@@ -25,3 +25,5 @@ Thumbs.db
 .vscode/
 *.iml
 dataset/
+CHANGELOG.md
+CHANGELOG.local.md

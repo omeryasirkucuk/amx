@@ -8,6 +8,9 @@ import sys
 
 import click
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_html import HTML
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 
@@ -34,6 +37,27 @@ log = get_logger("cli")
 
 pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 
+_NS_STATE: dict[str, str] = {"namespace": ""}
+
+
+def _kb_escape_namespace() -> KeyBindings:
+    kb = KeyBindings()
+
+    @kb.add("escape")
+    def _(event) -> None:  # type: ignore[no-untyped-def]
+        buf = event.app.current_buffer
+        if buf.text:
+            buf.reset()
+            return
+        ns = _NS_STATE.get("namespace", "")
+        if ns:
+            _NS_STATE["namespace"] = ""
+            event.app.exit(result="__amx_esc_back__")
+        else:
+            event.app.exit(result="__amx_esc_root__")
+
+    return kb
+
 
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="amx")
@@ -59,10 +83,17 @@ def _interactive_session(cfg: AMXConfig) -> None:
     info("Type /help for commands, /exit to quit.")
     info("Namespaces: /db, /docs, /analyze (use /back to return).")
     info("Tip: start typing / and use ↑/↓ to pick a command.")
+    info("Tip: press Esc on an empty line to go back (like Claude Code).")
     namespace = ""
 
     session = PromptSession(
         completer=_SlashCompleter(lambda: namespace, cfg),
+        key_bindings=_kb_escape_namespace(),
+        bottom_toolbar=lambda: HTML(
+            "<style bg='#222'> </style>"
+            "<b>↑↓</b> navigate · <b>Enter</b> select · "
+            "<b>Esc</b> clear line / go back · <b>Ctrl+C</b> exit"
+        ),
         complete_while_typing=True,
         complete_style=CompleteStyle.COLUMN,
         style=Style.from_dict(
@@ -78,6 +109,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
     )
 
     while True:
+        _NS_STATE["namespace"] = namespace
         prefix = f"amx/{namespace}" if namespace else "amx"
         try:
             raw = session.prompt(f"{prefix}> ").strip()
@@ -85,6 +117,14 @@ def _interactive_session(cfg: AMXConfig) -> None:
             console.print()
             success("Session closed.")
             return
+
+        if raw == "__amx_esc_back__":
+            namespace = ""
+            info("Back to root namespace (Esc).")
+            continue
+        if raw == "__amx_esc_root__":
+            info("Already at root namespace (Esc).")
+            continue
 
         if not raw:
             continue
@@ -139,7 +179,10 @@ def _interactive_session(cfg: AMXConfig) -> None:
         previous = os.environ.get("AMX_SESSION_CHILD")
         os.environ["AMX_SESSION_CHILD"] = "1"
         try:
-            main.main(args=args, prog_name="amx", standalone_mode=False)
+            # Route Click/Rich stdout through prompt-toolkit while the UI is active.
+            # This prevents terminal reflow/resizes from duplicating the prompt line.
+            with patch_stdout():
+                main.main(args=args, prog_name="amx", standalone_mode=False)
         except click.ClickException as exc:
             exc.show()
         except SystemExit:
@@ -184,6 +227,9 @@ Commands (in order):
 
 Aliases:
   /c == /connect
+
+Navigation:
+  Esc (empty line)                 Go back to root namespace
 """
         )
         return
@@ -197,6 +243,9 @@ Commands (in order):
   2) /scan [paths...]              Scan documents (preview)
   3) /ingest [paths...]            Ingest documents into RAG store
   4) /query <question>             Query RAG store
+
+Navigation:
+  Esc (empty line)                 Go back to root namespace
 """
         )
         return
@@ -209,6 +258,9 @@ Commands (in order):
   1) /back                         Return to root namespace
   2) /run [--schema …] [--table …] [--apply]   Run agents (interactive if omitted)
   3) /codebase <path> --schema …   Scan codebase references for tables in schema
+
+Navigation:
+  Esc (empty line)                 Go back to root namespace
 """
         )
         return
@@ -239,14 +291,17 @@ Context helpers:
   /schema <name>                   Remember schema for defaults
   /table <name>                    Remember table for defaults
 
+Navigation:
+  Esc (empty line)                 Go back one level (namespace → root)
+
 Examples:
-  /db
-  /connect
-  /schemas
-  /schema sap_s6p
-  /tables
-  /table t001
-  /profile
+  [bright_white]/db[/bright_white]
+  [bright_white]/connect[/bright_white]
+  [bright_white]/schemas[/bright_white]
+  [bright_white]/schema sap_s6p[/bright_white]
+  [bright_white]/tables[/bright_white]
+  [bright_white]/table t001[/bright_white]
+  [bright_white]/profile[/bright_white]
 """
     )
 
