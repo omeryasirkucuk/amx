@@ -98,14 +98,28 @@ def ask_password(question: str) -> str:
 
 
 def ask_choice(question: str, choices: list[str], default: str = "") -> str:
+    """Prompt for a single choice. Type 1–N or a matching label. Enter accepts the default.
+
+    The input line is never pre-filled with the default text (so you can type ``2`` immediately).
+    """
+    if not choices:
+        return default
     completer = WordCompleter(choices, ignore_case=True)
     console.print(f"  [info]{question}[/info]")
     for i, c in enumerate(choices, 1):
-        console.print(f"    {i}. {c}")
-    answer = pt_prompt("  > ", completer=completer, default=default).strip()
+        mark = " — default (Enter)" if default and c == default else ""
+        console.print(f"    {i}. {c}[dim]{mark}[/dim]")
+    if default and default in choices:
+        console.print("  [dim]Enter = default · or type a number 1–%d[/dim]" % len(choices))
+    # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.
+    answer = pt_prompt("  > ", completer=completer).strip()
+    if not answer:
+        return default if default in choices else ""
     if answer.isdigit() and 1 <= int(answer) <= len(choices):
         return choices[int(answer) - 1]
-    return answer if answer in choices else default
+    if answer in choices:
+        return answer
+    return default if default in choices else ""
 
 
 def ask_multi_choice(question: str, choices: list[str]) -> list[str]:

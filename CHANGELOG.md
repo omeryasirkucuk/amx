@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.13] — 2026-04-20
+
+### Fixed
+- **`ask_choice` UX**: the prompt no longer pre-fills the input with the long default option text. Type **`2`** (or any number) immediately; **Enter** still selects the default when one is set.
+
 ## [0.1.12] — 2026-04-20
 
 ### Fixed
