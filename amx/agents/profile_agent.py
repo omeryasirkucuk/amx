@@ -42,16 +42,63 @@ class ProfileAgent(BaseAgent):
     def __init__(self, llm: LLMProvider):
         self.llm = llm
 
+    BATCH_SIZE = 10
+
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
         profile = ctx.db_profile
         if not profile:
             return []
 
+        columns = list(profile.get("columns") or [])
+        if not columns:
+            return []
+
+        if len(columns) <= self.BATCH_SIZE:
+            return self._run_single_batch(ctx, columns)
+
+        all_suggestions: list[MetadataSuggestion] = []
+        batches = [
+            columns[i : i + self.BATCH_SIZE]
+            for i in range(0, len(columns), self.BATCH_SIZE)
+        ]
+        for idx, batch in enumerate(batches, 1):
+            col_names = ", ".join(c["name"] for c in batch)
+            log.info(
+                "Profile agent batch %d/%d (%d cols: %s)",
+                idx, len(batches), len(batch), col_names,
+            )
+            batch_ctx = self._ctx_with_columns(ctx, batch)
+            batch_suggestions = self._run_single_batch(batch_ctx, batch)
+            all_suggestions.extend(batch_suggestions)
+
+        if not all_suggestions:
+            log.warning(
+                "Profile agent produced zero suggestions across %d batches for %s.%s.",
+                len(batches), ctx.schema, ctx.table,
+            )
+        return all_suggestions
+
+    def _ctx_with_columns(self, ctx: AgentContext, columns: list) -> AgentContext:
+        """Return a shallow copy of the context with only the specified columns."""
+        new_profile = dict(ctx.db_profile)
+        new_profile["columns"] = columns
+        return AgentContext(
+            schema=ctx.schema,
+            table=ctx.table,
+            column=ctx.column,
+            db_profile=new_profile,
+            rag_context=ctx.rag_context,
+            code_context=ctx.code_context,
+            existing_metadata=ctx.existing_metadata,
+        )
+
+    def _run_single_batch(
+        self, ctx: AgentContext, columns: list
+    ) -> list[MetadataSuggestion]:
         user_msg = self._build_prompt(ctx)
         log.debug(
             "Profile agent prompt for %s.%s: %d chars, %d columns",
-            ctx.schema, ctx.table, len(user_msg),
-            len((ctx.db_profile or {}).get("columns", [])),
+            ctx.schema, ctx.table, len(user_msg), len(columns),
         )
         try:
             response = self.llm.chat([
@@ -64,29 +111,27 @@ class ProfileAgent(BaseAgent):
 
         if not response or not response.strip():
             log.warning(
-                "LLM returned an EMPTY response for %s.%s. "
+                "LLM returned an EMPTY response for %s.%s (%d columns). "
                 "Check model name, API key, and billing on the provider dashboard.",
-                ctx.schema, ctx.table,
+                ctx.schema, ctx.table, len(columns),
             )
             return []
 
         suggestions = self._parse_response(response, ctx)
-        if not suggestions and response and len(response.strip()) > 20:
+        if not suggestions and len(response.strip()) > 20:
             log.warning(
-                "Strict parse found no COLUMN:/DESCRIPTION_ blocks; trying loose parser "
-                "(LLMs often return Markdown instead of the exact template)."
+                "Strict parse found no COLUMN:/DESCRIPTION_ blocks; trying loose parser."
             )
             suggestions = self._parse_response_loose(response, ctx)
-        if not suggestions and response:
+        if not suggestions:
             suggestions = self._parse_by_known_column_names(response, ctx)
 
         if not suggestions:
             self._save_failed_response_for_debug(response, ctx)
             log.warning(
-                "Profile agent produced zero suggestions after all parsers. "
-                "Full raw LLM reply saved to %s — see also %s",
+                "Profile agent produced zero suggestions for batch. "
+                "Raw reply saved to %s",
                 LAST_PROFILE_RESPONSE_FILE,
-                LOG_DIR / "amx.log",
             )
         return suggestions
 

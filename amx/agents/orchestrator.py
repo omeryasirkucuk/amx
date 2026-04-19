@@ -80,7 +80,16 @@ class Orchestrator:
 
         all_suggestions: list[MetadataSuggestion] = []
 
-        info("Running profile agent (column names, types, statistics)...")
+        num_cols = len(profile.columns)
+        batch_size = self.profile_agent.BATCH_SIZE
+        if num_cols > batch_size:
+            n_batches = (num_cols + batch_size - 1) // batch_size
+            info(
+                f"Running profile agent on {num_cols} columns "
+                f"({n_batches} batches of ≤{batch_size} to stay within model output limits)..."
+            )
+        else:
+            info(f"Running profile agent ({num_cols} columns)...")
         all_suggestions.extend(self.profile_agent.run(ctx))
 
         if self.rag_agent:

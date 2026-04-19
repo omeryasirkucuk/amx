@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.11] — 2026-04-20
+
+### Fixed
+- **`finish_reason=length` → empty output**: tables with many columns (vbup has 47) exhausted the model's output budget in a single call. Profile agent now **batches columns in groups of 10**, making multiple smaller LLM calls so each has room to respond. Progress is shown in the terminal.
+
 ## [0.1.10] — 2026-04-20
 
 ### Fixed
