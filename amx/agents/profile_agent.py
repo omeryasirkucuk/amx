@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
 from amx.llm.provider import LLMProvider
-from amx.utils.logging import get_logger
+from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
 
 log = get_logger("agents.profile")
 
@@ -59,12 +60,85 @@ class ProfileAgent(BaseAgent):
                 "(LLMs often return Markdown instead of the exact template)."
             )
             suggestions = self._parse_response_loose(response, ctx)
+        if not suggestions and response:
+            suggestions = self._parse_by_known_column_names(response, ctx)
+
         if not suggestions:
+            self._save_failed_response_for_debug(response, ctx)
             log.warning(
-                "Profile agent produced zero suggestions after parsing. "
-                "Check LLM output format or try another model."
+                "Profile agent produced zero suggestions after all parsers. "
+                "Full raw LLM reply saved to %s — see also %s",
+                LAST_PROFILE_RESPONSE_FILE,
+                LOG_DIR / "amx.log",
             )
         return suggestions
+
+    def _save_failed_response_for_debug(self, response: str, ctx: AgentContext) -> None:
+        """Persist the model output when nothing could be parsed (inspect off-line)."""
+        try:
+            header = (
+                f"# AMX profile agent — raw LLM reply (all parsers failed)\n"
+                f"# schema={ctx.schema} table={ctx.table}\n"
+                f"# ---\n\n"
+            )
+            Path(LAST_PROFILE_RESPONSE_FILE).write_text(
+                header + (response or ""), encoding="utf-8"
+            )
+        except OSError as exc:
+            log.debug("Could not write %s: %s", LAST_PROFILE_RESPONSE_FILE, exc)
+
+    def _parse_by_known_column_names(
+        self, text: str, ctx: AgentContext
+    ) -> list[MetadataSuggestion]:
+        """Last resort: match each profiled column name in the response and grab the line/phrase after it."""
+        out: list[MetadataSuggestion] = []
+        cols = (ctx.db_profile or {}).get("columns") or []
+        for col in cols:
+            name = str(col.get("name", "")).strip()
+            if len(name) < 1:
+                continue
+            desc = self._description_after_column_name(text, name)
+            if not desc:
+                continue
+            out.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=name,
+                    suggestions=[desc],
+                    confidence=Confidence.MEDIUM,
+                    reasoning="Matched known column name in free-form LLM text",
+                    source="db_profile",
+                )
+            )
+        return out
+
+    def _description_after_column_name(self, text: str, name: str) -> str | None:
+        """Find `NAME: ...` or `**NAME** ...` style lines in Markdown-ish output."""
+        escaped = re.escape(name)
+        flags = re.MULTILINE | re.IGNORECASE
+        patterns = [
+            rf"^\s*[-*]\s*\**{escaped}\**(?:\s*[\u2013\-:])+\s*(.+)$",
+            rf"^\s*\**{escaped}\**(?:\s*[\u2013\-:])+\s*(.+)$",
+            rf"^\s*COLUMN:?\s*{escaped}\s*[:\-]\s*(.+)$",
+            rf"(?:^|\n)\s*#{1,4}\s+{escaped}\s*[:\-]?\s*(.+)$",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, flags)
+            if m:
+                line = m.group(1).strip().strip("*`")
+                if len(line) > 5:
+                    return line[:2000]
+        m2 = re.search(
+            rf"{escaped}\s*[\u2013\-–:]\s*(.+?)(?:\n|$)",
+            text,
+            flags,
+        )
+        if m2:
+            frag = m2.group(1).strip()
+            if len(frag) > 5:
+                return frag[:2000]
+        return None
 
     def _build_prompt(self, ctx: AgentContext) -> str:
         p = ctx.db_profile

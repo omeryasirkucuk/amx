@@ -33,7 +33,7 @@ from amx.utils.console import (
     success,
     warn,
 )
-from amx.utils.logging import get_logger
+from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
 
 log = get_logger("cli")
 
@@ -46,6 +46,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
     """Show version, config location, and active profiles when the session starts."""
     cfg_path = Path(cfg.CONFIG_DIR) / "config.yml"
     info(f"Version {__version__} · Config file: {cfg_path}")
+    info(f"Logs directory: {LOG_DIR} (amx.log · on LLM parse errors: {LAST_PROFILE_RESPONSE_FILE.name})")
     info(
         f"Database: profile '{cfg.active_db_profile}' → "
         f"{cfg.db.database} @ {cfg.db.host}:{cfg.db.port} (user {cfg.db.user})"

@@ -95,8 +95,8 @@ class Orchestrator:
         if not merged:
             warn(
                 "No metadata suggestions were produced for this table. "
-                "Usually the LLM reply did not match the expected format, or the LLM call failed. "
-                "Try another model, or check ~/.amx/logs/amx.log for details."
+                "If the model replied, the raw text may be in ~/.amx/logs/last_profile_agent_response.txt "
+                "— see also ~/.amx/logs/amx.log"
             )
             return []
 

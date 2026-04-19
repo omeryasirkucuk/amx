@@ -4,6 +4,15 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.9] — 2026-04-20
+
+### Added
+- **Debug artifacts**: when the profile agent still cannot parse the LLM reply, the **full raw response** is written to `~/.amx/logs/last_profile_agent_response.txt`.
+- **Third parser pass**: match **known column names** from the table profile against free-form model text (handles Markdown bullets / headings with different casing).
+
+### Changed
+- Session startup shows the **logs directory**; warnings point to `amx.log` and `last_profile_agent_response.txt`.
+
 ## [0.1.8] — 2026-04-20
 
 ### Fixed

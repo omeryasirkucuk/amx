@@ -9,6 +9,9 @@ from pathlib import Path
 LOG_DIR = Path.home() / ".amx" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+# Written when the profile agent cannot parse an LLM reply (debugging).
+LAST_PROFILE_RESPONSE_FILE = LOG_DIR / "last_profile_agent_response.txt"
+
 _fmt = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
