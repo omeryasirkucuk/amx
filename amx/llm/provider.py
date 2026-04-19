@@ -12,8 +12,10 @@ from amx.utils.logging import get_logger
 
 log = get_logger("llm.provider")
 
+# LiteLLM expects a provider prefix for many models (e.g. openai/gpt-4o).
+# If the user already passes provider/model, we leave it unchanged.
 PROVIDER_MODEL_PREFIX = {
-    "openai": "",
+    "openai": "openai/",
     "anthropic": "anthropic/",
     "gemini": "gemini/",
     "deepseek": "deepseek/",
@@ -48,8 +50,13 @@ class LLMProvider:
 
     @property
     def model_name(self) -> str:
+        raw = (self.cfg.model or "").strip()
+        if not raw:
+            return raw
+        if "/" in raw:
+            return raw
         prefix = PROVIDER_MODEL_PREFIX.get(self.cfg.provider, "")
-        return f"{prefix}{self.cfg.model}"
+        return f"{prefix}{raw}" if prefix else raw
 
     def chat(
         self,

@@ -65,8 +65,9 @@ pip install -e .
 
 ```bash
 docker-compose up -d
-amx db load ./dataset --schema sap_s6p
 ```
+
+AMX focuses on **metadata inference**, not bulk data loading. Load CSVs or restore dumps with your own tooling (for example `psql` `COPY`, `pgloader`, or ETL jobs), then point AMX at the populated database with `amx setup`.
 
 ### Configure AMX
 
@@ -77,7 +78,9 @@ amx setup
 This interactive wizard walks you through:
 1. **Database connection** — PostgreSQL host, port, credentials
 2. **AI model** — provider and API key (supports OpenAI, Anthropic, Gemini, DeepSeek, Ollama, local endpoints)
-3. **Data sources** — optional document paths and codebase locations
+3. **Data sources** — optional named **document** and **codebase** profiles for RAG and code scanning
+
+In an interactive `amx` session you can manage several **DB connections**, **LLM configs**, **document roots**, and **codebases**, then switch the active profile with commands such as `/use`, `/use-llm`, `/use-doc`, and `/use-code`. See `/help` in the shell for the full list.
 
 ### Run Analysis
 
@@ -99,12 +102,11 @@ amx analyze run --schema sap_s6p --table t001 --table vbak --apply
 | `amx db schemas` | List available schemas |
 | `amx db tables <schema>` | List tables in a schema |
 | `amx db profile <schema> <table>` | Profile table structure and data |
-| `amx db load <csv_dir>` | Bulk-load CSV files into a schema |
 | `amx docs scan [paths...]` | Scan and preview documents for RAG |
 | `amx docs ingest [paths...]` | Ingest documents into the RAG vector store |
 | `amx docs query <question>` | Query the document store |
 | `amx analyze run` | Run all agents and review suggestions |
-| `amx analyze codebase <path>` | Scan a codebase for asset references |
+| `amx analyze codebase <path> [--schema NAME]` | Scan a codebase for asset references (schema defaults from config session) |
 
 ## Supported Document Sources
 
@@ -144,8 +146,7 @@ amx/
 │   ├── rag_agent.py    # Document RAG agent
 │   └── code_agent.py   # Codebase analysis agent
 ├── db/
-│   ├── connector.py    # Database introspection and metadata I/O
-│   └── loader.py       # CSV bulk loader
+│   └── connector.py    # Database introspection and metadata I/O
 ├── docs/
 │   ├── scanner.py      # Multi-source document scanner
 │   └── rag.py          # ChromaDB vector store and RAG pipeline

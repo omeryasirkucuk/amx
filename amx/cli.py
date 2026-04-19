@@ -6,6 +6,7 @@ import os
 import shlex
 import signal
 import sys
+from dataclasses import replace
 
 import click
 from prompt_toolkit.completion import Completer, Completion
@@ -38,6 +39,54 @@ log = get_logger("cli")
 pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 
 _NS_STATE: dict[str, str] = {"namespace": ""}
+
+
+def _fix_codebase_cli_tail(tokens: list[str]) -> list[str]:
+    """Turn mistaken flags like `--sap_s6p` into `--schema sap_s6p` for `analyze codebase`."""
+    known = {"--schema", "-s", "--help", "-h"}
+    out: list[str] = []
+    k = 0
+    while k < len(tokens):
+        t = tokens[k]
+        if t in ("--schema", "-s"):
+            out.append(t)
+            k += 1
+            if k < len(tokens) and not tokens[k].startswith("-"):
+                out.append(tokens[k])
+                k += 1
+            continue
+        if t.startswith("--") and "=" not in t and t not in ("--help",):
+            name = t[2:]
+            if name and name != "schema":
+                out.extend(["--schema", name])
+                k += 1
+                continue
+        out.append(t)
+        k += 1
+    return out
+
+
+def _normalize_click_argv(args: list[str], cfg: AMXConfig) -> list[str]:
+    if len(args) >= 3 and args[0] == "analyze" and args[1] == "codebase":
+        return ["analyze", "codebase", args[2]] + _fix_codebase_cli_tail(args[3:])
+    return args
+
+
+def _rewrite_sys_argv_for_codebase(argv: list[str]) -> None:
+    """In-place fix for `amx analyze codebase …` when launched from a real shell."""
+    for i in range(len(argv) - 2):
+        if argv[i] == "analyze" and argv[i + 1] == "codebase":
+            head = argv[: i + 3]
+            tail = argv[i + 3 :]
+            argv[:] = head + _fix_codebase_cli_tail(tail)
+            return
+
+
+def run_cli() -> None:
+    """Entry point for the `amx` console script (argv normalization + Click)."""
+    if len(sys.argv) >= 4:
+        _rewrite_sys_argv_for_codebase(sys.argv)
+    main()
 
 
 def _kb_escape_namespace() -> KeyBindings:
@@ -178,6 +227,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
                 error(f"Unknown command: /{cmdline}. Type /help.")
                 continue
 
+            args = _normalize_click_argv(args, cfg)
             args = _inject_session_defaults(cfg, namespace, args)
 
             previous = os.environ.get("AMX_SESSION_CHILD")
@@ -227,7 +277,6 @@ Commands (in order):
  10) /schemas                      List schemas
  11) /tables [schema]             List tables (defaults to current schema)
  12) /profile [schema] [table]    Profile a table (defaults to current context)
- 13) /load <csv_dir> [--schema …] Bulk load CSVs
 
 Aliases:
   /c == /connect
@@ -261,7 +310,9 @@ Navigation:
 Commands (in order):
   1) /back                         Return to root namespace
   2) /run [--schema …] [--table …] [--apply]   Run agents (interactive if omitted)
-  3) /codebase <path> --schema …   Scan codebase references for tables in schema
+  3) /codebase <path> [--schema …] Scan codebase (schema defaults to /schema context)
+     Tip: `/schema sap_s6p` then `/codebase <url>` — or use `--schema sap_s6p`
+     Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -285,11 +336,29 @@ Getting started (in order):
   5) /analyze                      Enter analysis commands
 
 DB profiles (works anywhere):
-  /profiles                        List profiles
-  /use <name>                      Switch profile
-  /add-profile <name>              Add/update profile (interactive)
-  /remove-profile <name>          Remove profile
+  /profiles                        List DB profiles
+  /use <name>                      Switch active DB profile
+  /add-profile <name>              Add/update DB profile (interactive)
+  /remove-profile <name>           Remove DB profile
   /save                            Persist ~/.amx/config.yml
+
+LLM profiles:
+  /llm-profiles                    List named LLM configs
+  /use-llm <name>                  Switch active LLM profile
+  /add-llm-profile <name>          Add/update LLM profile (interactive)
+  /remove-llm-profile <name>       Remove LLM profile
+
+Document sources (named lists of paths):
+  /doc-profiles                    List document profiles
+  /use-doc <name>                  Switch active document profile
+  /add-doc-profile <name>          Add/update paths (interactive)
+  /remove-doc-profile <name>       Remove document profile
+
+Codebases (named repo / path):
+  /code-profiles                   List codebase profiles
+  /use-code <name>                 Switch active codebase profile
+  /add-code-profile <name>       Add/update one path (local or Git URL)
+  /remove-code-profile <name>     Remove codebase profile
 
 Context helpers:
   /schema <name>                   Remember schema for defaults
@@ -306,6 +375,8 @@ Examples:
   [bright_white]/tables[/bright_white]
   [bright_white]/table t001[/bright_white]
   [bright_white]/profile[/bright_white]
+  [bright_white]/codebase https://github.com/org/repo --schema sap_s6p[/bright_white]
+  [bright_white]/codebase https://github.com/org/repo --sap_s6p[/bright_white]  (same as --schema)
 """
     )
 
@@ -349,6 +420,18 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/save", "Save config to disk"),
         ("/schema", "Set current schema (/schema <name>)"),
         ("/table", "Set current table (/table <name>)"),
+        ("/llm-profiles", "List LLM profiles"),
+        ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
+        ("/add-llm-profile", "Add/update LLM profile"),
+        ("/remove-llm-profile", "Remove LLM profile"),
+        ("/doc-profiles", "List document profiles"),
+        ("/use-doc", "Switch document profile (/use-doc <name>)"),
+        ("/add-doc-profile", "Add/update document profile"),
+        ("/remove-doc-profile", "Remove document profile"),
+        ("/code-profiles", "List codebase profiles"),
+        ("/use-code", "Switch codebase profile (/use-code <name>)"),
+        ("/add-code-profile", "Add/update codebase profile"),
+        ("/remove-code-profile", "Remove codebase profile"),
     ]
 
     db_cmds: list[tuple[str, str]] = [
@@ -365,7 +448,6 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/schemas", "List schemas"),
         ("/tables", "List tables (/tables [schema])"),
         ("/profile", "Profile table (/profile [schema] [table])"),
-        ("/load", "Load CSVs (/load <dir> [--schema …])"),
     ]
 
     docs_cmds: list[tuple[str, str]] = [
@@ -392,6 +474,43 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
 def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) -> bool | str:
     head = parts[0]
+
+    if head == "llm-profiles":
+        _cmd_llm_profiles(cfg)
+        return True
+    if head == "use-llm":
+        _cmd_use_llm(cfg, parts[1:])
+        return True
+    if head == "add-llm-profile":
+        _cmd_add_llm_profile(cfg, parts[1:])
+        return True
+    if head == "remove-llm-profile":
+        _cmd_remove_llm_profile(cfg, parts[1:])
+        return True
+    if head == "doc-profiles":
+        _cmd_doc_profiles(cfg)
+        return True
+    if head == "use-doc":
+        _cmd_use_doc(cfg, parts[1:])
+        return True
+    if head == "add-doc-profile":
+        _cmd_add_doc_profile(cfg, parts[1:])
+        return True
+    if head == "remove-doc-profile":
+        _cmd_remove_doc_profile(cfg, parts[1:])
+        return True
+    if head == "code-profiles":
+        _cmd_code_profiles(cfg)
+        return True
+    if head == "use-code":
+        _cmd_use_code(cfg, parts[1:])
+        return True
+    if head == "add-code-profile":
+        _cmd_add_code_profile(cfg, parts[1:])
+        return True
+    if head == "remove-code-profile":
+        _cmd_remove_code_profile(cfg, parts[1:])
+        return True
 
     if head == "profiles":
         _cmd_profiles(cfg)
@@ -489,6 +608,206 @@ def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
         error(str(exc))
 
 
+def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
+    provider = ask_choice(
+        "Select AI provider",
+        ["openai", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
+        default=defaults.provider or "openai",
+    )
+    info(
+        "Model: use a short id (e.g. gpt-4o) or LiteLLM form openai/gpt-4o — "
+        "see https://docs.litellm.ai/docs/providers"
+    )
+    model = ask("Model name", defaults.model or _default_model(provider))
+    api_base = defaults.api_base
+    if provider in ("local", "ollama", "kimi"):
+        api_base = ask("API base URL", api_base or "http://localhost:11434/v1")
+    api_key = ask_password("API key") or defaults.api_key
+    return LLMConfig(
+        provider=provider,
+        model=model.strip(),
+        api_key=api_key,
+        api_base=api_base,
+        temperature=defaults.temperature,
+        max_tokens=defaults.max_tokens,
+    )
+
+
+def _cmd_llm_profiles(cfg: AMXConfig) -> None:
+    rows = []
+    for name, llm in sorted(cfg.llm_profiles.items(), key=lambda x: x[0]):
+        mark = "*" if name == cfg.active_llm_profile else " "
+        rows.append([f"{mark} {name}", llm.provider, llm.model])
+    render_table("LLM profiles (* = active)", ["Profile", "Provider", "Model"], rows)
+
+
+def _cmd_use_llm(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        names = sorted(cfg.llm_profiles.keys())
+        if not names:
+            error("No LLM profiles configured.")
+            return
+        name = ask_choice("Select LLM profile", names, default=cfg.active_llm_profile)
+    try:
+        cfg.set_active_llm_profile(name)
+        cfg.save()
+        success(f"Switched active LLM profile to: {name}")
+    except Exception as exc:
+        error(str(exc))
+
+
+def _cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        name = ask("LLM profile name", default="work")
+    base = cfg.llm_profiles.get(name, cfg.llm)
+    info(f"Creating/updating LLM profile: {name}")
+    llm = _interactive_llm_block(replace(base))
+    cfg.upsert_llm_profile(name, llm)
+    if confirm(f"Activate profile {name} now?", default=True):
+        cfg.set_active_llm_profile(name)
+    cfg.save()
+    success(f"LLM profile saved: {name} (active: {cfg.active_llm_profile})")
+
+
+def _cmd_remove_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) < 1:
+        error("Usage: /remove-llm-profile <name>")
+        return
+    name = rest[0]
+    try:
+        cfg.remove_llm_profile(name)
+        cfg.save()
+        success(f"Removed LLM profile: {name} (active: {cfg.active_llm_profile})")
+    except Exception as exc:
+        error(str(exc))
+
+
+def _cmd_doc_profiles(cfg: AMXConfig) -> None:
+    if not cfg.doc_profiles:
+        info("No document profiles. Use /add-doc-profile <name>")
+        return
+    rows = []
+    for name, paths in sorted(cfg.doc_profiles.items(), key=lambda x: x[0]):
+        mark = "*" if name == cfg.active_doc_profile else " "
+        preview = "; ".join(paths[:2]) + (" …" if len(paths) > 2 else "")
+        rows.append([f"{mark} {name}", str(len(paths)), preview])
+    render_table("Document profiles (* = active)", ["Profile", "# paths", "Preview"], rows)
+
+
+def _cmd_use_doc(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        names = sorted(cfg.doc_profiles.keys())
+        if not names:
+            error("No document profiles.")
+            return
+        name = ask_choice("Select document profile", names, default=cfg.active_doc_profile)
+    if name not in cfg.doc_profiles:
+        error(f"Unknown document profile: {name}")
+        return
+    cfg.active_doc_profile = name
+    cfg.save()
+    success(f"Active document profile: {name}")
+
+
+def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        name = ask("Document profile name", default="default")
+    paths: list[str] = []
+    info("Enter document roots (local dir, s3://, GitHub URL). Empty line to finish.")
+    while True:
+        p = ask("Path", default="")
+        if not p:
+            break
+        paths.append(p)
+    if not paths:
+        error("No paths added.")
+        return
+    cfg.upsert_doc_profile(name, paths)
+    if not cfg.active_doc_profile or confirm(f"Switch active document profile to {name}?", default=True):
+        cfg.active_doc_profile = name
+    cfg.save()
+    success(f"Document profile saved: {name} ({len(paths)} path(s))")
+
+
+def _cmd_remove_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) < 1:
+        error("Usage: /remove-doc-profile <name>")
+        return
+    try:
+        cfg.remove_doc_profile(rest[0])
+        cfg.save()
+        success(f"Removed document profile: {rest[0]}")
+    except Exception as exc:
+        error(str(exc))
+
+
+def _cmd_code_profiles(cfg: AMXConfig) -> None:
+    if not cfg.code_profiles:
+        info("No codebase profiles. Use /add-code-profile <name>")
+        return
+    rows = []
+    for name, path in sorted(cfg.code_profiles.items(), key=lambda x: x[0]):
+        mark = "*" if name == cfg.active_code_profile else " "
+        rows.append([f"{mark} {name}", path])
+    render_table("Codebase profiles (* = active)", ["Profile", "Path / URL"], rows)
+
+
+def _cmd_use_code(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        names = sorted(cfg.code_profiles.keys())
+        if not names:
+            error("No codebase profiles.")
+            return
+        name = ask_choice("Select codebase profile", names, default=cfg.active_code_profile)
+    if name not in cfg.code_profiles:
+        error(f"Unknown codebase profile: {name}")
+        return
+    cfg.active_code_profile = name
+    cfg.save()
+    success(f"Active codebase profile: {name}")
+
+
+def _cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+        path = " ".join(rest[1:]).strip() if len(rest) > 1 else ""
+    else:
+        name = ask("Codebase profile name", default="default")
+        path = ""
+    if not path:
+        path = ask("Codebase path (local dir or Git URL)", default="")
+    if not path:
+        error("Path required.")
+        return
+    cfg.upsert_code_profile(name, path)
+    if not cfg.active_code_profile or confirm(f"Switch active codebase profile to {name}?", default=True):
+        cfg.active_code_profile = name
+    cfg.save()
+    success(f"Codebase profile saved: {name}")
+
+
+def _cmd_remove_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) < 1:
+        error("Usage: /remove-code-profile <name>")
+        return
+    try:
+        cfg.remove_code_profile(rest[0])
+        cfg.save()
+        success(f"Removed codebase profile: {rest[0]}")
+    except Exception as exc:
+        error(str(exc))
+
+
 def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
 
@@ -498,7 +817,6 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
         "schemas": ["db", "schemas"],
         "tables": ["db", "tables"],
         "profile": ["db", "profile"],
-        "load": ["db", "load"],
         "scan": ["docs", "scan"],
         "ingest": ["docs", "ingest"],
         "query": ["docs", "query"],
@@ -536,6 +854,16 @@ def _inject_session_defaults(cfg: AMXConfig, namespace: str, args: list[str]) ->
             return ["db", "profile", cfg.current_schema, cfg.current_table]
         if len(args) == 3 and cfg.current_table:
             return ["db", "profile", args[2], cfg.current_table]
+
+    if (
+        len(args) >= 3
+        and args[0] == "analyze"
+        and args[1] == "codebase"
+        and "--schema" not in args
+        and "-s" not in args
+        and cfg.current_schema
+    ):
+        return args + ["--schema", cfg.current_schema]
 
     return args
 
@@ -575,16 +903,10 @@ def setup(cfg: AMXConfig) -> None:
 
     # LLM
     info("Step 2/3 — AI Model Configuration")
-    cfg.llm.provider = ask_choice(
-        "Select AI provider",
-        ["openai", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
-        default=cfg.llm.provider or "openai",
-    )
-    cfg.llm.model = ask("Model name", cfg.llm.model or _default_model(cfg.llm.provider))
-
-    if cfg.llm.provider in ("local", "ollama", "kimi"):
-        cfg.llm.api_base = ask("API base URL", cfg.llm.api_base or "http://localhost:11434/v1")
-    cfg.llm.api_key = ask_password("API key") or cfg.llm.api_key
+    cfg.llm = _interactive_llm_block(cfg.llm)
+    cfg.active_llm_profile = cfg.active_llm_profile or "default"
+    cfg.upsert_llm_profile(cfg.active_llm_profile, replace(cfg.llm))
+    cfg.apply_active_llm_profile()
 
     from amx.llm.provider import LLMProvider
 
@@ -595,20 +917,25 @@ def setup(cfg: AMXConfig) -> None:
         warn("LLM test failed — you can reconfigure later with `amx setup`.")
 
     # Data sources
-    info("Step 3/3 — Optional Data Sources")
-    if confirm("Add document paths for RAG?", default=False):
+    info("Step 3/3 — Optional Data Sources (named profiles)")
+    if confirm("Add a document profile for RAG?", default=False):
+        name = ask("Profile name", default="default")
+        paths: list[str] = []
         while True:
-            p = ask("Document path (local dir, s3://, github URL, or empty to stop)")
+            p = ask("Document path (empty to finish)", default="")
             if not p:
                 break
-            cfg.doc_paths.append(p)
+            paths.append(p)
+        if paths:
+            cfg.upsert_doc_profile(name, paths)
+            cfg.active_doc_profile = name
 
-    if confirm("Add codebase paths for analysis?", default=False):
-        while True:
-            p = ask("Codebase path (local dir, github URL, or empty to stop)")
-            if not p:
-                break
-            cfg.code_paths.append(p)
+    if confirm("Add a codebase profile?", default=False):
+        name = ask("Profile name", default="default")
+        p = ask("Codebase path (local dir or Git URL)", default="")
+        if p:
+            cfg.upsert_code_profile(name, p)
+            cfg.active_code_profile = name
 
     saved = cfg.save()
     success(f"Configuration saved to {saved}")
@@ -631,7 +958,7 @@ def _default_model(provider: str) -> str:
 
 @main.group()
 def db() -> None:
-    """Database inspection and data loading commands."""
+    """Database inspection and profiling commands."""
 
 
 @db.command("connect")
@@ -696,24 +1023,6 @@ def db_profile(cfg: AMXConfig, schema: str, table: str) -> None:
     )
 
 
-@db.command("load")
-@click.argument("csv_dir")
-@click.option("--schema", default="sap_s6p", help="Target schema name.")
-@click.pass_obj
-def db_load(cfg: AMXConfig, csv_dir: str, schema: str) -> None:
-    """Bulk-load CSV files into a PostgreSQL schema."""
-    from amx.db.connector import DatabaseConnector
-    from amx.db.loader import load_csvs_to_schema
-
-    db = DatabaseConnector(cfg.db)
-    if not db.test_connection():
-        error("Cannot connect to database.")
-        sys.exit(1)
-
-    loaded = load_csvs_to_schema(db, csv_dir, schema=schema)
-    success(f"Loaded {len(loaded)} tables into {schema}")
-
-
 # ── Document Commands ───────────────────────────────────────────────────────
 
 
@@ -729,9 +1038,9 @@ def docs_scan(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
     """Scan document sources and show what would be ingested."""
     from amx.docs.scanner import scan_all_sources, total_size_mb
 
-    all_paths = list(paths) or cfg.doc_paths
+    all_paths = list(paths) or cfg.effective_doc_paths()
     if not all_paths:
-        error("No document paths provided. Use `amx setup` or pass paths as arguments.")
+        error("No document paths configured. Use /add-doc-profile, `amx setup`, or pass paths.")
         return
 
     documents = scan_all_sources(all_paths)
@@ -767,9 +1076,9 @@ def docs_ingest(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
     from amx.docs.rag import RAGStore
     from amx.docs.scanner import scan_all_sources, total_size_mb
 
-    all_paths = list(paths) or cfg.doc_paths
+    all_paths = list(paths) or cfg.effective_doc_paths()
     if not all_paths:
-        error("No document paths provided.")
+        error("No document paths configured. Use /add-doc-profile, `amx setup`, or pass paths.")
         return
 
     documents = scan_all_sources(all_paths)
@@ -862,10 +1171,11 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
 
     # Codebase analysis
     code_report = None
-    if cfg.code_paths:
+    code_paths = cfg.effective_code_paths()
+    if code_paths:
         info("Analyzing codebase references...")
         all_table_names = tables
-        for cp in cfg.code_paths:
+        for cp in code_paths:
             try:
                 code_report = analyze_codebase(cp, all_table_names)
                 info(f"Found {sum(len(v) for v in code_report.references.values())} code references")
@@ -910,12 +1220,22 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
 
 @analyze.command("codebase")
 @click.argument("path")
-@click.option("--schema", "-s", required=True, help="Schema to match against.")
+@click.option(
+    "--schema",
+    "-s",
+    default=None,
+    help="Schema to match against (defaults to session current_schema from config).",
+)
 @click.pass_obj
-def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str) -> None:
+def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str | None) -> None:
     """Analyze a codebase for database asset references."""
     from amx.codebase.analyzer import analyze_codebase
     from amx.db.connector import DatabaseConnector
+
+    schema = schema or cfg.current_schema
+    if not schema:
+        error("Missing schema: use --schema sap_s6p or set context with /schema … in session.")
+        sys.exit(1)
 
     db = DatabaseConnector(cfg.db)
     tables = db.list_tables(schema)
@@ -949,11 +1269,18 @@ def show_config(cfg: AMXConfig) -> None:
         names = ", ".join(sorted(cfg.db_profiles.keys()))
         info(f"DB profiles: {names}")
     info(f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}")
-    info(f"LLM: {cfg.llm.provider}/{cfg.llm.model}")
-    info(f"Document paths: {cfg.doc_paths or 'none'}")
-    info(f"Codebase paths: {cfg.code_paths or 'none'}")
+    info(
+        f"Active LLM profile: {cfg.active_llm_profile} → "
+        f"{cfg.llm.provider}/{cfg.llm.model}"
+    )
+    if cfg.llm_profiles:
+        info("LLM profiles: " + ", ".join(sorted(cfg.llm_profiles.keys())))
+    info(f"Active document profile: {cfg.active_doc_profile or '-'}")
+    info(f"Document paths (active): {cfg.effective_doc_paths() or 'none'}")
+    info(f"Active codebase profile: {cfg.active_code_profile or '-'}")
+    info(f"Codebase paths (active): {cfg.effective_code_paths() or 'none'}")
     info(f"Selected schemas: {cfg.selected_schemas or 'all'}")
 
 
 if __name__ == "__main__":
-    main()
+    run_cli()
