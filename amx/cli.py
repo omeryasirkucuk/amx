@@ -79,121 +79,124 @@ def main(ctx: click.Context, cfg_path: str | None) -> None:
 
 def _interactive_session(cfg: AMXConfig) -> None:
     """Start AMX interactive slash-command shell."""
-    heading("AMX Interactive Session")
-    info("Type /help for commands, /exit to quit.")
-    info("Namespaces: /db, /docs, /analyze (use /back to return).")
-    info("Tip: start typing / and use ↑/↓ to pick a command.")
-    info("Tip: press Esc on an empty line to go back (like Claude Code).")
-    namespace = ""
+    # Important: keep *all* Rich output and the PromptSession on the same stdout path.
+    # Otherwise Terminal.app reflow can leave "ghost" copies of the prompt line.
+    with patch_stdout():
+        heading("AMX Interactive Session")
+        info("Type /help for commands, /exit to quit.")
+        info("Namespaces: /db, /docs, /analyze (use /back to return).")
+        info("Tip: start typing / and use ↑/↓ to pick a command.")
+        info("Tip: press Esc on an empty line to go back (like Claude Code).")
+        namespace = ""
 
-    session = PromptSession(
-        completer=_SlashCompleter(lambda: namespace, cfg),
-        key_bindings=_kb_escape_namespace(),
-        bottom_toolbar=lambda: HTML(
-            "<style bg='#222'> </style>"
-            "<b>↑↓</b> navigate · <b>Enter</b> select · "
-            "<b>Esc</b> clear line / go back · <b>Ctrl+C</b> exit"
-        ),
-        complete_while_typing=True,
-        complete_style=CompleteStyle.COLUMN,
-        style=Style.from_dict(
-            {
-                # High-contrast completion menu (meta text was too faint on gray backgrounds).
-                "completion-menu": "bg:#1f1f1f",
-                "completion-menu.completion": "fg:#ffffff bg:#2b2b2b",
-                "completion-menu.completion.current": "fg:#ffffff bold bg:#0b5fff",
-                "completion-menu.meta.completion": "fg:#e6e6e6 bg:#2b2b2b",
-                "completion-menu.meta.completion.current": "fg:#ffffff bold bg:#0b5fff",
-            }
-        ),
-    )
+        session = PromptSession(
+            completer=_SlashCompleter(lambda: namespace, cfg),
+            key_bindings=_kb_escape_namespace(),
+            mouse_support=False,
+            bottom_toolbar=lambda: HTML(
+                "<style bg='#222'> </style>"
+                "<b>↑↓</b> navigate · <b>Enter</b> select · "
+                "<b>Esc</b> clear line / go back · <b>Ctrl+C</b> exit"
+            ),
+            complete_while_typing=True,
+            complete_style=CompleteStyle.COLUMN,
+            style=Style.from_dict(
+                {
+                    # High-contrast completion menu (meta text was too faint on gray backgrounds).
+                    "completion-menu": "bg:#1f1f1f",
+                    "completion-menu.completion": "fg:#ffffff bg:#2b2b2b",
+                    "completion-menu.completion.current": "fg:#ffffff bold bg:#0b5fff",
+                    "completion-menu.meta.completion": "fg:#e6e6e6 bg:#2b2b2b",
+                    "completion-menu.meta.completion.current": "fg:#ffffff bold bg:#0b5fff",
+                }
+            ),
+        )
 
-    while True:
-        _NS_STATE["namespace"] = namespace
-        prefix = f"amx/{namespace}" if namespace else "amx"
-        try:
-            raw = session.prompt(f"{prefix}> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            success("Session closed.")
-            return
+        while True:
+            _NS_STATE["namespace"] = namespace
+            prefix = f"amx/{namespace}" if namespace else "amx"
+            try:
+                raw = session.prompt(f"{prefix}> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print()
+                success("Session closed.")
+                return
 
-        if raw == "__amx_esc_back__":
-            namespace = ""
-            info("Back to root namespace (Esc).")
-            continue
-        if raw == "__amx_esc_root__":
-            info("Already at root namespace (Esc).")
-            continue
+            if raw == "__amx_esc_back__":
+                namespace = ""
+                info("Back to root namespace (Esc).")
+                continue
+            if raw == "__amx_esc_root__":
+                info("Already at root namespace (Esc).")
+                continue
 
-        if not raw:
-            continue
-        if not raw.startswith("/"):
-            warn("Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
-            continue
+            if not raw:
+                continue
+            if not raw.startswith("/"):
+                warn("Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
+                continue
 
-        cmdline = raw[1:].strip()
-        if not cmdline:
-            continue
+            cmdline = raw[1:].strip()
+            if not cmdline:
+                continue
 
-        if cmdline in {"exit", "quit", "q"}:
-            success("Session closed.")
-            return
-        if cmdline in {"help", "?"}:
-            _print_session_help(namespace=namespace, cfg=cfg)
-            continue
-        if cmdline == "back":
-            namespace = ""
-            info("Back to root namespace.")
-            continue
-        if cmdline in {"db", "docs", "analyze"}:
-            namespace = cmdline
-            info(f"Entered /{namespace} namespace.")
-            continue
+            if cmdline in {"exit", "quit", "q"}:
+                success("Session closed.")
+                return
+            if cmdline in {"help", "?"}:
+                _print_session_help(namespace=namespace, cfg=cfg)
+                continue
+            if cmdline == "back":
+                namespace = ""
+                info("Back to root namespace.")
+                continue
+            if cmdline in {"db", "docs", "analyze"}:
+                namespace = cmdline
+                info(f"Entered /{namespace} namespace.")
+                continue
 
-        try:
-            parts = shlex.split(cmdline)
-        except ValueError as exc:
-            error(f"Invalid command syntax: {exc}")
-            continue
+            try:
+                parts = shlex.split(cmdline)
+            except ValueError as exc:
+                error(f"Invalid command syntax: {exc}")
+                continue
 
-        if not parts:
-            continue
+            if not parts:
+                continue
 
-        handled = _handle_session_builtin(cfg, namespace, parts)
-        if handled == "exit":
-            success("Session closed.")
-            return
-        if handled:
-            continue
+            handled = _handle_session_builtin(cfg, namespace, parts)
+            if handled == "exit":
+                success("Session closed.")
+                return
+            if handled:
+                continue
 
-        args = _session_to_click_args(namespace, parts)
-        if args is None:
-            error(f"Unknown command: /{cmdline}. Type /help.")
-            continue
+            args = _session_to_click_args(namespace, parts)
+            if args is None:
+                error(f"Unknown command: /{cmdline}. Type /help.")
+                continue
 
-        # Fill defaults from session context where safe.
-        args = _inject_session_defaults(cfg, namespace, args)
+            # Fill defaults from session context where safe.
+            args = _inject_session_defaults(cfg, namespace, args)
 
-        # Run selected command as a child invocation so it doesn't reopen session.
-        previous = os.environ.get("AMX_SESSION_CHILD")
-        os.environ["AMX_SESSION_CHILD"] = "1"
-        try:
-            # Route Click/Rich stdout through prompt-toolkit while the UI is active.
-            # This prevents terminal reflow/resizes from duplicating the prompt line.
-            with patch_stdout():
-                main.main(args=args, prog_name="amx", standalone_mode=False)
-        except click.ClickException as exc:
-            exc.show()
-        except SystemExit:
-            pass
-        except Exception as exc:  # pragma: no cover - defensive
-            error(f"Command failed: {exc}")
-        finally:
-            if previous is None:
-                os.environ.pop("AMX_SESSION_CHILD", None)
-            else:
-                os.environ["AMX_SESSION_CHILD"] = previous
+            # Run selected command as a child invocation so it doesn't reopen session.
+            previous = os.environ.get("AMX_SESSION_CHILD")
+            os.environ["AMX_SESSION_CHILD"] = "1"
+            try:
+                # Nested patch_stdout is harmless; keeps Click/Rich aligned during commands.
+                with patch_stdout():
+                    main.main(args=args, prog_name="amx", standalone_mode=False)
+            except click.ClickException as exc:
+                exc.show()
+            except SystemExit:
+                pass
+            except Exception as exc:  # pragma: no cover - defensive
+                error(f"Command failed: {exc}")
+            finally:
+                if previous is None:
+                    os.environ.pop("AMX_SESSION_CHILD", None)
+                else:
+                    os.environ["AMX_SESSION_CHILD"] = previous
 
 
 def _print_session_help(*, namespace: str, cfg: AMXConfig) -> None:
