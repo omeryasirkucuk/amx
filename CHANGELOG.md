@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.12] — 2026-04-20
+
+### Fixed
+- **OpenAI `gpt-5` / o-series (`finish_reason=length`, empty `content`)**: these models can burn the entire output budget on **reasoning tokens** before emitting visible text. The LLM layer now **raises `max_tokens` to at least 16384** for those models (override via `AMX_LLM_MIN_MAX_TOKENS`), passes **`reasoning_effort`** (default `low`, env `AMX_REASONING_EFFORT`), and prints a targeted warning when `finish_reason=length` with empty content. New installs default **`max_tokens` = 16384** in `LLMConfig`.
+
 ## [0.1.11] — 2026-04-20
 
 ### Fixed

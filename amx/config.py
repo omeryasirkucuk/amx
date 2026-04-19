@@ -33,7 +33,7 @@ class LLMConfig:
     api_key: str = ""
     api_base: str | None = None
     temperature: float = 0.2
-    max_tokens: int = 4096
+    max_tokens: int = 16384
 
 
 def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
