@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from prompt_toolkit import prompt as pt_prompt
+from rich import box
+from rich.align import Align
 from prompt_toolkit.completion import WordCompleter
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from rich.theme import Theme
 
 _theme = Theme(
@@ -22,6 +26,47 @@ _theme = Theme(
 )
 
 console = Console(theme=_theme)
+
+_BANNER_SHOWN = False
+
+
+def show_banner(force: bool = False) -> None:
+    """Render AMX startup banner once per process."""
+    global _BANNER_SHOWN
+    if _BANNER_SHOWN and not force:
+        return
+    if os.getenv("AMX_NO_BANNER", "").lower() in {"1", "true", "yes"}:
+        return
+
+    title = Text("* AMX (Agentic Metadata Extractor) — Initialization & Setup *", style="bold cyan")
+    art = Text(
+        "\n".join(
+            [
+                " █████╗ ███╗   ███╗██╗  ██╗",
+                "██╔══██╗████╗ ████║╚██╗██╔╝",
+                "███████║██╔████╔██║ ╚███╔╝ ",
+                "██╔══██║██║╚██╔╝██║ ██╔██╗ ",
+                "██║  ██║██║ ╚═╝ ██║██╔╝ ██╗",
+                "╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝",
+            ]
+        ),
+        style="bold bright_cyan",
+    )
+    subtitle = Text(
+        "Metadata Extraction System | Multi-Source Inference Pipeline",
+        style="bold #66ffff",
+    )
+
+    content = Text.assemble(title, "\n\n", art, "\n", subtitle)
+    console.print(
+        Panel(
+            Align.center(content),
+            border_style="bright_cyan",
+            box=box.DOUBLE_EDGE,
+            padding=(1, 2),
+        )
+    )
+    _BANNER_SHOWN = True
 
 
 def heading(text: str) -> None:

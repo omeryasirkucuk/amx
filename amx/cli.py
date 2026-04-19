@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import sys
 
 import click
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.styles import Style
+from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 
 from amx import __version__
 from amx.config import AMXConfig, DBConfig, LLMConfig
@@ -19,6 +24,7 @@ from amx.utils.console import (
     heading,
     info,
     render_table,
+    show_banner,
     success,
     warn,
 )
@@ -29,7 +35,7 @@ log = get_logger("cli")
 pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="amx")
 @click.option("--config", "cfg_path", default=None, help="Path to config YAML file.")
 @click.pass_context
@@ -41,6 +47,450 @@ def main(ctx: click.Context, cfg_path: str | None) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj = AMXConfig.load(cfg_path)
+    if os.getenv("AMX_SESSION_CHILD") != "1":
+        show_banner()
+    if ctx.invoked_subcommand is None:
+        _interactive_session(cfg=ctx.obj)
+
+
+def _interactive_session(cfg: AMXConfig) -> None:
+    """Start AMX interactive slash-command shell."""
+    heading("AMX Interactive Session")
+    info("Type /help for commands, /exit to quit.")
+    info("Namespaces: /db, /docs, /analyze (use /back to return).")
+    info("Tip: start typing / and use ↑/↓ to pick a command.")
+    namespace = ""
+
+    session = PromptSession(
+        completer=_SlashCompleter(lambda: namespace, cfg),
+        complete_while_typing=True,
+        complete_style=CompleteStyle.COLUMN,
+        style=Style.from_dict(
+            {
+                # High-contrast completion menu (meta text was too faint on gray backgrounds).
+                "completion-menu": "bg:#1f1f1f",
+                "completion-menu.completion": "fg:#ffffff bg:#2b2b2b",
+                "completion-menu.completion.current": "fg:#ffffff bold bg:#0b5fff",
+                "completion-menu.meta.completion": "fg:#e6e6e6 bg:#2b2b2b",
+                "completion-menu.meta.completion.current": "fg:#ffffff bold bg:#0b5fff",
+            }
+        ),
+    )
+
+    while True:
+        prefix = f"amx/{namespace}" if namespace else "amx"
+        try:
+            raw = session.prompt(f"{prefix}> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            success("Session closed.")
+            return
+
+        if not raw:
+            continue
+        if not raw.startswith("/"):
+            warn("Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
+            continue
+
+        cmdline = raw[1:].strip()
+        if not cmdline:
+            continue
+
+        if cmdline in {"exit", "quit", "q"}:
+            success("Session closed.")
+            return
+        if cmdline in {"help", "?"}:
+            _print_session_help(namespace=namespace, cfg=cfg)
+            continue
+        if cmdline == "back":
+            namespace = ""
+            info("Back to root namespace.")
+            continue
+        if cmdline in {"db", "docs", "analyze"}:
+            namespace = cmdline
+            info(f"Entered /{namespace} namespace.")
+            continue
+
+        try:
+            parts = shlex.split(cmdline)
+        except ValueError as exc:
+            error(f"Invalid command syntax: {exc}")
+            continue
+
+        if not parts:
+            continue
+
+        handled = _handle_session_builtin(cfg, namespace, parts)
+        if handled == "exit":
+            success("Session closed.")
+            return
+        if handled:
+            continue
+
+        args = _session_to_click_args(namespace, parts)
+        if args is None:
+            error(f"Unknown command: /{cmdline}. Type /help.")
+            continue
+
+        # Fill defaults from session context where safe.
+        args = _inject_session_defaults(cfg, namespace, args)
+
+        # Run selected command as a child invocation so it doesn't reopen session.
+        previous = os.environ.get("AMX_SESSION_CHILD")
+        os.environ["AMX_SESSION_CHILD"] = "1"
+        try:
+            main.main(args=args, prog_name="amx", standalone_mode=False)
+        except click.ClickException as exc:
+            exc.show()
+        except SystemExit:
+            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            error(f"Command failed: {exc}")
+        finally:
+            if previous is None:
+                os.environ.pop("AMX_SESSION_CHILD", None)
+            else:
+                os.environ["AMX_SESSION_CHILD"] = previous
+
+
+def _print_session_help(*, namespace: str, cfg: AMXConfig) -> None:
+    active = cfg.active_db_profile or "default"
+    ctx_schema = cfg.current_schema or "(not set)"
+    ctx_table = cfg.current_table or "(not set)"
+
+    if namespace == "db":
+        console.print(
+            f"""
+[heading]Help — /db namespace[/heading]
+Context:
+  Active DB profile: [cyan]{active}[/cyan]
+  Current schema: [cyan]{ctx_schema}[/cyan]
+  Current table:  [cyan]{ctx_table}[/cyan]
+
+Commands (in order):
+  1) /back                         Return to root namespace
+  2) /profiles                     List DB connection profiles
+  3) /use <name>                   Switch active DB profile
+  4) /add-profile <name>           Create/update a profile (interactive)
+  5) /remove-profile <name>        Remove a profile (cannot remove last)
+  6) /save                         Persist config to disk (~/.amx/config.yml)
+  7) /schema <name>                Set current schema context (used by /tables)
+  8) /table <name>                 Set current table context (used by /profile)
+  9) /connect                      Test DB connectivity
+ 10) /schemas                      List schemas
+ 11) /tables [schema]             List tables (defaults to current schema)
+ 12) /profile [schema] [table]    Profile a table (defaults to current context)
+ 13) /load <csv_dir> [--schema …] Bulk load CSVs
+
+Aliases:
+  /c == /connect
+"""
+        )
+        return
+
+    if namespace == "docs":
+        console.print(
+            """
+[heading]Help — /docs namespace[/heading]
+Commands (in order):
+  1) /back                         Return to root namespace
+  2) /scan [paths...]              Scan documents (preview)
+  3) /ingest [paths...]            Ingest documents into RAG store
+  4) /query <question>             Query RAG store
+"""
+        )
+        return
+
+    if namespace == "analyze":
+        console.print(
+            """
+[heading]Help — /analyze namespace[/heading]
+Commands (in order):
+  1) /back                         Return to root namespace
+  2) /run [--schema …] [--table …] [--apply]   Run agents (interactive if omitted)
+  3) /codebase <path> --schema …   Scan codebase references for tables in schema
+"""
+        )
+        return
+
+    console.print(
+        f"""
+[heading]Help — root[/heading]
+Context:
+  Active DB profile: [cyan]{active}[/cyan]
+  Current schema: [cyan]{ctx_schema}[/cyan]
+  Current table:  [cyan]{ctx_table}[/cyan]
+
+Getting started (in order):
+  1) /setup                        First-time wizard (DB + LLM + sources)
+  2) /config                       Show current configuration
+  3) /db                           Enter database commands (/connect, /schemas, …)
+  4) /docs                         Enter document/RAG commands
+  5) /analyze                      Enter analysis commands
+
+DB profiles (works anywhere):
+  /profiles                        List profiles
+  /use <name>                      Switch profile
+  /add-profile <name>              Add/update profile (interactive)
+  /remove-profile <name>          Remove profile
+  /save                            Persist ~/.amx/config.yml
+
+Context helpers:
+  /schema <name>                   Remember schema for defaults
+  /table <name>                    Remember table for defaults
+
+Examples:
+  /db
+  /connect
+  /schemas
+  /schema sap_s6p
+  /tables
+  /table t001
+  /profile
+"""
+    )
+
+
+class _SlashCompleter(Completer):
+    def __init__(self, namespace_cb, cfg: AMXConfig):
+        self._namespace_cb = namespace_cb
+        self._cfg = cfg
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+
+        ns = self._namespace_cb()
+        partial = text[1:]
+
+        for cmd, meta in _slash_command_catalog(ns, self._cfg):
+            if cmd[1:].startswith(partial):
+                yield Completion(
+                    cmd,
+                    start_position=-len(text),
+                    display_meta=meta,
+                )
+
+
+def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, str]]:
+    """Ordered (command, description) pairs for autocomplete + help."""
+    root: list[tuple[str, str]] = [
+        ("/help", "Contextual help"),
+        ("/exit", "Exit session"),
+        ("/setup", "Run setup wizard"),
+        ("/config", "Show configuration"),
+        ("/db", "Enter /db namespace"),
+        ("/docs", "Enter /docs namespace"),
+        ("/analyze", "Enter /analyze namespace"),
+        ("/profiles", "List DB profiles"),
+        ("/use", "Switch DB profile (/use <name>)"),
+        ("/add-profile", "Create/update DB profile (/add-profile <name>)"),
+        ("/remove-profile", "Remove DB profile (/remove-profile <name>)"),
+        ("/save", "Save config to disk"),
+        ("/schema", "Set current schema (/schema <name>)"),
+        ("/table", "Set current table (/table <name>)"),
+    ]
+
+    db_cmds: list[tuple[str, str]] = [
+        ("/back", "Return to root namespace"),
+        ("/profiles", "List DB profiles"),
+        ("/use", "Switch DB profile (/use <name>)"),
+        ("/add-profile", "Create/update DB profile (/add-profile <name>)"),
+        ("/remove-profile", "Remove DB profile (/remove-profile <name>)"),
+        ("/save", "Save config to disk"),
+        ("/schema", "Set current schema (/schema <name>)"),
+        ("/table", "Set current table (/table <name>)"),
+        ("/connect", "Test DB connectivity"),
+        ("/c", "Alias of /connect"),
+        ("/schemas", "List schemas"),
+        ("/tables", "List tables (/tables [schema])"),
+        ("/profile", "Profile table (/profile [schema] [table])"),
+        ("/load", "Load CSVs (/load <dir> [--schema …])"),
+    ]
+
+    docs_cmds: list[tuple[str, str]] = [
+        ("/back", "Return to root namespace"),
+        ("/scan", "Scan documents (/scan [paths...])"),
+        ("/ingest", "Ingest documents (/ingest [paths...])"),
+        ("/query", "Query RAG (/query <question>)"),
+    ]
+
+    analyze_cmds: list[tuple[str, str]] = [
+        ("/back", "Return to root namespace"),
+        ("/run", "Run agents (/run [--schema …] [--table …] [--apply])"),
+        ("/codebase", "Scan codebase (/codebase <path> --schema …)"),
+    ]
+
+    if namespace == "db":
+        return db_cmds
+    if namespace == "docs":
+        return docs_cmds
+    if namespace == "analyze":
+        return analyze_cmds
+    return root
+
+
+def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) -> bool | str:
+    head = parts[0]
+
+    # Profile management works in any namespace (Claude-like ergonomics).
+    if head == "profiles":
+        _cmd_profiles(cfg)
+        return True
+    if head == "use":
+        _cmd_use(cfg, parts[1:])
+        return True
+    if head == "add-profile":
+        _cmd_add_profile(cfg, parts[1:])
+        return True
+    if head == "remove-profile":
+        _cmd_remove_profile(cfg, parts[1:])
+        return True
+    if head == "save":
+        path = cfg.save()
+        success(f"Saved configuration to {path}")
+        return True
+    if head == "schema":
+        if len(parts) < 2:
+            error("Usage: /schema <name>")
+            return True
+        cfg.current_schema = parts[1]
+        cfg.save()
+        info(f"Current schema set to: {cfg.current_schema}")
+        return True
+    if head == "table":
+        if len(parts) < 2:
+            error("Usage: /table <name>")
+            return True
+        cfg.current_table = parts[1]
+        cfg.save()
+        info(f"Current table set to: {cfg.current_table}")
+        return True
+
+    return False
+
+
+def _cmd_profiles(cfg: AMXConfig) -> None:
+    rows = []
+    for name, db in sorted(cfg.db_profiles.items(), key=lambda x: x[0]):
+        mark = "*" if name == cfg.active_db_profile else " "
+        rows.append(
+            [
+                f"{mark} {name}",
+                db.host,
+                str(db.port),
+                db.user,
+                db.database,
+            ]
+        )
+    render_table(
+        "DB profiles (* = active)",
+        ["Profile", "Host", "Port", "User", "Database"],
+        rows,
+    )
+
+
+def _cmd_use(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        names = sorted(cfg.db_profiles.keys())
+        if not names:
+            error("No profiles configured.")
+            return
+        name = ask_choice("Select profile", names, default=cfg.active_db_profile)
+
+    try:
+        cfg.set_active_db_profile(name)
+        cfg.save()
+        success(f"Switched active DB profile to: {name}")
+    except Exception as exc:
+        error(str(exc))
+
+
+def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) >= 1:
+        name = rest[0]
+    else:
+        name = ask("Profile name", default="local")
+
+    info(f"Creating/updating profile: {name}")
+    host = ask("PostgreSQL host", cfg.db.host)
+    port = int(ask("Port", str(cfg.db.port)))
+    user = ask("Username", cfg.db.user)
+    password = ask_password("Password")
+    database = ask("Database name", cfg.db.database)
+
+    db = DBConfig(host=host, port=port, user=user, password=password or "", database=database)
+    cfg.upsert_db_profile(name, db)
+    cfg.set_active_db_profile(name)
+    cfg.save()
+    success(f"Profile saved and activated: {name}")
+
+
+def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
+    if len(rest) < 1:
+        error("Usage: /remove-profile <name>")
+        return
+    name = rest[0]
+    try:
+        cfg.remove_db_profile(name)
+        cfg.save()
+        success(f"Removed profile: {name} (active: {cfg.active_db_profile})")
+    except Exception as exc:
+        error(str(exc))
+
+
+def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
+    head = parts[0]
+
+    shortcut_map = {
+        "connect": ["db", "connect"],
+        "c": ["db", "connect"],
+        "schemas": ["db", "schemas"],
+        "tables": ["db", "tables"],
+        "profile": ["db", "profile"],
+        "load": ["db", "load"],
+        "scan": ["docs", "scan"],
+        "ingest": ["docs", "ingest"],
+        "query": ["docs", "query"],
+        "run": ["analyze", "run"],
+        "codebase": ["analyze", "codebase"],
+        "setup": ["setup"],
+        "config": ["config"],
+        "help": ["--help"],
+    }
+
+    if head in {"db", "docs", "analyze", "setup", "config"}:
+        return parts
+
+    if namespace and head in shortcut_map:
+        return shortcut_map[head] + parts[1:]
+
+    if head in shortcut_map:
+        return shortcut_map[head] + parts[1:]
+
+    if namespace:
+        return [namespace] + parts
+
+    return None
+
+
+def _inject_session_defaults(cfg: AMXConfig, namespace: str, args: list[str]) -> list[str]:
+    if not args:
+        return args
+
+    if args[:2] == ["db", "tables"] and len(args) == 2 and cfg.current_schema:
+        return ["db", "tables", cfg.current_schema]
+
+    if args[:2] == ["db", "profile"]:
+        if len(args) == 2 and cfg.current_schema and cfg.current_table:
+            return ["db", "profile", cfg.current_schema, cfg.current_table]
+        if len(args) == 3 and cfg.current_table:
+            return ["db", "profile", args[2], cfg.current_table]
+
+    return args
 
 
 # ── Setup Commands ──────────────────────────────────────────────────────────
@@ -59,6 +509,12 @@ def setup(cfg: AMXConfig) -> None:
     cfg.db.user = ask("Username", cfg.db.user)
     cfg.db.password = ask_password("Password") or cfg.db.password
     cfg.db.database = ask("Database name", cfg.db.database)
+
+    # Persist DB credentials into the active profile (multi-connection support).
+    if not cfg.active_db_profile:
+        cfg.active_db_profile = "default"
+    cfg.upsert_db_profile(cfg.active_db_profile, cfg.db)
+    cfg.apply_active_db_profile()
 
     from amx.db.connector import DatabaseConnector
 
@@ -438,7 +894,14 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str) -> None:
 @click.pass_obj
 def show_config(cfg: AMXConfig) -> None:
     """Display current configuration."""
-    info(f"Database: {cfg.db.user}@{cfg.db.host}:{cfg.db.port}/{cfg.db.database}")
+    info(
+        f"Active DB profile: {cfg.active_db_profile} → "
+        f"{cfg.db.user}@{cfg.db.host}:{cfg.db.port}/{cfg.db.database}"
+    )
+    if cfg.db_profiles:
+        names = ", ".join(sorted(cfg.db_profiles.keys()))
+        info(f"DB profiles: {names}")
+    info(f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}")
     info(f"LLM: {cfg.llm.provider}/{cfg.llm.model}")
     info(f"Document paths: {cfg.doc_paths or 'none'}")
     info(f"Codebase paths: {cfg.code_paths or 'none'}")
