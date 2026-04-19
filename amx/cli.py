@@ -7,6 +7,7 @@ import shlex
 import signal
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import click
 from prompt_toolkit.completion import Completer, Completion
@@ -39,6 +40,30 @@ log = get_logger("cli")
 pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 
 _NS_STATE: dict[str, str] = {"namespace": ""}
+
+
+def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
+    """Show version, config location, and active profiles when the session starts."""
+    cfg_path = Path(cfg.CONFIG_DIR) / "config.yml"
+    info(f"Version {__version__} · Config file: {cfg_path}")
+    info(
+        f"Database: profile '{cfg.active_db_profile}' → "
+        f"{cfg.db.database} @ {cfg.db.host}:{cfg.db.port} (user {cfg.db.user})"
+    )
+    llm_line = (
+        f"{cfg.llm.provider or '(unset)'}/{cfg.llm.model or '(unset)'}"
+        if cfg.llm.model or cfg.llm.provider
+        else "(not configured — run /setup)"
+    )
+    info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line}")
+    info(
+        f"Context: schema={cfg.current_schema or '—'} · table={cfg.current_table or '—'} "
+        f"(set with /schema, /table)"
+    )
+    info(
+        "Approved descriptions are written to PostgreSQL as COMMENT ON TABLE / COLUMN "
+        "(stored in pg_catalog.pg_description)."
+    )
 
 
 def _fix_codebase_cli_tail(tokens: list[str]) -> list[str]:
@@ -135,6 +160,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
       - Ghost 'amx>' lines on terminal resize
     """
     heading("AMX Interactive Session")
+    _print_interactive_startup_summary(cfg)
     info("Type /help for commands, /exit to quit.")
     info("Namespaces: /db, /docs, /analyze (use /back or Esc to return).")
     info("Tip: start typing / and use ↑/↓ to pick a command.")
@@ -309,7 +335,7 @@ Navigation:
 [heading]Help — /analyze namespace[/heading]
 Commands (in order):
   1) /back                         Return to root namespace
-  2) /run [--schema …] [--table …] [--apply]   Run agents (interactive if omitted)
+  2) /run [--schema …] [--table …] [--apply]   Run agents (/run alone asks: session defaults vs pick assets)
   3) /codebase <path> [--schema …] Scan codebase (schema defaults to /schema context)
      Tip: `/schema sap_s6p` then `/codebase <url>` — or use `--schema sap_s6p`
      Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
@@ -1148,16 +1174,43 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
         error("Cannot connect to database.")
         sys.exit(1)
 
-    # Schema selection
-    if not schema:
-        schemas = db.list_schemas()
-        schema = ask_choice("Select schema to analyze", schemas)
+    tables_arg = list(table)
 
-    # Table selection
-    tables = list(table)
-    if not tables:
-        available = db.list_tables(schema)
-        tables = ask_multi_choice("Select tables to analyze", available)
+    # Scope: session defaults vs interactive (when /run with no --schema/--table)
+    if schema is None and not tables_arg:
+        if cfg.current_schema:
+            scope = ask_choice(
+                "What should we analyze?",
+                [
+                    "Use session defaults (/schema and optional /table)",
+                    "Pick schema and table(s) interactively",
+                ],
+                default="Use session defaults (/schema and optional /table)",
+            )
+        else:
+            scope = "Pick schema and table(s) interactively"
+            info("No /schema in session yet — choose assets below.")
+
+        if scope.startswith("Use session") and cfg.current_schema:
+            schema = cfg.current_schema
+            if cfg.current_table:
+                tables = [cfg.current_table]
+            else:
+                available = db.list_tables(schema)
+                tables = ask_multi_choice("Select table(s) to analyze", available)
+        else:
+            schemas = db.list_schemas()
+            schema = ask_choice("Select schema to analyze", schemas)
+            available = db.list_tables(schema)
+            tables = ask_multi_choice("Select table(s) to analyze", available)
+    else:
+        if not schema:
+            schemas = db.list_schemas()
+            schema = ask_choice("Select schema to analyze", schemas)
+        tables = list(tables_arg)
+        if not tables:
+            available = db.list_tables(schema)
+            tables = ask_multi_choice("Select table(s) to analyze", available)
 
     # RAG store
     rag_store = None

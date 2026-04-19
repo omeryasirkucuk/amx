@@ -92,6 +92,14 @@ class Orchestrator:
             all_suggestions.extend(self.code_agent.run(ctx))
 
         merged = self._merge_suggestions(all_suggestions, ctx)
+        if not merged:
+            warn(
+                "No metadata suggestions were produced for this table. "
+                "Usually the LLM reply did not match the expected format, or the LLM call failed. "
+                "Try another model, or check ~/.amx/logs/amx.log for details."
+            )
+            return []
+
         reviewed = self._human_review(merged, schema, table)
         self.results.extend(reviewed)
         return reviewed

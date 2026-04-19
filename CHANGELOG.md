@@ -4,6 +4,12 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.8] — 2026-04-20
+
+### Fixed
+- **Empty analyze results (Approved: 0 / Skipped: 0)**: the profile agent only accepted a rigid `COLUMN:` / `DESCRIPTION_1:` template; many models return Markdown instead. A **loose parser** now recovers column suggestions from typical LLM formatting, with clearer warnings when nothing is parseable.
+- **`/run` with no flags**: asks whether to use **session defaults** (`/schema` and optional `/table`) or **pick schema/table(s) interactively** before running agents.
+
 ## [0.1.7] — 2026-04-20
 
 ### Removed

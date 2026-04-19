@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
 from amx.llm.provider import LLMProvider
 from amx.utils.logging import get_logger
@@ -50,7 +52,19 @@ class ProfileAgent(BaseAgent):
             {"role": "user", "content": user_msg},
         ])
 
-        return self._parse_response(response, ctx)
+        suggestions = self._parse_response(response, ctx)
+        if not suggestions and response and len(response.strip()) > 20:
+            log.warning(
+                "Strict parse found no COLUMN:/DESCRIPTION_ blocks; trying loose parser "
+                "(LLMs often return Markdown instead of the exact template)."
+            )
+            suggestions = self._parse_response_loose(response, ctx)
+        if not suggestions:
+            log.warning(
+                "Profile agent produced zero suggestions after parsing. "
+                "Check LLM output format or try another model."
+            )
+        return suggestions
 
     def _build_prompt(self, ctx: AgentContext) -> str:
         p = ctx.db_profile
@@ -123,3 +137,80 @@ class ProfileAgent(BaseAgent):
             ))
 
         return suggestions
+
+    def _parse_response_loose(self, text: str, ctx: AgentContext) -> list[MetadataSuggestion]:
+        """Fallback when the model ignores the exact COLUMN:/DESCRIPTION_1: template."""
+        suggestions: list[MetadataSuggestion] = []
+        t = text.strip()
+        t = re.sub(r"^```[a-z]*\s*\n", "", t, flags=re.IGNORECASE)
+        t = re.sub(r"\n```\s*$", "", t)
+
+        m_tbl = re.search(r"(?im)TABLE_DESCRIPTION:\s*([^\n]+)", t)
+        if m_tbl:
+            desc = m_tbl.group(1).strip().strip("*`")
+            if desc:
+                suggestions.append(
+                    MetadataSuggestion(
+                        schema=ctx.schema,
+                        table=ctx.table,
+                        column=None,
+                        suggestions=[desc[:2000]],
+                        confidence=Confidence.MEDIUM,
+                        reasoning="Loose parse (table)",
+                        source="db_profile",
+                    )
+                )
+
+        # Split into COLUMN blocks (markdown-tolerant)
+        col_iter = list(
+            re.finditer(
+                r"(?im)(?:^|\n)\s*#*\s*\*{0,2}COLUMN:?\*{0,2}\s*([A-Za-z0-9_]+)\s*",
+                t,
+            )
+        )
+        for i, m in enumerate(col_iter):
+            col_name = m.group(1).strip()
+            start = m.end()
+            end = col_iter[i + 1].start() if i + 1 < len(col_iter) else len(t)
+            block = t[start:end]
+            descs = self._extract_descriptions_from_block(block)
+            if not descs:
+                continue
+            suggestions.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=col_name,
+                    suggestions=descs[:5],
+                    confidence=Confidence.MEDIUM,
+                    reasoning="Loose parse from LLM output",
+                    source="db_profile",
+                )
+            )
+
+        return suggestions
+
+    def _extract_descriptions_from_block(self, block: str) -> list[str]:
+        descs: list[str] = []
+        for line in block.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(
+                r"(?i)(?:DESCRIPTION_\d+|Description|[-*]\s*|\d+\.\s*)(?:[:.]?\s*)(.+)",
+                line,
+            )
+            if m:
+                d = m.group(1).strip().strip("*`")
+                if len(d) > 3:
+                    descs.append(d)
+            elif re.match(r"(?i)CONFIDENCE:|REASONING:", line):
+                continue
+        if not descs:
+            for line in block.splitlines():
+                line = line.strip().strip("-*•` ")
+                if 15 < len(line) < 2000 and not line.startswith("#"):
+                    descs.append(line)
+                    if len(descs) >= 3:
+                        break
+        return descs
