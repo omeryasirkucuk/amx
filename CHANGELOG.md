@@ -4,6 +4,13 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.6] — 2026-04-20
+
+### Fixed
+- **Raw ANSI escape codes** (`?[1;35m…`) no longer appear on session start — removed `patch_stdout()` entirely and use the standard Rich `console` for all output between prompts.
+- **Ghost `amx>` lines on terminal resize** eliminated — output now happens strictly *between* `PromptSession.prompt()` calls, so prompt-toolkit no longer redraws stale prompt lines when the terminal is resized.
+- Simplified internal architecture: removed `_interactive_console`, `_ipt_*` helpers, and `patch_stdout` dependency; all session output uses the shared `console` from `amx.utils.console`.
+
 ## [0.1.5] — 2026-04-28
 
 ### Fixed
