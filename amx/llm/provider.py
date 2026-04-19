@@ -65,16 +65,40 @@ class LLMProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> str:
-        resp = litellm.completion(
-            model=self.model_name,
-            messages=messages,
-            temperature=temperature or self.cfg.temperature,
-            max_tokens=max_tokens or self.cfg.max_tokens,
-            api_base=self.cfg.api_base if self.cfg.provider in ("local", "kimi") else None,
-            **kwargs,
-        )
+        model = self.model_name
+        mt = max_tokens or self.cfg.max_tokens
+        log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
+        try:
+            resp = litellm.completion(
+                model=model,
+                messages=messages,
+                temperature=temperature or self.cfg.temperature,
+                max_tokens=mt,
+                api_base=self.cfg.api_base if self.cfg.provider in ("local", "kimi") else None,
+                **kwargs,
+            )
+        except Exception as exc:
+            log.error("LLM call failed: %s", exc)
+            raise
+
         content = resp.choices[0].message.content or ""
-        log.debug("LLM response length: %d chars", len(content))
+        finish = getattr(resp.choices[0], "finish_reason", None)
+        usage = getattr(resp, "usage", None)
+        log.debug(
+            "LLM response: %d chars, finish_reason=%s, usage=%s",
+            len(content),
+            finish,
+            usage,
+        )
+
+        if not content:
+            log.warning(
+                "LLM returned EMPTY content (finish_reason=%s, model=%s). "
+                "This often means the model name is invalid, the API key lacks permissions, "
+                "or the request was rejected. Check the OpenAI dashboard for details.",
+                finish,
+                model,
+            )
         return content
 
     def test(self) -> bool:

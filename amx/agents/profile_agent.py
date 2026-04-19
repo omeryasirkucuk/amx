@@ -48,10 +48,27 @@ class ProfileAgent(BaseAgent):
             return []
 
         user_msg = self._build_prompt(ctx)
-        response = self.llm.chat([
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ])
+        log.debug(
+            "Profile agent prompt for %s.%s: %d chars, %d columns",
+            ctx.schema, ctx.table, len(user_msg),
+            len((ctx.db_profile or {}).get("columns", [])),
+        )
+        try:
+            response = self.llm.chat([
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ])
+        except Exception as exc:
+            log.error("LLM call failed in profile agent: %s", exc)
+            return []
+
+        if not response or not response.strip():
+            log.warning(
+                "LLM returned an EMPTY response for %s.%s. "
+                "Check model name, API key, and billing on the provider dashboard.",
+                ctx.schema, ctx.table,
+            )
+            return []
 
         suggestions = self._parse_response(response, ctx)
         if not suggestions and response and len(response.strip()) > 20:

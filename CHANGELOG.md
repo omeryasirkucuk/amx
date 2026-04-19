@@ -4,6 +4,12 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.10] — 2026-04-20
+
+### Fixed
+- **Empty LLM response diagnosis**: the model was returning **0 chars** (empty content). LLM provider now logs `finish_reason`, `usage`, and model name; warns immediately when content is empty. Profile agent exits early with a clear message instead of running parsers on nothing.
+- **Default `max_tokens`** raised from 2048 to 4096 (tables with many columns need more output room).
+
 ## [0.1.9] — 2026-04-20
 
 ### Added
