@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.5] — 2026-04-28
+
+### Fixed
+- **Interactive session rendering**: prevent raw ANSI fragments like `?[1;35m` showing up in Terminal.app by using a Rich `Console(force_terminal=True)` bound to the patched stdout during interactive sessions.
+
 ## [0.1.4] — 2026-04-28
 
 ### Fixed

@@ -7,6 +7,10 @@ import shlex
 import sys
 
 import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.theme import Theme
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import HTML
@@ -38,6 +42,61 @@ log = get_logger("cli")
 pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 
 _NS_STATE: dict[str, str] = {"namespace": ""}
+
+_IPT_THEME = Theme(
+    {
+        "info": "cyan",
+        "success": "bold green",
+        "warning": "bold yellow",
+        "error": "bold red",
+        "heading": "bold magenta",
+    }
+)
+
+
+def _interactive_console() -> Console:
+    """Rich console configured for prompt-toolkit `patch_stdout()` sessions.
+
+    When stdout is proxied, Rich may think output is not a TTY and will emit
+    raw ANSI sequences as plain text unless we force terminal rendering.
+    """
+    return Console(
+        file=sys.stdout,
+        force_terminal=True,
+        color_system="standard",
+        theme=_IPT_THEME,
+        highlight=False,
+        soft_wrap=True,
+    )
+
+
+def _ipt_heading(c: Console, text: str) -> None:
+    c.print(Panel(f"[heading]{text}[/heading]", expand=False))
+
+
+def _ipt_info(c: Console, text: str) -> None:
+    c.print(f"[info]ℹ  {text}[/info]")
+
+
+def _ipt_warn(c: Console, text: str) -> None:
+    c.print(f"[warning]⚠  {text}[/warning]")
+
+
+def _ipt_success(c: Console, text: str) -> None:
+    c.print(f"[success]✓  {text}[/success]")
+
+
+def _ipt_error(c: Console, text: str) -> None:
+    c.print(f"[error]✗  {text}[/error]")
+
+
+def _ipt_render_table(c: Console, title: str, columns: list[str], rows: list[list[str]]) -> None:
+    table = Table(title=title, show_lines=True)
+    for col in columns:
+        table.add_column(col, style="cyan")
+    for row in rows:
+        table.add_row(*[str(v) for v in row])
+    c.print(table)
 
 
 def _kb_escape_namespace() -> KeyBindings:
@@ -82,11 +141,12 @@ def _interactive_session(cfg: AMXConfig) -> None:
     # Important: keep *all* Rich output and the PromptSession on the same stdout path.
     # Otherwise Terminal.app reflow can leave "ghost" copies of the prompt line.
     with patch_stdout():
-        heading("AMX Interactive Session")
-        info("Type /help for commands, /exit to quit.")
-        info("Namespaces: /db, /docs, /analyze (use /back to return).")
-        info("Tip: start typing / and use ↑/↓ to pick a command.")
-        info("Tip: press Esc on an empty line to go back (like Claude Code).")
+        c = _interactive_console()
+        _ipt_heading(c, "AMX Interactive Session")
+        _ipt_info(c, "Type /help for commands, /exit to quit.")
+        _ipt_info(c, "Namespaces: /db, /docs, /analyze (use /back to return).")
+        _ipt_info(c, "Tip: start typing / and use ↑/↓ to pick a command.")
+        _ipt_info(c, "Tip: press Esc on an empty line to go back (like Claude Code).")
         namespace = ""
 
         session = PromptSession(
@@ -118,22 +178,22 @@ def _interactive_session(cfg: AMXConfig) -> None:
             try:
                 raw = session.prompt(f"{prefix}> ").strip()
             except (EOFError, KeyboardInterrupt):
-                console.print()
-                success("Session closed.")
+                c.print()
+                _ipt_success(c, "Session closed.")
                 return
 
             if raw == "__amx_esc_back__":
                 namespace = ""
-                info("Back to root namespace (Esc).")
+                _ipt_info(c, "Back to root namespace (Esc).")
                 continue
             if raw == "__amx_esc_root__":
-                info("Already at root namespace (Esc).")
+                _ipt_info(c, "Already at root namespace (Esc).")
                 continue
 
             if not raw:
                 continue
             if not raw.startswith("/"):
-                warn("Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
+                _ipt_warn(c, "Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
                 continue
 
             cmdline = raw[1:].strip()
@@ -141,39 +201,39 @@ def _interactive_session(cfg: AMXConfig) -> None:
                 continue
 
             if cmdline in {"exit", "quit", "q"}:
-                success("Session closed.")
+                _ipt_success(c, "Session closed.")
                 return
             if cmdline in {"help", "?"}:
-                _print_session_help(namespace=namespace, cfg=cfg)
+                _print_session_help(namespace=namespace, cfg=cfg, c=c)
                 continue
             if cmdline == "back":
                 namespace = ""
-                info("Back to root namespace.")
+                _ipt_info(c, "Back to root namespace.")
                 continue
             if cmdline in {"db", "docs", "analyze"}:
                 namespace = cmdline
-                info(f"Entered /{namespace} namespace.")
+                _ipt_info(c, f"Entered /{namespace} namespace.")
                 continue
 
             try:
                 parts = shlex.split(cmdline)
             except ValueError as exc:
-                error(f"Invalid command syntax: {exc}")
+                _ipt_error(c, f"Invalid command syntax: {exc}")
                 continue
 
             if not parts:
                 continue
 
-            handled = _handle_session_builtin(cfg, namespace, parts)
+            handled = _handle_session_builtin(cfg, namespace, parts, c=c)
             if handled == "exit":
-                success("Session closed.")
+                _ipt_success(c, "Session closed.")
                 return
             if handled:
                 continue
 
             args = _session_to_click_args(namespace, parts)
             if args is None:
-                error(f"Unknown command: /{cmdline}. Type /help.")
+                _ipt_error(c, f"Unknown command: /{cmdline}. Type /help.")
                 continue
 
             # Fill defaults from session context where safe.
@@ -183,15 +243,13 @@ def _interactive_session(cfg: AMXConfig) -> None:
             previous = os.environ.get("AMX_SESSION_CHILD")
             os.environ["AMX_SESSION_CHILD"] = "1"
             try:
-                # Nested patch_stdout is harmless; keeps Click/Rich aligned during commands.
-                with patch_stdout():
-                    main.main(args=args, prog_name="amx", standalone_mode=False)
+                main.main(args=args, prog_name="amx", standalone_mode=False)
             except click.ClickException as exc:
                 exc.show()
             except SystemExit:
                 pass
             except Exception as exc:  # pragma: no cover - defensive
-                error(f"Command failed: {exc}")
+                _ipt_error(c, f"Command failed: {exc}")
             finally:
                 if previous is None:
                     os.environ.pop("AMX_SESSION_CHILD", None)
@@ -199,13 +257,14 @@ def _interactive_session(cfg: AMXConfig) -> None:
                     os.environ["AMX_SESSION_CHILD"] = previous
 
 
-def _print_session_help(*, namespace: str, cfg: AMXConfig) -> None:
+def _print_session_help(*, namespace: str, cfg: AMXConfig, c: Console | None = None) -> None:
     active = cfg.active_db_profile or "default"
     ctx_schema = cfg.current_schema or "(not set)"
     ctx_table = cfg.current_table or "(not set)"
+    out = c or console
 
     if namespace == "db":
-        console.print(
+        out.print(
             f"""
 [heading]Help — /db namespace[/heading]
 Context:
@@ -238,7 +297,7 @@ Navigation:
         return
 
     if namespace == "docs":
-        console.print(
+        out.print(
             """
 [heading]Help — /docs namespace[/heading]
 Commands (in order):
@@ -254,7 +313,7 @@ Navigation:
         return
 
     if namespace == "analyze":
-        console.print(
+        out.print(
             """
 [heading]Help — /analyze namespace[/heading]
 Commands (in order):
@@ -268,7 +327,7 @@ Navigation:
         )
         return
 
-    console.print(
+    out.print(
         f"""
 [heading]Help — root[/heading]
 Context:
@@ -389,47 +448,64 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
     return root
 
 
-def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) -> bool | str:
+def _handle_session_builtin(
+    cfg: AMXConfig, namespace: str, parts: list[str], *, c: Console | None = None
+) -> bool | str:
     head = parts[0]
 
     # Profile management works in any namespace (Claude-like ergonomics).
     if head == "profiles":
-        _cmd_profiles(cfg)
+        _cmd_profiles(cfg, c=c)
         return True
     if head == "use":
-        _cmd_use(cfg, parts[1:])
+        _cmd_use(cfg, parts[1:], c=c)
         return True
     if head == "add-profile":
-        _cmd_add_profile(cfg, parts[1:])
+        _cmd_add_profile(cfg, parts[1:], c=c)
         return True
     if head == "remove-profile":
-        _cmd_remove_profile(cfg, parts[1:])
+        _cmd_remove_profile(cfg, parts[1:], c=c)
         return True
     if head == "save":
         path = cfg.save()
-        success(f"Saved configuration to {path}")
+        if c is not None:
+            _ipt_success(c, f"Saved configuration to {path}")
+        else:
+            success(f"Saved configuration to {path}")
         return True
     if head == "schema":
         if len(parts) < 2:
-            error("Usage: /schema <name>")
+            if c is not None:
+                _ipt_error(c, "Usage: /schema <name>")
+            else:
+                error("Usage: /schema <name>")
             return True
         cfg.current_schema = parts[1]
         cfg.save()
-        info(f"Current schema set to: {cfg.current_schema}")
+        if c is not None:
+            _ipt_info(c, f"Current schema set to: {cfg.current_schema}")
+        else:
+            info(f"Current schema set to: {cfg.current_schema}")
         return True
     if head == "table":
         if len(parts) < 2:
-            error("Usage: /table <name>")
+            if c is not None:
+                _ipt_error(c, "Usage: /table <name>")
+            else:
+                error("Usage: /table <name>")
             return True
         cfg.current_table = parts[1]
         cfg.save()
-        info(f"Current table set to: {cfg.current_table}")
+        if c is not None:
+            _ipt_info(c, f"Current table set to: {cfg.current_table}")
+        else:
+            info(f"Current table set to: {cfg.current_table}")
         return True
 
     return False
 
 
-def _cmd_profiles(cfg: AMXConfig) -> None:
+def _cmd_profiles(cfg: AMXConfig, *, c: Console | None = None) -> None:
     rows = []
     for name, db in sorted(cfg.db_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_db_profile else " "
@@ -442,38 +518,58 @@ def _cmd_profiles(cfg: AMXConfig) -> None:
                 db.database,
             ]
         )
-    render_table(
-        "DB profiles (* = active)",
-        ["Profile", "Host", "Port", "User", "Database"],
-        rows,
-    )
+    if c is not None:
+        _ipt_render_table(
+            c,
+            "DB profiles (* = active)",
+            ["Profile", "Host", "Port", "User", "Database"],
+            rows,
+        )
+    else:
+        render_table(
+            "DB profiles (* = active)",
+            ["Profile", "Host", "Port", "User", "Database"],
+            rows,
+        )
 
 
-def _cmd_use(cfg: AMXConfig, rest: list[str]) -> None:
+def _cmd_use(cfg: AMXConfig, rest: list[str], *, c: Console | None = None) -> None:
     if len(rest) >= 1:
         name = rest[0]
     else:
         names = sorted(cfg.db_profiles.keys())
         if not names:
-            error("No profiles configured.")
+            if c is not None:
+                _ipt_error(c, "No profiles configured.")
+            else:
+                error("No profiles configured.")
             return
         name = ask_choice("Select profile", names, default=cfg.active_db_profile)
 
     try:
         cfg.set_active_db_profile(name)
         cfg.save()
-        success(f"Switched active DB profile to: {name}")
+        if c is not None:
+            _ipt_success(c, f"Switched active DB profile to: {name}")
+        else:
+            success(f"Switched active DB profile to: {name}")
     except Exception as exc:
-        error(str(exc))
+        if c is not None:
+            _ipt_error(c, str(exc))
+        else:
+            error(str(exc))
 
 
-def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
+def _cmd_add_profile(cfg: AMXConfig, rest: list[str], *, c: Console | None = None) -> None:
     if len(rest) >= 1:
         name = rest[0]
     else:
         name = ask("Profile name", default="local")
 
-    info(f"Creating/updating profile: {name}")
+    if c is not None:
+        _ipt_info(c, f"Creating/updating profile: {name}")
+    else:
+        info(f"Creating/updating profile: {name}")
     host = ask("PostgreSQL host", cfg.db.host)
     port = int(ask("Port", str(cfg.db.port)))
     user = ask("Username", cfg.db.user)
@@ -484,20 +580,32 @@ def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
     cfg.upsert_db_profile(name, db)
     cfg.set_active_db_profile(name)
     cfg.save()
-    success(f"Profile saved and activated: {name}")
+    if c is not None:
+        _ipt_success(c, f"Profile saved and activated: {name}")
+    else:
+        success(f"Profile saved and activated: {name}")
 
 
-def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
+def _cmd_remove_profile(cfg: AMXConfig, rest: list[str], *, c: Console | None = None) -> None:
     if len(rest) < 1:
-        error("Usage: /remove-profile <name>")
+        if c is not None:
+            _ipt_error(c, "Usage: /remove-profile <name>")
+        else:
+            error("Usage: /remove-profile <name>")
         return
     name = rest[0]
     try:
         cfg.remove_db_profile(name)
         cfg.save()
-        success(f"Removed profile: {name} (active: {cfg.active_db_profile})")
+        if c is not None:
+            _ipt_success(c, f"Removed profile: {name} (active: {cfg.active_db_profile})")
+        else:
+            success(f"Removed profile: {name} (active: {cfg.active_db_profile})")
     except Exception as exc:
-        error(str(exc))
+        if c is not None:
+            _ipt_error(c, str(exc))
+        else:
+            error(str(exc))
 
 
 def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
