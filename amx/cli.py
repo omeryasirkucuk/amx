@@ -763,7 +763,10 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
     else:
         name = ask("Document profile name", default="default")
     paths: list[str] = []
-    info("Enter document roots (local dir, s3://, GitHub URL). Empty line to finish.")
+    info(
+        "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive). "
+        "Empty line to finish."
+    )
     while True:
         p = ask("Path", default="")
         if not p:
@@ -784,23 +787,13 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def _validate_doc_sources(paths: list[str]) -> list[str]:
-    """Validate configured document sources and reject unsupported URLs."""
+    """Validate configured document sources (local, cloud URLs, git, S3)."""
     from amx.docs.scanner import scan_source
 
     valid: list[str] = []
     for raw in paths:
         p = raw.strip()
         if not p:
-            continue
-
-        low = p.lower()
-        if "drive.google.com" in low or "docs.google.com" in low:
-            error(f"Unsupported document source: {p}")
-            info("Google Drive links are not supported yet. Use a local path, GitHub URL, or s3:// URI.")
-            continue
-        if "sharepoint.com" in low or "onedrive.live.com" in low:
-            error(f"Unsupported document source: {p}")
-            info("SharePoint/OneDrive links are not supported yet. Use a local path, GitHub URL, or s3:// URI.")
             continue
 
         try:
@@ -1257,7 +1250,7 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
     if not apply:
         warn(
             "Without --apply, approved metadata is not written to the database. "
-            "Use `amx analyze apply`, `/apply`, or re-run with `/run-apply` to persist COMMENTs."
+            "Use `/analyze` then `/apply`, or `/run-apply`, to persist COMMENTs."
         )
 
     tables_arg = list(table)
@@ -1357,7 +1350,7 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
         if not apply:
             info(
                 f"Saved {len(approved)} approved description(s) as pending. "
-                "Run `amx analyze apply` (or `/run-apply` on a future run) to write COMMENTs to PostgreSQL."
+                "Run `/analyze` then `/apply` (or `/run-apply` next time) to write COMMENTs to PostgreSQL."
             )
 
     if apply and approved:
@@ -1379,7 +1372,7 @@ def analyze_apply(cfg: AMXConfig) -> None:
     pending = load_pending()
     if not pending:
         error(
-            "No pending metadata. Run `amx analyze run` (or `/run`), approve descriptions, "
+            "No pending metadata. Run `/analyze` then `/run`, approve descriptions, "
             "and finish without `--apply` first."
         )
         return

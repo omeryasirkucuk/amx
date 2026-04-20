@@ -126,8 +126,29 @@ amx
 | Local files/directories | `/path/to/docs` | Supported |
 | GitHub repositories | `https://github.com/user/repo` or `git@github.com:user/repo.git` | Supported |
 | AWS S3 | `s3://bucket/prefix` | Supported |
-| Google Drive links | `https://drive.google.com/...` | Not supported yet |
-| SharePoint / OneDrive links | `https://...sharepoint.com/...` | Not supported yet |
+| Google Drive links | `https://drive.google.com/...` | Supported (requires credentials; see below) |
+| SharePoint / OneDrive links | `https://...sharepoint.com/...` or `https://onedrive.live.com/...` | Supported (requires Azure app + Graph; see below) |
+
+### Cloud document authentication
+
+**Google Drive**
+
+Set one of:
+
+- `AMX_GOOGLE_SERVICE_ACCOUNT_JSON` — path to a service account JSON with Drive access; share the file/folder with that service account email.
+- `AMX_GOOGLE_OAUTH_TOKEN_JSON` — path to a user OAuth token JSON (`token.json` style) obtained from a one-time consent flow (not shipped with AMX).
+
+AMX uses the Drive API to download files (and exports Google Docs/Sheets/Slides to PDF/CSV where needed).
+
+**SharePoint / OneDrive (Microsoft Graph)**
+
+Set:
+
+- `AMX_AZURE_TENANT_ID`
+- `AMX_AZURE_CLIENT_ID`
+- `AMX_AZURE_CLIENT_SECRET`
+
+Use an Azure AD **app registration** with application permissions on Microsoft Graph (typically **Files.Read.All**, and **Sites.Read.All** for many `sharepoint.com` sharing links). AMX resolves your sharing URL via `GET /shares/{shareId}/driveItem`, then downloads supported file types.
 
 ### Supported Document File Types
 

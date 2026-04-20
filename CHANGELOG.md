@@ -4,6 +4,16 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.15] — 2026-04-21
+
+### Added
+- **Google Drive document sources**: scan/ingest via Drive API using `AMX_GOOGLE_SERVICE_ACCOUNT_JSON` or `AMX_GOOGLE_OAUTH_TOKEN_JSON`.
+- **SharePoint / OneDrive document sources**: scan/ingest via Microsoft Graph sharing API using `AMX_AZURE_TENANT_ID`, `AMX_AZURE_CLIENT_ID`, `AMX_AZURE_CLIENT_SECRET`.
+
+### Changed
+- **Docs**: README documents cloud auth env vars and supported link types.
+- **CLI copy**: pending-metadata hints no longer reference disabled direct `amx analyze …` commands.
+
 ## [0.1.14] — 2026-04-21
 
 ### Added
