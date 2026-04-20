@@ -60,6 +60,8 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 git clone https://github.com/omeryasirkucuk/amx.git
 cd amx
 pip install -e .
+# Optional: richer SQL parsing in codebase scans (sqlglot)
+pip install -e ".[code-intel]"
 ```
 
 AMX focuses on **metadata inference**, not bulk data loading. Populate schemas and tables with your own import or ETL process, then use AMX against that database.
@@ -133,13 +135,22 @@ amx
 | `/docs` + `/use-doc <name>` | Switch active document profile |
 | `/docs` + `/add-doc-profile [name]` | Add/update document roots (interactive) |
 | `/docs` + `/remove-doc-profile <name>` | Remove a document profile |
-| `/docs` + `/scan [paths...]` | Scan and preview documents for RAG |
-| `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store |
+| `/docs` + `/scan [paths...]` | Scan and preview documents for RAG (`--doc-profile NAME` when no paths) |
+| `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store (`--doc-profile`, `--refresh` to drop prior chunks for those sources) |
 | `/docs` + `/search-docs <text>` | Similarity search over ingested docs (Chroma vectors only; no LLM answer). Aliases: `/similarity`; `/query` is deprecated |
-| `/analyze` + `/run` | Run all agents and review suggestions |
+| `/analyze` + `/run` | Run all agents and review suggestions (`--code-profile`, `--code-refresh` to rebuild cache + `amx_code` index) |
 | `/analyze` + `/run-apply` | Run analysis and apply approved metadata immediately |
 | `/analyze` + `/apply` | Write pending approved metadata back to PostgreSQL (`COMMENT ON ...`) |
-| `/analyze` + `/codebase [path] [--schema NAME]` | Scan a **local folder or Git URL** for table-name matches. Omit `path` to use the **active `/code` profile** path; otherwise pass a directory or `https://github.com/...` |
+| `/analyze` + `/codebase [path] [--schema NAME]` | Scan a **local folder or Git URL** for table/column heuristics, Spark-style literals, and optional `sqlglot` on `.sql`. Omit `path` for the **active** profile, or use `--code-profile NAME` |
+| `/analyze` + `/code-refresh` | Clear `~/.amx/code_cache` for a profile path and reset the **`amx_code`** Chroma collection so the next `/run` rebuilds |
+
+## Codebase and document intelligence
+
+- **Profiles without switching context**: use `--code-profile` / `--doc-profile` on CLI commands (or the same flags after `/codebase`, `/ingest`, `/run` in session) instead of `/use-code` / `/use-doc` first.
+- **Code scan cache**: `~/.amx/code_cache/<slug>/` stores a manifest plus serialized scan results so `/run` does not re-walk the repo every time. Use **`--code-refresh`** or **`/code-refresh`** after the tree changes or when you want a clean semantic index.
+- **Semantic code RAG**: Chroma collection **`amx_code`** holds embedded chunks (Python by function/class span; other languages by text split). The Code Agent combines regex-style hits with a few nearest-neighbor chunks. This is **assistive**, not a proof of dataflow—wide schemas use **capped** table/column lists for performance.
+- **Identifiers outside the DB**: strings that look like catalog objects but are not in the connected table list appear as **secondary context** for the LLM (for example external lake tables).
+- **Doc RAG refresh**: **`/ingest --refresh`** removes existing chunks whose stored `source` path matches the files you are ingesting, then re-upserts—useful when files shrink or move.
 
 ## Supported Document Sources
 

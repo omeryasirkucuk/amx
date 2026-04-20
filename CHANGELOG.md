@@ -4,6 +4,19 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.27] — 2026-04-21
+
+### Added
+- **Profile flags**: `--code-profile` on `analyze codebase` and `analyze run`; `--doc-profile` and `--refresh` / `--no-refresh` on `docs scan` / `docs ingest`. Slash shortcuts include `/code-refresh`.
+- **Codebase cache** under `~/.amx/code_cache` (manifest + `report.json`) so `/run` can reuse scans; `--code-refresh` forces rebuild and clears the semantic code index.
+- **Semantic code index** in Chroma collection `amx_code` (Python AST chunks + split fallback for other extensions); Code Agent uses hybrid grep hits + vector retrieval. **External-style identifiers** (e.g. Spark `read.table` strings not in the connected catalog) are surfaced for LLM context only.
+- **Deeper static scan**: Python `ast` string literals, Spark/SQL-style line heuristics, optional **`sqlglot`**-based table extraction for `.sql` when you install `amx[code-intel]`.
+- **RAG ingest refresh**: `--refresh` deletes existing chunks whose `source` metadata matches the paths being ingested, then upserts (avoids stale chunks when files shrink).
+- **Duplicate path prompts** when adding the same document path twice to a profile (or setup), and when a codebase path is already used by another named profile.
+
+### Changed
+- **`/run` with multiple codebase roots** merges `CodebaseReport` results instead of keeping only the last path’s report.
+
 ## [0.1.26] — 2026-04-21
 
 ### Changed

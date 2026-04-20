@@ -57,7 +57,32 @@ class RAGStore:
             separators=["\n\n", "\n", ". ", " ", ""],
         )
 
-    def ingest(self, docs: list[DocInfo]) -> int:
+    def delete_chunks_for_sources(self, sources: list[str]) -> int:
+        """Remove all chunks whose metadata ``source`` equals one of the given paths (exact match)."""
+        removed = 0
+        for src in sources:
+            if not src:
+                continue
+            try:
+                res = self.collection.get(where={"source": src}, include=[])
+            except Exception as exc:
+                log.warning("Chroma get for delete failed %s: %s", src, exc)
+                continue
+            ids = res.get("ids") or []
+            if ids:
+                self.collection.delete(ids=ids)
+                removed += len(ids)
+                log.info("Deleted %d chunks for source %s", len(ids), src)
+        return removed
+
+    def ingest(
+        self,
+        docs: list[DocInfo],
+        *,
+        refresh: bool = False,
+    ) -> int:
+        if refresh and docs:
+            self.delete_chunks_for_sources([d.path for d in docs])
         total_chunks = 0
         for doc in docs:
             loader_cls = LOADER_MAP.get(doc.extension)

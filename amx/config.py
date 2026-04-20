@@ -332,6 +332,28 @@ class AMXConfig:
             return [self.code_profiles[key]]
         return list(self.code_paths)
 
+    def resolve_doc_paths(self, profile: str | None, cli_paths: list[str]) -> list[str]:
+        """Paths for docs scan/ingest: explicit CLI paths, else named profile, else active effective paths."""
+        if cli_paths:
+            return list(cli_paths)
+        if profile:
+            if profile not in self.doc_profiles:
+                raise KeyError(f"Unknown document profile: {profile}")
+            return list(self.doc_profiles[profile])
+        return self.effective_doc_paths()
+
+    def resolve_code_path(self, profile: str | None, cli_path: str | None) -> str | None:
+        """Single codebase path: explicit path, or named profile, or active profile."""
+        p = (cli_path or "").strip()
+        if p:
+            return p
+        if profile:
+            if profile not in self.code_profiles:
+                raise KeyError(f"Unknown codebase profile: {profile}")
+            return self.code_profiles[profile]
+        paths = self.effective_code_paths()
+        return paths[0] if paths else None
+
     def _doc_paths_for_yaml(self) -> list[str]:
         """Legacy `doc_paths` key: mirror active (or only) document profile."""
         return self.effective_doc_paths()

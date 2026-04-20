@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
-from amx.codebase.analyzer import CodebaseReport
+from amx.codebase.analyzer import CodeReference, CodebaseReport
 from amx.llm.provider import LLMProvider
 from amx.utils.logging import get_logger
 
@@ -38,33 +38,68 @@ class CodeAgent(BaseAgent):
         self.report = report
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
-        if not self.report or not self.report.references:
-            log.info("No codebase references available, skipping code agent")
+        if not self.report:
+            log.info("No codebase report, skipping code agent")
+            return []
+
+        from amx.codebase.code_rag import code_collection_count, query_code_snippets
+
+        has_refs = bool(self.report.references) or bool(self.report.external_mentions)
+        has_sem = code_collection_count() > 0
+        if not has_refs and not has_sem:
+            log.info("No codebase references or semantic index, skipping code agent")
             return []
 
         suggestions: list[MetadataSuggestion] = []
         columns = ctx.db_profile.get("columns", [])
 
+        ext_flat: list[CodeReference] = []
+        for lst in (self.report.external_mentions or {}).values():
+            ext_flat.extend(lst[:2])
+        ext_block = ""
+        if ext_flat:
+            ext_block = "\n\n---\n\n".join(
+                f"(not in connected DB catalog) File: {r.file}:{r.line_no}\n{r.context}"
+                for r in ext_flat[:5]
+            )
+
         for col in columns:
             col_name = col["name"].lower()
-            refs = self.report.references.get(col_name, [])
-            table_refs = self.report.references.get(ctx.table.lower(), [])
+            refs = self.report.references.get(col_name, []) if self.report.references else []
+            table_refs = self.report.references.get(ctx.table.lower(), []) if self.report.references else []
 
             all_refs = refs + table_refs[:5]
-            if not all_refs:
+            sem_block = ""
+            if has_sem:
+                sem_hits = query_code_snippets(
+                    f"{ctx.schema} {ctx.table} {col['name']} SQL Spark dataframe usage",
+                    n_results=3,
+                )
+                if sem_hits:
+                    sem_block = "\n\nSemantic code retrieval (nearest chunks):\n" + "\n---\n".join(
+                        h["text"][:900] for h in sem_hits
+                    )
+
+            if not all_refs and not sem_block and not ext_block:
                 continue
 
-            code_snippets = "\n\n---\n\n".join(
-                f"File: {r.file}:{r.line_no}\n{r.context}"
-                for r in all_refs[:10]
-            )
+            code_snippets = ""
+            if all_refs:
+                code_snippets = "\n\n---\n\n".join(
+                    f"File: {r.file}:{r.line_no}\n{r.context}"
+                    for r in all_refs[:10]
+                )
 
             user_msg = (
                 f"Schema: {ctx.schema}\n"
                 f"Table: {ctx.table}\n"
                 f"Column: {col['name']} (type={col['dtype']})\n\n"
-                f"Code references:\n{code_snippets}"
+                f"Code references:\n{code_snippets or '(none)'}"
             )
+            if ext_block:
+                user_msg += f"\n\nOther identifiers seen in repo (may be outside this DB):\n{ext_block}"
+            if sem_block:
+                user_msg += sem_block
 
             response = self.llm.chat([
                 {"role": "system", "content": SYSTEM_PROMPT},

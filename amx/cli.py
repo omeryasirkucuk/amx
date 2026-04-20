@@ -212,7 +212,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
     _code_cmd_heads = frozenset(
         {"code-profiles", "use-code", "add-code-profile", "remove-code-profile"}
     )
-    _analyze_cmd_heads = frozenset({"run", "run-apply", "apply", "codebase"})
+    _analyze_cmd_heads = frozenset({"run", "run-apply", "apply", "codebase", "code-refresh"})
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
 
@@ -399,8 +399,8 @@ Commands (in order):
   3) /use-doc <name>               Switch active document profile
   4) /add-doc-profile [name]       Add/update document roots (interactive)
   5) /remove-doc-profile <name>    Remove a document profile
-  6) /scan [paths...]              Scan documents (preview); uses active profile paths if omitted
-  7) /ingest [paths...]            Ingest into RAG store; uses active profile paths if omitted
+  6) /scan [paths...]              Scan (preview); optional `--doc-profile NAME`; else active profile or paths
+  7) /ingest [paths...]            Ingest into RAG; `--doc-profile NAME`; `--refresh` replaces chunks for those sources
   8) /search-docs <text>           Vector similarity over ingested docs (Chroma; no LLM answer)
      /similarity <text>           Same as /search-docs
      /query <text>                Deprecated alias of /search-docs
@@ -456,8 +456,9 @@ Commands (in order):
   2) /run [--schema …] [--table …] [--apply]   Run agents (/run alone asks: session defaults vs pick assets)
   3) /run-apply                    Run analysis and apply approved COMMENTs in one step
   4) /apply                        Write pending approved COMMENTs to PostgreSQL
-  5) /codebase [path] [--schema …] Scan for table-name matches (optional path = active /code profile if omitted)
-     Tip: `/db` then `/schema sap_s6p`, then `/codebase` or `/codebase /path/to/app` or `/codebase https://github.com/org/repo`
+  5) /codebase [path] [--schema …] [--code-profile NAME] Scan table-name matches; path defaults to active profile
+  6) /code-refresh [--code-profile NAME] Clear codebase cache + semantic code index; next `/run` rebuilds
+     Tip: `/db` then `/schema sap_s6p`, then `/codebase` or `/codebase --code-profile other`
      Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
 
 Navigation:
@@ -570,8 +571,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/use-doc", "Switch document profile (/use-doc <name>)"),
         ("/add-doc-profile", "Add/update document profile"),
         ("/remove-doc-profile", "Remove document profile (/remove-doc-profile <name>)"),
-        ("/scan", "Scan documents (/scan [paths...])"),
-        ("/ingest", "Ingest documents (/ingest [paths...])"),
+        ("/scan", "Scan documents (/scan [--doc-profile NAME] [paths...])"),
+        ("/ingest", "Ingest (/ingest [--doc-profile NAME] [--refresh] [paths...])"),
         ("/search-docs", "Similarity search (/search-docs <text>, no LLM)"),
         ("/similarity", "Alias of /search-docs"),
         ("/query", "Deprecated: same as /search-docs"),
@@ -595,10 +596,11 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     analyze_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
-        ("/run", "Run agents (/run [--schema …] [--table …] [--apply])"),
+        ("/run", "Run agents (/run [--schema …] [--table …] [--apply] [--code-refresh])"),
         ("/run-apply", "Run agents and apply approved COMMENTs"),
         ("/apply", "Write pending COMMENTs to PostgreSQL"),
-        ("/codebase", "Scan codebase (/codebase [path] — uses active code profile if omitted)"),
+        ("/codebase", "Scan codebase (/codebase [path] [--code-profile NAME])"),
+        ("/code-refresh", "Clear codebase cache + semantic code index"),
     ]
 
     if namespace == "db":
@@ -913,35 +915,40 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
         name = ask("Document profile name", default="default")
     from amx.docs.scanner import test_source_reachable
 
-    paths: list[str] = []
+    existing = list(cfg.doc_profiles.get(name, []))
+    new_paths: list[str] = []
     info(
         "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive). "
         "Each path is checked for reachability only (no full scan)."
     )
     while True:
-        p = ask("Path (empty to finish)" if paths else "Path", default="")
+        p = ask("Path (empty to finish)" if new_paths else "Path", default="")
         if not p:
-            if paths:
+            if new_paths:
                 break
             error("No paths added.")
             return
+        if p in existing or p in new_paths:
+            if not confirm(f"This path is already in profile {name!r}: {p}. Add duplicate anyway?", default=False):
+                continue
         try:
             test_source_reachable(p)
             success(f"Source reachable: {p}")
-            paths.append(p)
+            new_paths.append(p)
         except Exception as exc:
             error(f"Source not reachable: {p}")
             warn(str(exc))
         if not confirm("Add another path?", default=False):
             break
-    if not paths:
+    if not new_paths:
         error("No valid document sources to save.")
         return
-    cfg.upsert_doc_profile(name, paths)
+    merged = existing + new_paths
+    cfg.upsert_doc_profile(name, merged)
     if not cfg.active_doc_profile or confirm(f"Switch active document profile to {name}?", default=True):
         cfg.active_doc_profile = name
     cfg.save()
-    success(f"Document profile saved: {name} ({len(paths)} path(s))")
+    success(f"Document profile saved: {name} ({len(merged)} path(s))")
 
 
 
@@ -1010,6 +1017,18 @@ def _cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
         return
     from amx.codebase.analyzer import test_codebase_path_reachable
 
+    prev = cfg.code_profiles.get(name)
+    if prev == path:
+        success(f"Codebase profile {name!r} already points to this path — nothing to change.")
+        return
+    others = [n for n, p in cfg.code_profiles.items() if p == path and n != name]
+    if others:
+        olist = ", ".join(sorted(others))
+        if not confirm(
+            f"This path is already used by codebase profile(s): {olist}. Point {name!r} here too?",
+            default=True,
+        ):
+            return
     try:
         test_codebase_path_reachable(path)
         success(f"Codebase reachable: {path}")
@@ -1054,6 +1073,7 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
         "run-apply": ["analyze", "run", "--apply"],
         "apply": ["analyze", "apply"],
         "codebase": ["analyze", "codebase"],
+        "code-refresh": ["analyze", "code-refresh"],
         "setup": ["setup"],
         "config": ["config"],
         "help": ["--help"],
@@ -1174,22 +1194,26 @@ def setup(cfg: AMXConfig) -> None:
         from amx.docs.scanner import test_source_reachable
 
         name = ask("Profile name", default="default")
-        paths: list[str] = []
+        existing = list(cfg.doc_profiles.get(name, []))
+        new_paths: list[str] = []
         while True:
-            p = ask("Document path" if not paths else "Another path (empty to finish)", default="")
+            p = ask("Document path" if not new_paths else "Another path (empty to finish)", default="")
             if not p:
                 break
+            if p in existing or p in new_paths:
+                if not confirm(f"This path is already in profile {name!r}: {p}. Add duplicate anyway?", default=False):
+                    continue
             try:
                 test_source_reachable(p)
                 success(f"Source reachable: {p}")
-                paths.append(p)
+                new_paths.append(p)
             except Exception as exc:
                 error(f"Source not reachable: {p}")
                 warn(str(exc))
             if not confirm("Add another path?", default=False):
                 break
-        if paths:
-            cfg.upsert_doc_profile(name, paths)
+        if new_paths:
+            cfg.upsert_doc_profile(name, existing + new_paths)
             cfg.active_doc_profile = name
         else:
             warn("Skipping document profile — no valid sources were provided.")
@@ -1305,12 +1329,22 @@ def docs() -> None:
 
 @docs.command("scan")
 @click.argument("paths", nargs=-1)
+@click.option(
+    "--doc-profile",
+    "doc_profile",
+    default=None,
+    help="Use paths from this named document profile when no paths are given.",
+)
 @click.pass_obj
-def docs_scan(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
+def docs_scan(cfg: AMXConfig, paths: tuple[str, ...], doc_profile: str | None) -> None:
     """Scan document sources and show what would be ingested."""
     from amx.docs.scanner import scan_all_sources, total_size_mb
 
-    all_paths = list(paths) or cfg.effective_doc_paths()
+    try:
+        all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
+    except KeyError as exc:
+        error(str(exc))
+        return
     if not all_paths:
         _warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="scan")
         return
@@ -1336,19 +1370,34 @@ def docs_scan(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
         from amx.docs.rag import RAGStore
 
         store = RAGStore()
-        chunks = store.ingest(documents)
+        chunks = store.ingest(documents, refresh=False)
         success(f"Ingested {chunks} chunks from {len(documents)} documents")
 
 
 @docs.command("ingest")
 @click.argument("paths", nargs=-1)
+@click.option(
+    "--doc-profile",
+    "doc_profile",
+    default=None,
+    help="Use paths from this named document profile when no paths are given.",
+)
+@click.option(
+    "--refresh/--no-refresh",
+    default=False,
+    help="Delete existing Chroma chunks for the same source paths before upserting.",
+)
 @click.pass_obj
-def docs_ingest(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
+def docs_ingest(cfg: AMXConfig, paths: tuple[str, ...], doc_profile: str | None, refresh: bool) -> None:
     """Ingest documents directly into the RAG store."""
     from amx.docs.rag import RAGStore
     from amx.docs.scanner import scan_all_sources, total_size_mb
 
-    all_paths = list(paths) or cfg.effective_doc_paths()
+    try:
+        all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
+    except KeyError as exc:
+        error(str(exc))
+        return
     if not all_paths:
         _warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="ingest")
         return
@@ -1364,7 +1413,9 @@ def docs_ingest(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
             return
 
     store = RAGStore()
-    chunks = store.ingest(documents)
+    chunks = store.ingest(documents, refresh=refresh)
+    if refresh:
+        info("Refreshed: removed prior chunks for the same source paths before ingest.")
     success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
 
 
@@ -1421,11 +1472,31 @@ def analyze() -> None:
 @click.option("--schema", "-s", help="Schema to analyze.")
 @click.option("--table", "-t", multiple=True, help="Specific table(s). Omit for interactive selection.")
 @click.option("--apply/--no-apply", default=False, help="Apply approved metadata to the database.")
+@click.option(
+    "--code-refresh",
+    is_flag=True,
+    default=False,
+    help="Invalidate codebase disk cache and rebuild semantic code index on this run.",
+)
+@click.option(
+    "--code-profile",
+    default=None,
+    help="Use this named codebase profile path (otherwise active profile).",
+)
 @click.pass_obj
-def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], apply: bool) -> None:
+def analyze_run(
+    cfg: AMXConfig,
+    schema: str | None,
+    table: tuple[str, ...],
+    apply: bool,
+    code_refresh: bool,
+    code_profile: str | None,
+) -> None:
     """Run all agents to infer metadata for selected tables."""
     from amx.agents.orchestrator import Orchestrator
-    from amx.codebase.analyzer import analyze_codebase
+    from amx.codebase.analyzer import analyze_codebase, merge_codebase_reports
+    from amx.codebase.cache import invalidate_cache, load_cached_report, save_cached_report
+    from amx.codebase.code_rag import delete_code_collection
     from amx.db.connector import DatabaseConnector
     from amx.docs.rag import RAGStore
     from amx.llm.provider import LLMProvider
@@ -1496,18 +1567,88 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
     except Exception:
         pass
 
-    # Codebase analysis
+    # Codebase analysis (optional cache + semantic index)
     code_report = None
-    code_paths = cfg.effective_code_paths()
+    cp_name = (code_profile or "").strip() or None
+    if cp_name:
+        if cp_name not in cfg.code_profiles:
+            error(f"Unknown codebase profile: {cp_name}")
+            sys.exit(1)
+        code_paths = [cfg.code_profiles[cp_name]]
+        profile_nm = cp_name
+    else:
+        code_paths = cfg.effective_code_paths()
+        profile_nm = (cfg.active_code_profile or "default").strip() or "default"
+
     if code_paths:
+        if code_refresh:
+            delete_code_collection()
+        column_names: list[str] = []
+        seen_col: set[str] = set()
+        for t in tables:
+            tp = db.profile_table(schema, t)
+            for c in tp.columns:
+                k = c.name.lower()
+                if k in seen_col:
+                    continue
+                seen_col.add(k)
+                column_names.append(c.name)
+                if len(column_names) >= 400:
+                    break
+            if len(column_names) >= 400:
+                break
+
+        all_schema_tables = db.list_tables(schema)
+        catalog = frozenset(x.lower() for x in all_schema_tables)
+
         info("Analyzing codebase references...")
-        all_table_names = tables
+        merged_report = None
         for cp in code_paths:
+            if code_refresh:
+                invalidate_cache(profile_nm, cp)
             try:
-                code_report = analyze_codebase(cp, all_table_names)
-                info(f"Found {sum(len(v) for v in code_report.references.values())} code references")
+                cached = (
+                    None
+                    if code_refresh
+                    else load_cached_report(
+                        profile_name=profile_nm,
+                        source_path=cp,
+                        schema=schema,
+                        tables=tables,
+                        column_names=column_names,
+                        force_refresh=False,
+                    )
+                )
+                if cached is not None:
+                    rpt = cached
+                    info(f"Loaded cached codebase scan for {cp}")
+                else:
+                    rpt = analyze_codebase(
+                        cp,
+                        all_schema_tables,
+                        column_names=column_names,
+                        known_catalog_tables=catalog,
+                        index_semantic=True,
+                    )
+                    info(
+                        f"Found {sum(len(v) for v in rpt.references.values())} code references "
+                        f"({sum(len(v) for v in rpt.external_mentions.values())} external-style)"
+                    )
+                    try:
+                        save_cached_report(
+                            profile_name=profile_nm,
+                            source_path=cp,
+                            schema=schema,
+                            tables=tables,
+                            column_names=column_names,
+                            report=rpt,
+                        )
+                    except Exception as exc:
+                        warn(f"Could not save codebase cache: {exc}")
+                merged_report = merge_codebase_reports(merged_report, rpt)
             except Exception as exc:
                 warn(f"Codebase analysis failed for {cp}: {exc}")
+        code_report = merged_report
 
     # Run orchestrator
     orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report)
@@ -1606,8 +1747,15 @@ def analyze_apply(cfg: AMXConfig) -> None:
     default=None,
     help="Schema to match against (defaults to session current_schema from config).",
 )
+@click.option(
+    "--code-profile",
+    default=None,
+    help="Use this named codebase profile path when no path argument is given.",
+)
 @click.pass_obj
-def analyze_codebase_cmd(cfg: AMXConfig, path: str | None, schema: str | None) -> None:
+def analyze_codebase_cmd(
+    cfg: AMXConfig, path: str | None, schema: str | None, code_profile: str | None
+) -> None:
     """Analyze a codebase for database asset references."""
     from amx.codebase.analyzer import analyze_codebase
     from amx.db.connector import DatabaseConnector
@@ -1619,24 +1767,36 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str | None, schema: str | None) -
         )
         sys.exit(1)
 
-    resolved = (path or "").strip()
+    try:
+        resolved = cfg.resolve_code_path((code_profile or "").strip() or None, (path or "").strip() or None)
+    except KeyError as exc:
+        error(str(exc))
+        sys.exit(1)
     if not resolved:
-        candidates = cfg.effective_code_paths()
-        if not candidates:
-            error(
-                "No codebase path given and no active codebase profile. "
-                "Run `/code` then `/add-code-profile`, or pass a path: `/codebase /path/to/repo`."
-            )
-            sys.exit(1)
-        resolved = candidates[0]
-        info(f"Using active codebase profile path: {resolved}")
+        error(
+            "No codebase path given and no matching profile. "
+            "Run `/code` then `/add-code-profile`, or `/codebase --code-profile NAME`, or pass a path."
+        )
+        sys.exit(1)
+    if not (path or "").strip():
+        if (code_profile or "").strip():
+            info(f"Using codebase profile {(code_profile or '').strip()!r}: {resolved}")
+        else:
+            info(f"Using active codebase profile path: {resolved}")
 
     db = DatabaseConnector(cfg.db)
     tables = db.list_tables(schema)
+    catalog = frozenset(t.lower() for t in tables)
 
     info(f"Scanning {resolved} for references to {len(tables)} tables...")
     try:
-        report = analyze_codebase(resolved, tables)
+        report = analyze_codebase(
+            resolved,
+            tables,
+            column_names=None,
+            known_catalog_tables=catalog,
+            index_semantic=False,
+        )
     except Exception as exc:
         error(str(exc))
         sys.exit(1)
@@ -1654,7 +1814,43 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str | None, schema: str | None) -
         ]
         render_table("Asset references found", ["Asset", "Ref Count", "Example File"], rows[:30])
     else:
-        warn("No references found.")
+        warn("No catalog-style references found.")
+    if report.external_mentions:
+        erows = [
+            [asset, str(len(refs)), refs[0].file if refs else ""]
+            for asset, refs in sorted(report.external_mentions.items())[:20]
+        ]
+        render_table(
+            "Other identifiers (not in DB table list)",
+            ["Token", "Ref Count", "Example File"],
+            erows,
+        )
+
+
+@analyze.command("code-refresh")
+@click.option(
+    "--code-profile",
+    default=None,
+    help="Invalidate cache for this profile's path (default: active profile).",
+)
+@click.pass_obj
+def analyze_code_refresh(cfg: AMXConfig, code_profile: str | None) -> None:
+    """Clear persisted codebase scan cache and the semantic ``amx_code`` Chroma index."""
+    from amx.codebase.cache import invalidate_cache
+    from amx.codebase.code_rag import delete_code_collection
+
+    try:
+        cp = cfg.resolve_code_path((code_profile or "").strip() or None, None)
+    except KeyError as exc:
+        error(str(exc))
+        sys.exit(1)
+    if not cp:
+        error("No codebase path configured.")
+        sys.exit(1)
+    nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
+    invalidate_cache(nm, cp)
+    delete_code_collection()
+    success(f"Cleared codebase cache for profile {nm!r} and reset semantic code index (`amx_code`).")
 
 
 # ── Config Commands ─────────────────────────────────────────────────────────
