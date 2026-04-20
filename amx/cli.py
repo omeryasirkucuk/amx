@@ -904,20 +904,31 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
         name = rest[0]
     else:
         name = ask("Document profile name", default="default")
+    from amx.docs.scanner import scan_source
+
     paths: list[str] = []
     info(
-        "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive). "
-        "Empty line to finish."
+        "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive)."
     )
     while True:
-        p = ask("Path", default="")
+        p = ask("Path (empty to finish)" if paths else "Path", default="")
         if not p:
+            if paths:
+                break
+            error("No paths added.")
+            return
+        try:
+            docs = scan_source(p)
+            if not docs:
+                warn(f"Source reachable but no supported documents found: {p}")
+            else:
+                success(f"Document source OK: {p} ({len(docs)} supported file(s))")
+            paths.append(p)
+        except Exception as exc:
+            error(f"Failed to access document source: {p}")
+            warn(str(exc))
+        if not confirm("Add another path?", default=False):
             break
-        paths.append(p)
-    if not paths:
-        error("No paths added.")
-        return
-    paths = _validate_doc_sources(paths)
     if not paths:
         error("No valid document sources to save.")
         return
@@ -927,29 +938,6 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
     cfg.save()
     success(f"Document profile saved: {name} ({len(paths)} path(s))")
 
-
-def _validate_doc_sources(paths: list[str]) -> list[str]:
-    """Validate configured document sources (local, cloud URLs, git, S3)."""
-    from amx.docs.scanner import scan_source
-
-    valid: list[str] = []
-    for raw in paths:
-        p = raw.strip()
-        if not p:
-            continue
-
-        try:
-            docs = scan_source(p)
-            if not docs:
-                warn(f"Source reachable but no supported documents found: {p}")
-            else:
-                success(f"Document source OK: {p} ({len(docs)} supported file(s))")
-            valid.append(p)
-        except Exception as exc:
-            error(f"Failed to access document source: {p}")
-            warn(str(exc))
-
-    return valid
 
 
 def _warn_no_doc_paths_for_scan_or_ingest(cfg: AMXConfig, *, cmd: str) -> None:
@@ -1167,20 +1155,31 @@ def setup(cfg: AMXConfig) -> None:
     # Data sources
     info("Step 3/3 — Optional Data Sources (named profiles)")
     if confirm("Add a document profile for RAG?", default=False):
+        from amx.docs.scanner import scan_source
+
         name = ask("Profile name", default="default")
         paths: list[str] = []
         while True:
-            p = ask("Document path (empty to finish)", default="")
+            p = ask("Document path" if not paths else "Another path (empty to finish)", default="")
             if not p:
                 break
-            paths.append(p)
+            try:
+                docs = scan_source(p)
+                if not docs:
+                    warn(f"Source reachable but no supported documents found: {p}")
+                else:
+                    success(f"Document source OK: {p} ({len(docs)} supported file(s))")
+                paths.append(p)
+            except Exception as exc:
+                error(f"Failed to access document source: {p}")
+                warn(str(exc))
+            if not confirm("Add another path?", default=False):
+                break
         if paths:
-            valid_paths = _validate_doc_sources(paths)
-            if valid_paths:
-                cfg.upsert_doc_profile(name, valid_paths)
-                cfg.active_doc_profile = name
-            else:
-                warn("Skipping document profile creation because no valid sources were provided.")
+            cfg.upsert_doc_profile(name, paths)
+            cfg.active_doc_profile = name
+        else:
+            warn("Skipping document profile — no valid sources were provided.")
 
     if confirm("Add a codebase profile?", default=False):
         name = ask("Profile name", default="default")

@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.20] — 2026-04-21
+
+### Changed
+- **`/add-doc-profile` UX**: validate each path inline as it's entered (no more "empty line to finish" double-prompt); after each path, asks "Add another path?" instead of requiring a blank line to end.
+
 ## [0.1.19] — 2026-04-21
 
 ### Changed
