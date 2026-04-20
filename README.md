@@ -121,6 +121,8 @@ amx
 | `/db` + `/use-db <name>` | Switch active DB profile |
 | `/db` + `/add-db-profile [name]` | Add/update a DB profile (interactive) |
 | `/db` + `/remove-db-profile <name>` | Remove a DB profile |
+| `/db` + `/schema <name>` | Set default schema context (used by /tables, /analyze, …) |
+| `/db` + `/table <name>` | Set default table context (used by /profile, /analyze, …) |
 | `/db` + `/connect` | Test database connectivity |
 | `/db` + `/schemas` | List available schemas |
 | `/db` + `/tables [schema]` | List tables in a schema |

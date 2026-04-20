@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.18] — 2026-04-21
+
+### Changed
+- **`/schema` and `/table` are `/db` commands**: removed from root autocomplete/help as “global shortcuts”, gated handlers to `/db`, and include them in `/db` namespace auto-detection from the root prompt.
+
 ## [0.1.17] — 2026-04-21
 
 ### Changed

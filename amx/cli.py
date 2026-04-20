@@ -59,7 +59,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
     info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line}")
     info(
         f"Context: schema={cfg.current_schema or '—'} · table={cfg.current_table or '—'} "
-        f"(set with /schema, /table)"
+        f"(set in /db with /schema, /table)"
     )
     info(
         "Approved descriptions are written to PostgreSQL as COMMENT ON TABLE / COLUMN "
@@ -186,6 +186,8 @@ def _interactive_session(cfg: AMXConfig) -> None:
             "remove-db-profile",
             "connect",
             "c",
+            "schema",
+            "table",
             "schemas",
             "tables",
             "profile",
@@ -450,8 +452,8 @@ Commands (in order):
   2) /run [--schema …] [--table …] [--apply]   Run agents (/run alone asks: session defaults vs pick assets)
   3) /run-apply                    Run analysis and apply approved COMMENTs in one step
   4) /apply                        Write pending approved COMMENTs to PostgreSQL
-  5) /codebase <path> [--schema …] Scan codebase (schema defaults to /schema context)
-     Tip: `/schema sap_s6p` then `/codebase <url>` — or use `--schema sap_s6p`
+  5) /codebase <path> [--schema …] Scan codebase (schema defaults to /db /schema context)
+     Tip: `/db` then `/schema sap_s6p`, then `/codebase <url>` — or use `--schema sap_s6p`
      Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
 
 Navigation:
@@ -478,19 +480,13 @@ Getting started (in order):
   7) /analyze                      Metadata inference (/run, /apply, …)
 
 Inside namespaces (examples):
-  [bright_white]/db[/bright_white]   → /db-profiles, /add-db-profile, /connect, …
+  [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, …
   [bright_white]/docs[/bright_white] → /doc-profiles, /add-doc-profile, /ingest, …
   [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
   [bright_white]/code[/bright_white] → /code-profiles, /add-code-profile, …
 
 Global shortcuts (work anywhere):
   /save                            Persist ~/.amx/config.yml
-  /schema <name>                   Remember schema for defaults
-  /table <name>                    Remember table for defaults
-
-Context helpers:
-  /schema <name>                   Remember schema for defaults
-  /table <name>                    Remember table for defaults
 
 Navigation:
   Esc (empty line)                 Go back one level (namespace → root)
@@ -503,6 +499,7 @@ Examples:
   [bright_white]/tables[/bright_white]
   [bright_white]/table t001[/bright_white]
   [bright_white]/profile[/bright_white]
+  [bright_white]/analyze[/bright_white]
   [bright_white]/codebase https://github.com/org/repo --schema sap_s6p[/bright_white]
   [bright_white]/codebase https://github.com/org/repo --sap_s6p[/bright_white]  (same as --schema)
 """
@@ -544,8 +541,6 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/code", "Enter /code namespace"),
         ("/analyze", "Enter /analyze namespace"),
         ("/save", "Save config to disk"),
-        ("/schema", "Set current schema (/schema <name>)"),
-        ("/table", "Set current table (/table <name>)"),
     ]
 
     db_cmds: list[tuple[str, str]] = [
@@ -714,16 +709,20 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
         success(f"Saved configuration to {path}")
         return True
     if head == "schema":
+        if not _require_namespace(head, namespace, "db", "schema"):
+            return True
         if len(parts) < 2:
-            error("Usage: /schema <name>")
+            error("Usage: /schema <name> (inside /db)")
             return True
         cfg.current_schema = parts[1]
         cfg.save()
         info(f"Current schema set to: {cfg.current_schema}")
         return True
     if head == "table":
+        if not _require_namespace(head, namespace, "db", "table"):
+            return True
         if len(parts) < 2:
-            error("Usage: /table <name>")
+            error("Usage: /table <name> (inside /db)")
             return True
         cfg.current_table = parts[1]
         cfg.save()
@@ -1415,14 +1414,14 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
             scope = ask_choice(
                 "What should we analyze?",
                 [
-                    "Use session defaults (/schema and optional /table)",
+                    "Use session defaults (/db /schema and optional /db /table)",
                     "Pick schema and table(s) interactively",
                 ],
-                default="Use session defaults (/schema and optional /table)",
+                default="Use session defaults (/db /schema and optional /db /table)",
             )
         else:
             scope = "Pick schema and table(s) interactively"
-            info("No /schema in session yet — choose assets below.")
+            info("No schema context yet — set /db /schema (and optional /db /table), or pick below.")
 
         if scope.startswith("Use session") and cfg.current_schema:
             schema = cfg.current_schema
@@ -1573,7 +1572,9 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str | None) -> None:
 
     schema = schema or cfg.current_schema
     if not schema:
-        error("Missing schema: use --schema sap_s6p or set context with /schema … in session.")
+        error(
+            "Missing schema: use --schema sap_s6p or set context with `/db` then `/schema …` in session."
+        )
         sys.exit(1)
 
     db = DatabaseConnector(cfg.db)
