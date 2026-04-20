@@ -39,9 +39,12 @@ def _clone_if_remote(path: str) -> str:
     if path.startswith("https://github.com") or path.startswith("git@"):
         import git as gitpython
 
+        from amx.docs.scanner import normalize_github_url
+
+        clone_url = normalize_github_url(path)
         dest = tempfile.mkdtemp(prefix="amx_code_")
-        log.info("Cloning %s → %s", path, dest)
-        gitpython.Repo.clone_from(path, dest, depth=1)
+        log.info("Cloning %s → %s", clone_url, dest)
+        gitpython.Repo.clone_from(clone_url, dest, depth=1)
         return dest
     return path
 

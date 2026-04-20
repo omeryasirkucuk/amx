@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.24] — 2026-04-21
+
+### Fixed
+- **GitHub file/tree URLs now work**: pasting `https://github.com/user/repo/blob/main/file.sql` or `/tree/…` URLs is automatically normalized to the repo clone URL (`https://github.com/user/repo`). Applies to reachability checks, clones for code analysis, and document scanning.
+
 ## [0.1.23] — 2026-04-21
 
 ### Changed

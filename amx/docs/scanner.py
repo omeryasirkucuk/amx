@@ -43,13 +43,36 @@ def _resolve_local(path: str) -> Iterator[DocInfo]:
                 yield DocInfo(str(f), f.stat().st_size, f.suffix.lower(), "local")
 
 
+def normalize_github_url(url: str) -> str:
+    """Strip /blob/…, /tree/…, /raw/…, trailing .git to get a clean clone-able repo URL.
+
+    Examples:
+      https://github.com/user/repo/blob/main/file.sql → https://github.com/user/repo
+      https://github.com/user/repo/tree/v2/some/dir   → https://github.com/user/repo
+      https://github.com/user/repo.git                 → https://github.com/user/repo
+      git@github.com:user/repo.git                     → git@github.com:user/repo.git  (ssh untouched)
+    """
+    u = url.strip()
+    if u.startswith("git@"):
+        return u
+    for marker in ("/blob/", "/tree/", "/raw/"):
+        idx = u.find(marker)
+        if idx != -1:
+            u = u[:idx]
+    u = u.rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    return u
+
+
 def _resolve_github(url: str, target_dir: str | None = None) -> Iterator[DocInfo]:
     """Clone a GitHub repo to a temp dir and scan files."""
     import git as gitpython
 
+    clone_url = normalize_github_url(url)
     dest = target_dir or tempfile.mkdtemp(prefix="amx_gh_")
-    log.info("Cloning %s → %s", url, dest)
-    gitpython.Repo.clone_from(url, dest, depth=1)
+    log.info("Cloning %s → %s", clone_url, dest)
+    gitpython.Repo.clone_from(clone_url, dest, depth=1)
     yield from _resolve_local(dest)
 
 
@@ -500,7 +523,7 @@ def _resolve_sharepoint_or_onedrive(url: str, target_dir: str | None = None) -> 
 
 def test_git_remote_reachable(url: str) -> None:
     """Verify a Git remote exists and is readable (no clone). Raises RuntimeError on failure."""
-    u = url.strip()
+    u = normalize_github_url(url.strip())
     if not u:
         raise RuntimeError("Empty Git URL")
     if not shutil.which("git"):
