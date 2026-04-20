@@ -111,6 +111,10 @@ amx
 | `/db` + `/schemas` | List available schemas |
 | `/db` + `/tables [schema]` | List tables in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
+| `/docs` + `/doc-profiles` | List named document path profiles |
+| `/docs` + `/use-doc <name>` | Switch active document profile |
+| `/docs` + `/add-doc-profile [name]` | Add/update document roots (interactive) |
+| `/docs` + `/remove-doc-profile <name>` | Remove a document profile |
 | `/docs` + `/scan [paths...]` | Scan and preview documents for RAG |
 | `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store |
 | `/docs` + `/query <question>` | Query the document store |

@@ -253,6 +253,16 @@ def _interactive_session(cfg: AMXConfig) -> None:
             if not parts:
                 continue
 
+            if namespace == "docs":
+                if parts[0] == "query" and len(parts) == 1:
+                    error("Usage: /query <your question>")
+                    info('Example: /query What does field "BUKRS" mean in our docs?')
+                    continue
+                if parts[0] in {"ingest", "scan"} and len(parts) == 1:
+                    if not cfg.effective_doc_paths():
+                        _warn_no_doc_paths_for_scan_or_ingest(cfg, cmd=parts[0])
+                        continue
+
             handled = _handle_session_builtin(cfg, namespace, parts)
             if handled == "exit":
                 success("Session closed.")
@@ -331,9 +341,15 @@ Navigation:
 [heading]Help — /docs namespace[/heading]
 Commands (in order):
   1) /back                         Return to root namespace
-  2) /scan [paths...]              Scan documents (preview)
-  3) /ingest [paths...]            Ingest documents into RAG store
-  4) /query <question>             Query RAG store
+  2) /doc-profiles                 List document profiles (named path lists)
+  3) /use-doc <name>               Switch active document profile
+  4) /add-doc-profile [name]       Add/update document roots (interactive)
+  5) /remove-doc-profile <name>    Remove a document profile
+  6) /scan [paths...]              Scan documents (preview); uses active profile paths if omitted
+  7) /ingest [paths...]            Ingest into RAG store; uses active profile paths if omitted
+  8) /query <question>             Query the RAG store
+
+Tip: configure sources first (steps 2–5), then scan/ingest, then query.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -388,7 +404,7 @@ LLM profiles:
   /add-llm-profile <name>          Add/update LLM profile (interactive)
   /remove-llm-profile <name>       Remove LLM profile
 
-Document sources (named lists of paths):
+Document sources (named lists of paths) — also listed under [bright_white]/docs[/bright_white] /help:
   /doc-profiles                    List document profiles
   /use-doc <name>                  Switch active document profile
   /add-doc-profile <name>          Add/update paths (interactive)
@@ -492,6 +508,10 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     docs_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
+        ("/doc-profiles", "List document profiles"),
+        ("/use-doc", "Switch document profile (/use-doc <name>)"),
+        ("/add-doc-profile", "Add/update document profile"),
+        ("/remove-doc-profile", "Remove document profile (/remove-doc-profile <name>)"),
         ("/scan", "Scan documents (/scan [paths...])"),
         ("/ingest", "Ingest documents (/ingest [paths...])"),
         ("/query", "Query RAG (/query <question>)"),
@@ -808,6 +828,17 @@ def _validate_doc_sources(paths: list[str]) -> list[str]:
             warn(str(exc))
 
     return valid
+
+
+def _warn_no_doc_paths_for_scan_or_ingest(cfg: AMXConfig, *, cmd: str) -> None:
+    """User-friendly hint when /scan or /ingest has no paths and no configured profile."""
+    error(f"No document paths to {cmd}.")
+    if not cfg.doc_profiles and not cfg.doc_paths:
+        info("Add a document profile first: /add-doc-profile (or run /setup).")
+    elif cfg.doc_profiles and not cfg.effective_doc_paths():
+        info("Your document profiles look empty. Run /add-doc-profile to add paths.")
+    else:
+        info("Pass paths on the command (e.g. /ingest /path/to/docs) or set an active profile with /use-doc.")
 
 
 def _cmd_remove_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -1139,7 +1170,7 @@ def docs_scan(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
 
     all_paths = list(paths) or cfg.effective_doc_paths()
     if not all_paths:
-        error("No document paths configured. Use /add-doc-profile, `amx setup`, or pass paths.")
+        _warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="scan")
         return
 
     documents = scan_all_sources(all_paths)
@@ -1177,7 +1208,7 @@ def docs_ingest(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
 
     all_paths = list(paths) or cfg.effective_doc_paths()
     if not all_paths:
-        error("No document paths configured. Use /add-doc-profile, `amx setup`, or pass paths.")
+        _warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="ingest")
         return
 
     documents = scan_all_sources(all_paths)
@@ -1204,7 +1235,7 @@ def docs_query(question: str, results: int) -> None:
 
     store = RAGStore()
     if store.doc_count == 0:
-        error("RAG store is empty. Run `amx docs ingest` first.")
+        error("RAG store is empty. Run /ingest (after /add-doc-profile) first.")
         return
 
     hits = store.query(question, n_results=results)

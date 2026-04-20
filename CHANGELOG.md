@@ -4,6 +4,12 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.16] — 2026-04-21
+
+### Changed
+- **Interactive `/docs` UX**: help + autocomplete now surface document profile commands (`/doc-profiles`, `/use-doc`, `/add-doc-profile`, `/remove-doc-profile`) ahead of scan/ingest/query.
+- **Better empty-input handling**: bare `/query` shows usage (no Click “missing argument” spam); bare `/ingest` and `/scan` without configured paths show setup-first guidance.
+
 ## [0.1.15] — 2026-04-21
 
 ### Added
