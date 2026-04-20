@@ -81,7 +81,14 @@ This interactive wizard walks you through:
 2. **AI model** — provider and API key (supports OpenAI, Anthropic, Gemini, DeepSeek, Ollama, local endpoints)
 3. **Data sources** — optional named **document** and **codebase** profiles for RAG and code scanning
 
-In an interactive `amx` session you can manage several **DB connections**, **LLM configs**, **document roots**, and **codebases**, then switch the active profile with commands such as `/use`, `/use-llm`, `/use-doc`, and `/use-code`. See `/help` in the shell for the full list.
+In an interactive `amx` session, configuration is grouped by namespace:
+
+- `/db` — PostgreSQL profiles + introspection (`/db-profiles`, `/add-db-profile`, `/connect`, …)
+- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, …)
+- `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
+- `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
+
+AMX may **auto-select** the right namespace when you run an unambiguous command from the root prompt (it will print which namespace it assumed).
 
 ### Run Analysis
 
@@ -93,8 +100,11 @@ amx
 
 # Inside AMX (slash commands)
 /db
+/db-profiles
 /connect
 /schema sap_s6p
+/docs
+/add-doc-profile default
 /analyze
 /run --table t001 --table vbak
 /run-apply
@@ -107,10 +117,22 @@ amx
 |---------|-------------|
 | `/setup` | Interactive first-time configuration wizard |
 | `/config` | Display current configuration |
+| `/db` + `/db-profiles` | List DB connection profiles |
+| `/db` + `/use-db <name>` | Switch active DB profile |
+| `/db` + `/add-db-profile [name]` | Add/update a DB profile (interactive) |
+| `/db` + `/remove-db-profile <name>` | Remove a DB profile |
 | `/db` + `/connect` | Test database connectivity |
 | `/db` + `/schemas` | List available schemas |
 | `/db` + `/tables [schema]` | List tables in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
+| `/llm` + `/llm-profiles` | List LLM profiles |
+| `/llm` + `/use-llm <name>` | Switch active LLM profile |
+| `/llm` + `/add-llm-profile [name]` | Add/update an LLM profile (interactive) |
+| `/llm` + `/remove-llm-profile <name>` | Remove an LLM profile |
+| `/code` + `/code-profiles` | List codebase profiles |
+| `/code` + `/use-code <name>` | Switch active codebase profile |
+| `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
+| `/code` + `/remove-code-profile <name>` | Remove a codebase profile |
 | `/docs` + `/doc-profiles` | List named document path profiles |
 | `/docs` + `/use-doc <name>` | Switch active document profile |
 | `/docs` + `/add-doc-profile [name]` | Add/update document roots (interactive) |

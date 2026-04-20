@@ -174,9 +174,41 @@ def _interactive_session(cfg: AMXConfig) -> None:
     heading("AMX Interactive Session")
     _print_interactive_startup_summary(cfg)
     info("Type /help for commands, /exit to quit.")
-    info("Namespaces: /db, /docs, /analyze (use /back or Esc to return).")
+    info("Namespaces: /db, /docs, /llm, /code, /analyze (use /back or Esc to return).")
     info("Tip: start typing / and use ↑/↓ to pick a command.")
     namespace = ""
+
+    _db_cmd_heads = frozenset(
+        {
+            "db-profiles",
+            "use-db",
+            "add-db-profile",
+            "remove-db-profile",
+            "connect",
+            "c",
+            "schemas",
+            "tables",
+            "profile",
+        }
+    )
+    _docs_cmd_heads = frozenset(
+        {
+            "doc-profiles",
+            "use-doc",
+            "add-doc-profile",
+            "remove-doc-profile",
+            "scan",
+            "ingest",
+            "query",
+        }
+    )
+    _llm_cmd_heads = frozenset(
+        {"llm-profiles", "use-llm", "add-llm-profile", "remove-llm-profile"}
+    )
+    _code_cmd_heads = frozenset(
+        {"code-profiles", "use-code", "add-code-profile", "remove-code-profile"}
+    )
+    _analyze_cmd_heads = frozenset({"run", "run-apply", "apply", "codebase"})
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
 
@@ -239,7 +271,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
                 namespace = ""
                 info("Back to root namespace.")
                 continue
-            if cmdline in {"db", "docs", "analyze"}:
+            if cmdline in {"db", "docs", "llm", "code", "analyze"}:
                 namespace = cmdline
                 info(f"Entered /{namespace} namespace.")
                 continue
@@ -252,6 +284,24 @@ def _interactive_session(cfg: AMXConfig) -> None:
 
             if not parts:
                 continue
+
+            if not namespace:
+                h = parts[0]
+                if h in _db_cmd_heads:
+                    namespace = "db"
+                    info("Assumed /db namespace for this command.")
+                elif h in _docs_cmd_heads:
+                    namespace = "docs"
+                    info("Assumed /docs namespace for this command.")
+                elif h in _llm_cmd_heads:
+                    namespace = "llm"
+                    info("Assumed /llm namespace for this command.")
+                elif h in _code_cmd_heads:
+                    namespace = "code"
+                    info("Assumed /code namespace for this command.")
+                elif h in _analyze_cmd_heads:
+                    namespace = "analyze"
+                    info("Assumed /analyze namespace for this command.")
 
             if namespace == "docs":
                 if parts[0] == "query" and len(parts) == 1:
@@ -314,10 +364,10 @@ Context:
 
 Commands (in order):
   1) /back                         Return to root namespace
-  2) /profiles                     List DB connection profiles
-  3) /use <name>                   Switch active DB profile
-  4) /add-profile <name>           Create/update a profile (interactive)
-  5) /remove-profile <name>        Remove a profile (cannot remove last)
+  2) /db-profiles                  List DB connection profiles
+  3) /use-db <name>                Switch active DB profile
+  4) /add-db-profile [name]        Create/update a DB profile (interactive)
+  5) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
   6) /save                         Persist config to disk (~/.amx/config.yml)
   7) /schema <name>                Set current schema context (used by /tables)
   8) /table <name>                 Set current table context (used by /profile)
@@ -357,6 +407,40 @@ Navigation:
         )
         return
 
+    if namespace == "llm":
+        out.print(
+            """
+[heading]Help — /llm namespace[/heading]
+Commands (in order):
+  1) /back                         Return to root namespace
+  2) /llm-profiles                 List LLM profiles
+  3) /use-llm <name>               Switch active LLM profile
+  4) /add-llm-profile [name]       Add/update an LLM profile (interactive)
+  5) /remove-llm-profile <name>    Remove an LLM profile
+
+Navigation:
+  Esc (empty line)                 Go back to root namespace
+"""
+        )
+        return
+
+    if namespace == "code":
+        out.print(
+            """
+[heading]Help — /code namespace[/heading]
+Commands (in order):
+  1) /back                         Return to root namespace
+  2) /code-profiles                List codebase profiles
+  3) /use-code <name>              Switch active codebase profile
+  4) /add-code-profile [name]      Add/update a codebase path (interactive)
+  5) /remove-code-profile <name>   Remove a codebase profile
+
+Navigation:
+  Esc (empty line)                 Go back to root namespace
+"""
+        )
+        return
+
     if namespace == "analyze":
         out.print(
             """
@@ -387,34 +471,22 @@ Context:
 Getting started (in order):
   1) /setup                        First-time wizard (DB + LLM + sources)
   2) /config                       Show current configuration
-  3) /db                           Enter database commands (/connect, /schemas, …)
-  4) /docs                         Enter document/RAG commands
-  5) /analyze                      Enter analysis commands
+  3) /db                           Database introspection + DB profiles
+  4) /docs                         Document roots + RAG (scan/ingest/query)
+  5) /llm                          LLM profile management
+  6) /code                         Codebase profile management
+  7) /analyze                      Metadata inference (/run, /apply, …)
 
-DB profiles (works anywhere):
-  /profiles                        List DB profiles
-  /use <name>                      Switch active DB profile
-  /add-profile <name>              Add/update DB profile (interactive)
-  /remove-profile <name>           Remove DB profile
+Inside namespaces (examples):
+  [bright_white]/db[/bright_white]   → /db-profiles, /add-db-profile, /connect, …
+  [bright_white]/docs[/bright_white] → /doc-profiles, /add-doc-profile, /ingest, …
+  [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
+  [bright_white]/code[/bright_white] → /code-profiles, /add-code-profile, …
+
+Global shortcuts (work anywhere):
   /save                            Persist ~/.amx/config.yml
-
-LLM profiles:
-  /llm-profiles                    List named LLM configs
-  /use-llm <name>                  Switch active LLM profile
-  /add-llm-profile <name>          Add/update LLM profile (interactive)
-  /remove-llm-profile <name>       Remove LLM profile
-
-Document sources (named lists of paths) — also listed under [bright_white]/docs[/bright_white] /help:
-  /doc-profiles                    List document profiles
-  /use-doc <name>                  Switch active document profile
-  /add-doc-profile <name>          Add/update paths (interactive)
-  /remove-doc-profile <name>       Remove document profile
-
-Codebases (named repo / path):
-  /code-profiles                   List codebase profiles
-  /use-code <name>                 Switch active codebase profile
-  /add-code-profile <name>       Add/update one path (local or Git URL)
-  /remove-code-profile <name>     Remove codebase profile
+  /schema <name>                   Remember schema for defaults
+  /table <name>                    Remember table for defaults
 
 Context helpers:
   /schema <name>                   Remember schema for defaults
@@ -468,34 +540,20 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/config", "Show configuration"),
         ("/db", "Enter /db namespace"),
         ("/docs", "Enter /docs namespace"),
+        ("/llm", "Enter /llm namespace"),
+        ("/code", "Enter /code namespace"),
         ("/analyze", "Enter /analyze namespace"),
-        ("/profiles", "List DB profiles"),
-        ("/use", "Switch DB profile (/use <name>)"),
-        ("/add-profile", "Create/update DB profile (/add-profile <name>)"),
-        ("/remove-profile", "Remove DB profile (/remove-profile <name>)"),
         ("/save", "Save config to disk"),
         ("/schema", "Set current schema (/schema <name>)"),
         ("/table", "Set current table (/table <name>)"),
-        ("/llm-profiles", "List LLM profiles"),
-        ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
-        ("/add-llm-profile", "Add/update LLM profile"),
-        ("/remove-llm-profile", "Remove LLM profile"),
-        ("/doc-profiles", "List document profiles"),
-        ("/use-doc", "Switch document profile (/use-doc <name>)"),
-        ("/add-doc-profile", "Add/update document profile"),
-        ("/remove-doc-profile", "Remove document profile"),
-        ("/code-profiles", "List codebase profiles"),
-        ("/use-code", "Switch codebase profile (/use-code <name>)"),
-        ("/add-code-profile", "Add/update codebase profile"),
-        ("/remove-code-profile", "Remove codebase profile"),
     ]
 
     db_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
-        ("/profiles", "List DB profiles"),
-        ("/use", "Switch DB profile (/use <name>)"),
-        ("/add-profile", "Create/update DB profile (/add-profile <name>)"),
-        ("/remove-profile", "Remove DB profile (/remove-profile <name>)"),
+        ("/db-profiles", "List DB profiles"),
+        ("/use-db", "Switch DB profile (/use-db <name>)"),
+        ("/add-db-profile", "Create/update DB profile"),
+        ("/remove-db-profile", "Remove DB profile (/remove-db-profile <name>)"),
         ("/save", "Save config to disk"),
         ("/schema", "Set current schema (/schema <name>)"),
         ("/table", "Set current table (/table <name>)"),
@@ -517,6 +575,22 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/query", "Query RAG (/query <question>)"),
     ]
 
+    llm_cmds: list[tuple[str, str]] = [
+        ("/back", "Return to root namespace"),
+        ("/llm-profiles", "List LLM profiles"),
+        ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
+        ("/add-llm-profile", "Add/update LLM profile"),
+        ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
+    ]
+
+    code_cmds: list[tuple[str, str]] = [
+        ("/back", "Return to root namespace"),
+        ("/code-profiles", "List codebase profiles"),
+        ("/use-code", "Switch codebase profile (/use-code <name>)"),
+        ("/add-code-profile", "Add/update codebase profile"),
+        ("/remove-code-profile", "Remove codebase profile (/remove-code-profile <name>)"),
+    ]
+
     analyze_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
         ("/run", "Run agents (/run [--schema …] [--table …] [--apply])"),
@@ -529,61 +603,110 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         return db_cmds
     if namespace == "docs":
         return docs_cmds
+    if namespace == "llm":
+        return llm_cmds
+    if namespace == "code":
+        return code_cmds
     if namespace == "analyze":
         return analyze_cmds
     return root
 
 
+def _require_namespace(cmd: str, namespace: str, expected: str, replacement: str) -> bool:
+    if namespace == expected:
+        return True
+    error(f"/{cmd} belongs in /{expected}. Example: `/{expected}` then `/{replacement}`.")
+    return False
+
+
 def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) -> bool | str:
     head = parts[0]
 
+    if head in {"profiles", "use", "add-profile", "remove-profile"}:
+        error(
+            f"/{head} was renamed — use /db (then /db-profiles, /use-db, /add-db-profile, /remove-db-profile)."
+        )
+        return True
+
     if head == "llm-profiles":
+        if not _require_namespace(head, namespace, "llm", "llm-profiles"):
+            return True
         _cmd_llm_profiles(cfg)
         return True
     if head == "use-llm":
+        if not _require_namespace(head, namespace, "llm", "use-llm"):
+            return True
         _cmd_use_llm(cfg, parts[1:])
         return True
     if head == "add-llm-profile":
+        if not _require_namespace(head, namespace, "llm", "add-llm-profile"):
+            return True
         _cmd_add_llm_profile(cfg, parts[1:])
         return True
     if head == "remove-llm-profile":
+        if not _require_namespace(head, namespace, "llm", "remove-llm-profile"):
+            return True
         _cmd_remove_llm_profile(cfg, parts[1:])
         return True
     if head == "doc-profiles":
+        if not _require_namespace(head, namespace, "docs", "doc-profiles"):
+            return True
         _cmd_doc_profiles(cfg)
         return True
     if head == "use-doc":
+        if not _require_namespace(head, namespace, "docs", "use-doc"):
+            return True
         _cmd_use_doc(cfg, parts[1:])
         return True
     if head == "add-doc-profile":
+        if not _require_namespace(head, namespace, "docs", "add-doc-profile"):
+            return True
         _cmd_add_doc_profile(cfg, parts[1:])
         return True
     if head == "remove-doc-profile":
+        if not _require_namespace(head, namespace, "docs", "remove-doc-profile"):
+            return True
         _cmd_remove_doc_profile(cfg, parts[1:])
         return True
     if head == "code-profiles":
+        if not _require_namespace(head, namespace, "code", "code-profiles"):
+            return True
         _cmd_code_profiles(cfg)
         return True
     if head == "use-code":
+        if not _require_namespace(head, namespace, "code", "use-code"):
+            return True
         _cmd_use_code(cfg, parts[1:])
         return True
     if head == "add-code-profile":
+        if not _require_namespace(head, namespace, "code", "add-code-profile"):
+            return True
         _cmd_add_code_profile(cfg, parts[1:])
         return True
     if head == "remove-code-profile":
+        if not _require_namespace(head, namespace, "code", "remove-code-profile"):
+            return True
         _cmd_remove_code_profile(cfg, parts[1:])
         return True
 
-    if head == "profiles":
+    if head == "db-profiles":
+        if not _require_namespace(head, namespace, "db", "db-profiles"):
+            return True
         _cmd_profiles(cfg)
         return True
-    if head == "use":
+    if head == "use-db":
+        if not _require_namespace(head, namespace, "db", "use-db"):
+            return True
         _cmd_use(cfg, parts[1:])
         return True
-    if head == "add-profile":
+    if head == "add-db-profile":
+        if not _require_namespace(head, namespace, "db", "add-db-profile"):
+            return True
         _cmd_add_profile(cfg, parts[1:])
         return True
-    if head == "remove-profile":
+    if head == "remove-db-profile":
+        if not _require_namespace(head, namespace, "db", "remove-db-profile"):
+            return True
         _cmd_remove_profile(cfg, parts[1:])
         return True
     if head == "save":
@@ -659,7 +782,7 @@ def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
 
 def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
     if len(rest) < 1:
-        error("Usage: /remove-profile <name>")
+        error("Usage: /remove-db-profile <name>")
         return
     name = rest[0]
     try:
@@ -933,7 +1056,7 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
         "help": ["--help"],
     }
 
-    if head in {"db", "docs", "analyze", "setup", "config"}:
+    if head in {"db", "docs", "llm", "code", "analyze", "setup", "config"}:
         return parts
 
     if namespace and head in shortcut_map:

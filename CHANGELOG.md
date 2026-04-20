@@ -4,6 +4,13 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.17] — 2026-04-21
+
+### Changed
+- **Slash-command structure**: DB profile commands are now explicit under `/db` (`/db-profiles`, `/use-db`, `/add-db-profile`, `/remove-db-profile`).
+- **New namespaces**: `/llm` and `/code` for LLM and codebase profile management (commands are namespace-gated for clarity).
+- **Ergonomics**: running an unambiguous command from the root prompt auto-selects the appropriate namespace (with an info line); legacy `/profiles`, `/use`, `/add-profile`, `/remove-profile` show a rename hint.
+
 ## [0.1.16] — 2026-04-21
 
 ### Changed
