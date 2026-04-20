@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.22] — 2026-04-21
+
+### Changed
+- **README**: removed Docker/demo database instructions; prerequisites now describe a generic PostgreSQL deployment. LLM provider table is provider + config value only (no per-provider notes). Profile-agent context list uses “Usage stats” without `pg_stat_user_tables` column names. Configuration section documents `amx --config` correctly.
+
 ## [0.1.21] — 2026-04-21
 
 ### Changed

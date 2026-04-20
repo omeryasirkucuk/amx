@@ -51,8 +51,8 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 ### Prerequisites
 
 - Python 3.10+
-- Docker (for the demo PostgreSQL database)
-- An LLM API key (OpenAI, Anthropic, Gemini, DeepSeek, or a local model)
+- A PostgreSQL database you can connect to
+- Access to at least one LLM provider you plan to configure (API key, local endpoint, etc.)
 
 ### Installation
 
@@ -62,13 +62,7 @@ cd amx
 pip install -e .
 ```
 
-### Start the Demo Database
-
-```bash
-docker-compose up -d
-```
-
-AMX focuses on **metadata inference**, not bulk data loading. Load CSVs or restore dumps with your own tooling (for example `psql` `COPY`, `pgloader`, or ETL jobs), then point AMX at the populated database with `amx setup`.
+AMX focuses on **metadata inference**, not bulk data loading. Populate schemas and tables with your own import or ETL process, then use AMX against that database.
 
 ### Configure AMX
 
@@ -78,13 +72,13 @@ amx setup
 
 This interactive wizard walks you through:
 1. **Database connection** — PostgreSQL host, port, credentials
-2. **AI model** — provider and API key (supports OpenAI, Anthropic, Gemini, DeepSeek, Ollama, local endpoints)
+2. **AI model** — provider and API key (see [Supported LLM Providers](#supported-llm-providers))
 3. **Data sources** — optional named **document** and **codebase** profiles for RAG and code scanning
 
 In an interactive `amx` session, configuration is grouped by namespace:
 
 - `/db` — PostgreSQL profiles + introspection (`/db-profiles`, `/add-db-profile`, `/connect`, …)
-- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, …)
+- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`, …)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
 
@@ -187,14 +181,14 @@ AMX scans/ingests these extensions:
 
 ## Supported LLM Providers
 
-| Provider | Config Value | Notes |
-|----------|-------------|-------|
-| OpenAI | `openai` | GPT-4o, GPT-4, etc. |
-| Anthropic | `anthropic` | Claude Sonnet, Opus, etc. |
-| Google Gemini | `gemini` | Gemini 2.0 Flash, Pro, etc. |
-| DeepSeek | `deepseek` | DeepSeek Chat |
-| Ollama | `ollama` | Local models via Ollama |
-| Any OpenAI-compatible | `local` | Custom API base URL |
+| Provider | Config value |
+|----------|--------------|
+| OpenAI | `openai` |
+| Anthropic | `anthropic` |
+| Google Gemini | `gemini` |
+| DeepSeek | `deepseek` |
+| Ollama | `ollama` |
+| OpenAI-compatible (custom base URL) | `local` |
 
 ## Database Details Sent to LLM (Profile Agent)
 
@@ -208,7 +202,7 @@ When AMX profiles a table, it sends the following database-derived context to th
   - Incoming foreign keys (downstream dependents)
   - Unique constraints
   - Check constraints
-- Usage stats (`pg_stat_user_tables`): `seq_scan`, `idx_scan`, `n_live_tup`
+- Usage stats
 - Related metadata: existing comments on FK-related neighbor tables
 - Per-column profile:
   - name, type, nullable
@@ -221,7 +215,7 @@ AMX does not send full table dumps; it sends summarized profiling signals and sm
 
 ## Configuration
 
-AMX stores its configuration at `~/.amx/config.yml`. You can also pass `--config path/to/config.yml` to any command.
+AMX stores its configuration at `~/.amx/config.yml`. To use a different file, start the CLI with `amx --config path/to/config.yml`.
 
 ## Project Structure
 
