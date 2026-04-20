@@ -154,29 +154,30 @@ amx
 | Local files/directories | `/path/to/docs` | Supported |
 | GitHub repositories | `https://github.com/user/repo` or `git@github.com:user/repo.git` | Supported |
 | AWS S3 | `s3://bucket/prefix` | Supported |
-| Google Drive links | `https://drive.google.com/...` | Supported (requires credentials; see below) |
-| SharePoint / OneDrive links | `https://...sharepoint.com/...` or `https://onedrive.live.com/...` | Supported (requires Azure app + Graph; see below) |
+| Google Drive links | `https://drive.google.com/...` | Supported — public links work with zero setup; private files need credentials (see below) |
+| SharePoint / OneDrive links | `https://...sharepoint.com/...` or `https://onedrive.live.com/...` | Supported — public sharing links work with zero setup; private files need Azure credentials (see below) |
 
-### Cloud document authentication
+### Cloud document access
+
+AMX always **tries the public/anonymous download first** — no credentials needed if the file is shared as "Anyone with the link". Credentials are only required for private files or folder listings.
 
 **Google Drive**
 
-Set one of:
+- **Public files** (shared as "Anyone with the link can view"): just paste the link, no setup needed.
+- **Google Docs/Sheets/Slides**: public export to PDF/CSV works automatically.
+- **Private files or entire folders**: set one of:
+  - `AMX_GOOGLE_SERVICE_ACCOUNT_JSON` — path to a service account JSON; share the file/folder with that service account email.
+  - `AMX_GOOGLE_OAUTH_TOKEN_JSON` — path to a user OAuth token JSON from a prior consent flow.
 
-- `AMX_GOOGLE_SERVICE_ACCOUNT_JSON` — path to a service account JSON with Drive access; share the file/folder with that service account email.
-- `AMX_GOOGLE_OAUTH_TOKEN_JSON` — path to a user OAuth token JSON (`token.json` style) obtained from a one-time consent flow (not shipped with AMX).
+**SharePoint / OneDrive**
 
-AMX uses the Drive API to download files (and exports Google Docs/Sheets/Slides to PDF/CSV where needed).
+- **Public sharing links** ("Anyone with the link"): just paste the link, no setup needed.
+- **Private / org-restricted files**: set:
+  - `AMX_AZURE_TENANT_ID`
+  - `AMX_AZURE_CLIENT_ID`
+  - `AMX_AZURE_CLIENT_SECRET`
 
-**SharePoint / OneDrive (Microsoft Graph)**
-
-Set:
-
-- `AMX_AZURE_TENANT_ID`
-- `AMX_AZURE_CLIENT_ID`
-- `AMX_AZURE_CLIENT_SECRET`
-
-Use an Azure AD **app registration** with application permissions on Microsoft Graph (typically **Files.Read.All**, and **Sites.Read.All** for many `sharepoint.com` sharing links). AMX resolves your sharing URL via `GET /shares/{shareId}/driveItem`, then downloads supported file types.
+  Use an Azure AD app registration with Graph permissions (**Files.Read.All**, **Sites.Read.All**).
 
 ### Supported Document File Types
 

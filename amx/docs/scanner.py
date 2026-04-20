@@ -104,6 +104,96 @@ def _parse_google_drive_folder_id(url: str) -> str | None:
     return None
 
 
+def _download_to_file(url: str, dest: Path, *, timeout: int = 300) -> int:
+    """Stream-download a URL to a local file; return byte count."""
+    r = requests.get(url, timeout=timeout, stream=True, allow_redirects=True)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Download failed {r.status_code}: {r.text[:300]}")
+    n = 0
+    with dest.open("wb") as f:
+        for chunk in r.iter_content(chunk_size=1024 * 256):
+            if chunk:
+                f.write(chunk)
+                n += len(chunk)
+    return n
+
+
+def _gdrive_public_download(file_id: str, dest_dir: Path) -> DocInfo | None:
+    """Try downloading a Google Drive file via the public export endpoint (no credentials)."""
+    dl_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    sess = requests.Session()
+    r = sess.get(dl_url, stream=True, timeout=60, allow_redirects=True)
+
+    if r.status_code == 404:
+        return None
+    if r.status_code >= 400:
+        return None
+
+    cd = r.headers.get("Content-Disposition", "")
+    ct = r.headers.get("Content-Type", "")
+
+    if "text/html" in ct and "confirm" not in cd:
+        html = r.content.decode("utf-8", errors="replace")
+        m = re.search(r'id="download-form"[^>]*action="([^"]+)"', html)
+        if not m:
+            m = re.search(r'href="(/uc\?export=download[^"]*confirm=[^"]+)"', html)
+        if m:
+            confirm_url = m.group(1).replace("&amp;", "&")
+            if confirm_url.startswith("/"):
+                confirm_url = "https://drive.google.com" + confirm_url
+            r = sess.get(confirm_url, stream=True, timeout=120, allow_redirects=True)
+            cd = r.headers.get("Content-Disposition", "")
+            ct = r.headers.get("Content-Type", "")
+
+    if "text/html" in ct and "filename" not in cd:
+        return None
+
+    fname_match = re.search(r'filename="?([^";]+)"?', cd)
+    fname = fname_match.group(1).strip() if fname_match else f"{file_id}.bin"
+    ext = Path(fname).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        log.warning("Drive file %r has unsupported extension %s", fname, ext)
+        return None
+
+    out = dest_dir / fname
+    n = 0
+    with out.open("wb") as f:
+        for chunk in r.iter_content(chunk_size=1024 * 256):
+            if chunk:
+                f.write(chunk)
+                n += len(chunk)
+    if n == 0:
+        out.unlink(missing_ok=True)
+        return None
+
+    return DocInfo(str(out), n, ext, "drive")
+
+
+def _gdrive_public_export(file_id: str, dest_dir: Path, fmt: str, ext: str) -> DocInfo | None:
+    """Export a Google Workspace native file (Doc/Sheet/Slides) via public export URL."""
+    export_url = f"https://docs.google.com/document/d/{file_id}/export?format={fmt}"
+    if fmt == "csv":
+        export_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv"
+    elif fmt == "pptx":
+        export_url = f"https://docs.google.com/presentation/d/{file_id}/export/{fmt}"
+
+    out = dest_dir / f"{file_id}{ext}"
+    try:
+        n = _download_to_file(export_url, out)
+    except Exception:
+        return None
+    if n == 0:
+        out.unlink(missing_ok=True)
+        return None
+    return DocInfo(str(out), n, ext, "drive")
+
+
+def _gdrive_has_api_credentials() -> bool:
+    sa = os.environ.get("AMX_GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    tok = os.environ.get("AMX_GOOGLE_OAUTH_TOKEN_JSON", "").strip()
+    return bool((sa and Path(sa).is_file()) or (tok and Path(tok).is_file()))
+
+
 def _google_drive_credentials():
     """Return credentials for Drive API or raise with setup hints."""
     try:
@@ -111,28 +201,20 @@ def _google_drive_credentials():
         from google.oauth2.credentials import Credentials
     except ImportError as exc:
         raise RuntimeError(
-            "Google Drive support requires google-auth. Install AMX with its full dependencies."
+            "Google Drive API requires google-auth. Install AMX with its full dependencies."
         ) from exc
 
     sa_path = os.environ.get("AMX_GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if sa_path and Path(sa_path).is_file():
         return service_account.Credentials.from_service_account_file(
-            sa_path,
-            scopes=["https://www.googleapis.com/auth/drive.readonly"],
+            sa_path, scopes=["https://www.googleapis.com/auth/drive.readonly"],
         )
-
     token_path = os.environ.get("AMX_GOOGLE_OAUTH_TOKEN_JSON", "").strip()
     if token_path and Path(token_path).is_file():
         return Credentials.from_authorized_user_file(
-            token_path,
-            scopes=["https://www.googleapis.com/auth/drive.readonly"],
+            token_path, scopes=["https://www.googleapis.com/auth/drive.readonly"],
         )
-
-    raise RuntimeError(
-        "Google Drive: set AMX_GOOGLE_SERVICE_ACCOUNT_JSON (service account JSON path) "
-        "or AMX_GOOGLE_OAUTH_TOKEN_JSON (OAuth token JSON from a prior consent flow). "
-        "The Drive must be shared with that principal."
-    )
+    raise RuntimeError("No Drive API credentials configured.")
 
 
 def _google_drive_build_service():
@@ -141,30 +223,14 @@ def _google_drive_build_service():
         from googleapiclient.errors import HttpError
     except ImportError as exc:
         raise RuntimeError(
-            "Google Drive support requires google-api-python-client. "
-            "Install AMX with its full dependencies."
+            "Google Drive API requires google-api-python-client."
         ) from exc
-
     creds = _google_drive_credentials()
     return build("drive", "v3", credentials=creds, cache_discovery=False), HttpError
 
 
-def _google_mime_to_export_extension(mime: str) -> tuple[str, str]:
-    """Return (export_mime, file_extension) for Google Workspace native files."""
-    if mime == "application/vnd.google-apps.document":
-        return "application/pdf", ".pdf"
-    if mime == "application/vnd.google-apps.spreadsheet":
-        return "text/csv", ".csv"
-    if mime == "application/vnd.google-apps.presentation":
-        return "application/pdf", ".pdf"
-    return "", ""
-
-
-def _download_google_drive_file(
-    service: Any,
-    HttpError: type,
-    file_id: str,
-    dest_dir: Path,
+def _download_google_drive_file_api(
+    service: Any, HttpError: type, file_id: str, dest_dir: Path,
 ) -> Iterator[DocInfo]:
     try:
         meta = service.files().get(fileId=file_id, fields="id,name,mimeType,size").execute()
@@ -175,17 +241,19 @@ def _download_google_drive_file(
     mime = str(meta.get("mimeType") or "")
 
     if mime == "application/vnd.google-apps.folder":
-        yield from _list_google_drive_folder(service, HttpError, file_id, dest_dir)
+        yield from _list_google_drive_folder_api(service, HttpError, file_id, dest_dir)
         return
 
-    export_mime, ext = _google_mime_to_export_extension(mime)
-    if export_mime:
+    export_map = {
+        "application/vnd.google-apps.document": ("application/pdf", ".pdf"),
+        "application/vnd.google-apps.spreadsheet": ("text/csv", ".csv"),
+        "application/vnd.google-apps.presentation": ("application/pdf", ".pdf"),
+    }
+    if mime in export_map:
+        exp_mime, ext = export_map[mime]
         safe = re.sub(r"[^\w.\-]+", "_", Path(name).stem)[:120] or "export"
         out = dest_dir / f"{safe}{ext}"
-        try:
-            data = service.files().export_media(fileId=file_id, mimeType=export_mime).execute()
-        except HttpError as exc:
-            raise RuntimeError(f"Drive export failed for {name!r}: {exc}") from exc
+        data = service.files().export_media(fileId=file_id, mimeType=exp_mime).execute()
         out.write_bytes(data)
         yield DocInfo(str(out), out.stat().st_size, ext, "drive")
         return
@@ -194,42 +262,24 @@ def _download_google_drive_file(
     if ext not in SUPPORTED_EXTENSIONS:
         log.warning("Skipping Drive file %r (unsupported extension %s)", name, ext or "(none)")
         return
-
     out = dest_dir / Path(name).name
-    try:
-        data = service.files().get_media(fileId=file_id).execute()
-    except HttpError as exc:
-        raise RuntimeError(f"Drive download failed for {name!r}: {exc}") from exc
+    data = service.files().get_media(fileId=file_id).execute()
     out.write_bytes(data)
     yield DocInfo(str(out), out.stat().st_size, ext, "drive")
 
 
-def _list_google_drive_folder(
-    service: Any,
-    HttpError: type,
-    folder_id: str,
-    dest_dir: Path,
+def _list_google_drive_folder_api(
+    service: Any, HttpError: type, folder_id: str, dest_dir: Path,
 ) -> Iterator[DocInfo]:
     page_token: str | None = None
     q = f"'{folder_id}' in parents and trashed = false"
     while True:
-        try:
-            resp = (
-                service.files()
-                .list(
-                    q=q,
-                    spaces="drive",
-                    fields="nextPageToken, files(id, name, mimeType)",
-                    pageToken=page_token,
-                    pageSize=100,
-                )
-                .execute()
-            )
-        except HttpError as exc:
-            raise RuntimeError(f"Drive API files.list failed: {exc}") from exc
+        resp = service.files().list(
+            q=q, spaces="drive", fields="nextPageToken, files(id, name, mimeType)",
+            pageToken=page_token, pageSize=100,
+        ).execute()
         for f in resp.get("files", []):
-            fid = f["id"]
-            yield from _download_google_drive_file(service, HttpError, fid, dest_dir)
+            yield from _download_google_drive_file_api(service, HttpError, f["id"], dest_dir)
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
@@ -238,40 +288,116 @@ def _list_google_drive_folder(
 def _resolve_google_drive(url: str, target_dir: str | None = None) -> Iterator[DocInfo]:
     dest = Path(target_dir or tempfile.mkdtemp(prefix="amx_gdrive_"))
     dest.mkdir(parents=True, exist_ok=True)
-    service, HttpError = _google_drive_build_service()
 
     folder_id = _parse_google_drive_folder_id(url)
-    if folder_id:
-        yield from _list_google_drive_folder(service, HttpError, folder_id, dest)
-        return
+    file_id = _parse_google_drive_file_id(url) if not folder_id else None
 
-    file_id = _parse_google_drive_file_id(url)
+    if not folder_id and not file_id:
+        raise RuntimeError(
+            "Could not parse Google Drive URL. Use a link containing /folders/<id> or /d/<id>."
+        )
+
     if file_id:
-        yield from _download_google_drive_file(service, HttpError, file_id, dest)
+        doc = _gdrive_public_download(file_id, dest)
+        if doc:
+            log.info("Downloaded Drive file via public link (no credentials needed)")
+            yield doc
+            return
+
+        for fmt, ext in [("pdf", ".pdf"), ("csv", ".csv")]:
+            doc = _gdrive_public_export(file_id, dest, fmt, ext)
+            if doc:
+                log.info("Exported Google Workspace file via public export")
+                yield doc
+                return
+
+    if _gdrive_has_api_credentials():
+        service, HttpError = _google_drive_build_service()
+        if folder_id:
+            yield from _list_google_drive_folder_api(service, HttpError, folder_id, dest)
+        elif file_id:
+            yield from _download_google_drive_file_api(service, HttpError, file_id, dest)
         return
 
-    raise RuntimeError(
-        "Could not parse Google Drive URL. Use a link that contains /folders/<id> or /d/<id> "
-        "or ?id=<id>."
+    hint = (
+        "Could not download this Drive file publicly (it may be private or restricted). "
+        "To access private files or folders, set one of:\n"
+        "  AMX_GOOGLE_SERVICE_ACCOUNT_JSON — path to a service account JSON (share the file with it)\n"
+        "  AMX_GOOGLE_OAUTH_TOKEN_JSON     — path to an OAuth user token JSON"
     )
+    if folder_id:
+        raise RuntimeError(
+            "Google Drive folders require API credentials to list contents. " + hint
+        )
+    raise RuntimeError(hint)
+
+
+# ── SharePoint / OneDrive ───────────────────────────────────────────────────
+
+
+def _onedrive_try_public_download(url: str, dest_dir: Path) -> DocInfo | None:
+    """Try to download a OneDrive/SharePoint sharing link via public redirect."""
+    try:
+        r = requests.head(url, allow_redirects=True, timeout=30)
+    except Exception:
+        return None
+
+    cd = r.headers.get("Content-Disposition", "")
+    ct = r.headers.get("Content-Type", "")
+    fname_match = re.search(r'filename="?([^";]+)"?', cd)
+
+    if not fname_match:
+        download_url = url.split("?")[0]
+        if download_url.endswith("/"):
+            download_url = download_url.rstrip("/")
+        if "download=1" not in url:
+            sep = "&" if "?" in url else "?"
+            download_url = url + sep + "download=1"
+        try:
+            r2 = requests.head(download_url, allow_redirects=True, timeout=30)
+            cd = r2.headers.get("Content-Disposition", "")
+            fname_match = re.search(r'filename="?([^";]+)"?', cd)
+            if fname_match:
+                url = download_url
+        except Exception:
+            pass
+
+    if not fname_match:
+        return None
+
+    fname = fname_match.group(1).strip()
+    ext = Path(fname).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        log.warning("SharePoint file %r has unsupported extension %s", fname, ext)
+        return None
+
+    out = dest_dir / fname
+    try:
+        n = _download_to_file(url, out)
+    except Exception:
+        return None
+    if n == 0:
+        out.unlink(missing_ok=True)
+        return None
+    return DocInfo(str(out), n, ext, "sharepoint")
+
+
+def _graph_has_credentials() -> bool:
+    t = os.environ.get("AMX_AZURE_TENANT_ID", "").strip()
+    c = os.environ.get("AMX_AZURE_CLIENT_ID", "").strip()
+    s = os.environ.get("AMX_AZURE_CLIENT_SECRET", "").strip()
+    return bool(t and c and s)
 
 
 def _graph_app_token() -> str:
     tenant = os.environ.get("AMX_AZURE_TENANT_ID", "").strip()
     client_id = os.environ.get("AMX_AZURE_CLIENT_ID", "").strip()
     secret = os.environ.get("AMX_AZURE_CLIENT_SECRET", "").strip()
-    if not (tenant and client_id and secret):
-        raise RuntimeError(
-            "SharePoint / OneDrive (Graph): set AMX_AZURE_TENANT_ID, AMX_AZURE_CLIENT_ID, "
-            "and AMX_AZURE_CLIENT_SECRET for application (client credentials) access. "
-            "Grant Microsoft Graph application permissions: Files.Read.All (and Sites.Read.All "
-            "if you use sharepoint.com links)."
-        )
     try:
         import msal
     except ImportError as exc:
         raise RuntimeError(
-            "SharePoint / OneDrive support requires msal. Install AMX with its full dependencies."
+            "SharePoint / OneDrive API requires msal."
         ) from exc
 
     app = msal.ConfidentialClientApplication(
@@ -288,69 +414,40 @@ def _graph_app_token() -> str:
 
 def _graph_share_encode(url: str) -> str:
     raw = f"u!{url}"
-    b64 = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
-    return b64
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def _graph_get(url: str, token: str) -> dict[str, Any]:
-    r = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=120,
-    )
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=120)
     if r.status_code >= 400:
         raise RuntimeError(f"Graph request failed {r.status_code}: {r.text[:500]}")
     return r.json()
 
 
-def _graph_download_file(download_url: str, dest: Path) -> int:
-    r = requests.get(download_url, timeout=300, stream=True)
-    if r.status_code >= 400:
-        raise RuntimeError(f"Download failed {r.status_code}: {r.text[:300]}")
-    n = 0
-    with dest.open("wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 256):
-            if chunk:
-                f.write(chunk)
-                n += len(chunk)
-    return n
-
-
 def _download_graph_drive_item(
-    token: str,
-    drive_id: str,
-    item_id: str,
-    name_hint: str,
-    dest_dir: Path,
+    token: str, drive_id: str, item_id: str, name_hint: str, dest_dir: Path,
 ) -> Iterator[DocInfo]:
     meta = _graph_get(
-        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}",
-        token,
+        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}", token,
     )
     name = str(meta.get("name") or name_hint)
-
     ext = Path(name).suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         log.warning("Skipping Graph item %r (unsupported extension %s)", name, ext or "(none)")
         return
-
     dl = meta.get("@microsoft.graph.downloadUrl")
     if not dl:
         raise RuntimeError(f"No download URL for {name!r}")
     out = dest_dir / Path(name).name
-    size = _graph_download_file(str(dl), out)
+    size = _download_to_file(str(dl), out)
     yield DocInfo(str(out), size, ext, "sharepoint")
 
 
 def _list_graph_folder(
-    token: str,
-    drive_id: str,
-    folder_id: str,
-    dest_dir: Path,
+    token: str, drive_id: str, folder_id: str, dest_dir: Path,
 ) -> Iterator[DocInfo]:
-    url = (
-        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{folder_id}/children"
-        f"?$top=200"
+    url: str | None = (
+        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{folder_id}/children?$top=200"
     )
     while url:
         data = _graph_get(url, token)
@@ -365,27 +462,38 @@ def _list_graph_folder(
 
 
 def _resolve_sharepoint_or_onedrive(url: str, target_dir: str | None = None) -> Iterator[DocInfo]:
-    token = _graph_app_token()
-    enc = _graph_share_encode(url.strip())
-    share = _graph_get(
-        f"https://graph.microsoft.com/v1.0/shares/{enc}/driveItem",
-        token,
-    )
-    drive_id = share.get("parentReference", {}).get("driveId")
-    item_id = share.get("id")
-    name = str(share.get("name") or "root")
-    if not drive_id or not item_id:
-        raise RuntimeError("Graph share resolution returned no driveItem id")
-
     dest = Path(target_dir or tempfile.mkdtemp(prefix="amx_sp_"))
     dest.mkdir(parents=True, exist_ok=True)
 
-    if share.get("folder") is not None:
-        yield from _list_graph_folder(token, str(drive_id), str(item_id), dest)
-    else:
-        yield from _download_graph_drive_item(
-            token, str(drive_id), str(item_id), name, dest
-        )
+    doc = _onedrive_try_public_download(url, dest)
+    if doc:
+        log.info("Downloaded SharePoint/OneDrive file via public sharing link")
+        yield doc
+        return
+
+    if _graph_has_credentials():
+        token = _graph_app_token()
+        enc = _graph_share_encode(url.strip())
+        share = _graph_get(f"https://graph.microsoft.com/v1.0/shares/{enc}/driveItem", token)
+        drive_id = share.get("parentReference", {}).get("driveId")
+        item_id = share.get("id")
+        name = str(share.get("name") or "root")
+        if not drive_id or not item_id:
+            raise RuntimeError("Graph share resolution returned no driveItem id")
+        if share.get("folder") is not None:
+            yield from _list_graph_folder(token, str(drive_id), str(item_id), dest)
+        else:
+            yield from _download_graph_drive_item(token, str(drive_id), str(item_id), name, dest)
+        return
+
+    raise RuntimeError(
+        "Could not download this SharePoint/OneDrive file publicly (it may be private). "
+        "To access private files, set:\n"
+        "  AMX_AZURE_TENANT_ID\n"
+        "  AMX_AZURE_CLIENT_ID\n"
+        "  AMX_AZURE_CLIENT_SECRET\n"
+        "with an Azure AD app registration that has Files.Read.All Graph permission."
+    )
 
 
 def scan_source(path: str) -> list[DocInfo]:

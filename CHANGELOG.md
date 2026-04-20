@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.19] — 2026-04-21
+
+### Changed
+- **Google Drive & SharePoint/OneDrive: public-first download**: public/shared links ("Anyone with the link") now work with **zero credential setup** — AMX tries anonymous download first and only falls back to API credentials for private files or folder listings. Error messages now guide users clearly on what's needed.
+
 ## [0.1.18] — 2026-04-21
 
 ### Changed
