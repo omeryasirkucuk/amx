@@ -456,8 +456,8 @@ Commands (in order):
   2) /run [--schema …] [--table …] [--apply]   Run agents (/run alone asks: session defaults vs pick assets)
   3) /run-apply                    Run analysis and apply approved COMMENTs in one step
   4) /apply                        Write pending approved COMMENTs to PostgreSQL
-  5) /codebase <path> [--schema …] Scan a local dir or Git repo for table-name matches (path = folder/URL, not a /code profile name)
-     Tip: `/db` then `/schema sap_s6p`, then `/codebase /path/to/app` or `/codebase https://github.com/org/repo`
+  5) /codebase [path] [--schema …] Scan for table-name matches (optional path = active /code profile if omitted)
+     Tip: `/db` then `/schema sap_s6p`, then `/codebase` or `/codebase /path/to/app` or `/codebase https://github.com/org/repo`
      Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
 
 Navigation:
@@ -504,6 +504,7 @@ Examples:
   [bright_white]/table t001[/bright_white]
   [bright_white]/profile[/bright_white]
   [bright_white]/analyze[/bright_white]
+  [bright_white]/codebase[/bright_white]  (after /schema …, uses active /code profile path)
   [bright_white]/codebase https://github.com/org/repo --schema sap_s6p[/bright_white]
   [bright_white]/codebase https://github.com/org/repo --sap_s6p[/bright_white]  (same as --schema)
 """
@@ -597,7 +598,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/run", "Run agents (/run [--schema …] [--table …] [--apply])"),
         ("/run-apply", "Run agents and apply approved COMMENTs"),
         ("/apply", "Write pending COMMENTs to PostgreSQL"),
-        ("/codebase", "Scan codebase (/codebase <path> --schema …)"),
+        ("/codebase", "Scan codebase (/codebase [path] — uses active code profile if omitted)"),
     ]
 
     if namespace == "db":
@@ -1087,7 +1088,7 @@ def _inject_session_defaults(cfg: AMXConfig, namespace: str, args: list[str]) ->
             return ["db", "profile", args[2], cfg.current_table]
 
     if (
-        len(args) >= 3
+        len(args) >= 2
         and args[0] == "analyze"
         and args[1] == "codebase"
         and "--schema" not in args
@@ -1598,7 +1599,7 @@ def analyze_apply(cfg: AMXConfig) -> None:
 
 
 @analyze.command("codebase")
-@click.argument("path")
+@click.argument("path", required=False, default=None)
 @click.option(
     "--schema",
     "-s",
@@ -1606,7 +1607,7 @@ def analyze_apply(cfg: AMXConfig) -> None:
     help="Schema to match against (defaults to session current_schema from config).",
 )
 @click.pass_obj
-def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str | None) -> None:
+def analyze_codebase_cmd(cfg: AMXConfig, path: str | None, schema: str | None) -> None:
     """Analyze a codebase for database asset references."""
     from amx.codebase.analyzer import analyze_codebase
     from amx.db.connector import DatabaseConnector
@@ -1618,12 +1619,24 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str | None) -> None:
         )
         sys.exit(1)
 
+    resolved = (path or "").strip()
+    if not resolved:
+        candidates = cfg.effective_code_paths()
+        if not candidates:
+            error(
+                "No codebase path given and no active codebase profile. "
+                "Run `/code` then `/add-code-profile`, or pass a path: `/codebase /path/to/repo`."
+            )
+            sys.exit(1)
+        resolved = candidates[0]
+        info(f"Using active codebase profile path: {resolved}")
+
     db = DatabaseConnector(cfg.db)
     tables = db.list_tables(schema)
 
-    info(f"Scanning {path} for references to {len(tables)} tables...")
+    info(f"Scanning {resolved} for references to {len(tables)} tables...")
     try:
-        report = analyze_codebase(path, tables)
+        report = analyze_codebase(resolved, tables)
     except Exception as exc:
         error(str(exc))
         sys.exit(1)
@@ -1632,7 +1645,7 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str | None) -> None:
     if report.total_files == 0:
         warn(
             "No source files matched (.py, .sql, .java, .ts, …). "
-            "Check the path is a folder/repo root with code under it — `/codebase` does not take a profile name."
+            "Check the folder/repo root contains files with those extensions."
         )
     if report.references:
         rows = [

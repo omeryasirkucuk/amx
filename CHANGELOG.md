@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.26] — 2026-04-21
+
+### Changed
+- **`/codebase` without a path** uses the **active codebase profile** path (`effective_code_paths()`), so you do not need to repeat the URL after `/add-code-profile`. Still accepts an explicit path or Git URL when you want a one-off scan.
+
 ## [0.1.25] — 2026-04-21
 
 ### Changed
