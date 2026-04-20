@@ -77,8 +77,17 @@ def analyze_codebase(
     context_lines: int = 3,
 ) -> CodebaseReport:
     local_path = _clone_if_remote(path)
-    root = Path(local_path)
+    root = Path(local_path).expanduser().resolve()
     report = CodebaseReport(path=path)
+
+    if not root.exists():
+        raise RuntimeError(
+            f"Codebase path does not exist: {root}. "
+            "Use a full directory path, a https://github.com/... URL, or git@… — "
+            "not a profile name (profile names are for /code /add-code-profile only)."
+        )
+    if not root.is_dir():
+        raise RuntimeError(f"Codebase path must be a directory or Git URL, not a single file: {root}")
 
     assets = set(table_names)
     if column_names:
@@ -94,6 +103,13 @@ def analyze_codebase(
         if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
     ]
     report.total_files = len(code_files)
+    if report.total_files == 0:
+        exts = ", ".join(sorted(CODE_EXTENSIONS))
+        log.warning(
+            "No scannable source files under %s (extensions: %s).",
+            root,
+            exts,
+        )
 
     for fpath in code_files:
         try:

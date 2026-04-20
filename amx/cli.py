@@ -456,8 +456,8 @@ Commands (in order):
   2) /run [--schema …] [--table …] [--apply]   Run agents (/run alone asks: session defaults vs pick assets)
   3) /run-apply                    Run analysis and apply approved COMMENTs in one step
   4) /apply                        Write pending approved COMMENTs to PostgreSQL
-  5) /codebase <path> [--schema …] Scan codebase (schema defaults to /db /schema context)
-     Tip: `/db` then `/schema sap_s6p`, then `/codebase <url>` — or use `--schema sap_s6p`
+  5) /codebase <path> [--schema …] Scan a local dir or Git repo for table-name matches (path = folder/URL, not a /code profile name)
+     Tip: `/db` then `/schema sap_s6p`, then `/codebase /path/to/app` or `/codebase https://github.com/org/repo`
      Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
 
 Navigation:
@@ -1622,9 +1622,18 @@ def analyze_codebase_cmd(cfg: AMXConfig, path: str, schema: str | None) -> None:
     tables = db.list_tables(schema)
 
     info(f"Scanning {path} for references to {len(tables)} tables...")
-    report = analyze_codebase(path, tables)
+    try:
+        report = analyze_codebase(path, tables)
+    except Exception as exc:
+        error(str(exc))
+        sys.exit(1)
 
     info(f"Scanned {report.scanned_files}/{report.total_files} files")
+    if report.total_files == 0:
+        warn(
+            "No source files matched (.py, .sql, .java, .ts, …). "
+            "Check the path is a folder/repo root with code under it — `/codebase` does not take a profile name."
+        )
     if report.references:
         rows = [
             [asset, str(len(refs)), refs[0].file if refs else ""]

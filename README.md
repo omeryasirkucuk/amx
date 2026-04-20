@@ -139,7 +139,7 @@ amx
 | `/analyze` + `/run` | Run all agents and review suggestions |
 | `/analyze` + `/run-apply` | Run analysis and apply approved metadata immediately |
 | `/analyze` + `/apply` | Write pending approved metadata back to PostgreSQL (`COMMENT ON ...`) |
-| `/analyze` + `/codebase <path> [--schema NAME]` | Scan a codebase for asset references (schema defaults from session context) |
+| `/analyze` + `/codebase <path> [--schema NAME]` | One-off scan: search a **local folder or Git URL** for mentions of tables in the chosen schema. `<path>` is not a profile name — use `/Users/you/proj` or `https://github.com/org/repo` |
 
 ## Supported Document Sources
 

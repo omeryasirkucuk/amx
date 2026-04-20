@@ -4,6 +4,12 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.25] — 2026-04-21
+
+### Changed
+- **`/codebase` UX**: missing or invalid local paths now error with a clear message (instead of silently scanning 0 files). When the path exists but no scannable files were found, a hint lists supported extensions and notes that `/codebase` expects a directory/Git URL, not a `/code` profile name.
+- **Docs**: README and `/analyze` help clarify what `<path>` means for `/codebase`.
+
 ## [0.1.24] — 2026-04-21
 
 ### Fixed
