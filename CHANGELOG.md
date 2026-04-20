@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.21] — 2026-04-21
+
+### Changed
+- **RAG “query” command renamed for clarity**: primary slash command is now **`/search-docs`** (vector similarity via Chroma only; no conversational LLM). Short alias **`/similarity`**. **`/query`** remains as a deprecated alias with a warning.
+
 ## [0.1.20] — 2026-04-21
 
 ### Changed

@@ -141,7 +141,7 @@ amx
 | `/docs` + `/remove-doc-profile <name>` | Remove a document profile |
 | `/docs` + `/scan [paths...]` | Scan and preview documents for RAG |
 | `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store |
-| `/docs` + `/query <question>` | Query the document store |
+| `/docs` + `/search-docs <text>` | Similarity search over ingested docs (Chroma vectors only; no LLM answer). Aliases: `/similarity`; `/query` is deprecated |
 | `/analyze` + `/run` | Run all agents and review suggestions |
 | `/analyze` + `/run-apply` | Run analysis and apply approved metadata immediately |
 | `/analyze` + `/apply` | Write pending approved metadata back to PostgreSQL (`COMMENT ON ...`) |

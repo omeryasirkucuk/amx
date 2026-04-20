@@ -201,6 +201,8 @@ def _interactive_session(cfg: AMXConfig) -> None:
             "remove-doc-profile",
             "scan",
             "ingest",
+            "search-docs",
+            "similarity",
             "query",
         }
     )
@@ -306,9 +308,9 @@ def _interactive_session(cfg: AMXConfig) -> None:
                     info("Assumed /analyze namespace for this command.")
 
             if namespace == "docs":
-                if parts[0] == "query" and len(parts) == 1:
-                    error("Usage: /query <your question>")
-                    info('Example: /query What does field "BUKRS" mean in our docs?')
+                if parts[0] in {"search-docs", "similarity", "query"} and len(parts) == 1:
+                    error("Usage: /search-docs <text>  (alias: /similarity; legacy: /query)")
+                    info('Example: /search-docs What does field "BUKRS" mean in our docs?')
                     continue
                 if parts[0] in {"ingest", "scan"} and len(parts) == 1:
                     if not cfg.effective_doc_paths():
@@ -399,9 +401,11 @@ Commands (in order):
   5) /remove-doc-profile <name>    Remove a document profile
   6) /scan [paths...]              Scan documents (preview); uses active profile paths if omitted
   7) /ingest [paths...]            Ingest into RAG store; uses active profile paths if omitted
-  8) /query <question>             Query the RAG store
+  8) /search-docs <text>           Vector similarity over ingested docs (Chroma; no LLM answer)
+     /similarity <text>           Same as /search-docs
+     /query <text>                Deprecated alias of /search-docs
 
-Tip: configure sources first (steps 2–5), then scan/ingest, then query.
+Tip: configure sources first (steps 2–5), then scan/ingest, then /search-docs.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -474,7 +478,7 @@ Getting started (in order):
   1) /setup                        First-time wizard (DB + LLM + sources)
   2) /config                       Show current configuration
   3) /db                           Database introspection + DB profiles
-  4) /docs                         Document roots + RAG (scan/ingest/query)
+  4) /docs                         Document roots + RAG (scan/ingest/search-docs)
   5) /llm                          LLM profile management
   6) /code                         Codebase profile management
   7) /analyze                      Metadata inference (/run, /apply, …)
@@ -567,7 +571,9 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/remove-doc-profile", "Remove document profile (/remove-doc-profile <name>)"),
         ("/scan", "Scan documents (/scan [paths...])"),
         ("/ingest", "Ingest documents (/ingest [paths...])"),
-        ("/query", "Query RAG (/query <question>)"),
+        ("/search-docs", "Similarity search (/search-docs <text>, no LLM)"),
+        ("/similarity", "Alias of /search-docs"),
+        ("/query", "Deprecated: same as /search-docs"),
     ]
 
     llm_cmds: list[tuple[str, str]] = [
@@ -1033,6 +1039,8 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
         "profile": ["db", "profile"],
         "scan": ["docs", "scan"],
         "ingest": ["docs", "ingest"],
+        "search-docs": ["docs", "search-docs"],
+        "similarity": ["docs", "similarity"],
         "query": ["docs", "query"],
         "run": ["analyze", "run"],
         "run-apply": ["analyze", "run", "--apply"],
@@ -1347,11 +1355,8 @@ def docs_ingest(cfg: AMXConfig, paths: tuple[str, ...]) -> None:
     success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
 
 
-@docs.command("query")
-@click.argument("question")
-@click.option("-n", "--results", default=5, help="Number of results.")
-def docs_query(question: str, results: int) -> None:
-    """Query the RAG document store."""
+def _run_docs_semantic_search(question: str, results: int) -> None:
+    """Chroma embedding similarity only — no generative LLM."""
     from amx.docs.rag import RAGStore
 
     store = RAGStore()
@@ -1361,9 +1366,34 @@ def docs_query(question: str, results: int) -> None:
 
     hits = store.query(question, n_results=results)
     for i, hit in enumerate(hits, 1):
-        console.print(f"\n[heading]Result {i}[/heading] (distance: {hit['distance']:.3f})")
+        console.print(f"\n[heading]Match {i}[/heading] (distance: {hit['distance']:.3f})")
         console.print(f"  Source: {hit['metadata'].get('source', 'unknown')}")
         console.print(f"  {hit['text'][:300]}...")
+
+
+@docs.command("search-docs")
+@click.argument("question")
+@click.option("-n", "--results", default=5, help="Number of results.")
+def docs_search_docs(question: str, results: int) -> None:
+    """Semantic similarity search over ingested documents (vector store only; no LLM reply)."""
+    _run_docs_semantic_search(question, results)
+
+
+@docs.command("similarity")
+@click.argument("question")
+@click.option("-n", "--results", default=5, help="Number of results.")
+def docs_similarity(question: str, results: int) -> None:
+    """Alias of search-docs: embedding similarity over the RAG index (no LLM)."""
+    _run_docs_semantic_search(question, results)
+
+
+@docs.command("query", hidden=True)
+@click.argument("question")
+@click.option("-n", "--results", default=5, help="Number of results.")
+def docs_query(question: str, results: int) -> None:
+    """Deprecated name for search-docs."""
+    warn("/query is deprecated — use /search-docs or /similarity (vector similarity only, no LLM).")
+    _run_docs_semantic_search(question, results)
 
 
 # ── Analysis Commands ───────────────────────────────────────────────────────
