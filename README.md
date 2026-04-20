@@ -22,6 +22,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Provide your own description
 - Skip individual items
 - Bulk-accept high-confidence results
+- Write approved metadata back to PostgreSQL as `COMMENT ON TABLE/COLUMN` (write-back support)
 
 ## Architecture
 
@@ -84,39 +85,55 @@ In an interactive `amx` session you can manage several **DB connections**, **LLM
 
 ### Run Analysis
 
-```bash
-# Interactive schema/table selection
-amx analyze run
+AMX is interactive-first: start with `amx`, then run slash commands.
 
-# Target specific schema and tables
-amx analyze run --schema sap_s6p --table t001 --table vbak --apply
+```bash
+# Start AMX session
+amx
+
+# Inside AMX (slash commands)
+/db
+/connect
+/schema sap_s6p
+/analyze
+/run --table t001 --table vbak
+/run-apply
+/apply
 ```
 
-## CLI Commands
+## Interactive Commands (inside `amx` session)
 
 | Command | Description |
 |---------|-------------|
-| `amx setup` | Interactive first-time configuration wizard |
-| `amx config` | Display current configuration |
-| `amx db connect` | Test database connectivity |
-| `amx db schemas` | List available schemas |
-| `amx db tables <schema>` | List tables in a schema |
-| `amx db profile <schema> <table>` | Profile table structure and data |
-| `amx docs scan [paths...]` | Scan and preview documents for RAG |
-| `amx docs ingest [paths...]` | Ingest documents into the RAG vector store |
-| `amx docs query <question>` | Query the document store |
-| `amx analyze run` | Run all agents and review suggestions |
-| `amx analyze codebase <path> [--schema NAME]` | Scan a codebase for asset references (schema defaults from config session) |
+| `/setup` | Interactive first-time configuration wizard |
+| `/config` | Display current configuration |
+| `/db` + `/connect` | Test database connectivity |
+| `/db` + `/schemas` | List available schemas |
+| `/db` + `/tables [schema]` | List tables in a schema |
+| `/db` + `/profile [schema] [table]` | Profile table structure and data |
+| `/docs` + `/scan [paths...]` | Scan and preview documents for RAG |
+| `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store |
+| `/docs` + `/query <question>` | Query the document store |
+| `/analyze` + `/run` | Run all agents and review suggestions |
+| `/analyze` + `/run-apply` | Run analysis and apply approved metadata immediately |
+| `/analyze` + `/apply` | Write pending approved metadata back to PostgreSQL (`COMMENT ON ...`) |
+| `/analyze` + `/codebase <path> [--schema NAME]` | Scan a codebase for asset references (schema defaults from session context) |
 
 ## Supported Document Sources
 
-| Source | Path Format |
-|--------|------------|
-| Local files/directories | `/path/to/docs` |
-| GitHub repositories | `https://github.com/user/repo` |
-| AWS S3 | `s3://bucket/prefix` |
+| Source | Path Format | Status |
+|--------|-------------|--------|
+| Local files/directories | `/path/to/docs` | Supported |
+| GitHub repositories | `https://github.com/user/repo` or `git@github.com:user/repo.git` | Supported |
+| AWS S3 | `s3://bucket/prefix` | Supported |
+| Google Drive links | `https://drive.google.com/...` | Not supported yet |
+| SharePoint / OneDrive links | `https://...sharepoint.com/...` | Not supported yet |
 
-Supported file types: PDF, DOCX, TXT, Markdown, CSV, Excel, HTML, PPTX, JSON, YAML, RST.
+### Supported Document File Types
+
+AMX scans/ingests these extensions:
+
+`pdf`, `docx`, `doc`, `txt`, `md`, `csv`, `xlsx`, `xls`, `html`, `htm`, `pptx`, `json`, `yaml`, `yml`, `rst`, `rtf`
 
 ## Supported LLM Providers
 
@@ -128,6 +145,29 @@ Supported file types: PDF, DOCX, TXT, Markdown, CSV, Excel, HTML, PPTX, JSON, YA
 | DeepSeek | `deepseek` | DeepSeek Chat |
 | Ollama | `ollama` | Local models via Ollama |
 | Any OpenAI-compatible | `local` | Custom API base URL |
+
+## Database Details Sent to LLM (Profile Agent)
+
+When AMX profiles a table, it sends the following database-derived context to the Profile Agent prompt:
+
+- Scope: database name, schema, table
+- Table-level: row count, existing table comment, schema comment, database comment
+- Constraints and relationships:
+  - Primary key columns
+  - Outgoing foreign keys (upstream dependencies)
+  - Incoming foreign keys (downstream dependents)
+  - Unique constraints
+  - Check constraints
+- Usage stats (`pg_stat_user_tables`): `seq_scan`, `idx_scan`, `n_live_tup`
+- Related metadata: existing comments on FK-related neighbor tables
+- Per-column profile:
+  - name, type, nullable
+  - null count, distinct count, cardinality ratio (`distinct_count / row_count`)
+  - min/max value (as text)
+  - up to 5 distinct non-null sample values
+  - existing column comment
+
+AMX does not send full table dumps; it sends summarized profiling signals and small samples for inference.
 
 ## Configuration
 

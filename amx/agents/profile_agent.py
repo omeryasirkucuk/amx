@@ -209,17 +209,37 @@ class ProfileAgent(BaseAgent):
             f"Schema: {ctx.schema}",
             f"Table: {ctx.table}",
             f"Row count: {p.get('row_count', 'N/A')}",
+            f"Usage stats (pg_stat_user_tables): seq_scan={p.get('stats_seq_scan', 0)}, idx_scan={p.get('stats_idx_scan', 0)}, n_live_tup={p.get('stats_n_live_tup', 0)}",
             f"Existing table comment: {p.get('existing_comment') or 'None'}",
+            f"Existing schema comment: {p.get('schema_comment') or 'None'}",
+            f"Existing database comment: {p.get('database_comment') or 'None'}",
+            f"Primary key: {p.get('primary_key') or []}",
+            f"Outgoing foreign keys (upstream dependencies): {p.get('foreign_keys') or []}",
+            f"Incoming foreign keys (downstream dependents): {p.get('referenced_by') or []}",
+            f"Unique constraints: {p.get('unique_constraints') or []}",
+            f"Check constraints: {p.get('check_constraints') or []}",
             "",
-            "Columns:",
+            "Related table comments (FK neighbors):",
         ]
+        for rel in p.get("related_comments", []):
+            lines.append(
+                f"  - {rel.get('schema')}.{rel.get('table')}: {rel.get('comment') or 'None'}"
+            )
+        lines.extend(
+            [
+                "",
+            "Columns:",
+            ]
+        )
         for col in p.get("columns", []):
             lines.append(
                 f"  - {col['name']} | type={col['dtype']} | "
                 f"nulls={col['null_count']}/{col['row_count']} | "
                 f"distinct={col['distinct_count']} | "
+                f"cardinality_ratio={col.get('cardinality_ratio', 0.0):.4f} | "
                 f"min={col['min_val']} | max={col['max_val']} | "
-                f"samples={col['samples']}"
+                f"samples={col['samples']} | "
+                f"existing_comment={col.get('existing_comment') or 'None'}"
             )
         return "\n".join(lines)
 

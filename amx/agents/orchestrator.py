@@ -56,6 +56,23 @@ class ReviewResult:
     applied: bool = False
 
 
+def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult]) -> int:
+    """Write approved descriptions as PostgreSQL COMMENT ON TABLE/COLUMN."""
+    applied = 0
+    for r in results:
+        if not r.applied or not r.final_description:
+            continue
+        try:
+            if r.column is None:
+                db.set_table_comment(r.schema, r.table, r.final_description)
+            else:
+                db.set_column_comment(r.schema, r.table, r.column, r.final_description)
+            applied += 1
+        except Exception as exc:
+            error(f"Failed to apply comment on {r.schema}.{r.table}.{r.column or ''}: {exc}")
+    return applied
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -120,6 +137,17 @@ class Orchestrator:
             db_profile={
                 "row_count": profile.row_count,
                 "existing_comment": profile.existing_comment,
+                "primary_key": profile.primary_key,
+                "foreign_keys": profile.foreign_keys,
+                "referenced_by": profile.referenced_by,
+                "unique_constraints": profile.unique_constraints,
+                "check_constraints": profile.check_constraints,
+                "stats_seq_scan": profile.stats_seq_scan,
+                "stats_idx_scan": profile.stats_idx_scan,
+                "stats_n_live_tup": profile.stats_n_live_tup,
+                "schema_comment": profile.schema_comment,
+                "database_comment": profile.database_comment,
+                "related_comments": profile.related_comments,
                 "columns": [
                     {
                         "name": c.name,
@@ -128,9 +156,11 @@ class Orchestrator:
                         "row_count": c.row_count,
                         "null_count": c.null_count,
                         "distinct_count": c.distinct_count,
+                        "cardinality_ratio": c.cardinality_ratio,
                         "min_val": c.min_val,
                         "max_val": c.max_val,
                         "samples": c.samples,
+                        "existing_comment": c.existing_comment,
                     }
                     for c in profile.columns
                 ],
@@ -138,6 +168,8 @@ class Orchestrator:
             existing_metadata={
                 "database": self.db.cfg.database,
                 "table_comment": profile.existing_comment,
+                "schema_comment": profile.schema_comment,
+                "database_comment": profile.database_comment,
             },
         )
 
@@ -287,17 +319,6 @@ class Orchestrator:
 
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
-        applied = 0
-        for r in results:
-            if not r.applied or not r.final_description:
-                continue
-            try:
-                if r.column is None:
-                    self.db.set_table_comment(r.schema, r.table, r.final_description)
-                else:
-                    self.db.set_column_comment(r.schema, r.table, r.column, r.final_description)
-                applied += 1
-            except Exception as exc:
-                error(f"Failed to apply comment on {r.schema}.{r.table}.{r.column or ''}: {exc}")
+        applied = apply_review_results_to_db(self.db, results)
         success(f"Applied {applied} metadata comments to the database")
         return applied

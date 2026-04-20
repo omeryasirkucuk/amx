@@ -146,10 +146,21 @@ def main(ctx: click.Context, cfg_path: str | None) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj = AMXConfig.load(cfg_path)
-    if os.getenv("AMX_SESSION_CHILD") != "1":
+    is_session_child = os.getenv("AMX_SESSION_CHILD") == "1"
+    if not is_session_child:
         show_banner()
     if ctx.invoked_subcommand is None:
         _interactive_session(cfg=ctx.obj)
+        return
+
+    # Enforce interactive-only command execution from the terminal.
+    # Subcommands are still allowed when dispatched internally from the session.
+    if not is_session_child:
+        error(
+            "Direct subcommands are disabled. Start with `amx`, then run slash commands "
+            "inside the session (for example: /db, /connect, /run, /run-apply)."
+        )
+        raise click.ClickException("Use interactive mode only")
 
 
 def _interactive_session(cfg: AMXConfig) -> None:
@@ -337,7 +348,9 @@ Navigation:
 Commands (in order):
   1) /back                         Return to root namespace
   2) /run [--schema …] [--table …] [--apply]   Run agents (/run alone asks: session defaults vs pick assets)
-  3) /codebase <path> [--schema …] Scan codebase (schema defaults to /schema context)
+  3) /run-apply                    Run analysis and apply approved COMMENTs in one step
+  4) /apply                        Write pending approved COMMENTs to PostgreSQL
+  5) /codebase <path> [--schema …] Scan codebase (schema defaults to /schema context)
      Tip: `/schema sap_s6p` then `/codebase <url>` — or use `--schema sap_s6p`
      Shorthand: `--sap_s6p` is accepted as `--schema sap_s6p`
 
@@ -487,6 +500,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
     analyze_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
         ("/run", "Run agents (/run [--schema …] [--table …] [--apply])"),
+        ("/run-apply", "Run agents and apply approved COMMENTs"),
+        ("/apply", "Write pending COMMENTs to PostgreSQL"),
         ("/codebase", "Scan codebase (/codebase <path> --schema …)"),
     ]
 
@@ -757,11 +772,49 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
     if not paths:
         error("No paths added.")
         return
+    paths = _validate_doc_sources(paths)
+    if not paths:
+        error("No valid document sources to save.")
+        return
     cfg.upsert_doc_profile(name, paths)
     if not cfg.active_doc_profile or confirm(f"Switch active document profile to {name}?", default=True):
         cfg.active_doc_profile = name
     cfg.save()
     success(f"Document profile saved: {name} ({len(paths)} path(s))")
+
+
+def _validate_doc_sources(paths: list[str]) -> list[str]:
+    """Validate configured document sources and reject unsupported URLs."""
+    from amx.docs.scanner import scan_source
+
+    valid: list[str] = []
+    for raw in paths:
+        p = raw.strip()
+        if not p:
+            continue
+
+        low = p.lower()
+        if "drive.google.com" in low or "docs.google.com" in low:
+            error(f"Unsupported document source: {p}")
+            info("Google Drive links are not supported yet. Use a local path, GitHub URL, or s3:// URI.")
+            continue
+        if "sharepoint.com" in low or "onedrive.live.com" in low:
+            error(f"Unsupported document source: {p}")
+            info("SharePoint/OneDrive links are not supported yet. Use a local path, GitHub URL, or s3:// URI.")
+            continue
+
+        try:
+            docs = scan_source(p)
+            if not docs:
+                warn(f"Source reachable but no supported documents found: {p}")
+            else:
+                success(f"Document source OK: {p} ({len(docs)} supported file(s))")
+            valid.append(p)
+        except Exception as exc:
+            error(f"Failed to access document source: {p}")
+            warn(str(exc))
+
+    return valid
 
 
 def _cmd_remove_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -848,6 +901,8 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
         "ingest": ["docs", "ingest"],
         "query": ["docs", "query"],
         "run": ["analyze", "run"],
+        "run-apply": ["analyze", "run", "--apply"],
+        "apply": ["analyze", "apply"],
         "codebase": ["analyze", "codebase"],
         "setup": ["setup"],
         "config": ["config"],
@@ -906,11 +961,31 @@ def setup(cfg: AMXConfig) -> None:
 
     # Database
     info("Step 1/3 — Database Connection")
-    cfg.db.host = ask("PostgreSQL host", cfg.db.host)
-    cfg.db.port = int(ask("Port", str(cfg.db.port)))
-    cfg.db.user = ask("Username", cfg.db.user)
-    cfg.db.password = ask_password("Password") or cfg.db.password
-    cfg.db.database = ask("Database name", cfg.db.database)
+    host = ask("PostgreSQL host (e.g. localhost)")
+    while not host:
+        warn("Host is required.")
+        host = ask("PostgreSQL host (e.g. localhost)")
+    cfg.db.host = host
+
+    port_raw = ask("Port (e.g. 5432)")
+    while not port_raw.isdigit():
+        warn("Port must be a number (e.g. 5432).")
+        port_raw = ask("Port (e.g. 5432)")
+    cfg.db.port = int(port_raw)
+
+    user = ask("Username")
+    while not user:
+        warn("Username is required.")
+        user = ask("Username")
+    cfg.db.user = user
+
+    cfg.db.password = ask_password("Password")
+
+    database = ask("Database name (e.g. postgres)")
+    while not database:
+        warn("Database name is required.")
+        database = ask("Database name (e.g. postgres)")
+    cfg.db.database = database
 
     # Persist DB credentials into the active profile (multi-connection support).
     if not cfg.active_db_profile:
@@ -954,8 +1029,12 @@ def setup(cfg: AMXConfig) -> None:
                 break
             paths.append(p)
         if paths:
-            cfg.upsert_doc_profile(name, paths)
-            cfg.active_doc_profile = name
+            valid_paths = _validate_doc_sources(paths)
+            if valid_paths:
+                cfg.upsert_doc_profile(name, valid_paths)
+                cfg.active_doc_profile = name
+            else:
+                warn("Skipping document profile creation because no valid sources were provided.")
 
     if confirm("Add a codebase profile?", default=False):
         name = ask("Profile name", default="default")
@@ -1175,6 +1254,12 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
         error("Cannot connect to database.")
         sys.exit(1)
 
+    if not apply:
+        warn(
+            "Without --apply, approved metadata is not written to the database. "
+            "Use `amx analyze apply`, `/apply`, or re-run with `/run-apply` to persist COMMENTs."
+        )
+
     tables_arg = list(table)
 
     # Scope: session defaults vs interactive (when /run with no --schema/--table)
@@ -1265,11 +1350,64 @@ def analyze_run(cfg: AMXConfig, schema: str | None, table: tuple[str, ...], appl
             ],
         )
 
+    if approved:
+        from amx.pending_review import save_pending
+
+        save_pending(approved)
+        if not apply:
+            info(
+                f"Saved {len(approved)} approved description(s) as pending. "
+                "Run `amx analyze apply` (or `/run-apply` on a future run) to write COMMENTs to PostgreSQL."
+            )
+
     if apply and approved:
         if confirm("Apply these metadata comments to the database?"):
+            from amx.pending_review import clear_pending
+
             orch.apply_results(approved)
-    elif approved:
-        info("Run with --apply flag or use `amx apply` to write metadata to the database.")
+            clear_pending()
+
+
+@analyze.command("apply")
+@click.pass_obj
+def analyze_apply(cfg: AMXConfig) -> None:
+    """Write last pending approved descriptions to PostgreSQL (COMMENT ON TABLE/COLUMN)."""
+    from amx.agents.orchestrator import apply_review_results_to_db
+    from amx.db.connector import DatabaseConnector
+    from amx.pending_review import clear_pending, load_pending
+
+    pending = load_pending()
+    if not pending:
+        error(
+            "No pending metadata. Run `amx analyze run` (or `/run`), approve descriptions, "
+            "and finish without `--apply` first."
+        )
+        return
+
+    heading("Apply pending metadata to the database")
+    render_table(
+        "Pending COMMENTs",
+        ["Asset", "Description"],
+        [
+            [
+                f"{r.table}.{r.column}" if r.column else r.table,
+                (r.final_description or "")[:72],
+            ]
+            for r in pending
+        ],
+    )
+    if not confirm(f"Write {len(pending)} COMMENT(s) to PostgreSQL?", default=True):
+        info("Cancelled — pending file unchanged.")
+        return
+
+    db = DatabaseConnector(cfg.db)
+    if not db.test_connection():
+        error("Cannot connect to database.")
+        sys.exit(1)
+
+    n = apply_review_results_to_db(db, pending)
+    clear_pending()
+    success(f"Applied {n} COMMENT(s). Pending file cleared.")
 
 
 @analyze.command("codebase")

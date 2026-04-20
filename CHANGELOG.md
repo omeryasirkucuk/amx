@@ -4,6 +4,19 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.14] — 2026-04-21
+
+### Added
+- **Deferred apply flow**: approved review results are now persisted to `~/.amx/pending_metadata.json` and can be applied later via `amx analyze apply` / `/apply`.
+- **Analyze shortcut**: added `/run-apply` as a one-step alias for running analysis and writing approved COMMENTs.
+- **Document source validation**: `/add-doc-profile` and setup now validate document paths immediately, with explicit unsupported-source errors for Google Drive and SharePoint/OneDrive links.
+- **Richer DB profiling context for LLM**: prompt context now includes PK/FK/constraints, upstream/downstream FK relations, table usage stats, per-column cardinality ratio, and existing comments from database/schema/column/related tables.
+
+### Changed
+- **Interactive-only command model**: AMX now enforces terminal usage via `amx` session + slash commands (direct `amx <subcommand>` execution is blocked).
+- **Setup DB prompts**: first-time DB setup no longer pre-fills example values (e.g., `localhost`, `SAP`); prompts require explicit user input.
+- **Docs refreshed**: README now reflects supported document formats/sources, write-back support, interactive slash-command workflow, and the exact DB details sent to LLM.
+
 ## [0.1.13] — 2026-04-20
 
 ### Fixed
