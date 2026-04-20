@@ -127,7 +127,7 @@ amx
 | `/llm` + `/remove-llm-profile <name>` | Remove an LLM profile |
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
-| `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
+| `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive); checks reachability only, full clone runs on `/analyze` `/run` |
 | `/code` + `/remove-code-profile <name>` | Remove a codebase profile |
 | `/docs` + `/doc-profiles` | List named document path profiles |
 | `/docs` + `/use-doc <name>` | Switch active document profile |
@@ -142,6 +142,8 @@ amx
 | `/analyze` + `/codebase <path> [--schema NAME]` | Scan a codebase for asset references (schema defaults from session context) |
 
 ## Supported Document Sources
+
+When you add paths with `/add-doc-profile` or during `/setup`, AMX checks **reachability only** (for example `git ls-remote` for GitHub, bucket/prefix checks for S3, lightweight HTTP checks for Drive/SharePoint). Full file discovery happens on `/scan` and `/ingest`.
 
 | Source | Path Format | Status |
 |--------|-------------|--------|

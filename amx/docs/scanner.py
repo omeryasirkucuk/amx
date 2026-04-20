@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import urllib.parse
 from dataclasses import dataclass
@@ -494,6 +496,106 @@ def _resolve_sharepoint_or_onedrive(url: str, target_dir: str | None = None) -> 
         "  AMX_AZURE_CLIENT_SECRET\n"
         "with an Azure AD app registration that has Files.Read.All Graph permission."
     )
+
+
+def test_git_remote_reachable(url: str) -> None:
+    """Verify a Git remote exists and is readable (no clone). Raises RuntimeError on failure."""
+    u = url.strip()
+    if not u:
+        raise RuntimeError("Empty Git URL")
+    if not shutil.which("git"):
+        raise RuntimeError("git is not installed — cannot verify Git remote URLs.")
+    r = subprocess.run(
+        ["git", "ls-remote", u],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip() or "git ls-remote failed"
+        raise RuntimeError(err)
+
+
+def _test_s3_reachable(uri: str) -> None:
+    import boto3
+    from botocore.exceptions import ClientError
+
+    rest = uri.replace("s3://", "").strip()
+    if not rest:
+        raise RuntimeError("Invalid s3:// URI")
+    bucket, _, prefix = rest.partition("/")
+    bucket = bucket.strip()
+    if not bucket:
+        raise RuntimeError("Invalid s3:// URI (missing bucket)")
+    s3 = boto3.client("s3")
+    try:
+        s3.head_bucket(Bucket=bucket)
+    except ClientError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if prefix.strip():
+        pfx = prefix.strip()
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=pfx, MaxKeys=1)
+        if not resp.get("Contents"):
+            resp2 = s3.list_objects_v2(Bucket=bucket, Prefix=pfx.rstrip("/") + "/", MaxKeys=1)
+            if not resp2.get("Contents"):
+                raise RuntimeError(
+                    f"No objects found under s3://{bucket}/{pfx} (bucket OK; check prefix)"
+                )
+
+
+def _test_local_reachable(path: str) -> None:
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        raise RuntimeError(f"Path does not exist: {p}")
+    if not (p.is_dir() or p.is_file()):
+        raise RuntimeError(f"Not a file or directory: {p}")
+
+
+def _test_google_drive_reachable(url: str) -> None:
+    folder_id = _parse_google_drive_folder_id(url)
+    file_id = _parse_google_drive_file_id(url) if not folder_id else None
+    if not folder_id and not file_id:
+        raise RuntimeError(
+            "Could not parse Google Drive URL (expected /folders/…, /d/…, or ?id=…)."
+        )
+    if file_id:
+        u = f"https://drive.google.com/uc?export=download&id={file_id}"
+        r = requests.head(u, allow_redirects=True, timeout=30)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Drive file not reachable (HTTP {r.status_code})")
+        return
+    u = f"https://drive.google.com/drive/folders/{folder_id}"
+    r = requests.head(u, allow_redirects=True, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Drive folder not reachable (HTTP {r.status_code})")
+
+
+def _test_sharepoint_reachable(url: str) -> None:
+    r = requests.head(url.strip(), allow_redirects=True, timeout=30)
+    if r.status_code >= 400:
+        raise RuntimeError(f"SharePoint/OneDrive URL not reachable (HTTP {r.status_code})")
+
+
+def test_source_reachable(path: str) -> None:
+    """Lightweight reachability check only (no clone, no full file listing). Raises RuntimeError on failure."""
+    p = path.strip()
+    if not p:
+        raise RuntimeError("Empty path")
+    if p.startswith("s3://"):
+        _test_s3_reachable(p)
+    elif p.startswith("https://github.com") or p.startswith("git@"):
+        test_git_remote_reachable(p)
+    elif p.startswith("http://") or p.startswith("https://"):
+        if _is_google_drive_url(p):
+            _test_google_drive_reachable(p)
+        elif _is_sharepoint_or_onedrive_url(p):
+            _test_sharepoint_reachable(p)
+        else:
+            raise RuntimeError(
+                "Unsupported HTTP(S) document source (use Google Drive, SharePoint/OneDrive, or GitHub)."
+            )
+    else:
+        _test_local_reachable(p)
 
 
 def scan_source(path: str) -> list[DocInfo]:

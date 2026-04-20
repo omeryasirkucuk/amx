@@ -46,6 +46,27 @@ def _clone_if_remote(path: str) -> str:
     return path
 
 
+def test_codebase_path_reachable(path: str) -> None:
+    """Verify GitHub/git remote or local directory without cloning. Raises RuntimeError on failure."""
+    from amx.docs.scanner import test_git_remote_reachable
+
+    p = path.strip()
+    if not p:
+        raise RuntimeError("Empty path")
+    if p.startswith("https://github.com") or p.startswith("git@"):
+        test_git_remote_reachable(p)
+        return
+    if p.startswith("http://") or p.startswith("https://"):
+        raise RuntimeError(
+            "Codebase URL must be a Git clone URL (https://github.com/... or git@github.com:...)."
+        )
+    root = Path(p).expanduser().resolve()
+    if not root.exists():
+        raise RuntimeError(f"Path does not exist: {root}")
+    if not root.is_dir():
+        raise RuntimeError(f"Codebase path must be a local directory: {root}")
+
+
 def analyze_codebase(
     path: str,
     table_names: list[str],

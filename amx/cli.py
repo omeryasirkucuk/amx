@@ -910,11 +910,12 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
         name = rest[0]
     else:
         name = ask("Document profile name", default="default")
-    from amx.docs.scanner import scan_source
+    from amx.docs.scanner import test_source_reachable
 
     paths: list[str] = []
     info(
-        "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive)."
+        "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive). "
+        "Each path is checked for reachability only (no full scan)."
     )
     while True:
         p = ask("Path (empty to finish)" if paths else "Path", default="")
@@ -924,14 +925,11 @@ def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
             error("No paths added.")
             return
         try:
-            docs = scan_source(p)
-            if not docs:
-                warn(f"Source reachable but no supported documents found: {p}")
-            else:
-                success(f"Document source OK: {p} ({len(docs)} supported file(s))")
+            test_source_reachable(p)
+            success(f"Source reachable: {p}")
             paths.append(p)
         except Exception as exc:
-            error(f"Failed to access document source: {p}")
+            error(f"Source not reachable: {p}")
             warn(str(exc))
         if not confirm("Add another path?", default=False):
             break
@@ -1008,6 +1006,15 @@ def _cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
         path = ask("Codebase path (local dir or Git URL)", default="")
     if not path:
         error("Path required.")
+        return
+    from amx.codebase.analyzer import test_codebase_path_reachable
+
+    try:
+        test_codebase_path_reachable(path)
+        success(f"Codebase reachable: {path}")
+    except Exception as exc:
+        error(f"Codebase not reachable: {path}")
+        warn(str(exc))
         return
     cfg.upsert_code_profile(name, path)
     if not cfg.active_code_profile or confirm(f"Switch active codebase profile to {name}?", default=True):
@@ -1163,7 +1170,7 @@ def setup(cfg: AMXConfig) -> None:
     # Data sources
     info("Step 3/3 — Optional Data Sources (named profiles)")
     if confirm("Add a document profile for RAG?", default=False):
-        from amx.docs.scanner import scan_source
+        from amx.docs.scanner import test_source_reachable
 
         name = ask("Profile name", default="default")
         paths: list[str] = []
@@ -1172,14 +1179,11 @@ def setup(cfg: AMXConfig) -> None:
             if not p:
                 break
             try:
-                docs = scan_source(p)
-                if not docs:
-                    warn(f"Source reachable but no supported documents found: {p}")
-                else:
-                    success(f"Document source OK: {p} ({len(docs)} supported file(s))")
+                test_source_reachable(p)
+                success(f"Source reachable: {p}")
                 paths.append(p)
             except Exception as exc:
-                error(f"Failed to access document source: {p}")
+                error(f"Source not reachable: {p}")
                 warn(str(exc))
             if not confirm("Add another path?", default=False):
                 break
@@ -1190,11 +1194,19 @@ def setup(cfg: AMXConfig) -> None:
             warn("Skipping document profile — no valid sources were provided.")
 
     if confirm("Add a codebase profile?", default=False):
+        from amx.codebase.analyzer import test_codebase_path_reachable
+
         name = ask("Profile name", default="default")
         p = ask("Codebase path (local dir or Git URL)", default="")
         if p:
-            cfg.upsert_code_profile(name, p)
-            cfg.active_code_profile = name
+            try:
+                test_codebase_path_reachable(p)
+                success(f"Codebase reachable: {p}")
+                cfg.upsert_code_profile(name, p)
+                cfg.active_code_profile = name
+            except Exception as exc:
+                error(f"Codebase not reachable: {p}")
+                warn(str(exc))
 
     saved = cfg.save()
     success(f"Configuration saved to {saved}")

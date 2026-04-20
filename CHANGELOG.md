@@ -4,6 +4,11 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.23] — 2026-04-21
+
+### Changed
+- **Profile path checks are reachability-only**: `/add-doc-profile` and `/setup` document paths use `test_source_reachable()` (Git: `git ls-remote`, S3: `head_bucket` + prefix probe, Drive/SharePoint: HTTP checks, local: path exists) instead of cloning or full `scan_source()`. `/add-code-profile` and setup codebase path use `test_codebase_path_reachable()` (`git ls-remote` or local directory check). Full scans remain on `/scan` and `/ingest`.
+
 ## [0.1.22] — 2026-04-21
 
 ### Changed
