@@ -129,7 +129,13 @@ class Orchestrator:
             )
             return []
 
+        from amx.utils.live_display import get_display
+        display = get_display()
+        if display.is_active:
+            display.pause()
         reviewed = self._human_review(merged, schema, table)
+        if display.is_active:
+            display.resume()
         self.results.extend(reviewed)
         return reviewed
 

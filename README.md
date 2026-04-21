@@ -260,12 +260,19 @@ amx/
 │   ├── provider.py     # Unified LLM interface via LiteLLM
 │   └── batch.py        # Provider-agnostic Batch API (OpenAI, Anthropic)
 └── utils/
-    ├── console.py      # Rich console helpers
+    ├── console.py       # Rich console helpers
+    ├── live_display.py  # Live terminal UI for agent runs (rich.Live)
     ├── token_tracker.py # tiktoken-based token counting and usage tracking
-    └── logging.py      # Structured logging
+    └── logging.py       # Structured logging
 ```
 
 ## Changelog
+
+### v0.1.34
+
+- **Live display during agent runs**: New `LiveDisplay` using `rich.Live` renders a persistent header (AMX version, provider, model, schema, mode, elapsed time, token counter), a hierarchical activity tree (● done, ✦ active, ○ pending), a thinking indicator with live timer, and a context-aware footer — all updating in-place without flooding scroll history.
+- **Persistent session footer**: Interactive prompt now shows a dynamic status bar with current namespace, schema/table context, LLM profile, and keyboard shortcuts.
+- **Non-blocking UI**: All terminal output during agent runs uses in-place updates via `rich.Live`. The display pauses automatically for human-review prompts and resumes after.
 
 ### v0.1.33
 

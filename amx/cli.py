@@ -222,14 +222,24 @@ def _interactive_session(cfg: AMXConfig) -> None:
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
 
+    def _toolbar() -> HTML:
+        ns = namespace or "root"
+        schema_ctx = cfg.current_schema or "—"
+        table_ctx = cfg.current_table or "—"
+        llm_short = f"{cfg.llm.provider}/{cfg.llm.model}" if cfg.llm.model else "—"
+        return HTML(
+            f"<b>AMX v{__version__}</b> │ "
+            f"ns:<b>{ns}</b> │ "
+            f"schema:<b>{schema_ctx}</b> table:<b>{table_ctx}</b> │ "
+            f"llm:<b>{llm_short}</b> │ "
+            "<b>↑↓</b> navigate · <b>Esc</b> back · <b>Ctrl+C</b> exit"
+        )
+
     session = PromptSession(
         completer=_SlashCompleter(lambda: namespace, cfg),
         key_bindings=_kb_escape_namespace(),
         mouse_support=False,
-        bottom_toolbar=HTML(
-            "<b>↑↓</b> navigate · <b>Enter</b> select · "
-            "<b>Esc</b> go back · <b>Ctrl+C</b> exit"
-        ),
+        bottom_toolbar=_toolbar,
         complete_while_typing=True,
         complete_style=CompleteStyle.COLUMN,
         style=Style.from_dict(
@@ -2399,13 +2409,27 @@ def analyze_run(
 
     orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report)
 
-    if use_batch:
-        all_results = orch.process_tables_batch_mode(schema, list(tables))
-    else:
-        all_results = []
-        for t in tables:
-            results = orch.process_table(schema, t)
-            all_results.extend(results)
+    from amx.utils.live_display import get_display
+    display = get_display()
+    display.start(
+        schema=schema,
+        table=", ".join(tables) if len(tables) <= 3 else f"{len(tables)} tables",
+        mode="batch" if use_batch else "chat",
+        provider=cfg.llm.provider,
+        model=cfg.llm.model,
+    )
+
+    try:
+        if use_batch:
+            all_results = orch.process_tables_batch_mode(schema, list(tables))
+        else:
+            all_results = []
+            for t in tables:
+                display.set_context(table=t)
+                results = orch.process_table(schema, t)
+                all_results.extend(results)
+    finally:
+        display.stop()
 
     heading("Summary")
     render_token_summary(token_tracker)

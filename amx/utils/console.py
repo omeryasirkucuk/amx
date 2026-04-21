@@ -200,26 +200,35 @@ def step_spinner(
     token_estimate: int | None = None,
     done_message: str | None = None,
 ) -> Generator[None, None, None]:
-    """Rich spinner that shows elapsed time and optional token estimate.
+    from amx.utils.live_display import get_display
 
-    Usage::
+    display = get_display()
 
-        with step_spinner("Profile Agent batch 1/3", token_estimate=1240):
-            result = llm.chat(messages)
-    """
-    tok = f" (~{token_estimate:,} input tokens)" if token_estimate else ""
-    t0 = time.monotonic()
-    with console.status(f"[info]{label}{tok}[/info]", spinner="dots") as status:
+    if display.is_active:
+        idx = display.add_activity(label, token_estimate=token_estimate or 0)
+        display.begin_activity(idx)
+        display.set_thinking(label)
         try:
             yield
-        finally:
-            elapsed = time.monotonic() - t0
+        except Exception:
+            display.stop_thinking()
+            display.fail_activity(idx)
+            raise
+        else:
+            display.stop_thinking()
             msg = done_message or label
-            status.update(f"[success]✓ {msg} ({elapsed:.1f}s)[/success]")
-    if done_message:
-        success(f"{done_message} ({elapsed:.1f}s)")
+            display.complete_activity(idx, detail=msg)
     else:
-        success(f"{label} ({elapsed:.1f}s)")
+        tok = f" (~{token_estimate:,} input tokens)" if token_estimate else ""
+        t0 = time.monotonic()
+        with console.status(f"[info]{label}{tok}[/info]", spinner="dots") as status:
+            try:
+                yield
+            finally:
+                elapsed = time.monotonic() - t0
+                msg = done_message or label
+                status.update(f"[success]✓ {msg} ({elapsed:.1f}s)[/success]")
+        success(f"{msg} ({elapsed:.1f}s)")
 
 
 @contextmanager
