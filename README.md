@@ -27,23 +27,23 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     AMX CLI (Click)                      │
-├─────────────────────────────────────────────────────────┤
-│                    Orchestrator Agent                    │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐ │
-│  │ Profile Agent │ │  RAG Agent   │ │   Code Agent     │ │
-│  │ (DB stats)   │ │ (Documents)  │ │ (Codebase scan)  │ │
-│  └──────┬───────┘ └──────┬───────┘ └────────┬─────────┘ │
-│         └────────────────┼──────────────────┘           │
-│                    Merge & Rank                          │
-│                          │                               │
-│              Human-in-the-Loop Review                    │
-│                          │                               │
-│                 Apply to Database                         │
-├─────────────────────────────────────────────────────────┤
-│  LLM Provider (OpenAI / Anthropic / Gemini / Local / …) │
-└─────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                      AMX CLI                               │
+├────────────────────────────────────────────────────────────┤
+│                    Orchestrator Agent                      │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐   │
+│  │ Profile Agent │  │   RAG Agent   │  │  Code Agent   │   │
+│  │   (DB stats)  │  │  (Documents)  │  │ (Codebase)    │   │
+│  └───────┬───────┘  └───────┬───────┘  └───────┬───────┘   │
+│          └──────────────────┼──────────────────┘           │
+│                         Merge & Rank                       │
+│                              │                             │
+│                   Human-in-the-Loop Review                 │
+│                              │                             │
+│                      Apply to Database                     │
+├────────────────────────────────────────────────────────────┤
+│ LLM Provider (OpenAI / Anthropic / Gemini / Local / ...)   │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -267,6 +267,11 @@ amx/
 ```
 
 ## Changelog
+
+### v0.1.35
+
+- **DB command simplification**: Removed `/c` alias from `/db` namespace. `/connect` is now the single connectivity command in command catalog, help text, and interactive shortcut routing.
+- **Docs alignment fix**: Updated architecture ASCII block formatting so labels align cleanly on the same lines in monospace terminals.
 
 ### v0.1.34
 

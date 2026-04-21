@@ -187,7 +187,6 @@ def _interactive_session(cfg: AMXConfig) -> None:
             "add-db-profile",
             "remove-db-profile",
             "connect",
-            "c",
             "schema",
             "table",
             "schemas",
@@ -396,9 +395,6 @@ Commands (in order):
  11) /tables [schema]             List tables (defaults to current schema)
  12) /profile [schema] [table]    Profile a table (defaults to current context)
 
-Aliases:
-  /c == /connect
-
 Navigation:
   Esc (empty line)                 Go back to root namespace
 """
@@ -582,7 +578,6 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/schema", "Set current schema (/schema <name>)"),
         ("/table", "Set current table (/table <name>)"),
         ("/connect", "Test DB connectivity"),
-        ("/c", "Alias of /connect"),
         ("/schemas", "List schemas"),
         ("/tables", "List tables (/tables [schema])"),
         ("/profile", "Profile table (/profile [schema] [table])"),
@@ -1086,7 +1081,6 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
 
     shortcut_map = {
         "connect": ["db", "connect"],
-        "c": ["db", "connect"],
         "schemas": ["db", "schemas"],
         "tables": ["db", "tables"],
         "profile": ["db", "profile"],
