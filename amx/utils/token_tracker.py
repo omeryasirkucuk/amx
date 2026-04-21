@@ -1,14 +1,32 @@
-"""Lightweight token estimation and per-session usage tracking."""
+"""Token estimation via tiktoken and per-session usage tracking."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import lru_cache
+
+import tiktoken
+
+
+@lru_cache(maxsize=1)
+def _get_encoding() -> tiktoken.Encoding:
+    return tiktoken.get_encoding("cl100k_base")
 
 
 def estimate_tokens(messages: list[dict[str, str]]) -> int:
-    """Rough token count for a list of chat messages (~4 chars per token)."""
-    total_chars = sum(len(m.get("content", "")) + len(m.get("role", "")) for m in messages)
-    return max(1, total_chars // 4)
+    """Count tokens for a list of chat messages using tiktoken (cl100k_base).
+
+    Accounts for the per-message overhead that the chat-completions
+    format adds (~4 tokens per message for role/separator framing).
+    """
+    enc = _get_encoding()
+    total = 0
+    for msg in messages:
+        total += 4  # role/name/separator framing
+        for value in msg.values():
+            total += len(enc.encode(value, disallowed_special=()))
+    total += 2  # reply priming
+    return max(1, total)
 
 
 @dataclass

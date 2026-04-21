@@ -14,8 +14,6 @@ from amx.utils.logging import get_logger
 
 log = get_logger("llm.provider")
 
-# LiteLLM expects a provider prefix for many models (e.g. openai/gpt-4o).
-# If the user already passes provider/model, we leave it unchanged.
 PROVIDER_MODEL_PREFIX = {
     "openai": "openai/",
     "anthropic": "anthropic/",
@@ -25,12 +23,6 @@ PROVIDER_MODEL_PREFIX = {
     "kimi": "openai/",
     "ollama": "ollama/",
 }
-
-# Providers that support the logprobs parameter.
-LOGPROB_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai"})
-
-# Providers that support the OpenAI Batch API.
-BATCH_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai"})
 
 PROVIDER_ENV_KEY = {
     "openai": "OPENAI_API_KEY",
@@ -129,12 +121,16 @@ class LLMProvider:
     @property
     def supports_logprobs(self) -> bool:
         """True when the configured provider can return per-token logprobs."""
-        return self.cfg.provider in LOGPROB_SUPPORTED_PROVIDERS
+        try:
+            return litellm.supports_logprobs(model=self.model_name)
+        except Exception:
+            return False
 
     @property
     def supports_batch(self) -> bool:
-        """True when the configured provider supports the OpenAI Batch API."""
-        return self.cfg.provider in BATCH_SUPPORTED_PROVIDERS
+        """True when the configured provider has a registered batch implementation."""
+        from amx.llm.batch import get_batch_provider
+        return get_batch_provider(self.cfg) is not None
 
     def _configure_env(self) -> None:
         env_key = PROVIDER_ENV_KEY.get(self.cfg.provider)

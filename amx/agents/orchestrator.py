@@ -217,18 +217,11 @@ class Orchestrator:
         tracker.record("merge", est, result.usage)
 
         parsed = self._parse_merge_response(result.content)
-        _lp_conf = None
-        from amx.llm.provider import confidence_from_logprobs
-        if result.logprobs:
-            raw = confidence_from_logprobs(result.logprobs)
-            if raw:
-                _lp_conf = Confidence[raw]
 
+        merge_results: list[MetadataSuggestion] = []
         for col_name, col_suggestions in needs_merge.items():
             key = col_name or "(table-level)"
             best, conf, reasoning = parsed.get(key, ("", Confidence.MEDIUM, ""))
-            if _lp_conf is not None:
-                conf = _lp_conf
 
             all_descs = [best] if best else []
             for s in col_suggestions:
@@ -236,7 +229,7 @@ class Orchestrator:
                     if d not in all_descs:
                         all_descs.append(d)
 
-            merged.append(MetadataSuggestion(
+            merge_results.append(MetadataSuggestion(
                 schema=ctx.schema,
                 table=ctx.table,
                 column=col_name,
@@ -246,6 +239,7 @@ class Orchestrator:
                 source="combined",
             ))
 
+        merged.extend(apply_logprob_confidence(merge_results, result.logprobs))
         return merged
 
     @staticmethod
@@ -377,35 +371,34 @@ class Orchestrator:
     def process_tables_batch_mode(
         self, schema: str, tables: list[str]
     ) -> list[ReviewResult]:
-        """Run the full pipeline for *tables* using the OpenAI Batch API.
+        """Run the full pipeline for *tables* via the provider's Batch API.
 
-        Phase 1 — collect all Profile / RAG / Code prompts for every table and
-        submit them in a single Batch API job (50 % cost reduction).
-        Phase 2 — once results arrive, run merge (sync, one call per table) and
-        hand off to the usual human-review flow.
+        Phase 1 — collect all Profile / RAG / Code prompts for every table
+        and submit them in a single batch job (~50 % cost reduction).
+        Phase 2 — once results arrive, run merge (sync) and hand off to
+        the human-review flow.
 
-        Falls back to sequential chat-completions mode for non-OpenAI providers.
+        Falls back to Chat Completions if the provider has no batch support.
         """
-        from amx.llm.batch import BatchRequest, run_batch
+        from amx.llm.batch import BatchRequest, run_batch, supported_providers
 
         if not self.llm.supports_batch:
             warn(
-                f"Provider '{self.llm.cfg.provider}' does not support the OpenAI Batch API. "
-                "Falling back to Chat Completions mode."
+                f"Provider '{self.llm.cfg.provider}' does not support batch mode "
+                f"(supported: {', '.join(supported_providers())}). "
+                "Falling back to Chat Completions."
             )
             all_results: list[ReviewResult] = []
             for table in tables:
                 all_results.extend(self.process_table(schema, table))
             return all_results
 
-        # ── Collect profiles (DB) ────────────────────────────────────────────
         info(f"[Batch] Profiling {len(tables)} table(s)…")
         profiles: dict[str, "TableProfile"] = {}
         for table in tables:
             with step_spinner(f"Profiling {schema}.{table}"):
                 profiles[table] = self.db.profile_table(schema, table)
 
-        # ── Collect all LLM prompts ──────────────────────────────────────────
         all_requests: list[BatchRequest] = []
         ctx_map: dict[str, "AgentContext"] = {}
 
@@ -425,7 +418,7 @@ class Orchestrator:
 
         info(
             f"[Batch] Submitting {len(all_requests)} request(s) for "
-            f"{len(tables)} table(s) to OpenAI Batch API…"
+            f"{len(tables)} table(s)…"
         )
         batch_results = run_batch(all_requests, self.llm.cfg)
 

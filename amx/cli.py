@@ -2288,7 +2288,7 @@ def _resolve_codebase_for_run(
     default=None,
     help=(
         "Completion mode: 'chat' = Chat Completions (real-time, full price); "
-        "'batch' = OpenAI Batch API (async, ~50 %% cheaper, OpenAI only)."
+        "'batch' = Batch API (async, ~50 %% cheaper)."
     ),
 )
 @click.pass_obj
@@ -2305,12 +2305,13 @@ def analyze_run(
     """Run all agents to infer metadata for selected tables.
 
     Tables can be passed as positional arguments (e.g. /run vbrk vbrp) or via --table.
-    Use --mode batch for the OpenAI Batch API (50 %% cheaper, results within 24 h).
+    Use --mode batch for the Batch API (~50 %% cheaper, results within 24 h).
     """
     from amx.agents.orchestrator import Orchestrator
     from amx.db.connector import DatabaseConnector
     from amx.docs.rag import RAGStore
-    from amx.llm.provider import LLMProvider, BATCH_SUPPORTED_PROVIDERS
+    from amx.llm.batch import supported_providers as batch_supported_providers
+    from amx.llm.provider import LLMProvider
 
     token_tracker.reset()
 
@@ -2332,29 +2333,35 @@ def analyze_run(
         )
 
     # ── Mode selection ────────────────────────────────────────────────────────
+    batch_capable = llm.supports_batch
+    batch_providers_list = batch_supported_providers()
+
     if mode is None:
-        # Respect the config default, but also ask interactively if not set.
         cfg_mode = (cfg.llm.completion_mode or "chat_completions").lower()
         default_mode_label = "batch" if cfg_mode == "batch" else "chat"
 
         from amx.utils.console import ask_choice as _ask_choice
-        mode_choices = ["chat", "batch"]
-        _batch_note = " (OpenAI only)" if cfg.llm.provider not in BATCH_SUPPORTED_PROVIDERS else " (50 % cheaper, async)"
+        batch_note = (
+            " (50 % cheaper, async)"
+            if batch_capable
+            else f" (requires {', '.join(batch_providers_list)})"
+        )
         mode = _ask_choice(
             "Select completion mode",
-            mode_choices,
+            ["chat", "batch"],
             default=default_mode_label,
             descriptions={
                 "chat": "Chat Completions — real-time, live spinners, full price",
-                "batch": f"Batch API{_batch_note} — submit all at once, results in minutes–hours",
+                "batch": f"Batch API{batch_note} — submit all at once, results in minutes–hours",
             },
         )
 
     use_batch = mode == "batch"
 
-    if use_batch and cfg.llm.provider not in BATCH_SUPPORTED_PROVIDERS:
+    if use_batch and not batch_capable:
         warn(
-            f"Batch mode is only available for OpenAI (current provider: '{cfg.llm.provider}'). "
+            f"Provider '{cfg.llm.provider}' does not support batch mode. "
+            f"Supported providers: {', '.join(batch_providers_list)}. "
             "Falling back to Chat Completions."
         )
         use_batch = False
@@ -2364,14 +2371,13 @@ def analyze_run(
         from amx.utils.console import console as _console
         _console.print(Panel(
             "[bold]Batch API selected.[/bold]\n"
-            "All LLM requests will be submitted as a single OpenAI Batch job.\n"
+            "All LLM requests will be submitted as a single batch job.\n"
             "Typical turnaround: [bold]2–30 minutes[/bold]  |  Cost: [bold green]~50 % lower[/bold green]\n"
-            "[dim]You will see live polling status below.[/dim]",
+            "[dim]Live polling status will appear below.[/dim]",
             title="[cyan]Mode: Batch[/cyan]", border_style="cyan",
         ))
     else:
-        from amx.utils.console import info as _info
-        _info("Mode: [bold]Chat Completions[/bold] (real-time)")
+        info("Mode: [bold]Chat Completions[/bold] (real-time)")
 
     # ── Table scope ───────────────────────────────────────────────────────────
     tables_arg = list(tables_pos) + list(table)
