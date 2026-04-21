@@ -32,15 +32,16 @@ from amx.utils.token_tracker import estimate_tokens, tracker
 log = get_logger("agents.orchestrator")
 
 MERGE_PROMPT = """\
-You are merging metadata suggestions from multiple sources for a database column.
+You are merging metadata suggestions from multiple sources for database columns.
 
-Sources and their suggestions:
-{source_text}
-
+For each column below, multiple sources have proposed descriptions.
 Produce a single best description that combines insights from all sources.
-Also rate your confidence: HIGH / MEDIUM / LOW.
 
-Respond exactly:
+{columns_text}
+
+Respond in this exact format for EACH column (one block per column):
+
+COLUMN: <column_name>
 BEST_DESCRIPTION: <merged description>
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why>
@@ -183,38 +184,43 @@ class Orchestrator:
             by_column[s.column].append(s)
 
         merged: list[MetadataSuggestion] = []
+        needs_merge: dict[str | None, list[MetadataSuggestion]] = {}
+
         for col_name, col_suggestions in by_column.items():
             if len(col_suggestions) == 1:
                 merged.append(col_suggestions[0])
-                continue
+            else:
+                needs_merge[col_name] = col_suggestions
 
+        if not needs_merge:
+            return merged
+
+        columns_blocks: list[str] = []
+        for col_name, col_suggestions in needs_merge.items():
+            label = col_name or "(table-level)"
             source_text = "\n".join(
-                f"[{s.source}] (confidence={s.confidence.value}): {', '.join(s.suggestions)}\n  reasoning: {s.reasoning}"
+                f"  [{s.source}] (confidence={s.confidence.value}): "
+                f"{', '.join(s.suggestions)}\n    reasoning: {s.reasoning}"
                 for s in col_suggestions
             )
+            columns_blocks.append(f"### {label}\n{source_text}")
 
-            messages = [
-                {"role": "user", "content": MERGE_PROMPT.format(source_text=source_text)},
-            ]
-            est = estimate_tokens(messages)
-            col_label = col_name or "table"
-            with step_spinner(f"Merging suggestions: {col_label}", token_estimate=est):
-                result = self.llm.chat(messages)
-            tracker.record("merge", est, result.usage)
-            response = result.content
+        columns_text = "\n\n".join(columns_blocks)
+        messages = [
+            {"role": "user", "content": MERGE_PROMPT.format(columns_text=columns_text)},
+        ]
+        est = estimate_tokens(messages)
+        with step_spinner(
+            f"Merging suggestions: {len(needs_merge)} columns", token_estimate=est
+        ):
+            result = self.llm.chat(messages)
+        tracker.record("merge", est, result.usage)
 
-            best = ""
-            conf = Confidence.MEDIUM
-            reasoning = ""
-            for line in response.splitlines():
-                line = line.strip()
-                if line.startswith("BEST_DESCRIPTION:"):
-                    best = line.split(":", 1)[1].strip()
-                elif line.startswith("CONFIDENCE:"):
-                    raw = line.split(":", 1)[1].strip().upper()
-                    conf = Confidence[raw] if raw in Confidence.__members__ else Confidence.MEDIUM
-                elif line.startswith("REASONING:"):
-                    reasoning = line.split(":", 1)[1].strip()
+        parsed = self._parse_merge_response(result.content)
+
+        for col_name, col_suggestions in needs_merge.items():
+            key = col_name or "(table-level)"
+            best, conf, reasoning = parsed.get(key, ("", Confidence.MEDIUM, ""))
 
             all_descs = [best] if best else []
             for s in col_suggestions:
@@ -233,6 +239,39 @@ class Orchestrator:
             ))
 
         return merged
+
+    @staticmethod
+    def _parse_merge_response(
+        text: str,
+    ) -> dict[str, tuple[str, Confidence, str]]:
+        """Parse batched merge response into {column: (description, confidence, reasoning)}."""
+        results: dict[str, tuple[str, Confidence, str]] = {}
+        current_col = ""
+        best = ""
+        conf = Confidence.MEDIUM
+        reasoning = ""
+
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("COLUMN:"):
+                if current_col and best:
+                    results[current_col] = (best, conf, reasoning)
+                current_col = line.split(":", 1)[1].strip()
+                best = ""
+                conf = Confidence.MEDIUM
+                reasoning = ""
+            elif line.startswith("BEST_DESCRIPTION:"):
+                best = line.split(":", 1)[1].strip()
+            elif line.startswith("CONFIDENCE:"):
+                raw = line.split(":", 1)[1].strip().upper()
+                conf = Confidence[raw] if raw in Confidence.__members__ else Confidence.MEDIUM
+            elif line.startswith("REASONING:"):
+                reasoning = line.split(":", 1)[1].strip()
+
+        if current_col and best:
+            results[current_col] = (best, conf, reasoning)
+
+        return results
 
     def _human_review(
         self, suggestions: list[MetadataSuggestion], schema: str, table: str
