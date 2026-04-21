@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
+from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.codebase.analyzer import CodeReference, CodebaseReport
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
@@ -39,22 +39,21 @@ class CodeAgent(BaseAgent):
         self.llm = llm
         self.report = report
 
-    def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+    def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
+        """Build the Code Agent prompt messages. Returns ``None`` when no code context exists."""
         if not self.report:
-            log.info("No codebase report, skipping code agent")
-            return []
+            return None
 
         from amx.codebase.code_rag import code_collection_count, query_code_snippets
 
         has_refs = bool(self.report.references) or bool(self.report.external_mentions)
         has_sem = code_collection_count() > 0
         if not has_refs and not has_sem:
-            log.info("No codebase references or semantic index, skipping code agent")
-            return []
+            return None
 
         columns = ctx.db_profile.get("columns", [])
         if not columns:
-            return []
+            return None
 
         table_refs = (
             self.report.references.get(ctx.table.lower(), [])
@@ -73,7 +72,6 @@ class CodeAgent(BaseAgent):
                 )
             )
 
-        cols_with_refs: list[str] = []
         for col in columns:
             col_name = col["name"].lower()
             refs = (
@@ -82,7 +80,6 @@ class CodeAgent(BaseAgent):
                 else []
             )
             if refs:
-                cols_with_refs.append(col["name"])
                 all_code_blocks.append(
                     f"## Column: {col['name']}\n"
                     + "\n---\n".join(
@@ -115,24 +112,50 @@ class CodeAgent(BaseAgent):
             )
 
         if not all_code_blocks:
-            log.info("No code context for %s.%s, skipping", ctx.schema, ctx.table)
-            return []
+            return None
 
         col_lines = "\n".join(
             f"  - {c['name']} (type={c['dtype']})" for c in columns
         )
-
         user_msg = (
             f"Schema: {ctx.schema}\n"
             f"Table: {ctx.table}\n\n"
             f"Columns:\n{col_lines}\n\n"
             f"Code references:\n\n" + "\n\n".join(all_code_blocks)
         )
-
-        messages = [
+        return [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ]
+
+    def collect_messages(self, ctx: AgentContext) -> "list":
+        """Return a ``BatchRequest`` for this table (or empty list when no code context)."""
+        from amx.llm.batch import BatchRequest
+
+        msgs = self._build_messages(ctx)
+        if msgs is None:
+            return []
+        return [
+            BatchRequest(
+                custom_id=f"code:{ctx.schema}:{ctx.table}",
+                messages=msgs,
+                max_tokens=self.llm.cfg.max_tokens,
+                temperature=self.llm.cfg.temperature,
+                metadata={"schema": ctx.schema, "table": ctx.table},
+            )
+        ]
+
+    def parse_batch_result(self, content: str, ctx: AgentContext) -> list[MetadataSuggestion]:
+        """Parse a raw LLM text response; used after Batch API completes."""
+        return self._parse_response(content, ctx)
+
+    def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+        messages = self._build_messages(ctx)
+        if messages is None:
+            log.info("No code context for %s.%s, skipping", ctx.schema, ctx.table)
+            return []
+
+        columns = ctx.db_profile.get("columns", [])
         est = estimate_tokens(messages)
         with step_spinner(
             f"Code Agent: {len(columns)} columns", token_estimate=est
@@ -140,7 +163,8 @@ class CodeAgent(BaseAgent):
             result = self.llm.chat(messages)
         tracker.record("code_agent", est, result.usage)
 
-        return self._parse_response(result.content, ctx)
+        suggestions = self._parse_response(result.content, ctx)
+        return apply_logprob_confidence(suggestions, result.logprobs)
 
     def _parse_response(
         self, text: str, ctx: AgentContext, default_col: str = ""

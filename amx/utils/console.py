@@ -100,9 +100,15 @@ def ask_password(question: str) -> str:
     return pt_prompt(f"  {question}: ", is_password=True).strip()
 
 
-def ask_choice(question: str, choices: list[str], default: str = "") -> str:
+def ask_choice(
+    question: str,
+    choices: list[str],
+    default: str = "",
+    descriptions: dict[str, str] | None = None,
+) -> str:
     """Prompt for a single choice. Type 1–N or a matching label. Enter accepts the default.
 
+    *descriptions* is an optional ``{choice: one-line-description}`` mapping shown next to each option.
     The input line is never pre-filled with the default text (so you can type ``2`` immediately).
     """
     if not choices:
@@ -111,7 +117,8 @@ def ask_choice(question: str, choices: list[str], default: str = "") -> str:
     console.print(f"  [info]{question}[/info]")
     for i, c in enumerate(choices, 1):
         mark = " — default (Enter)" if default and c == default else ""
-        console.print(f"    {i}. {c}[dim]{mark}[/dim]")
+        desc = f"  [dim]{descriptions[c]}[/dim]" if descriptions and c in descriptions else ""
+        console.print(f"    {i}. [bold]{c}[/bold]{desc}[dim]{mark}[/dim]")
     if default and default in choices:
         console.print("  [dim]Enter = default · or type a number 1–%d[/dim]" % len(choices))
     # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.

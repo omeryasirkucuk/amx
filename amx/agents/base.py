@@ -14,6 +14,34 @@ class Confidence(Enum):
     LOW = "low"
 
 
+def apply_logprob_confidence(
+    suggestions: list["MetadataSuggestion"],
+    logprobs: list | None,
+) -> list["MetadataSuggestion"]:
+    """Override text-declared confidence with logprob-calibrated value when available.
+
+    Calls ``confidence_from_logprobs`` from the provider module and replaces
+    each suggestion's confidence only when a higher-fidelity logprob signal exists.
+    This is provider-agnostic: non-OpenAI providers simply return ``None`` from
+    the helper and nothing changes.
+    """
+    if not logprobs:
+        return suggestions
+    try:
+        from amx.llm.provider import confidence_from_logprobs
+
+        raw = confidence_from_logprobs(logprobs)
+        if raw is None:
+            return suggestions
+        calibrated = Confidence[raw]
+    except Exception:
+        return suggestions
+
+    for s in suggestions:
+        s.confidence = calibrated
+    return suggestions
+
+
 @dataclass
 class MetadataSuggestion:
     schema: str

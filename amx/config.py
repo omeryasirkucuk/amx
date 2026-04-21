@@ -34,6 +34,7 @@ class LLMConfig:
     api_base: str | None = None
     temperature: float = 0.2
     max_tokens: int = 16384
+    completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
 
 
 def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
@@ -64,6 +65,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         api_base=m.get("api_base"),
         temperature=float(m.get("temperature", 0.2)),
         max_tokens=int(m.get("max_tokens", 2048)),
+        completion_mode=str(m.get("completion_mode", "chat_completions")),
     )
 
 
@@ -75,6 +77,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "api_base": llm.api_base,
         "temperature": llm.temperature,
         "max_tokens": llm.max_tokens,
+        "completion_mode": llm.completion_mode,
     }
 
 

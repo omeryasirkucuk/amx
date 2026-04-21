@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
+from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
@@ -96,18 +96,68 @@ class ProfileAgent(BaseAgent):
             existing_metadata=ctx.existing_metadata,
         )
 
-    def _run_single_batch(
-        self, ctx: AgentContext, columns: list, *, batch_label: str = ""
-    ) -> list[MetadataSuggestion]:
-        user_msg = self._build_prompt(ctx)
-        log.debug(
-            "Profile agent prompt for %s.%s: %d chars, %d columns",
-            ctx.schema, ctx.table, len(user_msg), len(columns),
+    def collect_messages(self, ctx: AgentContext) -> "list":
+        """Return ``BatchRequest`` objects for every profile prompt without calling LLM.
+
+        Used by the orchestrator in Batch mode.
+        """
+        from amx.llm.batch import BatchRequest
+
+        profile = ctx.db_profile
+        if not profile:
+            return []
+        columns = list(profile.get("columns") or [])
+        if not columns:
+            return []
+
+        batches = (
+            [columns]
+            if len(columns) <= self.BATCH_SIZE
+            else [
+                columns[i : i + self.BATCH_SIZE]
+                for i in range(0, len(columns), self.BATCH_SIZE)
+            ]
         )
-        messages = [
+        requests: list[BatchRequest] = []
+        for idx, batch in enumerate(batches):
+            batch_ctx = self._ctx_with_columns(ctx, batch)
+            msgs = self._build_messages(batch_ctx)
+            requests.append(
+                BatchRequest(
+                    custom_id=f"profile:{ctx.schema}:{ctx.table}:{idx}",
+                    messages=msgs,
+                    max_tokens=self.llm.cfg.max_tokens,
+                    temperature=self.llm.cfg.temperature,
+                    metadata={"schema": ctx.schema, "table": ctx.table, "batch_idx": idx},
+                )
+            )
+        return requests
+
+    def parse_batch_result(self, content: str, ctx: AgentContext) -> list[MetadataSuggestion]:
+        """Parse a raw LLM text response for one batch; used after Batch API completes."""
+        suggestions = self._parse_response(content, ctx)
+        if not suggestions and len(content.strip()) > 20:
+            suggestions = self._parse_response_loose(content, ctx)
+        if not suggestions:
+            suggestions = self._parse_by_known_column_names(content, ctx)
+        return suggestions
+
+    def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
+        """Build the messages list for a single profile batch — shared by run() and collect_messages()."""
+        user_msg = self._build_prompt(ctx)
+        return [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ]
+
+    def _run_single_batch(
+        self, ctx: AgentContext, columns: list, *, batch_label: str = ""
+    ) -> list[MetadataSuggestion]:
+        messages = self._build_messages(ctx)
+        log.debug(
+            "Profile agent prompt for %s.%s: %d chars, %d columns",
+            ctx.schema, ctx.table, len(messages[-1]["content"]), len(columns),
+        )
         est = estimate_tokens(messages)
         label = f"Profile Agent {batch_label}" if batch_label else "Profile Agent"
         try:
@@ -119,6 +169,7 @@ class ProfileAgent(BaseAgent):
 
         tracker.record("profile_agent", est, result.usage)
         response = result.content
+        _logprobs = result.logprobs
 
         if not response or not response.strip():
             log.warning(
@@ -144,7 +195,9 @@ class ProfileAgent(BaseAgent):
                 "Raw reply saved to %s",
                 LAST_PROFILE_RESPONSE_FILE,
             )
-        return suggestions
+            return []
+
+        return apply_logprob_confidence(suggestions, _logprobs)
 
     def _save_failed_response_for_debug(self, response: str, ctx: AgentContext) -> None:
         """Persist the model output when nothing could be parsed (inspect off-line)."""

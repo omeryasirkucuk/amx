@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
+from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.docs.rag import RAGStore
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
@@ -39,19 +39,18 @@ class RAGAgent(BaseAgent):
         self.llm = llm
         self.rag = rag_store
 
-    def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+    def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
+        """Build the RAG prompt messages. Returns ``None`` when no context is available."""
         if self.rag.doc_count == 0:
-            log.info("No documents ingested, skipping RAG agent")
-            return []
+            return None
 
         columns = ctx.db_profile.get("columns", [])
         if not columns:
-            return []
+            return None
 
         table_hits = self.rag.query(
             f"table {ctx.table} in schema {ctx.schema}", n_results=5
         )
-
         seen_docs: set[str] = set()
         unique_hits = list(table_hits)
         for col in columns:
@@ -63,30 +62,55 @@ class RAGAgent(BaseAgent):
                     unique_hits.append(h)
 
         if not unique_hits:
-            log.info("No RAG hits for %s.%s, skipping", ctx.schema, ctx.table)
-            return []
+            return None
 
         doc_text = "\n\n---\n\n".join(
             f"[{h['metadata'].get('source', 'unknown')}]\n{h['text']}"
             for h in unique_hits[:15]
         )
-
         col_lines = "\n".join(
             f"  - {c['name']} (type={c['dtype']}, samples={c.get('samples', [])})"
             for c in columns
         )
-
         user_msg = (
             f"Schema: {ctx.schema}\n"
             f"Table: {ctx.table}\n\n"
             f"Columns:\n{col_lines}\n\n"
             f"Relevant documentation:\n{doc_text}"
         )
-
-        messages = [
+        return [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ]
+
+    def collect_messages(self, ctx: AgentContext) -> "list":
+        """Return a ``BatchRequest`` for this table (or empty list when no docs)."""
+        from amx.llm.batch import BatchRequest
+
+        msgs = self._build_messages(ctx)
+        if msgs is None:
+            return []
+        return [
+            BatchRequest(
+                custom_id=f"rag:{ctx.schema}:{ctx.table}",
+                messages=msgs,
+                max_tokens=self.llm.cfg.max_tokens,
+                temperature=self.llm.cfg.temperature,
+                metadata={"schema": ctx.schema, "table": ctx.table},
+            )
+        ]
+
+    def parse_batch_result(self, content: str, ctx: AgentContext) -> list[MetadataSuggestion]:
+        """Parse a raw LLM text response; used after Batch API completes."""
+        return self._parse_response(content, ctx)
+
+    def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+        messages = self._build_messages(ctx)
+        if messages is None:
+            log.info("No RAG context for %s.%s, skipping", ctx.schema, ctx.table)
+            return []
+
+        columns = ctx.db_profile.get("columns", [])
         est = estimate_tokens(messages)
         with step_spinner(
             f"RAG Agent: {len(columns)} columns", token_estimate=est
@@ -94,7 +118,8 @@ class RAGAgent(BaseAgent):
             result = self.llm.chat(messages)
         tracker.record("rag_agent", est, result.usage)
 
-        return self._parse_response(result.content, ctx)
+        suggestions = self._parse_response(result.content, ctx)
+        return apply_logprob_confidence(suggestions, result.logprobs)
 
     def _parse_response(
         self, text: str, ctx: AgentContext, default_col: str = ""

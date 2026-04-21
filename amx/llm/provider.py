@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import litellm
@@ -25,6 +26,12 @@ PROVIDER_MODEL_PREFIX = {
     "ollama": "ollama/",
 }
 
+# Providers that support the logprobs parameter.
+LOGPROB_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai"})
+
+# Providers that support the OpenAI Batch API.
+BATCH_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai"})
+
 PROVIDER_ENV_KEY = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -44,9 +51,58 @@ class ChatResult:
 
     content: str
     usage: dict | None = None
+    logprobs: list | None = None  # raw per-token logprob objects from the API
 
     def __str__(self) -> str:  # noqa: D105
         return self.content
+
+
+# ── Logprob-based confidence calibration ────────────────────────────────────
+
+_CONF_TOKEN_UPPER: frozenset[str] = frozenset({"HIGH", "MEDIUM", "LOW"})
+
+
+def confidence_from_logprobs(logprobs_content: list | None) -> "str | None":
+    """Scan token-level logprobs for the CONFIDENCE label and return calibrated level.
+
+    Scans the completion token list for a HIGH / MEDIUM / LOW token that appears
+    after a ``CONFIDENCE`` context window.  Returns the *logprob-calibrated* level:
+
+    * p > 0.85  → ``"HIGH"``
+    * p > 0.50  → ``"MEDIUM"``
+    * p ≤ 0.50  → ``"LOW"``
+
+    Returns ``None`` when logprobs are unavailable or the token is not found.
+    """
+    if not logprobs_content:
+        return None
+
+    for i, token_obj in enumerate(logprobs_content):
+        token_str = (getattr(token_obj, "token", None) or "").strip().upper()
+        if token_str not in _CONF_TOKEN_UPPER:
+            continue
+
+        prev_window = "".join(
+            (getattr(t, "token", None) or "")
+            for t in logprobs_content[max(0, i - 8) : i]
+        ).upper()
+        if "CONFIDENCE" not in prev_window:
+            continue
+
+        logprob = getattr(token_obj, "logprob", None)
+        if logprob is None:
+            continue
+
+        prob = math.exp(float(logprob))
+        log.debug("Logprob confidence token=%s prob=%.3f", token_str, prob)
+        if prob > 0.85:
+            return "HIGH"
+        elif prob > 0.50:
+            return "MEDIUM"
+        else:
+            return "LOW"
+
+    return None
 
 
 def _openai_model_id(model: str) -> str:
@@ -69,6 +125,16 @@ class LLMProvider:
     def __init__(self, cfg: LLMConfig):
         self.cfg = cfg
         self._configure_env()
+
+    @property
+    def supports_logprobs(self) -> bool:
+        """True when the configured provider can return per-token logprobs."""
+        return self.cfg.provider in LOGPROB_SUPPORTED_PROVIDERS
+
+    @property
+    def supports_batch(self) -> bool:
+        """True when the configured provider supports the OpenAI Batch API."""
+        return self.cfg.provider in BATCH_SUPPORTED_PROVIDERS
 
     def _configure_env(self) -> None:
         env_key = PROVIDER_ENV_KEY.get(self.cfg.provider)
@@ -94,11 +160,16 @@ class LLMProvider:
         messages: list[dict[str, str]],
         temperature: float | None = None,
         max_tokens: int | None = None,
+        use_logprobs: bool = True,
         **kwargs: Any,
     ) -> ChatResult:
         model = self.model_name
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
+
+        if use_logprobs and self.supports_logprobs:
+            extra.setdefault("logprobs", True)
+            extra.setdefault("top_logprobs", 5)
 
         # Reasoning models: raise floor so visible content can appear after thinking tokens.
         if self.cfg.provider == "openai" and _is_openai_reasoning_style_model(model):
@@ -129,8 +200,10 @@ class LLMProvider:
             log.error("LLM call failed: %s", exc)
             raise
 
-        content = resp.choices[0].message.content or ""
-        finish = getattr(resp.choices[0], "finish_reason", None)
+        choice = resp.choices[0]
+        content = choice.message.content or ""
+        finish = getattr(choice, "finish_reason", None)
+
         raw_usage = getattr(resp, "usage", None)
         usage_dict: dict | None = None
         if raw_usage:
@@ -139,11 +212,18 @@ class LLMProvider:
                 "completion_tokens": getattr(raw_usage, "completion_tokens", 0) or 0,
                 "total_tokens": getattr(raw_usage, "total_tokens", 0) or 0,
             }
+
+        raw_lp = getattr(choice, "logprobs", None)
+        logprobs_content: list | None = None
+        if raw_lp is not None:
+            logprobs_content = getattr(raw_lp, "content", None) or None
+
         log.debug(
-            "LLM response: %d chars, finish_reason=%s, usage=%s",
+            "LLM response: %d chars, finish_reason=%s, usage=%s, logprobs=%s",
             len(content),
             finish,
             usage_dict,
+            "yes" if logprobs_content else "no",
         )
 
         if not content:
@@ -163,7 +243,7 @@ class LLMProvider:
                     finish,
                     model,
                 )
-        return ChatResult(content=content, usage=usage_dict)
+        return ChatResult(content=content, usage=usage_dict, logprobs=logprobs_content)
 
     def test(self) -> bool:
         try:

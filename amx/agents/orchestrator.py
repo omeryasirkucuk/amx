@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from amx.agents.base import AgentContext, Confidence, MetadataSuggestion
+from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
@@ -217,10 +217,18 @@ class Orchestrator:
         tracker.record("merge", est, result.usage)
 
         parsed = self._parse_merge_response(result.content)
+        _lp_conf = None
+        from amx.llm.provider import confidence_from_logprobs
+        if result.logprobs:
+            raw = confidence_from_logprobs(result.logprobs)
+            if raw:
+                _lp_conf = Confidence[raw]
 
         for col_name, col_suggestions in needs_merge.items():
             key = col_name or "(table-level)"
             best, conf, reasoning = parsed.get(key, ("", Confidence.MEDIUM, ""))
+            if _lp_conf is not None:
+                conf = _lp_conf
 
             all_descs = [best] if best else []
             for s in col_suggestions:
@@ -363,6 +371,132 @@ class Orchestrator:
                 final_description=choice, confidence=s.confidence,
                 source=s.source, applied=True,
             )
+
+    # ── Batch mode ────────────────────────────────────────────────────────────
+
+    def process_tables_batch_mode(
+        self, schema: str, tables: list[str]
+    ) -> list[ReviewResult]:
+        """Run the full pipeline for *tables* using the OpenAI Batch API.
+
+        Phase 1 — collect all Profile / RAG / Code prompts for every table and
+        submit them in a single Batch API job (50 % cost reduction).
+        Phase 2 — once results arrive, run merge (sync, one call per table) and
+        hand off to the usual human-review flow.
+
+        Falls back to sequential chat-completions mode for non-OpenAI providers.
+        """
+        from amx.llm.batch import BatchRequest, run_batch
+
+        if not self.llm.supports_batch:
+            warn(
+                f"Provider '{self.llm.cfg.provider}' does not support the OpenAI Batch API. "
+                "Falling back to Chat Completions mode."
+            )
+            all_results: list[ReviewResult] = []
+            for table in tables:
+                all_results.extend(self.process_table(schema, table))
+            return all_results
+
+        # ── Collect profiles (DB) ────────────────────────────────────────────
+        info(f"[Batch] Profiling {len(tables)} table(s)…")
+        profiles: dict[str, "TableProfile"] = {}
+        for table in tables:
+            with step_spinner(f"Profiling {schema}.{table}"):
+                profiles[table] = self.db.profile_table(schema, table)
+
+        # ── Collect all LLM prompts ──────────────────────────────────────────
+        all_requests: list[BatchRequest] = []
+        ctx_map: dict[str, "AgentContext"] = {}
+
+        for table in tables:
+            ctx = self._build_context(profiles[table])
+            ctx_map[table] = ctx
+
+            all_requests.extend(self.profile_agent.collect_messages(ctx))
+            if self.rag_agent:
+                all_requests.extend(self.rag_agent.collect_messages(ctx))
+            if self.code_agent:
+                all_requests.extend(self.code_agent.collect_messages(ctx))
+
+        if not all_requests:
+            warn("No LLM requests to submit — all agents had nothing to process.")
+            return []
+
+        info(
+            f"[Batch] Submitting {len(all_requests)} request(s) for "
+            f"{len(tables)} table(s) to OpenAI Batch API…"
+        )
+        batch_results = run_batch(all_requests, self.llm.cfg)
+
+        # ── Parse results per table ──────────────────────────────────────────
+        all_reviewed: list[ReviewResult] = []
+
+        for table in tables:
+            heading(f"Processing results: {schema}.{table}")
+            ctx = ctx_map[table]
+            profile = profiles[table]
+
+            num_cols = len(profile.columns)
+            batch_size = self.profile_agent.BATCH_SIZE
+            n_batches = (num_cols + batch_size - 1) // batch_size
+
+            all_suggestions: list[MetadataSuggestion] = []
+
+            # Profile batches
+            for idx in range(n_batches):
+                cid = f"profile:{schema}:{table}:{idx}"
+                chat_result = batch_results.get(cid)
+                if chat_result and chat_result.content:
+                    cols_slice = profile.columns[idx * batch_size : (idx + 1) * batch_size]
+                    col_dicts = [
+                        {"name": c.name, "dtype": c.dtype, "nullable": c.nullable,
+                         "row_count": c.row_count, "null_count": c.null_count,
+                         "distinct_count": c.distinct_count, "samples": c.samples}
+                        for c in cols_slice
+                    ]
+                    batch_ctx = self.profile_agent._ctx_with_columns(ctx, col_dicts)
+                    tracker.record("profile_agent(batch)", 0, chat_result.usage)
+                    all_suggestions.extend(
+                        self.profile_agent.parse_batch_result(chat_result.content, batch_ctx)
+                    )
+
+            # RAG
+            if self.rag_agent:
+                cid = f"rag:{schema}:{table}"
+                chat_result = batch_results.get(cid)
+                if chat_result and chat_result.content:
+                    tracker.record("rag_agent(batch)", 0, chat_result.usage)
+                    all_suggestions.extend(
+                        self.rag_agent.parse_batch_result(chat_result.content, ctx)
+                    )
+
+            # Code
+            if self.code_agent:
+                cid = f"code:{schema}:{table}"
+                chat_result = batch_results.get(cid)
+                if chat_result and chat_result.content:
+                    tracker.record("code_agent(batch)", 0, chat_result.usage)
+                    all_suggestions.extend(
+                        self.code_agent.parse_batch_result(chat_result.content, ctx)
+                    )
+
+            if not all_suggestions:
+                warn(f"No suggestions for {schema}.{table} after parsing batch results.")
+                continue
+
+            merged = self._merge_suggestions(all_suggestions, ctx)
+            if not merged:
+                warn(f"Merge produced no output for {schema}.{table}.")
+                continue
+
+            reviewed = self._human_review(merged, schema, table)
+            self.results.extend(reviewed)
+            all_reviewed.extend(reviewed)
+
+        return all_reviewed
+
+    # ── Apply ────────────────────────────────────────────────────────────────
 
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
