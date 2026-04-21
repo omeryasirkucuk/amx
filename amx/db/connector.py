@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 import pandas as pd
@@ -13,6 +14,25 @@ from amx.config import DBConfig
 from amx.utils.logging import get_logger
 
 log = get_logger("db.connector")
+
+
+class AssetKind(Enum):
+    TABLE = "table"
+    VIEW = "view"
+    MATERIALIZED_VIEW = "materialized_view"
+
+    @property
+    def label(self) -> str:
+        return self.value.replace("_", " ")
+
+    @property
+    def comment_keyword(self) -> str:
+        """SQL keyword for COMMENT ON <keyword>."""
+        return {
+            AssetKind.TABLE: "TABLE",
+            AssetKind.VIEW: "VIEW",
+            AssetKind.MATERIALIZED_VIEW: "MATERIALIZED VIEW",
+        }[self]
 
 
 @dataclass
@@ -34,6 +54,7 @@ class ColumnProfile:
 class TableProfile:
     schema: str
     name: str
+    asset_kind: AssetKind = AssetKind.TABLE
     row_count: int = 0
     columns: list[ColumnProfile] = field(default_factory=list)
     existing_comment: str | None = None
@@ -79,6 +100,48 @@ class DatabaseConnector:
         insp = inspect(self.engine)
         return insp.get_table_names(schema=schema)
 
+    def list_views(self, schema: str) -> list[str]:
+        insp = inspect(self.engine)
+        return insp.get_view_names(schema=schema)
+
+    def list_materialized_views(self, schema: str) -> list[str]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT c.relname FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = :schema AND c.relkind = 'm' "
+                    "ORDER BY c.relname"
+                ),
+                {"schema": schema},
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def list_assets(self, schema: str) -> list[tuple[str, AssetKind]]:
+        """All analyzable assets (tables, views, materialized views) in a schema."""
+        assets: list[tuple[str, AssetKind]] = []
+        for t in self.list_tables(schema):
+            assets.append((t, AssetKind.TABLE))
+        for v in self.list_views(schema):
+            assets.append((v, AssetKind.VIEW))
+        for mv in self.list_materialized_views(schema):
+            assets.append((mv, AssetKind.MATERIALIZED_VIEW))
+        assets.sort(key=lambda x: x[0])
+        return assets
+
+    def resolve_asset_kind(self, schema: str, name: str) -> AssetKind:
+        """Determine whether *name* is a table, view, or materialized view."""
+        tables = set(self.list_tables(schema))
+        if name in tables:
+            return AssetKind.TABLE
+        views = set(self.list_views(schema))
+        if name in views:
+            return AssetKind.VIEW
+        matviews = set(self.list_materialized_views(schema))
+        if name in matviews:
+            return AssetKind.MATERIALIZED_VIEW
+        return AssetKind.TABLE
+
     def get_table_comment(self, schema: str, table: str) -> str | None:
         insp = inspect(self.engine)
         info = insp.get_table_comment(table, schema=schema)
@@ -89,12 +152,21 @@ class DatabaseConnector:
         cols = insp.get_columns(table, schema=schema)
         return {c["name"]: c.get("comment") for c in cols}
 
-    def profile_table(self, schema: str, table: str, sample_size: int = 5) -> TableProfile:
-        log.info("Profiling %s.%s", schema, table)
+    def profile_table(
+        self,
+        schema: str,
+        table: str,
+        sample_size: int = 5,
+        asset_kind: AssetKind | None = None,
+    ) -> TableProfile:
+        if asset_kind is None:
+            asset_kind = self.resolve_asset_kind(schema, table)
+        log.info("Profiling %s.%s (%s)", schema, table, asset_kind.label)
         fqn = f'"{schema}"."{table}"'
         profile = TableProfile(
             schema=schema,
             name=table,
+            asset_kind=asset_kind,
             existing_comment=self.get_table_comment(schema, table),
             schema_comment=self.get_schema_comment(schema),
             database_comment=self.get_database_comment(),
@@ -275,11 +347,18 @@ class DatabaseConnector:
             )
         return out
 
-    def set_table_comment(self, schema: str, table: str, comment: str) -> None:
-        stmt = f'COMMENT ON TABLE "{schema}"."{table}" IS :cmt'
+    def set_table_comment(
+        self,
+        schema: str,
+        table: str,
+        comment: str,
+        asset_kind: AssetKind = AssetKind.TABLE,
+    ) -> None:
+        keyword = asset_kind.comment_keyword
+        stmt = f'COMMENT ON {keyword} "{schema}"."{table}" IS :cmt'
         with self.engine.begin() as conn:
             conn.execute(text(stmt), {"cmt": comment})
-        log.info("Set comment on %s.%s", schema, table)
+        log.info("Set comment on %s.%s (%s)", schema, table, asset_kind.label)
 
     def set_column_comment(self, schema: str, table: str, column: str, comment: str) -> None:
         stmt = f'COMMENT ON COLUMN "{schema}"."{table}"."{column}" IS :cmt'

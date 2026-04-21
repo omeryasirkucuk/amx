@@ -1,6 +1,6 @@
 # AMX — Agentic Metadata Extractor
 
-AI-powered CLI application that automatically infers, reviews, and applies metadata (descriptions, tags) to database assets using a multi-agent system with human-in-the-loop validation.
+AI-powered CLI application that automatically infers, reviews, and applies metadata (descriptions, tags) to database assets — tables, views, and materialized views — using a multi-agent system with human-in-the-loop validation.
 
 ## Problem
 
@@ -22,7 +22,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Provide your own description
 - Skip individual items
 - Bulk-accept high-confidence results
-- Write approved metadata back to the database as `COMMENT ON TABLE/COLUMN` (write-back support)
+- Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 ## Architecture
 
@@ -121,7 +121,7 @@ amx
 | `/db` + `/table <name>` | Set default table context (used by /profile, /analyze, …) |
 | `/db` + `/connect` | Test database connectivity |
 | `/db` + `/schemas` | List available schemas |
-| `/db` + `/tables [schema]` | List tables in a schema |
+| `/db` + `/tables [schema]` | List all assets (tables, views, materialized views) in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
 | `/llm` + `/llm-profiles` | List LLM profiles |
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
@@ -145,8 +145,8 @@ amx
 | `/docs` + `/search-docs <text>` | Similarity search over ingested docs (Chroma; no LLM) |
 | `/docs` + `/doc-analyze [TABLE …]` | Run RAG Agent standalone (LLM); results saved for next `/run` |
 | `/docs` + `/export-doc-report [FILE]` | Export RAG summary to a markdown file |
-| `/analyze` + `/run [TABLE …]` | Run all agents; tables as args or `--table`; `--code-profile`, `--code-refresh` |
-| `/analyze` + `/run-apply [TABLE …]` | Same as `/run --apply` |
+| `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
+| `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
 
 ## Codebase and document intelligence
@@ -267,6 +267,14 @@ amx/
 ```
 
 ## Changelog
+
+### v0.1.36
+
+- **Three-level scope picker**: `/run` now offers Database, Schema, or Asset scope — run metadata inference across an entire database, selected schemas, or specific assets in a single command.
+- **Views and materialized views**: AMX now discovers and profiles views and materialized views alongside tables. The `/tables` command shows all asset types with kind labels. `COMMENT ON VIEW` and `COMMENT ON MATERIALIZED VIEW` are used when writing metadata back.
+- **`AssetKind` enum**: New `AssetKind` (TABLE, VIEW, MATERIALIZED_VIEW) in `connector.py` propagates through profiling, agent context, review results, and pending metadata serialization for correct SQL comment syntax.
+- **Multi-schema processing**: A single `/run` invocation can now iterate over multiple schemas when Database or Schema scope is selected — one orchestrator per schema with shared codebase and RAG context.
+- **Asset-kind-aware orchestrator**: `process_table`, `process_tables_batch_mode`, and `apply_review_results_to_db` all accept and propagate asset kind for correct COMMENT ON syntax and display labels.
 
 ### v0.1.35
 

@@ -472,9 +472,12 @@ Navigation:
 [heading]Help — /analyze namespace[/heading]
 Commands (in order):
   1) /back                         Return to root namespace
-  2) /run [TABLE …] [--schema …] [--table …] [--apply] [--code-refresh] [--code-profile NAME]
-                                   Run all agents; tables as args or picked interactively
-  3) /run-apply [TABLE …] [--schema …] [--table …]   Same as /run --apply
+  2) /run [ASSET …] [--schema …] [--table …] [--apply] [--code-refresh] [--code-profile NAME]
+                                   Run all agents with scope picker:
+                                     Database — all schemas, all assets
+                                     Schema   — select schema(s), all assets
+                                     Asset    — specific tables/views
+  3) /run-apply [ASSET …] [--schema …] [--table …]   Same as /run --apply
   4) /apply                        Write pending approved comments to the database
 
 Tip: scan code and docs first (`/code-scan`, `/doc-analyze`, `/code-analyze`), then `/run`.
@@ -619,8 +622,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     analyze_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
-        ("/run", "Run all agents (/run [TABLE …] [--schema …] [--table …] [--apply])"),
-        ("/run-apply", "Run + apply (/run-apply [TABLE …] [--schema …] [--table …])"),
+        ("/run", "Run all agents — scope: database / schema / asset (/run [ASSET …] [--schema …] [--apply])"),
+        ("/run-apply", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
         ("/apply", "Write pending comments to the database"),
     ]
 
@@ -1309,12 +1312,16 @@ def db_schemas(cfg: AMXConfig) -> None:
 @click.argument("schema")
 @click.pass_obj
 def db_tables(cfg: AMXConfig, schema: str) -> None:
-    """List tables in a schema."""
+    """List all assets (tables, views, materialized views) in a schema."""
     from amx.db.connector import DatabaseConnector
 
-    db = DatabaseConnector(cfg.db)
-    tables = db.list_tables(schema)
-    render_table(f"Tables in {schema}", ["Table Name"], [[t] for t in tables])
+    db_conn = DatabaseConnector(cfg.db)
+    assets = db_conn.list_assets(schema)
+    render_table(
+        f"Assets in {schema}",
+        ["Name", "Type"],
+        [[name, kind.label] for name, kind in assets],
+    )
 
 
 @db.command("profile")
@@ -1565,10 +1572,11 @@ def docs_analyze(cfg: AMXConfig, tables_pos: tuple[str, ...], schema: str | None
         sys.exit(1)
 
     tables_arg = list(tables_pos) + list(table)
-    ft = _finalize_table_scope(cfg, db, schema or cfg.current_schema, tables_arg)
-    if ft is None:
+    scope = _finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
+    if scope is None:
         return
-    schema, tables = ft
+    schema = next(iter(scope))
+    tables = scope[schema]
 
     agent = RAGAgent(llm, store)
     all_suggestions = []
@@ -1677,12 +1685,13 @@ def code_scan_cmd(
     profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
 
     db = DatabaseConnector(cfg.db)
-    tables = db.list_tables(schema)
+    all_assets = db.list_assets(schema)
+    tables = [name for name, _ in all_assets]
     catalog = frozenset(t.lower() for t in tables)
 
     column_names: list[str] = []
     seen_col: set[str] = set()
-    with step_spinner(f"Collecting column names from {len(tables)} tables"):
+    with step_spinner(f"Collecting column names from {len(tables)} asset(s)"):
         for t in tables:
             tp = db.profile_table(schema, t)
             for c in tp.columns:
@@ -2016,10 +2025,11 @@ def code_analyze_cmd(
         sys.exit(1)
 
     tables_arg = list(tables_pos) + list(table)
-    ft = _finalize_table_scope(cfg, db, schema or cfg.current_schema, tables_arg)
-    if ft is None:
+    scope = _finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
+    if scope is None:
         return
-    schema, tables = ft
+    schema = next(iter(scope))
+    tables = scope[schema]
 
     agent = CodeAgent(llm, code_report)
     all_suggestions = []
@@ -2079,18 +2089,18 @@ def analyze() -> None:
     """Run metadata inference agents."""
 
 
-def _validate_tables_in_schema(db: object, schema: str, tables: list[str]) -> list[str]:
-    """Map user input to real table names (case-insensitive). Raise ValueError if any name is unknown."""
+def _validate_assets_in_schema(db: object, schema: str, names: list[str]) -> list[str]:
+    """Map user input to real asset names (case-insensitive). Raise ValueError if any name is unknown."""
     from difflib import get_close_matches
 
-    if not tables:
-        raise ValueError("No tables selected.")
-    avail = db.list_tables(schema)
+    if not names:
+        raise ValueError("No assets selected.")
+    avail = [a[0] for a in db.list_assets(schema)]
     avail_set = set(avail)
     by_lower = {t.lower(): t for t in avail}
     resolved: list[str] = []
     missing: list[str] = []
-    for t in tables:
+    for t in names:
         if t in avail_set:
             resolved.append(t)
         elif t.lower() in by_lower:
@@ -2103,28 +2113,41 @@ def _validate_tables_in_schema(db: object, schema: str, tables: list[str]) -> li
     for m in missing:
         close = get_close_matches(m, avail, n=5, cutoff=0.35)
         parts.append(f"{m!r}" + (f" (similar: {close})" if close else ""))
-    raise ValueError(f"Unknown table(s) in schema {schema!r}: " + ", ".join(parts))
+    raise ValueError(f"Unknown asset(s) in schema {schema!r}: " + ", ".join(parts))
 
 
-def _finalize_table_scope(
+def _finalize_scope(
     cfg: AMXConfig,
     db: object,
     schema: str | None,
     table_args: list[str],
-) -> tuple[str, list[str]] | None:
-    """Resolve interactive / CLI table selection and validate names against the database."""
-    schema, tables = _resolve_run_scope(cfg, db, schema, table_args)
-    if not tables:
+) -> dict[str, list[str]] | None:
+    """Resolve interactive / CLI scope and validate asset names against the database.
+
+    Returns ``{schema: [validated_asset_name, ...]}`` or ``None`` on failure.
+    """
+    scope = _resolve_run_scope(cfg, db, schema, table_args)
+    if not scope:
         error(
-            "No tables selected. At the prompt, use numbers from the list, exact table names, "
+            "No assets selected. Use numbers from the list, exact names, "
             "comma-separated lists, or `all`. Enter alone cancels."
         )
         return None
-    try:
-        return schema, _validate_tables_in_schema(db, schema, tables)
-    except ValueError as exc:
-        error(str(exc))
+
+    validated: dict[str, list[str]] = {}
+    for s, names in scope.items():
+        if not names:
+            continue
+        try:
+            validated[s] = _validate_assets_in_schema(db, s, names)
+        except ValueError as exc:
+            error(str(exc))
+            return None
+
+    if not validated:
+        error("No valid assets to analyze.")
         return None
+    return validated
 
 
 def _resolve_run_scope(
@@ -2132,50 +2155,85 @@ def _resolve_run_scope(
     db: object,
     schema: str | None,
     table_args: list[str],
-) -> tuple[str, list[str]]:
-    """Shared schema/table resolution for /run and /run-apply."""
-    if schema is None and not table_args:
-        if cfg.current_schema:
-            scope = ask_choice(
-                "What should we analyze?",
-                [
-                    "Use session defaults (/db /schema and optional /db /table)",
-                    "Pick schema and table(s) interactively",
-                ],
-                default="Use session defaults (/db /schema and optional /db /table)",
-            )
-        else:
-            scope = "Pick schema and table(s) interactively"
-            info("No schema context yet — set /db /schema (and optional /db /table), or pick below.")
+) -> dict[str, list[str]]:
+    """Three-level scope resolution: database → schema → asset.
 
-        if scope.startswith("Use session") and cfg.current_schema:
-            schema = cfg.current_schema
-            if cfg.current_table:
-                tables = [cfg.current_table]
-            else:
-                available = db.list_tables(schema)
-                tables = ask_multi_choice("Select table(s) to analyze", available)
-        else:
-            schemas = db.list_schemas()
-            schema = ask_choice("Select schema to analyze", schemas)
-            available = db.list_tables(schema)
-            tables = ask_multi_choice("Select table(s) to analyze", available)
-    else:
+    Returns ``{schema: [asset_name, ...]}``.
+    """
+    if schema is not None or table_args:
         if not schema:
             schemas = db.list_schemas()
             schema = ask_choice("Select schema to analyze", schemas)
-        tables = list(table_args)
-        if not tables:
-            available = db.list_tables(schema)
-            tables = ask_multi_choice("Select table(s) to analyze", available)
-    return schema, tables
+        assets = list(table_args)
+        if not assets:
+            available = _asset_display_list(db, schema)
+            assets = _pick_assets(available)
+        return {schema: assets}
+
+    scope_level = ask_choice(
+        "Select analysis scope",
+        ["Database", "Schema", "Asset"],
+        default="Schema",
+        descriptions={
+            "Database": "All schemas, all assets (tables, views, materialized views)",
+            "Schema": "Select schema(s), analyze all assets within",
+            "Asset": "Select specific tables or views",
+        },
+    )
+
+    if scope_level == "Database":
+        schemas = db.list_schemas()
+        result: dict[str, list[str]] = {}
+        for s in schemas:
+            names = [a[0] for a in db.list_assets(s)]
+            if names:
+                result[s] = names
+        if not result:
+            warn("No analyzable assets found in any schema.")
+        return result
+
+    if scope_level == "Schema":
+        schemas = db.list_schemas()
+        if len(schemas) == 1:
+            selected = schemas
+        else:
+            selected = ask_multi_choice("Select schema(s) to analyze", schemas)
+        result = {}
+        for s in selected:
+            names = [a[0] for a in db.list_assets(s)]
+            if names:
+                result[s] = names
+        return result
+
+    schemas = db.list_schemas()
+    schema = ask_choice("Select schema", schemas)
+    available = _asset_display_list(db, schema)
+    chosen = _pick_assets(available)
+    return {schema: chosen}
+
+
+def _asset_display_list(db: object, schema: str) -> list[str]:
+    """Build display labels for interactive selection: ``name  [kind]``."""
+    from amx.db.connector import AssetKind
+
+    assets = db.list_assets(schema)
+    lines: list[str] = []
+    for name, kind in assets:
+        tag = "" if kind == AssetKind.TABLE else f"  [{kind.label}]"
+        lines.append(f"{name}{tag}")
+    return lines
+
+
+def _pick_assets(display_list: list[str]) -> list[str]:
+    """Interactive multi-choice that strips display tags before returning bare names."""
+    chosen = ask_multi_choice("Select asset(s) to analyze", display_list)
+    return [c.split("  [")[0].strip() for c in chosen]
 
 
 def _resolve_codebase_for_run(
     cfg: AMXConfig,
     db: object,
-    schema: str,
-    tables: list[str],
+    scope: dict[str, list[str]],
     code_profile: str | None,
     code_refresh: bool,
 ) -> object | None:
@@ -2200,24 +2258,35 @@ def _resolve_codebase_for_run(
 
     if code_refresh:
         delete_code_collection()
+
+    all_tables: list[str] = []
     column_names: list[str] = []
     seen_col: set[str] = set()
-    with step_spinner(f"Collecting column names from {len(tables)} tables"):
-        for t in tables:
+    all_assets_flat = [(s, t) for s, ts in scope.items() for t in ts]
+    total_assets = sum(len(ts) for ts in scope.values())
+
+    with step_spinner(f"Collecting column names from {total_assets} asset(s)"):
+        for schema, t in all_assets_flat:
             tp = db.profile_table(schema, t)
             for c in tp.columns:
                 k = c.name.lower()
-                if k in seen_col:
-                    continue
-                seen_col.add(k)
-                column_names.append(c.name)
+                if k not in seen_col:
+                    seen_col.add(k)
+                    column_names.append(c.name)
                 if len(column_names) >= 400:
                     break
             if len(column_names) >= 400:
                 break
 
-    all_schema_tables = db.list_tables(schema)
-    catalog = frozenset(x.lower() for x in all_schema_tables)
+    catalog_set: set[str] = set()
+    for schema in scope:
+        for name, _ in db.list_assets(schema):
+            all_tables.append(name)
+            catalog_set.add(name.lower())
+    catalog = frozenset(catalog_set)
+
+    first_schema = next(iter(scope))
+    tables_flat = [t for ts in scope.values() for t in ts]
 
     info("Analyzing codebase references...")
     merged_report = None
@@ -2231,8 +2300,8 @@ def _resolve_codebase_for_run(
                 else load_cached_report(
                     profile_name=profile_nm,
                     source_path=cp,
-                    schema=schema,
-                    tables=tables,
+                    schema=first_schema,
+                    tables=tables_flat,
                     column_names=column_names,
                     force_refresh=False,
                 )
@@ -2244,7 +2313,7 @@ def _resolve_codebase_for_run(
                 with step_spinner(f"Scanning codebase: {cp}"):
                     rpt = analyze_codebase(
                         cp,
-                        all_schema_tables,
+                        all_tables,
                         column_names=column_names,
                         known_catalog_tables=catalog,
                         index_semantic=True,
@@ -2257,8 +2326,8 @@ def _resolve_codebase_for_run(
                     save_cached_report(
                         profile_name=profile_nm,
                         source_path=cp,
-                        schema=schema,
-                        tables=tables,
+                        schema=first_schema,
+                        tables=tables_flat,
                         column_names=column_names,
                         report=rpt,
                     )
@@ -2271,9 +2340,9 @@ def _resolve_codebase_for_run(
 
 
 @analyze.command("run")
-@click.argument("tables_pos", nargs=-1, metavar="[TABLE ...]")
+@click.argument("tables_pos", nargs=-1, metavar="[ASSET ...]")
 @click.option("--schema", "-s", help="Schema to analyze.")
-@click.option("--table", "-t", multiple=True, help="Specific table(s). Omit for interactive selection.")
+@click.option("--table", "-t", multiple=True, help="Specific asset(s). Omit for interactive selection.")
 @click.option("--apply/--no-apply", default=False, help="Apply approved metadata to the database.")
 @click.option(
     "--code-refresh",
@@ -2306,10 +2375,10 @@ def analyze_run(
     code_profile: str | None,
     mode: str | None,
 ) -> None:
-    """Run all agents to infer metadata for selected tables.
+    """Run all agents to infer metadata for selected assets (tables, views, etc.).
 
-    Tables can be passed as positional arguments (e.g. /run vbrk vbrp) or via --table.
-    Use --mode batch for the Batch API (~50 %% cheaper, results within 24 h).
+    Assets can be passed as positional arguments (e.g. /run vbrk vbrp) or via --table.
+    Scope levels: Database (all schemas) → Schema (all assets) → Asset (specific picks).
     """
     from amx.agents.orchestrator import Orchestrator
     from amx.db.connector import DatabaseConnector
@@ -2383,12 +2452,20 @@ def analyze_run(
     else:
         info("Mode: [bold]Chat Completions[/bold] (real-time)")
 
-    # ── Table scope ───────────────────────────────────────────────────────────
+    # ── Scope resolution ──────────────────────────────────────────────────────
     tables_arg = list(tables_pos) + list(table)
-    ft = _finalize_table_scope(cfg, db, schema, tables_arg)
-    if ft is None:
+    scope = _finalize_scope(cfg, db, schema, tables_arg)
+    if scope is None:
         return
-    schema, tables = ft
+
+    total_assets = sum(len(v) for v in scope.values())
+    total_schemas = len(scope)
+    scope_summary = (
+        f"{total_assets} asset(s) across {total_schemas} schema(s)"
+        if total_schemas > 1
+        else f"{total_assets} asset(s) in {next(iter(scope))}"
+    )
+    info(f"Scope: {scope_summary}")
 
     rag_store = None
     try:
@@ -2399,31 +2476,46 @@ def analyze_run(
     except Exception:
         pass
 
-    code_report = _resolve_codebase_for_run(cfg, db, schema, tables, code_profile, code_refresh)
-
-    orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report)
+    code_report = _resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
 
     from amx.utils.live_display import get_display
     display = get_display()
-    display.start(
-        schema=schema,
-        table=", ".join(tables) if len(tables) <= 3 else f"{len(tables)} tables",
-        mode="batch" if use_batch else "chat",
-        provider=cfg.llm.provider,
-        model=cfg.llm.model,
-    )
 
-    try:
-        if use_batch:
-            all_results = orch.process_tables_batch_mode(schema, list(tables))
-        else:
-            all_results = []
-            for t in tables:
-                display.set_context(table=t)
-                results = orch.process_table(schema, t)
+    all_results: list = []
+
+    for schema_name, assets in scope.items():
+        asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
+
+        orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report)
+
+        display_label = (
+            ", ".join(assets) if len(assets) <= 3
+            else f"{len(assets)} assets"
+        )
+        display.start(
+            schema=schema_name,
+            table=display_label,
+            mode="batch" if use_batch else "chat",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        )
+
+        try:
+            if use_batch:
+                results = orch.process_tables_batch_mode(
+                    schema_name, list(assets), asset_kinds=asset_kinds,
+                )
                 all_results.extend(results)
-    finally:
-        display.stop()
+            else:
+                for asset_name in assets:
+                    display.set_context(table=asset_name)
+                    results = orch.process_table(
+                        schema_name, asset_name,
+                        asset_kind=asset_kinds.get(asset_name),
+                    )
+                    all_results.extend(results)
+        finally:
+            display.stop()
 
     heading("Summary")
     render_token_summary(token_tracker)
@@ -2434,9 +2526,10 @@ def analyze_run(
     if approved:
         render_table(
             "Approved metadata",
-            ["Asset", "Description", "Confidence", "Source"],
+            ["Schema", "Asset", "Description", "Confidence", "Source"],
             [
                 [
+                    r.schema,
                     f"{r.table}.{r.column}" if r.column else r.table,
                     r.final_description[:60],
                     r.confidence.value,

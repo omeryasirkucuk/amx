@@ -10,7 +10,7 @@ from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
 from amx.codebase.analyzer import CodebaseReport
-from amx.db.connector import DatabaseConnector, TableProfile
+from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.provider import LLMProvider
 from amx.utils.console import (
@@ -57,17 +57,22 @@ class ReviewResult:
     confidence: Confidence
     source: str
     applied: bool = False
+    asset_kind: str = "table"
 
 
 def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult]) -> int:
-    """Write approved descriptions as COMMENT ON TABLE/COLUMN to the database."""
+    """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
     applied = 0
     for r in results:
         if not r.applied or not r.final_description:
             continue
         try:
+            kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
+        except ValueError:
+            kind = AssetKind.TABLE
+        try:
             if r.column is None:
-                db.set_table_comment(r.schema, r.table, r.final_description)
+                db.set_table_comment(r.schema, r.table, r.final_description, asset_kind=kind)
             else:
                 db.set_column_comment(r.schema, r.table, r.column, r.final_description)
             applied += 1
@@ -91,11 +96,17 @@ class Orchestrator:
         self.code_agent = CodeAgent(llm, code_report) if code_report else None
         self.results: list[ReviewResult] = []
 
-    def process_table(self, schema: str, table: str) -> list[ReviewResult]:
-        heading(f"Analyzing {schema}.{table}")
+    def process_table(
+        self,
+        schema: str,
+        table: str,
+        asset_kind: AssetKind | None = None,
+    ) -> list[ReviewResult]:
+        kind_label = f" ({asset_kind.label})" if asset_kind and asset_kind != AssetKind.TABLE else ""
+        heading(f"Analyzing {schema}.{table}{kind_label}")
 
         with step_spinner(f"Profiling {schema}.{table} structure and data"):
-            profile = self.db.profile_table(schema, table)
+            profile = self.db.profile_table(schema, table, asset_kind=asset_kind)
         ctx = self._build_context(profile)
 
         all_suggestions: list[MetadataSuggestion] = []
@@ -133,7 +144,8 @@ class Orchestrator:
         display = get_display()
         if display.is_active:
             display.pause()
-        reviewed = self._human_review(merged, schema, table)
+        ak = profile.asset_kind.value if profile.asset_kind else "table"
+        reviewed = self._human_review(merged, schema, table, asset_kind=ak)
         if display.is_active:
             display.resume()
         self.results.extend(reviewed)
@@ -143,6 +155,7 @@ class Orchestrator:
         return AgentContext(
             schema=profile.schema,
             table=profile.name,
+            asset_kind=profile.asset_kind.value,
             db_profile={
                 "row_count": profile.row_count,
                 "existing_comment": profile.existing_comment,
@@ -282,7 +295,11 @@ class Orchestrator:
         return results
 
     def _human_review(
-        self, suggestions: list[MetadataSuggestion], schema: str, table: str
+        self,
+        suggestions: list[MetadataSuggestion],
+        schema: str,
+        table: str,
+        asset_kind: str = "table",
     ) -> list[ReviewResult]:
         results: list[ReviewResult] = []
 
@@ -290,7 +307,7 @@ class Orchestrator:
         col_suggestions = [s for s in suggestions if s.column is not None]
 
         for s in table_suggestions:
-            result = self._review_single(s, is_table=True)
+            result = self._review_single(s, is_table=True, asset_kind=asset_kind)
             results.append(result)
 
         if col_suggestions:
@@ -322,27 +339,36 @@ class Orchestrator:
                         schema=s.schema, table=s.table, column=s.column,
                         final_description=s.suggestions[0],
                         confidence=s.confidence, source=s.source, applied=True,
+                        asset_kind=asset_kind,
                     ))
                 elif review_mode == "accept-all-high" and s.confidence == Confidence.HIGH:
                     results.append(ReviewResult(
                         schema=s.schema, table=s.table, column=s.column,
                         final_description=s.suggestions[0],
                         confidence=s.confidence, source=s.source, applied=True,
+                        asset_kind=asset_kind,
                     ))
                 elif review_mode == "reject-all":
                     results.append(ReviewResult(
                         schema=s.schema, table=s.table, column=s.column,
                         final_description="",
                         confidence=s.confidence, source=s.source, applied=False,
+                        asset_kind=asset_kind,
                     ))
                 else:
-                    result = self._review_single(s, is_table=False)
+                    result = self._review_single(s, is_table=False, asset_kind=asset_kind)
                     results.append(result)
 
         return results
 
-    def _review_single(self, s: MetadataSuggestion, is_table: bool) -> ReviewResult:
-        asset = f"Table: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
+    def _review_single(
+        self,
+        s: MetadataSuggestion,
+        is_table: bool,
+        asset_kind: str = "table",
+    ) -> ReviewResult:
+        kind_label = asset_kind.replace("_", " ").title() if is_table else "Column"
+        asset = f"{kind_label}: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
         console.print(f"\n  [heading]{asset}[/heading]")
         console.print(f"  Confidence: [{'success' if s.confidence == Confidence.HIGH else 'warning'}]{s.confidence.value}[/]")
         console.print(f"  Source: {s.source}")
@@ -356,37 +382,37 @@ class Orchestrator:
             return ReviewResult(
                 schema=s.schema, table=s.table, column=s.column,
                 final_description="", confidence=s.confidence,
-                source=s.source, applied=False,
+                source=s.source, applied=False, asset_kind=asset_kind,
             )
         elif choice == "Other (type your own)":
             custom = ask("Enter your description")
             return ReviewResult(
                 schema=s.schema, table=s.table, column=s.column,
                 final_description=custom, confidence=Confidence.HIGH,
-                source="human", applied=True,
+                source="human", applied=True, asset_kind=asset_kind,
             )
         else:
             return ReviewResult(
                 schema=s.schema, table=s.table, column=s.column,
                 final_description=choice, confidence=s.confidence,
-                source=s.source, applied=True,
+                source=s.source, applied=True, asset_kind=asset_kind,
             )
 
     # ── Batch mode ────────────────────────────────────────────────────────────
 
     def process_tables_batch_mode(
-        self, schema: str, tables: list[str]
+        self,
+        schema: str,
+        tables: list[str],
+        asset_kinds: dict[str, AssetKind] | None = None,
     ) -> list[ReviewResult]:
         """Run the full pipeline for *tables* via the provider's Batch API.
-
-        Phase 1 — collect all Profile / RAG / Code prompts for every table
-        and submit them in a single batch job (~50 % cost reduction).
-        Phase 2 — once results arrive, run merge (sync) and hand off to
-        the human-review flow.
 
         Falls back to Chat Completions if the provider has no batch support.
         """
         from amx.llm.batch import BatchRequest, run_batch, supported_providers
+
+        asset_kinds = asset_kinds or {}
 
         if not self.llm.supports_batch:
             warn(
@@ -396,14 +422,18 @@ class Orchestrator:
             )
             all_results: list[ReviewResult] = []
             for table in tables:
-                all_results.extend(self.process_table(schema, table))
+                all_results.extend(
+                    self.process_table(schema, table, asset_kind=asset_kinds.get(table))
+                )
             return all_results
 
-        info(f"[Batch] Profiling {len(tables)} table(s)…")
+        n_assets = len(tables)
+        info(f"[Batch] Profiling {n_assets} asset(s)…")
         profiles: dict[str, "TableProfile"] = {}
         for table in tables:
+            ak = asset_kinds.get(table)
             with step_spinner(f"Profiling {schema}.{table}"):
-                profiles[table] = self.db.profile_table(schema, table)
+                profiles[table] = self.db.profile_table(schema, table, asset_kind=ak)
 
         all_requests: list[BatchRequest] = []
         ctx_map: dict[str, "AgentContext"] = {}
@@ -424,17 +454,17 @@ class Orchestrator:
 
         info(
             f"[Batch] Submitting {len(all_requests)} request(s) for "
-            f"{len(tables)} table(s)…"
+            f"{n_assets} asset(s)…"
         )
         batch_results = run_batch(all_requests, self.llm.cfg)
 
-        # ── Parse results per table ──────────────────────────────────────────
         all_reviewed: list[ReviewResult] = []
 
         for table in tables:
             heading(f"Processing results: {schema}.{table}")
             ctx = ctx_map[table]
             profile = profiles[table]
+            ak = profile.asset_kind.value if profile.asset_kind else "table"
 
             num_cols = len(profile.columns)
             batch_size = self.profile_agent.BATCH_SIZE
@@ -442,7 +472,6 @@ class Orchestrator:
 
             all_suggestions: list[MetadataSuggestion] = []
 
-            # Profile batches
             for idx in range(n_batches):
                 cid = f"profile:{schema}:{table}:{idx}"
                 chat_result = batch_results.get(cid)
@@ -460,7 +489,6 @@ class Orchestrator:
                         self.profile_agent.parse_batch_result(chat_result.content, batch_ctx)
                     )
 
-            # RAG
             if self.rag_agent:
                 cid = f"rag:{schema}:{table}"
                 chat_result = batch_results.get(cid)
@@ -470,7 +498,6 @@ class Orchestrator:
                         self.rag_agent.parse_batch_result(chat_result.content, ctx)
                     )
 
-            # Code
             if self.code_agent:
                 cid = f"code:{schema}:{table}"
                 chat_result = batch_results.get(cid)
@@ -489,7 +516,7 @@ class Orchestrator:
                 warn(f"Merge produced no output for {schema}.{table}.")
                 continue
 
-            reviewed = self._human_review(merged, schema, table)
+            reviewed = self._human_review(merged, schema, table, asset_kind=ak)
             self.results.extend(reviewed)
             all_reviewed.extend(reviewed)
 

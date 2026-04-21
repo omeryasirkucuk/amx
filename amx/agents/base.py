@@ -55,6 +55,7 @@ class AgentContext:
     schema: str = ""
     table: str = ""
     column: str | None = None
+    asset_kind: str = "table"
     db_profile: dict[str, Any] = field(default_factory=dict)
     rag_context: list[str] = field(default_factory=list)
     code_context: list[str] = field(default_factory=list)

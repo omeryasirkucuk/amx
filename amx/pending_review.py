@@ -26,6 +26,7 @@ def save_pending(results: list[ReviewResult]) -> Path:
                 "final_description": r.final_description,
                 "confidence": r.confidence.value,
                 "source": r.source,
+                "asset_kind": getattr(r, "asset_kind", "table"),
             }
         )
     PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -57,6 +58,7 @@ def load_pending() -> list[ReviewResult]:
                 confidence=conf,
                 source=str(row.get("source", "pending")),
                 applied=True,
+                asset_kind=str(row.get("asset_kind", "table")),
             )
         )
     return out
