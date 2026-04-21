@@ -18,13 +18,7 @@ def apply_logprob_confidence(
     suggestions: list["MetadataSuggestion"],
     logprobs: list | None,
 ) -> list["MetadataSuggestion"]:
-    """Override text-declared confidence with logprob-calibrated value when available.
-
-    Calls ``confidence_from_logprobs`` from the provider module and replaces
-    each suggestion's confidence only when a higher-fidelity logprob signal exists.
-    This is provider-agnostic: non-OpenAI providers simply return ``None`` from
-    the helper and nothing changes.
-    """
+    """Override text-declared confidence with logprob-calibrated value when available."""
     if not logprobs:
         return suggestions
     try:

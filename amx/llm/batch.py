@@ -1,20 +1,4 @@
-"""Provider-agnostic Batch API for AMX.
-
-Supports any provider that offers an asynchronous batch endpoint.
-Each provider implements the ``BatchProvider`` interface; the public
-``run_batch()`` function auto-selects the right one based on the
-active ``LLMConfig``.
-
-Currently supported providers
------------------------------
-* **OpenAI**     — ``/v1/batches`` (Files API upload, JSONL, 50 % cost)
-* **Anthropic**  — ``/v1/messages/batches`` (inline requests, 50 % cost)
-
-Adding a new provider
----------------------
-1. Subclass ``BatchProvider``.
-2. Register it in ``_PROVIDER_MAP``.
-"""
+"""Provider-agnostic Batch API for asynchronous LLM request processing."""
 
 from __future__ import annotations
 
@@ -37,8 +21,6 @@ _POLL_INTERVAL = 15
 
 @dataclass
 class BatchRequest:
-    """A single deferred LLM request."""
-
     custom_id: str
     messages: list[dict[str, str]]
     max_tokens: int = 4096
@@ -46,25 +28,17 @@ class BatchRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# ── Abstract base ────────────────────────────────────────────────────────────
-
-
 class BatchProvider(ABC):
-    """Strategy interface for provider-specific batch implementations."""
 
     def __init__(self, cfg: LLMConfig) -> None:
         self.cfg = cfg
 
     @abstractmethod
-    def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]:
-        """Submit *requests*, poll until done, return ``{custom_id: ChatResult}``."""
+    def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]: ...
 
     def _resolve_model(self) -> str:
         raw = (self.cfg.model or "").strip()
         return raw.split("/")[-1] if "/" in raw else raw
-
-
-# ── OpenAI ───────────────────────────────────────────────────────────────────
 
 
 class OpenAIBatchProvider(BatchProvider):
@@ -183,9 +157,6 @@ class OpenAIBatchProvider(BatchProvider):
         return results
 
 
-# ── Anthropic ────────────────────────────────────────────────────────────────
-
-
 class AnthropicBatchProvider(BatchProvider):
 
     def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]:
@@ -302,8 +273,6 @@ class AnthropicBatchProvider(BatchProvider):
         return results
 
 
-# ── Registry ─────────────────────────────────────────────────────────────────
-
 _PROVIDER_MAP: dict[str, type[BatchProvider]] = {
     "openai": OpenAIBatchProvider,
     "anthropic": AnthropicBatchProvider,
@@ -311,19 +280,13 @@ _PROVIDER_MAP: dict[str, type[BatchProvider]] = {
 
 
 def get_batch_provider(cfg: LLMConfig) -> BatchProvider | None:
-    """Return the batch provider for *cfg*, or ``None`` if unsupported."""
     cls = _PROVIDER_MAP.get(cfg.provider)
-    if cls is None:
-        return None
-    return cls(cfg)
+    return cls(cfg) if cls else None
 
 
 def supported_providers() -> list[str]:
-    """Return the list of provider names that support batch mode."""
     return list(_PROVIDER_MAP.keys())
 
-
-# ── Public entry point ───────────────────────────────────────────────────────
 
 def _normalize_usage(raw: dict | None) -> dict | None:
     if not raw:
@@ -339,12 +302,6 @@ def run_batch(
     requests: list[BatchRequest],
     llm_cfg: LLMConfig,
 ) -> dict[str, ChatResult]:
-    """Submit *requests* via the active provider's batch API.
-
-    Automatically selects the right ``BatchProvider`` based on
-    ``llm_cfg.provider``.  Raises ``RuntimeError`` if the provider
-    does not support batch mode.
-    """
     if not requests:
         return {}
 

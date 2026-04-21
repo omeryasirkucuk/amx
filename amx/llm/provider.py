@@ -39,33 +39,19 @@ _DEFAULT_REASONING_FLOOR = 16_384
 
 @dataclass
 class ChatResult:
-    """Return value of ``LLMProvider.chat`` — wraps the content string with usage metadata."""
-
     content: str
     usage: dict | None = None
-    logprobs: list | None = None  # raw per-token logprob objects from the API
+    logprobs: list | None = None
 
     def __str__(self) -> str:  # noqa: D105
         return self.content
 
 
-# ── Logprob-based confidence calibration ────────────────────────────────────
-
 _CONF_TOKEN_UPPER: frozenset[str] = frozenset({"HIGH", "MEDIUM", "LOW"})
 
 
 def confidence_from_logprobs(logprobs_content: list | None) -> "str | None":
-    """Scan token-level logprobs for the CONFIDENCE label and return calibrated level.
-
-    Scans the completion token list for a HIGH / MEDIUM / LOW token that appears
-    after a ``CONFIDENCE`` context window.  Returns the *logprob-calibrated* level:
-
-    * p > 0.85  → ``"HIGH"``
-    * p > 0.50  → ``"MEDIUM"``
-    * p ≤ 0.50  → ``"LOW"``
-
-    Returns ``None`` when logprobs are unavailable or the token is not found.
-    """
+    """Map the token probability of the CONFIDENCE label to HIGH/MEDIUM/LOW."""
     if not logprobs_content:
         return None
 

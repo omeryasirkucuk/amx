@@ -1,4 +1,4 @@
-"""Token estimation via tiktoken and per-session usage tracking."""
+"""Token counting (tiktoken) and per-session usage tracking."""
 
 from __future__ import annotations
 
@@ -14,11 +14,6 @@ def _get_encoding() -> tiktoken.Encoding:
 
 
 def estimate_tokens(messages: list[dict[str, str]]) -> int:
-    """Count tokens for a list of chat messages using tiktoken (cl100k_base).
-
-    Accounts for the per-message overhead that the chat-completions
-    format adds (~4 tokens per message for role/separator framing).
-    """
     enc = _get_encoding()
     total = 0
     for msg in messages:

@@ -253,13 +253,33 @@ amx/
 │   ├── scanner.py      # Multi-source document scanner
 │   └── rag.py          # ChromaDB vector store and RAG pipeline
 ├── codebase/
-│   └── analyzer.py     # Codebase reference analysis
+│   ├── analyzer.py     # Codebase reference analysis
+│   ├── cache.py        # Disk cache for scan results
+│   └── code_rag.py     # Semantic code index (Chroma amx_code)
 ├── llm/
-│   └── provider.py     # Unified LLM interface via LiteLLM
+│   ├── provider.py     # Unified LLM interface via LiteLLM
+│   └── batch.py        # Provider-agnostic Batch API (OpenAI, Anthropic)
 └── utils/
     ├── console.py      # Rich console helpers
+    ├── token_tracker.py # tiktoken-based token counting and usage tracking
     └── logging.py      # Structured logging
 ```
+
+## Changelog
+
+### v0.1.33
+
+- **Logprob-calibrated confidence**: Confidence levels (HIGH/MEDIUM/LOW) are now derived from actual token probabilities (`logprobs`) instead of trusting the model's self-declared label. The calibration thresholds: p > 0.85 → HIGH, p > 0.50 → MEDIUM, p ≤ 0.50 → LOW. Works automatically on providers that support logprobs.
+- **Batch API mode**: New `--mode batch` flag on `/run` submits all LLM requests as a single asynchronous batch job at ~50% cost reduction. Provider-agnostic architecture with strategy pattern — currently supports **OpenAI** and **Anthropic** batch APIs. User selects between "Chat Completions" (real-time) and "Batch" (async, cheaper) at run start.
+- **tiktoken token counting**: Replaced the `chars // 4` heuristic with proper tiktoken (cl100k_base) encoding for accurate token estimation.
+- **Provider-agnostic design**: Removed all hardcoded provider lists. Batch support and logprob capability are detected dynamically via a provider registry and litellm introspection.
+
+### v0.1.30
+
+- **Batched LLM calls**: RAG, Code, and Merge agents now process all columns in a single LLM call per table instead of one call per column (~80-90% cost reduction).
+- **Progress and token tracking**: Spinners, progress bars, and per-step token usage summary displayed during scans and agent runs.
+- **Table name normalization**: Codebase scanner now deduplicates fully-qualified (`schema.table`) and bare table names against the catalog.
+- **Input validation**: Interactive table selection validates against the database with similarity hints for typos.
 
 ## License
 
