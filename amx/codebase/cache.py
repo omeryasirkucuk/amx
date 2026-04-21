@@ -188,6 +188,28 @@ def load_cached_report(
         return None
 
 
+def load_latest_cached_report(
+    profile_name: str,
+    source_path: str,
+) -> tuple[dict[str, Any] | None, CodebaseReport | None]:
+    """Load the most recent cached report for a profile/path without fingerprint checks.
+
+    Returns ``(manifest_dict, report)`` or ``(None, None)`` if nothing cached.
+    """
+    slug = _slug(profile_name or "default", source_path)
+    dirp = CACHE_ROOT / slug
+    man_path = dirp / "manifest.json"
+    rep_path = dirp / "report.json"
+    if not man_path.is_file() or not rep_path.is_file():
+        return None, None
+    try:
+        manifest = json.loads(man_path.read_text(encoding="utf-8"))
+        data = json.loads(rep_path.read_text(encoding="utf-8"))
+        return manifest, report_from_dict(data)
+    except Exception:
+        return None, None
+
+
 def invalidate_cache(profile_name: str, source_path: str) -> bool:
     slug = _slug(profile_name or "default", source_path)
     dirp = CACHE_ROOT / slug

@@ -22,10 +22,12 @@ from amx.utils.console import (
     heading,
     info,
     render_table,
+    step_spinner,
     success,
     warn,
 )
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.orchestrator")
 
@@ -57,7 +59,7 @@ class ReviewResult:
 
 
 def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult]) -> int:
-    """Write approved descriptions as PostgreSQL COMMENT ON TABLE/COLUMN."""
+    """Write approved descriptions as COMMENT ON TABLE/COLUMN to the database."""
     applied = 0
     for r in results:
         if not r.applied or not r.final_description:
@@ -91,8 +93,8 @@ class Orchestrator:
     def process_table(self, schema: str, table: str) -> list[ReviewResult]:
         heading(f"Analyzing {schema}.{table}")
 
-        info("Profiling table structure and data...")
-        profile = self.db.profile_table(schema, table)
+        with step_spinner(f"Profiling {schema}.{table} structure and data"):
+            profile = self.db.profile_table(schema, table)
         ctx = self._build_context(profile)
 
         all_suggestions: list[MetadataSuggestion] = []
@@ -102,19 +104,19 @@ class Orchestrator:
         if num_cols > batch_size:
             n_batches = (num_cols + batch_size - 1) // batch_size
             info(
-                f"Running profile agent on {num_cols} columns "
-                f"({n_batches} batches of ≤{batch_size} to stay within model output limits)..."
+                f"Profile Agent: {num_cols} columns "
+                f"({n_batches} batches of ≤{batch_size})"
             )
         else:
-            info(f"Running profile agent ({num_cols} columns)...")
+            info(f"Profile Agent: {num_cols} columns")
         all_suggestions.extend(self.profile_agent.run(ctx))
 
         if self.rag_agent:
-            info("Running RAG agent (document search)...")
+            info(f"RAG Agent: {num_cols} columns to check against documents")
             all_suggestions.extend(self.rag_agent.run(ctx))
 
         if self.code_agent:
-            info("Running code agent (codebase analysis)...")
+            info(f"Code Agent: {num_cols} columns to check against codebase")
             all_suggestions.extend(self.code_agent.run(ctx))
 
         merged = self._merge_suggestions(all_suggestions, ctx)
@@ -191,9 +193,15 @@ class Orchestrator:
                 for s in col_suggestions
             )
 
-            response = self.llm.chat([
+            messages = [
                 {"role": "user", "content": MERGE_PROMPT.format(source_text=source_text)},
-            ])
+            ]
+            est = estimate_tokens(messages)
+            col_label = col_name or "table"
+            with step_spinner(f"Merging suggestions: {col_label}", token_estimate=est):
+                result = self.llm.chat(messages)
+            tracker.record("merge", est, result.usage)
+            response = result.content
 
             best = ""
             conf = Confidence.MEDIUM

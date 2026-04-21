@@ -129,12 +129,16 @@ def code_collection_count(persist_dir: str | None = None) -> int:
         return 0
 
 
-def delete_code_collection(persist_dir: str | None = None) -> None:
-    """Remove the entire ``amx_code`` collection (e.g. before full re-index)."""
+def delete_code_collection(persist_dir: str | None = None) -> bool:
+    """Remove the entire ``amx_code`` collection (e.g. before full re-index).
+
+    Returns ``True`` if a collection was deleted, ``False`` if it didn't exist.
+    """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
         client = chromadb.PersistentClient(path=persist)
         client.delete_collection(COLLECTION)
         log.info("Deleted Chroma collection %s", COLLECTION)
-    except Exception as exc:
-        log.warning("Could not delete %s: %s", COLLECTION, exc)
+        return True
+    except Exception:
+        return False

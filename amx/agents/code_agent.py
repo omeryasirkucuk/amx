@@ -5,7 +5,9 @@ from __future__ import annotations
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
 from amx.codebase.analyzer import CodeReference, CodebaseReport
 from amx.llm.provider import LLMProvider
+from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.code")
 
@@ -101,12 +103,16 @@ class CodeAgent(BaseAgent):
             if sem_block:
                 user_msg += sem_block
 
-            response = self.llm.chat([
+            messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
-            ])
+            ]
+            est = estimate_tokens(messages)
+            with step_spinner(f"Code Agent: {col['name']}", token_estimate=est):
+                result = self.llm.chat(messages)
+            tracker.record("code_agent", est, result.usage)
 
-            for s in self._parse_response(response, ctx, col["name"]):
+            for s in self._parse_response(result.content, ctx, col["name"]):
                 suggestions.append(s)
 
         return suggestions

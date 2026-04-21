@@ -4,6 +4,34 @@ This file is the **public, high-signal** changelog for AMX (what contributors/us
 
 For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
 
+## [0.1.30] — 2026-04-21
+
+### Added
+- **Standalone agent commands**: `/code-analyze [TABLE …]` runs the Code Agent (LLM) against cached scan results; `/doc-analyze [TABLE …]` runs the RAG Agent against ingested documents. Both save JSON results under `~/.amx/` so the next `/run` can reuse them — scan once, run agents individually, then `/run` merges everything faster.
+- **Code ops moved to `/code` namespace**: `/code-scan`, `/code-refresh`, `/code-results`, `/code-analyze`, `/export-code-report` all live under `/code` (previously under `/analyze`). Slash shortcuts still work from any namespace.
+- **Doc ops enriched**: `/doc-analyze` and `/export-doc-report` live under `/docs`.
+
+### Changed
+- **`/analyze` is now lean**: only `/run`, `/run-apply`, and `/apply`. All scanning/agent/export commands belong to their source namespaces (`/code` or `/docs`).
+
+## [0.1.29] — 2026-04-21
+
+### Added
+- **`/run` and `/run-apply` accept positional table names** — e.g. `/run vbrk vbrp` or `/run-apply t001 --schema sap_s6p`. `/run-apply` supports the same `--schema`, `--table`, `--code-profile`, `--code-refresh` options as `/run`.
+- **`/code-results`** — view the last cached code-scan report for a profile without re-scanning.
+- **`/export-code-report [FILE]`** — export code-scan results (catalog hits, external identifiers, detailed snippets) to a markdown file.
+- **`/export-doc-report [FILE]`** — export a summary of the RAG document store (chunk counts per source) to a markdown file.
+
+### Changed
+- **Removed all "PostgreSQL" references** from help text, prompts, and comments — database engine is now generic ("database").
+- **Removed `/query` and `/similarity`** — only `/search-docs` remains.
+
+## [0.1.28] — 2026-04-21
+
+### Changed
+- **`/codebase` renamed to `/code-scan`** — the command now also scans **columns** (not just table names), builds the **semantic code index** (`amx_code`), and **saves results to cache** so the next `/run` reuses them without re-scanning.
+- **`/code-refresh`** no longer prints a warning when the `amx_code` Chroma collection doesn't exist yet (expected on first use).
+
 ## [0.1.27] — 2026-04-21
 
 ### Added

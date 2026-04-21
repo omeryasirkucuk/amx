@@ -7,7 +7,9 @@ from pathlib import Path
 
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion
 from amx.llm.provider import LLMProvider
+from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
+from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.profile")
 
@@ -68,7 +70,9 @@ class ProfileAgent(BaseAgent):
                 idx, len(batches), len(batch), col_names,
             )
             batch_ctx = self._ctx_with_columns(ctx, batch)
-            batch_suggestions = self._run_single_batch(batch_ctx, batch)
+            batch_suggestions = self._run_single_batch(
+                batch_ctx, batch, batch_label=f"batch {idx}/{len(batches)}"
+            )
             all_suggestions.extend(batch_suggestions)
 
         if not all_suggestions:
@@ -93,21 +97,28 @@ class ProfileAgent(BaseAgent):
         )
 
     def _run_single_batch(
-        self, ctx: AgentContext, columns: list
+        self, ctx: AgentContext, columns: list, *, batch_label: str = ""
     ) -> list[MetadataSuggestion]:
         user_msg = self._build_prompt(ctx)
         log.debug(
             "Profile agent prompt for %s.%s: %d chars, %d columns",
             ctx.schema, ctx.table, len(user_msg), len(columns),
         )
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
+        est = estimate_tokens(messages)
+        label = f"Profile Agent {batch_label}" if batch_label else "Profile Agent"
         try:
-            response = self.llm.chat([
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ])
+            with step_spinner(label, token_estimate=est):
+                result = self.llm.chat(messages)
         except Exception as exc:
             log.error("LLM call failed in profile agent: %s", exc)
             return []
+
+        tracker.record("profile_agent", est, result.usage)
+        response = result.content
 
         if not response or not response.strip():
             log.warning(

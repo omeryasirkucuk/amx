@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+import time
+from contextlib import contextmanager
+from typing import Any, Generator
 
 from prompt_toolkit import prompt as pt_prompt
 from rich import box
@@ -11,6 +13,7 @@ from rich.align import Align
 from prompt_toolkit.completion import WordCompleter
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
@@ -124,20 +127,43 @@ def ask_choice(question: str, choices: list[str], default: str = "") -> str:
 
 def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
     console.print(f"  [info]{question}[/info]")
-    console.print("  (enter comma-separated numbers or names, 'all' for everything)")
+    console.print(
+        "  (comma-separated numbers or names; `all` = everything; "
+        "Enter alone cancels — no accidental 'run on every table')"
+    )
     for i, c in enumerate(choices, 1):
         console.print(f"    {i}. {c}")
     raw = pt_prompt("  > ").strip()
+    if not raw:
+        return []
     if raw.lower() == "all":
         return choices
     selected: list[str] = []
     for token in raw.split(","):
         token = token.strip()
+        if not token:
+            continue
         if token.isdigit() and 1 <= int(token) <= len(choices):
             selected.append(choices[int(token) - 1])
-        elif token in choices:
+            continue
+        if token in choices:
             selected.append(token)
-    return selected or choices
+            continue
+        lower_matches = [c for c in choices if c.lower() == token.lower()]
+        if len(lower_matches) == 1:
+            selected.append(lower_matches[0])
+            continue
+        pref = [c for c in choices if c.lower().startswith(token.lower())]
+        if len(pref) == 1:
+            selected.append(pref[0])
+            continue
+        sub = [c for c in choices if token.lower() in c.lower()]
+        if len(sub) == 1:
+            selected.append(sub[0])
+            continue
+    if not selected:
+        warn(f"No option matched {raw!r}. Use numbers from the list, exact names, or `all`.")
+    return selected
 
 
 def confirm(question: str, default: bool = True) -> bool:
@@ -154,4 +180,85 @@ def render_table(title: str, columns: list[str], rows: list[list[Any]]) -> None:
         table.add_column(col, style="cyan")
     for row in rows:
         table.add_row(*[str(v) for v in row])
+    console.print(table)
+
+
+# ── Progress / spinner helpers ──────────────────────────────────────────────
+
+
+@contextmanager
+def step_spinner(
+    label: str,
+    *,
+    token_estimate: int | None = None,
+    done_message: str | None = None,
+) -> Generator[None, None, None]:
+    """Rich spinner that shows elapsed time and optional token estimate.
+
+    Usage::
+
+        with step_spinner("Profile Agent batch 1/3", token_estimate=1240):
+            result = llm.chat(messages)
+    """
+    tok = f" (~{token_estimate:,} input tokens)" if token_estimate else ""
+    t0 = time.monotonic()
+    with console.status(f"[info]{label}{tok}[/info]", spinner="dots") as status:
+        try:
+            yield
+        finally:
+            elapsed = time.monotonic() - t0
+            msg = done_message or label
+            status.update(f"[success]✓ {msg} ({elapsed:.1f}s)[/success]")
+    if done_message:
+        success(f"{done_message} ({elapsed:.1f}s)")
+    else:
+        success(f"{label} ({elapsed:.1f}s)")
+
+
+@contextmanager
+def file_progress(total: int, label: str = "Scanning files") -> Generator[Progress, None, None]:
+    """Rich progress bar for iterating over files."""
+    progress = Progress(
+        TextColumn("[info]{task.description}[/info]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    with progress:
+        task = progress.add_task(label, total=total)
+        progress._amx_task_id = task  # type: ignore[attr-defined]
+        yield progress
+
+
+def advance_file_progress(progress: Progress, filename: str = "") -> None:
+    """Advance the file progress bar by one step."""
+    task_id = getattr(progress, "_amx_task_id", None)
+    if task_id is not None:
+        if filename:
+            progress.update(task_id, description=f"Scanning: {filename}")
+        progress.advance(task_id)
+
+
+def render_token_summary(tracker: object) -> None:
+    """Render a Rich table summarising per-step token usage."""
+    from amx.utils.token_tracker import TokenTracker
+
+    if not isinstance(tracker, TokenTracker) or not tracker.has_records:
+        return
+    rows = tracker.summary()
+    table = Table(title="Token usage", show_lines=True, box=box.SIMPLE_HEAVY)
+    table.add_column("Step", style="cyan")
+    table.add_column("Input", justify="right")
+    table.add_column("Output", justify="right")
+    table.add_column("Total", justify="right", style="bold")
+    tot_in = tot_out = tot_all = 0
+    for step, inp, out, total in rows:
+        table.add_row(step, f"{inp:,}", f"{out:,}", f"{total:,}")
+        tot_in += inp
+        tot_out += out
+        tot_all += total
+    table.add_section()
+    table.add_row("[bold]TOTAL[/bold]", f"[bold]{tot_in:,}[/bold]", f"[bold]{tot_out:,}[/bold]", f"[bold]{tot_all:,}[/bold]")
     console.print(table)

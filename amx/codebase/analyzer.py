@@ -81,6 +81,21 @@ def _catalog_match(token: str, assets: set[str]) -> bool:
     return False
 
 
+def _canonical_catalog_ref_key(
+    token: str,
+    assets: set[str],
+    catalog_tables: frozenset[str],
+) -> str:
+    """Use bare table/column id when a qualified token's tail matches the catalog (same as sqlglot path)."""
+    tl = (token or "").strip().lower()
+    if not tl or "." not in tl:
+        return tl
+    tail = tl.rsplit(".", 1)[-1]
+    if tail in assets or (catalog_tables and tail in catalog_tables):
+        return tail
+    return tl
+
+
 def _append_ref(
     bucket: dict[str, list[CodeReference]],
     key: str,
@@ -180,7 +195,11 @@ def _scan_sqlglot_sql_file(
             )
             tail = token.rsplit(".", 1)[-1]
             if _catalog_match(token, assets) or (catalog_tables and tail in catalog_tables):
-                _append_ref(references, tail if tail in assets else token, ref)
+                _append_ref(
+                    references,
+                    _canonical_catalog_ref_key(token, assets, catalog_tables),
+                    ref,
+                )
             else:
                 _append_ref(external_mentions, token, ref)
 
@@ -214,13 +233,17 @@ def _scan_spark_sql_literals_in_line(
                 matched_asset=token.lower(),
                 context=ctx,
             )
-            key = token.lower()
+            tl = token.lower()
             if _catalog_match(token, assets) or (
                 catalog_tables and token.split(".")[-1].lower() in catalog_tables
             ):
-                _append_ref(references, key, ref)
+                _append_ref(
+                    references,
+                    _canonical_catalog_ref_key(tl, assets, catalog_tables),
+                    ref,
+                )
             else:
-                _append_ref(external_mentions, key, ref)
+                _append_ref(external_mentions, tl, ref)
 
     if rel_file.lower().endswith(".sql"):
         for m in _SQL_QUALIFIED.finditer(line):
@@ -235,10 +258,15 @@ def _scan_spark_sql_literals_in_line(
                 matched_asset=token.lower(),
                 context=ctx,
             )
+            tl = token.lower()
             if _catalog_match(token, assets):
-                _append_ref(references, token.lower(), ref)
+                _append_ref(
+                    references,
+                    _canonical_catalog_ref_key(tl, assets, catalog_tables),
+                    ref,
+                )
             else:
-                _append_ref(external_mentions, token.lower(), ref)
+                _append_ref(external_mentions, tl, ref)
 
 
 def _scan_python_ast_strings(
@@ -316,6 +344,7 @@ def analyze_codebase(
     *,
     known_catalog_tables: frozenset[str] | None = None,
     index_semantic: bool = False,
+    progress_callback: object | None = None,
 ) -> CodebaseReport:
     local_path = _clone_if_remote(path)
     root = Path(local_path).expanduser().resolve()
@@ -362,10 +391,22 @@ def analyze_codebase(
             exts,
         )
 
+    _cb = progress_callback if callable(progress_callback) else None
+    if _cb:
+        try:
+            _cb("__total__", len(code_files))
+        except Exception:
+            pass
+
     for fpath in code_files:
         try:
             lines = fpath.read_text(errors="replace").splitlines()
         except Exception:
+            if _cb:
+                try:
+                    _cb("__advance__", fpath.name)
+                except Exception:
+                    pass
             continue
         report.scanned_files += 1
         rel = str(fpath.relative_to(root))
@@ -420,6 +461,12 @@ def analyze_codebase(
                 report.references,
                 report.external_mentions,
             )
+
+        if _cb:
+            try:
+                _cb("__advance__", fpath.name)
+            except Exception:
+                pass
 
     ext_n = sum(len(v) for v in report.external_mentions.values())
     log.info(

@@ -22,7 +22,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Provide your own description
 - Skip individual items
 - Bulk-accept high-confidence results
-- Write approved metadata back to PostgreSQL as `COMMENT ON TABLE/COLUMN` (write-back support)
+- Write approved metadata back to the database as `COMMENT ON TABLE/COLUMN` (write-back support)
 
 ## Architecture
 
@@ -51,7 +51,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 ### Prerequisites
 
 - Python 3.10+
-- A PostgreSQL database you can connect to
+- A database you can connect to (PostgreSQL supported; more engines planned)
 - Access to at least one LLM provider you plan to configure (API key, local endpoint, etc.)
 
 ### Installation
@@ -73,14 +73,14 @@ amx setup
 ```
 
 This interactive wizard walks you through:
-1. **Database connection** — PostgreSQL host, port, credentials
+1. **Database connection** — host, port, credentials
 2. **AI model** — provider and API key (see [Supported LLM Providers](#supported-llm-providers))
 3. **Data sources** — optional named **document** and **codebase** profiles for RAG and code scanning
 
 In an interactive `amx` session, configuration is grouped by namespace:
 
-- `/db` — PostgreSQL profiles + introspection (`/db-profiles`, `/add-db-profile`, `/connect`, …)
-- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`, …)
+- `/db` — database profiles + introspection (`/db-profiles`, `/add-db-profile`, `/connect`, …)
+- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
 
@@ -102,8 +102,8 @@ amx
 /docs
 /add-doc-profile default
 /analyze
-/run --table t001 --table vbak
-/run-apply
+/run t001 vbak
+/run-apply t001 vbak
 /apply
 ```
 
@@ -129,24 +129,29 @@ amx
 | `/llm` + `/remove-llm-profile <name>` | Remove an LLM profile |
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
-| `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive); checks reachability only, full clone runs on `/analyze` `/run` |
+| `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
 | `/code` + `/remove-code-profile <name>` | Remove a codebase profile |
+| `/code` + `/code-scan [path]` | Scan codebase, save results + build `amx_code` semantic index. `--code-profile NAME` |
+| `/code` + `/code-refresh` | Clear scan cache and reset `amx_code` Chroma |
+| `/code` + `/code-results` | View the last cached code-scan results |
+| `/code` + `/code-analyze [TABLE …]` | Run Code Agent standalone (LLM); results saved for next `/run` |
+| `/code` + `/export-code-report [FILE]` | Export scan results to a markdown file |
 | `/docs` + `/doc-profiles` | List named document path profiles |
 | `/docs` + `/use-doc <name>` | Switch active document profile |
 | `/docs` + `/add-doc-profile [name]` | Add/update document roots (interactive) |
 | `/docs` + `/remove-doc-profile <name>` | Remove a document profile |
 | `/docs` + `/scan [paths...]` | Scan and preview documents for RAG (`--doc-profile NAME` when no paths) |
-| `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store (`--doc-profile`, `--refresh` to drop prior chunks for those sources) |
-| `/docs` + `/search-docs <text>` | Similarity search over ingested docs (Chroma vectors only; no LLM answer). Aliases: `/similarity`; `/query` is deprecated |
-| `/analyze` + `/run` | Run all agents and review suggestions (`--code-profile`, `--code-refresh` to rebuild cache + `amx_code` index) |
-| `/analyze` + `/run-apply` | Run analysis and apply approved metadata immediately |
-| `/analyze` + `/apply` | Write pending approved metadata back to PostgreSQL (`COMMENT ON ...`) |
-| `/analyze` + `/codebase [path] [--schema NAME]` | Scan a **local folder or Git URL** for table/column heuristics, Spark-style literals, and optional `sqlglot` on `.sql`. Omit `path` for the **active** profile, or use `--code-profile NAME` |
-| `/analyze` + `/code-refresh` | Clear `~/.amx/code_cache` for a profile path and reset the **`amx_code`** Chroma collection so the next `/run` rebuilds |
+| `/docs` + `/ingest [paths...]` | Ingest documents into the RAG vector store (`--doc-profile`, `--refresh`) |
+| `/docs` + `/search-docs <text>` | Similarity search over ingested docs (Chroma; no LLM) |
+| `/docs` + `/doc-analyze [TABLE …]` | Run RAG Agent standalone (LLM); results saved for next `/run` |
+| `/docs` + `/export-doc-report [FILE]` | Export RAG summary to a markdown file |
+| `/analyze` + `/run [TABLE …]` | Run all agents; tables as args or `--table`; `--code-profile`, `--code-refresh` |
+| `/analyze` + `/run-apply [TABLE …]` | Same as `/run --apply` |
+| `/analyze` + `/apply` | Write pending approved metadata to the database |
 
 ## Codebase and document intelligence
 
-- **Profiles without switching context**: use `--code-profile` / `--doc-profile` on CLI commands (or the same flags after `/codebase`, `/ingest`, `/run` in session) instead of `/use-code` / `/use-doc` first.
+- **Profiles without switching context**: use `--code-profile` / `--doc-profile` on CLI commands (or the same flags after `/code-scan`, `/ingest`, `/run` in session) instead of `/use-code` / `/use-doc` first.
 - **Code scan cache**: `~/.amx/code_cache/<slug>/` stores a manifest plus serialized scan results so `/run` does not re-walk the repo every time. Use **`--code-refresh`** or **`/code-refresh`** after the tree changes or when you want a clean semantic index.
 - **Semantic code RAG**: Chroma collection **`amx_code`** holds embedded chunks (Python by function/class span; other languages by text split). The Code Agent combines regex-style hits with a few nearest-neighbor chunks. This is **assistive**, not a proof of dataflow—wide schemas use **capped** table/column lists for performance.
 - **Identifiers outside the DB**: strings that look like catalog objects but are not in the connected table list appear as **secondary context** for the LLM (for example external lake tables).

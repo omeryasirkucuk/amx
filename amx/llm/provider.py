@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import litellm
@@ -35,6 +36,17 @@ PROVIDER_ENV_KEY = {
 # internal reasoning, leaving message.content empty with finish_reason=length.
 # Floor output budget + optional reasoning_effort (LiteLLM passes through to the API).
 _DEFAULT_REASONING_FLOOR = 16_384
+
+
+@dataclass
+class ChatResult:
+    """Return value of ``LLMProvider.chat`` — wraps the content string with usage metadata."""
+
+    content: str
+    usage: dict | None = None
+
+    def __str__(self) -> str:  # noqa: D105
+        return self.content
 
 
 def _openai_model_id(model: str) -> str:
@@ -83,7 +95,7 @@ class LLMProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         **kwargs: Any,
-    ) -> str:
+    ) -> ChatResult:
         model = self.model_name
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
@@ -119,12 +131,19 @@ class LLMProvider:
 
         content = resp.choices[0].message.content or ""
         finish = getattr(resp.choices[0], "finish_reason", None)
-        usage = getattr(resp, "usage", None)
+        raw_usage = getattr(resp, "usage", None)
+        usage_dict: dict | None = None
+        if raw_usage:
+            usage_dict = {
+                "prompt_tokens": getattr(raw_usage, "prompt_tokens", 0) or 0,
+                "completion_tokens": getattr(raw_usage, "completion_tokens", 0) or 0,
+                "total_tokens": getattr(raw_usage, "total_tokens", 0) or 0,
+            }
         log.debug(
             "LLM response: %d chars, finish_reason=%s, usage=%s",
             len(content),
             finish,
-            usage,
+            usage_dict,
         )
 
         if not content:
@@ -144,12 +163,12 @@ class LLMProvider:
                     finish,
                     model,
                 )
-        return content
+        return ChatResult(content=content, usage=usage_dict)
 
     def test(self) -> bool:
         try:
-            reply = self.chat([{"role": "user", "content": "Reply with OK"}])
-            return "ok" in reply.lower()
+            result = self.chat([{"role": "user", "content": "Reply with OK"}])
+            return "ok" in result.content.lower()
         except Exception as exc:
             log.error("LLM test failed: %s", exc)
             return False
