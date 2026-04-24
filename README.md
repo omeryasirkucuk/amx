@@ -298,6 +298,10 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
+### v0.1.38
+
+- **LiteLLM import stability**: LiteLLM is imported only when the first LLM call runs (avoids `litellm_core_utils` circular-import failures under Python 3.12+ / pipx). Minimum LiteLLM version is now **1.83.7**. If you use pipx: `pipx upgrade amx` (or `pipx inject amx 'litellm>=1.83.7'` on an older install).
+
 ### v0.1.37
 
 - **All database drivers in one install**: `pip install amx` now includes Snowflake, Databricks, and BigQuery SQLAlchemy stacks alongside PostgreSQL — no optional `[snowflake]` / `[bigquery]` extras.

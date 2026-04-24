@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.38] — 2026-04-24
+
+### Fixed
+
+- **LiteLLM circular import** (`partially initialized module 'litellm' … litellm_core_utils`): defer importing LiteLLM until the first LLM call, and require **LiteLLM ≥ 1.83.7** so older broken releases are not installed.
+
 ## [0.1.37] — 2026-04-24
 
 ### Changed
@@ -20,4 +26,5 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 See the **Changelog** section in [README.md](README.md).
 
+[0.1.38]: https://github.com/omeryasirkucuk/amx/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/omeryasirkucuk/amx/compare/v0.1.36...v0.1.37

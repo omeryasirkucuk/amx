@@ -4,15 +4,29 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from types import ModuleType
 from typing import Any
-
-import litellm
 
 from amx.config import LLMConfig
 from amx.utils.logging import get_logger
 
 log = get_logger("llm.provider")
+
+# Lazy import: LiteLLM has had circular-import issues when the top-level package is
+# pulled in during a heavy dependency graph (e.g. interactive /run). Defer import until
+# first LLM use. See https://github.com/BerriAI/litellm/issues/14717
+_litellm_module: ModuleType | None = None
+
+
+def _litellm() -> ModuleType:
+    global _litellm_module
+    if _litellm_module is None:
+        import litellm as lm
+
+        _litellm_module = lm
+    return _litellm_module
+
 
 PROVIDER_MODEL_PREFIX = {
     "openai": "openai/",
@@ -108,7 +122,7 @@ class LLMProvider:
     def supports_logprobs(self) -> bool:
         """True when the configured provider can return per-token logprobs."""
         try:
-            return litellm.supports_logprobs(model=self.model_name)
+            return _litellm().supports_logprobs(model=self.model_name)
         except Exception:
             return False
 
@@ -125,7 +139,7 @@ class LLMProvider:
         if self.cfg.api_base and self.cfg.provider in ("local", "kimi"):
             os.environ["OPENAI_API_BASE"] = self.cfg.api_base
             os.environ.setdefault("OPENAI_API_KEY", self.cfg.api_key or "local")
-        litellm.drop_params = True
+        _litellm().drop_params = True
 
     @property
     def model_name(self) -> str:
@@ -170,7 +184,7 @@ class LLMProvider:
 
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
         try:
-            resp = litellm.completion(
+            resp = _litellm().completion(
                 model=model,
                 messages=messages,
                 temperature=temperature or self.cfg.temperature,
