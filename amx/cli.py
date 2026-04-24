@@ -224,7 +224,8 @@ def _interactive_session(cfg: AMXConfig) -> None:
         }
     )
     _llm_cmd_heads = frozenset(
-        {"llm-profiles", "use-llm", "add-llm-profile", "remove-llm-profile"}
+        {"llm-profiles", "use-llm", "add-llm-profile", "remove-llm-profile",
+         "prompt-detail", "n-alternatives"}
     )
     _code_cmd_heads = frozenset({
         "code-profiles", "use-code", "add-code-profile", "remove-code-profile",
@@ -463,14 +464,21 @@ Navigation:
             """
 [heading]Help — /llm namespace[/heading]
 Commands (in order):
-  1) /back                         Return to root namespace
-  2) /llm-profiles                 List LLM profiles
-  3) /use-llm <name>               Switch active LLM profile
-  4) /add-llm-profile [name]       Add/update an LLM profile (interactive)
-  5) /remove-llm-profile <name>    Remove an LLM profile
+  1) /back                              Return to root namespace
+  2) /llm-profiles                      List LLM profiles
+  3) /use-llm <name>                    Switch active LLM profile
+  4) /add-llm-profile [name]            Add/update an LLM profile (interactive)
+  5) /remove-llm-profile <name>         Remove an LLM profile
+  6) /prompt-detail [level]             Show or set the prompt detail level
+                                          Levels: minimal | standard | detailed | full
+                                          Controls which DB fields are included in the LLM prompt.
+                                          Run without args to show the current level + what each
+                                          preset includes.
+  7) /n-alternatives [N]                Show or set number of description alternatives per column
+                                          Range: 1 – 5  (default: 3)
 
 Navigation:
-  Esc (empty line)                 Go back to root namespace
+  Esc (empty line)                      Go back to root namespace
 """
         )
         return
@@ -666,6 +674,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
         ("/add-llm-profile", "Add/update LLM profile"),
         ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
+        ("/prompt-detail", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
+        ("/n-alternatives", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
     ]
 
     code_cmds: list[tuple[str, str]] = [
@@ -750,6 +760,16 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
         if not _require_namespace(head, namespace, "llm", "remove-llm-profile"):
             return True
         _cmd_remove_llm_profile(cfg, parts[1:])
+        return True
+    if head == "prompt-detail":
+        if not _require_namespace(head, namespace, "llm", "prompt-detail"):
+            return True
+        _cmd_prompt_detail(cfg, parts[1:])
+        return True
+    if head == "n-alternatives":
+        if not _require_namespace(head, namespace, "llm", "n-alternatives"):
+            return True
+        _cmd_n_alternatives(cfg, parts[1:])
         return True
     if head == "doc-profiles":
         if not _require_namespace(head, namespace, "docs", "doc-profiles"):
@@ -1080,6 +1100,109 @@ def _cmd_remove_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
         success(f"Removed LLM profile: {name} (active: {cfg.active_llm_profile})")
     except Exception as exc:
         error(str(exc))
+
+
+def _cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the prompt detail level for the active LLM profile."""
+    from amx.config import PROMPT_DETAIL_LEVELS, prompt_detail_for
+
+    if not rest:
+        # Show current level + comparison table
+        current = cfg.llm.prompt_detail or "standard"
+        heading(f"Prompt detail level: {current}")
+        rows = []
+        flags = [
+            ("samples", "include_samples"),
+            ("null counts", "include_null_counts"),
+            ("min / max", "include_min_max"),
+            ("cardinality ratio", "include_cardinality"),
+            ("col. comment", "include_existing_col_comment"),
+            ("PK / FK keys", "include_pk_fk"),
+            ("unique+check constraints", "include_unique_check"),
+            ("usage stats (pg_stat)", "include_usage_stats"),
+            ("schema+db comments", "include_schema_db_comments"),
+            ("FK neighbour comments", "include_related_comments"),
+            ("RAG table hits", "rag_table_hits"),
+            ("RAG col hits", "rag_col_hits"),
+            ("RAG max chunks", "rag_max_chunks"),
+        ]
+        for label, attr in flags:
+            row = [label]
+            for lv in PROMPT_DETAIL_LEVELS:
+                pd = prompt_detail_for(lv)
+                val = getattr(pd, attr)
+                if isinstance(val, bool):
+                    mark = "✓" if val else "—"
+                else:
+                    mark = str(val)
+                row.append(f"[{'success' if val else 'dim'}]{mark}[/]" if isinstance(val, bool) else mark)
+            rows.append(row)
+        render_table(
+            "Preset comparison",
+            ["Field", *PROMPT_DETAIL_LEVELS],
+            rows,
+        )
+        info(
+            f"Current level: [cyan]{current}[/cyan]  "
+            f"(n_alternatives={cfg.llm.n_alternatives})  "
+            "— run [cyan]/prompt-detail <level>[/cyan] to change."
+        )
+        return
+
+    level = rest[0].lower().strip()
+    if level not in PROMPT_DETAIL_LEVELS:
+        error(
+            f"Unknown level: {level!r}. "
+            f"Valid levels: {', '.join(PROMPT_DETAIL_LEVELS)}"
+        )
+        return
+
+    cfg.llm.prompt_detail = level
+    # Persist to the active profile so it survives session
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].prompt_detail = level
+    cfg.save()
+    success(f"Prompt detail set to [cyan]{level}[/cyan] and saved.")
+    pd = prompt_detail_for(level)
+    info(
+        f"  samples={pd.include_samples}(max={pd.max_samples})  "
+        f"null_counts={pd.include_null_counts}  "
+        f"min_max={pd.include_min_max}  "
+        f"cardinality={pd.include_cardinality}  "
+        f"pk_fk={pd.include_pk_fk}  "
+        f"usage_stats={pd.include_usage_stats}  "
+        f"rag_chunks={pd.rag_max_chunks}"
+    )
+
+
+def _cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set number of description alternatives per column."""
+    if not rest:
+        current = getattr(cfg.llm, "n_alternatives", 3)
+        info(
+            f"Current n_alternatives: [cyan]{current}[/cyan]  "
+            "(1 = cheapest, 5 = maximum alternatives)  "
+            "— run [cyan]/n-alternatives <N>[/cyan] to change."
+        )
+        return
+
+    try:
+        n = int(rest[0])
+    except ValueError:
+        error(f"Expected an integer 1–5, got: {rest[0]!r}")
+        return
+
+    if not 1 <= n <= 5:
+        error("n_alternatives must be between 1 and 5.")
+        return
+
+    cfg.llm.n_alternatives = n
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].n_alternatives = n
+    cfg.save()
+    cost_note = {1: "cheapest — 1 option shown at review", 2: "lean", 3: "balanced (default)",
+                 4: "rich", 5: "maximum context, highest cost"}.get(n, "")
+    success(f"n_alternatives set to [cyan]{n}[/cyan] ({cost_note}) and saved.")
 
 
 def _cmd_doc_profiles(cfg: AMXConfig) -> None:

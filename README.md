@@ -143,6 +143,8 @@ amx
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
 | `/llm` + `/add-llm-profile [name]` | Add/update an LLM profile (interactive) |
 | `/llm` + `/remove-llm-profile <name>` | Remove an LLM profile |
+| `/llm` + `/prompt-detail [level]` | Show or set prompt detail level (`minimal` \| `standard` \| `detailed` \| `full`). Run without args to see a comparison table of all presets. |
+| `/llm` + `/n-alternatives [N]` | Show or set number of description alternatives per column (1–5, default 3). Fewer = lower cost. |
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
 | `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
@@ -330,6 +332,18 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.40
+
+- **Prompt detail presets**: New `PromptDetail` system with four named levels — `minimal`, `standard`
+  (default), `detailed`, `full` — controlling exactly which database context fields (samples,
+  min/max, cardinality, usage stats, FK comments, RAG chunk counts, etc.) are included in each
+  LLM prompt. **Nothing is removed**; all fields remain accessible via the `full` or `detailed`
+  presets. Switch with `/llm` → `/prompt-detail <level>`. Settings are saved per LLM profile.
+- **Configurable alternatives count**: `n_alternatives` (1–5) controls how many description
+  alternatives the LLM generates per column. Fewer alternatives = fewer output tokens = lower
+  cost at review time. Set with `/llm` → `/n-alternatives <N>`.
+- **`max_tokens` default** lowered from 16384 to 4096 (reasoning models still auto-raise).
 
 ### v0.1.39
 

@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.40] — 2026-04-25
+
+### Added
+
+- **Prompt detail presets** (`PromptDetail` dataclass + `prompt_detail_for(level)` in `config.py`):
+  Four named presets — `minimal`, `standard` (new default), `detailed`, `full` — control exactly
+  which database context fields are sent to the LLM in every prompt. Fields include:
+  sample values, null counts, min/max, cardinality ratio, PK/FK keys, unique/check constraints,
+  usage stats (pg_stat), schema/DB comments, FK neighbour comments, and RAG chunk counts.
+  Nothing is removed — any field can be re-enabled by switching presets.
+- **`/llm` → `/prompt-detail [level]`**: Shows a comparison table of all four presets and their
+  flags. When given a level name, sets and saves it to the active LLM profile.
+- **Configurable alternatives count** (`n_alternatives: int` in `LLMConfig`, default 3, range 1–5):
+  The number of description alternatives the LLM is asked to generate per column. Fewer
+  alternatives = fewer output tokens = lower cost. Stored in `~/.amx/config.yml`.
+- **`/llm` → `/n-alternatives [N]`**: Shows current value or sets it with a plain integer.
+- **All three agents** (`ProfileAgent`, `RAGAgent`, `CodeAgent`) now build their system prompts
+  dynamically based on `n_alternatives`, so the prompt template always matches what is requested.
+- **`max_tokens` default lowered** from 16384 to 4096 in `LLMConfig`.
+  Reasoning models (gpt-5, o-series) still auto-raise to 16384 as before.
+
 ## [0.1.39] — 2026-04-24
 
 ### Added
@@ -52,6 +73,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 See the **Changelog** section in [README.md](README.md).
 
+[0.1.40]: https://github.com/omeryasirkucuk/amx/compare/v0.1.39...v0.1.40
 [0.1.39]: https://github.com/omeryasirkucuk/amx/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/omeryasirkucuk/amx/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/omeryasirkucuk/amx/compare/v0.1.36...v0.1.37

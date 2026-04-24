@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
+from amx.config import PromptDetail, prompt_detail_for
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
@@ -13,22 +14,22 @@ from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.profile")
 
-SYSTEM_PROMPT = """\
+_BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert. Given database profile information for a table
 and its columns, infer what each column likely represents.
 
 For EACH column provide:
 1. A concise description (1-2 sentences).
-2. Up to 3 alternative descriptions ranked by likelihood.
-3. A confidence level: HIGH / MEDIUM / LOW.
-4. Brief reasoning for your choice.
+{alt_instruction}
+{extra_items}
+A confidence level: HIGH / MEDIUM / LOW.
+Brief reasoning for your choice.
 
 Respond in this exact format for each column (one block per column):
 
 COLUMN: <column_name>
 DESCRIPTION_1: <most likely description>
-DESCRIPTION_2: <alternative>
-DESCRIPTION_3: <alternative>
+{desc_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why you think so>
 
@@ -38,6 +39,27 @@ TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>
 """
 
 
+def _build_system_prompt(n_alternatives: int) -> str:
+    """Build the system prompt dynamically for the requested number of alternatives."""
+    n = max(1, min(5, n_alternatives))
+    if n == 1:
+        alt_instruction = ""
+        extra_items = ""
+        desc_lines = ""
+    else:
+        alt_instruction = f"Up to {n} alternative descriptions ranked by likelihood."
+        extra_items = ""
+        desc_lines = "\n".join(
+            f"DESCRIPTION_{i}: <alternative>"
+            for i in range(2, n + 1)
+        )
+    return _BASE_SYSTEM_PROMPT.format(
+        alt_instruction=alt_instruction,
+        extra_items=extra_items,
+        desc_lines=desc_lines,
+    ).strip() + "\n"
+
+
 class ProfileAgent(BaseAgent):
     name = "profile_agent"
 
@@ -45,6 +67,14 @@ class ProfileAgent(BaseAgent):
         self.llm = llm
 
     BATCH_SIZE = 10
+
+    @property
+    def _n_alternatives(self) -> int:
+        return max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
+
+    @property
+    def _prompt_detail(self) -> PromptDetail:
+        return self.llm.cfg.prompt_detail_cfg
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
         profile = ctx.db_profile
@@ -145,8 +175,9 @@ class ProfileAgent(BaseAgent):
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
         """Build the messages list for a single profile batch — shared by run() and collect_messages()."""
         user_msg = self._build_prompt(ctx)
+        system = _build_system_prompt(self._n_alternatives)
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
 
@@ -267,44 +298,73 @@ class ProfileAgent(BaseAgent):
         return None
 
     def _build_prompt(self, ctx: AgentContext) -> str:
+        pd = self._prompt_detail
         p = ctx.db_profile
         lines = [
             f"Database: {ctx.existing_metadata.get('database', 'N/A')}",
             f"Schema: {ctx.schema}",
             f"Table: {ctx.table}",
             f"Row count: {p.get('row_count', 'N/A')}",
-            f"Usage stats ({p.get('stats_source', 'database')}): seq_scan={p.get('stats_seq_scan', 0)}, idx_scan={p.get('stats_idx_scan', 0)}, n_live_tup={p.get('stats_n_live_tup', 0)}",
-            f"Existing table comment: {p.get('existing_comment') or 'None'}",
-            f"Existing schema comment: {p.get('schema_comment') or 'None'}",
-            f"Existing database comment: {p.get('database_comment') or 'None'}",
-            f"Primary key: {p.get('primary_key') or []}",
-            f"Outgoing foreign keys (upstream dependencies): {p.get('foreign_keys') or []}",
-            f"Incoming foreign keys (downstream dependents): {p.get('referenced_by') or []}",
-            f"Unique constraints: {p.get('unique_constraints') or []}",
-            f"Check constraints: {p.get('check_constraints') or []}",
-            "",
-            "Related table comments (FK neighbors):",
         ]
-        for rel in p.get("related_comments", []):
+
+        # ── Usage stats (pg_stat) ─────────────────────────────────────────────
+        if pd.include_usage_stats:
             lines.append(
-                f"  - {rel.get('schema')}.{rel.get('table')}: {rel.get('comment') or 'None'}"
+                f"Usage stats ({p.get('stats_source', 'database')}): "
+                f"seq_scan={p.get('stats_seq_scan', 0)}, "
+                f"idx_scan={p.get('stats_idx_scan', 0)}, "
+                f"n_live_tup={p.get('stats_n_live_tup', 0)}"
             )
-        lines.extend(
-            [
-                "",
-            "Columns:",
-            ]
-        )
+
+        # ── Existing comments ────────────────────────────────────────────────
+        lines.append(f"Existing table comment: {p.get('existing_comment') or 'None'}")
+        if pd.include_schema_db_comments:
+            lines.append(f"Existing schema comment: {p.get('schema_comment') or 'None'}")
+            lines.append(f"Existing database comment: {p.get('database_comment') or 'None'}")
+
+        # ── Keys and constraints ────────────────────────────────────────────
+        if pd.include_pk_fk:
+            lines.append(f"Primary key: {p.get('primary_key') or []}")
+            lines.append(f"Outgoing foreign keys (upstream dependencies): {p.get('foreign_keys') or []}")
+            lines.append(f"Incoming foreign keys (downstream dependents): {p.get('referenced_by') or []}")
+        if pd.include_unique_check:
+            lines.append(f"Unique constraints: {p.get('unique_constraints') or []}")
+            lines.append(f"Check constraints: {p.get('check_constraints') or []}")
+
+        # ── FK neighbour comments ───────────────────────────────────────────
+        if pd.include_related_comments:
+            related = p.get("related_comments", []) or []
+            if related:
+                lines.append("")
+                lines.append("Related table comments (FK neighbors):")
+                for rel in related:
+                    lines.append(
+                        f"  - {rel.get('schema')}.{rel.get('table')}: "
+                        f"{rel.get('comment') or 'None'}"
+                    )
+
+        # ── Columns ────────────────────────────────────────────────────────
+        lines.extend(["", "Columns:"])
         for col in p.get("columns", []):
-            lines.append(
-                f"  - {col['name']} | type={col['dtype']} | "
-                f"nulls={col['null_count']}/{col['row_count']} | "
-                f"distinct={col['distinct_count']} | "
-                f"cardinality_ratio={col.get('cardinality_ratio', 0.0):.4f} | "
-                f"min={col['min_val']} | max={col['max_val']} | "
-                f"samples={col['samples']} | "
-                f"existing_comment={col.get('existing_comment') or 'None'}"
-            )
+            parts = [
+                f"  - {col['name']}",
+                f"type={col['dtype']}",
+            ]
+            if pd.include_null_counts:
+                parts.append(f"nulls={col['null_count']}/{col['row_count']}")
+            if pd.include_cardinality:
+                parts.append(f"distinct={col['distinct_count']}")
+                parts.append(f"cardinality_ratio={col.get('cardinality_ratio', 0.0):.4f}")
+            if pd.include_min_max:
+                parts.append(f"min={col['min_val']}")
+                parts.append(f"max={col['max_val']}")
+            if pd.include_samples and col.get("samples"):
+                samples = col["samples"][: pd.max_samples]
+                parts.append(f"samples={samples}")
+            if pd.include_existing_col_comment:
+                parts.append(f"existing_comment={col.get('existing_comment') or 'None'}")
+            lines.append(" | ".join(parts))
+
         return "\n".join(lines)
 
     def _parse_response(self, text: str, ctx: AgentContext) -> list[MetadataSuggestion]:

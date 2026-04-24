@@ -11,7 +11,7 @@ from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.code")
 
-SYSTEM_PROMPT = """\
+_BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert analyzing how database tables and columns are used
 in application code to understand their meaning.
 
@@ -25,11 +25,19 @@ Respond in this format for each column (one block per column):
 
 COLUMN: <column_name>
 DESCRIPTION_1: <best description based on code usage>
-DESCRIPTION_2: <alternative>
-DESCRIPTION_3: <alternative>
+{desc_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <what code patterns support this>
 """
+
+
+def _build_system_prompt(n_alternatives: int) -> str:
+    n = max(1, min(5, n_alternatives))
+    desc_lines = "\n".join(
+        f"DESCRIPTION_{i}: <alternative>"
+        for i in range(2, n + 1)
+    ) if n > 1 else ""
+    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines).strip() + "\n"
 
 
 class CodeAgent(BaseAgent):
@@ -38,6 +46,10 @@ class CodeAgent(BaseAgent):
     def __init__(self, llm: LLMProvider, report: CodebaseReport | None = None):
         self.llm = llm
         self.report = report
+
+    @property
+    def _n_alternatives(self) -> int:
+        return max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
 
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
         """Build the Code Agent prompt messages. Returns ``None`` when no code context exists."""
@@ -123,8 +135,9 @@ class CodeAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Code references:\n\n" + "\n\n".join(all_code_blocks)
         )
+        system = _build_system_prompt(self._n_alternatives)
         return [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
 

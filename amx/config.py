@@ -15,6 +15,134 @@ SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 DISABLED_PROFILE = "__none__"
 
 
+# ── Prompt Detail Levels ──────────────────────────────────────────────────────
+
+
+@dataclass
+class PromptDetail:
+    """Controls which database context fields are included in every LLM prompt.
+
+    Reducing detail lowers input-token cost; increasing detail may improve
+    inference quality for ambiguous schemas. Use ``prompt_detail_for()`` to
+    get a named preset, or construct your own by overriding individual flags.
+    """
+
+    # --- Column-level fields ---
+    include_samples: bool = True       # Sample values per column
+    max_samples: int = 3               # How many sample values to include (when enabled)
+    include_null_counts: bool = True   # null_count / row_count
+    include_min_max: bool = True       # min_val / max_val
+    include_cardinality: bool = False  # distinct_count + cardinality_ratio
+    include_existing_col_comment: bool = True  # existing DB comment on the column
+
+    # --- Table-level fields ---
+    include_pk_fk: bool = True         # Primary key + outgoing/incoming foreign keys
+    include_unique_check: bool = False  # Unique constraints + check constraints
+    include_usage_stats: bool = False  # seq_scan / idx_scan / n_live_tup from pg_stat
+    include_schema_db_comments: bool = False  # Schema-level and database-level comments
+    include_related_comments: bool = False    # Existing comments on FK-neighbour tables
+
+    # --- RAG agent tuning ---
+    rag_table_hits: int = 5   # Doc chunks fetched for the table-level query
+    rag_col_hits: int = 1     # Doc chunks fetched per column query
+    rag_max_chunks: int = 8   # Hard cap on total chunks injected into the RAG prompt
+
+
+PROMPT_DETAIL_LEVELS = ("minimal", "standard", "detailed", "full")
+
+
+def prompt_detail_for(level: str) -> PromptDetail:
+    """Return a ``PromptDetail`` preset for the given level name.
+
+    Presets (cheapest → most expensive):
+
+    ``minimal``
+        Column names + types + null counts only. No samples, no stats, no FK
+        constraints, no RAG column queries. Fastest and cheapest.
+
+    ``standard`` (default)
+        Adds samples (3 per col), min/max, PK + FK keys, existing col comments,
+        and light RAG retrieval. Good balance for most schemas.
+
+    ``detailed``
+        Adds cardinality ratio, distinct count, unique/check constraints,
+        schema/DB comments, related FK comments, and deeper RAG retrieval.
+
+    ``full``
+        Everything — original AMX behaviour before preset support was added.
+        Use this when you need maximum context regardless of token cost.
+    """
+    lv = (level or "standard").lower().strip()
+    if lv == "minimal":
+        return PromptDetail(
+            include_samples=False,
+            max_samples=0,
+            include_null_counts=True,
+            include_min_max=False,
+            include_cardinality=False,
+            include_existing_col_comment=True,
+            include_pk_fk=True,
+            include_unique_check=False,
+            include_usage_stats=False,
+            include_schema_db_comments=False,
+            include_related_comments=False,
+            rag_table_hits=3,
+            rag_col_hits=0,
+            rag_max_chunks=5,
+        )
+    if lv == "detailed":
+        return PromptDetail(
+            include_samples=True,
+            max_samples=5,
+            include_null_counts=True,
+            include_min_max=True,
+            include_cardinality=True,
+            include_existing_col_comment=True,
+            include_pk_fk=True,
+            include_unique_check=True,
+            include_usage_stats=True,
+            include_schema_db_comments=True,
+            include_related_comments=True,
+            rag_table_hits=8,
+            rag_col_hits=2,
+            rag_max_chunks=12,
+        )
+    if lv == "full":
+        return PromptDetail(
+            include_samples=True,
+            max_samples=5,
+            include_null_counts=True,
+            include_min_max=True,
+            include_cardinality=True,
+            include_existing_col_comment=True,
+            include_pk_fk=True,
+            include_unique_check=True,
+            include_usage_stats=True,
+            include_schema_db_comments=True,
+            include_related_comments=True,
+            rag_table_hits=5,
+            rag_col_hits=2,
+            rag_max_chunks=15,
+        )
+    # "standard" — default
+    return PromptDetail(
+        include_samples=True,
+        max_samples=3,
+        include_null_counts=True,
+        include_min_max=True,
+        include_cardinality=False,
+        include_existing_col_comment=True,
+        include_pk_fk=True,
+        include_unique_check=False,
+        include_usage_stats=False,
+        include_schema_db_comments=False,
+        include_related_comments=False,
+        rag_table_hits=5,
+        rag_col_hits=1,
+        rag_max_chunks=8,
+    )
+
+
 @dataclass
 class DBConfig:
     backend: str = "postgresql"
@@ -162,19 +290,29 @@ class LLMConfig:
     api_key: str = ""
     api_base: str | None = None
     temperature: float = 0.2
-    max_tokens: int = 16384
+    max_tokens: int = 4096  # reduced from 16384; reasoning models raise this automatically
     completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
+    n_alternatives: int = 3   # how many description alternatives per column (1–5)
+    prompt_detail: str = "standard"  # minimal | standard | detailed | full
+
+    @property
+    def prompt_detail_cfg(self) -> PromptDetail:
+        """Return the resolved PromptDetail dataclass for this config's level."""
+        return prompt_detail_for(self.prompt_detail)
 
 
 def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
+    n_alt = int(m.get("n_alternatives", 3))
     return LLMConfig(
         provider=str(m.get("provider", "")),
         model=str(m.get("model", "")),
         api_key=str(m.get("api_key", "")),
         api_base=m.get("api_base"),
         temperature=float(m.get("temperature", 0.2)),
-        max_tokens=int(m.get("max_tokens", 2048)),
+        max_tokens=int(m.get("max_tokens", 4096)),
         completion_mode=str(m.get("completion_mode", "chat_completions")),
+        n_alternatives=max(1, min(5, n_alt)),
+        prompt_detail=str(m.get("prompt_detail", "standard")),
     )
 
 
@@ -187,6 +325,8 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "temperature": llm.temperature,
         "max_tokens": llm.max_tokens,
         "completion_mode": llm.completion_mode,
+        "n_alternatives": llm.n_alternatives,
+        "prompt_detail": llm.prompt_detail,
     }
 
 
