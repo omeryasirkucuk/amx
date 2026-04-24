@@ -41,7 +41,7 @@ def show_banner(force: bool = False) -> None:
     if os.getenv("AMX_NO_BANNER", "").lower() in {"1", "true", "yes"}:
         return
 
-    title = Text("* AMX (Agentic Metadata Extractor) — Initialization & Setup *", style="bold cyan")
+    title = Text("* AMX (Agentic Metadata Extractor) *", style="bold cyan")
     art = Text(
         "\n".join(
             [
@@ -55,10 +55,7 @@ def show_banner(force: bool = False) -> None:
         ),
         style="bold bright_cyan",
     )
-    subtitle = Text(
-        "Metadata Extraction System | Multi-Source Inference Pipeline",
-        style="bold #66ffff",
-    )
+    subtitle = Text("Metadata Extraction System", style="bold #66ffff")
 
     content = Text.assemble(title, "\n\n", art, "\n", subtitle)
     console.print(
@@ -119,8 +116,7 @@ def ask_choice(
         mark = " — default (Enter)" if default and c == default else ""
         desc = f"  [dim]{descriptions[c]}[/dim]" if descriptions and c in descriptions else ""
         console.print(f"    {i}. [bold]{c}[/bold]{desc}[dim]{mark}[/dim]")
-    if default and default in choices:
-        console.print("  [dim]Enter = default · or type a number 1–%d[/dim]" % len(choices))
+    # Keep the prompt minimal: users can press Enter for default without extra hint text.
     # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.
     answer = pt_prompt("  > ", completer=completer).strip()
     if not answer:

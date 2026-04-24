@@ -4,7 +4,33 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.39] — 2026-04-24
+
+### Added
+
+- **Persistent LLM alternatives** (`run_results` table in `~/.amx/history.db`):  
+  Every set of LLM-generated descriptions is now saved to SQLite before the user evaluates it,
+  keyed by `run_id` + timestamp. Multiple runs over the same table are fully tracked.
+- **`/history results <run_id>`**: Tabular view of all saved alternatives for any past run,
+  including confidence, source, evaluation status, chosen description, and evaluation timestamp.
+- **`/history review <run_id>`**: Interactive re-evaluation of past run alternatives.
+  Supports `--unevaluated-only` (skip already-evaluated rows) and `--apply` (write
+  approved comments to the database immediately). Evaluation decisions (accepted / skipped /
+  custom) are recorded back into SQLite with a timestamp.
+- The `Orchestrator` now accepts a `run_id` parameter; it persists all merged suggestions
+  before calling `_human_review`, and records each evaluation decision as it is made.
+
 ## [0.1.38] — 2026-04-24
+
+### Added
+
+- **SQLite history backend** (`~/.amx/history.db`) auto-initialized on startup.
+- New **`/history` namespace** with query commands:
+  - `/history list`
+  - `/history show <run_id>`
+  - `/history stats`
+  - `/history events`
+- App event tracking for key actions (profile switches, analyze run status, apply outcomes).
 
 ### Fixed
 
@@ -26,5 +52,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 See the **Changelog** section in [README.md](README.md).
 
+[0.1.39]: https://github.com/omeryasirkucuk/amx/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/omeryasirkucuk/amx/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/omeryasirkucuk/amx/compare/v0.1.36...v0.1.37

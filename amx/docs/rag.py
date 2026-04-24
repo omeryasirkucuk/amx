@@ -43,7 +43,11 @@ LOADER_MAP = {
 
 
 class RAGStore:
-    def __init__(self, persist_dir: str | None = None):
+    def __init__(
+        self,
+        persist_dir: str | None = None,
+        source_filters: list[str] | None = None,
+    ):
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
@@ -56,6 +60,7 @@ class RAGStore:
             chunk_overlap=200,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
+        self.source_filters = [s for s in (source_filters or []) if s]
 
     def delete_chunks_for_sources(self, sources: list[str]) -> int:
         """Remove all chunks whose metadata ``source`` equals one of the given paths (exact match)."""
@@ -113,10 +118,13 @@ class RAGStore:
         results = self.collection.query(query_texts=[question], n_results=n_results)
         hits: list[dict] = []
         for i in range(len(results["documents"][0])):
+            meta = results["metadatas"][0][i]
+            if not self._source_allowed(meta):
+                continue
             hits.append(
                 {
                     "text": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
+                    "metadata": meta,
                     "distance": results["distances"][0][i] if results.get("distances") else None,
                 }
             )
@@ -124,4 +132,30 @@ class RAGStore:
 
     @property
     def doc_count(self) -> int:
+        if self.source_filters:
+            return self.filtered_doc_count()
         return self.collection.count()
+
+    def filtered_doc_count(self) -> int:
+        """Count chunks visible under source filters."""
+        if not self.source_filters:
+            return self.collection.count()
+        try:
+            rows = self.collection.get(include=["metadatas"])
+            metas = rows.get("metadatas") or []
+            return sum(1 for m in metas if self._source_allowed(m))
+        except Exception:
+            return 0
+
+    def _source_allowed(self, metadata: dict | None) -> bool:
+        if not self.source_filters:
+            return True
+        if not metadata:
+            return False
+        src = str(metadata.get("source") or "")
+        if not src:
+            return False
+        for root in self.source_filters:
+            if src == root or src.startswith(root):
+                return True
+        return False

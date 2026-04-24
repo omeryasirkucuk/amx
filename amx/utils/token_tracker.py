@@ -95,5 +95,18 @@ class TokenTracker:
     def has_records(self) -> bool:
         return bool(self._records)
 
+    def records(self) -> list[dict[str, int | str]]:
+        """Return raw token records for persistence/analytics."""
+        return [
+            {
+                "step": r.step,
+                "input_estimate": r.input_estimate,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "total_tokens": r.total_tokens,
+            }
+            for r in self._records
+        ]
+
 
 tracker = TokenTracker()

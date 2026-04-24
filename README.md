@@ -164,6 +164,12 @@ amx
 | `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
 | `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
+| `/history` + `/list [-n N]` | List recent analyze runs from SQLite |
+| `/history` + `/show <run_id>` | Show full JSON payload for one run (scope, metrics, tokens, results, errors) |
+| `/history` + `/stats` | Aggregate local run/event statistics |
+| `/history` + `/events [-n N]` | List recent app events (profile switches, run status, apply outcomes, etc.) |
+| `/history` + `/results <run_id>` | Show all saved LLM alternatives for a past run (table, column, confidence, choices, evaluation status) |
+| `/history` + `/review <run_id>` | Re-evaluate saved alternatives for a past run; `--unevaluated-only` to skip already-decided rows; `--apply` to write to DB immediately |
 
 ## Codebase and document intelligence
 
@@ -262,6 +268,33 @@ AMX does not send full table dumps; it sends summarized profiling signals and sm
 
 AMX stores its configuration at `~/.amx/config.yml`. To use a different file, start the CLI with `amx --config path/to/config.yml`.
 
+## Local SQLite history
+
+AMX automatically initializes a local SQLite database at:
+
+- `~/.amx/history.db`
+
+Current persisted data includes:
+
+- `/analyze run` history (status, mode, duration, backend/provider/model, scope)
+- token usage (summary + per-step records)
+- approved/skipped metadata results
+- run failures (error text)
+- app events (profile switches, apply outcomes, run success/failure)
+- **all LLM-generated alternatives per column/table per run** — every merged suggestion set is
+  saved before human review so you can revisit and change your mind at any time
+
+Query it directly in AMX via `/history` namespace:
+
+| Command | Description |
+|---------|-------------|
+| `/list [-n N]` | Recent runs |
+| `/show <run_id>` | Full run JSON |
+| `/stats` | Aggregate stats |
+| `/events [-n N]` | App events |
+| `/results <run_id>` | All saved LLM alternatives for a run |
+| `/review <run_id>` | Re-evaluate alternatives interactively; `--unevaluated-only` / `--apply` |
+
 ## Project Structure
 
 ```
@@ -298,9 +331,21 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
+### v0.1.39
+
+- **Persistent LLM alternatives**: Every set of LLM-generated descriptions is now saved to
+  `~/.amx/history.db` (`run_results` table) before the user evaluates it, keyed by run ID and
+  timestamp. Multiple runs over the same table or different assets are all tracked independently.
+- **`/history results <run_id>`**: Display all saved alternatives for a past run — confidence,
+  source, evaluation status, chosen description, and evaluation timestamp.
+- **`/history review <run_id>`**: Interactively re-evaluate any past run's alternatives.
+  Use `--unevaluated-only` to skip already-decided rows, and `--apply` to write approved
+  descriptions directly to the database. Evaluation decisions are recorded in SQLite with timestamps.
+
 ### v0.1.38
 
 - **LiteLLM import stability**: LiteLLM is imported only when the first LLM call runs (avoids `litellm_core_utils` circular-import failures under Python 3.12+ / pipx). Minimum LiteLLM version is now **1.83.7**. If you use pipx: `pipx upgrade amx` (or `pipx inject amx 'litellm>=1.83.7'` on an older install).
+- **SQLite history backend**: AMX now auto-creates `~/.amx/history.db` and persists run metadata, performance, token usage, results, and app events. New `/history` namespace lets users query this data without leaving AMX.
 
 ### v0.1.37
 

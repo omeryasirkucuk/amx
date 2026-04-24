@@ -12,6 +12,7 @@ import yaml
 
 
 SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
+DISABLED_PROFILE = "__none__"
 
 
 @dataclass
@@ -419,6 +420,8 @@ class AMXConfig:
     def effective_doc_paths(self) -> list[str]:
         if self.doc_profiles:
             name = self.active_doc_profile
+            if name == DISABLED_PROFILE:
+                return []
             if name and name in self.doc_profiles:
                 return list(self.doc_profiles[name])
             if "default" in self.doc_profiles:
@@ -430,6 +433,8 @@ class AMXConfig:
     def effective_code_paths(self) -> list[str]:
         if self.code_profiles:
             name = self.active_code_profile
+            if name == DISABLED_PROFILE:
+                return []
             if name and name in self.code_profiles:
                 return [self.code_profiles[name]]
             if "default" in self.code_profiles:
@@ -443,6 +448,8 @@ class AMXConfig:
         if cli_paths:
             return list(cli_paths)
         if profile:
+            if profile in {"none", DISABLED_PROFILE}:
+                return []
             if profile not in self.doc_profiles:
                 raise KeyError(f"Unknown document profile: {profile}")
             return list(self.doc_profiles[profile])
@@ -454,6 +461,8 @@ class AMXConfig:
         if p:
             return p
         if profile:
+            if profile in {"none", DISABLED_PROFILE}:
+                return None
             if profile not in self.code_profiles:
                 raise KeyError(f"Unknown codebase profile: {profile}")
             return self.code_profiles[profile]

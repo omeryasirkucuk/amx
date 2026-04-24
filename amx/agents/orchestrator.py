@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -58,6 +59,7 @@ class ReviewResult:
     source: str
     applied: bool = False
     asset_kind: str = "table"
+    result_id: int | None = None  # FK to run_results.id (for re-evaluation)
 
 
 def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult]) -> int:
@@ -88,9 +90,11 @@ class Orchestrator:
         llm: LLMProvider,
         rag_store: RAGStore | None = None,
         code_report: CodebaseReport | None = None,
+        run_id: int | None = None,
     ):
         self.db = db
         self.llm = llm
+        self.run_id = run_id
         self.profile_agent = ProfileAgent(llm)
         self.rag_agent = RAGAgent(llm, rag_store) if rag_store else None
         self.code_agent = CodeAgent(llm, code_report) if code_report else None
@@ -109,8 +113,6 @@ class Orchestrator:
             profile = self.db.profile_table(schema, table, asset_kind=asset_kind)
         ctx = self._build_context(profile)
 
-        all_suggestions: list[MetadataSuggestion] = []
-
         num_cols = len(profile.columns)
         batch_size = self.profile_agent.BATCH_SIZE
         if num_cols > batch_size:
@@ -121,15 +123,13 @@ class Orchestrator:
             )
         else:
             info(f"Profile Agent: {num_cols} columns")
-        all_suggestions.extend(self.profile_agent.run(ctx))
-
         if self.rag_agent:
             info(f"RAG Agent: {num_cols} columns to check against documents")
-            all_suggestions.extend(self.rag_agent.run(ctx))
-
         if self.code_agent:
             info(f"Code Agent: {num_cols} columns to check against codebase")
-            all_suggestions.extend(self.code_agent.run(ctx))
+
+        # Run all enabled agents in parallel in chat mode.
+        all_suggestions = self._run_enabled_agents(ctx)
 
         merged = self._merge_suggestions(all_suggestions, ctx)
         if not merged:
@@ -140,16 +140,49 @@ class Orchestrator:
             )
             return []
 
+        # ── Persist all alternatives before human review ──────────────────
+        result_id_map = self._save_merged_suggestions(merged, asset_kind=asset_kind)
+
         from amx.utils.live_display import get_display
         display = get_display()
         if display.is_active:
             display.pause()
         ak = profile.asset_kind.value if profile.asset_kind else "table"
-        reviewed = self._human_review(merged, schema, table, asset_kind=ak)
+        reviewed = self._human_review(merged, schema, table, asset_kind=ak, result_id_map=result_id_map)
         if display.is_active:
             display.resume()
         self.results.extend(reviewed)
         return reviewed
+
+    def _run_enabled_agents(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+        jobs: list[tuple[str, object]] = [("profile", self.profile_agent)]
+        if self.rag_agent:
+            jobs.append(("rag", self.rag_agent))
+        if self.code_agent:
+            jobs.append(("code", self.code_agent))
+        if not jobs:
+            return []
+        if len(jobs) == 1:
+            label, agent = jobs[0]
+            try:
+                return agent.run(ctx)
+            except Exception as exc:
+                warn(f"{label.upper()} agent failed: {exc}")
+                return []
+
+        out: list[MetadataSuggestion] = []
+        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+            fut_to_label = {
+                ex.submit(agent.run, ctx): label
+                for label, agent in jobs
+            }
+            for fut in as_completed(fut_to_label):
+                label = fut_to_label[fut]
+                try:
+                    out.extend(fut.result() or [])
+                except Exception as exc:
+                    warn(f"{label.upper()} agent failed: {exc}")
+        return out
 
     def _build_context(self, profile: TableProfile) -> AgentContext:
         db_name = self.db.cfg.database or self.db.cfg.project or self.db.cfg.catalog or "N/A"
@@ -264,6 +297,70 @@ class Orchestrator:
         merged.extend(apply_logprob_confidence(merge_results, result.logprobs))
         return merged
 
+    # ── Persistence helpers ───────────────────────────────────────────────────
+
+    def _save_merged_suggestions(
+        self,
+        suggestions: list[MetadataSuggestion],
+        *,
+        asset_kind: str = "table",
+    ) -> dict[str | None, int]:
+        """Save all LLM alternatives to run_results before user review.
+
+        Returns {column_name: run_result_id} map so evaluations can be linked.
+        """
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None or self.run_id is None:
+            return {}
+        rows = [
+            {
+                "schema": s.schema,
+                "table": s.table,
+                "column": s.column,
+                "asset_kind": asset_kind,
+                "source": s.source,
+                "confidence": s.confidence.value,
+                "reasoning": s.reasoning,
+                "alternatives": s.suggestions,
+            }
+            for s in suggestions
+        ]
+        try:
+            ids = hs.save_run_results(self.run_id, rows)
+        except Exception as exc:
+            log.warning("Could not persist run_results: %s", exc)
+            return {}
+        # Map column_name → DB row id  (column=None → key None)
+        return {
+            s.column: rid
+            for s, rid in zip(suggestions, ids)
+        }
+
+    def _record_evaluation(
+        self,
+        result_id: int | None,
+        *,
+        chosen_description: str,
+        evaluation: str,
+    ) -> None:
+        if result_id is None:
+            return
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None:
+            return
+        try:
+            hs.record_evaluation(
+                result_id,
+                chosen_description=chosen_description,
+                evaluation=evaluation,
+            )
+        except Exception as exc:
+            log.debug("Could not record evaluation: %s", exc)
+
     @staticmethod
     def _parse_merge_response(
         text: str,
@@ -303,18 +400,23 @@ class Orchestrator:
         schema: str,
         table: str,
         asset_kind: str = "table",
+        result_id_map: dict[str | None, int] | None = None,
     ) -> list[ReviewResult]:
         results: list[ReviewResult] = []
+        result_id_map = result_id_map or {}
 
         table_suggestions = [s for s in suggestions if s.column is None]
         col_suggestions = [s for s in suggestions if s.column is not None]
 
         for s in table_suggestions:
-            result = self._review_single(s, is_table=True, asset_kind=asset_kind)
+            rid = result_id_map.get(s.column)  # column is None here
+            result = self._review_single(s, is_table=True, asset_kind=asset_kind, result_id=rid)
             results.append(result)
 
         if col_suggestions:
-            heading(f"Column descriptions for {schema}.{table}")
+            col_count = len(col_suggestions)
+            noun = "column" if col_count == 1 else "columns"
+            heading(f"Column descriptions for {schema}.{table} ({col_count} {noun})")
             rows = []
             for s in col_suggestions:
                 rows.append([
@@ -337,29 +439,45 @@ class Orchestrator:
             )
 
             for s in col_suggestions:
+                rid = result_id_map.get(s.column)
                 if review_mode == "accept-all":
-                    results.append(ReviewResult(
+                    rr = ReviewResult(
                         schema=s.schema, table=s.table, column=s.column,
                         final_description=s.suggestions[0],
                         confidence=s.confidence, source=s.source, applied=True,
-                        asset_kind=asset_kind,
-                    ))
+                        asset_kind=asset_kind, result_id=rid,
+                    )
+                    self._record_evaluation(rid, chosen_description=s.suggestions[0], evaluation="accepted")
+                    results.append(rr)
                 elif review_mode == "accept-all-high" and s.confidence == Confidence.HIGH:
-                    results.append(ReviewResult(
+                    rr = ReviewResult(
                         schema=s.schema, table=s.table, column=s.column,
                         final_description=s.suggestions[0],
                         confidence=s.confidence, source=s.source, applied=True,
-                        asset_kind=asset_kind,
-                    ))
-                elif review_mode == "reject-all":
-                    results.append(ReviewResult(
+                        asset_kind=asset_kind, result_id=rid,
+                    )
+                    self._record_evaluation(rid, chosen_description=s.suggestions[0], evaluation="accepted")
+                    results.append(rr)
+                elif review_mode == "accept-all-high" and s.confidence != Confidence.HIGH:
+                    rr = ReviewResult(
                         schema=s.schema, table=s.table, column=s.column,
                         final_description="",
                         confidence=s.confidence, source=s.source, applied=False,
-                        asset_kind=asset_kind,
-                    ))
+                        asset_kind=asset_kind, result_id=rid,
+                    )
+                    self._record_evaluation(rid, chosen_description="", evaluation="skipped")
+                    results.append(rr)
+                elif review_mode == "reject-all":
+                    rr = ReviewResult(
+                        schema=s.schema, table=s.table, column=s.column,
+                        final_description="",
+                        confidence=s.confidence, source=s.source, applied=False,
+                        asset_kind=asset_kind, result_id=rid,
+                    )
+                    self._record_evaluation(rid, chosen_description="", evaluation="skipped")
+                    results.append(rr)
                 else:
-                    result = self._review_single(s, is_table=False, asset_kind=asset_kind)
+                    result = self._review_single(s, is_table=False, asset_kind=asset_kind, result_id=rid)
                     results.append(result)
 
         return results
@@ -369,6 +487,7 @@ class Orchestrator:
         s: MetadataSuggestion,
         is_table: bool,
         asset_kind: str = "table",
+        result_id: int | None = None,
     ) -> ReviewResult:
         kind_label = asset_kind.replace("_", " ").title() if is_table else "Column"
         asset = f"{kind_label}: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
@@ -382,23 +501,29 @@ class Orchestrator:
         choice = ask_choice("Select a description", options, default=options[0])
 
         if choice == "Skip":
+            self._record_evaluation(result_id, chosen_description="", evaluation="skipped")
             return ReviewResult(
                 schema=s.schema, table=s.table, column=s.column,
                 final_description="", confidence=s.confidence,
                 source=s.source, applied=False, asset_kind=asset_kind,
+                result_id=result_id,
             )
         elif choice == "Other (type your own)":
             custom = ask("Enter your description")
+            self._record_evaluation(result_id, chosen_description=custom, evaluation="custom")
             return ReviewResult(
                 schema=s.schema, table=s.table, column=s.column,
                 final_description=custom, confidence=Confidence.HIGH,
                 source="human", applied=True, asset_kind=asset_kind,
+                result_id=result_id,
             )
         else:
+            self._record_evaluation(result_id, chosen_description=choice, evaluation="accepted")
             return ReviewResult(
                 schema=s.schema, table=s.table, column=s.column,
                 final_description=choice, confidence=s.confidence,
                 source=s.source, applied=True, asset_kind=asset_kind,
+                result_id=result_id,
             )
 
     # ── Batch mode ────────────────────────────────────────────────────────────
@@ -519,7 +644,8 @@ class Orchestrator:
                 warn(f"Merge produced no output for {schema}.{table}.")
                 continue
 
-            reviewed = self._human_review(merged, schema, table, asset_kind=ak)
+            result_id_map = self._save_merged_suggestions(merged, asset_kind=ak)
+            reviewed = self._human_review(merged, schema, table, asset_kind=ak, result_id_map=result_id_map)
             self.results.extend(reviewed)
             all_reviewed.extend(reviewed)
 

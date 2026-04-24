@@ -6,6 +6,8 @@ import os
 import shlex
 import signal
 import sys
+import time
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,7 +19,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 
 from amx import __version__
-from amx.config import AMXConfig, DBConfig, LLMConfig, SUPPORTED_BACKENDS
+from amx.config import AMXConfig, DBConfig, LLMConfig, SUPPORTED_BACKENDS, DISABLED_PROFILE
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -35,7 +37,8 @@ from amx.utils.console import (
     success,
     warn,
 )
-from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
+from amx.utils.logging import get_logger
+from amx.storage.sqlite_store import history_store, init_history_store
 from amx.utils.token_tracker import tracker as token_tracker
 
 log = get_logger("cli")
@@ -46,10 +49,8 @@ _NS_STATE: dict[str, str] = {"namespace": ""}
 
 
 def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
-    """Show version, config location, and active profiles when the session starts."""
-    cfg_path = Path(cfg.CONFIG_DIR) / "config.yml"
-    info(f"Version {__version__} · Config file: {cfg_path}")
-    info(f"Logs directory: {LOG_DIR} (amx.log · on LLM parse errors: {LAST_PROFILE_RESPONSE_FILE.name})")
+    """Show a concise startup summary."""
+    info(f"Version {__version__}")
     info(
         f"Database: profile '{cfg.active_db_profile}' → "
         f"[{cfg.db.backend}] {cfg.db.display_summary}"
@@ -60,13 +61,8 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
         else "(not configured — run /setup)"
     )
     info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line}")
-    info(
-        f"Context: schema={cfg.current_schema or '—'} · table={cfg.current_table or '—'} "
-        f"(set in /db with /schema, /table)"
-    )
-    info(
-        "Approved descriptions are written to the database as COMMENT ON TABLE / COLUMN."
-    )
+    if cfg.current_schema or cfg.current_table:
+        info(f"Context: schema={cfg.current_schema or '—'} · table={cfg.current_table or '—'}")
 
 
 def _fix_codebase_cli_tail(tokens: list[str]) -> list[str]:
@@ -117,6 +113,27 @@ def run_cli() -> None:
     main()
 
 
+def _log_app_event(
+    *,
+    event_type: str,
+    status: str,
+    command: str,
+    details: dict[str, object] | None = None,
+) -> None:
+    hs = history_store()
+    if hs is None:
+        return
+    try:
+        hs.log_event(
+            event_type=event_type,
+            status=status,
+            command=command,
+            details=details or {},
+        )
+    except Exception as exc:
+        log.debug("Could not persist app event: %s", exc)
+
+
 def _kb_escape_namespace() -> KeyBindings:
     kb = KeyBindings()
 
@@ -148,6 +165,7 @@ def main(ctx: click.Context, cfg_path: str | None) -> None:
     """
     ctx.ensure_object(dict)
     ctx.obj = AMXConfig.load(cfg_path)
+    init_history_store(ctx.obj.CONFIG_DIR)
     is_session_child = os.getenv("AMX_SESSION_CHILD") == "1"
     if not is_session_child:
         show_banner()
@@ -175,9 +193,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
     """
     heading("AMX Interactive Session")
     _print_interactive_startup_summary(cfg)
-    info("Type /help for commands, /exit to quit.")
-    info("Namespaces: /db, /docs, /llm, /code, /analyze (use /back or Esc to return).")
-    info("Tip: start typing / and use ↑/↓ to pick a command.")
+    info("Type /help for commands, /back to return, /exit to quit (from any namespace).")
     namespace = ""
 
     _db_cmd_heads = frozenset(
@@ -218,6 +234,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
     _analyze_cmd_heads = frozenset({
         "run", "run-apply", "apply",
     })
+    _history_cmd_heads = frozenset({"list", "show", "stats", "events", "results", "review"})
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
 
@@ -283,6 +300,9 @@ def _interactive_session(cfg: AMXConfig) -> None:
             if cmdline in {"exit", "quit", "q"}:
                 success("Session closed.")
                 return
+            if cmdline == "clear":
+                console.clear()
+                continue
             if cmdline in {"help", "?"}:
                 _print_session_help(namespace=namespace, cfg=cfg)
                 continue
@@ -290,7 +310,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
                 namespace = ""
                 info("Back to root namespace.")
                 continue
-            if cmdline in {"db", "docs", "llm", "code", "analyze"}:
+            if cmdline in {"db", "docs", "llm", "code", "analyze", "history"}:
                 namespace = cmdline
                 info(f"Entered /{namespace} namespace.")
                 if namespace == "db":
@@ -323,6 +343,9 @@ def _interactive_session(cfg: AMXConfig) -> None:
                 elif h in _analyze_cmd_heads:
                     namespace = "analyze"
                     info("Assumed /analyze namespace for this command.")
+                elif h in _history_cmd_heads:
+                    namespace = "history"
+                    info("Assumed /history namespace for this command.")
 
             if namespace == "docs":
                 if parts[0] == "search-docs" and len(parts) == 1:
@@ -354,7 +377,12 @@ def _interactive_session(cfg: AMXConfig) -> None:
             try:
                 main.main(args=args, prog_name="amx", standalone_mode=False)
             except click.ClickException as exc:
-                exc.show()
+                # Keep interactive UX slash-native; avoid Click's "Usage: amx ..."
+                # blocks inside namespaces.
+                if isinstance(exc, click.UsageError):
+                    error(f"Unknown command: /{cmdline}. Type /help.")
+                else:
+                    error(str(exc))
             except SystemExit:
                 pass
             except Exception as exc:  # pragma: no cover - defensive
@@ -482,6 +510,7 @@ Commands (in order):
                                      Database — all schemas, all assets
                                      Schema   — select schema(s), all assets
                                      Asset    — specific tables/views
+                                     Default  — current /db schema and optional /table
   3) /run-apply [ASSET …] [--schema …] [--table …]   Same as /run --apply
   4) /apply                        Write pending approved comments to the database
 
@@ -489,6 +518,26 @@ Tip: scan code and docs first (`/code-scan`, `/doc-analyze`, `/code-analyze`), t
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
+"""
+        )
+        return
+
+    if namespace == "history":
+        out.print(
+            """
+[heading]Help — /history namespace[/heading]
+Commands:
+  1) /back                                    Return to root namespace
+  2) /list [-n N]                             Show recent analyze runs from SQLite
+  3) /show <run_id>                           Show full JSON payload for one run
+  4) /stats                                   Aggregate run/event stats
+  5) /events [-n N]                           Recent app events
+  6) /results <run_id>                        Show all saved LLM alternatives for a run
+  7) /review <run_id> [--unevaluated-only]    Re-evaluate alternatives for a past run
+                         [--apply]            Write approved descriptions to the database
+
+SQLite file:
+  ~/.amx/history.db
 """
         )
         return
@@ -509,6 +558,7 @@ Getting started (in order):
   5) /llm                          LLM profile management
   6) /code                         Codebase profile management
   7) /analyze                      Metadata inference (/run, /apply, …)
+  8) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
   [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, …
@@ -518,6 +568,7 @@ Inside namespaces (examples):
 
 Global shortcuts (work anywhere):
   /save                            Persist ~/.amx/config.yml
+  /clear                           Clear terminal output (keep session running)
 
 Navigation:
   Esc (empty line)                 Go back one level (namespace → root)
@@ -566,6 +617,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
     root: list[tuple[str, str]] = [
         ("/help", "Contextual help"),
         ("/exit", "Exit session"),
+        ("/clear", "Clear terminal output"),
         ("/setup", "Run setup wizard"),
         ("/config", "Show configuration"),
         ("/db", "Enter /db namespace"),
@@ -573,11 +625,13 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/llm", "Enter /llm namespace"),
         ("/code", "Enter /code namespace"),
         ("/analyze", "Enter /analyze namespace"),
+        ("/history", "Enter /history namespace"),
         ("/save", "Save config to disk"),
     ]
 
     db_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
         ("/db-profiles", "List DB profiles"),
         ("/use-db", "Switch DB profile (lists PostgreSQL, BigQuery, … per profile)"),
         ("/add-db-profile", "Add profile — choose engine then connection details"),
@@ -593,6 +647,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     docs_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
         ("/doc-profiles", "List document profiles"),
         ("/use-doc", "Switch document profile (/use-doc <name>)"),
         ("/add-doc-profile", "Add/update document profile"),
@@ -606,6 +661,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     llm_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
         ("/llm-profiles", "List LLM profiles"),
         ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
         ("/add-llm-profile", "Add/update LLM profile"),
@@ -614,6 +670,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     code_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
         ("/code-profiles", "List codebase profiles"),
         ("/use-code", "Switch codebase profile (/use-code <name>)"),
         ("/add-code-profile", "Add/update codebase profile"),
@@ -627,9 +684,20 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
     analyze_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
         ("/run", "Run all agents — scope: database / schema / asset (/run [ASSET …] [--schema …] [--apply])"),
         ("/run-apply", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
         ("/apply", "Write pending comments to the database"),
+    ]
+    history_cmds: list[tuple[str, str]] = [
+        ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
+        ("/list", "Show recent runs (/list -n 20)"),
+        ("/show", "Show one run payload (/show <run_id>)"),
+        ("/stats", "Aggregate run/event metrics"),
+        ("/events", "Recent app events (/events -n 30)"),
+        ("/results", "Show saved LLM alternatives (/results <run_id>)"),
+        ("/review", "Re-evaluate alternatives (/review <run_id> [--unevaluated-only] [--apply])"),
     ]
 
     if namespace == "db":
@@ -642,6 +710,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         return code_cmds
     if namespace == "analyze":
         return analyze_cmds
+    if namespace == "history":
+        return history_cmds
     return root
 
 
@@ -819,7 +889,19 @@ def _cmd_use(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.save()
         p = cfg.db
         success(f"Switched active DB profile to: {name} [{p.backend}] — {p.display_summary}")
+        _log_app_event(
+            event_type="db_profile_switch",
+            status="success",
+            command="use-db",
+            details={"profile": name, "backend": p.backend},
+        )
     except Exception as exc:
+        _log_app_event(
+            event_type="db_profile_switch",
+            status="failed",
+            command="use-db",
+            details={"profile": name, "error": str(exc)},
+        )
         error(str(exc))
 
 
@@ -901,6 +983,12 @@ def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
     cfg.set_active_db_profile(name)
     cfg.save()
     success(f"Profile saved and activated: {name} [{db.backend}]")
+    _log_app_event(
+        event_type="db_profile_upsert",
+        status="success",
+        command="add-db-profile",
+        details={"profile": name, "backend": db.backend},
+    )
 
 
 def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -999,6 +1087,8 @@ def _cmd_doc_profiles(cfg: AMXConfig) -> None:
         info("No document profiles. Use /add-doc-profile <name>")
         return
     rows = []
+    if cfg.active_doc_profile == DISABLED_PROFILE:
+        rows.append(["* (none)", "0", "profiles disabled"])
     for name, paths in sorted(cfg.doc_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_doc_profile else " "
         preview = "; ".join(paths[:2]) + (" …" if len(paths) > 2 else "")
@@ -1008,19 +1098,26 @@ def _cmd_doc_profiles(cfg: AMXConfig) -> None:
 
 def _cmd_use_doc(cfg: AMXConfig, rest: list[str]) -> None:
     if len(rest) >= 1:
-        name = rest[0]
+        raw = rest[0].strip().lower()
+        name = DISABLED_PROFILE if raw in {"none", "(none)", "off", "disable"} else rest[0]
     else:
         names = sorted(cfg.doc_profiles.keys())
         if not names:
             error("No document profiles.")
             return
-        name = ask_choice("Select document profile", names, default=cfg.active_doc_profile)
-    if name not in cfg.doc_profiles:
+        choices = ["(none)"] + names
+        default_choice = "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else cfg.active_doc_profile
+        picked = ask_choice("Select document profile", choices, default=default_choice)
+        name = DISABLED_PROFILE if picked == "(none)" else picked
+    if name != DISABLED_PROFILE and name not in cfg.doc_profiles:
         error(f"Unknown document profile: {name}")
         return
     cfg.active_doc_profile = name
     cfg.save()
-    success(f"Active document profile: {name}")
+    if name == DISABLED_PROFILE:
+        success("Document profiles disabled for this session/config.")
+    else:
+        success(f"Active document profile: {name}")
 
 
 def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -1095,6 +1192,8 @@ def _cmd_code_profiles(cfg: AMXConfig) -> None:
         info("No codebase profiles. Use /add-code-profile <name>")
         return
     rows = []
+    if cfg.active_code_profile == DISABLED_PROFILE:
+        rows.append(["* (none)", "disabled"])
     for name, path in sorted(cfg.code_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_code_profile else " "
         rows.append([f"{mark} {name}", path])
@@ -1103,19 +1202,26 @@ def _cmd_code_profiles(cfg: AMXConfig) -> None:
 
 def _cmd_use_code(cfg: AMXConfig, rest: list[str]) -> None:
     if len(rest) >= 1:
-        name = rest[0]
+        raw = rest[0].strip().lower()
+        name = DISABLED_PROFILE if raw in {"none", "(none)", "off", "disable"} else rest[0]
     else:
         names = sorted(cfg.code_profiles.keys())
         if not names:
             error("No codebase profiles.")
             return
-        name = ask_choice("Select codebase profile", names, default=cfg.active_code_profile)
-    if name not in cfg.code_profiles:
+        choices = ["(none)"] + names
+        default_choice = "(none)" if cfg.active_code_profile == DISABLED_PROFILE else cfg.active_code_profile
+        picked = ask_choice("Select codebase profile", choices, default=default_choice)
+        name = DISABLED_PROFILE if picked == "(none)" else picked
+    if name != DISABLED_PROFILE and name not in cfg.code_profiles:
         error(f"Unknown codebase profile: {name}")
         return
     cfg.active_code_profile = name
     cfg.save()
-    success(f"Active codebase profile: {name}")
+    if name == DISABLED_PROFILE:
+        success("Codebase profiles disabled for this session/config.")
+    else:
+        success(f"Active codebase profile: {name}")
 
 
 def _cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -1196,7 +1302,7 @@ def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None
         "help": ["--help"],
     }
 
-    if head in {"db", "docs", "llm", "code", "analyze", "setup", "config"}:
+    if head in {"db", "docs", "llm", "code", "analyze", "history", "setup", "config"}:
         return parts
 
     if namespace and head in shortcut_map:
@@ -2238,12 +2344,13 @@ def _resolve_run_scope(
 
     scope_level = ask_choice(
         "Select analysis scope",
-        ["Database", "Schema", "Asset"],
+        ["Database", "Schema", "Asset", "Default"],
         default="Schema",
         descriptions={
             "Database": "All schemas, all assets (tables, views, materialized views)",
             "Schema": "Select schema(s), analyze all assets within",
             "Asset": "Select specific tables or views",
+            "Default": "Use current /db context: schema and optional table",
         },
     )
 
@@ -2270,6 +2377,17 @@ def _resolve_run_scope(
             if names:
                 result[s] = names
         return result
+
+    if scope_level == "Default":
+        if cfg.current_schema:
+            if cfg.current_table:
+                return {cfg.current_schema: [cfg.current_table]}
+            return {cfg.current_schema: [a[0] for a in db.list_assets(cfg.current_schema)]}
+        warn(
+            "Default scope requires /db context. Set /schema (and optionally /table) first, "
+            "or pick Schema/Asset scope."
+        )
+        return {}
 
     schemas = db.list_schemas()
     schema = ask_choice("Select schema", schemas)
@@ -2453,6 +2571,8 @@ def analyze_run(
     from amx.llm.provider import LLMProvider
 
     token_tracker.reset()
+    run_started = time.monotonic()
+    run_id: int | None = None
 
     if not cfg.llm.provider or not cfg.llm.model:
         error("LLM not configured. Run `amx setup` first.")
@@ -2523,104 +2643,228 @@ def analyze_run(
     scope = _finalize_scope(cfg, db, schema, tables_arg)
     if scope is None:
         return
+    hs = history_store()
+    if hs is not None:
+        try:
+            run_id = hs.create_run(
+                command="analyze.run",
+                mode=("batch" if use_batch else "chat"),
+                db_backend=cfg.db.backend,
+                db_profile=cfg.active_db_profile,
+                llm_provider=cfg.llm.provider,
+                llm_model=cfg.llm.model,
+                scope=scope,
+            )
+        except Exception as exc:
+            warn(f"History persistence disabled for this run: {exc}")
 
     total_assets = sum(len(v) for v in scope.values())
     total_schemas = len(scope)
-    scope_summary = (
-        f"{total_assets} asset(s) across {total_schemas} schema(s)"
-        if total_schemas > 1
-        else f"{total_assets} asset(s) in {next(iter(scope))}"
-    )
-    info(f"Scope: {scope_summary}")
-
-    rag_store = None
+    approved: list = []
+    skipped: list = []
     try:
-        store = RAGStore()
-        if store.doc_count > 0:
-            rag_store = store
-            info(f"RAG store has {store.doc_count} chunks available")
-    except Exception:
-        pass
-
-    code_report = _resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
-
-    from amx.utils.live_display import get_display
-    display = get_display()
-
-    all_results: list = []
-
-    for schema_name, assets in scope.items():
-        asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
-
-        orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report)
-
-        display_label = (
-            ", ".join(assets) if len(assets) <= 3
-            else f"{len(assets)} assets"
+        scope_summary = (
+            f"{total_assets} asset(s) across {total_schemas} schema(s)"
+            if total_schemas > 1
+            else f"{total_assets} asset(s) in {next(iter(scope))}"
         )
-        display.start(
-            schema=schema_name,
-            table=display_label,
-            mode="batch" if use_batch else "chat",
-            provider=cfg.llm.provider,
-            model=cfg.llm.model,
-        )
+        info(f"Scope: {scope_summary}")
 
+        rag_store = None
         try:
-            if use_batch:
-                results = orch.process_tables_batch_mode(
-                    schema_name, list(assets), asset_kinds=asset_kinds,
-                )
-                all_results.extend(results)
+            if cfg.active_doc_profile == DISABLED_PROFILE:
+                info("RAG Agent disabled (document profile: none).")
             else:
-                for asset_name in assets:
-                    display.set_context(table=asset_name)
-                    results = orch.process_table(
-                        schema_name, asset_name,
-                        asset_kind=asset_kinds.get(asset_name),
+                doc_filters = cfg.effective_doc_paths()
+                store = RAGStore(source_filters=doc_filters)
+                visible_chunks = store.doc_count
+                if visible_chunks > 0:
+                    rag_store = store
+                    if doc_filters:
+                        info(
+                            f"RAG store has {visible_chunks} chunks available "
+                            f"for active doc profile '{cfg.active_doc_profile or 'default'}'"
+                        )
+                    else:
+                        info(f"RAG store has {visible_chunks} chunks available")
+                elif doc_filters:
+                    info(
+                        f"RAG store has 0 chunks for active doc profile "
+                        f"'{cfg.active_doc_profile or 'default'}'"
                     )
-                    all_results.extend(results)
-        finally:
-            display.stop()
+        except Exception:
+            pass
 
-    heading("Summary")
-    render_token_summary(token_tracker)
-    approved = [r for r in all_results if r.applied]
-    skipped = [r for r in all_results if not r.applied]
-    info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
+        code_report = _resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
 
-    if approved:
-        render_table(
-            "Approved metadata",
-            ["Schema", "Asset", "Description", "Confidence", "Source"],
-            [
-                [
-                    r.schema,
-                    f"{r.table}.{r.column}" if r.column else r.table,
-                    r.final_description[:60],
-                    r.confidence.value,
-                    r.source,
-                ]
-                for r in approved
-            ],
-        )
+        from amx.utils.live_display import get_display
+        display = get_display()
 
-    if approved:
-        from amx.pending_review import save_pending
+        all_results: list = []
 
-        save_pending(approved)
-        if not apply:
-            info(
-                f"Saved {len(approved)} approved description(s) as pending. "
-                "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
+        for schema_name, assets in scope.items():
+            asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
+
+            orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report, run_id=run_id)
+
+            display_label = (
+                ", ".join(assets) if len(assets) <= 3
+                else f"{len(assets)} assets"
+            )
+            display.start(
+                schema=schema_name,
+                table=display_label,
+                mode="batch" if use_batch else "chat",
+                provider=cfg.llm.provider,
+                model=cfg.llm.model,
             )
 
-    if apply and approved:
-        if confirm("Apply these metadata comments to the database?"):
-            from amx.pending_review import clear_pending
+            try:
+                if use_batch:
+                    results = orch.process_tables_batch_mode(
+                        schema_name, list(assets), asset_kinds=asset_kinds,
+                    )
+                    all_results.extend(results)
+                else:
+                    for asset_name in assets:
+                        display.set_context(table=asset_name)
+                        results = orch.process_table(
+                            schema_name, asset_name,
+                            asset_kind=asset_kinds.get(asset_name),
+                        )
+                        all_results.extend(results)
+            finally:
+                display.stop()
 
-            orch.apply_results(approved)
-            clear_pending()
+        heading("Summary")
+        render_token_summary(token_tracker)
+        approved = [r for r in all_results if r.applied]
+        skipped = [r for r in all_results if not r.applied]
+        info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
+
+        if approved:
+            render_table(
+                "Approved metadata",
+                ["Schema", "Asset", "Description", "Confidence", "Source"],
+                [
+                    [
+                        r.schema,
+                        f"{r.table}.{r.column}" if r.column else r.table,
+                        r.final_description[:60],
+                        r.confidence.value,
+                        r.source,
+                    ]
+                    for r in approved
+                ],
+            )
+
+        if approved:
+            from amx.pending_review import save_pending
+
+            save_pending(approved)
+            if not apply:
+                info(
+                    f"Saved {len(approved)} approved description(s) as pending. "
+                    "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
+                )
+
+        if apply and approved:
+            if confirm("Apply these metadata comments to the database?"):
+                from amx.pending_review import clear_pending
+
+                orch.apply_results(approved)
+                clear_pending()
+    except Exception as exc:
+        if run_id is not None:
+            hs = history_store()
+            if hs is not None:
+                try:
+                    hs.finish_run(
+                        run_id,
+                        status="failed",
+                        metrics={
+                            "duration_sec": round(time.monotonic() - run_started, 3),
+                            "total_assets": total_assets,
+                            "total_schemas": total_schemas,
+                        },
+                        tokens={
+                            "total_tokens": token_tracker.total_tokens,
+                            "summary": token_tracker.summary(),
+                            "records": token_tracker.records(),
+                        },
+                        results={},
+                        error_text=str(exc),
+                    )
+                except Exception:
+                    pass
+        _log_app_event(
+            event_type="analyze_run",
+            status="failed",
+            command="analyze.run",
+            details={"error": str(exc), "mode": ("batch" if use_batch else "chat")},
+        )
+        raise
+
+    if run_id is not None:
+        try:
+            token_summary = token_tracker.summary()
+            hs = history_store()
+            if hs is not None:
+                hs.finish_run(
+                    run_id,
+                    status="success",
+                    metrics={
+                        "duration_sec": round(time.monotonic() - run_started, 3),
+                        "total_assets": total_assets,
+                        "total_schemas": total_schemas,
+                        "approved_count": len(approved),
+                        "skipped_count": len(skipped),
+                        "applied_flag": bool(apply),
+                    },
+                    tokens={
+                        "total_tokens": token_tracker.total_tokens,
+                        "summary": token_summary,
+                        "records": token_tracker.records(),
+                    },
+                    results={
+                        "approved": [
+                            {
+                                "schema": r.schema,
+                                "table": r.table,
+                                "column": r.column,
+                                "description": r.final_description,
+                                "confidence": r.confidence.value,
+                                "source": r.source,
+                                "asset_kind": r.asset_kind,
+                            }
+                            for r in approved
+                        ],
+                        "skipped": [
+                            {
+                                "schema": r.schema,
+                                "table": r.table,
+                                "column": r.column,
+                                "confidence": r.confidence.value,
+                                "source": r.source,
+                                "asset_kind": r.asset_kind,
+                            }
+                            for r in skipped
+                        ],
+                    },
+                )
+        except Exception as exc:
+            warn(f"Could not persist run history: {exc}")
+    _log_app_event(
+        event_type="analyze_run",
+        status="success",
+        command="analyze.run",
+        details={
+            "mode": ("batch" if use_batch else "chat"),
+            "approved_count": len(approved),
+            "skipped_count": len(skipped),
+            "total_assets": total_assets,
+        },
+    )
 
 
 @analyze.command("apply")
@@ -2633,6 +2877,12 @@ def analyze_apply(cfg: AMXConfig) -> None:
 
     pending = load_pending()
     if not pending:
+        _log_app_event(
+            event_type="analyze_apply",
+            status="skipped",
+            command="analyze.apply",
+            details={"reason": "no_pending"},
+        )
         error(
             "No pending metadata. Run `/analyze` then `/run`, approve descriptions, "
             "and finish without `--apply` first."
@@ -2652,17 +2902,353 @@ def analyze_apply(cfg: AMXConfig) -> None:
         ],
     )
     if not confirm(f"Write {len(pending)} comment(s) to the database?", default=True):
+        _log_app_event(
+            event_type="analyze_apply",
+            status="cancelled",
+            command="analyze.apply",
+            details={"pending_count": len(pending)},
+        )
         info("Cancelled — pending file unchanged.")
         return
 
     db = DatabaseConnector(cfg.db)
     if not db.test_connection():
+        _log_app_event(
+            event_type="analyze_apply",
+            status="failed",
+            command="analyze.apply",
+            details={"reason": "db_connect_failed"},
+        )
         error("Cannot connect to database.")
         sys.exit(1)
 
     n = apply_review_results_to_db(db, pending)
     clear_pending()
     success(f"Applied {n} comment(s). Pending file cleared.")
+    _log_app_event(
+        event_type="analyze_apply",
+        status="success",
+        command="analyze.apply",
+        details={"applied_count": n},
+    )
+
+
+# ── History Commands ────────────────────────────────────────────────────────
+
+
+@main.group()
+def history() -> None:
+    """Inspect local SQLite history (runs, tokens, results, events)."""
+
+
+@history.command("list")
+@click.option("-n", "--limit", default=20, help="Number of runs to show.")
+def history_list(limit: int) -> None:
+    hs = history_store()
+    if hs is None:
+        error("History store is not initialized.")
+        return
+    rows = hs.list_recent_runs(limit=limit)
+    if not rows:
+        info("No run history yet.")
+        return
+    render_table(
+        "Recent runs",
+        ["ID", "Start (epoch)", "Status", "Mode", "Backend", "Provider/Model", "Duration(s)"],
+        [
+            [
+                r.get("id", ""),
+                f"{float(r.get('started_at') or 0):.0f}",
+                r.get("status", ""),
+                r.get("mode", ""),
+                r.get("db_backend", ""),
+                f"{r.get('llm_provider', '')}/{r.get('llm_model', '')}",
+                f"{float(r.get('duration_sec') or 0):.2f}",
+            ]
+            for r in rows
+        ],
+    )
+
+
+@history.command("show")
+@click.argument("run_id", type=int)
+def history_show(run_id: int) -> None:
+    hs = history_store()
+    if hs is None:
+        error("History store is not initialized.")
+        return
+    row = hs.get_run(run_id)
+    if not row:
+        error(f"Run {run_id} not found.")
+        return
+    payload = {
+        "id": row.get("id"),
+        "started_at": row.get("started_at"),
+        "ended_at": row.get("ended_at"),
+        "duration_sec": row.get("duration_sec"),
+        "status": row.get("status"),
+        "command": row.get("command"),
+        "mode": row.get("mode"),
+        "db_backend": row.get("db_backend"),
+        "db_profile": row.get("db_profile"),
+        "llm_provider": row.get("llm_provider"),
+        "llm_model": row.get("llm_model"),
+        "scope": row.get("scope_json"),
+        "metrics": row.get("metrics_json"),
+        "tokens": row.get("tokens_json"),
+        "results": row.get("results_json"),
+        "error": row.get("error_text"),
+    }
+    console.print(json.dumps(payload, indent=2, ensure_ascii=True))
+
+
+@history.command("stats")
+def history_stats() -> None:
+    hs = history_store()
+    if hs is None:
+        error("History store is not initialized.")
+        return
+    s = hs.stats()
+    render_table(
+        "History stats",
+        ["Metric", "Value"],
+        [
+            ["total_runs", s.get("total_runs", 0)],
+            ["success_runs", s.get("success_runs", 0)],
+            ["failed_runs", s.get("failed_runs", 0)],
+            ["avg_duration_sec", f"{float(s.get('avg_duration_sec') or 0):.2f}"],
+            ["last_started_at", f"{float(s.get('last_started_at') or 0):.0f}"],
+            ["total_events", s.get("total_events", 0)],
+        ],
+    )
+
+
+@history.command("events")
+@click.option("-n", "--limit", default=30, help="Number of events to show.")
+def history_events(limit: int) -> None:
+    hs = history_store()
+    if hs is None:
+        error("History store is not initialized.")
+        return
+    rows = hs.list_recent_events(limit=limit)
+    if not rows:
+        info("No events yet.")
+        return
+    render_table(
+        "Recent events",
+        ["ID", "Time (epoch)", "Type", "Status", "Command", "Details"],
+        [
+            [
+                r.get("id", ""),
+                f"{float(r.get('created_at') or 0):.0f}",
+                r.get("event_type", ""),
+                r.get("status", ""),
+                r.get("command", ""),
+                json.dumps(r.get("details_json", {}), ensure_ascii=True)[:80],
+            ]
+            for r in rows
+        ],
+    )
+
+
+@history.command("results")
+@click.argument("run_id", type=int)
+def history_results(run_id: int) -> None:
+    """Show all saved LLM alternatives for a past run."""
+    from datetime import datetime, timezone
+
+    hs = history_store()
+    if hs is None:
+        error("History store is not initialized.")
+        return
+    rows = hs.get_run_results(run_id)
+    if not rows:
+        error(f"No saved alternatives for run {run_id}. (Alternatives are only stored for runs made with v0.1.39+.)")
+        return
+
+    heading(f"Saved alternatives — run #{run_id}")
+    table_rows = []
+    for r in rows:
+        alts = r.get("alternatives_json") or []
+        alts_str = " | ".join(str(a)[:40] for a in alts[:3])
+        evaluated_at = r.get("evaluated_at")
+        eval_time = (
+            datetime.fromtimestamp(evaluated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            if evaluated_at
+            else ""
+        )
+        table_rows.append([
+            r.get("id", ""),
+            r.get("table_name", ""),
+            r.get("column_name") or "(table)",
+            r.get("confidence", ""),
+            alts_str or "—",
+            r.get("evaluation") or "pending",
+            (r.get("chosen_description") or "")[:40],
+            eval_time,
+        ])
+    render_table(
+        f"Run #{run_id} alternatives",
+        ["Row", "Table", "Column", "Conf", "Alternatives (top-3)", "Status", "Chosen", "Eval'd at"],
+        table_rows,
+    )
+    pending = sum(1 for r in rows if not r.get("evaluation"))
+    if pending:
+        info(f"{pending} item(s) still pending. Run `/review {run_id}` to evaluate them.")
+
+
+@history.command("review")
+@click.argument("run_id", type=int)
+@click.option(
+    "--unevaluated-only",
+    is_flag=True,
+    default=False,
+    help="Skip items already evaluated; only show pending rows.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    default=False,
+    help="Write approved descriptions to the database immediately after review.",
+)
+@click.pass_obj
+def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: bool) -> None:
+    """Re-evaluate saved LLM alternatives for a past run.
+
+    All alternatives are kept in SQLite so you can come back and change
+    your mind, pick a different alternative, or evaluate items you skipped.
+    """
+    from amx.agents.base import Confidence
+    from amx.agents.orchestrator import ReviewResult, apply_review_results_to_db
+    from amx.db.connector import DatabaseConnector
+
+    hs = history_store()
+    if hs is None:
+        error("History store is not initialized.")
+        return
+
+    rows = hs.get_run_results(run_id, unevaluated_only=unevaluated_only)
+    if not rows:
+        if unevaluated_only:
+            success(f"No pending items for run #{run_id} — all alternatives have been evaluated.")
+        else:
+            error(f"No saved alternatives for run #{run_id}.")
+        return
+
+    heading(f"Re-evaluating alternatives — run #{run_id} ({len(rows)} item(s))")
+    if unevaluated_only:
+        info(f"Showing {len(rows)} unevaluated item(s) only (use without --unevaluated-only to review all).")
+    else:
+        info(f"Showing all {len(rows)} item(s) — already-evaluated rows will ask if you want to change your choice.")
+
+    newly_approved: list[ReviewResult] = []
+
+    for r in rows:
+        alts: list[str] = r.get("alternatives_json") or []
+        if not alts:
+            warn(f"Row {r['id']} ({r['table_name']}.{r.get('column_name') or '(table)'}) has no alternatives stored — skipping.")
+            continue
+
+        col_label = r.get("column_name") or "(table-level)"
+        existing_eval = r.get("evaluation")
+        existing_choice = r.get("chosen_description") or ""
+        console.print()
+        console.print(f"  [heading]Table: {r['table_name']}  Column: {col_label}[/heading]")
+        console.print(f"  Confidence: {r.get('confidence', 'unknown')}  |  Source: {r.get('source', 'unknown')}")
+        if r.get("reasoning"):
+            console.print(f"  Reasoning: {r.get('reasoning')}")
+        if existing_eval:
+            console.print(
+                f"  [dim]Previous evaluation: {existing_eval!r} → {existing_choice!r}[/dim]"
+            )
+
+        options = alts + ["Other (type your own)", "Skip"]
+        choice = ask_choice(
+            "Select a description (or Skip)",
+            options,
+            default=options[0],
+        )
+
+        if choice == "Skip":
+            hs.record_evaluation(r["id"], chosen_description="", evaluation="skipped")
+            info("Skipped.")
+        elif choice == "Other (type your own)":
+            custom = ask("Enter your description")
+            hs.record_evaluation(r["id"], chosen_description=custom, evaluation="custom")
+            newly_approved.append(ReviewResult(
+                schema=r.get("schema_name", ""),
+                table=r["table_name"],
+                column=r.get("column_name"),
+                final_description=custom,
+                confidence=Confidence.HIGH,
+                source="human",
+                applied=True,
+                asset_kind=r.get("asset_kind", "table"),
+                result_id=r["id"],
+            ))
+            success(f"Saved custom description for {r['table_name']}.{col_label}.")
+        else:
+            hs.record_evaluation(r["id"], chosen_description=choice, evaluation="accepted")
+            try:
+                conf = Confidence(r.get("confidence", "medium"))
+            except ValueError:
+                conf = Confidence.MEDIUM
+            newly_approved.append(ReviewResult(
+                schema=r.get("schema_name", ""),
+                table=r["table_name"],
+                column=r.get("column_name"),
+                final_description=choice,
+                confidence=conf,
+                source=r.get("source", "combined"),
+                applied=True,
+                asset_kind=r.get("asset_kind", "table"),
+                result_id=r["id"],
+            ))
+            success(f"Approved for {r['table_name']}.{col_label}.")
+
+    if not newly_approved:
+        info("No descriptions approved — nothing to apply or save.")
+        return
+
+    render_table(
+        "Approved in this review session",
+        ["Table", "Column", "Description", "Confidence", "Source"],
+        [
+            [
+                r.schema,
+                r.column or "(table)",
+                (r.final_description or "")[:60],
+                r.confidence.value,
+                r.source,
+            ]
+            for r in newly_approved
+        ],
+    )
+
+    if apply:
+        if not cfg.db.backend:
+            error("No database configured. Cannot apply.")
+            return
+        if confirm(f"Apply {len(newly_approved)} comment(s) to the database?", default=True):
+            db = DatabaseConnector(cfg.db)
+            if not db.test_connection():
+                error("Cannot connect to database.")
+                return
+            applied = apply_review_results_to_db(db, newly_approved)
+            success(f"Applied {applied} metadata comment(s) to the database.")
+            _log_app_event(
+                event_type="history_review_apply",
+                status="success",
+                command="history.review",
+                details={"run_id": run_id, "applied_count": applied},
+            )
+    else:
+        from amx.pending_review import save_pending
+        save_pending(newly_approved)
+        info(
+            f"Saved {len(newly_approved)} approved description(s) as pending. "
+            "Run `/analyze` then `/apply` to write them to the database."
+        )
 
 
 # ── Config Commands ─────────────────────────────────────────────────────────
@@ -2686,9 +3272,11 @@ def show_config(cfg: AMXConfig) -> None:
     )
     if cfg.llm_profiles:
         info("LLM profiles: " + ", ".join(sorted(cfg.llm_profiles.keys())))
-    info(f"Active document profile: {cfg.active_doc_profile or '-'}")
+    doc_prof = "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else (cfg.active_doc_profile or "-")
+    info(f"Active document profile: {doc_prof}")
     info(f"Document paths (active): {cfg.effective_doc_paths() or 'none'}")
-    info(f"Active codebase profile: {cfg.active_code_profile or '-'}")
+    code_prof = "(none)" if cfg.active_code_profile == DISABLED_PROFILE else (cfg.active_code_profile or "-")
+    info(f"Active codebase profile: {code_prof}")
     info(f"Codebase paths (active): {cfg.effective_code_paths() or 'none'}")
     info(f"Selected schemas: {cfg.selected_schemas or 'all'}")
 

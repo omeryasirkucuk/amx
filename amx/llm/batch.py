@@ -17,6 +17,7 @@ log = get_logger("llm.batch")
 
 _POLL_INITIAL_SLEEP = 10
 _POLL_INTERVAL = 15
+_POLL_HEARTBEAT = 60
 
 
 @dataclass
@@ -96,33 +97,66 @@ class OpenAIBatchProvider(BatchProvider):
 
     @staticmethod
     def _build_jsonl(requests: list[BatchRequest], model: str) -> bytes:
+        # OpenAI reasoning-style models (gpt-5 / o-series) require
+        # max_completion_tokens instead of max_tokens.
+        use_max_completion_tokens = OpenAIBatchProvider._requires_max_completion_tokens(model)
         lines: list[str] = []
         for req in requests:
+            body: dict[str, Any] = {
+                "model": model,
+                "messages": req.messages,
+            }
+            # GPT-5 / o-series currently accept only the default temperature (1)
+            # in batch; passing 0.2 yields "Unsupported value" errors.
+            if use_max_completion_tokens:
+                if req.temperature == 1:
+                    body["temperature"] = 1
+            else:
+                body["temperature"] = req.temperature
+            if use_max_completion_tokens:
+                body["max_completion_tokens"] = req.max_tokens
+            else:
+                body["max_tokens"] = req.max_tokens
             lines.append(json.dumps({
                 "custom_id": req.custom_id,
                 "method": "POST",
                 "url": "/v1/chat/completions",
-                "body": {
-                    "model": model,
-                    "messages": req.messages,
-                    "max_tokens": req.max_tokens,
-                    "temperature": req.temperature,
-                },
+                "body": body,
             }))
         return ("\n".join(lines) + "\n").encode()
+
+    @staticmethod
+    def _requires_max_completion_tokens(model: str) -> bool:
+        m = (model or "").strip().lower()
+        if "/" in m:
+            m = m.split("/")[-1]
+        return (
+            m.startswith("gpt-5")
+            or m.startswith("o1")
+            or m.startswith("o3")
+            or m.startswith("o4")
+        )
 
     @staticmethod
     def _poll(client: Any, batch: Any, total: int) -> tuple[Any, int]:
         terminal = {"completed", "failed", "expired", "cancelled"}
         elapsed = 0
+        last_snapshot: tuple[str, int, int] | None = None
+        last_print_elapsed = -_POLL_HEARTBEAT
         time.sleep(_POLL_INITIAL_SLEEP)
         elapsed += _POLL_INITIAL_SLEEP
         while batch.status not in terminal:
             done = (batch.request_counts.completed or 0) if batch.request_counts else 0
             cnt = (batch.request_counts.total or 0) if batch.request_counts else total
-            console.print(
-                f"[dim]  ↳ [{elapsed:>4}s] {batch.status} — {done}/{cnt}[/dim]"
-            )
+            snap = (str(batch.status), int(done), int(cnt))
+            # Reduce terminal spam: print only when state/progress changes,
+            # or every heartbeat seconds as a keep-alive.
+            if snap != last_snapshot or (elapsed - last_print_elapsed) >= _POLL_HEARTBEAT:
+                console.print(
+                    f"[dim]  ↳ [{elapsed:>4}s] {batch.status} — {done}/{cnt}[/dim]"
+                )
+                last_snapshot = snap
+                last_print_elapsed = elapsed
             time.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             batch = client.batches.retrieve(batch.id)
@@ -130,8 +164,26 @@ class OpenAIBatchProvider(BatchProvider):
 
     @staticmethod
     def _download_results(client: Any, batch: Any) -> dict[str, ChatResult]:
+        done = (batch.request_counts.completed or 0) if batch.request_counts else 0
+        failed = (batch.request_counts.failed or 0) if batch.request_counts else 0
+        total = (batch.request_counts.total or 0) if batch.request_counts else 0
+
+        # OpenAI can mark the batch "completed" even when all requests failed.
+        # In that case output_file_id is absent, but error_file_id is present.
         if not batch.output_file_id:
-            raise RuntimeError("Batch completed but output_file_id is missing.")
+            if getattr(batch, "error_file_id", None):
+                err_preview = OpenAIBatchProvider._download_error_preview(
+                    client, batch.error_file_id
+                )
+                raise RuntimeError(
+                    "Batch completed without output file; requests likely failed. "
+                    f"counts={done}/{total} completed, failed={failed}. "
+                    f"First errors: {err_preview}"
+                )
+            raise RuntimeError(
+                "Batch completed but output_file_id is missing "
+                f"(counts={done}/{total}, failed={failed})."
+            )
 
         output = client.files.content(batch.output_file_id)
         results: dict[str, ChatResult] = {}
@@ -154,7 +206,53 @@ class OpenAIBatchProvider(BatchProvider):
             results[cid] = ChatResult(content=content, usage=usage_dict)
 
         log.debug("Parsed %d results from batch output", len(results))
+        if not results and getattr(batch, "error_file_id", None):
+            err_preview = OpenAIBatchProvider._download_error_preview(
+                client, batch.error_file_id
+            )
+            raise RuntimeError(
+                "Batch produced no parsable results. "
+                f"First errors: {err_preview}"
+            )
         return results
+
+    @staticmethod
+    def _download_error_preview(client: Any, error_file_id: str) -> str:
+        """Return a compact summary of the first few OpenAI batch errors."""
+        try:
+            err_output = client.files.content(error_file_id)
+            lines: list[str] = []
+            for raw_line in err_output.text.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    if len(lines) < 3:
+                        lines.append(line[:180])
+                    if len(lines) >= 3:
+                        break
+                    continue
+
+                cid = obj.get("custom_id", "?")
+                msg = ""
+                err = obj.get("error") or {}
+                if isinstance(err, dict):
+                    msg = str(err.get("message") or err.get("type") or "")
+                if not msg:
+                    body = (obj.get("response") or {}).get("body") or {}
+                    berr = body.get("error") if isinstance(body, dict) else None
+                    if isinstance(berr, dict):
+                        msg = str(berr.get("message") or berr.get("type") or "")
+                if not msg:
+                    msg = "unknown batch error"
+                lines.append(f"{cid}: {msg}")
+                if len(lines) >= 3:
+                    break
+            return " | ".join(lines) if lines else "no details in error file"
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"could not download error_file ({exc})"
 
 
 class AnthropicBatchProvider(BatchProvider):
@@ -233,13 +331,19 @@ class AnthropicBatchProvider(BatchProvider):
     def _poll(client: Any, batch: Any, total: int) -> tuple[Any, int]:
         terminal = {"ended", "expired", "canceled", "canceling"}
         elapsed = 0
+        last_snapshot: tuple[str, int, int] | None = None
+        last_print_elapsed = -_POLL_HEARTBEAT
         time.sleep(_POLL_INITIAL_SLEEP)
         elapsed += _POLL_INITIAL_SLEEP
         while batch.processing_status not in terminal:
             done = (batch.request_counts.succeeded or 0) if batch.request_counts else 0
-            console.print(
-                f"[dim]  ↳ [{elapsed:>4}s] {batch.processing_status} — {done}/{total}[/dim]"
-            )
+            snap = (str(batch.processing_status), int(done), int(total))
+            if snap != last_snapshot or (elapsed - last_print_elapsed) >= _POLL_HEARTBEAT:
+                console.print(
+                    f"[dim]  ↳ [{elapsed:>4}s] {batch.processing_status} — {done}/{total}[/dim]"
+                )
+                last_snapshot = snap
+                last_print_elapsed = elapsed
             time.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             batch = client.messages.batches.retrieve(batch.id)
