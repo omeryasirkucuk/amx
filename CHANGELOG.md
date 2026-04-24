@@ -1,209 +1,23 @@
 # Changelog
 
-This file is the **public, high-signal** changelog for AMX (what contributors/users should expect on GitHub).
+All notable changes to this project are documented in this file.
 
-For day-to-day development notes (longer, more granular), use `CHANGELOG.local.md` in your checkout (gitignored).
+The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.30] — 2026-04-21
-
-### Added
-- **Standalone agent commands**: `/code-analyze [TABLE …]` runs the Code Agent (LLM) against cached scan results; `/doc-analyze [TABLE …]` runs the RAG Agent against ingested documents. Both save JSON results under `~/.amx/` so the next `/run` can reuse them — scan once, run agents individually, then `/run` merges everything faster.
-- **Code ops moved to `/code` namespace**: `/code-scan`, `/code-refresh`, `/code-results`, `/code-analyze`, `/export-code-report` all live under `/code` (previously under `/analyze`). Slash shortcuts still work from any namespace.
-- **Doc ops enriched**: `/doc-analyze` and `/export-doc-report` live under `/docs`.
+## [0.1.37] — 2026-04-24
 
 ### Changed
-- **`/analyze` is now lean**: only `/run`, `/run-apply`, and `/apply`. All scanning/agent/export commands belong to their source namespaces (`/code` or `/docs`).
 
-## [0.1.29] — 2026-04-21
+- **Single install for all SQL backends**: Core package dependencies now include Snowflake, Databricks, and BigQuery SQLAlchemy connectors (in addition to PostgreSQL). `pip install amx` is sufficient for every supported engine; optional `[snowflake]`, `[databricks]`, `[bigquery]`, and `[all-backends]` extras were removed.
+- **Interactive `/db` workflow**: Entering `/db` shows which engines are supported and how to list profiles, switch the active profile, or add a new one. `/use-db` (no argument) lists each saved profile with `[backend]` and a connection summary. `/add-db-profile` and the setup wizard describe each engine when you pick PostgreSQL, Snowflake, Databricks, or BigQuery.
 
-### Added
-- **`/run` and `/run-apply` accept positional table names** — e.g. `/run vbrk vbrp` or `/run-apply t001 --schema sap_s6p`. `/run-apply` supports the same `--schema`, `--table`, `--code-profile`, `--code-refresh` options as `/run`.
-- **`/code-results`** — view the last cached code-scan report for a profile without re-scanning.
-- **`/export-code-report [FILE]`** — export code-scan results (catalog hits, external identifiers, detailed snippets) to a markdown file.
-- **`/export-doc-report [FILE]`** — export a summary of the RAG document store (chunk counts per source) to a markdown file.
+### Documentation
 
-### Changed
-- **Removed all "PostgreSQL" references** from help text, prompts, and comments — database engine is now generic ("database").
-- **Removed `/query` and `/similarity`** — only `/search-docs` remains.
+- README: installation from PyPI, multi-backend table, `db/adapters` in project layout, changelog pointer.
+- This file added for release-focused notes; older entries remain in the README “Changelog” section.
 
-## [0.1.28] — 2026-04-21
+## [0.1.36] and earlier
 
-### Changed
-- **`/codebase` renamed to `/code-scan`** — the command now also scans **columns** (not just table names), builds the **semantic code index** (`amx_code`), and **saves results to cache** so the next `/run` reuses them without re-scanning.
-- **`/code-refresh`** no longer prints a warning when the `amx_code` Chroma collection doesn't exist yet (expected on first use).
+See the **Changelog** section in [README.md](README.md).
 
-## [0.1.27] — 2026-04-21
-
-### Added
-- **Profile flags**: `--code-profile` on `analyze codebase` and `analyze run`; `--doc-profile` and `--refresh` / `--no-refresh` on `docs scan` / `docs ingest`. Slash shortcuts include `/code-refresh`.
-- **Codebase cache** under `~/.amx/code_cache` (manifest + `report.json`) so `/run` can reuse scans; `--code-refresh` forces rebuild and clears the semantic code index.
-- **Semantic code index** in Chroma collection `amx_code` (Python AST chunks + split fallback for other extensions); Code Agent uses hybrid grep hits + vector retrieval. **External-style identifiers** (e.g. Spark `read.table` strings not in the connected catalog) are surfaced for LLM context only.
-- **Deeper static scan**: Python `ast` string literals, Spark/SQL-style line heuristics, optional **`sqlglot`**-based table extraction for `.sql` when you install `amx[code-intel]`.
-- **RAG ingest refresh**: `--refresh` deletes existing chunks whose `source` metadata matches the paths being ingested, then upserts (avoids stale chunks when files shrink).
-- **Duplicate path prompts** when adding the same document path twice to a profile (or setup), and when a codebase path is already used by another named profile.
-
-### Changed
-- **`/run` with multiple codebase roots** merges `CodebaseReport` results instead of keeping only the last path’s report.
-
-## [0.1.26] — 2026-04-21
-
-### Changed
-- **`/codebase` without a path** uses the **active codebase profile** path (`effective_code_paths()`), so you do not need to repeat the URL after `/add-code-profile`. Still accepts an explicit path or Git URL when you want a one-off scan.
-
-## [0.1.25] — 2026-04-21
-
-### Changed
-- **`/codebase` UX**: missing or invalid local paths now error with a clear message (instead of silently scanning 0 files). When the path exists but no scannable files were found, a hint lists supported extensions and notes that `/codebase` expects a directory/Git URL, not a `/code` profile name.
-- **Docs**: README and `/analyze` help clarify what `<path>` means for `/codebase`.
-
-## [0.1.24] — 2026-04-21
-
-### Fixed
-- **GitHub file/tree URLs now work**: pasting `https://github.com/user/repo/blob/main/file.sql` or `/tree/…` URLs is automatically normalized to the repo clone URL (`https://github.com/user/repo`). Applies to reachability checks, clones for code analysis, and document scanning.
-
-## [0.1.23] — 2026-04-21
-
-### Changed
-- **Profile path checks are reachability-only**: `/add-doc-profile` and `/setup` document paths use `test_source_reachable()` (Git: `git ls-remote`, S3: `head_bucket` + prefix probe, Drive/SharePoint: HTTP checks, local: path exists) instead of cloning or full `scan_source()`. `/add-code-profile` and setup codebase path use `test_codebase_path_reachable()` (`git ls-remote` or local directory check). Full scans remain on `/scan` and `/ingest`.
-
-## [0.1.22] — 2026-04-21
-
-### Changed
-- **README**: removed Docker/demo database instructions; prerequisites now describe a generic PostgreSQL deployment. LLM provider table is provider + config value only (no per-provider notes). Profile-agent context list uses “Usage stats” without `pg_stat_user_tables` column names. Configuration section documents `amx --config` correctly.
-
-## [0.1.21] — 2026-04-21
-
-### Changed
-- **RAG “query” command renamed for clarity**: primary slash command is now **`/search-docs`** (vector similarity via Chroma only; no conversational LLM). Short alias **`/similarity`**. **`/query`** remains as a deprecated alias with a warning.
-
-## [0.1.20] — 2026-04-21
-
-### Changed
-- **`/add-doc-profile` UX**: validate each path inline as it's entered (no more "empty line to finish" double-prompt); after each path, asks "Add another path?" instead of requiring a blank line to end.
-
-## [0.1.19] — 2026-04-21
-
-### Changed
-- **Google Drive & SharePoint/OneDrive: public-first download**: public/shared links ("Anyone with the link") now work with **zero credential setup** — AMX tries anonymous download first and only falls back to API credentials for private files or folder listings. Error messages now guide users clearly on what's needed.
-
-## [0.1.18] — 2026-04-21
-
-### Changed
-- **`/schema` and `/table` are `/db` commands**: removed from root autocomplete/help as “global shortcuts”, gated handlers to `/db`, and include them in `/db` namespace auto-detection from the root prompt.
-
-## [0.1.17] — 2026-04-21
-
-### Changed
-- **Slash-command structure**: DB profile commands are now explicit under `/db` (`/db-profiles`, `/use-db`, `/add-db-profile`, `/remove-db-profile`).
-- **New namespaces**: `/llm` and `/code` for LLM and codebase profile management (commands are namespace-gated for clarity).
-- **Ergonomics**: running an unambiguous command from the root prompt auto-selects the appropriate namespace (with an info line); legacy `/profiles`, `/use`, `/add-profile`, `/remove-profile` show a rename hint.
-
-## [0.1.16] — 2026-04-21
-
-### Changed
-- **Interactive `/docs` UX**: help + autocomplete now surface document profile commands (`/doc-profiles`, `/use-doc`, `/add-doc-profile`, `/remove-doc-profile`) ahead of scan/ingest/query.
-- **Better empty-input handling**: bare `/query` shows usage (no Click “missing argument” spam); bare `/ingest` and `/scan` without configured paths show setup-first guidance.
-
-## [0.1.15] — 2026-04-21
-
-### Added
-- **Google Drive document sources**: scan/ingest via Drive API using `AMX_GOOGLE_SERVICE_ACCOUNT_JSON` or `AMX_GOOGLE_OAUTH_TOKEN_JSON`.
-- **SharePoint / OneDrive document sources**: scan/ingest via Microsoft Graph sharing API using `AMX_AZURE_TENANT_ID`, `AMX_AZURE_CLIENT_ID`, `AMX_AZURE_CLIENT_SECRET`.
-
-### Changed
-- **Docs**: README documents cloud auth env vars and supported link types.
-- **CLI copy**: pending-metadata hints no longer reference disabled direct `amx analyze …` commands.
-
-## [0.1.14] — 2026-04-21
-
-### Added
-- **Deferred apply flow**: approved review results are now persisted to `~/.amx/pending_metadata.json` and can be applied later via `amx analyze apply` / `/apply`.
-- **Analyze shortcut**: added `/run-apply` as a one-step alias for running analysis and writing approved COMMENTs.
-- **Document source validation**: `/add-doc-profile` and setup now validate document paths immediately, with explicit unsupported-source errors for Google Drive and SharePoint/OneDrive links.
-- **Richer DB profiling context for LLM**: prompt context now includes PK/FK/constraints, upstream/downstream FK relations, table usage stats, per-column cardinality ratio, and existing comments from database/schema/column/related tables.
-
-### Changed
-- **Interactive-only command model**: AMX now enforces terminal usage via `amx` session + slash commands (direct `amx <subcommand>` execution is blocked).
-- **Setup DB prompts**: first-time DB setup no longer pre-fills example values (e.g., `localhost`, `SAP`); prompts require explicit user input.
-- **Docs refreshed**: README now reflects supported document formats/sources, write-back support, interactive slash-command workflow, and the exact DB details sent to LLM.
-
-## [0.1.13] — 2026-04-20
-
-### Fixed
-- **`ask_choice` UX**: the prompt no longer pre-fills the input with the long default option text. Type **`2`** (or any number) immediately; **Enter** still selects the default when one is set.
-
-## [0.1.12] — 2026-04-20
-
-### Fixed
-- **OpenAI `gpt-5` / o-series (`finish_reason=length`, empty `content`)**: these models can burn the entire output budget on **reasoning tokens** before emitting visible text. The LLM layer now **raises `max_tokens` to at least 16384** for those models (override via `AMX_LLM_MIN_MAX_TOKENS`), passes **`reasoning_effort`** (default `low`, env `AMX_REASONING_EFFORT`), and prints a targeted warning when `finish_reason=length` with empty content. New installs default **`max_tokens` = 16384** in `LLMConfig`.
-
-## [0.1.11] — 2026-04-20
-
-### Fixed
-- **`finish_reason=length` → empty output**: tables with many columns (vbup has 47) exhausted the model's output budget in a single call. Profile agent now **batches columns in groups of 10**, making multiple smaller LLM calls so each has room to respond. Progress is shown in the terminal.
-
-## [0.1.10] — 2026-04-20
-
-### Fixed
-- **Empty LLM response diagnosis**: the model was returning **0 chars** (empty content). LLM provider now logs `finish_reason`, `usage`, and model name; warns immediately when content is empty. Profile agent exits early with a clear message instead of running parsers on nothing.
-- **Default `max_tokens`** raised from 2048 to 4096 (tables with many columns need more output room).
-
-## [0.1.9] — 2026-04-20
-
-### Added
-- **Debug artifacts**: when the profile agent still cannot parse the LLM reply, the **full raw response** is written to `~/.amx/logs/last_profile_agent_response.txt`.
-- **Third parser pass**: match **known column names** from the table profile against free-form model text (handles Markdown bullets / headings with different casing).
-
-### Changed
-- Session startup shows the **logs directory**; warnings point to `amx.log` and `last_profile_agent_response.txt`.
-
-## [0.1.8] — 2026-04-20
-
-### Fixed
-- **Empty analyze results (Approved: 0 / Skipped: 0)**: the profile agent only accepted a rigid `COLUMN:` / `DESCRIPTION_1:` template; many models return Markdown instead. A **loose parser** now recovers column suggestions from typical LLM formatting, with clearer warnings when nothing is parseable.
-- **`/run` with no flags**: asks whether to use **session defaults** (`/schema` and optional `/table`) or **pick schema/table(s) interactively** before running agents.
-
-## [0.1.7] — 2026-04-20
-
-### Removed
-- **`amx db load` / `/load`**: AMX is scoped to metadata extraction only; CSV bulk loading was removed (use your own import tools).
-
-### Added
-- **Named profiles** for LLMs, document roots, and codebases in `~/.amx/config.yml`, with session commands: `/llm-profiles`, `/use-llm`, `/add-llm-profile`, `/remove-llm-profile`, `/doc-profiles`, `/use-doc`, `/add-doc-profile`, `/remove-doc-profile`, `/code-profiles`, `/use-code`, `/add-code-profile`, `/remove-code-profile`.
-- **Friendlier `analyze codebase`**: optional `--schema` (defaults to session `/schema`); flags like `--sap_s6p` are rewritten to `--schema sap_s6p` for both the interactive shell and the `amx` CLI entrypoint.
-
-### Fixed
-- **LiteLLM model id**: OpenAI (and other) models without a slash now get the correct provider prefix (e.g. `gpt-4o` → `openai/gpt-4o`) so provider detection no longer fails.
-
-## [0.1.6] — 2026-04-20
-
-### Fixed
-- **Raw ANSI escape codes** (`?[1;35m…`) no longer appear on session start — removed `patch_stdout()` entirely and use the standard Rich `console` for all output between prompts.
-- **Ghost `amx>` lines on terminal resize** eliminated — output now happens strictly *between* `PromptSession.prompt()` calls, so prompt-toolkit no longer redraws stale prompt lines when the terminal is resized.
-- Simplified internal architecture: removed `_interactive_console`, `_ipt_*` helpers, and `patch_stdout` dependency; all session output uses the shared `console` from `amx.utils.console`.
-
-## [0.1.5] — 2026-04-28
-
-### Fixed
-- **Interactive session rendering**: prevent raw ANSI fragments like `?[1;35m` showing up in Terminal.app by using a Rich `Console(force_terminal=True)` bound to the patched stdout during interactive sessions.
-
-## [0.1.4] — 2026-04-28
-
-### Fixed
-- **macOS Terminal.app resize**: reduce duplicated `amx>` “ghost prompts” by keeping Rich output and `PromptSession` under the same `patch_stdout()` for the whole interactive session (and disabling mouse reporting on the prompt).
-
-## [0.1.3] — 2026-04-28
-
-### Fixed
-- **Compatibility**: import `HTML` from `prompt_toolkit.formatted_text` (older prompt-toolkit releases don’t provide `prompt_toolkit.formatted_html`).
-
-## [0.1.2] — 2026-04-28
-
-### Fixed
-- Interactive session: reduce duplicated `amx>` prompt spam during terminal resize by routing command output through prompt-toolkit while the session UI is active.
-
-### Added
-- Interactive session: `Esc` on an empty line returns to the root namespace (similar “go back” ergonomics to agent CLIs).
-
-### Changed
-- Changelog workflow: keep detailed history locally in `CHANGELOG.local.md` (ignored by git) while keeping this public changelog updated for releases.
+[0.1.37]: https://github.com/omeryasirkucuk/amx/compare/v0.1.36...v0.1.37

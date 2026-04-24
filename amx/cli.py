@@ -17,7 +17,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 
 from amx import __version__
-from amx.config import AMXConfig, DBConfig, LLMConfig
+from amx.config import AMXConfig, DBConfig, LLMConfig, SUPPORTED_BACKENDS
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -52,7 +52,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
     info(f"Logs directory: {LOG_DIR} (amx.log · on LLM parse errors: {LAST_PROFILE_RESPONSE_FILE.name})")
     info(
         f"Database: profile '{cfg.active_db_profile}' → "
-        f"{cfg.db.database} @ {cfg.db.host}:{cfg.db.port} (user {cfg.db.user})"
+        f"[{cfg.db.backend}] {cfg.db.display_summary}"
     )
     llm_line = (
         f"{cfg.llm.provider or '(unset)'}/{cfg.llm.model or '(unset)'}"
@@ -293,6 +293,8 @@ def _interactive_session(cfg: AMXConfig) -> None:
             if cmdline in {"db", "docs", "llm", "code", "analyze"}:
                 namespace = cmdline
                 info(f"Entered /{namespace} namespace.")
+                if namespace == "db":
+                    _print_db_namespace_hint()
                 continue
 
             try:
@@ -373,9 +375,12 @@ def _print_session_help(*, namespace: str, cfg: AMXConfig) -> None:
     out = console
 
     if namespace == "db":
+        engines = ", ".join(SUPPORTED_BACKENDS)
         out.print(
             f"""
 [heading]Help — /db namespace[/heading]
+Engines: [cyan]{engines}[/cyan] — each profile stores one backend. /add-db-profile asks which engine first.
+
 Context:
   Active DB profile: [cyan]{active}[/cyan]
   Current schema: [cyan]{ctx_schema}[/cyan]
@@ -383,9 +388,9 @@ Context:
 
 Commands (in order):
   1) /back                         Return to root namespace
-  2) /db-profiles                  List DB connection profiles
-  3) /use-db <name>                Switch active DB profile
-  4) /add-db-profile [name]        Create/update a DB profile (interactive)
+  2) /db-profiles                  List DB profiles (Backend + connection summary)
+  3) /use-db [name]                Switch profile (interactive list shows [engine] per profile)
+  4) /add-db-profile [name]        Create/update profile — pick PostgreSQL, Snowflake, Databricks, or BigQuery
   5) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
   6) /save                         Persist config to disk (~/.amx/config.yml)
   7) /schema <name>                Set current schema context (used by /tables)
@@ -574,8 +579,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
     db_cmds: list[tuple[str, str]] = [
         ("/back", "Return to root namespace"),
         ("/db-profiles", "List DB profiles"),
-        ("/use-db", "Switch DB profile (/use-db <name>)"),
-        ("/add-db-profile", "Create/update DB profile"),
+        ("/use-db", "Switch DB profile (lists PostgreSQL, BigQuery, … per profile)"),
+        ("/add-db-profile", "Add profile — choose engine then connection details"),
         ("/remove-db-profile", "Remove DB profile (/remove-db-profile <name>)"),
         ("/save", "Save config to disk"),
         ("/schema", "Set current schema (/schema <name>)"),
@@ -765,14 +770,25 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
     return False
 
 
+def _print_db_namespace_hint() -> None:
+    """Shown when the user enters `/db` — how to pick engine and switch profiles."""
+    backends = ", ".join(SUPPORTED_BACKENDS)
+    info(
+        f"Database engines: {backends}. "
+        "Use /db-profiles to list saved profiles (each row shows its backend). "
+        "/use-db switches the active profile — you will see backend + connection summary. "
+        "/add-db-profile first asks which engine (PostgreSQL, Snowflake, Databricks, BigQuery), then connection details."
+    )
+
+
 def _cmd_profiles(cfg: AMXConfig) -> None:
     rows = []
     for name, db in sorted(cfg.db_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_db_profile else " "
-        rows.append([f"{mark} {name}", db.host, str(db.port), db.user, db.database])
+        rows.append([f"{mark} {name}", db.backend, db.display_summary])
     render_table(
         "DB profiles (* = active)",
-        ["Profile", "Host", "Port", "User", "Database"],
+        ["Profile", "Backend", "Connection"],
         rows,
     )
 
@@ -783,15 +799,94 @@ def _cmd_use(cfg: AMXConfig, rest: list[str]) -> None:
     else:
         names = sorted(cfg.db_profiles.keys())
         if not names:
-            error("No profiles configured.")
+            error("No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery).")
             return
-        name = ask_choice("Select profile", names, default=cfg.active_db_profile)
+        descriptions = {
+            n: f"[{p.backend}] {p.display_summary}"
+            for n, p in cfg.db_profiles.items()
+        }
+        name = ask_choice(
+            "Select DB profile (by name or number)",
+            names,
+            default=cfg.active_db_profile or names[0],
+            descriptions=descriptions,
+        )
+        if not name:
+            error("No profile selected.")
+            return
     try:
         cfg.set_active_db_profile(name)
         cfg.save()
-        success(f"Switched active DB profile to: {name}")
+        p = cfg.db
+        success(f"Switched active DB profile to: {name} [{p.backend}] — {p.display_summary}")
     except Exception as exc:
         error(str(exc))
+
+
+def _interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
+    """Interactive prompts to build a DBConfig for any supported backend."""
+    if defaults is None:
+        defaults = DBConfig()
+    backend = ask_choice(
+        "Select database backend (engine)",
+        list(SUPPORTED_BACKENDS),
+        default=defaults.backend or "postgresql",
+        descriptions={
+            "postgresql": "Host/port user/password — COMMENT ON metadata",
+            "snowflake": "Account, warehouse, role — Snowflake COMMENT",
+            "databricks": "SQL warehouse HTTP path + token — Unity Catalog",
+            "bigquery": "GCP project + dataset — table/column descriptions via OPTIONS",
+        },
+    )
+
+    if backend == "postgresql":
+        host = ask("Database host", defaults.host or "localhost")
+        port_raw = ask("Port", str(defaults.port or 5432))
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = ask("Port", str(defaults.port or 5432))
+        user = ask("Username", defaults.user or "amx")
+        password = ask_password("Password") or defaults.password or ""
+        database = ask("Database name", defaults.database or "postgres")
+        return DBConfig(
+            backend="postgresql", host=host, port=int(port_raw),
+            user=user, password=password, database=database,
+        )
+
+    if backend == "snowflake":
+        account = ask("Snowflake account identifier (e.g. xy12345.us-east-1)", defaults.account)
+        user = ask("Username", defaults.user)
+        password = ask_password("Password") or defaults.password or ""
+        database = ask("Database name", defaults.database)
+        warehouse = ask("Warehouse (optional)", defaults.warehouse or "")
+        role = ask("Role (optional)", defaults.role or "")
+        return DBConfig(
+            backend="snowflake", account=account, user=user,
+            password=password, database=database,
+            warehouse=warehouse, role=role,
+        )
+
+    if backend == "databricks":
+        host = ask("Databricks host (e.g. adb-xxx.azuredatabricks.net)", defaults.host)
+        http_path = ask("SQL warehouse HTTP path", defaults.http_path)
+        access_token = ask_password("Access token") or defaults.access_token or ""
+        catalog = ask("Unity Catalog name (optional)", defaults.catalog or "")
+        database = ask("Schema / database (optional)", defaults.database or "")
+        return DBConfig(
+            backend="databricks", host=host, http_path=http_path,
+            access_token=access_token, catalog=catalog, database=database,
+        )
+
+    if backend == "bigquery":
+        project = ask("GCP project ID", defaults.project)
+        dataset = ask("Default dataset (optional)", defaults.dataset or "")
+        creds = ask("Service account JSON path (optional, uses ADC if empty)", defaults.credentials_path or "")
+        return DBConfig(
+            backend="bigquery", project=project, dataset=dataset,
+            credentials_path=creds,
+        )
+
+    return defaults
 
 
 def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -800,16 +895,12 @@ def _cmd_add_profile(cfg: AMXConfig, rest: list[str]) -> None:
     else:
         name = ask("Profile name", default="local")
     info(f"Creating/updating profile: {name}")
-    host = ask("Database host", cfg.db.host)
-    port = int(ask("Port", str(cfg.db.port)))
-    user = ask("Username", cfg.db.user)
-    password = ask_password("Password")
-    database = ask("Database name", cfg.db.database)
-    db = DBConfig(host=host, port=port, user=user, password=password or "", database=database)
+    existing = cfg.db_profiles.get(name)
+    db = _interactive_db_block(existing or cfg.db)
     cfg.upsert_db_profile(name, db)
     cfg.set_active_db_profile(name)
     cfg.save()
-    success(f"Profile saved and activated: {name}")
+    success(f"Profile saved and activated: {name} [{db.backend}]")
 
 
 def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -1157,33 +1248,8 @@ def setup(cfg: AMXConfig) -> None:
 
     # Database
     info("Step 1/3 — Database Connection")
-    host = ask("Database host (e.g. localhost)")
-    while not host:
-        warn("Host is required.")
-        host = ask("Database host (e.g. localhost)")
-    cfg.db.host = host
+    cfg.db = _interactive_db_block(cfg.db)
 
-    port_raw = ask("Port (e.g. 5432)")
-    while not port_raw.isdigit():
-        warn("Port must be a number (e.g. 5432).")
-        port_raw = ask("Port (e.g. 5432)")
-    cfg.db.port = int(port_raw)
-
-    user = ask("Username")
-    while not user:
-        warn("Username is required.")
-        user = ask("Username")
-    cfg.db.user = user
-
-    cfg.db.password = ask_password("Password")
-
-    database = ask("Database name (e.g. postgres)")
-    while not database:
-        warn("Database name is required.")
-        database = ask("Database name (e.g. postgres)")
-    cfg.db.database = database
-
-    # Persist DB credentials into the active profile (multi-connection support).
     if not cfg.active_db_profile:
         cfg.active_db_profile = "default"
     cfg.upsert_db_profile(cfg.active_db_profile, cfg.db)
@@ -1193,7 +1259,7 @@ def setup(cfg: AMXConfig) -> None:
 
     db = DatabaseConnector(cfg.db)
     if db.test_connection():
-        success("Database connection successful!")
+        success(f"Database connection successful! (backend: {cfg.db.backend})")
     else:
         error("Database connection failed. Check credentials and try again.")
         if not confirm("Continue anyway?", default=False):
@@ -1291,7 +1357,7 @@ def db_connect(cfg: AMXConfig) -> None:
 
     db = DatabaseConnector(cfg.db)
     if db.test_connection():
-        success(f"Connected to {cfg.db.database} at {cfg.db.host}:{cfg.db.port}")
+        success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
     else:
         error("Connection failed.")
         sys.exit(1)
@@ -2608,7 +2674,7 @@ def show_config(cfg: AMXConfig) -> None:
     """Display current configuration."""
     info(
         f"Active DB profile: {cfg.active_db_profile} → "
-        f"{cfg.db.user}@{cfg.db.host}:{cfg.db.port}/{cfg.db.database}"
+        f"[{cfg.db.backend}] {cfg.db.display_summary}"
     )
     if cfg.db_profiles:
         names = ", ".join(sorted(cfg.db_profiles.keys()))

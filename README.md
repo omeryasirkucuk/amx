@@ -51,18 +51,34 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 ### Prerequisites
 
 - Python 3.10+
-- A database you can connect to (PostgreSQL supported; more engines planned)
+- A database you can connect to — **PostgreSQL**, **Snowflake**, **Databricks** (Unity Catalog SQL warehouse), or **BigQuery** (drivers ship with the package)
 - Access to at least one LLM provider you plan to configure (API key, local endpoint, etc.)
 
 ### Installation
+
+From [PyPI](https://pypi.org/project/amx/) (recommended):
+
+```bash
+pip install amx
+```
+
+From source:
 
 ```bash
 git clone https://github.com/omeryasirkucuk/amx.git
 cd amx
 pip install -e .
-# Optional: richer SQL parsing in codebase scans (sqlglot)
-pip install -e ".[code-intel]"
 ```
+
+Optional extras:
+
+```bash
+# Richer SQL parsing in codebase scans (sqlglot)
+pip install "amx[code-intel]"
+# or from source: pip install -e ".[code-intel]"
+```
+
+A single `pip install amx` includes SQLAlchemy drivers for PostgreSQL, Snowflake, Databricks, and BigQuery so you can add profiles for any supported engine without extra packages.
 
 AMX focuses on **metadata inference**, not bulk data loading. Populate schemas and tables with your own import or ETL process, then use AMX against that database.
 
@@ -73,13 +89,13 @@ amx setup
 ```
 
 This interactive wizard walks you through:
-1. **Database connection** — host, port, credentials
+1. **Database connection** — choose **PostgreSQL**, **Snowflake**, **Databricks**, or **BigQuery**, then enter that engine’s connection details
 2. **AI model** — provider and API key (see [Supported LLM Providers](#supported-llm-providers))
 3. **Data sources** — optional named **document** and **codebase** profiles for RAG and code scanning
 
 In an interactive `amx` session, configuration is grouped by namespace:
 
-- `/db` — database profiles + introspection (`/db-profiles`, `/add-db-profile`, `/connect`, …)
+- `/db` — database profiles + introspection. Entering `/db` explains how to list profiles, switch engines with `/use-db` (each option shows `[backend] connection summary`), and add a profile with `/add-db-profile` (engine first, then credentials)
 - `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
@@ -113,9 +129,9 @@ amx
 |---------|-------------|
 | `/setup` | Interactive first-time configuration wizard |
 | `/config` | Display current configuration |
-| `/db` + `/db-profiles` | List DB connection profiles |
-| `/db` + `/use-db <name>` | Switch active DB profile |
-| `/db` + `/add-db-profile [name]` | Add/update a DB profile (interactive) |
+| `/db` + `/db-profiles` | List DB profiles (shows **backend** + connection summary per row) |
+| `/db` + `/use-db [name]` | Switch active profile; interactive picker lists each profile’s engine (PostgreSQL, BigQuery, …) |
+| `/db` + `/add-db-profile [name]` | Add/update a profile: **choose engine first**, then connection fields for that backend |
 | `/db` + `/remove-db-profile <name>` | Remove a DB profile |
 | `/db` + `/schema <name>` | Set default schema context (used by /tables, /analyze, …) |
 | `/db` + `/table <name>` | Set default table context (used by /profile, /analyze, …) |
@@ -197,6 +213,17 @@ AMX scans/ingests these extensions:
 
 `pdf`, `docx`, `doc`, `txt`, `md`, `csv`, `xlsx`, `xls`, `html`, `htm`, `pptx`, `json`, `yaml`, `yml`, `rst`, `rtf`
 
+## Supported database backends
+
+| Backend | Config (`backend` in `~/.amx/config.yml`) | Notes |
+|---------|-------------------------------------------|--------|
+| PostgreSQL | `postgresql` | Default; `COMMENT ON TABLE/COLUMN` |
+| Snowflake | `snowflake` | Account, warehouse, role; Snowflake `COMMENT` syntax |
+| Databricks | `databricks` | SQL warehouse HTTP path + personal access token; Unity Catalog optional |
+| BigQuery | `bigquery` | GCP project, dataset; descriptions via `ALTER … SET OPTIONS` |
+
+Introspection and profiling use backend-specific SQL where needed; metadata write-back uses each platform’s supported description/comment mechanism.
+
 ## Supported LLM Providers
 
 | Provider | Config value |
@@ -248,7 +275,8 @@ amx/
 │   ├── rag_agent.py    # Document RAG agent
 │   └── code_agent.py   # Codebase analysis agent
 ├── db/
-│   └── connector.py    # Database introspection and metadata I/O
+│   ├── connector.py    # Database introspection and metadata I/O
+│   └── adapters/       # Backend-specific SQL and connections (PG, Snowflake, …)
 ├── docs/
 │   ├── scanner.py      # Multi-source document scanner
 │   └── rag.py          # ChromaDB vector store and RAG pipeline
@@ -267,6 +295,14 @@ amx/
 ```
 
 ## Changelog
+
+Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.37
+
+- **All database drivers in one install**: `pip install amx` now includes Snowflake, Databricks, and BigQuery SQLAlchemy stacks alongside PostgreSQL — no optional `[snowflake]` / `[bigquery]` extras.
+- **`/db` namespace UX**: Entering `/db` prints a short hint listing supported engines and how to use `/db-profiles`, `/use-db`, and `/add-db-profile`. `/use-db` without a name shows an interactive list with `[backend] connection summary` per profile. `/add-db-profile` and setup wizard use `SUPPORTED_BACKENDS` with one-line descriptions for each engine.
+- **Docs**: README updated for multi-backend installation and configuration; new top-level `CHANGELOG.md` for version history.
 
 ### v0.1.36
 

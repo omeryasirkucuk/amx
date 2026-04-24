@@ -6,24 +6,152 @@ import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 import yaml
 
 
+SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
+
+
 @dataclass
 class DBConfig:
+    backend: str = "postgresql"
+
+    # Common fields (PostgreSQL / generic)
     host: str = "localhost"
     port: int = 5432
     user: str = "amx"
     password: str = "amx_pass"
     database: str = "SAP"
 
+    # Snowflake
+    account: str = ""
+    warehouse: str = ""
+    role: str = ""
+
+    # Databricks
+    http_path: str = ""
+    access_token: str = ""
+    catalog: str = ""
+
+    # BigQuery
+    project: str = ""
+    dataset: str = ""
+    credentials_path: str = ""
+
     @property
     def url(self) -> str:
+        if self.backend == "snowflake":
+            url = (
+                f"snowflake://{quote_plus(self.user)}:{quote_plus(self.password)}"
+                f"@{self.account}/{self.database}"
+            )
+            params: list[str] = []
+            if self.warehouse:
+                params.append(f"warehouse={quote_plus(self.warehouse)}")
+            if self.role:
+                params.append(f"role={quote_plus(self.role)}")
+            if params:
+                url += "?" + "&".join(params)
+            return url
+
+        if self.backend == "databricks":
+            token = self.access_token or self.password
+            url = f"databricks://token:{quote_plus(token)}@{self.host}:443"
+            if self.database:
+                url += f"/{quote_plus(self.database)}"
+            params = []
+            if self.http_path:
+                params.append(f"http_path={quote_plus(self.http_path)}")
+            if self.catalog:
+                params.append(f"catalog={quote_plus(self.catalog)}")
+            if params:
+                url += "?" + "&".join(params)
+            return url
+
+        if self.backend == "bigquery":
+            url = f"bigquery://{self.project}"
+            if self.dataset:
+                url += f"/{self.dataset}"
+            if self.credentials_path:
+                url += f"?credentials_path={quote_plus(self.credentials_path)}"
+            return url
+
+        # Default: PostgreSQL
         return (
-            f"postgresql://{self.user}:{self.password}"
+            f"postgresql://{quote_plus(self.user)}:{quote_plus(self.password)}"
             f"@{self.host}:{self.port}/{self.database}"
         )
+
+    @property
+    def display_summary(self) -> str:
+        """Short human-readable connection summary for the UI."""
+        if self.backend == "snowflake":
+            return f"{self.database}@{self.account} (user {self.user})"
+        if self.backend == "databricks":
+            cat = f" catalog={self.catalog}" if self.catalog else ""
+            return f"{self.host}{cat}"
+        if self.backend == "bigquery":
+            ds = f".{self.dataset}" if self.dataset else ""
+            return f"{self.project}{ds}"
+        return f"{self.database} @ {self.host}:{self.port} (user {self.user})"
+
+
+# ── Serialization helpers ─────────────────────────────────────────────────
+
+
+def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
+    backend = str(m.get("backend", "postgresql"))
+    return DBConfig(
+        backend=backend,
+        host=str(m.get("host", "localhost")),
+        port=int(m.get("port", 5432)),
+        user=str(m.get("user", "amx")),
+        password=str(m.get("password", "")),
+        database=str(m.get("database", "SAP")),
+        account=str(m.get("account", "")),
+        warehouse=str(m.get("warehouse", "")),
+        role=str(m.get("role", "")),
+        http_path=str(m.get("http_path", "")),
+        access_token=str(m.get("access_token", "")),
+        catalog=str(m.get("catalog", "")),
+        project=str(m.get("project", "")),
+        dataset=str(m.get("dataset", "")),
+        credentials_path=str(m.get("credentials_path", "")),
+    )
+
+
+def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
+    base: dict[str, Any] = {"backend": db.backend}
+
+    if db.backend == "postgresql":
+        base.update({
+            "host": db.host, "port": db.port, "user": db.user,
+            "password": db.password, "database": db.database,
+        })
+    elif db.backend == "snowflake":
+        base.update({
+            "account": db.account, "user": db.user, "password": db.password,
+            "database": db.database, "warehouse": db.warehouse, "role": db.role,
+        })
+    elif db.backend == "databricks":
+        base.update({
+            "host": db.host, "http_path": db.http_path,
+            "access_token": db.access_token, "catalog": db.catalog,
+            "database": db.database,
+        })
+    elif db.backend == "bigquery":
+        base.update({
+            "project": db.project, "dataset": db.dataset,
+            "credentials_path": db.credentials_path,
+        })
+    else:
+        base.update({
+            "host": db.host, "port": db.port, "user": db.user,
+            "password": db.password, "database": db.database,
+        })
+    return base
 
 
 @dataclass
@@ -35,26 +163,6 @@ class LLMConfig:
     temperature: float = 0.2
     max_tokens: int = 16384
     completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
-
-
-def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
-    return DBConfig(
-        host=str(m.get("host", "localhost")),
-        port=int(m.get("port", 5432)),
-        user=str(m.get("user", "amx")),
-        password=str(m.get("password", "")),
-        database=str(m.get("database", "SAP")),
-    )
-
-
-def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
-    return {
-        "host": db.host,
-        "port": db.port,
-        "user": db.user,
-        "password": db.password,
-        "database": db.database,
-    }
 
 
 def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
@@ -112,7 +220,8 @@ class AMXConfig:
             data: dict[str, Any] = yaml.safe_load(p.read_text()) or {}
             if "db" in data:
                 for k, v in data["db"].items():
-                    setattr(cfg.db, k, v)
+                    if hasattr(cfg.db, k):
+                        setattr(cfg.db, k, v)
             if "llm" in data:
                 for k, v in data["llm"].items():
                     setattr(cfg.llm, k, v)
@@ -211,13 +320,7 @@ class AMXConfig:
         code_paths_yaml = self._code_paths_for_yaml()
 
         data = {
-            "db": {
-                "host": self.db.host,
-                "port": self.db.port,
-                "user": self.db.user,
-                "password": self.db.password,
-                "database": self.db.database,
-            },
+            "db": _db_to_mapping(self.db),
             "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
             "active_db_profile": self.active_db_profile,
             "current_schema": self.current_schema,

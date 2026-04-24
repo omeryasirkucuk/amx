@@ -152,6 +152,7 @@ class Orchestrator:
         return reviewed
 
     def _build_context(self, profile: TableProfile) -> AgentContext:
+        db_name = self.db.cfg.database or self.db.cfg.project or self.db.cfg.catalog or "N/A"
         return AgentContext(
             schema=profile.schema,
             table=profile.name,
@@ -167,6 +168,7 @@ class Orchestrator:
                 "stats_seq_scan": profile.stats_seq_scan,
                 "stats_idx_scan": profile.stats_idx_scan,
                 "stats_n_live_tup": profile.stats_n_live_tup,
+                "stats_source": self.db.stats_label,
                 "schema_comment": profile.schema_comment,
                 "database_comment": profile.database_comment,
                 "related_comments": profile.related_comments,
@@ -188,7 +190,8 @@ class Orchestrator:
                 ],
             },
             existing_metadata={
-                "database": self.db.cfg.database,
+                "database": db_name,
+                "backend": self.db.backend,
                 "table_comment": profile.existing_comment,
                 "schema_comment": profile.schema_comment,
                 "database_comment": profile.database_comment,

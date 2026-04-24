@@ -273,7 +273,7 @@ class ProfileAgent(BaseAgent):
             f"Schema: {ctx.schema}",
             f"Table: {ctx.table}",
             f"Row count: {p.get('row_count', 'N/A')}",
-            f"Usage stats (pg_stat_user_tables): seq_scan={p.get('stats_seq_scan', 0)}, idx_scan={p.get('stats_idx_scan', 0)}, n_live_tup={p.get('stats_n_live_tup', 0)}",
+            f"Usage stats ({p.get('stats_source', 'database')}): seq_scan={p.get('stats_seq_scan', 0)}, idx_scan={p.get('stats_idx_scan', 0)}, n_live_tup={p.get('stats_n_live_tup', 0)}",
             f"Existing table comment: {p.get('existing_comment') or 'None'}",
             f"Existing schema comment: {p.get('schema_comment') or 'None'}",
             f"Existing database comment: {p.get('database_comment') or 'None'}",
