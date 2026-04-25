@@ -23,6 +23,7 @@ def save_pending(results: list[ReviewResult]) -> Path:
                 "schema": r.schema,
                 "table": r.table,
                 "column": r.column,
+                "result_id": r.result_id,
                 "final_description": r.final_description,
                 "confidence": r.confidence.value,
                 "source": r.source,
@@ -59,6 +60,7 @@ def load_pending() -> list[ReviewResult]:
                 source=str(row.get("source", "pending")),
                 applied=True,
                 asset_kind=str(row.get("asset_kind", "table")),
+                result_id=(int(row["result_id"]) if row.get("result_id") is not None else None),
             )
         )
     return out

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
@@ -115,6 +116,19 @@ def _is_openai_reasoning_style_model(model: str) -> bool:
     )
 
 
+def _normalized_api_base(provider: str, api_base: str | None) -> str | None:
+    """Normalize provider-specific base URLs to avoid common endpoint mismatches."""
+    if not api_base:
+        return api_base
+    base = api_base.strip()
+    if provider == "ollama":
+        # LiteLLM's ollama provider expects the root endpoint (no trailing /v1).
+        lower = base.lower().rstrip("/")
+        if lower.endswith("/v1"):
+            return base.rstrip("/")[:-3].rstrip("/")
+    return base
+
+
 class LLMProvider:
     """Thin wrapper around LiteLLM so every agent uses the same calling convention."""
 
@@ -141,6 +155,16 @@ class LLMProvider:
         if env_key and self.cfg.api_key:
             os.environ[env_key] = self.cfg.api_key
 
+        normalized_base = _normalized_api_base(self.cfg.provider, self.cfg.api_base)
+        if normalized_base != self.cfg.api_base:
+            log.info(
+                "Normalizing %s api_base from '%s' to '%s'",
+                self.cfg.provider,
+                self.cfg.api_base,
+                normalized_base,
+            )
+            self.cfg.api_base = normalized_base
+
         if self.cfg.provider in ("local", "kimi"):
             if self.cfg.api_base:
                 os.environ["OPENAI_API_BASE"] = self.cfg.api_base
@@ -151,7 +175,13 @@ class LLMProvider:
             # Some LiteLLM versions still check for a key even if unused
             os.environ.setdefault("OLLAMA_API_KEY", self.cfg.api_key or "ollama")
 
-        _litellm().drop_params = True
+        lm = _litellm()
+        lm.drop_params = True
+        # Avoid LiteLLM printing raw "Give Feedback / turn_on_debug" lines into the TUI.
+        if hasattr(lm, "suppress_debug_info"):
+            lm.suppress_debug_info = True
+        if hasattr(lm, "set_verbose"):
+            lm.set_verbose = False
 
     @property
     def model_name(self) -> str:
@@ -195,18 +225,48 @@ class LLMProvider:
                 extra.setdefault("reasoning_effort", effort)
 
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
-        try:
-            resp = _litellm().completion(
+        call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama") else None
+
+        def _do_completion(api_base_override: str | None) -> Any:
+            return _litellm().completion(
                 model=model,
                 messages=messages,
                 temperature=temperature or self.cfg.temperature,
                 max_tokens=mt,
-                api_base=self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama") else None,
+                api_base=api_base_override,
                 **extra,
             )
+
+        t0 = time.perf_counter()
+        try:
+            resp = _do_completion(call_api_base)
         except Exception as exc:
-            log.error("LLM call failed: %s", exc)
-            raise
+            # If a legacy config still uses an OpenAI-style Ollama base (/v1), retry once.
+            msg = str(exc).lower()
+            if (
+                self.cfg.provider == "ollama"
+                and "404 page not found" in msg
+                and isinstance(call_api_base, str)
+                and call_api_base.rstrip("/").lower().endswith("/v1")
+            ):
+                fallback_base = call_api_base.rstrip("/")[:-3].rstrip("/")
+                log.warning(
+                    "Ollama returned 404 with api_base=%s; retrying once with %s",
+                    call_api_base,
+                    fallback_base,
+                )
+                try:
+                    resp = _do_completion(fallback_base)
+                    self.cfg.api_base = fallback_base
+                    os.environ["OLLAMA_API_BASE"] = fallback_base
+                except Exception as retry_exc:
+                    log.error("LLM call failed: %s", retry_exc)
+                    raise
+            else:
+                log.error("LLM call failed: %s", exc)
+                raise
+
+        elapsed_sec = max(0.0, time.perf_counter() - t0)
 
         choice = resp.choices[0]
         content = choice.message.content or ""
@@ -219,7 +279,10 @@ class LLMProvider:
                 "prompt_tokens": getattr(raw_usage, "prompt_tokens", 0) or 0,
                 "completion_tokens": getattr(raw_usage, "completion_tokens", 0) or 0,
                 "total_tokens": getattr(raw_usage, "total_tokens", 0) or 0,
+                "model_processing_sec": elapsed_sec,
             }
+        else:
+            usage_dict = {"model_processing_sec": elapsed_sec}
 
         raw_lp = getattr(choice, "logprobs", None)
         logprobs_content: list | None = None

@@ -1106,7 +1106,8 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
     model = ask("Model name", defaults.model or _default_model(provider))
     api_base = defaults.api_base
     if provider in ("local", "ollama", "kimi"):
-        api_base = ask("API base URL", api_base or "http://localhost:11434/v1")
+        default_api_base = "http://localhost:11434" if provider == "ollama" else "http://localhost:11434/v1"
+        api_base = ask("API base URL", api_base or default_api_base)
 
     if provider in ("local", "ollama"):
         api_key = ask("API key (optional)", defaults.api_key or "")
@@ -2822,6 +2823,41 @@ def analyze_run(
             "Use `/analyze` then `/apply`, or `/run-apply`, to persist comments."
         )
 
+    # ── Profile selection ─────────────────────────────────────────────────────
+    from amx.config import DISABLED_PROFILE
+    if confirm("Do you want to modify profiles before run?", default=False):
+        # 1. DB Profile
+        db_names = list(cfg.db_profiles.keys())
+        if db_names:
+            db_choice = ask_choice("Select DB profile", db_names, default=cfg.active_db_profile)
+            cfg.set_active_db_profile(db_choice)
+            info(f"Active DB: [bold cyan]{db_choice}[/]")
+
+        # 2. LLM Profile
+        llm_names = list(cfg.llm_profiles.keys())
+        if llm_names:
+            llm_choice = ask_choice("Select LLM profile", llm_names, default=cfg.active_llm_profile)
+            cfg.set_active_llm_profile(llm_choice)
+            info(f"Active LLM: [bold cyan]{llm_choice}[/]")
+
+        # 3. Document Profile
+        doc_names = list(cfg.doc_profiles.keys())
+        if doc_names:
+            options = doc_names + [DISABLED_PROFILE]
+            doc_choice = ask_choice("Select Document profile", options, default=cfg.active_doc_profile or DISABLED_PROFILE)
+            cfg.active_doc_profile = doc_choice
+            info(f"Active Docs: [bold cyan]{doc_choice}[/]")
+
+        # 4. Codebase Profile
+        code_names = list(cfg.code_profiles.keys())
+        if code_names:
+            options = code_names + [DISABLED_PROFILE]
+            code_choice = ask_choice("Select Codebase profile", options, default=cfg.active_code_profile or DISABLED_PROFILE)
+            cfg.active_code_profile = code_choice
+            info(f"Active Code: [bold cyan]{code_choice}[/]")
+        
+        console.print()
+
     # ── Mode selection ────────────────────────────────────────────────────────
     batch_capable = llm.supports_batch
     batch_providers_list = batch_supported_providers()
@@ -3046,12 +3082,17 @@ def analyze_run(
                 orch.apply_results(approved)
                 clear_pending()
     except KeyboardInterrupt:
-        # User pressed Ctrl+C — treat as 'cancelled', not 'failed'
+        # User pressed Ctrl+C. If results are already ready, keep run reviewable.
+        kb_status = "ready_for_review" if all_results else "cancelled"
         _log_app_event(
             event_type="analyze_run",
-            status="cancelled",
+            status=kb_status,
             command="analyze.run",
-            details={"mode": ("batch" if use_batch else "chat"), "error": "KeyboardInterrupt"},
+            details={
+                "mode": ("batch" if use_batch else "chat"),
+                "error": "KeyboardInterrupt",
+                "results_ready": bool(all_results),
+            },
         )
         raise
     except Exception as exc:
@@ -3074,10 +3115,10 @@ def analyze_run(
                     _exc_active = _sys.exc_info()[1] is not None
                     _exc_obj = _sys.exc_info()[1]
                     if _exc_active:
-                        # KeyboardInterrupt after results exist → cancelled, not failed
+                        # KeyboardInterrupt after results exist → ready_for_review.
                         if isinstance(_exc_obj, KeyboardInterrupt) and all_results:
-                            _final_status = "cancelled"
-                            _error_text = "Interrupted by user after results produced"
+                            _final_status = "ready_for_review"
+                            _error_text = "Interrupted by user after results produced; ready for review"
                         elif isinstance(_exc_obj, KeyboardInterrupt):
                             _final_status = "cancelled"
                             _error_text = "Interrupted by user"
@@ -3089,6 +3130,7 @@ def analyze_run(
                             status=_final_status,
                             metrics={
                                 "duration_sec": round(time.monotonic() - run_started, 3),
+                                "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
                                 "total_assets": total_assets,
                                 "total_schemas": total_schemas,
                             },
@@ -3107,6 +3149,7 @@ def analyze_run(
                             status="success",
                             metrics={
                                 "duration_sec": round(time.monotonic() - run_started, 3),
+                                "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
                                 "total_assets": total_assets,
                                 "total_schemas": total_schemas,
                                 "approved_count": len(approved),
@@ -3214,7 +3257,15 @@ def analyze_apply(cfg: AMXConfig) -> None:
         error("Cannot connect to database.")
         sys.exit(1)
 
-    n = apply_review_results_to_db(db, pending)
+    def _on_applied(result) -> None:
+        hs = history_store()
+        if result.result_id is not None and hs is not None:
+            try:
+                hs.record_applied(result.result_id)
+            except Exception:
+                pass
+
+    n = apply_review_results_to_db(db, pending, on_applied=_on_applied)
     clear_pending()
     success(f"Applied {n} comment(s). Pending file cleared.")
     _log_app_event(
@@ -3268,6 +3319,7 @@ def history_list(limit: int) -> None:
                 "success":   "[bold green]success[/bold green]",
                 "failed":    "[bold red]failed[/bold red]",
                 "cancelled": "[bold yellow]cancelled[/bold yellow]",
+                "ready_for_review": "[bold magenta]ready_for_review[/bold magenta]",
                 "running":   "[bold cyan]running[/bold cyan]",
             }.get(str(r.get("status", "")), str(r.get("status", ""))),
             str(r.get("mode", "")),
@@ -3275,11 +3327,22 @@ def history_list(limit: int) -> None:
             scope_str,
             f"{r.get('llm_provider', '')}/{r.get('llm_model', '')}",
             f"{float(r.get('duration_sec') or 0):.2f}",
+            f"{float((r.get('metrics_json') or {}).get('model_processing_sec') or 0):.2f}",
         ])
 
     render_table(
         "Recent runs",
-        ["ID", "Start (epoch)", "Status", "Mode", "Backend", "Target Scope", "Provider/Model", "Duration(s)"],
+        [
+            "ID",
+            "Start (epoch)",
+            "Status",
+            "Mode",
+            "Backend",
+            "Target Scope",
+            "Provider/Model",
+            "Duration(s)",
+            "Model(s)",
+        ],
         table_rows,
     )
 
@@ -3331,6 +3394,7 @@ def history_stats() -> None:
             ["success_runs", s.get("success_runs", 0)],
             ["failed_runs", s.get("failed_runs", 0)],
             ["avg_duration_sec", f"{float(s.get('avg_duration_sec') or 0):.2f}"],
+            ["avg_model_processing_sec", f"{float(s.get('avg_model_processing_sec') or 0):.2f}"],
             ["last_started_at", f"{float(s.get('last_started_at') or 0):.0f}"],
             ["total_events", s.get("total_events", 0)],
         ],
@@ -3404,6 +3468,18 @@ def history_results(run_id: int) -> None:
                 lines.append("  [dim](no alternatives stored)[/dim]")
             if chosen:
                 lines.append(f"\n  [bold green]\u2713 Chosen:[/bold green] {chosen}")
+            sel_ts = r.get("evaluated_at")
+            app_ts = r.get("applied_at")
+            if sel_ts:
+                lines.append(
+                    "  [dim]Selected at:[/dim] "
+                    + datetime.fromtimestamp(sel_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                )
+            if app_ts:
+                lines.append(
+                    "  [dim]Applied at:[/dim] "
+                    + datetime.fromtimestamp(app_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                )
             body = "\n".join(lines)
             console.print(Panel(
                 body,
@@ -3422,6 +3498,12 @@ def history_results(run_id: int) -> None:
             if evaluated_at
             else ""
         )
+        applied_at = r.get("applied_at")
+        applied_time = (
+            datetime.fromtimestamp(applied_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            if applied_at
+            else ""
+        )
         table_rows.append([
             r.get("id", ""),
             r.get("table_name", ""),
@@ -3431,11 +3513,22 @@ def history_results(run_id: int) -> None:
             r.get("evaluation") or "pending",
             (r.get("chosen_description") or "")[:40],
             eval_time,
+            applied_time,
         ])
     if table_rows:
         render_table(
             f"Run #{run_id} — Column alternatives",
-            ["Row", "Table", "Column", "Conf", "Alternatives (top-3)", "Status", "Chosen", "Eval'd at"],
+            [
+                "Row",
+                "Table",
+                "Column",
+                "Conf",
+                "Alternatives (top-3)",
+                "Status",
+                "Chosen",
+                "Selected at",
+                "Applied at",
+            ],
             table_rows,
         )
     pending = sum(1 for r in rows if not r.get("evaluation"))
@@ -3488,6 +3581,12 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
         info(f"Showing all {len(rows)} item(s) — already-evaluated rows will ask if you want to change your choice.")
 
     newly_approved: list[ReviewResult] = []
+
+    def _mark_run_success() -> None:
+        try:
+            hs.update_run_status(run_id, "success")
+        except Exception as exc:
+            warn(f"Could not update run #{run_id} status to success: {exc}")
 
     # Sort: table/schema/db-level (column=None) always reviewed first
     rows_sorted = sorted(rows, key=lambda r: (0 if not r.get("column_name") else 1, r.get("id", 0)))
@@ -3562,6 +3661,7 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
             success(f"Approved for {r['table_name']}.{col_label}.")
 
     if not newly_approved:
+        _mark_run_success()
         info("No descriptions approved — nothing to apply or save.")
         return
 
@@ -3589,7 +3689,12 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
             if not db.test_connection():
                 error("Cannot connect to database.")
                 return
-            applied = apply_review_results_to_db(db, newly_approved)
+            def _on_applied(result) -> None:
+                hs = history_store()
+                if result.result_id is not None and hs is not None:
+                    hs.record_applied(result.result_id)
+
+            applied = apply_review_results_to_db(db, newly_approved, on_applied=_on_applied)
             success(f"Applied {applied} metadata comment(s) to the database.")
             _log_app_event(
                 event_type="history_review_apply",
@@ -3604,6 +3709,8 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
             f"Saved {len(newly_approved)} approved description(s) as pending. "
             "Run `/analyze` then `/apply` to write them to the database."
         )
+
+    _mark_run_success()
 
 
 # ── Config Commands ─────────────────────────────────────────────────────────

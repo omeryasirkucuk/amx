@@ -166,7 +166,7 @@ amx
 | `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
 | `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
-| `/history` + `/list [-n N]` | List recent analyze runs from SQLite |
+| `/history` + `/list [-n N]` | List recent runs with end-to-end and model-processing duration |
 | `/history` + `/show <run_id>` | Show full JSON payload for one run (scope, metrics, tokens, results, errors) |
 | `/history` + `/stats` | Aggregate local run/event statistics |
 | `/history` + `/events [-n N]` | List recent app events (profile switches, run status, apply outcomes, etc.) |
@@ -243,6 +243,10 @@ Introspection and profiling use backend-specific SQL where needed; metadata writ
 | Ollama | `ollama` |
 | OpenAI-compatible (custom base URL) | `local` |
 
+Notes:
+- For `ollama`, use API base URL `http://localhost:11434` (no `/v1`).
+- For OpenAI-compatible local endpoints (`local`), use `http://localhost:11434/v1` when the server exposes OpenAI-style routes.
+
 ## Database Details Sent to LLM (Profile Agent)
 
 When AMX profiles a table, it sends the following database-derived context to the Profile Agent prompt:
@@ -290,7 +294,7 @@ Query it directly in AMX via `/history` namespace:
 
 | Command | Description |
 |---------|-------------|
-| `/list [-n N]` | Recent runs |
+| `/list [-n N]` | Recent runs (includes `Duration(s)` and `Model(s)`) |
 | `/show <run_id>` | Full run JSON |
 | `/stats` | Aggregate stats |
 | `/events [-n N]` | App events |

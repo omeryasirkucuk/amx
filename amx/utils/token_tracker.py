@@ -31,6 +31,7 @@ class _UsageRecord:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    model_processing_sec: float
 
 
 class TokenTracker:
@@ -51,6 +52,7 @@ class TokenTracker:
         prompt = 0
         completion = 0
         total = 0
+        model_processing_sec = 0.0
         if usage:
             prompt = int(getattr(usage, "prompt_tokens", 0) or usage.get("prompt_tokens", 0) or 0)
             completion = int(
@@ -59,6 +61,11 @@ class TokenTracker:
             total = int(getattr(usage, "total_tokens", 0) or usage.get("total_tokens", 0) or 0)
             if not total:
                 total = prompt + completion
+            model_processing_sec = float(
+                getattr(usage, "model_processing_sec", 0.0)
+                or usage.get("model_processing_sec", 0.0)
+                or 0.0
+            )
         self._records.append(
             _UsageRecord(
                 step=step,
@@ -66,6 +73,7 @@ class TokenTracker:
                 prompt_tokens=prompt,
                 completion_tokens=completion,
                 total_tokens=total,
+                model_processing_sec=model_processing_sec,
             )
         )
         try:
@@ -95,6 +103,10 @@ class TokenTracker:
     def has_records(self) -> bool:
         return bool(self._records)
 
+    @property
+    def total_model_processing_sec(self) -> float:
+        return float(sum(max(0.0, r.model_processing_sec) for r in self._records))
+
     def records(self) -> list[dict[str, int | str]]:
         """Return raw token records for persistence/analytics."""
         return [
@@ -104,6 +116,7 @@ class TokenTracker:
                 "prompt_tokens": r.prompt_tokens,
                 "completion_tokens": r.completion_tokens,
                 "total_tokens": r.total_tokens,
+                "model_processing_sec": round(float(r.model_processing_sec), 6),
             }
             for r in self._records
         ]

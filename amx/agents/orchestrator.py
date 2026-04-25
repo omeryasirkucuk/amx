@@ -6,11 +6,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from dataclasses import dataclass, field
 import time
+from typing import Callable
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
+from amx.storage.sqlite_store import history_store
 from amx.codebase.analyzer import CodebaseReport
 from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
@@ -85,7 +87,12 @@ class ReviewResult:
     result_id: int | None = None  # FK to run_results.id (for re-evaluation)
 
 
-def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult]) -> int:
+def apply_review_results_to_db(
+    db: DatabaseConnector,
+    results: list[ReviewResult],
+    *,
+    on_applied: "Callable[[ReviewResult], None] | None" = None,
+) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
     applied = 0
     for r in results:
@@ -105,6 +112,8 @@ def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult
             else:
                 db.set_column_comment(r.schema, r.table, r.column, r.final_description)
             applied += 1
+            if on_applied is not None:
+                on_applied(r)
         except Exception as exc:
             error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
     return applied
@@ -897,6 +906,15 @@ class Orchestrator:
 
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
-        applied = apply_review_results_to_db(self.db, results)
+        hs = history_store()
+
+        def _on_applied(r: ReviewResult) -> None:
+            if hs is not None and r.result_id is not None:
+                try:
+                    hs.record_applied(r.result_id)
+                except Exception as exc:
+                    log.debug("Could not record applied timestamp for result_id=%s: %s", r.result_id, exc)
+
+        applied = apply_review_results_to_db(self.db, results, on_applied=_on_applied)
         success(f"Applied {applied} metadata comments to the database")
         return applied

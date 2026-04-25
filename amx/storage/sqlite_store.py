@@ -83,12 +83,18 @@ class SQLiteHistoryStore:
                     reasoning TEXT,
                     alternatives_json TEXT NOT NULL,
                     evaluated_at REAL,
+                    applied_at REAL,
                     chosen_description TEXT,
                     evaluation TEXT,
                     FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
                 )
                 """
             )
+            # Backward-compatible migration for older history DBs.
+            try:
+                conn.execute("ALTER TABLE run_results ADD COLUMN applied_at REAL")
+            except sqlite3.OperationalError:
+                pass
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_run_id "
                 "ON run_results(run_id)"
@@ -236,6 +242,36 @@ class SQLiteHistoryStore:
                 (now, chosen_description, evaluation, result_id),
             )
 
+    def record_applied(self, result_id: int) -> None:
+        """Record when a reviewed description was successfully applied to DB."""
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE run_results
+                SET applied_at = ?
+                WHERE id = ?
+                """,
+                (now, result_id),
+            )
+
+    def update_run_status(self, run_id: int, status: str, error_text: str = "") -> None:
+        """Update run status without overwriting metrics/tokens/results payloads."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE analysis_runs
+                SET status = ?,
+                    error_text = CASE
+                        WHEN ? = 'success' THEN ''
+                        WHEN ? != '' THEN ?
+                        ELSE error_text
+                    END
+                WHERE id = ?
+                """,
+                (status, status, error_text, error_text, int(run_id)),
+            )
+
     def get_run_results(
         self,
         run_id: int,
@@ -338,7 +374,7 @@ class SQLiteHistoryStore:
             rows = conn.execute(
                 """
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
-                       db_backend, db_profile, llm_provider, llm_model, scope_json
+                       db_backend, db_profile, llm_provider, llm_model, scope_json, metrics_json
                 FROM analysis_runs
                 ORDER BY started_at DESC
                 LIMIT ?
@@ -348,12 +384,13 @@ class SQLiteHistoryStore:
         out: list[dict[str, Any]] = []
         for r in rows:
             d = dict(r)
-            raw = d.get("scope_json")
-            if isinstance(raw, str) and raw:
-                try:
-                    d["scope_json"] = json.loads(raw)
-                except Exception:
-                    pass
+            for key in ("scope_json", "metrics_json"):
+                raw = d.get(key)
+                if isinstance(raw, str) and raw:
+                    try:
+                        d[key] = json.loads(raw)
+                    except Exception:
+                        pass
             out.append(d)
         return out
 
@@ -386,6 +423,9 @@ class SQLiteHistoryStore:
             fail_runs = conn.execute(
                 "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'failed'"
             ).fetchone()["n"]
+            review_runs = conn.execute(
+                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'ready_for_review'"
+            ).fetchone()["n"]
             avg_duration = conn.execute(
                 "SELECT AVG(duration_sec) AS v FROM analysis_runs WHERE duration_sec IS NOT NULL"
             ).fetchone()["v"]
@@ -395,11 +435,36 @@ class SQLiteHistoryStore:
             total_events = conn.execute(
                 "SELECT COUNT(*) AS n FROM app_events"
             ).fetchone()["n"]
+            metrics_rows = conn.execute(
+                "SELECT metrics_json FROM analysis_runs WHERE metrics_json IS NOT NULL"
+            ).fetchall()
+
+        model_durations: list[float] = []
+        for row in metrics_rows:
+            raw = row[0]
+            if not isinstance(raw, str) or not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                continue
+            val = float((parsed or {}).get("model_processing_sec") or 0.0)
+            if val > 0:
+                model_durations.append(val)
+
+        avg_model_duration = (
+            sum(model_durations) / len(model_durations)
+            if model_durations
+            else 0.0
+        )
+
         return {
             "total_runs": int(total_runs or 0),
             "success_runs": int(ok_runs or 0),
             "failed_runs": int(fail_runs or 0),
+            "ready_for_review_runs": int(review_runs or 0),
             "avg_duration_sec": float(avg_duration or 0.0),
+            "avg_model_processing_sec": float(avg_model_duration),
             "last_started_at": float(last_started or 0.0),
             "total_events": int(total_events or 0),
         }

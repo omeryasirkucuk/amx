@@ -453,6 +453,8 @@ class AMXConfig:
                     iter(cfg.code_profiles.keys())
                 )
 
+        cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
+
         return cfg
 
     def save(self, path: str | None = None) -> Path:

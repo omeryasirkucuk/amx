@@ -4,6 +4,53 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.56] — 2026-04-25
+
+### Fixed
+- **Apply Errors**: Fixed `NameError: name 'hs' is not defined` during the database application phase in `/apply` and `/history-review`.
+
+## [0.1.55] — 2026-04-25
+
+### Fixed
+- **Profile batches showing `x` unexpectedly**: Fixed a regression in LLM timing capture where `elapsed_sec` could be referenced before assignment in `LLMProvider.chat()`. This caused profile batch steps to fail and render as failed (`✗` / `x`) in the live pipeline.
+
+## [0.1.54] — 2026-04-25
+
+### Added
+- **Model processing duration tracking**: AMX now captures per-LLM-call processing time and stores aggregated `model_processing_sec` in run metrics inside SQLite history.
+- **History visibility**: `/history list` now shows a dedicated `Model(s)` column alongside end-to-end `Duration(s)` for accurate runtime diagnostics.
+- **History stats**: `/history stats` now reports `avg_model_processing_sec`.
+
+## [0.1.53] — 2026-04-25
+
+### Fixed
+- **Ollama 404 on profile analysis**: Normalized Ollama `api_base` values that incorrectly include `/v1` (for example `http://localhost:11434/v1`) to `http://localhost:11434`, preventing `OllamaException - 404 page not found` failures during `/run`.
+- **Noisy LiteLLM error lines in TUI**: Suppressed LiteLLM debug/info spill (`Give Feedback` / `litellm._turn_on_debug()`) so profile failures do not pollute interactive output.
+- **Profile batching stability on local providers**: `ProfileAgent` now runs profile batches sequentially for `ollama`, `local`, and `kimi` providers to avoid unstable parallel behavior with local endpoints while keeping parallel execution for remote providers.
+
+## [0.1.52] — 2026-04-25
+
+### Fixed
+- **ModuleNotFoundError**: Fixed incorrect import path for `history_store` in `Orchestrator` (`amx.history` → `amx.storage.sqlite_store`).
+
+## [0.1.51] — 2026-04-25
+
+### Added
+- **Interactive Profile Selection**: When starting `/run`, you can now optionally switch your active DB, LLM, Document, or Codebase profiles through sequential prompts.
+
+### Removed
+- **Environment Variable Overrides**: Reverted session-specific overrides via environment variables in favor of the interactive workflow.
+
+## [0.1.50] — 2026-04-25
+
+### Added
+- **Multi-Session Support**: Use `AMX_CONFIG_PATH`, `AMX_ACTIVE_DB_PROFILE`, and `AMX_ACTIVE_LLM_PROFILE` environment variables to run multiple AMX sessions with independent configurations from different terminals.
+
+## [0.1.49] — 2026-04-25
+
+### Fixed
+- **NameError in Batch Review**: Fixed missing `history_store` import in `Orchestrator` that caused deferred review to fail.
+
 ## [0.1.48] — 2026-04-25
 
 ### Added
