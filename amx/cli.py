@@ -13,6 +13,7 @@ from pathlib import Path
 
 import click
 from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
@@ -137,6 +138,13 @@ def _log_app_event(
 def _kb_escape_namespace() -> KeyBindings:
     kb = KeyBindings()
 
+    @Condition
+    def _is_buffer_empty() -> bool:
+        from prompt_toolkit.application.current import get_app
+        return len(get_app().current_buffer.text) == 0
+
+    _TABS = ["", "db", "docs", "llm", "code", "analyze", "history"]
+
     @kb.add("escape")
     def _(event) -> None:  # type: ignore[no-untyped-def]
         buf = event.app.current_buffer
@@ -149,6 +157,20 @@ def _kb_escape_namespace() -> KeyBindings:
             event.app.exit(result="__amx_esc_back__")
         else:
             event.app.exit(result="__amx_esc_root__")
+
+    @kb.add("right", filter=_is_buffer_empty)
+    def _(event) -> None:  # type: ignore[no-untyped-def]
+        curr = _NS_STATE.get("namespace", "")
+        idx = _TABS.index(curr) if curr in _TABS else 0
+        new_ns = _TABS[(idx + 1) % len(_TABS)]
+        event.app.exit(result=f"__amx_switch_ns__:{new_ns}")
+
+    @kb.add("left", filter=_is_buffer_empty)
+    def _(event) -> None:  # type: ignore[no-untyped-def]
+        curr = _NS_STATE.get("namespace", "")
+        idx = _TABS.index(curr) if curr in _TABS else 0
+        new_ns = _TABS[(idx - 1) % len(_TABS)]
+        event.app.exit(result=f"__amx_switch_ns__:{new_ns}")
 
     return kb
 
@@ -183,6 +205,25 @@ def main(ctx: click.Context, cfg_path: str | None) -> None:
         raise click.ClickException("Use interactive mode only")
 
 
+def _print_namespace_hint(namespace: str, cfg: AMXConfig) -> None:
+    if not namespace:
+        heading("AMX Interactive Session")
+        _print_interactive_startup_summary(cfg)
+        info("Type /help for commands, /back to return, /exit to quit (from any namespace).")
+    elif namespace == "db":
+        _print_db_namespace_hint()
+    elif namespace == "docs":
+        info("Manage RAG document paths for schema context. Use /add-doc-profile to map paths.")
+    elif namespace == "llm":
+        info("Manage LLM profiles and cost settings. Use /prompt-detail to adjust context sizes.")
+    elif namespace == "code":
+        info("Scan your codebase to find how tables are used. Run /code-scan after adding a path.")
+    elif namespace == "analyze":
+        info("Run the AMX pipeline (/run) to generate metadata, or (/apply) to push to your DB.")
+    elif namespace == "history":
+        info("View past metadata extractions. Use /review to inspect results.")
+
+
 def _interactive_session(cfg: AMXConfig) -> None:
     """Start AMX interactive slash-command shell.
 
@@ -191,9 +232,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
       - Raw ANSI leaking as ?[1;35m… in Terminal.app
       - Ghost 'amx>' lines on terminal resize
     """
-    heading("AMX Interactive Session")
-    _print_interactive_startup_summary(cfg)
-    info("Type /help for commands, /back to return, /exit to quit (from any namespace).")
+    _print_namespace_hint("", cfg)
     namespace = ""
 
     _db_cmd_heads = frozenset(
@@ -269,13 +308,24 @@ def _interactive_session(cfg: AMXConfig) -> None:
             }
         ),
     )
+    def _build_prompt_message(ns: str) -> HTML:
+        tabs = ["root", "db", "docs", "llm", "code", "analyze", "history"]
+        curr = ns or "root"
+        parts = []
+        for t in tabs:
+            if t == curr:
+                parts.append(f"<ansicyan><b>[ {t.upper()} ]</b></ansicyan>")
+            else:
+                parts.append(f"<style fg='gray'>{t}</style>")
+        tab_line = "  ".join(parts)
+        return HTML(f"{tab_line}\n<b>&gt;</b> ")
 
     try:
         while True:
             _NS_STATE["namespace"] = namespace
-            prefix = f"amx/{namespace}" if namespace else "amx"
+            prompt_msg = _build_prompt_message(namespace)
             try:
-                raw = session.prompt(f"{prefix}> ").strip()
+                raw = session.prompt(prompt_msg).strip()
             except (EOFError, KeyboardInterrupt):
                 console.print()
                 success("Session closed.")
@@ -283,9 +333,18 @@ def _interactive_session(cfg: AMXConfig) -> None:
 
             if raw == "__amx_esc_back__":
                 namespace = ""
-                info("Back to root namespace (Esc).")
+                console.clear()
+                show_banner(force=True)
+                _print_namespace_hint(namespace, cfg)
                 continue
             if raw == "__amx_esc_root__":
+                continue
+            if raw.startswith("__amx_switch_ns__:"):
+                new_ns = raw.split(":", 1)[1]
+                namespace = new_ns
+                console.clear()
+                show_banner(force=True)
+                _print_namespace_hint(namespace, cfg)
                 continue
 
             if not raw:
@@ -303,19 +362,23 @@ def _interactive_session(cfg: AMXConfig) -> None:
                 return
             if cmdline == "clear":
                 console.clear()
+                show_banner(force=True)
+                _print_namespace_hint(namespace, cfg)
                 continue
             if cmdline in {"help", "?"}:
                 _print_session_help(namespace=namespace, cfg=cfg)
                 continue
             if cmdline == "back":
                 namespace = ""
-                info("Back to root namespace.")
+                console.clear()
+                show_banner(force=True)
+                _print_namespace_hint(namespace, cfg)
                 continue
             if cmdline in {"db", "docs", "llm", "code", "analyze", "history"}:
                 namespace = cmdline
-                info(f"Entered /{namespace} namespace.")
-                if namespace == "db":
-                    _print_db_namespace_hint()
+                console.clear()
+                show_banner(force=True)
+                _print_namespace_hint(namespace, cfg)
                 continue
 
             try:
@@ -2702,11 +2765,6 @@ def analyze_run(
         sys.exit(1)
 
     llm = LLMProvider(cfg.llm)
-    db = DatabaseConnector(cfg.db)
-
-    if not db.test_connection():
-        error("Cannot connect to database.")
-        sys.exit(1)
 
     if not apply:
         warn(
@@ -2762,6 +2820,11 @@ def analyze_run(
         info("Mode: [bold]Chat Completions[/bold] (real-time)")
 
     # ── Scope resolution ──────────────────────────────────────────────────────
+    db = DatabaseConnector(cfg.db)
+    if not db.test_connection():
+        error("Cannot connect to database.")
+        sys.exit(1)
+
     tables_arg = list(tables_pos) + list(table)
     scope = _finalize_scope(cfg, db, schema, tables_arg)
     if scope is None:
@@ -3075,21 +3138,38 @@ def history_list(limit: int) -> None:
     if not rows:
         info("No run history yet.")
         return
+    table_rows = []
+    for r in rows:
+        scope_str = "—"
+        scope = r.get("scope_json")
+        if isinstance(scope, dict) and scope:
+            schemas = list(scope.keys())
+            total_tables = sum(len(t) for t in scope.values())
+            if len(schemas) == 1:
+                sch = schemas[0]
+                tbls = scope[sch]
+                if len(tbls) == 1:
+                    scope_str = f"{sch}.{tbls[0]}"
+                else:
+                    scope_str = f"{sch} ({len(tbls)} tables)"
+            else:
+                scope_str = f"{len(schemas)} schemas ({total_tables} tables)"
+
+        table_rows.append([
+            str(r.get("id", "")),
+            f"{float(r.get('started_at') or 0):.0f}",
+            str(r.get("status", "")),
+            str(r.get("mode", "")),
+            str(r.get("db_backend", "")),
+            scope_str,
+            f"{r.get('llm_provider', '')}/{r.get('llm_model', '')}",
+            f"{float(r.get('duration_sec') or 0):.2f}",
+        ])
+
     render_table(
         "Recent runs",
-        ["ID", "Start (epoch)", "Status", "Mode", "Backend", "Provider/Model", "Duration(s)"],
-        [
-            [
-                r.get("id", ""),
-                f"{float(r.get('started_at') or 0):.0f}",
-                r.get("status", ""),
-                r.get("mode", ""),
-                r.get("db_backend", ""),
-                f"{r.get('llm_provider', '')}/{r.get('llm_model', '')}",
-                f"{float(r.get('duration_sec') or 0):.2f}",
-            ]
-            for r in rows
-        ],
+        ["ID", "Start (epoch)", "Status", "Mode", "Backend", "Target Scope", "Provider/Model", "Duration(s)"],
+        table_rows,
     )
 
 

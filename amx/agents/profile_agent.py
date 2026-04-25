@@ -93,17 +93,34 @@ class ProfileAgent(BaseAgent):
             columns[i : i + self.BATCH_SIZE]
             for i in range(0, len(columns), self.BATCH_SIZE)
         ]
-        for idx, batch in enumerate(batches, 1):
-            col_names = ", ".join(c["name"] for c in batch)
-            log.info(
-                "Profile agent batch %d/%d (%d cols: %s)",
-                idx, len(batches), len(batch), col_names,
-            )
-            batch_ctx = self._ctx_with_columns(ctx, batch)
-            batch_suggestions = self._run_single_batch(
-                batch_ctx, batch, batch_label=f"batch {idx}/{len(batches)}"
-            )
-            all_suggestions.extend(batch_suggestions)
+        
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        max_workers = min(5, len(batches))
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            fut_to_batch = {}
+            for idx, batch in enumerate(batches, 1):
+                col_names = ", ".join(c["name"] for c in batch)
+                log.info(
+                    "Profile agent batch %d/%d (%d cols: %s)",
+                    idx, len(batches), len(batch), col_names,
+                )
+                batch_ctx = self._ctx_with_columns(ctx, batch)
+                fut = ex.submit(
+                    self._run_single_batch, 
+                    batch_ctx, 
+                    batch, 
+                    batch_label=f"batch {idx}/{len(batches)}"
+                )
+                fut_to_batch[fut] = idx
+
+            for fut in as_completed(fut_to_batch):
+                try:
+                    res = fut.result()
+                    if res:
+                        all_suggestions.extend(res)
+                except Exception as exc:
+                    idx = fut_to_batch[fut]
+                    log.error("Profile agent batch %d failed: %s", idx, exc)
 
         if not all_suggestions:
             log.warning(

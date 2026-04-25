@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.41] — 2026-04-25
+
+### Added
+- **Keyboard Navigation**: Implemented Left/Right arrow key navigation for switching tabs seamlessly in the TUI when the input buffer is empty.
+- **Persistent Header (App UI)**: Emulated Claude Code CLI's persistent header by anchoring the AMX banner and namespace hints to the top of the terminal. Switching tabs now clears the screen and immediately re-renders the header and context hint.
+- **Target Scope display**: Updated `/history list` to include a new **Target Scope** column which dynamically parses the saved JSON scope to show exactly what schemas/tables were analyzed (e.g., `sap.vbrk`, `3 schemas (120 tables)`).
+
+### Changed
+- **Parallel Profile Execution**: Completely rewrote the `ProfileAgent` execution loop. Instead of processing batches of 10 columns sequentially, wide tables are now split into batches and processed **concurrently** using a `ThreadPoolExecutor`, dramatically speeding up analysis for large tables.
+- **Zero-Delay Start**: Moved the synchronous Database connection test in `/run` down past the Completion Mode prompt. The UI now appears instantly when `/run` is executed, instead of blocking for 1-2 seconds on the network check.
+- **Center Alignment**: Fixed the `show_banner` UI so the title and subtitle strings are perfectly center-aligned relative to the ASCII art logo.
+
 ## [0.1.40] — 2026-04-25
 
 ### Added

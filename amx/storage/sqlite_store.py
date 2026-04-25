@@ -338,14 +338,24 @@ class SQLiteHistoryStore:
             rows = conn.execute(
                 """
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
-                       db_backend, db_profile, llm_provider, llm_model
+                       db_backend, db_profile, llm_provider, llm_model, scope_json
                 FROM analysis_runs
                 ORDER BY started_at DESC
                 LIMIT ?
                 """,
                 (max(1, int(limit)),),
             ).fetchall()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            raw = d.get("scope_json")
+            if isinstance(raw, str) and raw:
+                try:
+                    d["scope_json"] = json.loads(raw)
+                except Exception:
+                    pass
+            out.append(d)
+        return out
 
     def get_run(self, run_id: int) -> dict[str, Any] | None:
         with self._connect() as conn:

@@ -57,7 +57,7 @@ def show_banner(force: bool = False) -> None:
     )
     subtitle = Text("Metadata Extraction System", style="bold #66ffff")
 
-    content = Text.assemble(title, "\n\n", art, "\n", subtitle)
+    content = Text.assemble(title, "\n\n", art, "\n", subtitle, justify="center")
     console.print(
         Panel(
             Align.center(content),
