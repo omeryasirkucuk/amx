@@ -64,7 +64,11 @@ class ChatResult:
 _CONF_TOKEN_UPPER: frozenset[str] = frozenset({"HIGH", "MEDIUM", "LOW"})
 
 
-def confidence_from_logprobs(logprobs_content: list | None) -> "str | None":
+def confidence_from_logprobs(
+    logprobs_content: list | None,
+    high_threshold: float = 0.85,
+    medium_threshold: float = 0.50,
+) -> "str | None":
     """Map the token probability of the CONFIDENCE label to HIGH/MEDIUM/LOW."""
     if not logprobs_content:
         return None
@@ -87,9 +91,9 @@ def confidence_from_logprobs(logprobs_content: list | None) -> "str | None":
 
         prob = math.exp(float(logprob))
         log.debug("Logprob confidence token=%s prob=%.3f", token_str, prob)
-        if prob > 0.85:
+        if prob >= high_threshold:
             return "HIGH"
-        elif prob > 0.50:
+        elif prob >= medium_threshold:
             return "MEDIUM"
         else:
             return "LOW"
@@ -136,9 +140,17 @@ class LLMProvider:
         env_key = PROVIDER_ENV_KEY.get(self.cfg.provider)
         if env_key and self.cfg.api_key:
             os.environ[env_key] = self.cfg.api_key
-        if self.cfg.api_base and self.cfg.provider in ("local", "kimi"):
-            os.environ["OPENAI_API_BASE"] = self.cfg.api_base
+
+        if self.cfg.provider in ("local", "kimi"):
+            if self.cfg.api_base:
+                os.environ["OPENAI_API_BASE"] = self.cfg.api_base
             os.environ.setdefault("OPENAI_API_KEY", self.cfg.api_key or "local")
+        elif self.cfg.provider == "ollama":
+            if self.cfg.api_base:
+                os.environ["OLLAMA_API_BASE"] = self.cfg.api_base
+            # Some LiteLLM versions still check for a key even if unused
+            os.environ.setdefault("OLLAMA_API_KEY", self.cfg.api_key or "ollama")
+
         _litellm().drop_params = True
 
     @property
@@ -189,7 +201,7 @@ class LLMProvider:
                 messages=messages,
                 temperature=temperature or self.cfg.temperature,
                 max_tokens=mt,
-                api_base=self.cfg.api_base if self.cfg.provider in ("local", "kimi") else None,
+                api_base=self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama") else None,
                 **extra,
             )
         except Exception as exc:

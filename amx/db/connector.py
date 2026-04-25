@@ -22,6 +22,8 @@ class AssetKind(Enum):
     TABLE = "table"
     VIEW = "view"
     MATERIALIZED_VIEW = "materialized_view"
+    SCHEMA = "schema"
+    DATABASE = "database"
 
     @property
     def label(self) -> str:
@@ -326,6 +328,18 @@ class DatabaseConnector:
         with self.engine.begin() as conn:
             conn.execute(text(stmt), {"cmt": comment})
         log.info("Set comment on %s.%s.%s", schema, table, column)
+
+    def set_schema_comment(self, schema: str, comment: str) -> None:
+        stmt = self._adapter.set_schema_comment_sql(schema)
+        with self.engine.begin() as conn:
+            conn.execute(text(stmt), {"cmt": comment})
+        log.info("Set comment on schema %s", schema)
+
+    def set_database_comment(self, comment: str) -> None:
+        stmt = self._adapter.set_database_comment_sql()
+        with self.engine.begin() as conn:
+            conn.execute(text(stmt), {"cmt": comment})
+        log.info("Set comment on database")
 
     # ── Adapter metadata ──────────────────────────────────────────────────
 

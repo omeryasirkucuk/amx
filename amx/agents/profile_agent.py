@@ -33,8 +33,9 @@ DESCRIPTION_1: <most likely description>
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why you think so>
 
-If the table-level description is also needed, add:
-TABLE_DESCRIPTION: <description>
+Also include ONE table-level description block (even when processing column batches):
+TABLE_DESCRIPTION_1: <most likely table description>
+{table_desc_lines}
 TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>
 """
 
@@ -46,6 +47,7 @@ def _build_system_prompt(n_alternatives: int) -> str:
         alt_instruction = ""
         extra_items = ""
         desc_lines = ""
+        table_desc_lines = ""
     else:
         alt_instruction = f"Up to {n} alternative descriptions ranked by likelihood."
         extra_items = ""
@@ -53,10 +55,15 @@ def _build_system_prompt(n_alternatives: int) -> str:
             f"DESCRIPTION_{i}: <alternative>"
             for i in range(2, n + 1)
         )
+        table_desc_lines = "\n".join(
+            f"TABLE_DESCRIPTION_{i}: <alternative table description>"
+            for i in range(2, n + 1)
+        )
     return _BASE_SYSTEM_PROMPT.format(
         alt_instruction=alt_instruction,
         extra_items=extra_items,
         desc_lines=desc_lines,
+        table_desc_lines=table_desc_lines,
     ).strip() + "\n"
 
 
@@ -127,7 +134,19 @@ class ProfileAgent(BaseAgent):
                 "Profile agent produced zero suggestions across %d batches for %s.%s.",
                 len(batches), ctx.schema, ctx.table,
             )
-        return all_suggestions
+            return all_suggestions
+
+        # Deduplicate table-level (column=None) suggestions across batches:
+        # Keep the first one encountered; discard duplicates from other batches.
+        seen_table_level = False
+        deduped: list = []
+        for s in all_suggestions:
+            if s.column is None:
+                if seen_table_level:
+                    continue
+                seen_table_level = True
+            deduped.append(s)
+        return deduped
 
     def _ctx_with_columns(self, ctx: AgentContext, columns: list) -> AgentContext:
         """Return a shallow copy of the context with only the specified columns."""
@@ -245,7 +264,12 @@ class ProfileAgent(BaseAgent):
             )
             return []
 
-        return apply_logprob_confidence(suggestions, _logprobs)
+        return apply_logprob_confidence(
+            suggestions,
+            _logprobs,
+            high_threshold=self.llm.cfg.logprob_high,
+            medium_threshold=self.llm.cfg.logprob_medium,
+        )
 
     def _save_failed_response_for_debug(self, response: str, ctx: AgentContext) -> None:
         """Persist the model output when nothing could be parsed (inspect off-line)."""
@@ -390,6 +414,8 @@ class ProfileAgent(BaseAgent):
         descs: list[str] = []
         conf = Confidence.MEDIUM
         reasoning = ""
+        table_descs: list[str] = []
+        table_conf = Confidence.MEDIUM
 
         for line in text.splitlines():
             line = line.strip()
@@ -411,25 +437,26 @@ class ProfileAgent(BaseAgent):
                 conf = Confidence[raw] if raw in Confidence.__members__ else Confidence.MEDIUM
             elif line.startswith("REASONING:"):
                 reasoning = line.split(":", 1)[1].strip()
-            elif line.startswith("TABLE_DESCRIPTION:"):
-                table_desc = line.split(":", 1)[1].strip()
-                tconf_str = "MEDIUM"
-                for l2 in text.splitlines():
-                    if l2.strip().startswith("TABLE_CONFIDENCE:"):
-                        tconf_str = l2.strip().split(":", 1)[1].strip().upper()
-                        break
-                tconf = Confidence[tconf_str] if tconf_str in Confidence.__members__ else Confidence.MEDIUM
-                suggestions.append(MetadataSuggestion(
-                    schema=ctx.schema, table=ctx.table, column=None,
-                    suggestions=[table_desc], confidence=tconf,
-                    reasoning="Inferred from table name, columns, and data profile",
-                    source="db_profile",
-                ))
+            # Match TABLE_DESCRIPTION_1:, TABLE_DESCRIPTION_2:, TABLE_DESCRIPTION: (legacy)
+            elif re.match(r"TABLE_DESCRIPTION(?:_\d+)?:", line):
+                table_descs.append(line.split(":", 1)[1].strip())
+            elif line.startswith("TABLE_CONFIDENCE:"):
+                tconf_str = line.split(":", 1)[1].strip().upper()
+                table_conf = Confidence[tconf_str] if tconf_str in Confidence.__members__ else Confidence.MEDIUM
 
         if current_col and descs:
             suggestions.append(MetadataSuggestion(
                 schema=ctx.schema, table=ctx.table, column=current_col,
                 suggestions=descs, confidence=conf, reasoning=reasoning,
+                source="db_profile",
+            ))
+
+        # Append the table-level suggestion once with ALL alternatives
+        if table_descs:
+            suggestions.append(MetadataSuggestion(
+                schema=ctx.schema, table=ctx.table, column=None,
+                suggestions=table_descs, confidence=table_conf,
+                reasoning="Inferred from table name, columns, and data profile",
                 source="db_profile",
             ))
 
@@ -442,21 +469,29 @@ class ProfileAgent(BaseAgent):
         t = re.sub(r"^```[a-z]*\s*\n", "", t, flags=re.IGNORECASE)
         t = re.sub(r"\n```\s*$", "", t)
 
-        m_tbl = re.search(r"(?im)TABLE_DESCRIPTION:\s*([^\n]+)", t)
-        if m_tbl:
-            desc = m_tbl.group(1).strip().strip("*`")
-            if desc:
-                suggestions.append(
-                    MetadataSuggestion(
-                        schema=ctx.schema,
-                        table=ctx.table,
-                        column=None,
-                        suggestions=[desc[:2000]],
-                        confidence=Confidence.MEDIUM,
-                        reasoning="Loose parse (table)",
-                        source="db_profile",
-                    )
+        # Collect all TABLE_DESCRIPTION_N: / TABLE_DESCRIPTION: alternatives
+        table_descs_loose = [
+            m.group(1).strip().strip("*`")[:2000]
+            for m in re.finditer(r"(?im)TABLE_DESCRIPTION(?:_\d+)?:\s*([^\n]+)", t)
+            if m.group(1).strip()
+        ]
+        if table_descs_loose:
+            tconf_str = "MEDIUM"
+            m_tc = re.search(r"(?im)TABLE_CONFIDENCE:\s*(HIGH|MEDIUM|LOW)", t)
+            if m_tc:
+                tconf_str = m_tc.group(1).upper()
+            tconf = Confidence[tconf_str] if tconf_str in Confidence.__members__ else Confidence.MEDIUM
+            suggestions.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=None,
+                    suggestions=table_descs_loose,
+                    confidence=tconf,
+                    reasoning="Loose parse (table)",
+                    source="db_profile",
                 )
+            )
 
         # Split into COLUMN blocks (markdown-tolerant)
         col_iter = list(

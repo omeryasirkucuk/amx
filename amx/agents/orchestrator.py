@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from dataclasses import dataclass, field
+import time
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
@@ -48,6 +49,28 @@ CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why>
 """
 
+SCHEMA_META_PROMPT = """\
+You are a data architect. Propose a concise description for the database SCHEMA: "{schema}".
+Based on the following tables and their primary purposes:
+{tables_summary}
+
+Respond in this exact format:
+DESCRIPTION: <concise schema description>
+CONFIDENCE: <HIGH|MEDIUM|LOW>
+REASONING: <why>
+"""
+
+DATABASE_META_PROMPT = """\
+You are a data architect. Propose a concise description for this DATABASE.
+The following schemas and their purposes were identified:
+{schemas_summary}
+
+Respond in this exact format:
+DESCRIPTION: <concise database description>
+CONFIDENCE: <HIGH|MEDIUM|LOW>
+REASONING: <why>
+"""
+
 
 @dataclass
 class ReviewResult:
@@ -73,13 +96,17 @@ def apply_review_results_to_db(db: DatabaseConnector, results: list[ReviewResult
         except ValueError:
             kind = AssetKind.TABLE
         try:
-            if r.column is None:
+            if r.asset_kind == AssetKind.SCHEMA.value:
+                db.set_schema_comment(r.schema, r.final_description)
+            elif r.asset_kind == AssetKind.DATABASE.value:
+                db.set_database_comment(r.final_description)
+            elif r.column is None:
                 db.set_table_comment(r.schema, r.table, r.final_description, asset_kind=kind)
             else:
                 db.set_column_comment(r.schema, r.table, r.column, r.final_description)
             applied += 1
         except Exception as exc:
-            error(f"Failed to apply comment on {r.schema}.{r.table}.{r.column or ''}: {exc}")
+            error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
     return applied
 
 
@@ -105,6 +132,7 @@ class Orchestrator:
         schema: str,
         table: str,
         asset_kind: AssetKind | None = None,
+        interactive_review: bool = True,
     ) -> list[ReviewResult]:
         kind_label = f" ({asset_kind.label})" if asset_kind and asset_kind != AssetKind.TABLE else ""
         heading(f"Analyzing {schema}.{table}{kind_label}")
@@ -119,7 +147,7 @@ class Orchestrator:
             n_batches = (num_cols + batch_size - 1) // batch_size
             info(
                 f"Profile Agent: {num_cols} columns "
-                f"({n_batches} batches of ≤{batch_size})"
+                f"({n_batches} batches of \u2264{batch_size})"
             )
         else:
             info(f"Profile Agent: {num_cols} columns")
@@ -129,30 +157,147 @@ class Orchestrator:
             info(f"Code Agent: {num_cols} columns to check against codebase")
 
         # Run all enabled agents in parallel in chat mode.
+        t0_agents = time.monotonic()
         all_suggestions = self._run_enabled_agents(ctx)
+        t1_agents = time.monotonic()
+        info(f"Agent processing took {t1_agents - t0_agents:.1f}s")
 
         merged = self._merge_suggestions(all_suggestions, ctx)
         if not merged:
             warn(
                 "No metadata suggestions were produced for this table. "
                 "If the model replied, the raw text may be in ~/.amx/logs/last_profile_agent_response.txt "
-                "— see also ~/.amx/logs/amx.log"
+                "\u2014 see also ~/.amx/logs/amx.log"
             )
             return []
 
-        # ── Persist all alternatives before human review ──────────────────
+        # \u2014\u2014 Persist all alternatives before human review \u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014
         result_id_map = self._save_merged_suggestions(merged, asset_kind=asset_kind)
+
+        ak = profile.asset_kind.value if profile.asset_kind else "table"
+        if not interactive_review:
+            # Wrap as un-applied ReviewResults for later batch review
+            results = []
+            for s in merged:
+                results.append(ReviewResult(
+                    schema=s.schema,
+                    table=s.table,
+                    column=s.column,
+                    final_description=s.suggestions[0] if s.suggestions else "",
+                    confidence=s.confidence,
+                    source=s.source,
+                    applied=False,
+                    asset_kind=ak,
+                    result_id=result_id_map.get(s.column or "__table__")
+                ))
+            self.results.extend(results)
+            return results
 
         from amx.utils.live_display import get_display
         display = get_display()
         if display.is_active:
             display.pause()
-        ak = profile.asset_kind.value if profile.asset_kind else "table"
+        
+        t0_review = time.monotonic()
         reviewed = self._human_review(merged, schema, table, asset_kind=ak, result_id_map=result_id_map)
+        t1_review = time.monotonic()
+        info(f"Human review took {t1_review - t0_review:.1f}s")
         if display.is_active:
             display.resume()
         self.results.extend(reviewed)
         return reviewed
+
+    def process_schema_meta(self, schema: str, table_results: list[ReviewResult]) -> list[ReviewResult]:
+        """Infer description for the schema itself based on its tables."""
+        heading(f"Analyzing Schema: {schema}")
+        
+        # Gather top-level table descriptions
+        table_summaries = []
+        for r in table_results:
+            if r.column is None and r.schema == schema:
+                table_summaries.append(f"Table: {r.table}\nDescription: {r.final_description}")
+        
+        if not table_summaries:
+            log.info("No table descriptions found to summarize schema %s", schema)
+            return []
+
+        tables_text = "\n\n".join(table_summaries)
+        prompt = SCHEMA_META_PROMPT.format(schema=schema, tables_summary=tables_text)
+        
+        with step_spinner(f"Generating description for schema {schema}"):
+            res = self.llm.chat([{"role": "user", "content": prompt}])
+        
+        desc, conf, reasoning = self._parse_meta_response(res.content)
+        if not desc:
+            return []
+            
+        result = ReviewResult(
+            schema=schema,
+            table="",
+            column=None,
+            final_description=desc,
+            confidence=conf,
+            source="combined",
+            applied=True, # Auto-apply/accept meta-descriptions for now or mark for review?
+            asset_kind=AssetKind.SCHEMA.value
+        )
+        self.results.append(result)
+        return [result]
+
+    def process_database_meta(self, schema_results: list[ReviewResult]) -> list[ReviewResult]:
+        """Infer description for the database itself based on its schemas."""
+        heading("Analyzing Database")
+        
+        schema_summaries = []
+        for r in schema_results:
+            if r.asset_kind == AssetKind.SCHEMA.value:
+                schema_summaries.append(f"Schema: {r.schema}\nDescription: {r.final_description}")
+        
+        if not schema_summaries:
+            log.info("No schema descriptions found to summarize database")
+            return []
+
+        schemas_text = "\n\n".join(schema_summaries)
+        prompt = DATABASE_META_PROMPT.format(schemas_summary=schemas_text)
+        
+        with step_spinner("Generating description for database"):
+            res = self.llm.chat([{"role": "user", "content": prompt}])
+        
+        desc, conf, reasoning = self._parse_meta_response(res.content)
+        if not desc:
+            return []
+            
+        result = ReviewResult(
+            schema="",
+            table="",
+            column=None,
+            final_description=desc,
+            confidence=conf,
+            source="combined",
+            applied=True,
+            asset_kind=AssetKind.DATABASE.value
+        )
+        self.results.append(result)
+        return [result]
+
+    def _parse_meta_response(self, text: str) -> tuple[str, Confidence, str]:
+        """Parse meta DESCRIPTION/CONFIDENCE/REASONING blocks."""
+        desc = ""
+        conf = Confidence.MEDIUM
+        reasoning = ""
+        
+        lines = text.splitlines()
+        for line in lines:
+            if line.upper().startswith("DESCRIPTION:"):
+                desc = line[12:].strip()
+            elif line.upper().startswith("CONFIDENCE:"):
+                c = line[11:].strip().upper()
+                if "HIGH" in c: conf = Confidence.HIGH
+                elif "LOW" in c: conf = Confidence.LOW
+            elif line.upper().startswith("REASONING:"):
+                reasoning = line[10:].strip()
+        
+        return desc, conf, reasoning
 
     def _run_enabled_agents(self, ctx: AgentContext) -> list[MetadataSuggestion]:
         jobs: list[tuple[str, object]] = [("profile", self.profile_agent)]
@@ -294,7 +439,12 @@ class Orchestrator:
                 source="combined",
             ))
 
-        merged.extend(apply_logprob_confidence(merge_results, result.logprobs))
+        merged.extend(apply_logprob_confidence(
+            merge_results,
+            result.logprobs,
+            high_threshold=self.llm.cfg.logprob_high,
+            medium_threshold=self.llm.cfg.logprob_medium,
+        ))
         return merged
 
     # ── Persistence helpers ───────────────────────────────────────────────────
@@ -319,7 +469,7 @@ class Orchestrator:
                 "schema": s.schema,
                 "table": s.table,
                 "column": s.column,
-                "asset_kind": asset_kind,
+                "asset_kind": getattr(asset_kind, "value", str(asset_kind)),
                 "source": s.source,
                 "confidence": s.confidence.value,
                 "reasoning": s.reasoning,
@@ -481,6 +631,98 @@ class Orchestrator:
                     results.append(result)
 
         return results
+
+    def batch_review(self, results: list[ReviewResult]) -> list[ReviewResult]:
+        """Perform interactive review for a list of un-applied results."""
+        if not results:
+            return []
+
+        # Filter for unapplied results that are not meta (meta are auto-applied for now)
+        to_review = [r for r in results if not r.applied]
+        if not to_review:
+            return results
+
+        heading(f"Batch Review: {len(to_review)} items pending")
+        
+        # Group by table for better UX
+        by_table = defaultdict(list)
+        for r in to_review:
+            by_table[(r.schema, r.table)].append(r)
+        
+        final_results = [r for r in results if r.applied] # Keep already applied/meta
+        
+        for (sch, tbl), items in by_table.items():
+            heading(f"Reviewing {sch}.{tbl}")
+            
+            # Separate table-level and column-level
+            table_items = [r for r in items if r.column is None]
+            col_items = [r for r in items if r.column is not None]
+            
+            for r in table_items:
+                reviewed = self._review_single_result(r)
+                final_results.append(reviewed)
+                
+            if col_items:
+                col_count = len(col_items)
+                noun = "column" if col_count == 1 else "columns"
+                info(f"Found {col_count} {noun} for {sch}.{tbl}")
+                
+                rows = [[r.column, r.final_description[:60], r.confidence.value, r.source] for r in col_items]
+                render_table("Suggested descriptions", ["Column", "Best Suggestion", "Confidence", "Source"], rows)
+                
+                review_mode = ask_choice(
+                    "How would you like to review these columns?",
+                    ["one-by-one", "accept-all-high", "accept-all", "reject-all"],
+                    default="one-by-one",
+                )
+                
+                for r in col_items:
+                    if review_mode == "accept-all":
+                        r.applied = True
+                        self._record_evaluation(r.result_id, chosen_description=r.final_description, evaluation="accepted")
+                        final_results.append(r)
+                    elif review_mode == "accept-all-high" and r.confidence == Confidence.HIGH:
+                        r.applied = True
+                        self._record_evaluation(r.result_id, chosen_description=r.final_description, evaluation="accepted")
+                        final_results.append(r)
+                    elif review_mode == "accept-all-high" and r.confidence != Confidence.HIGH:
+                        r.applied = False
+                        self._record_evaluation(r.result_id, chosen_description="", evaluation="skipped")
+                        final_results.append(r)
+                    elif review_mode == "reject-all":
+                        r.applied = False
+                        self._record_evaluation(r.result_id, chosen_description="", evaluation="skipped")
+                        final_results.append(r)
+                    else:
+                        reviewed = self._review_single_result(r)
+                        final_results.append(reviewed)
+        
+        return final_results
+
+    def _review_single_result(self, r: ReviewResult) -> ReviewResult:
+        """Helper to review a single result by looking up its alternatives if needed."""
+        # If we have a result_id, we can fetch alternatives from history store
+        suggestions = [r.final_description]
+        history = history_store()
+        if history and r.result_id:
+            try:
+                # We need a way to get alternatives for a result_id
+                # For now, if not available, we just use the one we have
+                pass 
+            except Exception:
+                pass
+        
+        # Create a dummy MetadataSuggestion for the UI
+        s = MetadataSuggestion(
+            schema=r.schema,
+            table=r.table,
+            column=r.column,
+            suggestions=suggestions,
+            confidence=r.confidence,
+            reasoning="Deferred review",
+            source=r.source
+        )
+        return self._review_single(s, is_table=(r.column is None), asset_kind=r.asset_kind, result_id=r.result_id)
 
     def _review_single(
         self,

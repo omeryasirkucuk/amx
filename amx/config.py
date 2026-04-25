@@ -294,6 +294,8 @@ class LLMConfig:
     completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
     n_alternatives: int = 3   # how many description alternatives per column (1–5)
     prompt_detail: str = "standard"  # minimal | standard | detailed | full
+    logprob_high: float = 0.85
+    logprob_medium: float = 0.50
 
     @property
     def prompt_detail_cfg(self) -> PromptDetail:
@@ -313,6 +315,8 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         completion_mode=str(m.get("completion_mode", "chat_completions")),
         n_alternatives=max(1, min(5, n_alt)),
         prompt_detail=str(m.get("prompt_detail", "standard")),
+        logprob_high=float(m.get("logprob_high", 0.85)),
+        logprob_medium=float(m.get("logprob_medium", 0.50)),
     )
 
 
@@ -327,6 +331,8 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "completion_mode": llm.completion_mode,
         "n_alternatives": llm.n_alternatives,
         "prompt_detail": llm.prompt_detail,
+        "logprob_high": llm.logprob_high,
+        "logprob_medium": llm.logprob_medium,
     }
 
 

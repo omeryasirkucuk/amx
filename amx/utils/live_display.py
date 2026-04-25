@@ -111,9 +111,9 @@ class LiveDisplay:
         self._total_tokens_in = 0
         self._total_tokens_out = 0
         self._live = Live(
-            self._render(),
+            self,
             console=self._console,
-            refresh_per_second=4,
+            refresh_per_second=10,
             transient=False,
         )
         self._live.start()
@@ -131,9 +131,9 @@ class LiveDisplay:
     def resume(self) -> None:
         if self._live:
             self._live = Live(
-                self._render(),
+                self,
                 console=self._console,
-                refresh_per_second=4,
+                refresh_per_second=10,
                 transient=False,
             )
             self._live.start()
@@ -224,11 +224,10 @@ class LiveDisplay:
     # ── Rendering ─────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        if self._live:
-            try:
-                self._live.update(self._render())
-            except Exception:
-                pass
+        pass
+
+    def __rich_console__(self, console, options):
+        yield self._render()
 
     def _render(self) -> Group:
         parts: list[Any] = []
@@ -285,13 +284,20 @@ class LiveDisplay:
         tree = Tree("[bold]Pipeline[/bold]", guide_style="dim")
 
         for act in self._activities:
-            glyph = _STATE_GLYPH[act.state]
             elapsed_str = f" [dim]({act.elapsed_str})[/dim]" if act.start_time else ""
             tok_str = ""
             if act.state == ActivityState.ACTIVE and act.token_estimate:
                 tok_str = f" [dim]~{act.token_estimate:,} tokens[/dim]"
             elif act.state == ActivityState.DONE and act.tokens_used:
                 tok_str = f" [dim]↓ {act.tokens_used:,} tokens[/dim]"
+
+            if act.state == ActivityState.ACTIVE:
+                idx = int(time.monotonic() * 10) % 8
+                # Dense braille square frames that naturally look like a rotating frame 
+                spinner = ["⢹", "⢺", "⢼", "⣸", "⣇", "⡧", "⡏", "⡟"][idx]
+                glyph = f"[bold dodger_blue1]{spinner}[/bold dodger_blue1]"
+            else:
+                glyph = _STATE_GLYPH[act.state]
 
             node_label = f"{glyph} {act.label}{elapsed_str}{tok_str}"
             node = tree.add(node_label)

@@ -169,3 +169,12 @@ class BigQueryAdapter(DatabaseAdapter):
         fqn = self.fully_qualified_name(schema, table)
         col = self.quote_identifier(column)
         return f"ALTER TABLE {fqn} ALTER COLUMN {col} SET OPTIONS(description = :cmt)"
+
+    def set_schema_comment_sql(self, schema: str) -> str:
+        project = getattr(self.cfg, "project", "") or ""
+        ds = f"`{project}`.`{schema}`" if project else f"`{schema}`"
+        return f"ALTER SCHEMA {ds} SET OPTIONS(description = :cmt)"
+
+    def set_database_comment_sql(self) -> str:
+        # BigQuery projects don't have descriptions in SQL
+        return "SELECT 1 -- BigQuery project description not supported via SQL"

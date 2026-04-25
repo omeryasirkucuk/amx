@@ -160,3 +160,14 @@ class DatabricksAdapter(DatabaseAdapter):
         fqn = self.fully_qualified_name(schema, table)
         col = self.quote_identifier(column)
         return f"ALTER TABLE {fqn} ALTER COLUMN {col} COMMENT :cmt"
+
+    def set_schema_comment_sql(self, schema: str) -> str:
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        qualified = f"`{catalog}`.`{schema}`" if catalog else f"`{schema}`"
+        return f"COMMENT ON SCHEMA {qualified} IS :cmt"
+
+    def set_database_comment_sql(self) -> str:
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        if not catalog:
+            return "SELECT 1 -- No catalog configured"
+        return f"COMMENT ON CATALOG `{catalog}` IS :cmt"

@@ -161,3 +161,9 @@ class SnowflakeAdapter(DatabaseAdapter):
     ) -> str:
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON COLUMN {fqn}.{self.quote_identifier(column)} IS :cmt"
+
+    def set_schema_comment_sql(self, schema: str) -> str:
+        return f"COMMENT ON SCHEMA {self.quote_identifier(schema)} IS :cmt"
+
+    def set_database_comment_sql(self) -> str:
+        return f"COMMENT ON DATABASE {self.quote_identifier(self.cfg.database)} IS :cmt"

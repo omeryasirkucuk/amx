@@ -177,7 +177,12 @@ class CodeAgent(BaseAgent):
         tracker.record("code_agent", est, result.usage)
 
         suggestions = self._parse_response(result.content, ctx)
-        return apply_logprob_confidence(suggestions, result.logprobs)
+        return apply_logprob_confidence(
+            suggestions,
+            result.logprobs,
+            high_threshold=self.llm.cfg.logprob_high,
+            medium_threshold=self.llm.cfg.logprob_medium,
+        )
 
     def _parse_response(
         self, text: str, ctx: AgentContext, default_col: str = ""

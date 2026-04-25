@@ -17,6 +17,8 @@ class Confidence(Enum):
 def apply_logprob_confidence(
     suggestions: list["MetadataSuggestion"],
     logprobs: list | None,
+    high_threshold: float = 0.85,
+    medium_threshold: float = 0.50,
 ) -> list["MetadataSuggestion"]:
     """Override text-declared confidence with logprob-calibrated value when available."""
     if not logprobs:
@@ -24,7 +26,11 @@ def apply_logprob_confidence(
     try:
         from amx.llm.provider import confidence_from_logprobs
 
-        raw = confidence_from_logprobs(logprobs)
+        raw = confidence_from_logprobs(
+            logprobs,
+            high_threshold=high_threshold,
+            medium_threshold=medium_threshold,
+        )
         if raw is None:
             return suggestions
         calibrated = Confidence[raw]

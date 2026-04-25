@@ -4,6 +4,60 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.48] — 2026-04-25
+
+### Added
+- **High-Level Metadata**: Support for inferring and applying descriptions for Database Schemas and the Database itself.
+- **Review Strategies**: Choice between `individual` (real-time) and `deferred` (batch) human review at the start of `/run`.
+- **Local/Ollama Improvements**: API keys are now optional in the setup wizard for local providers, and `api_base` is correctly propagated for Ollama.
+- **Logprob Configuration**: User-configurable thresholds for HIGH/MEDIUM confidence levels via `/llm /logprob-thresholds`.
+
+## [0.1.47] — 2026-04-25
+
+### Fixed
+- **Ctrl+C incorrectly logged as `failed`**: A `KeyboardInterrupt` is now caught separately from `Exception`. If results were already produced before the interrupt, the run is saved as **`cancelled`** (yellow in `/list`). If interrupted mid-processing with no results, it is still `cancelled` (not `failed`).
+- **`/list` status color-coding**: Status column now renders in distinct colors — `success` in green, `failed` in red, `cancelled` in yellow, `running` in cyan.
+
+## [0.1.46] — 2026-04-25
+
+### Fixed
+- **`/list` showing stale "running" status with 0.00s duration**: Runs that crashed, were interrupted by Ctrl+C, or exited through the human review prompt could leave the SQLite `analysis_runs` row frozen at `status=running`. Fixed by consolidating both the success and failure `finish_run()` calls into a single `finally:` block that uses `sys.exc_info()` to detect the execution path.
+- **`/history results` missing table description**: Top-level (`column=None`) results were blended into the flat column table with just `(table)` as the label. They are now shown in a prominent **cyan Panel** at the top listing all alternatives with their chosen description highlighted in green.
+- **`/history review` not surfacing table description first**: Review items are now sorted so `column=None` (table/schema/db) entries are always processed first, and they display with a `▶ TABLE DESCRIPTION` cyan banner instead of the standard column heading.
+
+## [0.1.45] — 2026-04-25
+
+### Fixed
+- **Table-level description persistence**: `/history review` was not storing the table's own description — only column descriptions were saved. Root causes were:
+  1. The system prompt only asked for a single `TABLE_DESCRIPTION:` line while columns got multiple `DESCRIPTION_N:` alternatives.
+  2. The parser consumed it as a single-element list, losing the multi-alternative format entirely.
+  3. For tables with >10 columns (multiple batches), each batch generated a separate table-level suggestion causing duplicates, but only the first was retained without deduplication logic.
+- **All three parsers fixed** (`_parse_response`, `_parse_response_loose`, system prompt) to:
+  - Emit `TABLE_DESCRIPTION_1/2/3:` alternatives matching `n_alternatives`.
+  - Collect all alternatives into a single `MetadataSuggestion(column=None, suggestions=[...])` with all options.
+  - Deduplicate table-level entries across batches, keeping only the first (most complete) one.
+
+## [0.1.44] — 2026-04-25
+
+### UI Refinements
+- **High-Density Minimal Spinner**: Replaced the custom 2x2 bulky Table spinner with a single-character high-density Braille spinner (`⢹⢺⢼⣸⣇⡧⡏⡟`). This perfectly matches the footprint of the `[green]●[/green]` success state, creating a much cleaner, tighter, and tighter square border animation for active tasks.
+
+## [0.1.43] — 2026-04-25
+
+### Refactored
+- **Live UI Engine**: Completely refactored the `LiveDisplay` rendering loop. Instead of blocking synchronously and manually pushing frame updates to `rich.live.Live`, the class now implements a native `__rich_console__` method. This allows `Live` to automatically poll and redraw the entire UI 10 times a second in an asynchronous, non-blocking background thread.
+- **Dynamic Clock & Animations**: The elapsed time counters across all pipelines (activities, thinking states, global execution time) and the new Braille trail spinner now natively update completely smoothly in real-time as a result of the background refresh loop.
+
+## [0.1.42] — 2026-04-25
+
+### Fixed
+- **SQLite Persistence**: Fixed an issue where metadata review options were silently failing to write to the SQLite history store because the `AssetKind` Enum wasn't properly serialized to a string. `amx /review <id>` will now correctly retrieve run data.
+
+### Added
+- **UI Enhancements**:
+  - Replaced the static active indicator with an animated Braille spinner (`⠋`) in the `LiveDisplay` pipeline tree to visually convey real-time concurrent agent processing.
+  - Added elapsed time console output showing the total duration for the "Agent processing" phase (before review) and the "Human review" phase (after review).
+
 ## [0.1.41] — 2026-04-25
 
 ### Added

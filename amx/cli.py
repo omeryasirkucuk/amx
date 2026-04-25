@@ -739,6 +739,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
         ("/prompt-detail", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
         ("/n-alternatives", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
+        ("/logprob-thresholds", "Show/set confidence thresholds (/logprob-thresholds [high] [med])"),
     ]
 
     code_cmds: list[tuple[str, str]] = [
@@ -833,6 +834,11 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
         if not _require_namespace(head, namespace, "llm", "n-alternatives"):
             return True
         _cmd_n_alternatives(cfg, parts[1:])
+        return True
+    if head == "logprob-thresholds":
+        if not _require_namespace(head, namespace, "llm", "logprob-thresholds"):
+            return True
+        _cmd_logprob_thresholds(cfg, parts[1:])
         return True
     if head == "doc-profiles":
         if not _require_namespace(head, namespace, "docs", "doc-profiles"):
@@ -1101,7 +1107,16 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
     api_base = defaults.api_base
     if provider in ("local", "ollama", "kimi"):
         api_base = ask("API base URL", api_base or "http://localhost:11434/v1")
-    api_key = ask_password("API key") or defaults.api_key
+
+    if provider in ("local", "ollama"):
+        api_key = ask("API key (optional)", defaults.api_key or "")
+    else:
+        api_key = ask_password("API key") or defaults.api_key
+
+    info("Confidence thresholds (token probability 0.0\u20131.0):")
+    high = ask("  High threshold", default=str(getattr(defaults, "logprob_high", 0.85)))
+    med = ask("  Medium threshold", default=str(getattr(defaults, "logprob_medium", 0.50)))
+
     return LLMConfig(
         provider=provider,
         model=model.strip(),
@@ -1109,7 +1124,42 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
         api_base=api_base,
         temperature=defaults.temperature,
         max_tokens=defaults.max_tokens,
+        logprob_high=float(high),
+        logprob_medium=float(med),
     )
+
+
+def _cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set logprob confidence thresholds for the active LLM profile."""
+    if not rest:
+        high = getattr(cfg.llm, "logprob_high", 0.85)
+        med = getattr(cfg.llm, "logprob_medium", 0.50)
+        info(f"Current logprob thresholds: [bold]HIGH[/] >= {high:.2f} | [bold]MEDIUM[/] >= {med:.2f}")
+        info("Run [cyan]/logprob-thresholds <high> <med>[/cyan] to change (e.g. 0.9 0.6).")
+        return
+
+    try:
+        if len(rest) < 2:
+            error("Usage: /logprob-thresholds <high> <medium>")
+            return
+        h = float(rest[0])
+        m = float(rest[1])
+    except ValueError:
+        error(f"Expected numeric values, got: {rest}")
+        return
+
+    if not (0.0 <= m < h <= 1.0):
+        error("Thresholds must be 0.0\u20131.0, and high must be greater than medium.")
+        return
+
+    cfg.llm.logprob_high = h
+    cfg.llm.logprob_medium = m
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        prof = cfg.llm_profiles[cfg.active_llm_profile]
+        prof.logprob_high = h
+        prof.logprob_medium = m
+    cfg.save()
+    success(f"Logprob thresholds saved: HIGH >= {h:.2f}, MEDIUM >= {m:.2f}")
 
 
 def _cmd_llm_profiles(cfg: AMXConfig) -> None:
@@ -2819,6 +2869,19 @@ def analyze_run(
     else:
         info("Mode: [bold]Chat Completions[/bold] (real-time)")
 
+    # ── Review strategy ───────────────────────────────────────────────────────
+    review_strategy = "individual"
+    if not use_batch:
+        review_strategy = ask_choice(
+            "Review strategy",
+            ["individual", "deferred"],
+            default="individual",
+            descriptions={
+                "individual": "Assess each asset (table) as it becomes ready",
+                "deferred": "Process everything first, then review all together at the end",
+            }
+        )
+
     # ── Scope resolution ──────────────────────────────────────────────────────
     db = DatabaseConnector(cfg.db)
     if not db.test_connection():
@@ -2848,6 +2911,7 @@ def analyze_run(
     total_schemas = len(scope)
     approved: list = []
     skipped: list = []
+    all_results: list = []  # tracks all ReviewResult objects; used for cancel vs fail detection
     try:
         scope_summary = (
             f"{total_assets} asset(s) across {total_schemas} schema(s)"
@@ -2917,10 +2981,25 @@ def analyze_run(
                         results = orch.process_table(
                             schema_name, asset_name,
                             asset_kind=asset_kinds.get(asset_name),
+                            interactive_review=(review_strategy == "individual"),
                         )
                         all_results.extend(results)
+                    
+                    # Point 1: Schema-level meta analysis
+                    if len(assets) > 1 or total_schemas > 1:
+                        schema_meta = orch.process_schema_meta(schema_name, all_results)
+                        all_results.extend(schema_meta)
             finally:
                 display.stop()
+
+        # Point 1: Database-level meta analysis
+        if total_schemas > 1:
+            db_meta = orch.process_database_meta(all_results)
+            all_results.extend(db_meta)
+
+        # Handle deferred review
+        if review_strategy == "deferred" and not use_batch:
+            all_results = orch.batch_review(all_results)
 
         heading("Summary")
         render_token_summary(token_tracker)
@@ -2929,13 +3008,19 @@ def analyze_run(
         info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
 
         if approved:
+            def _asset_label(r):
+                if r.asset_kind == "database": return "[bold cyan]DATABASE[/]"
+                if r.asset_kind == "schema": return f"[cyan]SCHEMA: {r.schema}[/]"
+                asset = f"{r.table}.{r.column}" if r.column else r.table
+                return asset
+
             render_table(
                 "Approved metadata",
                 ["Schema", "Asset", "Description", "Confidence", "Source"],
                 [
                     [
-                        r.schema,
-                        f"{r.table}.{r.column}" if r.column else r.table,
+                        r.schema if r.asset_kind not in ("database", "schema") else "\u2014",
+                        _asset_label(r),
                         r.final_description[:60],
                         r.confidence.value,
                         r.source,
@@ -2960,29 +3045,17 @@ def analyze_run(
 
                 orch.apply_results(approved)
                 clear_pending()
+    except KeyboardInterrupt:
+        # User pressed Ctrl+C — treat as 'cancelled', not 'failed'
+        _log_app_event(
+            event_type="analyze_run",
+            status="cancelled",
+            command="analyze.run",
+            details={"mode": ("batch" if use_batch else "chat"), "error": "KeyboardInterrupt"},
+        )
+        raise
     except Exception as exc:
-        if run_id is not None:
-            hs = history_store()
-            if hs is not None:
-                try:
-                    hs.finish_run(
-                        run_id,
-                        status="failed",
-                        metrics={
-                            "duration_sec": round(time.monotonic() - run_started, 3),
-                            "total_assets": total_assets,
-                            "total_schemas": total_schemas,
-                        },
-                        tokens={
-                            "total_tokens": token_tracker.total_tokens,
-                            "summary": token_tracker.summary(),
-                            "records": token_tracker.records(),
-                        },
-                        results={},
-                        error_text=str(exc),
-                    )
-                except Exception:
-                    pass
+        _run_exc = exc
         _log_app_event(
             event_type="analyze_run",
             status="failed",
@@ -2990,67 +3063,100 @@ def analyze_run(
             details={"error": str(exc), "mode": ("batch" if use_batch else "chat")},
         )
         raise
-
-    if run_id is not None:
-        try:
-            token_summary = token_tracker.summary()
+    finally:
+        # Always finalize the run — prevents 'running' / duration=0 rows in /list
+        if run_id is not None:
             hs = history_store()
             if hs is not None:
-                hs.finish_run(
-                    run_id,
-                    status="success",
-                    metrics={
-                        "duration_sec": round(time.monotonic() - run_started, 3),
-                        "total_assets": total_assets,
-                        "total_schemas": total_schemas,
-                        "approved_count": len(approved),
-                        "skipped_count": len(skipped),
-                        "applied_flag": bool(apply),
-                    },
-                    tokens={
-                        "total_tokens": token_tracker.total_tokens,
-                        "summary": token_summary,
-                        "records": token_tracker.records(),
-                    },
-                    results={
-                        "approved": [
-                            {
-                                "schema": r.schema,
-                                "table": r.table,
-                                "column": r.column,
-                                "description": r.final_description,
-                                "confidence": r.confidence.value,
-                                "source": r.source,
-                                "asset_kind": r.asset_kind,
-                            }
-                            for r in approved
-                        ],
-                        "skipped": [
-                            {
-                                "schema": r.schema,
-                                "table": r.table,
-                                "column": r.column,
-                                "confidence": r.confidence.value,
-                                "source": r.source,
-                                "asset_kind": r.asset_kind,
-                            }
-                            for r in skipped
-                        ],
-                    },
-                )
-        except Exception as exc:
-            warn(f"Could not persist run history: {exc}")
-    _log_app_event(
-        event_type="analyze_run",
-        status="success",
-        command="analyze.run",
-        details={
-            "mode": ("batch" if use_batch else "chat"),
-            "approved_count": len(approved),
-            "skipped_count": len(skipped),
-            "total_assets": total_assets,
-        },
-    )
+                try:
+                    # Determine if we're in the exception path or success path.
+                    import sys as _sys
+                    _exc_active = _sys.exc_info()[1] is not None
+                    _exc_obj = _sys.exc_info()[1]
+                    if _exc_active:
+                        # KeyboardInterrupt after results exist → cancelled, not failed
+                        if isinstance(_exc_obj, KeyboardInterrupt) and all_results:
+                            _final_status = "cancelled"
+                            _error_text = "Interrupted by user after results produced"
+                        elif isinstance(_exc_obj, KeyboardInterrupt):
+                            _final_status = "cancelled"
+                            _error_text = "Interrupted by user"
+                        else:
+                            _final_status = "failed"
+                            _error_text = str(_exc_obj)
+                        hs.finish_run(
+                            run_id,
+                            status=_final_status,
+                            metrics={
+                                "duration_sec": round(time.monotonic() - run_started, 3),
+                                "total_assets": total_assets,
+                                "total_schemas": total_schemas,
+                            },
+                            tokens={
+                                "total_tokens": token_tracker.total_tokens,
+                                "summary": token_tracker.summary(),
+                                "records": token_tracker.records(),
+                            },
+                            results={},
+                            error_text=_error_text,
+                        )
+                    else:
+                        token_summary = token_tracker.summary()
+                        hs.finish_run(
+                            run_id,
+                            status="success",
+                            metrics={
+                                "duration_sec": round(time.monotonic() - run_started, 3),
+                                "total_assets": total_assets,
+                                "total_schemas": total_schemas,
+                                "approved_count": len(approved),
+                                "skipped_count": len(skipped),
+                                "applied_flag": bool(apply),
+                            },
+                            tokens={
+                                "total_tokens": token_tracker.total_tokens,
+                                "summary": token_summary,
+                                "records": token_tracker.records(),
+                            },
+                            results={
+                                "approved": [
+                                    {
+                                        "schema": r.schema,
+                                        "table": r.table,
+                                        "column": r.column,
+                                        "description": r.final_description,
+                                        "confidence": r.confidence.value,
+                                        "source": r.source,
+                                        "asset_kind": r.asset_kind,
+                                    }
+                                    for r in approved
+                                ],
+                                "skipped": [
+                                    {
+                                        "schema": r.schema,
+                                        "table": r.table,
+                                        "column": r.column,
+                                        "confidence": r.confidence.value,
+                                        "source": r.source,
+                                        "asset_kind": r.asset_kind,
+                                    }
+                                    for r in skipped
+                                ],
+                            },
+                        )
+                        _log_app_event(
+                            event_type="analyze_run",
+                            status="success",
+                            command="analyze.run",
+                            details={
+                                "mode": ("batch" if use_batch else "chat"),
+                                "approved_count": len(approved),
+                                "skipped_count": len(skipped),
+                                "total_assets": total_assets,
+                            },
+                        )
+                except Exception as _fe:
+                    warn(f"Could not persist run history: {_fe}")
 
 
 @analyze.command("apply")
@@ -3158,7 +3264,12 @@ def history_list(limit: int) -> None:
         table_rows.append([
             str(r.get("id", "")),
             f"{float(r.get('started_at') or 0):.0f}",
-            str(r.get("status", "")),
+            {
+                "success":   "[bold green]success[/bold green]",
+                "failed":    "[bold red]failed[/bold red]",
+                "cancelled": "[bold yellow]cancelled[/bold yellow]",
+                "running":   "[bold cyan]running[/bold cyan]",
+            }.get(str(r.get("status", "")), str(r.get("status", ""))),
             str(r.get("mode", "")),
             str(r.get("db_backend", "")),
             scope_str,
@@ -3270,8 +3381,39 @@ def history_results(run_id: int) -> None:
         return
 
     heading(f"Saved alternatives — run #{run_id}")
+
+    # ── Separate top-level (table/schema/db) from column rows ────────────
+    top_level = [r for r in rows if not r.get("column_name")]
+    col_rows_data = [r for r in rows if r.get("column_name")]
+
+    if top_level:
+        from rich.panel import Panel
+        from rich.text import Text
+        from amx.utils.console import console
+        for r in top_level:
+            alts = r.get("alternatives_json") or []
+            kind = r.get("asset_kind", "table").upper()
+            asset_label = f"{r.get('schema_name','')}.{r.get('table_name','')}"
+            status_label = r.get("evaluation") or "pending"
+            chosen = r.get("chosen_description") or ""
+            lines = []
+            if alts:
+                for i, a in enumerate(alts, 1):
+                    lines.append(f"  [dim]{i}.[/dim] {a}")
+            else:
+                lines.append("  [dim](no alternatives stored)[/dim]")
+            if chosen:
+                lines.append(f"\n  [bold green]\u2713 Chosen:[/bold green] {chosen}")
+            body = "\n".join(lines)
+            console.print(Panel(
+                body,
+                title=f"[bold cyan]{kind} DESCRIPTION[/bold cyan] — {asset_label}  [dim][{status_label}][/dim]",
+                border_style="cyan",
+                expand=False,
+            ))
+
     table_rows = []
-    for r in rows:
+    for r in col_rows_data:
         alts = r.get("alternatives_json") or []
         alts_str = " | ".join(str(a)[:40] for a in alts[:3])
         evaluated_at = r.get("evaluated_at")
@@ -3290,11 +3432,12 @@ def history_results(run_id: int) -> None:
             (r.get("chosen_description") or "")[:40],
             eval_time,
         ])
-    render_table(
-        f"Run #{run_id} alternatives",
-        ["Row", "Table", "Column", "Conf", "Alternatives (top-3)", "Status", "Chosen", "Eval'd at"],
-        table_rows,
-    )
+    if table_rows:
+        render_table(
+            f"Run #{run_id} — Column alternatives",
+            ["Row", "Table", "Column", "Conf", "Alternatives (top-3)", "Status", "Chosen", "Eval'd at"],
+            table_rows,
+        )
     pending = sum(1 for r in rows if not r.get("evaluation"))
     if pending:
         info(f"{pending} item(s) still pending. Run `/review {run_id}` to evaluate them.")
@@ -3346,17 +3489,26 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
 
     newly_approved: list[ReviewResult] = []
 
-    for r in rows:
+    # Sort: table/schema/db-level (column=None) always reviewed first
+    rows_sorted = sorted(rows, key=lambda r: (0 if not r.get("column_name") else 1, r.get("id", 0)))
+
+    for r in rows_sorted:
         alts: list[str] = r.get("alternatives_json") or []
         if not alts:
             warn(f"Row {r['id']} ({r['table_name']}.{r.get('column_name') or '(table)'}) has no alternatives stored — skipping.")
             continue
 
         col_label = r.get("column_name") or "(table-level)"
+        is_top_level = not r.get("column_name")
         existing_eval = r.get("evaluation")
         existing_choice = r.get("chosen_description") or ""
         console.print()
-        console.print(f"  [heading]Table: {r['table_name']}  Column: {col_label}[/heading]")
+        if is_top_level:
+            kind = r.get("asset_kind", "table").upper()
+            asset_label = f"{r.get('schema_name','')}.{r.get('table_name','')}"
+            console.print(f"  [bold cyan]\u25b6 {kind} DESCRIPTION[/bold cyan]  [dim]{asset_label}[/dim]")
+        else:
+            console.print(f"  [heading]Table: {r['table_name']}  Column: {col_label}[/heading]")
         console.print(f"  Confidence: {r.get('confidence', 'unknown')}  |  Source: {r.get('source', 'unknown')}")
         if r.get("reasoning"):
             console.print(f"  Reasoning: {r.get('reasoning')}")

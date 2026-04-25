@@ -106,3 +106,13 @@ class DatabaseAdapter(ABC):
     ) -> str:
         """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
         ...
+
+    @abstractmethod
+    def set_schema_comment_sql(self, schema: str) -> str:
+        """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
+        ...
+
+    @abstractmethod
+    def set_database_comment_sql(self) -> str:
+        """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
+        ...
