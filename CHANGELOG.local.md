@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.75] — 2026-04-26
+### CLI Refactor
+- **amx/cli_db.py**: Added a dedicated module for `/db` namespace hints, DB profile listing/switching/add/remove flows, interactive DB config prompts, and profiling guardrail updates.
+- **amx/cli.py**: Replaced the in-file DB command implementations with delegated imports, keeping command routing and event logging behavior intact.
+- **tests/test_regressions.py**: Added coverage for `cmd_profiling()` updating the active DB profile.
+
 ## [0.1.74] — 2026-04-26
 ### Reliability Cleanup
 - **amx/agents/base.py**: `apply_logprob_confidence()` now downgrades confidence to `LOW` when logprobs are missing or unusable.

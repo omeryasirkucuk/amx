@@ -319,7 +319,8 @@ Query it directly in AMX via `/history` namespace:
 
 ```
 amx/
-├── cli.py              # Click-based CLI entry point
+├── cli.py              # Interactive shell, command routing, and top-level workflows
+├── cli_db.py           # /db namespace profile and profiling command helpers
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -350,6 +351,10 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.75
+
+- **CLI maintainability**: `/db` profile and profiling commands now live in `amx.cli_db`, reducing the size of `amx.cli` while preserving the existing interactive commands.
 
 ### v0.1.74
 

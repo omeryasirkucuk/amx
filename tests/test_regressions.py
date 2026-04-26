@@ -8,7 +8,8 @@ from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator
 from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
-from amx.config import DBConfig
+from amx.config import AMXConfig, DBConfig
+from amx.cli_db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
@@ -80,6 +81,22 @@ class BackendCapabilityTests(unittest.TestCase):
 
 
 class ProfilingGuardrailTests(unittest.TestCase):
+    def test_cli_profiling_updates_active_profile(self) -> None:
+        cfg = AMXConfig()
+        cfg.db = DBConfig(backend="postgresql")
+        cfg.db_profiles = {"default": cfg.db}
+        cfg.active_db_profile = "default"
+        cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
+
+        cmd_profiling(cfg, ["sampled", "500000", "3"])
+
+        self.assertEqual(cfg.db.profiling_mode, "sampled")
+        self.assertEqual(cfg.db.profiling_max_rows, 500_000)
+        self.assertEqual(cfg.db.profiling_sample_size, 3)
+        self.assertEqual(cfg.db_profiles["default"].profiling_mode, "sampled")
+        self.assertEqual(cfg.db_profiles["default"].profiling_max_rows, 500_000)
+        self.assertEqual(cfg.db_profiles["default"].profiling_sample_size, 3)
+
     def test_metadata_mode_does_not_open_data_connection(self) -> None:
         class FakeEngine:
             def connect(self):

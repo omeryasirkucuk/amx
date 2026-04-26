@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.75] — 2026-04-26
+### Changed
+- **CLI maintainability**: Extracted `/db` profile, profile-switching, profile-removal, and profiling guardrail commands from `amx/cli.py` into `amx/cli_db.py` while keeping the interactive command behavior unchanged.
+
+### Added
+- **Regression coverage**: Added a CLI profiling helper test to verify that guardrail changes still update the active DB profile after the extraction.
+
 ## [0.1.74] — 2026-04-26
 ### Changed
 - **Confidence calibration**: Agent confidence now defaults to `LOW` when token logprobs are unavailable or unparseable, so model-declared text labels are not treated as calibrated confidence.
