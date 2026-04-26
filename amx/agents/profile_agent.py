@@ -73,7 +73,9 @@ class ProfileAgent(BaseAgent):
     def __init__(self, llm: LLMProvider):
         self.llm = llm
 
-    BATCH_SIZE = 10
+    @property
+    def batch_size(self) -> int:
+        return max(1, min(100, getattr(self.llm.cfg, "column_batch_size", 10)))
 
     @property
     def _n_alternatives(self) -> int:
@@ -99,13 +101,13 @@ class ProfileAgent(BaseAgent):
         if not columns:
             return []
 
-        if len(columns) <= self.BATCH_SIZE:
+        if len(columns) <= self.batch_size:
             return self._run_single_batch(ctx, columns)
 
         all_suggestions: list[MetadataSuggestion] = []
         batches = [
-            columns[i : i + self.BATCH_SIZE]
-            for i in range(0, len(columns), self.BATCH_SIZE)
+            columns[i : i + self.batch_size]
+            for i in range(0, len(columns), self.batch_size)
         ]
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -177,8 +179,24 @@ class ProfileAgent(BaseAgent):
 
     def _ctx_with_columns(self, ctx: AgentContext, columns: list) -> AgentContext:
         """Return a shallow copy of the context with only the specified columns."""
+        full_columns = list((ctx.db_profile or {}).get("columns") or [])
+        current_names = {str(c.get("name", "")).strip() for c in columns}
+        remaining_names = [
+            str(c.get("name", "")).strip()
+            for c in full_columns
+            if str(c.get("name", "")).strip() and str(c.get("name", "")).strip() not in current_names
+        ]
+        extra_setting = int(getattr(self.llm.cfg, "batch_context_column_names", 0))
+        if extra_setting == -1:
+            context_names = remaining_names
+        elif extra_setting > 0:
+            context_names = remaining_names[:extra_setting]
+        else:
+            context_names = []
+
         new_profile = dict(ctx.db_profile)
         new_profile["columns"] = columns
+        new_profile["context_column_names"] = context_names
         return AgentContext(
             schema=ctx.schema,
             table=ctx.table,
@@ -205,10 +223,10 @@ class ProfileAgent(BaseAgent):
 
         batches = (
             [columns]
-            if len(columns) <= self.BATCH_SIZE
+            if len(columns) <= self.batch_size
             else [
-                columns[i : i + self.BATCH_SIZE]
-                for i in range(0, len(columns), self.BATCH_SIZE)
+                columns[i : i + self.batch_size]
+                for i in range(0, len(columns), self.batch_size)
             ]
         )
         requests: list[BatchRequest] = []
@@ -411,6 +429,26 @@ class ProfileAgent(BaseAgent):
                         f"{rel.get('comment') or 'None'}"
                     )
 
+        # ── Query-log/code usage hints ────────────────────────────────────────
+        if pd.include_query_log_analysis:
+            q = p.get("query_usage", {}) or {}
+            if q:
+                lines.append("")
+                lines.append("Query usage analysis (derived from SQL/code references):")
+                lines.append(
+                    f"  - table_mentions={q.get('table_mentions', 0)}"
+                    f", sql_like_table_mentions={q.get('sql_like_table_mentions', 0)}"
+                    f", columns_with_mentions={q.get('columns_with_mentions', 0)}"
+                )
+                top_usage = q.get("top_column_usage", []) or []
+                for row in top_usage[:10]:
+                    col = row.get("column", "")
+                    m = row.get("mentions", 0)
+                    sample_lines = row.get("sample_sql_lines", []) or []
+                    lines.append(f"  - {col}: mentions={m}")
+                    for sl in sample_lines[:2]:
+                        lines.append(f"      sample={sl}")
+
         # ── Columns ────────────────────────────────────────────────────────
         lines.extend(["", "Columns:"])
         for col in p.get("columns", []):
@@ -432,6 +470,16 @@ class ProfileAgent(BaseAgent):
             if pd.include_existing_col_comment:
                 parts.append(f"existing_comment={col.get('existing_comment') or 'None'}")
             lines.append(" | ".join(parts))
+
+        context_names = list(p.get("context_column_names") or [])
+        if context_names:
+            lines.extend(
+                [
+                    "",
+                    "Other column names in this table (context only):",
+                    f"  {', '.join(context_names)}",
+                ]
+            )
 
         return "\n".join(lines)
 

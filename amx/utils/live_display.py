@@ -283,7 +283,19 @@ class LiveDisplay:
     def _render_activity_tree(self) -> Tree:
         tree = Tree("[bold]Pipeline[/bold]", guide_style="dim")
 
-        for act in self._activities:
+        # Windowing logic to prevent terminal overflow
+        max_visible = 15 if self._collapsed else 25
+        total_acts = len(self._activities)
+
+        display_acts = self._activities
+        hidden_count = 0
+
+        if total_acts > max_visible:
+            hidden_count = total_acts - max_visible
+            display_acts = self._activities[-max_visible:]
+            tree.add(f"[dim]... {hidden_count} older activities hidden (Press Tab to toggle details) ...[/dim]")
+
+        for act in display_acts:
             elapsed_str = f" [dim]({act.elapsed_str})[/dim]" if act.start_time else ""
             tok_str = ""
             if act.state == ActivityState.ACTIVE and act.token_estimate:
@@ -293,7 +305,6 @@ class LiveDisplay:
 
             if act.state == ActivityState.ACTIVE:
                 idx = int(time.monotonic() * 10) % 8
-                # Dense braille square frames that naturally look like a rotating frame 
                 spinner = ["⢹", "⢺", "⢼", "⣸", "⣇", "⡧", "⡏", "⡟"][idx]
                 glyph = f"[bold dodger_blue1]{spinner}[/bold dodger_blue1]"
             else:

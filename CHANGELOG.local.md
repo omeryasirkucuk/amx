@@ -2,6 +2,16 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.74] — 2026-04-26
+### Reliability Cleanup
+- **amx/agents/base.py**: `apply_logprob_confidence()` now downgrades confidence to `LOW` when logprobs are missing or unusable.
+- **amx/agents/profile_agent.py**: Replaced remaining fixed `BATCH_SIZE` usage with the configured `column_batch_size`; added optional non-batch column-name context.
+- **amx/agents/orchestrator.py**: Added table/column fallback suggestions for missing model outputs, schema/database reviewability, query-usage hints, and `ReviewResult.alternatives` support.
+- **amx/storage/sqlite_store.py**: Added stale `running` run recovery and an `asset_kind` migration guard.
+- **amx/utils/console.py**: Added continuously refreshing elapsed time in `step_spinner()`.
+- **amx/utils/live_display.py**: Added activity windowing to prevent long-run terminal overflow.
+- **tests/test_regressions.py**: Added coverage for missing-logprob confidence downgrades and fallback suggestion injection.
+
 ## [0.1.73] — 2026-04-26
 ### Profiling Guardrails
 - **amx/config.py**: Added `DBConfig.profiling_mode`, `profiling_max_rows`, and `profiling_sample_size`; persisted them through DB profile serialization.

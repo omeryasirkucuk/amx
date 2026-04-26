@@ -92,6 +92,10 @@ class SQLiteHistoryStore:
             )
             # Backward-compatible migration for older history DBs.
             try:
+                conn.execute("ALTER TABLE run_results ADD COLUMN asset_kind TEXT NOT NULL DEFAULT 'table'")
+            except sqlite3.OperationalError:
+                pass
+            try:
                 conn.execute("ALTER TABLE run_results ADD COLUMN applied_at REAL")
             except sqlite3.OperationalError:
                 pass
@@ -117,6 +121,26 @@ class SQLiteHistoryStore:
     ) -> int:
         started = time.time()
         with self._lock, self._connect() as conn:
+            # Recover stale rows left as 'running' after an unclean shutdown/crash.
+            conn.execute(
+                """
+                UPDATE analysis_runs
+                SET ended_at = ?,
+                    duration_sec = CASE
+                        WHEN started_at IS NOT NULL THEN MAX(0.0, ? - started_at)
+                        ELSE 0.0
+                    END,
+                    status = 'failed',
+                    error_text = CASE
+                        WHEN error_text IS NULL OR error_text = ''
+                        THEN 'Recovered stale running run during new run start'
+                        ELSE error_text
+                    END
+                WHERE status = 'running'
+                  AND ended_at IS NULL
+                """,
+                (started, started),
+            )
             cur = conn.execute(
                 """
                 INSERT INTO analysis_runs (

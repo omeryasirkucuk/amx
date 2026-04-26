@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Generator
@@ -218,9 +219,21 @@ def step_spinner(
         tok = f" (~{token_estimate:,} input tokens)" if token_estimate else ""
         t0 = time.monotonic()
         with console.status(f"[info]{label}{tok}[/info]", spinner="dots") as status:
+            stop_evt = threading.Event()
+
+            def _refresh_elapsed() -> None:
+                while not stop_evt.is_set():
+                    elapsed_now = time.monotonic() - t0
+                    status.update(f"[info]{label}{tok} ({elapsed_now:.1f}s)[/info]")
+                    stop_evt.wait(0.1)
+
+            tick = threading.Thread(target=_refresh_elapsed, daemon=True)
+            tick.start()
             try:
                 yield
             finally:
+                stop_evt.set()
+                tick.join(timeout=0.2)
                 elapsed = time.monotonic() - t0
                 msg = done_message or label
                 status.update(f"[success]✓ {msg} ({elapsed:.1f}s)[/success]")

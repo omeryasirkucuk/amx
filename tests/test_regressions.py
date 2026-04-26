@@ -3,13 +3,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from amx.agents.base import AgentContext
+from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
+from amx.agents.orchestrator import Orchestrator
 from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.config import DBConfig
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
+from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 
 
@@ -134,6 +136,60 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(profile.row_count, 2_500_000)
         self.assertEqual(profile.columns[0].samples, [])
         self.assertEqual(profile.columns[0].distinct_count, 0)
+
+
+class ConfidenceCalibrationTests(unittest.TestCase):
+    def test_missing_logprobs_downgrades_to_low(self) -> None:
+        suggestion = MetadataSuggestion(
+            schema="public",
+            table="orders",
+            column="id",
+            suggestions=["Identifier"],
+            confidence=Confidence.HIGH,
+            reasoning="model text said high",
+            source="profile",
+        )
+
+        calibrated = apply_logprob_confidence([suggestion], logprobs=None)
+
+        self.assertEqual(calibrated[0].confidence, Confidence.LOW)
+
+
+class OrchestratorFallbackTests(unittest.TestCase):
+    def test_missing_columns_get_low_confidence_fallbacks(self) -> None:
+        class DummyDB:
+            pass
+
+        class DummyLLM:
+            pass
+
+        orch = Orchestrator(DummyDB(), DummyLLM())
+        profile = TableProfile(
+            schema="public",
+            name="orders",
+            columns=[
+                ColumnProfile(name="id", dtype="INTEGER", nullable=False),
+                ColumnProfile(name="amount", dtype="NUMERIC", nullable=True),
+            ],
+        )
+        merged = [
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column="id",
+                suggestions=["Order identifier"],
+                confidence=Confidence.HIGH,
+                reasoning="parsed",
+                source="combined",
+            )
+        ]
+
+        completed = orch._ensure_complete_table_coverage(profile, merged)
+
+        by_column = {s.column: s for s in completed}
+        self.assertIn(None, by_column)
+        self.assertIn("amount", by_column)
+        self.assertEqual(by_column["amount"].confidence, Confidence.LOW)
 
 
 if __name__ == "__main__":

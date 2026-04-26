@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.74] — 2026-04-26
+### Changed
+- **Confidence calibration**: Agent confidence now defaults to `LOW` when token logprobs are unavailable or unparseable, so model-declared text labels are not treated as calibrated confidence.
+- **Profile batching**: Profile Agent batching now uses the persisted `/llm-batch-size` setting consistently in chat and batch flows, with optional context-only non-batch column names.
+- **Schema/database review**: Schema-level and database-level generated descriptions remain reviewable instead of being auto-accepted.
+
+### Fixed
+- **Coverage gaps**: Orchestrator now injects low-confidence fallback rows when model output misses the table-level description or individual columns, preventing silent drops from review/history.
+- **History recovery**: SQLite history recovers stale `running` runs left behind by crashes or interrupted sessions when the next run starts.
+- **Live display bounds**: Pipeline activity rendering now windows older activities so long runs do not overflow the terminal.
+
+### Added
+- **Regression coverage**: Added tests for missing-logprob confidence downgrades and fallback coverage for model omissions.
+
 ## [0.1.73] — 2026-04-26
 ### Added
 - **Profiling guardrails**: Added DB-profile-level profiling modes (`full`, `sampled`, `metadata`) plus `/db` → `/profiling [mode] [max_rows|off] [sample_size]` to control expensive table-data scans.

@@ -351,6 +351,14 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
+### v0.1.74
+
+- **Reliability cleanup**: AMX now keeps missed model outputs visible with low-confidence fallback review rows, treats confidence as low when calibrated logprobs are unavailable, keeps schema/database descriptions reviewable, and bounds long-run live display output.
+
+### v0.1.73
+
+- **Profiling guardrails**: DB profiles now support `full`, `sampled`, and `metadata` profiling modes through `/db` → `/profiling`, plus source-scoped document/code RAG filtering.
+
 ### v0.1.72
 
 - **History alternatives UX**: `/results <run_id>` now shows all saved alternatives and reminds you to use `/review <run_id> --apply` to choose a different option and apply it later.

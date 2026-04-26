@@ -20,8 +20,16 @@ def apply_logprob_confidence(
     high_threshold: float = 0.85,
     medium_threshold: float = 0.50,
 ) -> list["MetadataSuggestion"]:
-    """Override text-declared confidence with logprob-calibrated value when available."""
+    """Set confidence from logprob statistics (text labels are ignored).
+
+    If logprobs are unavailable/unparseable, default to LOW so confidence
+    is never based on model-declared text labels.
+    """
+    if not suggestions:
+        return suggestions
     if not logprobs:
+        for s in suggestions:
+            s.confidence = Confidence.LOW
         return suggestions
     try:
         from amx.llm.provider import confidence_from_logprobs
@@ -32,9 +40,13 @@ def apply_logprob_confidence(
             medium_threshold=medium_threshold,
         )
         if raw is None:
+            for s in suggestions:
+                s.confidence = Confidence.LOW
             return suggestions
         calibrated = Confidence[raw]
     except Exception:
+        for s in suggestions:
+            s.confidence = Confidence.LOW
         return suggestions
 
     for s in suggestions:

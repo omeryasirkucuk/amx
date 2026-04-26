@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from dataclasses import dataclass, field
+import re
 import time
 from typing import Callable
 
@@ -85,6 +86,7 @@ class ReviewResult:
     applied: bool = False
     asset_kind: str = "table"
     result_id: int | None = None  # FK to run_results.id (for re-evaluation)
+    alternatives: list[str] = field(default_factory=list)
 
 
 def apply_review_results_to_db(
@@ -131,10 +133,13 @@ class Orchestrator:
         self.db = db
         self.llm = llm
         self.run_id = run_id
+        self.code_report = code_report
         self.profile_agent = ProfileAgent(llm)
         self.rag_agent = RAGAgent(llm, rag_store) if rag_store else None
         self.code_agent = CodeAgent(llm, code_report) if code_report else None
         self.results: list[ReviewResult] = []
+
+    _SQL_VERB_RE = re.compile(r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE)
 
     def process_table(
         self,
@@ -151,7 +156,7 @@ class Orchestrator:
         ctx = self._build_context(profile)
 
         num_cols = len(profile.columns)
-        batch_size = self.profile_agent.BATCH_SIZE
+        batch_size = self.profile_agent.batch_size
         if num_cols > batch_size:
             n_batches = (num_cols + batch_size - 1) // batch_size
             info(
@@ -179,6 +184,7 @@ class Orchestrator:
                 "\u2014 see also ~/.amx/logs/amx.log"
             )
             return []
+        merged = self._ensure_complete_table_coverage(profile, merged)
 
         # \u2014\u2014 Persist all alternatives before human review \u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014
         result_id_map = self._save_merged_suggestions(merged, asset_kind=asset_kind)
@@ -247,9 +253,27 @@ class Orchestrator:
             final_description=desc,
             confidence=conf,
             source="combined",
-            applied=True, # Auto-apply/accept meta-descriptions for now or mark for review?
+            applied=False,  # keep reviewable in both immediate and deferred flows
             asset_kind=AssetKind.SCHEMA.value
         )
+        calibrated = apply_logprob_confidence(
+            [
+                MetadataSuggestion(
+                    schema=schema,
+                    table="",
+                    column=None,
+                    suggestions=[desc],
+                    confidence=result.confidence,
+                    reasoning=reasoning,
+                    source="combined",
+                )
+            ],
+            res.logprobs,
+            high_threshold=self.llm.cfg.logprob_high,
+            medium_threshold=self.llm.cfg.logprob_medium,
+        )
+        if calibrated:
+            result.confidence = calibrated[0].confidence
         self.results.append(result)
         return [result]
 
@@ -283,11 +307,80 @@ class Orchestrator:
             final_description=desc,
             confidence=conf,
             source="combined",
-            applied=True,
+            applied=False,  # keep reviewable in both immediate and deferred flows
             asset_kind=AssetKind.DATABASE.value
         )
+        calibrated = apply_logprob_confidence(
+            [
+                MetadataSuggestion(
+                    schema="",
+                    table="",
+                    column=None,
+                    suggestions=[desc],
+                    confidence=result.confidence,
+                    reasoning=reasoning,
+                    source="combined",
+                )
+            ],
+            res.logprobs,
+            high_threshold=self.llm.cfg.logprob_high,
+            medium_threshold=self.llm.cfg.logprob_medium,
+        )
+        if calibrated:
+            result.confidence = calibrated[0].confidence
         self.results.append(result)
         return [result]
+
+    def _ensure_complete_table_coverage(
+        self,
+        profile: TableProfile,
+        merged: list[MetadataSuggestion],
+    ) -> list[MetadataSuggestion]:
+        """Ensure table-level + every physical column has at least one suggestion.
+
+        When model parsing misses some columns in large tables, keep them visible for review
+        with a low-confidence fallback instead of silently dropping them.
+        """
+        out = list(merged)
+        suggested_cols = {s.column for s in out if s.column is not None}
+        has_table_level = any(s.column is None for s in out)
+
+        if not has_table_level:
+            out.append(
+                MetadataSuggestion(
+                    schema=profile.schema,
+                    table=profile.name,
+                    column=None,
+                    suggestions=[
+                        f"Table {profile.name} contains business data for schema {profile.schema}. "
+                        "Auto-inference missed a reliable table description; please review manually."
+                    ],
+                    confidence=Confidence.LOW,
+                    reasoning="Fallback injected because model output had no table-level suggestion.",
+                    source="fallback",
+                )
+            )
+
+        for c in profile.columns:
+            if c.name in suggested_cols:
+                continue
+            fallback_desc = (
+                c.existing_comment
+                or f"Column {c.name} in table {profile.name}. "
+                   "Auto-inference missed a reliable description; please review manually."
+            )
+            out.append(
+                MetadataSuggestion(
+                    schema=profile.schema,
+                    table=profile.name,
+                    column=c.name,
+                    suggestions=[fallback_desc],
+                    confidence=Confidence.LOW,
+                    reasoning="Fallback injected because model output had no suggestion for this column.",
+                    source="fallback",
+                )
+            )
+        return out
 
     def _parse_meta_response(self, text: str) -> tuple[str, Confidence, str]:
         """Parse meta DESCRIPTION/CONFIDENCE/REASONING blocks."""
@@ -340,6 +433,7 @@ class Orchestrator:
 
     def _build_context(self, profile: TableProfile) -> AgentContext:
         db_name = self.db.cfg.database or self.db.cfg.project or self.db.cfg.catalog or "N/A"
+        query_usage = self._build_query_usage_hints(profile)
         return AgentContext(
             schema=profile.schema,
             table=profile.name,
@@ -359,6 +453,7 @@ class Orchestrator:
                 "schema_comment": profile.schema_comment,
                 "database_comment": profile.database_comment,
                 "related_comments": profile.related_comments,
+                "query_usage": query_usage,
                 "columns": [
                     {
                         "name": c.name,
@@ -384,6 +479,58 @@ class Orchestrator:
                 "database_comment": profile.database_comment,
             },
         )
+
+    def _build_query_usage_hints(self, profile: TableProfile) -> dict[str, object]:
+        """Derive query-usage hints from code scan references (query-log-like context)."""
+        if not self.code_report:
+            return {}
+
+        refs = self.code_report.references or {}
+        table_key = profile.name.lower()
+        table_refs = refs.get(table_key, [])
+        col_names = {c.name.lower() for c in profile.columns}
+        col_counts: dict[str, int] = {c.name: 0 for c in profile.columns}
+        col_snippets: dict[str, list[str]] = {c.name: [] for c in profile.columns}
+
+        sql_like_lines = 0
+        for r in table_refs:
+            text_line = (r.line_text or "").strip()
+            if self._SQL_VERB_RE.search(text_line):
+                sql_like_lines += 1
+
+        # Column-level mention frequencies and first SQL-like snippets.
+        for col in profile.columns:
+            key = col.name.lower()
+            hits = refs.get(key, [])
+            col_counts[col.name] = len(hits)
+            for h in hits:
+                line = (h.line_text or "").strip()
+                if line and self._SQL_VERB_RE.search(line):
+                    col_snippets[col.name].append(line[:200])
+                if len(col_snippets[col.name]) >= 2:
+                    break
+
+        top_cols = sorted(
+            (name for name in col_counts.keys() if col_counts[name] > 0),
+            key=lambda n: col_counts[n],
+            reverse=True,
+        )[:12]
+
+        top_column_usage = [
+            {
+                "column": name,
+                "mentions": col_counts[name],
+                "sample_sql_lines": col_snippets.get(name, []),
+            }
+            for name in top_cols
+        ]
+
+        return {
+            "table_mentions": len(table_refs),
+            "sql_like_table_mentions": sql_like_lines,
+            "top_column_usage": top_column_usage,
+            "columns_with_mentions": sum(1 for c in col_names if refs.get(c)),
+        }
 
     def _merge_suggestions(
         self, suggestions: list[MetadataSuggestion], ctx: AgentContext
@@ -646,7 +793,7 @@ class Orchestrator:
         if not results:
             return []
 
-        # Filter for unapplied results that are not meta (meta are auto-applied for now)
+        # Filter for unapplied results (including schema/database meta descriptions).
         to_review = [r for r in results if not r.applied]
         if not to_review:
             return results
@@ -710,16 +857,7 @@ class Orchestrator:
 
     def _review_single_result(self, r: ReviewResult) -> ReviewResult:
         """Helper to review a single result by looking up its alternatives if needed."""
-        # If we have a result_id, we can fetch alternatives from history store
-        suggestions = [r.final_description]
-        history = history_store()
-        if history and r.result_id:
-            try:
-                # We need a way to get alternatives for a result_id
-                # For now, if not available, we just use the one we have
-                pass 
-            except Exception:
-                pass
+        suggestions = r.alternatives if r.alternatives else [r.final_description]
         
         # Create a dummy MetadataSuggestion for the UI
         s = MetadataSuggestion(
@@ -846,7 +984,7 @@ class Orchestrator:
             ak = profile.asset_kind.value if profile.asset_kind else "table"
 
             num_cols = len(profile.columns)
-            batch_size = self.profile_agent.BATCH_SIZE
+            batch_size = self.profile_agent.batch_size
             n_batches = (num_cols + batch_size - 1) // batch_size
 
             all_suggestions: list[MetadataSuggestion] = []
