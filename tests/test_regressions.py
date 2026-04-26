@@ -8,6 +8,7 @@ from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator
 from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
+from amx.cli_history import format_run_scope
 from amx.config import AMXConfig, DBConfig
 from amx.cli_db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -153,6 +154,17 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(profile.row_count, 2_500_000)
         self.assertEqual(profile.columns[0].samples, [])
         self.assertEqual(profile.columns[0].distinct_count, 0)
+
+
+class HistoryFormattingTests(unittest.TestCase):
+    def test_format_run_scope_handles_single_and_multi_schema(self) -> None:
+        self.assertEqual(format_run_scope({"sap": ["vbak"]}), "sap.vbak")
+        self.assertEqual(format_run_scope({"sap": ["vbak", "vbap"]}), "sap (2 tables)")
+        self.assertEqual(
+            format_run_scope({"sap": ["vbak", "vbap"], "hr": ["employees"]}),
+            "2 schemas (3 tables)",
+        )
+        self.assertEqual(format_run_scope(None), "-")
 
 
 class ConfidenceCalibrationTests(unittest.TestCase):

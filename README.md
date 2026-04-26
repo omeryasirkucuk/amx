@@ -321,6 +321,7 @@ Query it directly in AMX via `/history` namespace:
 amx/
 ├── cli.py              # Interactive shell, command routing, and top-level workflows
 ├── cli_db.py           # /db namespace profile and profiling command helpers
+├── cli_history.py      # /history namespace commands and review/results flows
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -351,6 +352,10 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.76
+
+- **CLI maintainability**: `/history` commands, saved-result inspection, and review/apply flows now live in `amx.cli_history`, shrinking `amx.cli` further without changing the interactive command surface.
 
 ### v0.1.75
 

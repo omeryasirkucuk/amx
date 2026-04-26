@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.76] — 2026-04-26
+### Changed
+- **CLI maintainability**: Extracted `/history` list/show/stats/events/results/review commands from `amx/cli.py` into `amx/cli_history.py`, including the saved-alternative review/apply flow.
+
+### Added
+- **Regression coverage**: Added tests for the extracted history scope formatter so run target summaries remain stable after the refactor.
+
 ## [0.1.75] — 2026-04-26
 ### Changed
 - **CLI maintainability**: Extracted `/db` profile, profile-switching, profile-removal, and profiling guardrail commands from `amx/cli.py` into `amx/cli_db.py` while keeping the interactive command behavior unchanged.

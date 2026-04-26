@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.76] — 2026-04-26
+### CLI Refactor
+- **amx/cli_history.py**: Added a dedicated module for `/history` list/show/stats/events plus saved-result inspection and review/apply flows.
+- **amx/cli.py**: Replaced the in-file history namespace block with `register_history_commands(...)` registration.
+- **tests/test_regressions.py**: Added coverage for compact history scope rendering.
+
 ## [0.1.75] — 2026-04-26
 ### CLI Refactor
 - **amx/cli_db.py**: Added a dedicated module for `/db` namespace hints, DB profile listing/switching/add/remove flows, interactive DB config prompts, and profiling guardrail updates.
