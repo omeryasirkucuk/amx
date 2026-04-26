@@ -304,7 +304,7 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
 
 @dataclass
 class LLMConfig:
-    provider: str = ""  # openai | anthropic | gemini | local | deepseek | …
+    provider: str = ""  # openai | openrouter | anthropic | gemini | local | deepseek | …
     model: str = ""
     api_key: str = ""
     api_base: str | None = None

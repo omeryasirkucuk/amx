@@ -978,7 +978,7 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
 def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
     provider = ask_choice(
         "Select AI provider",
-        ["openai", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
+        ["openai", "openrouter", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
         default=defaults.provider or "openai",
     )
     info(
@@ -987,8 +987,10 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
     )
     model = ask("Model name", defaults.model or _default_model(provider))
     api_base = defaults.api_base
-    if provider in ("local", "ollama", "kimi"):
+    if provider in ("local", "ollama", "kimi", "openrouter"):
         default_api_base = "http://localhost:11434" if provider == "ollama" else "http://localhost:11434/v1"
+        if provider == "openrouter":
+            default_api_base = "https://openrouter.ai/api/v1"
         api_base = ask("API base URL", api_base or default_api_base)
 
     if provider in ("local", "ollama"):
@@ -1638,6 +1640,7 @@ def setup(cfg: AMXConfig) -> None:
 def _default_model(provider: str) -> str:
     return {
         "openai": "gpt-4o",
+        "openrouter": "openai/gpt-4o-mini",
         "anthropic": "claude-sonnet-4-20250514",
         "gemini": "gemini-2.0-flash",
         "deepseek": "deepseek-chat",
@@ -2732,6 +2735,10 @@ def _analyze_run_logic(
             code_refresh = False # default
             code_report = _resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
 
+            # Re-baseline token accounting right before actual agent execution.
+            # This avoids cross-command contamination in long interactive sessions.
+            token_tracker.reset()
+
             from amx.utils.live_display import get_display
             display = get_display()
 
@@ -2786,6 +2793,10 @@ def _analyze_run_logic(
 
             # Review any pending items (deferred table items, plus schema/database meta items).
             all_results = orch.batch_review(all_results)
+
+            # Defensive consistency: if docs are disabled, ignore any accidental rag token records.
+            if rag_store is None:
+                token_tracker.drop_steps({"rag_agent", "rag_agent(batch)"})
 
             heading("Summary")
             render_token_summary(token_tracker)

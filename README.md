@@ -241,6 +241,7 @@ Introspection and profiling use backend-specific SQL where needed; metadata writ
 | Provider | Config value |
 |----------|--------------|
 | OpenAI | `openai` |
+| OpenRouter | `openrouter` |
 | Anthropic | `anthropic` |
 | Google Gemini | `gemini` |
 | DeepSeek | `deepseek` |
@@ -249,6 +250,7 @@ Introspection and profiling use backend-specific SQL where needed; metadata writ
 
 Notes:
 - For `ollama`, use API base URL `http://localhost:11434` (no `/v1`).
+- For `openrouter`, use API base URL `https://openrouter.ai/api/v1` and an OpenRouter API key.
 - For OpenAI-compatible local endpoints (`local`), use `http://localhost:11434/v1` when the server exposes OpenAI-style routes.
 
 ## Database Details Sent to LLM (Profile Agent)

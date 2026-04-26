@@ -121,5 +121,11 @@ class TokenTracker:
             for r in self._records
         ]
 
+    def drop_steps(self, blocked_steps: set[str]) -> None:
+        """Remove records for exact step names from the tracker."""
+        if not blocked_steps:
+            return
+        self._records = [r for r in self._records if r.step not in blocked_steps]
+
 
 tracker = TokenTracker()

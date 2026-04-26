@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.78] — 2026-04-26
+### Added
+- **OpenRouter provider support**: Added `openrouter` as a first-class LLM provider in setup/profile flows with default API base `https://openrouter.ai/api/v1`.
+
+### Changed
+- **Provider wiring**: LiteLLM model-prefix and environment mapping now include OpenRouter (`openrouter/...`, `OPENROUTER_API_KEY`) and pass configured `api_base` for OpenRouter requests.
+- **Documentation**: Updated README supported-provider matrix and provider notes with explicit OpenRouter configuration guidance.
+
 ## [0.1.77] — 2026-04-26
 ### Changed
 - **CLI maintainability**: Extracted `analyze` scope-resolution helpers and `/analyze apply` from `amx/cli.py` into `amx/cli_run.py`, reducing `amx/cli.py` below 3,000 lines.

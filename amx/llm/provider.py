@@ -31,6 +31,7 @@ def _litellm() -> ModuleType:
 
 PROVIDER_MODEL_PREFIX = {
     "openai": "openai/",
+    "openrouter": "openrouter/",
     "anthropic": "anthropic/",
     "gemini": "gemini/",
     "deepseek": "deepseek/",
@@ -41,6 +42,7 @@ PROVIDER_MODEL_PREFIX = {
 
 PROVIDER_ENV_KEY = {
     "openai": "OPENAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
@@ -138,11 +140,12 @@ class LLMProvider:
 
     @property
     def supports_logprobs(self) -> bool:
-        """True when the configured provider can return per-token logprobs."""
-        try:
-            return _litellm().supports_logprobs(model=self.model_name)
-        except Exception:
-            return False
+        """Whether AMX should request logprobs for this profile.
+
+        Defaults to True (force-enable), but can be overridden per profile by
+        setting ``force_logprobs`` on the LLM config object.
+        """
+        return bool(getattr(self.cfg, "force_logprobs", True))
 
     @property
     def supports_batch(self) -> bool:
@@ -169,6 +172,10 @@ class LLMProvider:
             if self.cfg.api_base:
                 os.environ["OPENAI_API_BASE"] = self.cfg.api_base
             os.environ.setdefault("OPENAI_API_KEY", self.cfg.api_key or "local")
+        elif self.cfg.provider == "openrouter":
+            if self.cfg.api_base:
+                os.environ["OPENAI_API_BASE"] = self.cfg.api_base
+            os.environ.setdefault("OPENROUTER_API_KEY", self.cfg.api_key or "")
         elif self.cfg.provider == "ollama":
             if self.cfg.api_base:
                 os.environ["OLLAMA_API_BASE"] = self.cfg.api_base
@@ -206,8 +213,13 @@ class LLMProvider:
         extra: dict[str, Any] = dict(kwargs)
 
         if use_logprobs and self.supports_logprobs:
-            extra.setdefault("logprobs", True)
+            # Force-request logprobs regardless of provider capability metadata.
+            extra["logprobs"] = True
+            # Keep OpenAI-compatible top-k logprob detail where supported.
             extra.setdefault("top_logprobs", 5)
+            # Some local/Ollama-compatible backends require explicit integer hint.
+            if self.cfg.provider == "ollama":
+                extra.setdefault("num_probs", 5)
 
         # Reasoning models: raise floor so visible content can appear after thinking tokens.
         if self.cfg.provider == "openai" and _is_openai_reasoning_style_model(model):
@@ -225,7 +237,7 @@ class LLMProvider:
                 extra.setdefault("reasoning_effort", effort)
 
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
-        call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama") else None
+        call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama", "openrouter") else None
 
         def _do_completion(api_base_override: str | None) -> Any:
             return _litellm().completion(
@@ -284,10 +296,25 @@ class LLMProvider:
         else:
             usage_dict = {"model_processing_sec": elapsed_sec}
 
-        raw_lp = getattr(choice, "logprobs", None)
         logprobs_content: list | None = None
-        if raw_lp is not None:
-            logprobs_content = getattr(raw_lp, "content", None) or None
+        try:
+            raw_lp = getattr(choice, "logprobs", None)
+            if raw_lp is not None:
+                logprobs_content = getattr(raw_lp, "content", None) or None
+            if use_logprobs and self.supports_logprobs and not logprobs_content:
+                log.warning(
+                    "Requested logprobs but response had none (provider=%s, model=%s).",
+                    self.cfg.provider,
+                    model,
+                )
+        except Exception as exc:
+            log.warning(
+                "Failed to parse logprobs from response (provider=%s, model=%s): %s",
+                self.cfg.provider,
+                model,
+                exc,
+            )
+            logprobs_content = None
 
         log.debug(
             "LLM response: %d chars, finish_reason=%s, usage=%s, logprobs=%s",
