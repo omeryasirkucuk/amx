@@ -175,7 +175,12 @@ class LLMProvider:
         elif self.cfg.provider == "openrouter":
             if self.cfg.api_base:
                 os.environ["OPENAI_API_BASE"] = self.cfg.api_base
-            os.environ.setdefault("OPENROUTER_API_KEY", self.cfg.api_key or "")
+            # LiteLLM OpenRouter path expects OpenAI-style key wiring.
+            if self.cfg.api_key:
+                os.environ["OPENROUTER_API_KEY"] = self.cfg.api_key
+                os.environ["OPENAI_API_KEY"] = self.cfg.api_key
+            else:
+                os.environ.setdefault("OPENROUTER_API_KEY", "")
         elif self.cfg.provider == "ollama":
             if self.cfg.api_base:
                 os.environ["OLLAMA_API_BASE"] = self.cfg.api_base
@@ -240,11 +245,13 @@ class LLMProvider:
         call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama", "openrouter") else None
 
         def _do_completion(api_base_override: str | None) -> Any:
+            explicit_api_key = self.cfg.api_key if self.cfg.provider == "openrouter" else None
             return _litellm().completion(
                 model=model,
                 messages=messages,
                 temperature=temperature or self.cfg.temperature,
                 max_tokens=mt,
+                api_key=explicit_api_key,
                 api_base=api_base_override,
                 **extra,
             )

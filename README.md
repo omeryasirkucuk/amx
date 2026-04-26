@@ -149,6 +149,10 @@ amx
 | `/llm` + `/llm-batch-size [N]` | Show or set how many columns the Profile Agent sends in one LLM call. |
 | `/llm` + `/batch-context-columns [off\|all\|N]` | Show or set how many non-batch column names are added as context in each profile batch. |
 | `/llm` + `/logprob-thresholds [high] [medium]` | Show or set token-probability thresholds used to calibrate confidence labels when logprobs are available. |
+
+Notes:
+- `/llm` settings are saved per **active LLM profile** and command feedback prints the profile name that was updated.
+- Profile selections made in the interactive `/run` wizard are persisted to `~/.amx/config.yml` immediately.
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
 | `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
@@ -355,6 +359,14 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.79
+
+- **Persistence clarity**: `/run` wizard profile selections now persist immediately to `config.yml`, `/llm` setting commands print the exact LLM profile being updated, and config writes are now atomic for better crash safety.
+
+### v0.1.78
+
+- **OpenRouter support**: Added first-class `openrouter` provider wiring in setup/runtime with default `https://openrouter.ai/api/v1`, plus in-app model-name examples to reduce profile setup errors.
 
 ### v0.1.77
 

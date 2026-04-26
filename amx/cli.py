@@ -568,6 +568,13 @@ Commands (in order):
   9) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
                                          as context in every profile batch prompt
 
+Model examples (what to type in "Model name"):
+  - openai      -> gpt-4o
+  - openrouter  -> openrouter/openai/gpt-4o-mini
+                 -> openrouter/anthropic/claude-3.5-sonnet
+  - anthropic   -> claude-3-5-sonnet-20241022
+  - ollama      -> llama3
+
 Navigation:
   Esc (empty line)                      Go back to root namespace
 """
@@ -985,6 +992,14 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
         "Model: use a short id (e.g. gpt-4o) or LiteLLM form openai/gpt-4o — "
         "see https://docs.litellm.ai/docs/providers"
     )
+    if provider == "openrouter":
+        info("OpenRouter model examples: openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet")
+    elif provider == "openai":
+        info("OpenAI model example: gpt-4o")
+    elif provider == "anthropic":
+        info("Anthropic model example: claude-3-5-sonnet-20241022")
+    elif provider == "ollama":
+        info("Ollama model example: llama3")
     model = ask("Model name", defaults.model or _default_model(provider))
     api_base = defaults.api_base
     if provider in ("local", "ollama", "kimi", "openrouter"):
@@ -1051,7 +1066,10 @@ def _cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
         prof.logprob_high = h
         prof.logprob_medium = m
     cfg.save()
-    success(f"Logprob thresholds saved: HIGH >= {h:.2f}, MEDIUM >= {m:.2f}")
+    success(
+        f"Logprob thresholds saved for LLM profile '{cfg.active_llm_profile}': "
+        f"HIGH >= {h:.2f}, MEDIUM >= {m:.2f}"
+    )
 
 
 def _cmd_llm_profiles(cfg: AMXConfig) -> None:
@@ -1168,7 +1186,10 @@ def _cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
     if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
         cfg.llm_profiles[cfg.active_llm_profile].prompt_detail = level
     cfg.save()
-    success(f"Prompt detail set to [cyan]{level}[/cyan] and saved.")
+    success(
+        f"Prompt detail set to [cyan]{level}[/cyan] and saved "
+        f"for LLM profile '{cfg.active_llm_profile}'."
+    )
     pd = prompt_detail_for(level)
     info(
         f"  samples={pd.include_samples}(max={pd.max_samples})  "
@@ -1209,7 +1230,10 @@ def _cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
     cfg.save()
     cost_note = {1: "cheapest — 1 option shown at review", 2: "lean", 3: "balanced (default)",
                  4: "rich", 5: "maximum context, highest cost"}.get(n, "")
-    success(f"n_alternatives set to [cyan]{n}[/cyan] ({cost_note}) and saved.")
+    success(
+        f"n_alternatives set to [cyan]{n}[/cyan] ({cost_note}) and saved "
+        f"for LLM profile '{cfg.active_llm_profile}'."
+    )
 
 
 def _cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
@@ -1237,7 +1261,7 @@ def _cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
     if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
         cfg.llm_profiles[cfg.active_llm_profile].column_batch_size = n
     cfg.save()
-    success(f"LLM batch size set to {n} columns and saved.")
+    success(f"LLM batch size set to {n} columns and saved for LLM profile '{cfg.active_llm_profile}'.")
 
 
 def _cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
@@ -1277,11 +1301,11 @@ def _cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].batch_context_column_names = value
     cfg.save()
     if value == -1:
-        success("Batch context columns set to all remaining names and saved.")
+        success(f"Batch context columns set to all remaining names and saved for LLM profile '{cfg.active_llm_profile}'.")
     elif value == 0:
-        success("Batch context columns disabled and saved.")
+        success(f"Batch context columns disabled and saved for LLM profile '{cfg.active_llm_profile}'.")
     else:
-        success(f"Batch context columns set to {value} and saved.")
+        success(f"Batch context columns set to {value} and saved for LLM profile '{cfg.active_llm_profile}'.")
 
 
 def _cmd_doc_profiles(cfg: AMXConfig) -> None:
@@ -2608,6 +2632,9 @@ def _analyze_run_logic(
                 cfg.active_code_profile = code_choice
                 info(f"Active Code: [bold cyan]{code_choice}[/]")
 
+            # Persist wizard profile selections immediately to avoid in-memory-only state.
+            cfg.save()
+            info("Profile selections saved to config.yml.")
             console.print()
 
         # ── Mode selection ────────────────────────────────────────────────────────

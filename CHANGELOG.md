@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.79] — 2026-04-26
+### Changed
+- **Immediate config persistence**: `/run` wizard profile selections (DB/LLM/docs/code) are now saved to `~/.amx/config.yml` immediately after selection instead of remaining in-memory for the current session only.
+- **Explicit profile-scoped feedback**: `/llm` setting commands now report which active LLM profile was updated (prompt detail, alternatives, batch size, batch context columns, logprob thresholds).
+
+### Fixed
+- **Crash-safe config writes**: `AMXConfig.save()` now uses an atomic temp-file + `os.replace(...)` write path to reduce config corruption/state-loss risk during abrupt interruptions.
+
 ## [0.1.78] — 2026-04-26
 ### Added
 - **OpenRouter provider support**: Added `openrouter` as a first-class LLM provider in setup/profile flows with default API base `https://openrouter.ai/api/v1`.

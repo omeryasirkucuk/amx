@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -511,7 +512,19 @@ class AMXConfig:
             "selected_schemas": self.selected_schemas,
             "selected_tables": self.selected_tables,
         }
-        p.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        payload = yaml.dump(data, default_flow_style=False, sort_keys=False)
+        # Atomic write to reduce config corruption/state loss on interruptions.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(p.parent),
+            delete=False,
+            prefix=f".{p.name}.",
+            suffix=".tmp",
+        ) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, p)
         return p
 
     def apply_active_db_profile(self) -> None:
