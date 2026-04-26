@@ -59,7 +59,8 @@ class CodeAgent(BaseAgent):
         from amx.codebase.code_rag import code_collection_count, query_code_snippets
 
         has_refs = bool(self.report.references) or bool(self.report.external_mentions)
-        has_sem = code_collection_count() > 0
+        source_filters = [p for p in self.report.path.split(";") if p] if self.report.path else None
+        has_sem = code_collection_count(source_filters=source_filters) > 0
         if not has_refs and not has_sem:
             return None
 
@@ -104,6 +105,7 @@ class CodeAgent(BaseAgent):
             sem_hits = query_code_snippets(
                 f"{ctx.schema} {ctx.table} SQL Spark dataframe usage",
                 n_results=5,
+                source_filters=source_filters,
             )
             if sem_hits:
                 all_code_blocks.append(

@@ -136,6 +136,18 @@ class DatabaseConnector:
         assets.sort(key=lambda x: x[0])
         return assets
 
+    def list_column_profiles(self, schema: str, table: str) -> list[ColumnProfile]:
+        """Return column names/types/nullability without scanning table data."""
+        insp = inspect(self.engine)
+        return [
+            ColumnProfile(
+                name=str(c["name"]),
+                dtype=str(c["type"]),
+                nullable=bool(c.get("nullable", True)),
+            )
+            for c in insp.get_columns(table, schema=schema)
+        ]
+
     def resolve_asset_kind(self, schema: str, name: str) -> AssetKind:
         """Determine whether *name* is a table, view, or materialized view."""
         tables = set(self.list_tables(schema))
@@ -176,7 +188,7 @@ class DatabaseConnector:
         self,
         schema: str,
         table: str,
-        sample_size: int = 5,
+        sample_size: int | None = None,
         asset_kind: AssetKind | None = None,
     ) -> TableProfile:
         if asset_kind is None:
@@ -185,6 +197,14 @@ class DatabaseConnector:
 
         adapter = self._adapter
         fqn = adapter.fully_qualified_name(schema, table)
+        mode = str(getattr(self.cfg, "profiling_mode", "full") or "full").lower().strip()
+        if mode not in {"full", "sampled", "metadata"}:
+            mode = "full"
+        max_rows = max(0, int(getattr(self.cfg, "profiling_max_rows", 1_000_000) or 0))
+        effective_sample_size = max(
+            0,
+            int(sample_size if sample_size is not None else getattr(self.cfg, "profiling_sample_size", 5) or 0),
+        )
         profile = TableProfile(
             schema=schema,
             name=table,
@@ -194,14 +214,28 @@ class DatabaseConnector:
             database_comment=self.get_database_comment(),
         )
 
-        with self.engine.connect() as conn:
-            row_count = conn.execute(text(f"SELECT COUNT(*) FROM {fqn}")).scalar() or 0
-            profile.row_count = row_count
-
         stats = adapter.get_table_stats(self.engine, schema, table)
         profile.stats_seq_scan = stats.get("seq_scan", 0)
         profile.stats_idx_scan = stats.get("idx_scan", 0)
         profile.stats_n_live_tup = stats.get("n_live_tup", 0)
+        estimated_rows = int(profile.stats_n_live_tup or 0)
+        full_scan_blocked = bool(max_rows and estimated_rows > max_rows)
+
+        if mode == "full" and not full_scan_blocked:
+            try:
+                with self.engine.connect() as conn:
+                    row_count = conn.execute(text(f"SELECT COUNT(*) FROM {fqn}")).scalar() or 0
+                    profile.row_count = int(row_count or 0)
+            except Exception as exc:
+                log.warning("Exact row count failed for %s.%s: %s", schema, table, exc)
+                profile.row_count = estimated_rows
+        else:
+            profile.row_count = estimated_rows
+
+        if mode == "full" and max_rows and profile.row_count > max_rows:
+            full_scan_blocked = True
+        scan_column_stats = mode == "full" and not full_scan_blocked
+        scan_samples = mode in {"full", "sampled"} and effective_sample_size > 0
 
         insp = inspect(self.engine)
 
@@ -252,25 +286,28 @@ class DatabaseConnector:
                 row_count=profile.row_count,
             )
 
-            with self.engine.connect() as conn:
-                stats_sql = adapter.column_stats_sql(fqn, quoted_col)
-                col_stats = conn.execute(text(stats_sql)).fetchone()
-                if col_stats:
-                    cp.null_count = col_stats[0] or 0
-                    cp.distinct_count = col_stats[1] or 0
-                    cp.min_val = col_stats[2]
-                    cp.max_val = col_stats[3]
-                    cp.cardinality_ratio = (
-                        float(cp.distinct_count) / float(cp.row_count)
-                        if cp.row_count > 0
-                        else 0.0
-                    )
+            if scan_column_stats or scan_samples:
+                with self.engine.connect() as conn:
+                    if scan_column_stats:
+                        stats_sql = adapter.column_stats_sql(fqn, quoted_col)
+                        col_stats = conn.execute(text(stats_sql)).fetchone()
+                        if col_stats:
+                            cp.null_count = col_stats[0] or 0
+                            cp.distinct_count = col_stats[1] or 0
+                            cp.min_val = col_stats[2]
+                            cp.max_val = col_stats[3]
+                            cp.cardinality_ratio = (
+                                float(cp.distinct_count) / float(cp.row_count)
+                                if cp.row_count > 0
+                                else 0.0
+                            )
 
-                sample_sql = adapter.column_sample_sql(fqn, quoted_col)
-                samples_row = conn.execute(
-                    text(sample_sql), {"lim": sample_size}
-                ).fetchall()
-                cp.samples = [r[0] for r in samples_row]
+                    if scan_samples:
+                        sample_sql = adapter.column_sample_sql(fqn, quoted_col)
+                        samples_row = conn.execute(
+                            text(sample_sql), {"lim": effective_sample_size}
+                        ).fetchall()
+                        cp.samples = [r[0] for r in samples_row]
 
             cp.existing_comment = col_info.get("comment")
             profile.columns.append(cp)

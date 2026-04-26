@@ -20,7 +20,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 
 from amx import __version__
-from amx.config import AMXConfig, DBConfig, LLMConfig, SUPPORTED_BACKENDS, DISABLED_PROFILE
+from amx.config import AMXConfig, DBConfig, LLMConfig, SUPPORTED_BACKENDS, DISABLED_PROFILE, PROFILING_MODES
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -241,6 +241,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
             "use-db",
             "add-db-profile",
             "remove-db-profile",
+            "profiling",
             "connect",
             "schema",
             "table",
@@ -264,7 +265,7 @@ def _interactive_session(cfg: AMXConfig) -> None:
     )
     _llm_cmd_heads = frozenset(
         {"llm-profiles", "use-llm", "add-llm-profile", "remove-llm-profile",
-         "prompt-detail", "n-alternatives"}
+         "prompt-detail", "n-alternatives", "llm-batch-size", "batch-context-columns", "logprob-thresholds"}
     )
     _code_cmd_heads = frozenset({
         "code-profiles", "use-code", "add-code-profile", "remove-code-profile",
@@ -484,13 +485,14 @@ Commands (in order):
   3) /use-db [name]                Switch profile (interactive list shows [engine] per profile)
   4) /add-db-profile [name]        Create/update profile — pick PostgreSQL, Snowflake, Databricks, or BigQuery
   5) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
-  6) /save                         Persist config to disk (~/.amx/config.yml)
-  7) /schema <name>                Set current schema context (used by /tables)
-  8) /table <name>                 Set current table context (used by /profile)
-  9) /connect                      Test DB connectivity
- 10) /schemas                      List schemas
- 11) /tables [schema]             List tables (defaults to current schema)
- 12) /profile [schema] [table]    Profile a table (defaults to current context)
+  6) /profiling [mode] [max] [N]   Show/set profiling guardrails
+  7) /save                         Persist config to disk (~/.amx/config.yml)
+  8) /schema <name>                Set current schema context (used by /tables)
+  9) /table <name>                 Set current table context (used by /profile)
+ 10) /connect                      Test DB connectivity
+ 11) /schemas                      List schemas
+ 12) /tables [schema]             List tables (defaults to current schema)
+ 13) /profile [schema] [table]    Profile a table (defaults to current context)
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -538,7 +540,10 @@ Commands (in order):
                                           Run without args to show the current level + what each
                                           preset includes.
   7) /n-alternatives [N]                Show or set number of description alternatives per column
+  8) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
                                           Range: 1 – 5  (default: 3)
+  9) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
+                                         as context in every profile batch prompt
 
 Navigation:
   Esc (empty line)                      Go back to root namespace
@@ -707,6 +712,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/use-db", "Switch DB profile (lists PostgreSQL, BigQuery, … per profile)"),
         ("/add-db-profile", "Add profile — choose engine then connection details"),
         ("/remove-db-profile", "Remove DB profile (/remove-db-profile <name>)"),
+        ("/profiling", "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])"),
         ("/save", "Save config to disk"),
         ("/schema", "Set current schema (/schema <name>)"),
         ("/table", "Set current table (/table <name>)"),
@@ -739,6 +745,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
         ("/prompt-detail", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
         ("/n-alternatives", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
+        ("/llm-batch-size", "Show/set number of columns per LLM call (/llm-batch-size [N])"),
+        ("/batch-context-columns", "Show/set extra non-batch column names in each batch (/batch-context-columns [off|all|N])"),
         ("/logprob-thresholds", "Show/set confidence thresholds (/logprob-thresholds [high] [med])"),
     ]
 
@@ -835,6 +843,16 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
             return True
         _cmd_n_alternatives(cfg, parts[1:])
         return True
+    if head == "llm-batch-size":
+        if not _require_namespace(head, namespace, "llm", "llm-batch-size"):
+            return True
+        _cmd_llm_batch_size(cfg, parts[1:])
+        return True
+    if head == "batch-context-columns":
+        if not _require_namespace(head, namespace, "llm", "batch-context-columns"):
+            return True
+        _cmd_batch_context_columns(cfg, parts[1:])
+        return True
     if head == "logprob-thresholds":
         if not _require_namespace(head, namespace, "llm", "logprob-thresholds"):
             return True
@@ -900,6 +918,11 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
         if not _require_namespace(head, namespace, "db", "remove-db-profile"):
             return True
         _cmd_remove_profile(cfg, parts[1:])
+        return True
+    if head == "profiling":
+        if not _require_namespace(head, namespace, "db", "profiling"):
+            return True
+        _cmd_profiling(cfg, parts[1:])
         return True
     if head == "save":
         path = cfg.save()
@@ -1019,7 +1042,7 @@ def _interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         user = ask("Username", defaults.user or "amx")
         password = ask_password("Password") or defaults.password or ""
         database = ask("Database name", defaults.database or "postgres")
-        return DBConfig(
+        return replace(defaults,
             backend="postgresql", host=host, port=int(port_raw),
             user=user, password=password, database=database,
         )
@@ -1031,7 +1054,7 @@ def _interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         database = ask("Database name", defaults.database)
         warehouse = ask("Warehouse (optional)", defaults.warehouse or "")
         role = ask("Role (optional)", defaults.role or "")
-        return DBConfig(
+        return replace(defaults,
             backend="snowflake", account=account, user=user,
             password=password, database=database,
             warehouse=warehouse, role=role,
@@ -1043,7 +1066,7 @@ def _interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         access_token = ask_password("Access token") or defaults.access_token or ""
         catalog = ask("Unity Catalog name (optional)", defaults.catalog or "")
         database = ask("Schema / database (optional)", defaults.database or "")
-        return DBConfig(
+        return replace(defaults,
             backend="databricks", host=host, http_path=http_path,
             access_token=access_token, catalog=catalog, database=database,
         )
@@ -1052,7 +1075,7 @@ def _interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         project = ask("GCP project ID", defaults.project)
         dataset = ask("Default dataset (optional)", defaults.dataset or "")
         creds = ask("Service account JSON path (optional, uses ADC if empty)", defaults.credentials_path or "")
-        return DBConfig(
+        return replace(defaults,
             backend="bigquery", project=project, dataset=dataset,
             credentials_path=creds,
         )
@@ -1093,6 +1116,67 @@ def _cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
         error(str(exc))
 
 
+def _cmd_profiling(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or update active DB profiling guardrails."""
+    if not rest:
+        max_rows = int(getattr(cfg.db, "profiling_max_rows", 1_000_000) or 0)
+        max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
+        info(
+            "Current profiling guardrails: "
+            f"mode=[cyan]{cfg.db.profiling_mode}[/cyan], "
+            f"max_full_scan_rows=[cyan]{max_label}[/cyan], "
+            f"sample_size=[cyan]{cfg.db.profiling_sample_size}[/cyan]. "
+            "Use /profiling <full|sampled|metadata> [max_rows|off] [sample_size]."
+        )
+        return
+
+    mode = rest[0].lower().strip()
+    if mode not in PROFILING_MODES:
+        error(f"Unknown profiling mode {rest[0]!r}. Use: {', '.join(PROFILING_MODES)}")
+        return
+
+    max_rows = int(getattr(cfg.db, "profiling_max_rows", 1_000_000) or 0)
+    if len(rest) >= 2:
+        raw_max = rest[1].lower().strip()
+        if raw_max in {"off", "none", "0"}:
+            max_rows = 0
+        else:
+            try:
+                max_rows = int(raw_max.replace("_", ""))
+            except ValueError:
+                error(f"Expected max rows as integer or off, got: {rest[1]!r}")
+                return
+            if max_rows < 0:
+                error("Max rows must be >= 0, or use off.")
+                return
+
+    sample_size = int(getattr(cfg.db, "profiling_sample_size", 5) or 0)
+    if len(rest) >= 3:
+        try:
+            sample_size = int(rest[2])
+        except ValueError:
+            error(f"Expected sample size as integer, got: {rest[2]!r}")
+            return
+        if sample_size < 0:
+            error("Sample size must be >= 0.")
+            return
+
+    cfg.db.profiling_mode = mode
+    cfg.db.profiling_max_rows = max_rows
+    cfg.db.profiling_sample_size = sample_size
+    if cfg.active_db_profile and cfg.active_db_profile in cfg.db_profiles:
+        cfg.db_profiles[cfg.active_db_profile].profiling_mode = mode
+        cfg.db_profiles[cfg.active_db_profile].profiling_max_rows = max_rows
+        cfg.db_profiles[cfg.active_db_profile].profiling_sample_size = sample_size
+    cfg.save()
+
+    max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
+    success(
+        f"Profiling guardrails saved: mode={mode}, "
+        f"max_full_scan_rows={max_label}, sample_size={sample_size}."
+    )
+
+
 def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
     provider = ask_choice(
         "Select AI provider",
@@ -1114,6 +1198,10 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
     else:
         api_key = ask_password("API key") or defaults.api_key
 
+    info("Generation settings:")
+    n_alt = ask("  Alternatives (1\u20135)", default=str(getattr(defaults, "n_alternatives", 3)))
+    batch = ask("  Column batch size", default=str(getattr(defaults, "column_batch_size", 10)))
+
     info("Confidence thresholds (token probability 0.0\u20131.0):")
     high = ask("  High threshold", default=str(getattr(defaults, "logprob_high", 0.85)))
     med = ask("  Medium threshold", default=str(getattr(defaults, "logprob_medium", 0.50)))
@@ -1125,6 +1213,9 @@ def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
         api_base=api_base,
         temperature=defaults.temperature,
         max_tokens=defaults.max_tokens,
+        n_alternatives=int(n_alt),
+        column_batch_size=int(batch),
+        batch_context_column_names=int(getattr(defaults, "batch_context_column_names", 0)),
         logprob_high=float(high),
         logprob_medium=float(med),
     )
@@ -1236,6 +1327,7 @@ def _cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
             ("usage stats (pg_stat)", "include_usage_stats"),
             ("schema+db comments", "include_schema_db_comments"),
             ("FK neighbour comments", "include_related_comments"),
+            ("query-log analysis", "include_query_log_analysis"),
             ("RAG table hits", "rag_table_hits"),
             ("RAG col hits", "rag_col_hits"),
             ("RAG max chunks", "rag_max_chunks"),
@@ -1285,6 +1377,7 @@ def _cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
         f"cardinality={pd.include_cardinality}  "
         f"pk_fk={pd.include_pk_fk}  "
         f"usage_stats={pd.include_usage_stats}  "
+        f"query_log_analysis={pd.include_query_log_analysis}  "
         f"rag_chunks={pd.rag_max_chunks}"
     )
 
@@ -1317,6 +1410,78 @@ def _cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
     cost_note = {1: "cheapest — 1 option shown at review", 2: "lean", 3: "balanced (default)",
                  4: "rich", 5: "maximum context, highest cost"}.get(n, "")
     success(f"n_alternatives set to [cyan]{n}[/cyan] ({cost_note}) and saved.")
+
+
+def _cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the number of columns processed in a single LLM call."""
+    if not rest:
+        current = getattr(cfg.llm, "column_batch_size", 10)
+        info(
+            f"Current LLM batch size: [cyan]{current}[/cyan] columns  "
+            "(Small = safer/more precise, Large = faster/cheaper)  "
+            "— run [cyan]/llm-batch-size <N>[/cyan] to change."
+        )
+        return
+
+    try:
+        n = int(rest[0])
+    except ValueError:
+        error(f"Expected an integer, got: {rest[0]!r}")
+        return
+
+    if n < 1:
+        error("Batch size must be at least 1.")
+        return
+
+    cfg.llm.column_batch_size = n
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].column_batch_size = n
+    cfg.save()
+    success(f"LLM batch size set to {n} columns and saved.")
+
+
+def _cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set how many remaining column names are sent with each batch."""
+    if not rest:
+        current = int(getattr(cfg.llm, "batch_context_column_names", 0))
+        if current == -1:
+            current_label = "all remaining names"
+        elif current == 0:
+            current_label = "off"
+        else:
+            current_label = f"{current} names"
+        info(
+            f"Current batch context columns: [cyan]{current_label}[/cyan]. "
+            "Use [cyan]/batch-context-columns off[/cyan], [cyan]all[/cyan], "
+            "or [cyan]/batch-context-columns <N>[/cyan]."
+        )
+        return
+
+    raw = (rest[0] or "").strip().lower()
+    if raw in {"off", "none", "0"}:
+        value = 0
+    elif raw == "all":
+        value = -1
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            error(f"Expected off, all, or an integer; got: {rest[0]!r}")
+            return
+        if value < 0:
+            error("Value must be >= 0, or use 'all'.")
+            return
+
+    cfg.llm.batch_context_column_names = value
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].batch_context_column_names = value
+    cfg.save()
+    if value == -1:
+        success("Batch context columns set to all remaining names and saved.")
+    elif value == 0:
+        success("Batch context columns disabled and saved.")
+    else:
+        success(f"Batch context columns set to {value} and saved.")
 
 
 def _cmd_doc_profiles(cfg: AMXConfig) -> None:
@@ -2102,8 +2267,7 @@ def code_scan_cmd(
     seen_col: set[str] = set()
     with step_spinner(f"Collecting column names from {len(tables)} asset(s)"):
         for t in tables:
-            tp = db.profile_table(schema, t)
-            for c in tp.columns:
+            for c in db.list_column_profiles(schema, t):
                 k = c.name.lower()
                 if k not in seen_col:
                     seen_col.add(k)
@@ -2216,7 +2380,7 @@ def code_refresh_cmd(cfg: AMXConfig, code_profile: str | None) -> None:
         sys.exit(1)
     nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
     invalidate_cache(nm, cp)
-    delete_code_collection()
+    delete_code_collection(source_filters=[cp])
     success(f"Cleared codebase cache for profile {nm!r} and reset semantic code index (`amx_code`).")
 
 
@@ -2443,18 +2607,18 @@ def code_analyze_cmd(
     agent = CodeAgent(llm, code_report)
     all_suggestions = []
     for t in tables:
-        with step_spinner(f"Profiling {schema}.{t}"):
-            tp = db.profile_table(schema, t)
+        with step_spinner(f"Reading columns for {schema}.{t}"):
+            columns = db.list_column_profiles(schema, t)
         ctx = AgentContext(
             schema=schema,
             table=t,
             db_profile={
-                "row_count": tp.row_count,
-                "columns": [{"name": c.name, "dtype": c.dtype} for c in tp.columns],
+                "row_count": 0,
+                "columns": [{"name": c.name, "dtype": c.dtype} for c in columns],
             },
             existing_metadata={},
         )
-        info(f"Code Agent: {schema}.{t} ({len(tp.columns)} columns)")
+        info(f"Code Agent: {schema}.{t} ({len(columns)} columns)")
         sug = agent.run(ctx)
         all_suggestions.extend(sug)
         info(f"  -> {len(sug)} suggestions")
@@ -2659,11 +2823,14 @@ def _resolve_codebase_for_run(
     code_refresh: bool,
 ) -> object | None:
     """Load or build codebase report for /run and /run-apply (returns CodebaseReport or None)."""
+    from amx.config import DISABLED_PROFILE
     from amx.codebase.analyzer import analyze_codebase, merge_codebase_reports
     from amx.codebase.cache import invalidate_cache, load_cached_report, save_cached_report
     from amx.codebase.code_rag import delete_code_collection
 
     cp_name = (code_profile or "").strip() or None
+    if cp_name == DISABLED_PROFILE:
+        cp_name = None
     if cp_name:
         if cp_name not in cfg.code_profiles:
             error(f"Unknown codebase profile: {cp_name}")
@@ -2678,7 +2845,7 @@ def _resolve_codebase_for_run(
         return None
 
     if code_refresh:
-        delete_code_collection()
+        delete_code_collection(source_filters=code_paths)
 
     all_tables: list[str] = []
     column_names: list[str] = []
@@ -2688,8 +2855,7 @@ def _resolve_codebase_for_run(
 
     with step_spinner(f"Collecting column names from {total_assets} asset(s)"):
         for schema, t in all_assets_flat:
-            tp = db.profile_table(schema, t)
-            for c in tp.columns:
+            for c in db.list_column_profiles(schema, t):
                 k = c.name.lower()
                 if k not in seen_col:
                     seen_col.add(k)
@@ -2801,289 +2967,371 @@ def analyze_run(
     Assets can be passed as positional arguments (e.g. /run vbrk vbrp) or via --table.
     Scope levels: Database (all schemas) → Schema (all assets) → Asset (specific picks).
     """
+    from amx.db.connector import DatabaseConnector
+    from amx.utils.live_display import get_display
+
+    try:
+        # ── 1. Initial connection test (IMMEDIATE FEEDBACK) ───────────────────
+        db_init = DatabaseConnector(cfg.db)
+        display = get_display()
+        display.start(
+            schema=schema or cfg.current_schema or "",
+            table=(table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")),
+            mode="setup",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        )
+        try:
+            with step_spinner("Testing database connection..."):
+                if not db_init.test_connection():
+                    error("Cannot connect to database.")
+                    sys.exit(1)
+        finally:
+            display.stop()
+
+        # ── 2. Run the actual logic ───────────────────────────────────────────
+        _analyze_run_logic(cfg, schema, table, apply, mode, tables_pos, db_init)
+    except KeyboardInterrupt:
+        warn("User interrupted process.")
+        return
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+
+def _analyze_run_logic(
+    cfg: AMXConfig,
+    schema: str | None,
+    table: tuple[str, ...],
+    apply: bool,
+    mode: str | None,
+    tables_pos: tuple[str, ...],
+    db: DatabaseConnector,  # Passed from the early connection test
+) -> None:
     from amx.agents.orchestrator import Orchestrator
     from amx.db.connector import DatabaseConnector
     from amx.docs.rag import RAGStore
     from amx.llm.batch import supported_providers as batch_supported_providers
     from amx.llm.provider import LLMProvider
-
-    token_tracker.reset()
-    run_started = time.monotonic()
-    run_id: int | None = None
-
-    if not cfg.llm.provider or not cfg.llm.model:
-        error("LLM not configured. Run `amx setup` first.")
-        sys.exit(1)
-
-    llm = LLMProvider(cfg.llm)
-
-    if not apply:
-        warn(
-            "Without --apply, approved metadata is not written to the database. "
-            "Use `/analyze` then `/apply`, or `/run-apply`, to persist comments."
-        )
-
-    # ── Profile selection ─────────────────────────────────────────────────────
     from amx.config import DISABLED_PROFILE
-    if confirm("Do you want to modify profiles before run?", default=False):
-        # 1. DB Profile
-        db_names = list(cfg.db_profiles.keys())
-        if db_names:
-            db_choice = ask_choice("Select DB profile", db_names, default=cfg.active_db_profile)
-            cfg.set_active_db_profile(db_choice)
-            info(f"Active DB: [bold cyan]{db_choice}[/]")
 
-        # 2. LLM Profile
-        llm_names = list(cfg.llm_profiles.keys())
-        if llm_names:
-            llm_choice = ask_choice("Select LLM profile", llm_names, default=cfg.active_llm_profile)
-            cfg.set_active_llm_profile(llm_choice)
-            info(f"Active LLM: [bold cyan]{llm_choice}[/]")
-
-        # 3. Document Profile
-        doc_names = list(cfg.doc_profiles.keys())
-        if doc_names:
-            options = doc_names + [DISABLED_PROFILE]
-            doc_choice = ask_choice("Select Document profile", options, default=cfg.active_doc_profile or DISABLED_PROFILE)
-            cfg.active_doc_profile = doc_choice
-            info(f"Active Docs: [bold cyan]{doc_choice}[/]")
-
-        # 4. Codebase Profile
-        code_names = list(cfg.code_profiles.keys())
-        if code_names:
-            options = code_names + [DISABLED_PROFILE]
-            code_choice = ask_choice("Select Codebase profile", options, default=cfg.active_code_profile or DISABLED_PROFILE)
-            cfg.active_code_profile = code_choice
-            info(f"Active Code: [bold cyan]{code_choice}[/]")
-        
-        console.print()
-
-    # ── Mode selection ────────────────────────────────────────────────────────
-    batch_capable = llm.supports_batch
-    batch_providers_list = batch_supported_providers()
-
-    if mode is None:
-        cfg_mode = (cfg.llm.completion_mode or "chat_completions").lower()
-        default_mode_label = "batch" if cfg_mode == "batch" else "chat"
-
-        from amx.utils.console import ask_choice as _ask_choice
-        batch_note = (
-            " (50 % cheaper, async)"
-            if batch_capable
-            else f" (requires {', '.join(batch_providers_list)})"
-        )
-        mode = _ask_choice(
-            "Select completion mode",
-            ["chat", "batch"],
-            default=default_mode_label,
-            descriptions={
-                "chat": "Chat Completions — real-time, live spinners, full price",
-                "batch": f"Batch API{batch_note} — submit all at once, results in minutes–hours",
-            },
-        )
-
-    use_batch = mode == "batch"
-
-    if use_batch and not batch_capable:
-        warn(
-            f"Provider '{cfg.llm.provider}' does not support batch mode. "
-            f"Supported providers: {', '.join(batch_providers_list)}. "
-            "Falling back to Chat Completions."
-        )
-        use_batch = False
-
-    if use_batch:
-        from rich.panel import Panel
-        from amx.utils.console import console as _console
-        _console.print(Panel(
-            "[bold]Batch API selected.[/bold]\n"
-            "All LLM requests will be submitted as a single batch job.\n"
-            "Typical turnaround: [bold]2–30 minutes[/bold]  |  Cost: [bold green]~50 % lower[/bold green]\n"
-            "[dim]Live polling status will appear below.[/dim]",
-            title="[cyan]Mode: Batch[/cyan]", border_style="cyan",
-        ))
-    else:
-        info("Mode: [bold]Chat Completions[/bold] (real-time)")
-
-    # ── Review strategy ───────────────────────────────────────────────────────
-    review_strategy = "individual"
-    if not use_batch:
-        review_strategy = ask_choice(
-            "Review strategy",
-            ["individual", "deferred"],
-            default="individual",
-            descriptions={
-                "individual": "Assess each asset (table) as it becomes ready",
-                "deferred": "Process everything first, then review all together at the end",
-            }
-        )
-
-    # ── Scope resolution ──────────────────────────────────────────────────────
-    db = DatabaseConnector(cfg.db)
-    if not db.test_connection():
-        error("Cannot connect to database.")
-        sys.exit(1)
-
-    tables_arg = list(tables_pos) + list(table)
-    scope = _finalize_scope(cfg, db, schema, tables_arg)
-    if scope is None:
-        return
-    hs = history_store()
-    if hs is not None:
-        try:
-            run_id = hs.create_run(
-                command="analyze.run",
-                mode=("batch" if use_batch else "chat"),
-                db_backend=cfg.db.backend,
-                db_profile=cfg.active_db_profile,
-                llm_provider=cfg.llm.provider,
-                llm_model=cfg.llm.model,
-                scope=scope,
-            )
-        except Exception as exc:
-            warn(f"History persistence disabled for this run: {exc}")
-
-    total_assets = sum(len(v) for v in scope.values())
-    total_schemas = len(scope)
+    # Safe defaults used by interrupt/failure handlers before run setup completes.
+    use_batch = False
+    all_results: list = []
+    run_id: int | None = None
+    run_started = time.monotonic()
+    total_assets = 0
+    total_schemas = 0
     approved: list = []
     skipped: list = []
-    all_results: list = []  # tracks all ReviewResult objects; used for cancel vs fail detection
+    final_status: str | None = None
+    final_error_text = ""
+
     try:
-        scope_summary = (
-            f"{total_assets} asset(s) across {total_schemas} schema(s)"
-            if total_schemas > 1
-            else f"{total_assets} asset(s) in {next(iter(scope))}"
-        )
-        info(f"Scope: {scope_summary}")
+        token_tracker.reset()
 
-        rag_store = None
-        try:
-            if cfg.active_doc_profile == DISABLED_PROFILE:
-                info("RAG Agent disabled (document profile: none).")
-            else:
-                doc_filters = cfg.effective_doc_paths()
-                store = RAGStore(source_filters=doc_filters)
-                visible_chunks = store.doc_count
-                if visible_chunks > 0:
-                    rag_store = store
-                    if doc_filters:
-                        info(
-                            f"RAG store has {visible_chunks} chunks available "
-                            f"for active doc profile '{cfg.active_doc_profile or 'default'}'"
-                        )
-                    else:
-                        info(f"RAG store has {visible_chunks} chunks available")
-                elif doc_filters:
-                    info(
-                        f"RAG store has 0 chunks for active doc profile "
-                        f"'{cfg.active_doc_profile or 'default'}'"
-                    )
-        except Exception:
-            pass
+        if not cfg.llm.provider or not cfg.llm.model:
+            error("LLM not configured. Run `amx setup` first.")
+            sys.exit(1)
 
-        code_report = _resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
+        llm = LLMProvider(cfg.llm)
 
-        from amx.utils.live_display import get_display
-        display = get_display()
-
-        all_results: list = []
-
-        for schema_name, assets in scope.items():
-            asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
-
-            orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report, run_id=run_id)
-
-            display_label = (
-                ", ".join(assets) if len(assets) <= 3
-                else f"{len(assets)} assets"
-            )
-            display.start(
-                schema=schema_name,
-                table=display_label,
-                mode="batch" if use_batch else "chat",
-                provider=cfg.llm.provider,
-                model=cfg.llm.model,
+        if not apply:
+            warn(
+                "Without --apply, approved metadata is not written to the database. "
+                "Use `/analyze` then `/apply`, or `/run-apply`, to persist comments."
             )
 
+        # ── 2. Profile selection ───────────────────────────────────────────────
+        if confirm("Do you want to modify profiles before run?", default=False):
+            # 1. DB Profile
+            db_names = list(cfg.db_profiles.keys())
+            if db_names:
+                db_choice = ask_choice("Select DB profile", db_names, default=cfg.active_db_profile)
+                cfg.set_active_db_profile(db_choice)
+                info(f"Active DB: [bold cyan]{db_choice}[/]")
+                # Re-test if profile changed
+                db = DatabaseConnector(cfg.db)
+                with step_spinner("Testing new database connection..."):
+                    if not db.test_connection():
+                        error(f"Cannot connect to database using profile '{db_choice}'.")
+                        sys.exit(1)
+
+            # 2. LLM Profile
+            llm_names = list(cfg.llm_profiles.keys())
+            if llm_names:
+                llm_choice = ask_choice("Select LLM profile", llm_names, default=cfg.active_llm_profile)
+                cfg.set_active_llm_profile(llm_choice)
+                info(f"Active LLM: [bold cyan]{llm_choice}[/]")
+                llm = LLMProvider(cfg.llm)
+
+            # 3. Document Profile
+            doc_names = list(cfg.doc_profiles.keys())
+            if doc_names:
+                options = doc_names + [DISABLED_PROFILE]
+                doc_choice = ask_choice("Select Document profile", options, default=cfg.active_doc_profile or DISABLED_PROFILE)
+                cfg.active_doc_profile = doc_choice
+                info(f"Active Docs: [bold cyan]{doc_choice}[/]")
+
+            # 4. Codebase Profile
+            code_names = list(cfg.code_profiles.keys())
+            if code_names:
+                options = code_names + [DISABLED_PROFILE]
+                code_choice = ask_choice("Select Codebase profile", options, default=cfg.active_code_profile or DISABLED_PROFILE)
+                cfg.active_code_profile = code_choice
+                info(f"Active Code: [bold cyan]{code_choice}[/]")
+
+            console.print()
+
+        # ── Mode selection ────────────────────────────────────────────────────────
+        batch_capable = llm.supports_batch
+        batch_providers_list = batch_supported_providers()
+
+        if mode is None:
+            cfg_mode = (cfg.llm.completion_mode or "chat_completions").lower()
+            default_mode_label = "batch" if cfg_mode == "batch" else "chat"
+
+            from amx.utils.console import ask_choice as _ask_choice
+            batch_note = (
+                " (50 % cheaper, async)"
+                if batch_capable
+                else f" (requires {', '.join(batch_providers_list)})"
+            )
+            mode = _ask_choice(
+                "Select completion mode",
+                ["chat", "batch"],
+                default=default_mode_label,
+                descriptions={
+                    "chat": "Chat Completions — real-time, live spinners, full price",
+                    "batch": f"Batch API{batch_note} — submit all at once, results in minutes–hours",
+                },
+            )
+
+        use_batch = mode == "batch"
+
+        if use_batch and not batch_capable:
+            warn(
+                f"Provider '{cfg.llm.provider}' does not support batch mode. "
+                f"Supported providers: {', '.join(batch_providers_list)}. "
+                "Falling back to Chat Completions."
+            )
+            use_batch = False
+
+        if use_batch:
+            from rich.panel import Panel
+            from amx.utils.console import console as _console
+            _console.print(Panel(
+                "[bold]Batch API selected.[/bold]\n"
+                "All LLM requests will be submitted as a single batch job.\n"
+                "Typical turnaround: [bold]2–30 minutes[/bold]  |  Cost: [bold green]~50 % lower[/bold green]\n"
+                "[dim]Live polling status will appear below.[/dim]",
+                title="[cyan]Mode: Batch[/cyan]", border_style="cyan",
+            ))
+        else:
+            info("Mode: [bold]Chat Completions[/bold] (real-time)")
+
+        # ── Scope resolution ──────────────────────────────────────────────────────
+
+        tables_arg = list(tables_pos) + list(table)
+        scope = _finalize_scope(cfg, db, schema, tables_arg)
+        if scope is None:
+            return
+
+        total_assets = sum(len(v) for v in scope.values())
+
+        # ── Review strategy ───────────────────────────────────────────────────────
+        review_strategy = "individual"
+        if not use_batch and total_assets > 1:
+            review_strategy = ask_choice(
+                "Review strategy",
+                ["individual", "deferred"],
+                default="individual",
+                descriptions={
+                    "individual": "Assess each asset (table) as it becomes ready",
+                    "deferred": "Process everything first, then review all together at the end",
+                }
+            )
+        hs = history_store()
+        if hs is not None:
             try:
-                if use_batch:
-                    results = orch.process_tables_batch_mode(
-                        schema_name, list(assets), asset_kinds=asset_kinds,
-                    )
-                    all_results.extend(results)
-                else:
-                    for asset_name in assets:
-                        display.set_context(table=asset_name)
-                        results = orch.process_table(
-                            schema_name, asset_name,
-                            asset_kind=asset_kinds.get(asset_name),
-                            interactive_review=(review_strategy == "individual"),
-                        )
-                        all_results.extend(results)
-                    
-                    # Point 1: Schema-level meta analysis
-                    if len(assets) > 1 or total_schemas > 1:
-                        schema_meta = orch.process_schema_meta(schema_name, all_results)
-                        all_results.extend(schema_meta)
-            finally:
-                display.stop()
+                run_id = hs.create_run(
+                    command="analyze.run",
+                    mode=("batch" if use_batch else "chat"),
+                    db_backend=cfg.db.backend,
+                    db_profile=cfg.active_db_profile,
+                    llm_provider=cfg.llm.provider,
+                    llm_model=cfg.llm.model,
+                    scope=scope,
+                )
+            except Exception as exc:
+                warn(f"History persistence disabled for this run: {exc}")
 
-        # Point 1: Database-level meta analysis
-        if total_schemas > 1:
-            db_meta = orch.process_database_meta(all_results)
-            all_results.extend(db_meta)
-
-        # Handle deferred review
-        if review_strategy == "deferred" and not use_batch:
-            all_results = orch.batch_review(all_results)
-
-        heading("Summary")
-        render_token_summary(token_tracker)
-        approved = [r for r in all_results if r.applied]
-        skipped = [r for r in all_results if not r.applied]
-        info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
-
-        if approved:
-            def _asset_label(r):
-                if r.asset_kind == "database": return "[bold cyan]DATABASE[/]"
-                if r.asset_kind == "schema": return f"[cyan]SCHEMA: {r.schema}[/]"
-                asset = f"{r.table}.{r.column}" if r.column else r.table
-                return asset
-
-            render_table(
-                "Approved metadata",
-                ["Schema", "Asset", "Description", "Confidence", "Source"],
-                [
-                    [
-                        r.schema if r.asset_kind not in ("database", "schema") else "\u2014",
-                        _asset_label(r),
-                        r.final_description[:60],
-                        r.confidence.value,
-                        r.source,
-                    ]
-                    for r in approved
-                ],
+        total_schemas = len(scope)
+        approved = []
+        skipped = []
+        all_results: list = []  # tracks all ReviewResult objects; used for cancel vs fail detection
+        processed_assets: list[str] = []
+        try:
+            scope_summary = (
+                f"{total_assets} asset(s) across {total_schemas} schema(s)"
+                if total_schemas > 1
+                else f"{total_assets} asset(s) in {next(iter(scope))}"
             )
+            info(f"Scope: {scope_summary}")
 
-        if approved:
-            from amx.pending_review import save_pending
+            rag_store = None
+            try:
+                if cfg.active_doc_profile == DISABLED_PROFILE:
+                    info("RAG Agent disabled (document profile: none).")
+                else:
+                    doc_filters = cfg.effective_doc_paths()
+                    store = RAGStore(source_filters=doc_filters)
+                    visible_chunks = store.doc_count
+                    if visible_chunks > 0:
+                        rag_store = store
+                        if doc_filters:
+                            info(
+                                f"RAG store has {visible_chunks} chunks available "
+                                f"for active doc profile '{cfg.active_doc_profile or 'default'}'"
+                            )
+                        else:
+                            info(f"RAG store has {visible_chunks} chunks available")
+                    elif doc_filters:
+                        info(
+                            f"RAG store has 0 chunks for active doc profile "
+                            f"'{cfg.active_doc_profile or 'default'}'"
+                        )
+            except Exception:
+                pass
 
-            save_pending(approved)
-            if not apply:
-                info(
-                    f"Saved {len(approved)} approved description(s) as pending. "
-                    "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
+            code_profile = cfg.active_code_profile
+            code_refresh = False # default
+            code_report = _resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
+
+            from amx.utils.live_display import get_display
+            display = get_display()
+
+            all_results: list = []
+
+            for schema_name, assets in scope.items():
+                asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
+
+                orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report, run_id=run_id)
+
+                display_label = (
+                    ", ".join(assets) if len(assets) <= 3
+                    else f"{len(assets)} assets"
+                )
+                display.start(
+                    schema=schema_name,
+                    table=display_label,
+                    mode="batch" if use_batch else "chat",
+                    provider=cfg.llm.provider,
+                    model=cfg.llm.model,
                 )
 
-        if apply and approved:
-            if confirm("Apply these metadata comments to the database?"):
-                from amx.pending_review import clear_pending
+                try:
+                    if use_batch:
+                        results = orch.process_tables_batch_mode(
+                            schema_name, list(assets), asset_kinds=asset_kinds,
+                        )
+                        all_results.extend(results)
+                        processed_assets.extend([f"{schema_name}.{asset_name}" for asset_name in assets])
+                    else:
+                        for asset_name in assets:
+                            display.set_context(table=asset_name)
+                            results = orch.process_table(
+                                schema_name, asset_name,
+                                asset_kind=asset_kinds.get(asset_name),
+                                interactive_review=(review_strategy == "individual"),
+                            )
+                            all_results.extend(results)
+                            processed_assets.append(f"{schema_name}.{asset_name}")
 
-                orch.apply_results(approved)
-                clear_pending()
+                        # Point 1: Schema-level meta analysis
+                        if len(assets) > 1 or total_schemas > 1:
+                            schema_meta = orch.process_schema_meta(schema_name, all_results)
+                            all_results.extend(schema_meta)
+                finally:
+                    display.stop()
+
+            # Point 1: Database-level meta analysis
+            if total_schemas > 1:
+                db_meta = orch.process_database_meta(all_results)
+                all_results.extend(db_meta)
+
+            # Review any pending items (deferred table items, plus schema/database meta items).
+            all_results = orch.batch_review(all_results)
+
+            heading("Summary")
+            render_token_summary(token_tracker)
+            approved = [r for r in all_results if r.applied]
+            skipped = [r for r in all_results if not r.applied]
+            info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
+
+            if approved:
+                def _asset_label(r):
+                    if r.asset_kind == "database": return "[bold cyan]DATABASE[/]"
+                    if r.asset_kind == "schema": return f"[cyan]SCHEMA: {r.schema}[/]"
+                    asset = f"{r.table}.{r.column}" if r.column else r.table
+                    return asset
+
+                render_table(
+                    "Approved metadata",
+                    ["Asset", "Description", "Confidence", "Source"],
+                    [
+                        [
+                            f"{r.schema}.{r.table}.{r.column}" if r.column else (f"{r.schema}.{r.table}" if r.table else r.schema),
+                            (r.final_description or "")[:60],
+                            r.confidence.value,
+                            r.source,
+                        ]
+                        for r in approved
+                    ],
+                )
+
+            if approved:
+                from amx.pending_review import save_pending
+
+                save_pending(approved)
+                if not apply:
+                    info(
+                        f"Saved {len(approved)} approved description(s) as pending. "
+                        "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
+                    )
+
+            if apply and approved:
+                if confirm("Apply these metadata comments to the database?"):
+                    from amx.pending_review import clear_pending
+
+                    orch.apply_results(approved)
+                    clear_pending()
+        except Exception:
+            raise
+        final_status = "success"
     except KeyboardInterrupt:
-        # User pressed Ctrl+C. If results are already ready, keep run reviewable.
-        kb_status = "ready_for_review" if all_results else "cancelled"
+        # Preserve partial work on interrupt (completed assets/results so far).
+        approved = [r for r in all_results if getattr(r, "applied", False)]
+        skipped = [r for r in all_results if not getattr(r, "applied", False)]
+        if approved:
+            try:
+                from amx.pending_review import save_pending
+                save_pending(approved)
+            except Exception:
+                pass
+
+        # User pressed Ctrl+C. If any suggestions/results were produced, keep run reviewable.
+        has_reviewable_results = bool(all_results)
+        hs = history_store()
+        if not has_reviewable_results and run_id is not None and hs is not None:
+            try:
+                has_reviewable_results = bool(hs.get_run_results(run_id))
+            except Exception:
+                pass
+        if not has_reviewable_results:
+            has_reviewable_results = bool(token_tracker.total_tokens)
+
+        kb_status = "ready_for_review" if has_reviewable_results else "cancelled"
+        final_status = kb_status
+        final_error_text = "Interrupted by user"
         _log_app_event(
             event_type="analyze_run",
             status=kb_status,
@@ -3091,12 +3339,14 @@ def analyze_run(
             details={
                 "mode": ("batch" if use_batch else "chat"),
                 "error": "KeyboardInterrupt",
-                "results_ready": bool(all_results),
+                "results_ready": has_reviewable_results,
             },
         )
-        raise
+        warn("User interrupted process.")
+        return
     except Exception as exc:
-        _run_exc = exc
+        final_status = "failed"
+        final_error_text = str(exc)
         _log_app_event(
             event_type="analyze_run",
             status="failed",
@@ -3105,101 +3355,73 @@ def analyze_run(
         )
         raise
     finally:
-        # Always finalize the run — prevents 'running' / duration=0 rows in /list
+        # Always finalize the run to avoid stale 'running' rows in /history list.
         if run_id is not None:
             hs = history_store()
             if hs is not None:
                 try:
-                    # Determine if we're in the exception path or success path.
-                    import sys as _sys
-                    _exc_active = _sys.exc_info()[1] is not None
-                    _exc_obj = _sys.exc_info()[1]
-                    if _exc_active:
-                        # KeyboardInterrupt after results exist → ready_for_review.
-                        if isinstance(_exc_obj, KeyboardInterrupt) and all_results:
-                            _final_status = "ready_for_review"
-                            _error_text = "Interrupted by user after results produced; ready for review"
-                        elif isinstance(_exc_obj, KeyboardInterrupt):
-                            _final_status = "cancelled"
-                            _error_text = "Interrupted by user"
-                        else:
-                            _final_status = "failed"
-                            _error_text = str(_exc_obj)
-                        hs.finish_run(
-                            run_id,
-                            status=_final_status,
-                            metrics={
-                                "duration_sec": round(time.monotonic() - run_started, 3),
-                                "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
-                                "total_assets": total_assets,
-                                "total_schemas": total_schemas,
-                            },
-                            tokens={
-                                "total_tokens": token_tracker.total_tokens,
-                                "summary": token_tracker.summary(),
-                                "records": token_tracker.records(),
-                            },
-                            results={},
-                            error_text=_error_text,
-                        )
-                    else:
-                        token_summary = token_tracker.summary()
-                        hs.finish_run(
-                            run_id,
-                            status="success",
-                            metrics={
-                                "duration_sec": round(time.monotonic() - run_started, 3),
-                                "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
-                                "total_assets": total_assets,
-                                "total_schemas": total_schemas,
-                                "approved_count": len(approved),
-                                "skipped_count": len(skipped),
-                                "applied_flag": bool(apply),
-                            },
-                            tokens={
-                                "total_tokens": token_tracker.total_tokens,
-                                "summary": token_summary,
-                                "records": token_tracker.records(),
-                            },
-                            results={
-                                "approved": [
-                                    {
-                                        "schema": r.schema,
-                                        "table": r.table,
-                                        "column": r.column,
-                                        "description": r.final_description,
-                                        "confidence": r.confidence.value,
-                                        "source": r.source,
-                                        "asset_kind": r.asset_kind,
-                                    }
-                                    for r in approved
-                                ],
-                                "skipped": [
-                                    {
-                                        "schema": r.schema,
-                                        "table": r.table,
-                                        "column": r.column,
-                                        "confidence": r.confidence.value,
-                                        "source": r.source,
-                                        "asset_kind": r.asset_kind,
-                                    }
-                                    for r in skipped
-                                ],
-                            },
-                        )
-                        _log_app_event(
-                            event_type="analyze_run",
-                            status="success",
-                            command="analyze.run",
-                            details={
-                                "mode": ("batch" if use_batch else "chat"),
-                                "approved_count": len(approved),
-                                "skipped_count": len(skipped),
-                                "total_assets": total_assets,
-                            },
-                        )
-                except Exception as _fe:
-                    warn(f"Could not persist run history: {_fe}")
+                    status = final_status or "success"
+                    hs.finish_run(
+                        run_id,
+                        status=status,
+                        metrics={
+                            "duration_sec": round(time.monotonic() - run_started, 3),
+                            "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
+                            "total_assets": total_assets,
+                            "total_schemas": total_schemas,
+                            "processed_assets_count": len(processed_assets),
+                            "processed_assets": processed_assets,
+                            "approved_count": len(approved),
+                            "skipped_count": len(skipped),
+                            "applied_flag": bool(apply),
+                        },
+                        tokens={
+                            "total_tokens": token_tracker.total_tokens,
+                            "summary": token_tracker.summary(),
+                            "records": token_tracker.records(),
+                        },
+                        results={
+                            "all_results": [
+                                {
+                                    "schema": r.schema,
+                                    "table": r.table,
+                                    "column": r.column,
+                                    "description": r.final_description,
+                                    "confidence": r.confidence.value,
+                                    "source": r.source,
+                                    "asset_kind": r.asset_kind,
+                                    "applied": bool(r.applied),
+                                }
+                                for r in all_results
+                            ],
+                            "approved": [
+                                {
+                                    "schema": r.schema,
+                                    "table": r.table,
+                                    "column": r.column,
+                                    "description": r.final_description,
+                                    "confidence": r.confidence.value,
+                                    "source": r.source,
+                                    "asset_kind": r.asset_kind,
+                                }
+                                for r in approved
+                            ],
+                            "skipped": [
+                                {
+                                    "schema": r.schema,
+                                    "table": r.table,
+                                    "column": r.column,
+                                    "confidence": r.confidence.value,
+                                    "source": r.source,
+                                    "asset_kind": r.asset_kind,
+                                }
+                                for r in skipped
+                            ],
+                        },
+                        error_text=final_error_text,
+                    )
+                except Exception as exc:
+                    warn(f"Could not persist run history finalization: {exc}")
 
 
 @analyze.command("apply")
@@ -3491,7 +3713,10 @@ def history_results(run_id: int) -> None:
     table_rows = []
     for r in col_rows_data:
         alts = r.get("alternatives_json") or []
-        alts_str = " | ".join(str(a)[:40] for a in alts[:3])
+        if alts:
+            alts_str = "\n".join(f"{i}. {a}" for i, a in enumerate(alts, 1))
+        else:
+            alts_str = "—"
         evaluated_at = r.get("evaluated_at")
         eval_time = (
             datetime.fromtimestamp(evaluated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
@@ -3509,7 +3734,7 @@ def history_results(run_id: int) -> None:
             r.get("table_name", ""),
             r.get("column_name") or "(table)",
             r.get("confidence", ""),
-            alts_str or "—",
+            alts_str,
             r.get("evaluation") or "pending",
             (r.get("chosen_description") or "")[:40],
             eval_time,
@@ -3523,7 +3748,7 @@ def history_results(run_id: int) -> None:
                 "Table",
                 "Column",
                 "Conf",
-                "Alternatives (top-3)",
+                "Alternatives (all)",
                 "Status",
                 "Chosen",
                 "Selected at",
@@ -3534,6 +3759,10 @@ def history_results(run_id: int) -> None:
     pending = sum(1 for r in rows if not r.get("evaluation"))
     if pending:
         info(f"{pending} item(s) still pending. Run `/review {run_id}` to evaluate them.")
+    info(
+        f"To pick a different saved alternative later, run `/review {run_id}` "
+        f"and use `--apply` to write newly approved choices to the database."
+    )
 
 
 @history.command("review")
@@ -3591,74 +3820,50 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
     # Sort: table/schema/db-level (column=None) always reviewed first
     rows_sorted = sorted(rows, key=lambda r: (0 if not r.get("column_name") else 1, r.get("id", 0)))
 
+    results_to_review = []
     for r in rows_sorted:
         alts: list[str] = r.get("alternatives_json") or []
         if not alts:
             warn(f"Row {r['id']} ({r['table_name']}.{r.get('column_name') or '(table)'}) has no alternatives stored — skipping.")
             continue
 
-        col_label = r.get("column_name") or "(table-level)"
-        is_top_level = not r.get("column_name")
-        existing_eval = r.get("evaluation")
-        existing_choice = r.get("chosen_description") or ""
-        console.print()
-        if is_top_level:
-            kind = r.get("asset_kind", "table").upper()
-            asset_label = f"{r.get('schema_name','')}.{r.get('table_name','')}"
-            console.print(f"  [bold cyan]\u25b6 {kind} DESCRIPTION[/bold cyan]  [dim]{asset_label}[/dim]")
-        else:
-            console.print(f"  [heading]Table: {r['table_name']}  Column: {col_label}[/heading]")
-        console.print(f"  Confidence: {r.get('confidence', 'unknown')}  |  Source: {r.get('source', 'unknown')}")
-        if r.get("reasoning"):
-            console.print(f"  Reasoning: {r.get('reasoning')}")
-        if existing_eval:
-            console.print(
-                f"  [dim]Previous evaluation: {existing_eval!r} → {existing_choice!r}[/dim]"
-            )
+        try:
+            conf = Confidence(r.get("confidence", "medium"))
+        except ValueError:
+            conf = Confidence.MEDIUM
 
-        options = alts + ["Other (type your own)", "Skip"]
-        choice = ask_choice(
-            "Select a description (or Skip)",
-            options,
-            default=options[0],
+        # Determine the initial best choice
+        eval_status = r.get("evaluation")
+        if eval_status == "accepted" or eval_status == "custom":
+            best_desc = r.get("chosen_description") or (alts[0] if alts else "")
+        elif eval_status == "skipped":
+            best_desc = ""
+        else:
+            best_desc = alts[0] if alts else ""
+
+        rr = ReviewResult(
+            schema=r.get("schema_name", ""),
+            table=r["table_name"],
+            column=r.get("column_name"),
+            final_description=best_desc,
+            confidence=conf,
+            source=r.get("source", "combined"),
+            applied=False, # Treat as unapplied so batch_review processes them
+            asset_kind=r.get("asset_kind", "table"),
+            result_id=r["id"],
+            alternatives=alts,
         )
+        results_to_review.append(rr)
 
-        if choice == "Skip":
-            hs.record_evaluation(r["id"], chosen_description="", evaluation="skipped")
-            info("Skipped.")
-        elif choice == "Other (type your own)":
-            custom = ask("Enter your description")
-            hs.record_evaluation(r["id"], chosen_description=custom, evaluation="custom")
-            newly_approved.append(ReviewResult(
-                schema=r.get("schema_name", ""),
-                table=r["table_name"],
-                column=r.get("column_name"),
-                final_description=custom,
-                confidence=Confidence.HIGH,
-                source="human",
-                applied=True,
-                asset_kind=r.get("asset_kind", "table"),
-                result_id=r["id"],
-            ))
-            success(f"Saved custom description for {r['table_name']}.{col_label}.")
-        else:
-            hs.record_evaluation(r["id"], chosen_description=choice, evaluation="accepted")
-            try:
-                conf = Confidence(r.get("confidence", "medium"))
-            except ValueError:
-                conf = Confidence.MEDIUM
-            newly_approved.append(ReviewResult(
-                schema=r.get("schema_name", ""),
-                table=r["table_name"],
-                column=r.get("column_name"),
-                final_description=choice,
-                confidence=conf,
-                source=r.get("source", "combined"),
-                applied=True,
-                asset_kind=r.get("asset_kind", "table"),
-                result_id=r["id"],
-            ))
-            success(f"Approved for {r['table_name']}.{col_label}.")
+    from amx.agents.orchestrator import Orchestrator
+    from amx.llm.provider import LLMProvider
+
+    db = DatabaseConnector(cfg.db)
+    llm = LLMProvider(cfg.llm)
+    orch = Orchestrator(db=db, llm=llm)
+
+    final_results = orch.batch_review(results_to_review)
+    newly_approved = [r for r in final_results if r.applied]
 
     if not newly_approved:
         _mark_run_success()
@@ -3667,11 +3872,10 @@ def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: b
 
     render_table(
         "Approved in this review session",
-        ["Table", "Column", "Description", "Confidence", "Source"],
+        ["Asset", "Description", "Confidence", "Source"],
         [
             [
-                r.schema,
-                r.column or "(table)",
+                f"{r.schema}.{r.table}.{r.column}" if r.column else (f"{r.schema}.{r.table}" if r.table else r.schema),
                 (r.final_description or "")[:60],
                 r.confidence.value,
                 r.source,
@@ -3727,6 +3931,12 @@ def show_config(cfg: AMXConfig) -> None:
     if cfg.db_profiles:
         names = ", ".join(sorted(cfg.db_profiles.keys()))
         info(f"DB profiles: {names}")
+    max_rows = int(getattr(cfg.db, "profiling_max_rows", 1_000_000) or 0)
+    max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
+    info(
+        f"Profiling: mode={cfg.db.profiling_mode}, "
+        f"max_full_scan_rows={max_label}, sample_size={cfg.db.profiling_sample_size}"
+    )
     info(f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}")
     info(
         f"Active LLM profile: {cfg.active_llm_profile} → "

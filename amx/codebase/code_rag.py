@@ -17,6 +17,18 @@ log = get_logger("codebase.code_rag")
 COLLECTION = "amx_code"
 
 
+def _normalize_source_filter(source: str) -> str:
+    src = str(source or "").strip()
+    if not src:
+        return ""
+    if src.startswith(("http://", "https://", "s3://", "git@")):
+        return src
+    try:
+        return str(Path(src).expanduser().resolve())
+    except Exception:
+        return src
+
+
 def _iter_python_chunks(rel_path: str, content: str) -> list[tuple[str, str]]:
     """Return (chunk_id_suffix, text) for RAG indexing."""
     chunks: list[tuple[str, str]] = []
@@ -50,6 +62,7 @@ def index_codebase_tree(
     *,
     report: CodebaseReport | None = None,
     persist_dir: str | None = None,
+    source_root: str | None = None,
 ) -> int:
     """Chunk Python (AST) and other code files; upsert into ``amx_code`` collection."""
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
@@ -66,6 +79,7 @@ def index_codebase_tree(
     ]
     total = 0
     root_s = str(root.resolve())
+    source_root_s = _normalize_source_filter(source_root or root_s)
     for fpath in code_files:
         rel = str(fpath.relative_to(root))
         try:
@@ -87,6 +101,7 @@ def index_codebase_tree(
             doc_id = f"code::{h}"
             meta = {
                 "source": f"{root_s}/{rel}",
+                "source_root": source_root_s,
                 "rel_path": rel,
                 "chunk_id": cid,
                 "kind": "python_ast" if suffix == ".py" else "text_split",
@@ -99,37 +114,60 @@ def index_codebase_tree(
     return total
 
 
-def query_code_snippets(question: str, n_results: int = 5, persist_dir: str | None = None) -> list[dict]:
+def query_code_snippets(
+    question: str,
+    n_results: int = 5,
+    persist_dir: str | None = None,
+    source_filters: list[str] | None = None,
+) -> list[dict]:
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     client = chromadb.PersistentClient(path=persist)
     try:
         coll = client.get_collection(COLLECTION)
     except Exception:
         return []
-    res = coll.query(query_texts=[question], n_results=n_results)
+    filters = [_normalize_source_filter(s) for s in (source_filters or []) if s]
+    query_n = n_results if not filters else max(n_results * 4, n_results)
+    res = coll.query(query_texts=[question], n_results=query_n)
     hits: list[dict] = []
     for i in range(len(res["documents"][0])):
+        meta = res["metadatas"][0][i]
+        if filters and not _source_allowed(meta, filters):
+            continue
         hits.append(
             {
                 "text": res["documents"][0][i],
-                "metadata": res["metadatas"][0][i],
+                "metadata": meta,
                 "distance": res["distances"][0][i] if res.get("distances") else None,
             }
         )
+        if len(hits) >= n_results:
+            break
     return hits
 
 
-def code_collection_count(persist_dir: str | None = None) -> int:
+def code_collection_count(
+    persist_dir: str | None = None,
+    source_filters: list[str] | None = None,
+) -> int:
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
         client = chromadb.PersistentClient(path=persist)
         coll = client.get_collection(COLLECTION)
+        filters = [_normalize_source_filter(s) for s in (source_filters or []) if s]
+        if filters:
+            rows = coll.get(include=["metadatas"])
+            metas = rows.get("metadatas") or []
+            return sum(1 for m in metas if _source_allowed(m, filters))
         return int(coll.count())
     except Exception:
         return 0
 
 
-def delete_code_collection(persist_dir: str | None = None) -> bool:
+def delete_code_collection(
+    persist_dir: str | None = None,
+    source_filters: list[str] | None = None,
+) -> bool:
     """Remove the entire ``amx_code`` collection (e.g. before full re-index).
 
     Returns ``True`` if a collection was deleted, ``False`` if it didn't exist.
@@ -137,8 +175,35 @@ def delete_code_collection(persist_dir: str | None = None) -> bool:
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
         client = chromadb.PersistentClient(path=persist)
-        client.delete_collection(COLLECTION)
-        log.info("Deleted Chroma collection %s", COLLECTION)
+        if not source_filters:
+            client.delete_collection(COLLECTION)
+            log.info("Deleted Chroma collection %s", COLLECTION)
+            return True
+        coll = client.get_collection(COLLECTION)
+        filters = [_normalize_source_filter(s) for s in source_filters if s]
+        rows = coll.get(include=["metadatas"])
+        ids = [
+            row_id
+            for row_id, meta in zip(rows.get("ids") or [], rows.get("metadatas") or [])
+            if _source_allowed(meta, filters)
+        ]
+        if not ids:
+            return False
+        coll.delete(ids=ids)
+        log.info("Deleted %d code chunks from %s", len(ids), COLLECTION)
         return True
     except Exception:
         return False
+
+
+def _source_allowed(metadata: dict | None, filters: list[str]) -> bool:
+    if not metadata:
+        return False
+    src = str(metadata.get("source") or "")
+    root = str(metadata.get("source_root") or "")
+    for flt in filters:
+        if root and (root == flt or root.startswith(flt)):
+            return True
+        if src and (src == flt or src.startswith(flt)):
+            return True
+    return False

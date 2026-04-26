@@ -13,6 +13,7 @@ import yaml
 
 SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 DISABLED_PROFILE = "__none__"
+PROFILING_MODES = ("full", "sampled", "metadata")
 
 
 # ── Prompt Detail Levels ──────────────────────────────────────────────────────
@@ -41,6 +42,7 @@ class PromptDetail:
     include_usage_stats: bool = False  # seq_scan / idx_scan / n_live_tup from pg_stat
     include_schema_db_comments: bool = False  # Schema-level and database-level comments
     include_related_comments: bool = False    # Existing comments on FK-neighbour tables
+    include_query_log_analysis: bool = False  # SQL/code query-usage hints (table/column usage patterns)
 
     # --- RAG agent tuning ---
     rag_table_hits: int = 5   # Doc chunks fetched for the table-level query
@@ -86,6 +88,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
             include_usage_stats=False,
             include_schema_db_comments=False,
             include_related_comments=False,
+            include_query_log_analysis=False,
             rag_table_hits=3,
             rag_col_hits=0,
             rag_max_chunks=5,
@@ -103,6 +106,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
             include_usage_stats=True,
             include_schema_db_comments=True,
             include_related_comments=True,
+            include_query_log_analysis=True,
             rag_table_hits=8,
             rag_col_hits=2,
             rag_max_chunks=12,
@@ -120,6 +124,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
             include_usage_stats=True,
             include_schema_db_comments=True,
             include_related_comments=True,
+            include_query_log_analysis=True,
             rag_table_hits=5,
             rag_col_hits=2,
             rag_max_chunks=15,
@@ -137,6 +142,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
         include_usage_stats=False,
         include_schema_db_comments=False,
         include_related_comments=False,
+        include_query_log_analysis=False,
         rag_table_hits=5,
         rag_col_hits=1,
         rag_max_chunks=8,
@@ -168,6 +174,11 @@ class DBConfig:
     project: str = ""
     dataset: str = ""
     credentials_path: str = ""
+
+    # Profiling guardrails
+    profiling_mode: str = "full"  # full | sampled | metadata
+    profiling_max_rows: int = 1_000_000  # skip full column scans above this row estimate (0=off)
+    profiling_sample_size: int = 5
 
     @property
     def url(self) -> str:
@@ -248,6 +259,9 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         project=str(m.get("project", "")),
         dataset=str(m.get("dataset", "")),
         credentials_path=str(m.get("credentials_path", "")),
+        profiling_mode=str(m.get("profiling_mode", "full")),
+        profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
+        profiling_sample_size=int(m.get("profiling_sample_size", 5)),
     )
 
 
@@ -280,6 +294,11 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
             "host": db.host, "port": db.port, "user": db.user,
             "password": db.password, "database": db.database,
         })
+    base.update({
+        "profiling_mode": db.profiling_mode,
+        "profiling_max_rows": int(db.profiling_max_rows),
+        "profiling_sample_size": int(db.profiling_sample_size),
+    })
     return base
 
 
@@ -293,6 +312,8 @@ class LLMConfig:
     max_tokens: int = 4096  # reduced from 16384; reasoning models raise this automatically
     completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
     n_alternatives: int = 3   # how many description alternatives per column (1–5)
+    column_batch_size: int = 10  # how many columns to process in one LLM call
+    batch_context_column_names: int = 0  # how many non-batch column names to include as context (0=off, -1=all)
     prompt_detail: str = "standard"  # minimal | standard | detailed | full
     logprob_high: float = 0.85
     logprob_medium: float = 0.50
@@ -314,6 +335,8 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         max_tokens=int(m.get("max_tokens", 4096)),
         completion_mode=str(m.get("completion_mode", "chat_completions")),
         n_alternatives=max(1, min(5, n_alt)),
+        column_batch_size=int(m.get("column_batch_size", 10)),
+        batch_context_column_names=int(m.get("batch_context_column_names", 0)),
         prompt_detail=str(m.get("prompt_detail", "standard")),
         logprob_high=float(m.get("logprob_high", 0.85)),
         logprob_medium=float(m.get("logprob_medium", 0.50)),
@@ -330,6 +353,8 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "max_tokens": llm.max_tokens,
         "completion_mode": llm.completion_mode,
         "n_alternatives": llm.n_alternatives,
+        "column_batch_size": llm.column_batch_size,
+        "batch_context_column_names": llm.batch_context_column_names,
         "prompt_detail": llm.prompt_detail,
         "logprob_high": llm.logprob_high,
         "logprob_medium": llm.logprob_medium,

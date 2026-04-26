@@ -31,6 +31,7 @@ class DocInfo:
     size_bytes: int
     extension: str
     source_type: str  # local | github | s3 | gcs | azure | sharepoint | drive
+    source_root: str = ""  # original configured source path used for profile filtering
 
 
 def _resolve_local(path: str) -> Iterator[DocInfo]:
@@ -622,16 +623,23 @@ def test_source_reachable(path: str) -> None:
 
 
 def scan_source(path: str) -> list[DocInfo]:
+    def _tag(docs: list[DocInfo]) -> list[DocInfo]:
+        root = str(Path(path).expanduser().resolve()) if not path.startswith(("http://", "https://", "s3://", "git@")) else path
+        for doc in docs:
+            if not doc.source_root:
+                doc.source_root = root
+        return docs
+
     if path.startswith("s3://"):
-        return list(_resolve_s3(path))
+        return _tag(list(_resolve_s3(path)))
     if path.startswith("https://github.com") or path.startswith("git@"):
-        return list(_resolve_github(path))
+        return _tag(list(_resolve_github(path)))
     if path.startswith("http://") or path.startswith("https://"):
         if _is_google_drive_url(path):
-            return list(_resolve_google_drive(path))
+            return _tag(list(_resolve_google_drive(path)))
         if _is_sharepoint_or_onedrive_url(path):
-            return list(_resolve_sharepoint_or_onedrive(path))
-    return list(_resolve_local(path))
+            return _tag(list(_resolve_sharepoint_or_onedrive(path)))
+    return _tag(list(_resolve_local(path)))
 
 
 def scan_all_sources(paths: list[str]) -> list[DocInfo]:

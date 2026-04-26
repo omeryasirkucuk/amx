@@ -60,20 +60,26 @@ class RAGStore:
             chunk_overlap=200,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
-        self.source_filters = [s for s in (source_filters or []) if s]
+        self.source_filters = [self._normalize_source_filter(s) for s in (source_filters or []) if s]
 
     def delete_chunks_for_sources(self, sources: list[str]) -> int:
-        """Remove all chunks whose metadata ``source`` equals one of the given paths (exact match)."""
+        """Remove chunks by resolved file path or original configured source path."""
         removed = 0
         for src in sources:
             if not src:
                 continue
-            try:
-                res = self.collection.get(where={"source": src}, include=[])
-            except Exception as exc:
-                log.warning("Chroma get for delete failed %s: %s", src, exc)
-                continue
-            ids = res.get("ids") or []
+            ids: list[str] = []
+            for key, value in (
+                ("source", src),
+                ("source_root", self._normalize_source_filter(src)),
+            ):
+                try:
+                    res = self.collection.get(where={key: value}, include=[])
+                except Exception as exc:
+                    log.warning("Chroma get for delete failed %s=%s: %s", key, value, exc)
+                    continue
+                ids.extend(res.get("ids") or [])
+            ids = sorted(set(ids))
             if ids:
                 self.collection.delete(ids=ids)
                 removed += len(ids)
@@ -87,7 +93,7 @@ class RAGStore:
         refresh: bool = False,
     ) -> int:
         if refresh and docs:
-            self.delete_chunks_for_sources([d.path for d in docs])
+            self.delete_chunks_for_sources([x for d in docs for x in (d.path, d.source_root) if x])
         total_chunks = 0
         for doc in docs:
             loader_cls = LOADER_MAP.get(doc.extension)
@@ -104,7 +110,12 @@ class RAGStore:
                 ids = [f"{doc.path}::{i}" for i in range(len(chunks))]
                 texts = [c.page_content for c in chunks]
                 metadatas = [
-                    {"source": doc.path, "source_type": doc.source_type, "chunk_idx": i}
+                    {
+                        "source": doc.path,
+                        "source_root": self._normalize_source_filter(doc.source_root or doc.path),
+                        "source_type": doc.source_type,
+                        "chunk_idx": i,
+                    }
                     for i in range(len(chunks))
                 ]
                 self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
@@ -153,9 +164,24 @@ class RAGStore:
         if not metadata:
             return False
         src = str(metadata.get("source") or "")
-        if not src:
+        root_src = str(metadata.get("source_root") or "")
+        if not src and not root_src:
             return False
         for root in self.source_filters:
-            if src == root or src.startswith(root):
+            if root_src and (root_src == root or root_src.startswith(root)):
+                return True
+            if src and (src == root or src.startswith(root)):
                 return True
         return False
+
+    @staticmethod
+    def _normalize_source_filter(source: str) -> str:
+        src = str(source or "").strip()
+        if not src:
+            return ""
+        if src.startswith(("http://", "https://", "s3://", "git@")):
+            return src
+        try:
+            return str(Path(src).expanduser().resolve())
+        except Exception:
+            return src

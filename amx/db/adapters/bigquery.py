@@ -161,7 +161,7 @@ class BigQueryAdapter(DatabaseAdapter):
         self, schema: str, table: str, asset_keyword: str
     ) -> str:
         fqn = self.fully_qualified_name(schema, table)
-        return f"ALTER TABLE {fqn} SET OPTIONS(description = :cmt)"
+        return f"ALTER {asset_keyword} {fqn} SET OPTIONS(description = :cmt)"
 
     def set_column_comment_sql(
         self, schema: str, table: str, column: str
@@ -176,5 +176,6 @@ class BigQueryAdapter(DatabaseAdapter):
         return f"ALTER SCHEMA {ds} SET OPTIONS(description = :cmt)"
 
     def set_database_comment_sql(self) -> str:
-        # BigQuery projects don't have descriptions in SQL
-        return "SELECT 1 -- BigQuery project description not supported via SQL"
+        raise NotImplementedError(
+            "BigQuery project descriptions are not supported through SQL write-back."
+        )

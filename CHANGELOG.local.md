@@ -1,0 +1,541 @@
+# AMX — Local development changelog (not published to GitHub)
+
+This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
+
+## [0.1.73] — 2026-04-26
+### Profiling Guardrails
+- **amx/config.py**: Added `DBConfig.profiling_mode`, `profiling_max_rows`, and `profiling_sample_size`; persisted them through DB profile serialization.
+- **amx/cli.py**: Added `/db` → `/profiling [full|sampled|metadata] [max_rows|off] [sample_size]` and showed active guardrails in `/config`.
+- **amx/db/connector.py**: `profile_table()` now supports `full`, `sampled`, and `metadata` modes and skips full column aggregate scans above the configured row threshold.
+- **amx/db/connector.py / amx/cli.py**: Added and used `list_column_profiles()` for code-scan setup so it does not profile every table just to collect column names.
+
+### RAG / Backend Follow-up
+- **amx/docs/scanner.py / amx/docs/rag.py**: Added stable `source_root` metadata so remote document profiles filter and refresh correctly after temp-file downloads.
+- **amx/codebase/code_rag.py / amx/agents/code_agent.py**: Scoped semantic code chunks and queries to the active code profile/source path.
+- **amx/db/adapters/bigquery.py**: BigQuery project/database comment write-back now raises `NotImplementedError`.
+- **amx/db/adapters/databricks.py**: Stopped using `numFiles` as a row-count proxy.
+- **tests/test_regressions.py**: Added focused regression tests for the above behavior.
+
+## [0.1.72] — 2026-04-26
+### History
+- **amx/cli.py**: `history results` now renders full alternative lists per column and adds a direct hint for re-picking/applying alternatives via `/review <run_id> --apply`.
+
+## [0.1.71] — 2026-04-26
+### UX
+- **amx/utils/console.py**: `step_spinner` now refreshes elapsed time every 0.1s in non-live mode so wait-time seconds are visible in realtime.
+
+## [0.1.70] — 2026-04-26
+### CLI / History
+- **amx/cli.py**: Reintroduced robust run finalization (`finally` + `finish_run`) for `analyze.run`.
+- **amx/storage/sqlite_store.py**: Added stale `running` run recovery inside `create_run()`.
+
+## [0.1.69] — 2026-04-26
+### Config
+- **amx/config.py**: Added `column_batch_size` to `_llm_to_mapping` so `/llm-batch-size` values persist across save/load and profile switches.
+
+## [0.1.68] — 2026-04-26
+### CLI
+- **amx/cli.py**: Treat `__none__` codebase profile as disabled in `_resolve_codebase_for_run` to avoid spurious errors.
+
+## [0.1.67] — 2026-04-26
+### CLI
+- **amx/cli.py**: Imported `DatabaseConnector` inside `_analyze_run_logic` to fix profile-switch `NameError`.
+- **amx/cli.py**: Updated `analyze_run` wrapper to avoid traceback + duplicate error lines by converting unexpected exceptions to `click.ClickException`.
+
+## [0.1.66] — 2026-04-26
+### CLI
+- **amx/cli.py**: Initialized safe defaults for interrupt/failure handlers in `_analyze_run_logic` and handled `KeyboardInterrupt` with a clean `User interrupted process.` message (no traceback spam on prompt interrupts).
+
+## [0.1.65] — 2026-04-26
+### CLI
+- **amx/cli.py**: Fixed the `analyze.run` exception handler indentation so the module imports successfully again.
+
+## [0.1.64] — 2026-04-26
+### CLI
+- **analyze.run**: Added `step_spinner` around `db.test_connection()`.
+
+## [0.1.63] — 2026-04-25
+### Bug Fixes
+- **ProfileAgent**: Fixed all remaining `BATCH_SIZE` (constant) references to `batch_size` (property).
+- **Orchestrator**: Fixed `process_table` chat-mode reference to `BATCH_SIZE`.
+
+## [0.1.62] — 2026-04-25
+### CLI
+- **analyze.run**: Moved scope resolution earlier.
+- **UX**: Skipped `ask_choice` for review strategy when `total_assets == 1`.
+
+## [0.1.61] — 2026-04-25
+### Core
+- **LLMConfig**: Added `column_batch_size` (int).
+- **ProfileAgent**: Replaced `BATCH_SIZE` constant with a dynamic property.
+- **CLI**: Added `/llm-batch-size` command and updated setup wizard.
+
+## [0.1.60] — 2026-04-25
+### Live Display
+- **Windowing**: Implemented `max_visible` items in `_render_activity_tree`.
+- **Dynamic Limit**: Shows 15 items when collapsed, 25 when details are visible.
+- **Header**: Added a hint that older items are hidden.
+
+## [0.1.58] — 2026-04-25
+
+### Review Parity
+- **`ReviewResult`**: Added `alternatives` field to cleanly pass SQLite alternatives into the orchestrator.
+- **`Orchestrator`**: Updated `_review_single_result` to read `r.alternatives` directly.
+- **`history_review`**: Replaced custom sequential loop with a conversion to `ReviewResult` followed by `orch.batch_review()`. This ensures the exact same UI/UX (e.g., "accept-all-high") for past runs as live runs.
+
+## [0.1.56] — 2026-04-25
+
+### Bug Fixes
+- **CLI Apply**: Fixed scope issue where `hs` (history_store) was not defined in `_on_applied` callbacks.
+
+## [0.1.55] — 2026-04-25
+
+### Hotfix — Live Profile Batch Fail Marker
+- `amx/llm/provider.py`
+  - Fixed `elapsed_sec` scope/indentation in `LLMProvider.chat()`.
+  - `elapsed_sec` is now computed after the `try/except` block unconditionally, so both normal and fallback paths have a defined timing value.
+  - Resolves runtime error: `cannot access local variable 'elapsed_sec' where it is not associated with a value`.
+  - Side effect fixed: Profile batch activities no longer appear as failed (`x`) due to this regression.
+
+## [0.1.54] — 2026-04-25
+
+### Model Processing Duration Metric
+- `amx/llm/provider.py`
+  - Added per-call elapsed timing using `time.perf_counter()` inside `LLMProvider.chat()`.
+  - Extended `usage` payload to include `model_processing_sec` (even when token usage is absent).
+
+- `amx/utils/token_tracker.py`
+  - Extended `_UsageRecord` with `model_processing_sec`.
+  - Added aggregate property `total_model_processing_sec`.
+  - Included `model_processing_sec` in persisted token records.
+
+- `amx/cli.py`
+  - Persisted `model_processing_sec` into `analysis_runs.metrics_json` for both success and failure/cancel finalization paths.
+  - Updated `/history list` to display new `Model(s)` column from `metrics_json.model_processing_sec`.
+  - Updated `/history stats` to print `avg_model_processing_sec`.
+
+- `amx/storage/sqlite_store.py`
+  - `list_recent_runs()` now includes/parses `metrics_json`.
+  - `stats()` now computes `avg_model_processing_sec` from stored run metrics.
+
+## [0.1.53] — 2026-04-25
+
+### LLM / Provider Reliability
+- `amx/llm/provider.py`
+  - Added `_normalized_api_base()` to sanitize provider-specific base URLs.
+  - For `provider=ollama`, strips trailing `/v1` from `api_base` to match LiteLLM Ollama endpoint expectations.
+  - In `_configure_env()`, normalizes and persists `cfg.api_base` before setting env vars.
+  - Suppressed LiteLLM debug/info spill into the TUI by setting `suppress_debug_info=True` and `set_verbose=False` when available.
+  - Added one-shot fallback retry on Ollama `404 page not found` by retrying without `/v1` and updating `OLLAMA_API_BASE` in-process.
+
+### Profile Agent Stability
+- `amx/agents/profile_agent.py`
+  - Added `_profile_batch_workers()`.
+  - For `ollama`, `local`, and `kimi`, profile batches now run sequentially (`max_workers=1`) instead of using `ThreadPoolExecutor`.
+  - Remote providers keep parallel profile batching (up to 5 workers).
+
+### CLI Setup Defaults
+- `amx/cli.py`
+  - In `_interactive_llm_block()`, changed default Ollama API base from `http://localhost:11434/v1` to `http://localhost:11434`.
+  - Kept `http://localhost:11434/v1` default for OpenAI-compatible local endpoints (`local`, `kimi`).
+
+## [0.1.52] — 2026-04-25
+
+### Bug Fixes
+- **Import Error**: Fixed `amx.history` → `amx.storage.sqlite_store` for `history_store` in `orchestrator.py`.
+
+## [0.1.51] — 2026-04-25
+
+### Interactive Run Setup
+- **`analyze_run`**: Added sequential `ask_choice` prompts for DB, LLM, Docs, and Codebase profiles if the user confirms "Do you want to modify profiles before run?".
+- Reverted all `AMX_ACTIVE_...` environment variable logic in `AMXConfig`.
+
+## [0.1.50] — 2026-04-25
+
+### Multi-Session Support
+- **`AMX_CONFIG_PATH`**: Allows specifying a custom config file path.
+- **`AMX_ACTIVE_DB_PROFILE`**: Override the active database profile via environment.
+- **`AMX_ACTIVE_LLM_PROFILE`**: Override the active LLM profile via environment.
+- Updated `AMXConfig.load` and `AMXConfig.save` to respect these overrides.
+
+## [0.1.49] — 2026-04-25
+
+### Bug Fixes
+- **Import Error**: Added `from amx.history import history_store` to `orchestrator.py` to fix NameError during deferred review.
+
+## [0.1.48] — 2026-04-25
+
+### High-level Meta & Review Strategy
+- **`process_schema_meta`**: New `Orchestrator` method that summarizes table descriptions into a schema description.
+- **`process_database_meta`**: New `Orchestrator` method that summarizes schema descriptions into a database description.
+- **`review_strategy`**: Added "individual" (default) vs "deferred" choice at start of `/run`.
+- **`batch_review`**: Implemented deferred review loop in `Orchestrator`.
+- **Local/Ollama Setup**: Made API keys optional in the setup wizard and improved `api_base` / env var handling for local providers.
+- **AssetKind**: Expanded with `SCHEMA` and `DATABASE`.
+- **Comment Write**: Implemented `set_schema_comment` and `set_database_comment` across all database adapters.
+
+## [0.1.47] — 2026-04-25
+
+### Ctrl+C / Cancel Fix
+- Added `except KeyboardInterrupt:` before `except Exception:` in `analyze_run`.
+- In `finally` block: `isinstance(_exc_obj, KeyboardInterrupt)` → `_final_status = "cancelled"` regardless of whether results exist.
+- `/list` status rendered with Rich color markup: green/red/yellow/cyan per status value.
+- `all_results: list = []` initialized before `try:` so it's accessible in `finally` even on early-exit paths.
+
+## [0.1.46] — 2026-04-25
+
+### Status & Display Fix
+- `finish_run()` moved into single `finally:` block; `sys.exc_info()[1]` used to detect exception path vs success path inside `finally`.
+- `/history results`: `top_level` (column=None) rows split out and rendered as a cyan `Panel` with numbered alternatives before the column table.
+- `/history review`: rows sorted by `(is_column_row, id)` so table-level always reviewed first. Added `▶ TABLE DESCRIPTION` / `▶ SCHEMA DESCRIPTION` bold cyan header for top-level items.
+
+## [0.1.45] — 2026-04-25
+
+### Table Description Bug Fix
+- Prompt: Added `TABLE_DESCRIPTION_1/2/3:` alternatives to system prompt (matching `n_alternatives`).
+- Strict parser: Replaced single-line `TABLE_DESCRIPTION:` capture with a streaming multi-line collector using `re.match(r"TABLE_DESCRIPTION(?:_\d+)?:")`.
+- Loose parser: Updated to `re.finditer` across all `TABLE_DESCRIPTION_N:` matches, collapsing into one `MetadataSuggestion(column=None, suggestions=[...all alts...])`.
+- Batching: Added deduplication pass after `ThreadPoolExecutor` join — first table-level suggestion wins, rest discarded.
+
+## [0.1.44] — 2026-04-25
+
+### UI Size and Density Match
+- Refactored `ActiveTrailSpinner` 2x2 logic back down to a clean single character using the highly dense `dots12` rich spinner array (`⢹⢺⢼⣸⣇⡧⡏⡟`).
+- This fixes the UI footprint issue where the spinner was bulky compared to the final `●` marker. The trailing effect is now handled naturally by the physical shape of the 8 dots orbiting inside a single character space.
+
+## [0.1.43] — 2026-04-25
+
+### UI Live Engine Refactoring
+- Transformed `LiveDisplay` from a static rendered component manually pushed via `.update()` to a dynamic `__rich_console__` yielding class.
+- Instructed `rich.live.Live` to consume `self` directly with `refresh_per_second=10`.
+- All `Activity` time tracking naturally re-evaluates 10x per second, giving a smooth fractional realtime clock.
+- The `ActiveTrailSpinner` frame tracking smoothly rotates driven by the background polling.
+
+## [0.1.42] — 2026-04-25
+
+### Real-Time UX & Persistence Hotfix
+- Fixed an issue where SQLite refused to insert `run_results` due to receiving an `AssetKind` Enum instead of string `.value` via `getattr`.
+- Added dynamic Braille spinner (`["⠋", "⠙", "⠹", ...]`) synchronized with `time.monotonic()` directly in the `LiveDisplay._render_activity_tree` active state check.
+- Added elapsed time logs around `_run_enabled_agents` and `_human_review` in `Orchestrator.process_table`.
+
+## [0.1.41] — 2026-04-25
+
+### TUI & Performance Optimization
+- Added Left/Right arrow key navigation and persistent headers to mimic Claude Code CLI.
+- Added `_print_namespace_hint` for all namespaces.
+- Centered the ASCII banner text via `Text.assemble(..., justify="center")`.
+- Refactored `ProfileAgent.run` to batch column sets into a `ThreadPoolExecutor` for concurrent LLM processing.
+- Moved `db.test_connection()` in `_cmd_run_pipeline` until after UI `mode` selection for zero-delay start.
+- Updated `/history list` SQLite query to fetch `scope_json` and compute `Target Scope` strings.
+
+## [0.1.40] — 2026-04-25
+
+### Cost Optimization & UX Refinement
+- Added `PromptDetail` (minimal, standard, detailed, full) + `/prompt-detail` command.
+- Added configurable `n_alternatives` + `/n-alternatives` command.
+- Replaced standard scroll navigation with screen-clearing TUI namespaces.
+
+## [0.1.39] — 2026-04-24
+
+### Persistent LLM Alternatives & Re-evaluation System
+
+**Storage (`amx/storage/sqlite_store.py`)**
+- New `run_results` table: stores every merged `MetadataSuggestion` set (all alternatives list,
+  confidence, source, reasoning) keyed by `run_id` (FK to `analysis_runs`) + `saved_at` timestamp.
+- Two indexes: `idx_run_results_run_id` and `idx_run_results_asset` (schema/table/column).
+- `save_run_results(run_id, suggestions)` — bulk-insert before human review; returns row IDs.
+- `record_evaluation(result_id, *, chosen_description, evaluation)` — updates a row with the
+  user's decision (`accepted | skipped | custom`) and `evaluated_at` timestamp.
+- `get_run_results(run_id, *, unevaluated_only=False)` — fetch all or pending rows for a run.
+- `list_runs_with_result_counts(limit)` — augmented run list with `total_alternatives` + `pending_count`.
+
+**Orchestrator (`amx/agents/orchestrator.py`)**
+- `ReviewResult` dataclass: new `result_id: int | None` field (FK to `run_results.id`).
+- `Orchestrator.__init__`: new `run_id: int | None = None` parameter; stored as `self.run_id`.
+- `_save_merged_suggestions(suggestions, *, asset_kind)` — serializes suggestions to DB before
+  `_human_review` is called; returns `{column_name: row_id}` map.
+- `_record_evaluation(result_id, *, chosen_description, evaluation)` — thin wrapper around `hs.record_evaluation`.
+- `_human_review` / `_review_single`: accept `result_id_map` / `result_id`; call `_record_evaluation`
+  for every decision path (accept-all, accept-all-high, reject-all, one-by-one, custom, skip).
+- Batch mode (`process_tables_batch_mode`): same save + evaluate integration.
+
+**CLI (`amx/cli.py`)**
+- `Orchestrator(... run_id=run_id)` wired in `analyze_run`.
+- `/history results <run_id>` — renders saved alternatives table (row ID, table, column, confidence,
+  top-3 alternatives, evaluation status, chosen description, eval timestamp).
+- `/history review <run_id> [--unevaluated-only] [--apply]`:
+  - Loads alternatives from SQLite for the given run.
+  - `--unevaluated-only` skips rows that already have an evaluation.
+  - Each row shows prior evaluation context; user picks from alternatives or types custom text.
+  - Records the new decision in SQLite.
+  - Without `--apply`: saves newly approved rows to `pending_metadata.json` for later `/apply`.
+  - With `--apply`: connects to DB, applies `COMMENT ON TABLE/COLUMN` immediately.
+- Help text + autocomplete updated: `results` and `review` added to `/history` namespace.
+- `_history_cmd_heads` frozenset extended with `"results"` and `"review"`.
+
+## [0.1.24] — 2026-04-21
+
+### GitHub URL normalization
+- `normalize_github_url()` in `scanner.py`: strips `/blob/…`, `/tree/…`, `/raw/…` and trailing `.git` to extract the repo root URL. SSH URLs are left as-is.
+- Used in `_resolve_github`, `test_git_remote_reachable`, and `_clone_if_remote` (analyzer).
+- Fixes: pasting a GitHub file URL (e.g. `/blob/main/file.sql`) no longer fails with "repo not found".
+
+## [0.1.23] — 2026-04-21
+
+### CLI + scanner
+- `test_source_reachable` / `test_git_remote_reachable` in `scanner.py`; `test_codebase_path_reachable` in `analyzer.py`.
+- `/add-doc-profile`, `/setup` doc paths: reachability-only (no `scan_source` clone).
+- `/add-code-profile`, `/setup` code path: same for Git + local dir.
+
+## [0.1.22] — 2026-04-21
+
+### Docs
+- README: removed Docker / `docker-compose` demo DB section; Quick Start assumes user-supplied PostgreSQL.
+- README: LLM providers table — two columns only (provider, config value).
+- README: database context bullet shortened to “Usage stats” (no pg_stat column enumeration).
+- README: `--config` wording aligned with `amx --config …` startup.
+
+## [0.1.21] — 2026-04-21
+
+### CLI — /docs RAG
+- Renamed user-facing command from `/query` to `/search-docs` (and `/similarity` alias) to avoid implying a chat/LLM interface; implementation unchanged (Chroma `query_texts` embedding similarity).
+- `/query` kept as hidden Click command + deprecation warn; help, autocomplete, root inference updated.
+
+## [0.1.20] — 2026-04-21
+
+### UX — /add-doc-profile
+- Replaced "empty line to finish" batch-then-validate loop with inline validation per path.
+- Each path is validated via `scan_source` immediately after entry; success/warning/error shown instantly.
+- After each valid path, prompts "Add another path?" (y/N) instead of requiring a blank line.
+- Setup wizard doc-profile step uses the same inline-validate + confirm flow.
+- Removed dead `_validate_doc_sources` helper.
+
+## [0.1.19] — 2026-04-21
+
+### Cloud document sources — public-first download
+- Google Drive: `_gdrive_public_download` attempts `drive.google.com/uc?export=download` for public files. `_gdrive_public_export` handles Google Docs/Sheets/Slides public export. Only falls back to Drive API (`_download_google_drive_file_api`, `_list_google_drive_folder_api`) when credentials are configured.
+- SharePoint/OneDrive: `_onedrive_try_public_download` attempts direct download via the sharing URL (with `download=1` fallback). Only falls back to Graph API when `AMX_AZURE_*` credentials are set.
+- Shared helper `_download_to_file` for stream downloads.
+- `_gdrive_has_api_credentials` / `_graph_has_credentials` guard API fallbacks.
+- Error messages now distinguish between "file is private, set credentials" vs "could not parse URL".
+
+### Docs
+- README cloud auth section rewritten: emphasizes zero-setup for public links, credentials only for private/folder access.
+
+## [0.1.18] — 2026-04-21
+
+### CLI
+- `/schema` + `/table` now require `/db` namespace (or root auto-infer → `/db`).
+- Root slash catalog no longer advertises `/schema` / `/table` as global.
+- Updated help/copy in analyze + codebase paths + startup summary to point to `/db /schema`.
+
+### Docs
+- README command table includes `/db` + `/schema` and `/db` + `/table`.
+
+## [0.1.17] — 2026-04-21
+
+### CLI namespaces
+- Added `/llm` and `/code` interactive namespaces + contextual `/help`.
+- Renamed DB profile commands to `db-*` variants; old names error with migration hint.
+- Namespace gating: doc profile commands only in `/docs`, LLM profile commands only in `/llm`, code profile commands only in `/code`.
+- Root slash catalog trimmed to namespaces + global `/save`, `/schema`, `/table`.
+- Auto-infer namespace from root prompt for unambiguous command heads (db/docs/llm/code/analyze) with info line.
+
+### Docs
+- README updated for namespace grouping + new command names.
+
+## [0.1.16] — 2026-04-21
+
+### UX — /docs namespace
+- Reordered `/docs` help + slash autocomplete to prioritize document profile management before RAG operations.
+- Intercepted bare `/query` in-session to print usage + example (avoid Click missing-arg output).
+- Intercepted bare `/scan` and `/ingest` when no effective doc paths exist; replaced generic error with guided steps.
+- Updated `docs_scan` / `docs_ingest` empty-path messaging to reuse the same helper (no `amx docs …` references).
+- Updated `docs_query` empty-store message to slash-first workflow.
+
+### Docs
+- README interactive command table includes document profile commands under `/docs`.
+
+## [0.1.15] — 2026-04-21
+
+### Added
+- `amx/docs/scanner.py`: Google Drive resolution via Drive API v3 (`scan_source` detects drive.google.com / docs.google.com URLs).
+  - Service account: `AMX_GOOGLE_SERVICE_ACCOUNT_JSON`
+  - User OAuth token file: `AMX_GOOGLE_OAUTH_TOKEN_JSON`
+  - Recurses folders; exports Google Workspace native files (Docs/Sheets/Slides) to ingestible formats.
+- SharePoint / OneDrive resolution via Microsoft Graph:
+  - App-only token via MSAL client credentials (`AMX_AZURE_TENANT_ID`, `AMX_AZURE_CLIENT_ID`, `AMX_AZURE_CLIENT_SECRET`)
+  - Share URL → `/shares/{shareId}/driveItem` → download supported extensions; recurse folders.
+
+### Dependencies
+- Added `google-api-python-client`, `google-auth`, `msal` to `pyproject.toml`.
+
+### CLI
+- Removed hard rejection of Drive/SharePoint URLs in `_validate_doc_sources` (now attempts `scan_source` like other sources).
+- Updated user-facing strings that still referenced `amx analyze …` after interactive-only enforcement.
+
+### Docs
+- README: cloud auth section + updated supported sources table.
+
+## [0.1.14] — 2026-04-21
+
+### CLI and workflow
+- Enforced **interactive-only** execution model:
+  - `amx` starts the session, and operational commands are slash-based (`/db`, `/docs`, `/analyze`, etc.).
+  - Direct subcommands from terminal (e.g. `amx db connect`) now fail with a guidance message.
+- Added `/run-apply` shortcut in analyze namespace, mapped to `analyze run --apply`.
+- Updated analyze help text, command listings, and messaging to point to `/run-apply`.
+
+### Apply behavior
+- Added pending metadata persistence in `amx/pending_review.py`:
+  - save/load/clear approved review items at `~/.amx/pending_metadata.json`.
+- `analyze run` now saves approved items for later write-back when not applying immediately.
+- Added `analyze apply` command and session `/apply` path to write pending COMMENTs later.
+- Refactored DB write-back into `apply_review_results_to_db()` so apply-only path does not depend on LLM initialization.
+
+### Setup and source validation
+- Setup DB prompts no longer prefill sample defaults; now require explicit host/port/user/db input with basic validation.
+- Added document source connection tests during profile creation and setup:
+  - validates local/GitHub/S3 source access by scanning at add time.
+  - rejects unsupported Google Drive and SharePoint/OneDrive links with clear guidance.
+
+### Profiling context expansion (sent to LLM)
+- Added table-level metadata:
+  - PK, outgoing FKs, incoming FKs (upstream/downstream), unique/check constraints.
+  - usage stats from `pg_stat_user_tables` (`seq_scan`, `idx_scan`, `n_live_tup`).
+  - schema and database comments.
+  - related table comments for FK neighbors.
+- Added per-column metadata:
+  - `existing_comment`
+  - `cardinality_ratio = distinct_count / row_count`
+- Orchestrator context and profile-agent prompt updated to include all new fields.
+
+### Docs
+- README updated to:
+  - document write-back support clearly.
+  - list supported document sources + unsupported (Drive/SharePoint) explicitly.
+  - list supported file extensions explicitly.
+  - describe interactive-only command usage.
+  - describe exact DB details sent to the profile LLM.
+
+## [0.1.6] — 2026-04-20
+
+### Root cause analysis
+Both bugs (raw ANSI + ghost `amx>`) shared one root cause: `prompt_toolkit.patch_stdout()`.
+- It wraps `sys.stdout` in a proxy object that Rich cannot detect as a terminal, so Rich falls back to dumping raw escape sequences.
+- prompt-toolkit's internal resize handler (SIGWINCH) redraws the prompt line every time the terminal size changes, producing ghost `amx>` lines.
+
+### Fix
+- **Removed `patch_stdout()` entirely.** All Rich output now happens *between* `PromptSession.prompt()` calls using the standard `console` from `amx.utils.console`, which correctly auto-detects the real TTY.
+- Removed all `_ipt_*` helper functions and `_interactive_console()` — no longer needed since the global `console` works correctly.
+- Removed `c: Console | None` parameters from `_handle_session_builtin`, `_cmd_profiles`, `_cmd_use`, `_cmd_add_profile`, `_cmd_remove_profile`, and `_print_session_help`.
+- Removed Rich imports (`Console`, `Panel`, `Table`, `Theme`) from `cli.py` — they live in `amx/utils/console.py`.
+- Removed `patch_stdout` import.
+- Store/restore `SIGWINCH` handler as a safety net.
+
+### Files changed
+- `amx/cli.py` — major simplification (~80 lines removed)
+- `amx/__init__.py` — version bump 0.1.6
+- `pyproject.toml` — version bump 0.1.6
+
+## [0.1.5] — 2026-04-28
+
+### Fixed
+- **Raw ANSI in output (`?[1;35m…`)**: Rich treated stdout as non-color under `patch_stdout()` and emitted markup-ish output; interactive session now prints via a forced-terminal Rich console tied to `sys.stdout`.
+
+## [0.1.4] — 2026-04-28
+
+### Fixed
+- **Terminal.app reflow**: many stacked `amx>` lines after resizing window during interactive session.
+  - Mitigation: wrap the entire interactive session (Rich banner text + prompt loop) in `patch_stdout()` so prompt-toolkit controls stdout during redraw.
+  - Also set `mouse_support=False` on `PromptSession` to avoid extra redraw/mouse protocol interactions on some terminals.
+
+## [0.1.3] — 2026-04-28
+
+### Fixed
+- **pipx / older prompt_toolkit**: `ModuleNotFoundError: prompt_toolkit.formatted_html` when launching `amx`.
+  - Fix: import `HTML` from `prompt_toolkit.formatted_text`.
+  - Dependency: raise floor to `prompt_toolkit>=3.0.40` to reduce mismatched installs.
+
+## [0.1.2] — 2026-04-28
+
+### Fixed
+- **Interactive session + terminal resize**: duplicated `amx>` lines when resizing the terminal while running slash-session commands.
+  - Mitigation: wrap `click` invocations from the interactive loop with `prompt_toolkit.patch_stdout.patch_stdout()` so stdout is owned by the prompt UI during reflow.
+
+### Added
+- **Esc navigation** in interactive session:
+  - `Esc` on an empty prompt exits nested namespace back to root (Claude Code-like “go back”).
+  - `Esc` when text exists clears the current line (quick cancel).
+- **Bottom toolbar hints** in interactive session (↑/↓, Enter, Esc, Ctrl+C).
+
+### Changed
+- **Help readability**: root `/help` examples now render commands in `bright_white` instead of theme “info” cyan/magenta that looked low-contrast in some terminals.
+
+### Repo workflow
+- `CHANGELOG.md` remains **ignored by git** in this repository (per maintainer preference), while a short public changelog is still committed for GitHub consumers.
+
+---
+
+## [0.1.1] — 2026-04-28
+
+### Changed
+- **Interactive session UX** (`amx/cli.py`): increased contrast for prompt-toolkit completion menu meta text so `/` autocomplete stays readable on gray menus.
+
+---
+
+## [0.1.0] — 2026-04-19
+
+### Added
+- **Project scaffolding**: `pyproject.toml`, package structure, `.gitignore`, `docker-compose.yml`.
+- **CLI framework** (`amx/cli.py`): Click-based CLI with command groups for `setup`, `db`, `docs`, and `analyze`.
+- **Interactive session mode** (`amx/cli.py`): running `amx` without subcommands starts a persistent slash-command shell.
+- **Slash autocomplete** (`amx/cli.py`): `/` command discovery via prompt-toolkit completions.
+- **Contextual `/help`**: help text adapts to the active namespace (`/db`, `/docs`, `/analyze`).
+- **Multi DB connection profiles** (`amx/config.py`, `amx/cli.py`): named PostgreSQL profiles stored in `~/.amx/config.yml` with session commands `/profiles`, `/use`, `/add-profile`, `/remove-profile`, `/save`, plus `/schema` and `/table` defaults.
+- **Terminal branding** (`amx/utils/console.py`): neon-style startup banner.
+- **Setup wizard** (`amx setup`): Interactive configuration for database, LLM provider, document paths, and codebase paths.
+- **Database connector** (`amx/db/connector.py`):
+  - Connection testing, schema listing, table listing.
+  - Full table profiling: column types, null counts, distinct counts, min/max, sample data.
+  - Read and write table/column comments (PostgreSQL `COMMENT ON`).
+- **CSV bulk loader** (`amx/db/loader.py`):
+  - Loads CSV files into a PostgreSQL schema using fast `COPY` protocol.
+  - Loaded 78 SAP S/4HANA sample tables into `sap_s6p` schema under the `SAP` database.
+- **LLM provider** (`amx/llm/provider.py`):
+  - Unified interface via LiteLLM supporting OpenAI, Anthropic, Gemini, DeepSeek, Ollama, and custom local endpoints.
+  - Configurable temperature, max tokens, API base URL.
+- **Document scanner** (`amx/docs/scanner.py`):
+  - Multi-source scanning: local files, GitHub repos, S3 buckets.
+  - Supports 15+ file formats (PDF, DOCX, TXT, Markdown, Excel, HTML, PPTX, etc.).
+  - Size estimation with user approval for large document sets.
+- **RAG pipeline** (`amx/docs/rag.py`):
+  - ChromaDB-backed vector store with persistent storage.
+  - Recursive text splitting with configurable chunk size/overlap.
+  - Format-aware document loaders (PDF, DOCX, CSV, Excel, HTML, Markdown, etc.).
+- **Codebase analyzer** (`amx/codebase/analyzer.py`):
+  - Scans local directories or clones GitHub repos.
+  - Regex-based matching of table/column names across 15+ code file types.
+  - Extracts surrounding context lines for each reference.
+- **Agent system** (`amx/agents/`):
+  - **Profile Agent**: Infers metadata from database statistics and column naming patterns.
+  - **RAG Agent**: Enriches metadata using document context from the vector store.
+  - **Code Agent**: Analyzes how assets are used in application code.
+  - **Orchestrator**: Coordinates sub-agents, merges multi-source suggestions via LLM, drives human-in-the-loop review.
+- **Human-in-the-loop review**:
+  - One-by-one review with multiple choice options.
+  - Bulk accept modes: accept-all, accept-all-high-confidence, reject-all.
+  - Custom description input option ("Other").
+  - Skip individual items.
+- **Configuration** (`amx/config.py`):
+  - YAML-based persistent config at `~/.amx/config.yml`.
+  - Dataclass-based config objects for DB, LLM, and source paths.
+- **Rich console UI** (`amx/utils/console.py`):
+  - Color-coded output (info, success, warning, error).
+  - Interactive prompts with autocompletion.
+  - Formatted tables for data display.
+- **Structured logging** (`amx/utils/logging.py`):
+  - File-based debug logging at `~/.amx/logs/amx.log`.
+  - Console-level warning/error output.
+- **Docker setup**: `docker-compose.yml` with PostgreSQL 16 container and persistent volume.
+- **README.md**: Full project documentation with architecture diagram, quick start guide, and CLI reference.

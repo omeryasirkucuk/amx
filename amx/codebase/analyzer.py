@@ -12,8 +12,8 @@ from amx.utils.logging import get_logger
 
 log = get_logger("codebase.analyzer")
 
-MAX_REGEX_ASSETS = 450
-MAX_COL_NAMES = 280
+MAX_REGEX_ASSETS = 5000
+MAX_COL_NAMES = 4000
 
 CODE_EXTENSIONS = {
     ".py", ".sql", ".java", ".scala", ".kt", ".js", ".ts",
@@ -481,7 +481,7 @@ def analyze_codebase(
         try:
             from amx.codebase.code_rag import index_codebase_tree
 
-            index_codebase_tree(root, report=report)
+            index_codebase_tree(root, report=report, source_root=path)
         except Exception as exc:
             log.warning("Semantic code index failed: %s", exc)
     return report

@@ -128,11 +128,12 @@ amx
 | Command | Description |
 |---------|-------------|
 | `/setup` | Interactive first-time configuration wizard |
-| `/config` | Display current configuration |
+| `/config` | Display current configuration, including active profiling guardrails |
 | `/db` + `/db-profiles` | List DB profiles (shows **backend** + connection summary per row) |
 | `/db` + `/use-db [name]` | Switch active profile; interactive picker lists each profile’s engine (PostgreSQL, BigQuery, …) |
 | `/db` + `/add-db-profile [name]` | Add/update a profile: **choose engine first**, then connection fields for that backend |
 | `/db` + `/remove-db-profile <name>` | Remove a DB profile |
+| `/db` + `/profiling [mode] [max_rows] [sample_size]` | Show or set active DB profiling guardrails. Modes: `full`, `sampled`, `metadata`; use `off` for no max-row cutoff. |
 | `/db` + `/schema <name>` | Set default schema context (used by /tables, /analyze, …) |
 | `/db` + `/table <name>` | Set default table context (used by /profile, /analyze, …) |
 | `/db` + `/connect` | Test database connectivity |
@@ -145,12 +146,15 @@ amx
 | `/llm` + `/remove-llm-profile <name>` | Remove an LLM profile |
 | `/llm` + `/prompt-detail [level]` | Show or set prompt detail level (`minimal` \| `standard` \| `detailed` \| `full`). Run without args to see a comparison table of all presets. |
 | `/llm` + `/n-alternatives [N]` | Show or set number of description alternatives per column (1–5, default 3). Fewer = lower cost. |
+| `/llm` + `/llm-batch-size [N]` | Show or set how many columns the Profile Agent sends in one LLM call. |
+| `/llm` + `/batch-context-columns [off\|all\|N]` | Show or set how many non-batch column names are added as context in each profile batch. |
+| `/llm` + `/logprob-thresholds [high] [medium]` | Show or set token-probability thresholds used to calibrate confidence labels when logprobs are available. |
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
 | `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
 | `/code` + `/remove-code-profile <name>` | Remove a codebase profile |
 | `/code` + `/code-scan [path]` | Scan codebase, save results + build `amx_code` semantic index. `--code-profile NAME` |
-| `/code` + `/code-refresh` | Clear scan cache and reset `amx_code` Chroma |
+| `/code` + `/code-refresh` | Clear the active code profile’s scan cache and semantic `amx_code` chunks |
 | `/code` + `/code-results` | View the last cached code-scan results |
 | `/code` + `/code-analyze [TABLE …]` | Run Code Agent standalone (LLM); results saved for next `/run` |
 | `/code` + `/export-code-report [FILE]` | Export scan results to a markdown file |
@@ -176,10 +180,10 @@ amx
 ## Codebase and document intelligence
 
 - **Profiles without switching context**: use `--code-profile` / `--doc-profile` on CLI commands (or the same flags after `/code-scan`, `/ingest`, `/run` in session) instead of `/use-code` / `/use-doc` first.
-- **Code scan cache**: `~/.amx/code_cache/<slug>/` stores a manifest plus serialized scan results so `/run` does not re-walk the repo every time. Use **`--code-refresh`** or **`/code-refresh`** after the tree changes or when you want a clean semantic index.
-- **Semantic code RAG**: Chroma collection **`amx_code`** holds embedded chunks (Python by function/class span; other languages by text split). The Code Agent combines regex-style hits with a few nearest-neighbor chunks. This is **assistive**, not a proof of dataflow—wide schemas use **capped** table/column lists for performance.
+- **Code scan cache**: `~/.amx/code_cache/<slug>/` stores a manifest plus serialized scan results so `/run` does not re-walk the repo every time. Use **`--code-refresh`** or **`/code-refresh`** after the tree changes; refresh clears the active profile’s cache and semantic chunks.
+- **Semantic code RAG**: Chroma collection **`amx_code`** holds embedded chunks (Python by function/class span; other languages by text split). Chunks are tagged by source path, and the Code Agent filters nearest-neighbor retrieval to the active code profile. This is **assistive**, not a proof of dataflow—wide schemas use **capped** table/column lists for performance.
 - **Identifiers outside the DB**: strings that look like catalog objects but are not in the connected table list appear as **secondary context** for the LLM (for example external lake tables).
-- **Doc RAG refresh**: **`/ingest --refresh`** removes existing chunks whose stored `source` path matches the files you are ingesting, then re-upserts—useful when files shrink or move.
+- **Doc RAG refresh**: **`/ingest --refresh`** removes existing chunks whose stored resolved file path or original profile source path matches the files you are ingesting, then re-upserts—useful when files shrink or move, including remote sources downloaded to temporary paths.
 
 ## Supported Document Sources
 
@@ -228,7 +232,7 @@ AMX scans/ingests these extensions:
 | PostgreSQL | `postgresql` | Default; `COMMENT ON TABLE/COLUMN` |
 | Snowflake | `snowflake` | Account, warehouse, role; Snowflake `COMMENT` syntax |
 | Databricks | `databricks` | SQL warehouse HTTP path + personal access token; Unity Catalog optional |
-| BigQuery | `bigquery` | GCP project, dataset; descriptions via `ALTER … SET OPTIONS` |
+| BigQuery | `bigquery` | GCP project, dataset; table/schema/column descriptions via `ALTER … SET OPTIONS`; project-level descriptions are not supported through SQL write-back |
 
 Introspection and profiling use backend-specific SQL where needed; metadata write-back uses each platform’s supported description/comment mechanism.
 
@@ -269,6 +273,16 @@ When AMX profiles a table, it sends the following database-derived context to th
   - existing column comment
 
 AMX does not send full table dumps; it sends summarized profiling signals and small samples for inference.
+
+### Profiling guardrails
+
+Each DB profile has profiling guardrails to control warehouse cost:
+
+- `full` — exact row count plus per-column null count, distinct count, min/max, and samples. If table statistics report more rows than `profiling_max_rows`, AMX skips the expensive full column scans and keeps lightweight metadata plus samples.
+- `sampled` — skips exact row count and full per-column aggregate scans; uses backend table statistics when available and retrieves only small sample values.
+- `metadata` — skips table-data reads entirely; uses schema metadata, comments, constraints, and backend table statistics when available.
+
+Use `/db` then `/profiling` to view the active settings. Use `/profiling sampled 500000 3`, `/profiling metadata`, or `/profiling full off 5` to update them. Settings are saved on the active DB profile in `~/.amx/config.yml`.
 
 ## Configuration
 
@@ -336,6 +350,39 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.72
+
+- **History alternatives UX**: `/results <run_id>` now shows all saved alternatives and reminds you to use `/review <run_id> --apply` to choose a different option and apply it later.
+
+### v0.1.71
+
+- **Realtime connection timer**: Database connection/test spinners now show continuously updating elapsed seconds while waiting.
+
+### v0.1.70
+
+- **History status fix**: `/history list` no longer gets stuck with completed runs shown as `running` due to missing finalization paths.
+
+### v0.1.69
+
+- **LLM batch size save fix**: `/llm-batch-size` now persists correctly in LLM profile config and is honored by `/run`.
+
+### v0.1.68
+
+- **Codebase `__none__` fix**: Selecting the disabled codebase profile during `/run` or `/run-apply` no longer errors.
+
+### v0.1.67
+
+- **`/run-apply` profile switch hotfix**: Fixed `DatabaseConnector` NameError when changing DB profile mid-run.
+- **Cleaner failures**: `/run` no longer emits duplicate `Command failed` lines with debug traceback spill.
+
+### v0.1.66
+
+- **Graceful Ctrl+C during `/run`**: Interrupting prompts now exits with a clean user interruption message instead of Python traceback noise.
+
+### v0.1.65
+
+- **CLI startup hotfix**: Fixed a misindented exception handler in `amx/cli.py` so `amx` imports and `/run` startup behave normally again.
 
 ### v0.1.40
 

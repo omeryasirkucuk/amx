@@ -4,6 +4,89 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.73] — 2026-04-26
+### Added
+- **Profiling guardrails**: Added DB-profile-level profiling modes (`full`, `sampled`, `metadata`) plus `/db` → `/profiling [mode] [max_rows|off] [sample_size]` to control expensive table-data scans.
+- **Config visibility**: `/config` now shows the active DB profile’s profiling guardrails.
+- **Regression coverage**: Added focused unit tests for remote RAG source filtering, code RAG source scoping, BigQuery unsupported database write-back, and metadata-only profiling.
+
+### Changed
+- **Warehouse-cost control**: `profile_table()` now uses backend table statistics before deciding whether to run exact row counts and per-column aggregates. Tables above `profiling_max_rows` skip full column scans.
+- **Code scan efficiency**: Codebase scan setup uses metadata-only column introspection instead of full table profiling when it only needs column names.
+
+### Fixed
+- **Remote document RAG profiles**: Ingested chunks now keep the original configured source path, so remote document profiles still filter correctly after files are downloaded to temporary paths.
+- **Code RAG profile isolation**: Semantic code retrieval now filters by the active code profile/source path instead of querying a global mixed collection.
+- **BigQuery database write-back**: Project-level description write-back now fails explicitly because BigQuery does not support it through SQL.
+- **Databricks row estimate**: Databricks profiling no longer treats `numFiles` as a row count.
+
+## [0.1.72] — 2026-04-26
+### Changed
+- **History results visibility**: `/results <run_id>` now shows **all** saved alternatives for each column (not truncated top-3) so past choices are fully visible.
+- **Re-apply guidance**: `/results` now prints explicit guidance to use `/review <run_id> --apply` to re-pick and apply different alternatives later.
+
+## [0.1.71] — 2026-04-26
+### Changed
+- **Realtime step timer**: `step_spinner` now updates elapsed seconds continuously while running (for example during database connection tests), instead of showing elapsed time only at completion.
+
+## [0.1.70] — 2026-04-26
+### Fixed
+- **History status accuracy**: Restored guaranteed `finish_run(...)` finalization in `/run` so completed/cancelled/failed runs no longer remain stuck as `running`.
+- **Stale run recovery**: New run creation now auto-recovers orphan `running` rows left by unclean shutdowns and marks them as failed with recovery text.
+
+## [0.1.69] — 2026-04-26
+### Fixed
+- **`/llm-batch-size` persistence**: Fixed config serialization so `column_batch_size` is saved in LLM profiles and correctly used during `/run`.
+
+## [0.1.68] — 2026-04-26
+### Fixed
+- **Disabled codebase profile handling**: Selecting `__none__` for Codebase in `/run` or `/run-apply` no longer raises `Unknown codebase profile`.
+
+## [0.1.67] — 2026-04-26
+### Fixed
+- **`/run` profile switch NameError**: Fixed `NameError: name 'DatabaseConnector' is not defined` when changing DB profile in the interactive run flow.
+- **Duplicate error noise**: Removed duplicate `Command failed: ...` lines and debug traceback leakage from the `/run` wrapper by normalizing failures through `click.ClickException`.
+
+## [0.1.66] — 2026-04-26
+### Fixed
+- **Graceful interrupt handling**: Pressing `Ctrl+C` during `/run` prompts now exits cleanly with a user-facing interruption message instead of traceback noise and `UnboundLocalError`.
+
+## [0.1.65] — 2026-04-26
+### Fixed
+- **CLI startup hotfix**: Fixed a misindented exception handler in `amx/cli.py` that prevented `amx` from importing cleanly.
+
+## [0.1.64] — 2026-04-26
+### Added
+- **UI Feedback**: Added a "Testing database connection..." spinner to the `/run` command to provide immediate feedback during the initial connection phase.
+
+## [0.1.63] — 2026-04-25
+### Fixed
+- **Hotfix: BATCH_SIZE regression**: Fixed an `AttributeError` caused by missing references to the newly dynamic batch size property in `ProfileAgent`.
+
+## [0.1.62] — 2026-04-25
+### Changed
+- **Optimized `/run` Workflow**: Reordered prompts to resolve the analysis scope *before* asking for a review strategy. If only one table is selected, the review strategy prompt is now automatically skipped.
+
+## [0.1.61] — 2026-04-25
+### Added
+- **Configurable LLM Batch Size**: Added `/llm-batch-size` command to control how many columns are processed in a single LLM call (default: 10). Larger batches are faster, while smaller batches can improve precision.
+
+## [0.1.60] — 2026-04-25
+### Added
+- **Sliding Window Live Display**: The pipeline activity tree now only shows the last 15-25 items, preventing terminal overflow and scrolling issues during massive runs.
+
+## [0.1.59] — 2026-04-25
+
+### Fixed
+- **BigQuery View Comments**: Fixed a bug where AMX used `ALTER TABLE` for views, causing comment application to fail in BigQuery.
+- **History Re-review Logic**: Fixed an issue where "skipped" items would revert to the first LLM alternative when re-reviewing a past run.
+- **Asset Limits**: Increased the codebase scanner limit from 450 to 5000 assets to support massive schemas with thousands of columns.
+
+## [0.1.58] — 2026-04-25
+
+### Changed
+- **Review Options Parity**: `/history review` now uses the same batch review menu as `/run`, allowing you to quickly "accept-all-high", "accept-all", or "reject-all" instead of evaluating items strictly one-by-one.
+
 ## [0.1.56] — 2026-04-25
 
 ### Fixed

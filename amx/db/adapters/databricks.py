@@ -70,7 +70,8 @@ class DatabricksAdapter(DatabaseAdapter):
                 rows = conn.execute(text(f"DESCRIBE DETAIL {fqn}")).fetchall()
             if rows:
                 row = rows[0]
-                n_rows = int(row._mapping.get("numFiles", 0)) if hasattr(row, "_mapping") else 0
+                mapping = row._mapping if hasattr(row, "_mapping") else {}
+                n_rows = int(mapping.get("numRows") or mapping.get("rowCount") or 0)
                 return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": n_rows}
         except Exception:
             pass
