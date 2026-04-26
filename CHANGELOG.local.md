@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.77] — 2026-04-26
+### CLI Refactor
+- **amx/cli_run.py**: Added a dedicated module for `analyze` scope resolution helpers, codebase report setup, and `/analyze apply`.
+- **amx/cli.py**: Replaced the in-file analyze helper block and apply command with imports/registration from `cli_run`.
+- **tests/test_cli_integration.py**: Added Click integration tests for `/history list` and `/analyze apply`.
+
 ## [0.1.76] — 2026-04-26
 ### CLI Refactor
 - **amx/cli_history.py**: Added a dedicated module for `/history` list/show/stats/events plus saved-result inspection and review/apply flows.

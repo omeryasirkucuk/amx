@@ -322,6 +322,7 @@ amx/
 ├── cli.py              # Interactive shell, command routing, and top-level workflows
 ├── cli_db.py           # /db namespace profile and profiling command helpers
 ├── cli_history.py      # /history namespace commands and review/results flows
+├── cli_run.py          # /analyze namespace helpers, scope resolution, and apply flow
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -352,6 +353,10 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.77
+
+- **CLI maintainability**: `analyze` scope-resolution helpers and `/analyze apply` now live in `amx.cli_run`, and the repo now has real Click-level integration tests covering extracted CLI modules.
 
 ### v0.1.76
 

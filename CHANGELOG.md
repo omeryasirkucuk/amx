@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.77] — 2026-04-26
+### Changed
+- **CLI maintainability**: Extracted `analyze` scope-resolution helpers and `/analyze apply` from `amx/cli.py` into `amx/cli_run.py`, reducing `amx/cli.py` below 3,000 lines.
+
+### Added
+- **Integration coverage**: Added Click-level integration tests for `/history list` and `/analyze apply` so future CLI refactors can be validated against the real command wiring.
+
 ## [0.1.76] — 2026-04-26
 ### Changed
 - **CLI maintainability**: Extracted `/history` list/show/stats/events/results/review commands from `amx/cli.py` into `amx/cli_history.py`, including the saved-alternative review/apply flow.
