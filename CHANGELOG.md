@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.92] — 2026-04-27
+### Fixed
+- **Manual command error handling**: `/manual` commands now catch database-resolution/connection failures and report them with actionable guidance instead of leaking raw driver exceptions into the session. Interactive prompt cancellation during manual edits is also handled cleanly instead of surfacing as an empty `Command failed:` message.
+
+### Added
+- **Integration coverage**: Added a manual-edit integration test for friendly database connection error reporting.
+
 ## [0.1.91] — 2026-04-27
 ### Fixed
 - **Manual edit guidance**: In the interactive `/manual` namespace, typing bare `/edit` now shows the valid targets and concrete examples instead of only a generic missing-parameter error.

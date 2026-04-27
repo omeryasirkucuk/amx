@@ -410,6 +410,11 @@ Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md
 
 - **Manual edit guidance**: Inside `/manual`, typing bare `/edit` now prints the valid targets and concrete examples like `/edit database` and `/edit column vbeln`.
 
+### v0.1.92
+
+- **Manual error messages**: `/manual` inspect/edit/monitor now collapse database connection problems into a concise message with a concrete recovery step: check the active DB profile and run `/db` then `/connect`.
+- **Manual cancellation**: Cancelling an interactive manual edit prompt now exits cleanly as `Manual edit cancelled.` instead of bubbling up as an empty command failure.
+
 ### v0.1.88
 
 - **CLI package layout**: Extracted command modules now live under `amx.cli_support.commands`, and `amx.cli_support.root_commands` owns setup, config, and DB registration.

@@ -260,6 +260,33 @@ class ManualIntegrationTests(unittest.TestCase):
         self.assertIn("Updated column sap.vbak.vbeln", result.output)
         self.assertEqual(FakeDatabaseConnector.calls, [("sap", "vbak", "vbeln", "Sales document")])
 
+    def test_manual_edit_table_connection_error_is_reported_cleanly(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.current_schema = "sap"
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def resolve_asset_kind(self, schema, table):
+                raise Exception("connection refused")
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "manual", "edit", "table", "vbak", "--comment", "x", "--yes"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Could not resolve the manual edit target", result.output)
+        self.assertIn("run /db then /connect", result.output)
+
 
 if __name__ == "__main__":
     unittest.main()

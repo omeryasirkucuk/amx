@@ -2,6 +2,11 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.92] — 2026-04-27
+### Manual UX Fix
+- **amx/cli_support/commands/manual.py**: Added friendly database error reporting for inspect/edit/monitor paths and clean cancellation handling for interactive manual-edit prompts.
+- **tests/test_cli_integration.py**: Added coverage for the manual table-edit connection-failure path so raw backend exceptions do not leak as the primary user message.
+
 ## [0.1.91] — 2026-04-27
 ### Session UX Fix
 - **amx/cli_support/session.py**: Added a `/manual` shortcut guard so bare `/edit` prints the valid targets and examples before Click dispatch.
