@@ -1093,6 +1093,7 @@ class SearchCatalog:
 
     def _exact_candidates(self, db_profile: str, question: str, limit: int = 20) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
+        temporal_tokens = {"date", "dates", "time", "timestamp", "tarih", "tarihler", "zaman"}
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1106,13 +1107,20 @@ class SearchCatalog:
         hits: list[dict[str, Any]] = []
         for row in rows:
             search_text = str(row["search_text"] or "").lower()
+            dtype = str(row["dtype"] or "").lower()
+            column_name = str(row["column_name"] or "").lower()
             score = 0.0
             for token in tokens:
                 if token in search_text:
                     score += 1.0
-                if token == str(row["column_name"] or "").lower():
+                if token == column_name:
                     score += 2.0
                 if token == str(row["table_name"] or "").lower():
+                    score += 1.5
+            if temporal_tokens.intersection(tokens):
+                if any(part in dtype for part in ("date", "time", "timestamp")):
+                    score += 2.0
+                if any(part in column_name for part in ("date", "time", "valid", "recordstamp")):
                     score += 1.5
             if score <= 0:
                 continue
@@ -1212,9 +1220,27 @@ class SearchCatalog:
         question: str,
         limit: int = 8,
         entity_hints: list[str] | None = None,
+        query_variants: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         settings = self.get_settings(db_profile)
-        exact_hits = self._exact_candidates(db_profile, question, limit=max(limit * 2, 10))
+        variants: list[str] = []
+        for value in [question] + list(query_variants or []):
+            text = str(value or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        exact_hits: list[dict[str, Any]] = []
+        seen_exact: dict[int, dict[str, Any]] = {}
+        for variant in variants:
+            for row in self._exact_candidates(db_profile, variant, limit=max(limit * 2, 10)):
+                entity_id = int(row["id"])
+                existing = seen_exact.get(entity_id)
+                if existing is None:
+                    seen_exact[entity_id] = row
+                    continue
+                existing = dict(existing)
+                existing["match_score"] = float(existing.get("match_score") or 0.0) + float(row.get("match_score") or 0.0)
+                seen_exact[entity_id] = existing
+        exact_hits = list(seen_exact.values())
         if not exact_hits:
             return []
         by_id: dict[int, dict[str, Any]] = {}
@@ -1223,23 +1249,24 @@ class SearchCatalog:
                 continue
             by_id[int(row["id"])] = row
         if settings.get("enable_vector_search", "true").lower() == "true":
-            for hit in self.index.query(question, db_profile=db_profile, n_results=max(limit * 2, 10)):
-                entity_id = int((hit.get("metadata") or {}).get("entity_id") or 0)
-                if not entity_id:
-                    continue
-                row = by_id.get(entity_id)
-                if row is None:
-                    with self._connect() as conn:
-                        fetched = self._entity_row(conn, entity_id)
-                    if not fetched or fetched["entity_kind"] != "column":
+            for variant in variants:
+                for hit in self.index.query(variant, db_profile=db_profile, n_results=max(limit * 2, 10)):
+                    entity_id = int((hit.get("metadata") or {}).get("entity_id") or 0)
+                    if not entity_id:
                         continue
-                    row = dict(fetched)
-                    row["match_score"] = 0.0
-                    row["vector_only"] = True
-                    by_id[entity_id] = row
-                dist = hit.get("distance")
-                if dist is not None:
-                    row["match_score"] = float(row.get("match_score") or 0.0) + max(0.0, 3.0 - float(dist))
+                    row = by_id.get(entity_id)
+                    if row is None:
+                        with self._connect() as conn:
+                            fetched = self._entity_row(conn, entity_id)
+                        if not fetched or fetched["entity_kind"] != "column":
+                            continue
+                        row = dict(fetched)
+                        row["match_score"] = 0.0
+                        row["vector_only"] = True
+                        by_id[entity_id] = row
+                    dist = hit.get("distance")
+                    if dist is not None:
+                        row["match_score"] = float(row.get("match_score") or 0.0) + max(0.0, 3.0 - float(dist))
         hints = [str(item).strip().lower() for item in (entity_hints or []) if str(item).strip()]
         rows = list(by_id.values())
         if hints:

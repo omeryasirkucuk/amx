@@ -41,6 +41,8 @@ You are merging metadata suggestions from multiple sources for database columns.
 
 For each column below, multiple sources have proposed descriptions.
 Produce a single best description that combines insights from all sources.
+Write descriptions and reasoning in {target_language}. Keep the response labels
+(`COLUMN`, `BEST_DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
 
 {columns_text}
 
@@ -57,6 +59,9 @@ You are a data architect. Propose a concise description for the database SCHEMA:
 Based on the following tables and their primary purposes:
 {tables_summary}
 
+Write the description and reasoning in {target_language}. Keep the response labels
+(`DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+
 Respond in this exact format:
 DESCRIPTION: <concise schema description>
 CONFIDENCE: <HIGH|MEDIUM|LOW>
@@ -67,6 +72,9 @@ DATABASE_META_PROMPT = """\
 You are a data architect. Propose a concise description for this DATABASE.
 The following schemas and their purposes were identified:
 {schemas_summary}
+
+Write the description and reasoning in {target_language}. Keep the response labels
+(`DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
 
 Respond in this exact format:
 DESCRIPTION: <concise database description>
@@ -242,7 +250,11 @@ class Orchestrator:
             return []
 
         tables_text = "\n\n".join(table_summaries)
-        prompt = SCHEMA_META_PROMPT.format(schema=schema, tables_summary=tables_text)
+        prompt = SCHEMA_META_PROMPT.format(
+            schema=schema,
+            tables_summary=tables_text,
+            target_language=getattr(self.llm.cfg, "language", "english") or "english",
+        )
         
         with step_spinner(f"Generating description for schema {schema}"):
             res = self.llm.chat([{"role": "user", "content": prompt}])
@@ -298,7 +310,10 @@ class Orchestrator:
             return []
 
         schemas_text = "\n\n".join(schema_summaries)
-        prompt = DATABASE_META_PROMPT.format(schemas_summary=schemas_text)
+        prompt = DATABASE_META_PROMPT.format(
+            schemas_summary=schemas_text,
+            target_language=getattr(self.llm.cfg, "language", "english") or "english",
+        )
         
         with step_spinner("Generating description for database"):
             res = self.llm.chat([{"role": "user", "content": prompt}])
@@ -572,7 +587,13 @@ class Orchestrator:
 
         columns_text = "\n\n".join(columns_blocks)
         messages = [
-            {"role": "user", "content": MERGE_PROMPT.format(columns_text=columns_text)},
+            {
+                "role": "user",
+                "content": MERGE_PROMPT.format(
+                    columns_text=columns_text,
+                    target_language=getattr(self.llm.cfg, "language", "english") or "english",
+                ),
+            },
         ]
         est = estimate_tokens(messages)
         with step_spinner(

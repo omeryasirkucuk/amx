@@ -100,7 +100,7 @@ In an interactive `amx` session, configuration is grouped by namespace:
 - `/db` — database profiles + introspection. Entering `/db` explains how to list profiles, switch engines with `/use-db` (each option shows `[backend] connection summary`), and add a profile with `/add-db-profile` (engine first, then credentials)
 - `/metadata` — inspect, edit, and monitor database/schema/table/column comments without running LLM agents (`/manual` is a compatibility alias)
 - `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
-- `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
+- `/llm` — LLM profiles, preferred language, and cost controls (`/llm-profiles`, `/language`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
 - `/search` — LLM-backed metadata discussion grounded on generated/manual metadata, relationships, and code evidence
 
@@ -156,6 +156,7 @@ amx
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
 | `/llm` + `/add-llm-profile [name]` | Add/update an LLM profile (interactive) |
 | `/llm` + `/remove-llm-profile <name>` | Remove an LLM profile |
+| `/llm` + `/language [name]` | Show or set the preferred metadata/search language for the active LLM profile |
 | `/llm` + `/prompt-detail [level]` | Show or set prompt detail level (`minimal` \| `standard` \| `detailed` \| `full`). Run without args to see a comparison table of all presets. |
 | `/llm` + `/n-alternatives [N]` | Show or set number of description alternatives per column (1–5, default 3). Fewer = lower cost. |
 | `/llm` + `/llm-batch-size [N]` | Show or set how many columns the Profile Agent sends in one LLM call. |
@@ -164,6 +165,7 @@ amx
 
 Notes:
 - `/llm` settings are saved per **active LLM profile** and command feedback prints the profile name that was updated.
+- `/llm /language` controls both generated metadata language in `/run` and answer language in `/search`.
 - Profile selections made in the interactive `/run` wizard are persisted to `~/.amx/config.yml` immediately.
 - `max_tokens` defaults to `4096`; when `finish_reason=length`, AMX now halts processing so truncated JSON is not parsed silently.
 - `force_logprobs` defaults to `true` to force-request logprobs even when provider capability metadata is inconsistent.
@@ -368,9 +370,10 @@ Answering behavior:
 
 - `/search` is chat-first: inside the `/search` tab, plain text is treated as a metadata question
 - each question is interpreted by the active LLM, then grounded against catalog rows, relationships, and code evidence
-- semantic questions use effective metadata first, with exact/fuzzy name matching and vector support as secondary signals
+- semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as secondary signals
 - join questions prioritize FK relationships, then heuristics, then observed code usage
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
+- `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
 - if no active LLM profile exists, `/search ask` fails closed and tells you to configure `/llm`
 
 ## Project Structure

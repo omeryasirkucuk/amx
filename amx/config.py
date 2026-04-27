@@ -307,6 +307,7 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
 class LLMConfig:
     provider: str = ""  # openai | openrouter | anthropic | gemini | local | deepseek | …
     model: str = ""
+    language: str = "english"
     api_key: str = ""
     api_base: str | None = None
     temperature: float = 0.2
@@ -318,6 +319,7 @@ class LLMConfig:
     prompt_detail: str = "standard"  # minimal | standard | detailed | full
     logprob_high: float = 0.85
     logprob_medium: float = 0.50
+    force_logprobs: bool = True
 
     @property
     def prompt_detail_cfg(self) -> PromptDetail:
@@ -330,6 +332,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     return LLMConfig(
         provider=str(m.get("provider", "")),
         model=str(m.get("model", "")),
+        language=str(m.get("language", "english") or "english"),
         api_key=str(m.get("api_key", "")),
         api_base=m.get("api_base"),
         temperature=float(m.get("temperature", 0.2)),
@@ -341,6 +344,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         prompt_detail=str(m.get("prompt_detail", "standard")),
         logprob_high=float(m.get("logprob_high", 0.85)),
         logprob_medium=float(m.get("logprob_medium", 0.50)),
+        force_logprobs=bool(m.get("force_logprobs", True)),
     )
 
 
@@ -348,6 +352,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
     return {
         "provider": llm.provider,
         "model": llm.model,
+        "language": llm.language,
         "api_key": llm.api_key,
         "api_base": llm.api_base,
         "temperature": llm.temperature,
@@ -359,6 +364,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "prompt_detail": llm.prompt_detail,
         "logprob_high": llm.logprob_high,
         "logprob_medium": llm.logprob_medium,
+        "force_logprobs": llm.force_logprobs,
     }
 
 
@@ -380,6 +386,7 @@ class AMXConfig:
     active_doc_profile: str = ""
     code_profiles: dict[str, str] = field(default_factory=dict)
     active_code_profile: str = ""
+    write_through_config: bool = True
 
     CONFIG_DIR: str = field(
         default_factory=lambda: str(Path.home() / ".amx"), init=False
@@ -438,6 +445,7 @@ class AMXConfig:
                         cfg.code_profiles[str(name)] = path
 
             cfg.active_code_profile = str(data.get("active_code_profile") or "")
+            cfg.write_through_config = bool(data.get("write_through_config", True))
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
@@ -511,6 +519,7 @@ class AMXConfig:
             "active_code_profile": self.active_code_profile,
             "selected_schemas": self.selected_schemas,
             "selected_tables": self.selected_tables,
+            "write_through_config": self.write_through_config,
         }
         payload = yaml.dump(data, default_flow_style=False, sort_keys=False)
         # Atomic write to reduce config corruption/state loss on interruptions.
@@ -540,9 +549,11 @@ class AMXConfig:
             raise KeyError(f"Unknown DB profile: {name}")
         self.active_db_profile = name
         self.db = self.db_profiles[name]
+        self._autosave()
 
     def upsert_db_profile(self, name: str, db: DBConfig) -> None:
         self.db_profiles[name] = db
+        self._autosave()
 
     def remove_db_profile(self, name: str) -> None:
         if name not in self.db_profiles:
@@ -553,6 +564,7 @@ class AMXConfig:
         if self.active_db_profile == name:
             self.active_db_profile = next(iter(self.db_profiles.keys()))
             self.db = self.db_profiles[self.active_db_profile]
+        self._autosave()
 
     def apply_active_llm_profile(self) -> None:
         name = self.active_llm_profile or "default"
@@ -569,9 +581,11 @@ class AMXConfig:
         self.active_llm_profile = name
         self.llm = replace(self.llm_profiles[name])
         self.llm.api_key = self.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
+        self._autosave()
 
     def upsert_llm_profile(self, name: str, llm: LLMConfig) -> None:
         self.llm_profiles[name] = replace(llm)
+        self._autosave()
 
     def remove_llm_profile(self, name: str) -> None:
         if name not in self.llm_profiles:
@@ -582,9 +596,11 @@ class AMXConfig:
         if self.active_llm_profile == name:
             self.active_llm_profile = next(iter(self.llm_profiles.keys()))
             self.llm = replace(self.llm_profiles[self.active_llm_profile])
+        self._autosave()
 
     def upsert_doc_profile(self, name: str, paths: list[str]) -> None:
         self.doc_profiles[name] = list(paths)
+        self._autosave()
 
     def remove_doc_profile(self, name: str) -> None:
         if name not in self.doc_profiles:
@@ -592,9 +608,11 @@ class AMXConfig:
         del self.doc_profiles[name]
         if self.active_doc_profile == name:
             self.active_doc_profile = next(iter(self.doc_profiles.keys()), "")
+        self._autosave()
 
     def upsert_code_profile(self, name: str, path: str) -> None:
         self.code_profiles[name] = path
+        self._autosave()
 
     def remove_code_profile(self, name: str) -> None:
         if name not in self.code_profiles:
@@ -602,6 +620,16 @@ class AMXConfig:
         del self.code_profiles[name]
         if self.active_code_profile == name:
             self.active_code_profile = next(iter(self.code_profiles.keys()), "")
+        self._autosave()
+
+    def _autosave(self) -> None:
+        if not self.write_through_config:
+            return
+        try:
+            self.save()
+        except Exception:
+            # Write-through persistence is best-effort and should never break runtime flow.
+            pass
 
     def effective_doc_paths(self) -> list[str]:
         if self.doc_profiles:

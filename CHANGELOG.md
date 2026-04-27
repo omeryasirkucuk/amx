@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.100] — 2026-04-27
+### Changed
+- **Language-aware LLM profiles**: Added a preferred language setting per LLM profile so `/run`, schema/database summaries, and `/search` answers can follow the user's chosen language instead of always defaulting to English.
+- **Multilingual `/search` retrieval**: `/search ask` now plans multilingual search variants, including canonical English retrieval phrases, so Turkish and other non-English questions can retrieve the same metadata that English prompts would find.
+- **Improved `/search` UX**: `/search ask` now shows live progress stages while interpreting, retrieving, and synthesizing, and search-result descriptions wrap cleanly in the table output instead of truncating awkwardly.
+
+### Added
+- **`/llm /language`**: Added a dedicated command for viewing or changing the preferred output language of the active LLM profile.
+- **Regression coverage**: Added tests for multilingual semantic retrieval and language-aware `/search` behavior.
+
 ## [0.1.99] — 2026-04-27
 ### Changed
 - **LLM-native `/search` copilot**: `/search ask` is now a chat-first metadata discussion surface that uses the active LLM for query interpretation, typo recovery, follow-up handling, and grounded answer synthesis.

@@ -328,3 +328,34 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(second.intent, "explain_table")
         self.assertTrue(second.rows)
         self.assertEqual(second.rows[0]["table_name"], "vbak")
+
+    def test_turkish_question_uses_multilingual_search_variants(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=TableProfile(
+                schema="sap_test",
+                name="adr6",
+                asset_kind=AssetKind.TABLE,
+                row_count=10,
+                columns=[
+                    ColumnProfile(name="date_from", dtype="DATE", nullable=False, existing_comment="Effective start date"),
+                    ColumnProfile(name="valid_to", dtype="TIMESTAMP", nullable=True, existing_comment="End validity timestamp"),
+                ],
+            ),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.llm.language = "turkish"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"date related columns","search_mode":"semantic_concept","entity_hints":[],"search_queries":["Tarihlerle alakali kolonlar hangileri","date related columns","date columns"],"needs_typo_recovery":false,"reason":"multilingual semantic search"}',
+                "Tarih ile ilgili en guclu kolonlar `sap_test.adr6.date_from` ve `sap_test.adr6.valid_to` gorunuyor.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("Tarihlerle alakali kolonlar hangileri")
+        self.assertTrue(answer.rows)
+        self.assertEqual(answer.rows[0]["column_name"], "date_from")
+        self.assertEqual(answer.confidence, "high")
+        self.assertIn("date related columns", answer.details["plan"]["search_queries"])

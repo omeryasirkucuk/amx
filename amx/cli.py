@@ -51,7 +51,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
         f"[{cfg.db.backend}] {cfg.db.display_summary}"
     )
     llm_line = (
-        f"{cfg.llm.provider or '(unset)'}/{cfg.llm.model or '(unset)'}"
+        f"{cfg.llm.provider or '(unset)'}/{cfg.llm.model or '(unset)'} [{cfg.llm.language or 'english'}]"
         if cfg.llm.model or cfg.llm.provider
         else "(not configured — run /setup)"
     )

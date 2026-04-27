@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.100] — 2026-04-27
+### Multilingual Search + LLM Language Control
+- **amx/config.py / amx/cli_support/commands/profiles.py / amx/cli_support/session.py / amx/cli.py / amx/cli_support/root_commands.py**: Added `LLMConfig.language`, exposed it through interactive profile setup and the new `/llm /language` command, and surfaced the active language in CLI summaries.
+- **amx/agents/profile_agent.py / amx/agents/rag_agent.py / amx/agents/code_agent.py / amx/agents/orchestrator.py**: Made generated metadata descriptions, merge outputs, and schema/database summaries follow the configured language while keeping parse-critical field labels in English.
+- **amx/search/service.py / amx/search/catalog.py / amx/cli_support/commands/search.py**: Added multilingual query normalization, canonical English retrieval variants, live `/search ask` progress stages, and wrapped description rendering for long result text.
+- **tests/test_search_catalog.py**: Added multilingual retrieval coverage for Turkish semantic questions against English metadata.
+
 ## [0.1.99] — 2026-04-27
 ### LLM-Native Search Copilot
 - **amx/search/service.py**: Replaced the rule-based `/search` router with an LLM-backed interpretation, retrieval-planning, short session-memory, and grounded answer-synthesis flow.

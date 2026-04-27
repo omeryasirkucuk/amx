@@ -18,6 +18,10 @@ _BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert. Given database profile information for a table
 and its columns, infer what each column likely represents.
 
+Write descriptions and reasoning in {target_language}. Keep the response labels
+(`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, `TABLE_DESCRIPTION_1`, etc.)
+in English exactly as shown.
+
 For EACH column provide:
 1. A concise description (1-2 sentences).
 {alt_instruction}
@@ -40,7 +44,7 @@ TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>
 """
 
 
-def _build_system_prompt(n_alternatives: int) -> str:
+def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
     """Build the system prompt dynamically for the requested number of alternatives."""
     n = max(1, min(5, n_alternatives))
     if n == 1:
@@ -60,6 +64,7 @@ def _build_system_prompt(n_alternatives: int) -> str:
             for i in range(2, n + 1)
         )
     return _BASE_SYSTEM_PROMPT.format(
+        target_language=target_language,
         alt_instruction=alt_instruction,
         extra_items=extra_items,
         desc_lines=desc_lines,
@@ -256,7 +261,7 @@ class ProfileAgent(BaseAgent):
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
         """Build the messages list for a single profile batch — shared by run() and collect_messages()."""
         user_msg = self._build_prompt(ctx)
-        system = _build_system_prompt(self._n_alternatives)
+        system = _build_system_prompt(self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english")
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

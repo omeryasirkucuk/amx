@@ -7,6 +7,9 @@ from collections.abc import Callable
 from typing import Any
 
 import click
+from rich import box
+from rich.table import Table
+from rich.text import Text
 
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
@@ -14,7 +17,8 @@ from amx.search.catalog import SearchCatalog
 from amx.search.service import SearchService
 from amx.services.analyze_scope import finalize_scope as _finalize_scope
 from amx.storage.sqlite_store import history_store
-from amx.utils.console import ask_choice, ask_multi_choice, confirm, error, info, render_table, success, warn
+from amx.utils.console import ask_choice, ask_multi_choice, confirm, console, error, info, render_table, success, warn
+from amx.utils.live_display import get_display
 
 LogEvent = Callable[..., None]
 
@@ -52,22 +56,26 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
             ],
         )
         return
-    render_table(
-        "Search matches",
-        ["Schema", "Table", "Column", "Source", "Conf", "Score", "Description"],
-        [
-            [
-                row.get("schema_name", ""),
-                row.get("table_name", ""),
-                row.get("column_name", "") or "-",
-                row.get("effective_source_kind", ""),
-                row.get("current_confidence", ""),
-                f"{float(row.get('rank_score') or row.get('score') or 0):.2f}",
-                str(row.get("effective_description", "") or "")[:100],
-            ]
-            for row in rows
-        ],
-    )
+    table = Table(title="Search matches", show_lines=True, box=box.SIMPLE_HEAVY)
+    table.add_column("Schema", style="cyan", no_wrap=True)
+    table.add_column("Table", style="cyan", no_wrap=True)
+    table.add_column("Column", style="cyan", no_wrap=True)
+    table.add_column("Source", style="cyan", no_wrap=True)
+    table.add_column("Conf", style="cyan", no_wrap=True)
+    table.add_column("Score", style="cyan", no_wrap=True, justify="right")
+    table.add_column("Description", style="white", overflow="fold", max_width=72)
+    for row in rows:
+        desc = str(row.get("effective_description", "") or "")
+        table.add_row(
+            str(row.get("schema_name", "") or ""),
+            str(row.get("table_name", "") or ""),
+            str(row.get("column_name", "") or "-"),
+            str(row.get("effective_source_kind", "") or ""),
+            str(row.get("current_confidence", "") or ""),
+            f"{float(row.get('rank_score') or row.get('score') or 0):.2f}",
+            Text(desc),
+        )
+    console.print(table)
 
 
 def _search_scope_from_answer(answer: Any) -> dict[str, list[str]]:
@@ -120,7 +128,22 @@ def _search_results_payload(answer: Any) -> dict[str, Any]:
 
 
 def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, log_event: LogEvent) -> None:
-    answer = svc.ask(question_text)
+    display = get_display()
+    started_display = False
+    if not display.is_active:
+        display.start(
+            schema=cfg.current_schema or "",
+            table=cfg.current_table or "",
+            mode="search",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        )
+        started_display = True
+    try:
+        answer = svc.ask(question_text)
+    finally:
+        if started_display:
+            display.stop()
     hs = history_store()
     run_id: int | None = None
     if hs is not None:

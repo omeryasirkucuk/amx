@@ -21,6 +21,9 @@ You are given:
 
 Based on how the code uses these assets, infer a description for EACH column.
 
+Write descriptions and reasoning in {target_language}. Keep the response labels
+(`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+
 Respond in this format for each column (one block per column):
 
 COLUMN: <column_name>
@@ -31,13 +34,13 @@ REASONING: <what code patterns support this>
 """
 
 
-def _build_system_prompt(n_alternatives: int) -> str:
+def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
     n = max(1, min(5, n_alternatives))
     desc_lines = "\n".join(
         f"DESCRIPTION_{i}: <alternative>"
         for i in range(2, n + 1)
     ) if n > 1 else ""
-    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines).strip() + "\n"
+    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines, target_language=target_language).strip() + "\n"
 
 
 class CodeAgent(BaseAgent):
@@ -137,7 +140,7 @@ class CodeAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Code references:\n\n" + "\n\n".join(all_code_blocks)
         )
-        system = _build_system_prompt(self._n_alternatives)
+        system = _build_system_prompt(self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english")
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

@@ -198,7 +198,7 @@ def register_root_commands(
         info(f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}")
         info(
             f"Active LLM profile: {cfg.active_llm_profile} → "
-            f"{cfg.llm.provider}/{cfg.llm.model}"
+            f"{cfg.llm.provider}/{cfg.llm.model} [{cfg.llm.language or 'english'}]"
         )
         if cfg.llm_profiles:
             info("LLM profiles: " + ", ".join(sorted(cfg.llm_profiles.keys())))

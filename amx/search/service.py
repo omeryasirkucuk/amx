@@ -10,6 +10,7 @@ from typing import Any
 from amx.config import AMXConfig
 from amx.llm.provider import LLMProvider
 from amx.search.catalog import SearchAnswer, SearchCatalog
+from amx.utils.console import step_spinner
 
 _SESSION_MEMORY: dict[str, list[dict[str, Any]]] = {}
 
@@ -21,6 +22,7 @@ class SearchPlan:
     normalized_question: str
     search_mode: str
     entity_hints: list[str]
+    search_queries: list[str]
     needs_typo_recovery: bool
     reason: str
 
@@ -124,6 +126,7 @@ class SearchService:
     def _interpret_question(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
         llm = self._llm_provider()
         memory = self._memory_summary()
+        target_language = self.cfg.llm.language or "english"
         system = (
             "You interpret metadata-search questions for an AMX /search copilot.\n"
             "Return JSON only.\n"
@@ -132,6 +135,9 @@ class SearchService:
             "Allowed intent values: find_columns, join_candidates, explain_table, unsupported.\n"
             "Set out_of_domain=true for greetings, small talk, or requests not about database metadata.\n"
             "Use entity_hints for schema.table, table names, or important field names. Preserve original spelling even if it looks like a typo.\n"
+            "Always include search_queries as a short list of retrieval phrases. For semantic questions, include the user's original wording plus an English canonical retrieval phrase. "
+            "If the preferred output language is not English, also include one phrase in that preferred language when useful.\n"
+            "normalized_question should be the best canonical English retrieval phrase when the question is not already English.\n"
             "If the question looks like a field/code lookup such as MANDT, VBELN, mangdt, bukrs, choose name_lookup.\n"
             "If the question asks how to join two tables, choose join_candidates.\n"
             "If the question asks what a table does, choose table_explain.\n"
@@ -143,6 +149,7 @@ class SearchService:
                 "session_memory": memory,
                 "current_schema": self.cfg.current_schema or "",
                 "current_table": self.cfg.current_table or "",
+                "preferred_output_language": target_language,
             },
             ensure_ascii=True,
         )
@@ -162,6 +169,12 @@ class SearchService:
             normalized_question=str(payload.get("normalized_question") or question).strip() or question,
             search_mode=str(payload.get("search_mode") or "semantic_concept"),
             entity_hints=[str(item).strip() for item in (payload.get("entity_hints") or []) if str(item).strip()],
+            search_queries=[
+                str(item).strip()
+                for item in (payload.get("search_queries") or [])
+                if str(item).strip()
+            ]
+            or [str(payload.get("normalized_question") or question).strip() or question],
             needs_typo_recovery=bool(payload.get("needs_typo_recovery")),
             reason=str(payload.get("reason") or "").strip(),
         )
@@ -197,7 +210,11 @@ class SearchService:
             limit = max(1, int(self.settings.get("max_retrieved_entities", self.settings.get("max_results", "8"))))
         except Exception:
             limit = 8
-        details: dict[str, Any] = {"search_mode": plan.search_mode, "entity_hints": list(plan.entity_hints)}
+        details: dict[str, Any] = {
+            "search_mode": plan.search_mode,
+            "entity_hints": list(plan.entity_hints),
+            "search_queries": list(plan.search_queries),
+        }
         if plan.search_mode == "join_candidates":
             table_paths = self._resolve_table_paths(plan.entity_hints, question)
             details["resolved_tables"] = table_paths[:2]
@@ -236,6 +253,7 @@ class SearchService:
             plan.normalized_question or question,
             limit=limit,
             entity_hints=plan.entity_hints,
+            query_variants=plan.search_queries,
         )
         return rows, details
 
@@ -264,13 +282,15 @@ class SearchService:
         retrieval_details: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
         llm = self._llm_provider()
+        target_language = self.cfg.llm.language or "english"
         system = (
             "You are AMX /search, a metadata copilot.\n"
             "Answer only from the retrieved metadata evidence you are given.\n"
             "If evidence is weak or empty, say so explicitly and suggest a narrower follow-up.\n"
             "Reject small-talk or out-of-domain input by saying /search is for metadata discussion.\n"
             "Keep the answer concise, practical, and grounded.\n"
-            "Do not invent table names, joins, or column meanings that are not in the evidence."
+            "Do not invent table names, joins, or column meanings that are not in the evidence.\n"
+            f"Write the final answer in {target_language}."
         )
         user = json.dumps(
             {
@@ -322,7 +342,7 @@ class SearchService:
         score = float(top.get("rank_score") or top.get("score") or 0.0)
         if plan.search_mode == "name_lookup":
             return "high" if score >= 8.0 else "medium"
-        if score >= 7.0:
+        if score >= 5.0:
             return "high"
         if score >= 4.0:
             return "medium"
@@ -362,7 +382,8 @@ class SearchService:
                 details={"reason": "catalog_not_ready", "status": status},
             )
         try:
-            plan, interpretation_usage = self._interpret_question(clean_question)
+            with step_spinner("Search Copilot: interpreting question"):
+                plan, interpretation_usage = self._interpret_question(clean_question)
         except Exception as exc:
             return SearchAnswer(
                 intent="unsupported",
@@ -387,9 +408,11 @@ class SearchService:
                     "tokens": interpretation_usage,
                 },
             )
-        rows, retrieval_details = self._retrieve(clean_question, plan)
+        with step_spinner("Search Copilot: retrieving grounded evidence"):
+            rows, retrieval_details = self._retrieve(clean_question, plan)
         try:
-            answer_text, answer_usage = self._synthesize_answer(clean_question, plan, rows, retrieval_details)
+            with step_spinner("Search Copilot: synthesizing answer"):
+                answer_text, answer_usage = self._synthesize_answer(clean_question, plan, rows, retrieval_details)
         except Exception as exc:
             return SearchAnswer(
                 intent=plan.intent,
