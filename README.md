@@ -192,7 +192,7 @@ Notes:
 | `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
 | `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
-| `/search` + `/ask <question>` | Ask conversational metadata questions with LLM grounding over the internal search catalog |
+| `/search` + `/ask <question>` | Ask conversational metadata questions with LLM grounding over the internal search catalog, including databases, schemas, table counts, joins, and column meaning |
 | `/search` + `/status` | Show catalog counts, freshness, and recent sync jobs |
 | `/search` + `/sources` | Show enabled search settings and evidence-source coverage |
 | `/search` + `/config [key] [value]` | View or update `/search` settings for the active DB profile |
@@ -370,10 +370,12 @@ Answering behavior:
 
 - `/search` is chat-first: inside the `/search` tab, plain text is treated as a metadata question
 - each question is interpreted by the active LLM, then grounded against catalog rows, relationships, and code evidence
+- `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as secondary signals
-- join questions prioritize FK relationships, then heuristics, then observed code usage
+- join questions prioritize FK relationships, then heuristics, then observed code usage; if you ask from a single table, AMX can list joinable neighboring tables directly
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
+- aggregate answers avoid dumping the generic schema/table/column result grid when that grid would be irrelevant to the user question
 - if no active LLM profile exists, `/search ask` fails closed and tells you to configure `/llm`
 
 ## Project Structure

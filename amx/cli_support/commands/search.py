@@ -40,6 +40,25 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
         info("No results.")
         return
     first = rows[0]
+    if first.get("row_type") == "joinable_table" or "target_table_name" in first:
+        render_table(
+            "Joinable tables",
+            ["Base table", "Target schema", "Target table", "Base columns", "Target columns", "Type", "Score", "Source"],
+            [
+                [
+                    f"{row.get('schema_name', '')}.{row.get('table_name', '')}",
+                    row.get("target_schema_name", ""),
+                    row.get("target_table_name", ""),
+                    row.get("left_column", ""),
+                    row.get("right_column", ""),
+                    row.get("relationship_type", ""),
+                    f"{float(row.get('score') or 0):.2f}",
+                    row.get("source", ""),
+                ]
+                for row in rows
+            ],
+        )
+        return
     if "left_column" in first:
         render_table(
             "Join candidates",
@@ -161,7 +180,7 @@ def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, l
         info("Provenance: " + "; ".join(answer.provenance))
     if svc.settings.get("show_confidence", "true").lower() == "true":
         info(f"Confidence: {answer.confidence}")
-    if answer.rows:
+    if answer.rows and bool(answer.details.get("display_rows", True)):
         _render_search_rows(answer.rows)
     payload = _search_results_payload(answer)
     status = "success"

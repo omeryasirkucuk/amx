@@ -1214,6 +1214,156 @@ class SearchCatalog:
         ranked.sort(key=lambda item: float(item.get("rank_score") or 0.0), reverse=True)
         return ranked[:limit]
 
+    def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT database_name, COUNT(*) AS entity_count
+                FROM catalog_entities
+                WHERE db_profile = ? AND COALESCE(database_name, '') != ''
+                GROUP BY database_name
+                ORDER BY database_name
+                """,
+                (db_profile,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def known_schemas(
+        self,
+        db_profile: str,
+        *,
+        database_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [db_profile]
+        where = ["db_profile = ?", "entity_kind = 'table'", "COALESCE(schema_name, '') != ''"]
+        if database_name:
+            where.append("LOWER(database_name) = LOWER(?)")
+            params.append(database_name)
+        query = f"""
+            SELECT
+                schema_name,
+                MIN(database_name) AS database_name,
+                COUNT(*) AS table_count
+            FROM catalog_entities
+            WHERE {' AND '.join(where)}
+            GROUP BY schema_name
+            ORDER BY schema_name
+        """
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_tables(
+        self,
+        db_profile: str,
+        *,
+        schema_name: str | None = None,
+        database_name: str | None = None,
+    ) -> int:
+        params: list[Any] = [db_profile]
+        where = ["db_profile = ?", "entity_kind = 'table'"]
+        if schema_name:
+            where.append("LOWER(schema_name) = LOWER(?)")
+            params.append(schema_name)
+        if database_name:
+            where.append("LOWER(database_name) = LOWER(?)")
+            params.append(database_name)
+        query = f"SELECT COUNT(*) AS cnt FROM catalog_entities WHERE {' AND '.join(where)}"
+        with self._connect() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        return int((row["cnt"] if row else 0) or 0)
+
+    def joinable_tables(self, db_profile: str, table_path: str, limit: int = 8) -> list[dict[str, Any]]:
+        if "." not in (table_path or ""):
+            return []
+        schema_name, table_name = table_path.split(".", 1)
+        with self._connect() as conn:
+            base = conn.execute(
+                """
+                SELECT id, schema_name, table_name
+                FROM catalog_entities
+                WHERE db_profile = ? AND entity_kind = 'table'
+                  AND LOWER(schema_name) = LOWER(?) AND LOWER(table_name) = LOWER(?)
+                LIMIT 1
+                """,
+                (db_profile, schema_name, table_name),
+            ).fetchone()
+            if not base:
+                return []
+            rows = conn.execute(
+                """
+                SELECT
+                    rel.relationship_type,
+                    rel.score,
+                    rel.source,
+                    rel.details_json,
+                    src.schema_name AS src_schema_name,
+                    src.table_name AS src_table_name,
+                    dst.schema_name AS dst_schema_name,
+                    dst.table_name AS dst_table_name
+                FROM catalog_relationships rel
+                JOIN catalog_entities src ON src.id = rel.from_entity_id
+                JOIN catalog_entities dst ON dst.id = rel.to_entity_id
+                WHERE src.db_profile = ? AND dst.db_profile = ?
+                  AND (rel.from_entity_id = ? OR rel.to_entity_id = ?)
+                ORDER BY rel.score DESC, rel.last_seen DESC
+                """,
+                (db_profile, db_profile, int(base["id"]), int(base["id"])),
+            ).fetchall()
+        results: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        base_path = f"{base['schema_name']}.{base['table_name']}"
+        for rel in rows:
+            details = _json_loads(rel["details_json"], {})
+            src_path = f"{rel['src_schema_name']}.{rel['src_table_name']}"
+            if src_path.lower() == base_path.lower():
+                target_schema = str(rel["dst_schema_name"] or "")
+                target_table = str(rel["dst_table_name"] or "")
+                left_cols = list(details.get("constrained_columns") or details.get("referred_columns") or [])
+                right_cols = list(details.get("referred_columns") or details.get("constrained_columns") or [])
+            else:
+                target_schema = str(rel["src_schema_name"] or "")
+                target_table = str(rel["src_table_name"] or "")
+                left_cols = list(details.get("referred_columns") or details.get("constrained_columns") or [])
+                right_cols = list(details.get("constrained_columns") or details.get("referred_columns") or [])
+            if not target_schema or not target_table:
+                continue
+            if target_schema.lower() == schema_name.lower() and target_table.lower() == table_name.lower():
+                continue
+            join_left = ", ".join(str(item) for item in left_cols if str(item))
+            join_right = ", ".join(str(item) for item in right_cols if str(item))
+            key = (
+                target_schema.lower(),
+                target_table.lower(),
+                str(rel["relationship_type"] or "").lower(),
+                f"{join_left}|{join_right}",
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(
+                {
+                    "row_type": "joinable_table",
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "target_schema_name": target_schema,
+                    "target_table_name": target_table,
+                    "left_column": join_left,
+                    "right_column": join_right,
+                    "relationship_type": str(rel["relationship_type"] or ""),
+                    "source": str(rel["source"] or ""),
+                    "score": float(rel["score"] or 0.0),
+                }
+            )
+        results.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                item.get("target_schema_name", ""),
+                item.get("target_table_name", ""),
+            )
+        )
+        return results[:limit]
+
     def search_columns(
         self,
         db_profile: str,

@@ -131,8 +131,8 @@ class SearchService:
             "You interpret metadata-search questions for an AMX /search copilot.\n"
             "Return JSON only.\n"
             "You must classify the request and never answer the question itself.\n"
-            "Allowed search_mode values: semantic_concept, name_lookup, join_candidates, table_explain, unsupported.\n"
-            "Allowed intent values: find_columns, join_candidates, explain_table, unsupported.\n"
+            "Allowed search_mode values: semantic_concept, name_lookup, join_candidates, joinable_tables, table_explain, list_databases, list_schemas, count_tables, unsupported.\n"
+            "Allowed intent values: find_columns, join_candidates, explain_table, list_databases, list_schemas, count_tables, unsupported.\n"
             "Set out_of_domain=true for greetings, small talk, or requests not about database metadata.\n"
             "Use entity_hints for schema.table, table names, or important field names. Preserve original spelling even if it looks like a typo.\n"
             "Always include search_queries as a short list of retrieval phrases. For semantic questions, include the user's original wording plus an English canonical retrieval phrase. "
@@ -140,7 +140,11 @@ class SearchService:
             "normalized_question should be the best canonical English retrieval phrase when the question is not already English.\n"
             "If the question looks like a field/code lookup such as MANDT, VBELN, mangdt, bukrs, choose name_lookup.\n"
             "If the question asks how to join two tables, choose join_candidates.\n"
+            "If the question asks which tables can be joined with one table, choose joinable_tables.\n"
             "If the question asks what a table does, choose table_explain.\n"
+            "If the question asks which databases are known, choose list_databases.\n"
+            "If the question asks which schemas exist in a database or profile, choose list_schemas.\n"
+            "If the question asks how many tables exist in a schema or database, choose count_tables.\n"
             "Otherwise choose semantic_concept."
         )
         user = json.dumps(
@@ -222,6 +226,14 @@ class SearchService:
                 return [], details
             rows = self.catalog.join_candidates(self.db_profile, table_paths[0], table_paths[1], limit=limit)
             return rows, details
+        if plan.search_mode == "joinable_tables":
+            table_paths = self._resolve_table_paths(plan.entity_hints, question)
+            details["resolved_tables"] = table_paths[:1]
+            if not table_paths:
+                return [], details
+            rows = self.catalog.joinable_tables(self.db_profile, table_paths[0], limit=limit)
+            details["display_rows"] = True
+            return rows, details
         if plan.search_mode == "table_explain":
             table_paths = self._resolve_table_paths(plan.entity_hints, question)
             details["resolved_tables"] = table_paths[:1]
@@ -248,6 +260,65 @@ class SearchService:
             rows = self.catalog.name_search_columns(self.db_profile, query_text, limit=limit)
             details["query_text"] = query_text
             return rows, details
+        if plan.search_mode == "list_databases":
+            rows = self.catalog.known_databases(self.db_profile)
+            details["display_rows"] = False
+            details["result_kind"] = "catalog_overview"
+            return rows, details
+        if plan.search_mode == "list_schemas":
+            database_name = ""
+            known_databases = {
+                str(row.get("database_name") or "").lower(): str(row.get("database_name") or "")
+                for row in self.catalog.known_databases(self.db_profile)
+            }
+            for hint in plan.entity_hints:
+                normalized = str(hint or "").strip().lower()
+                if normalized and "." not in normalized and normalized in known_databases:
+                    database_name = known_databases[normalized]
+                    break
+            rows = self.catalog.known_schemas(self.db_profile, database_name=database_name or None)
+            details["database_name"] = database_name
+            details["display_rows"] = False
+            details["result_kind"] = "catalog_overview"
+            return rows, details
+        if plan.search_mode == "count_tables":
+            schema_name = ""
+            database_name = ""
+            schema_lookup = {
+                str(row.get("schema_name") or "").lower(): str(row.get("schema_name") or "")
+                for row in self.catalog.known_schemas(self.db_profile)
+            }
+            db_lookup = {
+                str(row.get("database_name") or "").lower(): str(row.get("database_name") or "")
+                for row in self.catalog.known_databases(self.db_profile)
+            }
+            for hint in plan.entity_hints:
+                normalized = str(hint or "").strip().lower()
+                if not normalized or "." in normalized:
+                    continue
+                if normalized in schema_lookup and not schema_name:
+                    schema_name = schema_lookup[normalized]
+                    continue
+                if normalized in db_lookup and not database_name:
+                    database_name = db_lookup[normalized]
+                    continue
+                if self.catalog.find_table_candidates(self.db_profile, normalized, limit=1):
+                    table_paths = self._resolve_table_paths([normalized], question)
+                    if table_paths and not schema_name:
+                        schema_name = table_paths[0].split(".", 1)[0]
+                        continue
+            if not schema_name and self.cfg.current_schema:
+                schema_name = self.cfg.current_schema
+            count = self.catalog.count_tables(
+                self.db_profile,
+                schema_name=schema_name or None,
+                database_name=database_name or None,
+            )
+            details["schema_name"] = schema_name
+            details["database_name"] = database_name
+            details["display_rows"] = False
+            details["result_kind"] = "aggregate"
+            return [{"row_type": "aggregate", "metric": "table_count", "value": count}], details
         rows = self.catalog.search_columns(
             self.db_profile,
             plan.normalized_question or question,
@@ -264,12 +335,18 @@ class SearchService:
                 "schema": row.get("schema_name", ""),
                 "table": row.get("table_name", ""),
                 "column": row.get("column_name", ""),
-                "source": row.get("effective_source_kind", ""),
-                "confidence": row.get("current_confidence", ""),
+                "target_schema": row.get("target_schema_name", ""),
+                "target_table": row.get("target_table_name", ""),
+                "source": row.get("effective_source_kind", row.get("source", "")),
+                "confidence": row.get("current_confidence", row.get("confidence", "")),
                 "rank_score": row.get("rank_score", row.get("score", 0)),
                 "description": row.get("effective_description", ""),
                 "relationship_type": row.get("relationship_type", ""),
                 "row_type": row.get("row_type", "column"),
+                "metric": row.get("metric", ""),
+                "value": row.get("value", ""),
+                "database_name": row.get("database_name", ""),
+                "table_count": row.get("table_count", ""),
             }
             payload.append(item)
         return payload
@@ -317,11 +394,16 @@ class SearchService:
         labels: list[str] = []
         if plan.search_mode == "join_candidates":
             labels.append("structural relationships")
+        if plan.search_mode == "joinable_tables":
+            labels.append("structural relationships")
+            labels.append("catalog relationships")
         if plan.search_mode == "table_explain":
             labels.append("effective table metadata")
+        if plan.search_mode in {"list_databases", "list_schemas", "count_tables"}:
+            labels.append("catalog inventory")
         if plan.search_mode == "name_lookup":
             labels.append("exact or fuzzy field-name matching")
-        else:
+        elif plan.search_mode not in {"list_databases", "list_schemas", "count_tables", "joinable_tables"}:
             labels.append("effective metadata")
         if any((row.get("source") or "") == "code" for row in rows):
             labels.append("behavioral code evidence")
@@ -334,8 +416,10 @@ class SearchService:
     def _confidence(self, plan: SearchPlan, rows: list[dict[str, Any]]) -> str:
         if plan.out_of_domain or not rows:
             return "low"
+        if plan.search_mode in {"list_databases", "list_schemas", "count_tables"}:
+            return "high"
         top = rows[0]
-        if plan.search_mode == "join_candidates":
+        if plan.search_mode in {"join_candidates", "joinable_tables"}:
             if str(top.get("relationship_type") or "") in {"foreign_key", "incoming_foreign_key"}:
                 return "high"
             return "medium"
@@ -400,7 +484,7 @@ class SearchService:
                 question=question,
                 rows=[],
                 confidence="low",
-                summary="This does not look like a metadata question. `/search` is for discussing tables, columns, joins, and metadata meaning.",
+                summary="This does not look like a metadata question. `/search` is for discussing databases, schemas, tables, columns, joins, and metadata meaning.",
                 provenance=[],
                 details={
                     "reason": "out_of_domain",
@@ -461,6 +545,7 @@ class SearchService:
             details={
                 "plan": asdict(plan),
                 "retrieval": retrieval_details,
+                "display_rows": bool(retrieval_details.get("display_rows", True)),
                 "scope": self._scope_from_tables(tables),
                 "tokens": _merge_usage(interpretation_usage, answer_usage),
                 "llm_usage": {

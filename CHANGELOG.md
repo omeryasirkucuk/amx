@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.101] — 2026-04-27
+### Changed
+- **Broader `/search ask` coverage**: `/search` now treats database inventory, schema listing, table counting, and single-table join-discovery questions as valid metadata discussion instead of rejecting them as out-of-domain.
+- **Smarter grounded retrieval**: Added catalog-level retrieval modes for known databases, known schemas, scoped table counts, and joinable-table discovery from one table path.
+- **More relevant `/search` rendering**: Aggregate answers no longer dump the generic schema/table/column grid after the LLM response; AMX only renders result tables when they are actually relevant to the question.
+
+### Added
+- **Regression coverage**: Added tests for catalog-overview questions, schema-scoped table counts, and single-table join discovery.
+
 ## [0.1.100] — 2026-04-27
 ### Changed
 - **Language-aware LLM profiles**: Added a preferred language setting per LLM profile so `/run`, schema/database summaries, and `/search` answers can follow the user's chosen language instead of always defaulting to English.

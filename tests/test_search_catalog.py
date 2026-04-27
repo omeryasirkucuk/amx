@@ -100,6 +100,17 @@ class SearchCatalogTests(unittest.TestCase):
             ],
         )
 
+    def _customer_profile(self) -> TableProfile:
+        return TableProfile(
+            schema="sap",
+            name="kna1",
+            asset_kind=AssetKind.TABLE,
+            row_count=5,
+            existing_comment="Customer master",
+            primary_key=["kunnr"],
+            columns=[ColumnProfile(name="kunnr", dtype="TEXT", nullable=False, existing_comment="Customer id")],
+        )
+
     def _search_cfg(self) -> AMXConfig:
         cfg = AMXConfig()
         cfg.active_db_profile = "default"
@@ -225,20 +236,42 @@ class SearchCatalogTests(unittest.TestCase):
             db_profile="default",
             db_backend="postgresql",
             database_name="SAP",
-            profile=TableProfile(
-                schema="sap",
-                name="kna1",
-                asset_kind=AssetKind.TABLE,
-                row_count=5,
-                primary_key=["kunnr"],
-                columns=[ColumnProfile(name="kunnr", dtype="TEXT", nullable=False, existing_comment="Customer id")],
-            ),
+            profile=self._customer_profile(),
             query_usage={},
         )
         joins = self.catalog.join_candidates("default", "sap.vbak", "sap.kna1")
         self.assertTrue(joins)
         self.assertEqual(joins[0]["left_column"], "kunnr")
         self.assertEqual(joins[0]["right_column"], "kunnr")
+
+    def test_catalog_inventory_and_joinable_tables(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        databases = self.catalog.known_databases("default")
+        self.assertEqual(databases[0]["database_name"], "SAP")
+
+        schemas = self.catalog.known_schemas("default", database_name="SAP")
+        self.assertEqual(schemas[0]["schema_name"], "sap")
+        self.assertEqual(schemas[0]["table_count"], 2)
+
+        self.assertEqual(self.catalog.count_tables("default", schema_name="sap"), 2)
+
+        joinable = self.catalog.joinable_tables("default", "sap.vbak")
+        self.assertTrue(joinable)
+        self.assertEqual(joinable[0]["target_table_name"], "kna1")
+        self.assertEqual(joinable[0]["relationship_type"], "foreign_key")
 
     def test_out_of_domain_question_returns_no_matches(self) -> None:
         self.catalog.sync_table_profile(
@@ -359,3 +392,79 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["column_name"], "date_from")
         self.assertEqual(answer.confidence, "high")
         self.assertIn("date related columns", answer.details["plan"]["search_queries"])
+
+    def test_catalog_overview_question_lists_known_databases(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"list_databases","out_of_domain":false,"normalized_question":"which databases are known","search_mode":"list_databases","entity_hints":[],"search_queries":["hangi databaseler hakkinda bilgi sahibisin","which databases are known"],"needs_typo_recovery":false,"reason":"catalog inventory"}',
+                "AMX su anda `SAP` veritabani hakkinda bilgi sahibi.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("Hangi databaseler hakkinda bilgi sahibisin")
+        self.assertEqual(answer.intent, "list_databases")
+        self.assertFalse(answer.details.get("display_rows", True))
+        self.assertEqual(answer.confidence, "high")
+        self.assertEqual(answer.rows[0]["database_name"], "SAP")
+
+    def test_count_tables_question_is_not_out_of_domain(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"how many tables are in sap","search_mode":"count_tables","entity_hints":["sap"],"search_queries":["sap icinde kac tablo var","how many tables are in sap"],"needs_typo_recovery":false,"reason":"aggregate metadata question"}',
+                "`sap` schema icinde 2 tablo var.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("sap icinde kac tablo var")
+        self.assertEqual(answer.intent, "count_tables")
+        self.assertEqual(answer.rows[0]["value"], 2)
+        self.assertEqual(answer.confidence, "high")
+
+    def test_single_table_join_question_returns_joinable_tables(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"join_candidates","out_of_domain":false,"normalized_question":"which tables can join with sap.vbak","search_mode":"joinable_tables","entity_hints":["sap.vbak"],"search_queries":["sap.vbak tablosunu hangi tablolar ile joinleyebilirim","which tables can join with sap.vbak"],"needs_typo_recovery":false,"reason":"single-table join discovery"}',
+                "`sap.vbak` tablosu `sap.kna1` ile `kunnr` kolonu uzerinden join edilebilir.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("sap.vbak tablosunu hangi tablolar ile joinleyebilirim")
+        self.assertEqual(answer.intent, "join_candidates")
+        self.assertTrue(answer.rows)
+        self.assertEqual(answer.rows[0]["target_table_name"], "kna1")
+        self.assertEqual(answer.confidence, "high")

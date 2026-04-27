@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.101] — 2026-04-27
+### Broader Metadata Discussion In `/search`
+- **amx/search/service.py**: Expanded the LLM interpreter/retrieval contract so `/search ask` can answer catalog-overview questions like known databases, schema lists, scoped table counts, and single-table joinability in addition to column semantics and two-table joins.
+- **amx/search/catalog.py**: Added catalog inventory helpers (`known_databases`, `known_schemas`, `count_tables`) plus direct relationship-based `joinable_tables` discovery for one-table join questions.
+- **amx/cli_support/commands/search.py**: Suppressed irrelevant generic result grids for aggregate answers and added a dedicated joinable-table renderer when the question is about which tables can join to one base table.
+- **tests/test_search_catalog.py**: Added regression tests for catalog inventory questions, schema table counts, and single-table join discovery.
+
 ## [0.1.100] — 2026-04-27
 ### Multilingual Search + LLM Language Control
 - **amx/config.py / amx/cli_support/commands/profiles.py / amx/cli_support/session.py / amx/cli.py / amx/cli_support/root_commands.py**: Added `LLMConfig.language`, exposed it through interactive profile setup and the new `/llm /language` command, and surfaced the active language in CLI summaries.
