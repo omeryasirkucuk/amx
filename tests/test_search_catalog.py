@@ -111,6 +111,19 @@ class SearchCatalogTests(unittest.TestCase):
             columns=[ColumnProfile(name="kunnr", dtype="TEXT", nullable=False, existing_comment="Customer id")],
         )
 
+    def _semantic_customer_profile(self) -> TableProfile:
+        return TableProfile(
+            schema="sap",
+            name="z_customer_map",
+            asset_kind=AssetKind.TABLE,
+            row_count=4,
+            existing_comment="Customer mapping helper",
+            columns=[
+                ColumnProfile(name="customer_id", dtype="TEXT", nullable=False, existing_comment="Customer id business key"),
+                ColumnProfile(name="customer_name", dtype="TEXT", nullable=True, existing_comment="Customer display name"),
+            ],
+        )
+
     def _search_cfg(self) -> AMXConfig:
         cfg = AMXConfig()
         cfg.active_db_profile = "default"
@@ -466,3 +479,53 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertTrue(answer.rows)
         self.assertEqual(answer.rows[0]["target_table_name"], "kna1")
         self.assertEqual(answer.confidence, "high")
+
+    def test_semantic_join_inference_surfaces_non_fk_candidate(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._semantic_customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"join_candidates","out_of_domain":false,"normalized_question":"which columns can join between sap.vbak and sap.z_customer_map","search_mode":"join_candidates","question_class":"join_discovery","entity_hints":["sap.vbak","sap.z_customer_map"],"search_queries":["sap.vbak and sap.z_customer_map join columns"],"needs_typo_recovery":false,"reason":"semantic join reasoning"}',
+                "`sap.vbak.kunnr` and `sap.z_customer_map.customer_id` look like a likely business-key join.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("sap.vbak ile sap.z_customer_map hangi kolonlardan joinlenir")
+        self.assertTrue(answer.rows)
+        self.assertEqual(answer.rows[0]["relationship_type"], "semantic_join_candidate")
+        self.assertEqual(answer.rows[0]["confidence_band"], "possible")
+        self.assertIn("semantic join inference", answer.provenance)
+
+    def test_inventory_answer_records_live_verification_metadata(self) -> None:
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        fake_db = type(
+            "FakeDB",
+            (),
+            {
+                "list_schemas": lambda self: ["sap"],
+                "list_tables": lambda self, schema: ["vbak", "kna1"],
+            },
+        )()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"how many tables do we have","search_mode":"count_tables","question_class":"inventory","entity_hints":[],"search_queries":["how many tables do we have"],"needs_typo_recovery":false,"answer_language":"english","ambiguity_flags":["missing_scope"],"reason":"inventory count"}'
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=fake_db):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("how many tables do we have")
+        self.assertEqual(answer.confidence, "high")
+        self.assertTrue(answer.details["verification"]["live_verified"])
+        self.assertIn("current schema", answer.summary)

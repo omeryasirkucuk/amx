@@ -197,6 +197,7 @@ Notes:
 | `/search` + `/status` | Show catalog counts, freshness, and recent sync jobs |
 | `/search` + `/sources` | Show enabled search settings and evidence-source coverage |
 | `/search` + `/config [key] [value]` | View or update `/search` settings for the active DB profile |
+| `/search` + `/context-detail [minimal\|standard\|rich\|deep]` | Control how much catalog/code/history context `/search` sends into grounded reasoning |
 | `/search` + `/sync [--schema …] [--table …]` | Sync DB structure/comments and cached code evidence into the catalog |
 | `/search` + `/rebuild` | Rebuild effective search state and the `amx_search` vector index |
 | `/history` + `/list [-n N]` | List recent runs with end-to-end and model-processing duration |
@@ -370,13 +371,15 @@ Sync behavior:
 Answering behavior:
 
 - `/search` is chat-first: inside the `/search` tab, plain text is treated as a metadata question
-- each question is interpreted by the active LLM, then grounded against catalog rows, relationships, and code evidence
+- each question now runs through a dedicated **Search Agent** pipeline: interpretation, retrieval planning, grounded retrieval, live verification for high-risk structural claims, answer synthesis, and optional follow-up action suggestions
 - `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as secondary signals
-- join questions prioritize FK relationships, then heuristics, then observed code usage; if you ask from a single table, AMX can list joinable neighboring tables directly
+- join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
+- `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, and action suggestions into history/event payloads so answers remain diagnosable
+- `/search /context-detail` controls how much neighborhood, code, and history context is exposed to the search synthesizer for cost/latency tuning
 - aggregate answers avoid dumping the generic schema/table/column result grid when that grid would be irrelevant to the user question
 - if no active LLM profile exists, `/search ask` fails closed and tells you to configure `/llm`
 
@@ -409,9 +412,10 @@ amx/
 │       ├── search.py       # /search namespace commands
 │       └── run.py          # /analyze helpers, scope resolution, and apply flow
 ├── search/
+│   ├── agent.py        # Multi-step Search Agent (planner, retriever, verifier, synthesizer)
 │   ├── catalog.py      # SQLite-backed metadata catalog and lifecycle sync
 │   ├── index.py        # Chroma `amx_search` vector index
-│   └── service.py      # LLM-backed query planning, memory, retrieval orchestration, and answer synthesis
+│   └── service.py      # Thin compatibility facade over the Search Agent
 ├── services/
 │   ├── __init__.py         # Service-layer package marker
 │   ├── analyze_scope.py    # Scope resolution, asset filtering, and codebase preparation

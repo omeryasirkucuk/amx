@@ -43,7 +43,7 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
     if first.get("row_type") == "joinable_table" or "target_table_name" in first:
         render_table(
             "Joinable tables",
-            ["Base table", "Target schema", "Target table", "Base columns", "Target columns", "Type", "Score", "Source"],
+            ["Base table", "Target schema", "Target table", "Base columns", "Target columns", "Type", "Band", "Score", "Source"],
             [
                 [
                     f"{row.get('schema_name', '')}.{row.get('table_name', '')}",
@@ -52,6 +52,7 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
                     row.get("left_column", ""),
                     row.get("right_column", ""),
                     row.get("relationship_type", ""),
+                    row.get("confidence_band", ""),
                     f"{float(row.get('score') or 0):.2f}",
                     row.get("source", ""),
                 ]
@@ -62,12 +63,13 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
     if "left_column" in first:
         render_table(
             "Join candidates",
-            ["Left column", "Right column", "Type", "Score", "Source"],
+            ["Left column", "Right column", "Type", "Band", "Score", "Source"],
             [
                 [
                     row.get("left_column", ""),
                     row.get("right_column", ""),
                     row.get("relationship_type", ""),
+                    row.get("confidence_band", ""),
                     f"{float(row.get('score') or 0):.2f}",
                     row.get("source", ""),
                 ]
@@ -125,12 +127,19 @@ def _search_scope_from_answer(answer: Any) -> dict[str, list[str]]:
 def _search_results_payload(answer: Any) -> dict[str, Any]:
     return {
         "intent": answer.intent,
+        "question_class": answer.details.get("question_class", ""),
         "question": answer.question,
         "confidence": answer.confidence,
         "summary": answer.summary,
         "provenance": answer.provenance,
         "retrieval": answer.details.get("retrieval", {}),
+        "verification": answer.details.get("verification", {}),
+        "policy": answer.details.get("policy", {}),
         "plan": answer.details.get("plan", {}),
+        "actions": answer.details.get("actions", []),
+        "ambiguity_flags": answer.details.get("ambiguity_flags", []),
+        "evidence_sources": answer.details.get("evidence_sources", []),
+        "stage_metrics": answer.details.get("stage_metrics", []),
         "reason": answer.details.get("reason", ""),
         "rows": [
             {
@@ -140,6 +149,8 @@ def _search_results_payload(answer: Any) -> dict[str, Any]:
                 "score": row.get("rank_score", row.get("score", 0)),
                 "source": row.get("effective_source_kind", row.get("source", "")),
                 "relationship_type": row.get("relationship_type", ""),
+                "confidence_band": row.get("confidence_band", ""),
+                "verified_live": bool(row.get("verified_live")),
             }
             for row in (answer.rows or [])[:10]
         ],
@@ -180,6 +191,11 @@ def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, l
         info("Provenance: " + "; ".join(answer.provenance))
     if svc.settings.get("show_confidence", "true").lower() == "true":
         info(f"Confidence: {answer.confidence}")
+    for action in answer.details.get("actions", []) or []:
+        action_name = str((action or {}).get("action") or "").strip()
+        action_reason = str((action or {}).get("reason") or "").strip()
+        if action_name:
+            info(f"Suggested next step: {action_name}" + (f" — {action_reason}" if action_reason else ""))
     if answer.rows and bool(answer.details.get("display_rows", True)):
         _render_search_rows(answer.rows)
     payload = _search_results_payload(answer)
@@ -204,10 +220,15 @@ def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, l
         details={
             "question": question_text,
             "intent": answer.intent,
+            "question_class": answer.details.get("question_class", ""),
             "confidence": answer.confidence,
             "reason": answer.details.get("reason", ""),
             "scope": _search_scope_from_answer(answer),
             "provenance": answer.provenance,
+            "actions": answer.details.get("actions", []),
+            "evidence_sources": answer.details.get("evidence_sources", []),
+            "ambiguity_flags": answer.details.get("ambiguity_flags", []),
+            "stage_metrics": answer.details.get("stage_metrics", []),
         },
     )
 
@@ -317,6 +338,9 @@ def register_search_commands(
         rows = [
             ["qa.ready", "yes" if total_entities > 0 else "no"],
             ["llm.ready", llm_ready],
+            ["context.detail", status["settings"].get("context_detail", "standard")],
+            ["verify.live_inventory", status["settings"].get("verify_live_inventory", "true")],
+            ["semantic_join_inference", status["settings"].get("semantic_join_inference", "true")],
             ["entities.total", total_entities],
             ["entities.effective", status["entities"].get("effective_entities", 0)],
             ["descriptions.total", status["descriptions"].get("total_descriptions", 0)],
@@ -393,6 +417,25 @@ def register_search_commands(
             ["Key", "Value"],
             [[name, val] for name, val in sorted(settings.items())],
         )
+
+    @search.command("context-detail")
+    @click.argument("level", required=False)
+    @pass_config
+    def search_context_detail(cfg: AMXConfig, level: str | None) -> None:
+        catalog = _catalog()
+        if catalog is None:
+            error("Search catalog is not initialized.")
+            return
+        db_profile = cfg.active_db_profile or "default"
+        if level:
+            normalized = level.strip().lower()
+            if normalized not in {"minimal", "standard", "rich", "deep"}:
+                error("Context detail must be one of: minimal, standard, rich, deep.")
+                return
+            catalog.set_setting(db_profile, "context_detail", normalized)
+            success(f"Updated search context detail for {db_profile}: {normalized}")
+            return
+        info(f"Current search context detail: {catalog.get_settings(db_profile).get('context_detail', 'standard')}")
 
     @search.command("sync")
     @click.option("--schema", "schema_name", default=None, help="Limit sync to one schema.")

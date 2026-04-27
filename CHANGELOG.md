@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.103] — 2026-04-27
+### Changed
+- **Production-style `/search` orchestration**: Replaced the monolithic `/search` flow with a dedicated Search Agent pipeline that explicitly separates interpretation, retrieval planning, grounded retrieval, live verification, answer synthesis, and follow-up action suggestions.
+- **Hybrid truth and observability**: `/search ask` now records question class, retrieval policy, evidence sources, ambiguity flags, verification details, and per-stage timings in history payloads while inventory questions continue to prefer live DB truth.
+- **Stronger join reasoning**: Added semantic join inference alongside FK and code evidence so `/search` can surface likely non-FK join candidates, including SAP-style business-key matches such as `KUNNR` ↔ `customer_id`, with confidence bands in the rendered output.
+
+### Added
+- **`/search /context-detail`**: Added a dedicated search-context control (`minimal`, `standard`, `rich`, `deep`) so operators can tune how much catalog, code, and memory context the Search Agent uses.
+- **Regression coverage**: Added tests for semantic non-FK join inference and live-verification metadata on inventory answers.
+
 ## [0.1.102] — 2026-04-27
 ### Changed
 - **Question-language `/search` answers**: `/search ask` now answers in the user's question language instead of reusing the LLM profile's metadata-generation language.

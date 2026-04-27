@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.103] — 2026-04-27
+### Search Agent + Semantic Join Inference
+- **amx/search/agent.py / amx/search/service.py**: Introduced a dedicated Search Agent that separates interpretation, retrieval planning, grounded retrieval, live verification, answer synthesis, session-memory reuse, and follow-up action suggestions while keeping `SearchService` as a compatibility facade.
+- **amx/search/catalog.py**: Added production-oriented `/search` settings (`context_detail`, live-verification toggles, semantic join inference), semantic join candidate scoring, confidence-band classification, SAP alias expansion, and semantic joinable-table discovery for one-table join questions.
+- **amx/cli_support/commands/search.py**: Extended `/search` rendering with join confidence bands, stage/action payloads, richer history/event serialization, status visibility for production search settings, and the new `/search /context-detail` command.
+- **README.md / CHANGELOG.md**: Documented the Search Agent architecture, context-detail control, and the stronger hybrid truth model for `/search`.
+- **tests/test_search_catalog.py**: Added coverage for semantic non-FK join discovery and live-verification metadata on inventory answers.
+
 ## [0.1.102] — 2026-04-27
 ### Search Language + Inventory Truth + Provider UX
 - **amx/search/service.py**: Made `/search ask` answer in the user's question language, moved count/schema/database inventory questions onto deterministic live DB introspection, and added explicit scope assumptions for ambiguous count questions.
