@@ -167,6 +167,7 @@ Notes:
 - `/llm` settings are saved per **active LLM profile** and command feedback prints the profile name that was updated.
 - `/llm /language` controls generated metadata language in `/run` and `/run-apply`; `/search` answers follow the user's question language.
 - When defining an OpenRouter profile, enter the model in its natural provider/model form such as `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`, or `qwen/qwen3.6-plus`; AMX handles provider wiring internally.
+- AMX now normalizes common provider-prefix typos in model ids as well; for example `oepnai/gpt-4o-mini` under an OpenRouter or OpenAI profile is corrected to the proper OpenAI namespace automatically.
 - Profile selections made in the interactive `/run` wizard are persisted to `~/.amx/config.yml` immediately.
 - `max_tokens` defaults to `4096`; when `finish_reason=length`, AMX now halts processing so truncated JSON is not parsed silently.
 - `force_logprobs` defaults to `true` to force-request logprobs even when provider capability metadata is inconsistent.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from difflib import get_close_matches
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,41 @@ SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 DISABLED_PROFILE = "__none__"
 PROFILING_MODES = ("full", "sampled", "metadata")
 
+_OPENROUTER_MODEL_NAMESPACES = (
+    "openai",
+    "anthropic",
+    "google",
+    "deepseek",
+    "qwen",
+    "meta-llama",
+    "mistralai",
+    "x-ai",
+    "moonshotai",
+    "openrouter",
+)
+
+
+def _closest_provider_namespace(value: str, choices: tuple[str, ...]) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return raw
+    aliases = {
+        "gpt": "openai",
+        "chatgpt": "openai",
+        "claude": "anthropic",
+        "gemini": "google",
+        "llama": "meta-llama",
+        "mistral": "mistralai",
+        "xai": "x-ai",
+        "moonshot": "moonshotai",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    if raw in choices:
+        return raw
+    matches = get_close_matches(raw, list(choices), n=1, cutoff=0.75)
+    return matches[0] if matches else raw
+
 
 def normalize_llm_model(provider: str, model: str) -> str:
     """Store provider-specific model ids in a concise, non-duplicated form."""
@@ -24,6 +60,18 @@ def normalize_llm_model(provider: str, model: str) -> str:
         return ""
     lower = raw.lower()
     provider_norm = (provider or "").strip().lower()
+    if provider_norm == "openrouter" and "/" in raw:
+        head, tail = raw.split("/", 1)
+        head_norm = _closest_provider_namespace(head, _OPENROUTER_MODEL_NAMESPACES)
+        if tail:
+            raw = f"{head_norm}/{tail.strip('/')}"
+            lower = raw.lower()
+    elif "/" in raw:
+        head, tail = raw.split("/", 1)
+        head_norm = _closest_provider_namespace(head, (provider_norm,)) if provider_norm else head.lower()
+        if provider_norm and head_norm == provider_norm and tail:
+            raw = tail.strip("/")
+            lower = raw.lower()
     if provider_norm and lower.startswith(f"{provider_norm}/"):
         raw = raw[len(provider_norm) + 1 :]
         lower = raw.lower()

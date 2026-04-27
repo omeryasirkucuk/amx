@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.104] — 2026-04-27
+### Changed
+- **More robust LLM model normalization**: AMX now corrects common provider-prefix typos in model ids before persisting them or sending them to LiteLLM, which fixes failures such as `oepnai/gpt-4o-mini` under OpenRouter or OpenAI profiles.
+- **Runtime model guard**: `LLMProvider` now re-normalizes the configured model on initialization so older saved profiles with malformed provider prefixes are repaired at call time instead of breaking `/search` and other LLM-backed flows.
+
+### Added
+- **Regression coverage**: Added tests for typo recovery in OpenRouter and OpenAI model-id normalization.
+
 ## [0.1.103] — 2026-04-27
 ### Changed
 - **Production-style `/search` orchestration**: Replaced the monolithic `/search` flow with a dedicated Search Agent pipeline that explicitly separates interpretation, retrieval planning, grounded retrieval, live verification, answer synthesis, and follow-up action suggestions.

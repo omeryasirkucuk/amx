@@ -246,6 +246,15 @@ class LLMProvider:
 
     def __init__(self, cfg: LLMConfig):
         self.cfg = cfg
+        normalized_model = normalize_llm_model(cfg.provider, cfg.model)
+        if normalized_model and normalized_model != cfg.model:
+            log.info(
+                "Normalizing %s model from '%s' to '%s'",
+                cfg.provider,
+                cfg.model,
+                normalized_model,
+            )
+            self.cfg.model = normalized_model
         self._configure_env()
 
     @property

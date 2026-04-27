@@ -271,6 +271,18 @@ class ProfileHelperTests(unittest.TestCase):
         provider.cfg = SimpleNamespace(provider="openrouter", model="qwen/qwen3.6-plus")
         self.assertEqual(provider.model_name, "qwen/qwen3.6-plus")
 
+    def test_openrouter_model_normalization_recovers_common_provider_typo(self) -> None:
+        self.assertEqual(
+            normalize_llm_model("openrouter", "oepnai/gpt-4o-mini"),
+            "openai/gpt-4o-mini",
+        )
+
+    def test_openai_model_normalization_recovers_duplicate_provider_typo(self) -> None:
+        self.assertEqual(
+            normalize_llm_model("openai", "oepnai/gpt-4o-mini"),
+            "gpt-4o-mini",
+        )
+
     def test_use_doc_accepts_disable_alias(self) -> None:
         cfg = AMXConfig()
         cfg.doc_profiles = {"default": ["/tmp/docs"]}

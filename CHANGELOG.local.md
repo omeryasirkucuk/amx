@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.104] — 2026-04-27
+### LLM Model Normalization Guardrails
+- **amx/config.py**: Hardened `normalize_llm_model()` so provider-prefixed model ids recover common namespace typos such as `oepnai/...` and cleanly strip redundant prefixes according to the selected provider.
+- **amx/llm/provider.py**: Added a runtime normalization pass in `LLMProvider.__init__()` so malformed saved profiles are repaired before any LiteLLM call is made.
+- **README.md / CHANGELOG.md**: Documented automatic typo correction for provider/model prefixes.
+- **tests/test_regressions.py**: Added regression tests for OpenRouter and OpenAI typo recovery during model normalization.
+
 ## [0.1.103] — 2026-04-27
 ### Search Agent + Semantic Join Inference
 - **amx/search/agent.py / amx/search/service.py**: Introduced a dedicated Search Agent that separates interpretation, retrieval planning, grounded retrieval, live verification, answer synthesis, session-memory reuse, and follow-up action suggestions while keeping `SearchService` as a compatibility facade.
