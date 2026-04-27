@@ -377,6 +377,7 @@ Answering behavior:
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as secondary signals
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
+- join answers now pass the resolved base/target join columns into the synthesis prompt, so AMX can explain not just which tables are joinable but also which column pairs it found
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
 - `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, and action suggestions into history/event payloads so answers remain diagnosable

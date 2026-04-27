@@ -730,6 +730,8 @@ class SearchAgent:
                 "column": row.get("column_name", ""),
                 "target_schema": row.get("target_schema_name", ""),
                 "target_table": row.get("target_table_name", ""),
+                "left_column": row.get("left_column", ""),
+                "right_column": row.get("right_column", ""),
                 "source": row.get("effective_source_kind", row.get("source", "")),
                 "confidence": row.get("current_confidence", row.get("confidence", "")),
                 "rank_score": row.get("rank_score", row.get("score", 0)),

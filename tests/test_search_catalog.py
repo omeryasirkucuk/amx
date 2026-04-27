@@ -500,6 +500,34 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["target_table_name"], "kna1")
         self.assertEqual(answer.confidence, "high")
 
+    def test_joinable_table_synthesis_prompt_includes_join_columns(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"join_candidates","out_of_domain":false,"normalized_question":"which tables can join with sap.vbak","search_mode":"joinable_tables","question_class":"join_discovery","entity_hints":["sap.vbak"],"search_queries":["which tables can join with sap.vbak"],"needs_typo_recovery":false,"answer_language":"english","reason":"single-table join discovery"}',
+                "You can join `sap.vbak` to `sap.kna1` using `kunnr`.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("sap.vbak tablosunu hangi tablolarla joinleyebilirim, hangi kolonlari kullanirim")
+        self.assertTrue(answer.rows)
+        synthesis_user = _FakeLLMProvider.calls[-1][1]["content"]
+        self.assertIn('"left_column": "kunnr"', synthesis_user)
+        self.assertIn('"right_column": "kunnr"', synthesis_user)
+
     def test_semantic_join_inference_surfaces_non_fk_candidate(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",

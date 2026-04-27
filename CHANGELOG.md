@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.106] — 2026-04-27
+### Changed
+- **Join-answer synthesis fix**: `/search` now includes resolved `left_column` and `right_column` evidence in the answer-synthesis payload for one-table join discovery, fixing responses that listed joinable tables but then incorrectly claimed no specific join columns were available.
+
+### Added
+- **Regression coverage**: Added a search test asserting that joinable-table synthesis receives the resolved join-column pair in its grounded prompt.
+
 ## [0.1.105] — 2026-04-27
 ### Changed
 - **Question-language enforcement in `/search`**: `/search` now forces the final answer language to match the detected language of the user's question even when the interpreter LLM returns the wrong `answer_language`, which fixes Turkish inventory questions incorrectly answering in English.

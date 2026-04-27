@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.106] — 2026-04-27
+### Join-Column Prompt Fix
+- **amx/search/agent.py**: Added `left_column` and `right_column` to the grounded synthesis payload so joinable-table answers can explicitly mention the discovered join columns instead of only the target tables.
+- **tests/test_search_catalog.py**: Added regression coverage asserting that one-table join synthesis sees the resolved `kunnr` ↔ `kunnr` join columns.
+- **README.md / CHANGELOG.md**: Documented the join-column synthesis fix.
+
 ## [0.1.105] — 2026-04-27
 ### Search Answer-Language Enforcement
 - **amx/search/agent.py**: Forced `/search` answers to use the detected question language after interpretation so deterministic and synthesized answers no longer drift back to the LLM-returned `answer_language`.
