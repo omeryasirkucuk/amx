@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.89] — 2026-04-27
+### Service Refactor
+- **amx/services/manual_metadata.py**: Added service helpers for manual metadata coverage, inspect row building, context-aware schema/table resolution, and manual edit target resolution.
+- **amx/services/analyze_scope.py**: Added service helpers for scope selection, asset filtering/validation, and codebase report preparation for analyze flows.
+- **amx/cli_support/commands/manual.py / run.py**: Replaced in-module business logic with thin wrappers around the new service functions.
+- **tests/test_regressions.py**: Added direct service-layer coverage for manual target resolution and non-business asset filtering.
+
 ## [0.1.88] — 2026-04-27
 ### CLI Refactor
 - **amx/cli_support/commands/**: Moved the extracted CLI command implementations into a dedicated command package (`analyze_flow`, `code`, `db`, `docs`, `history`, `manual`, `profiles`, `run`) so the codebase no longer treats them as a flat top-level namespace.

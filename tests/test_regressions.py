@@ -19,7 +19,8 @@ from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
-from amx.cli_support.commands.manual import collect_metadata_coverage
+from amx.services.analyze_scope import filter_non_business_assets
+from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target
 
 
 class RAGSourceFilteringTests(unittest.TestCase):
@@ -233,6 +234,38 @@ class ManualMetadataTests(unittest.TestCase):
         self.assertEqual(coverage.assets_with_comments, 1)
         self.assertEqual(coverage.columns, 3)
         self.assertEqual(coverage.columns_with_comments, 1)
+
+    def test_resolve_manual_target_uses_current_context_for_column(self) -> None:
+        cfg = AMXConfig()
+        cfg.current_schema = "sap"
+        cfg.current_table = "vbak"
+        errors: list[str] = []
+
+        class FakeDB:
+            def set_column_comment(self, schema, table, column, comment):
+                self.last_call = (schema, table, column, comment)
+
+        db = FakeDB()
+        target = resolve_manual_target(cfg, db, "column", ["vbeln"], error=errors.append)
+
+        self.assertEqual(target[0], "column sap.vbak.vbeln")
+        target[1]("Sales document")
+        self.assertEqual(db.last_call, ("sap", "vbak", "vbeln", "Sales document"))
+        self.assertEqual(errors, [])
+
+
+class AnalyzeScopeServiceTests(unittest.TestCase):
+    def test_filter_non_business_assets_drops_pg_stat_objects(self) -> None:
+        warnings: list[str] = []
+
+        filtered = filter_non_business_assets(
+            {"public": ["orders", "pg_stat_statements", "pg_statio_user_tables"]},
+            warn=warnings.append,
+        )
+
+        self.assertEqual(filtered, {"public": ["orders"]})
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Skipping non-business/system assets", warnings[0])
 
 
 class ConfidenceCalibrationTests(unittest.TestCase):

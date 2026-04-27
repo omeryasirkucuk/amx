@@ -345,10 +345,11 @@ amx/
 ├── cli_profiles.py     # Compatibility shim -> amx.cli_support.commands.profiles
 ├── cli_run.py          # Compatibility shim -> amx.cli_support.commands.run
 ├── cli_support/
-│   ├── __init__.py     # Session-helper export surface
-│   └── session.py      # Interactive shell, slash completion, namespace switching, and session defaults
+│   ├── __init__.py      # Session-helper export surface
+│   ├── session.py       # Interactive shell, slash completion, namespace switching, and session defaults
 │   ├── root_commands.py # /setup, /config, and top-level /db registration
 │   └── commands/
+│       ├── __init__.py   # Command package marker
 │       ├── analyze_flow.py # /analyze run command flow
 │       ├── code.py         # /code namespace commands
 │       ├── db.py           # /db profile and profiling helpers
@@ -357,6 +358,10 @@ amx/
 │       ├── manual.py       # /manual namespace commands
 │       ├── profiles.py     # /llm plus document/code profile helpers
 │       └── run.py          # /analyze helpers, scope resolution, and apply flow
+├── services/
+│   ├── __init__.py         # Service-layer package marker
+│   ├── analyze_scope.py    # Scope resolution, asset filtering, and codebase preparation
+│   └── manual_metadata.py  # Manual inspect/edit/coverage business logic
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -390,6 +395,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.89
+
+- **Service layer**: Manual metadata logic and analyze scope/codebase-preparation logic now live under `amx.services`, reducing business logic inside the Click command modules.
+- **Command thinness**: `amx.cli_support.commands.manual` and `amx.cli_support.commands.run` now mostly handle CLI wiring and defer to service functions.
+- **Coverage**: Added direct regression coverage for the new service-layer helpers.
 
 ### v0.1.88
 

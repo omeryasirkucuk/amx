@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.89] — 2026-04-27
+### Changed
+- **Service extraction**: Moved manual metadata logic and analyze-scope/codebase-preparation logic into `amx/services/manual_metadata.py` and `amx/services/analyze_scope.py`. The `manual` and `run` command modules now act as thin wrappers over service-layer functions instead of owning the business logic directly.
+
+### Added
+- **Service-level coverage**: Added regression tests for manual target resolution and non-business asset filtering in the new service layer.
+
 ## [0.1.88] — 2026-04-27
 ### Changed
 - **CLI package layout**: Moved the extracted command implementations under `amx/cli_support/commands/` and added `amx/cli_support/root_commands.py` for setup, DB, and config registration. `amx/cli.py` is now a thin bootstrap at roughly 200 lines.
