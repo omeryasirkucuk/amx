@@ -55,7 +55,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
         if cfg.llm.model or cfg.llm.provider
         else "(not configured — run /setup)"
     )
-    info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line}")
+    info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line} (metadata language)")
     if cfg.current_schema or cfg.current_table:
         info(f"Context: schema={cfg.current_schema or '—'} · table={cfg.current_table or '—'}")
 

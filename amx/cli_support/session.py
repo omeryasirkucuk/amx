@@ -127,7 +127,7 @@ def _print_namespace_hint(
     elif namespace == "docs":
         info("Manage RAG document paths for schema context. Use /add-doc-profile to map paths.")
     elif namespace == "llm":
-        info("Manage LLM profiles, output language, and cost settings. Use /language to control metadata/search language.")
+        info("Manage LLM profiles, metadata generation language, and cost settings. Search answers follow the user's question language.")
     elif namespace == "code":
         info("Scan your codebase to find how tables are used. Run /code-scan after adding a path.")
     elif namespace == "analyze":
@@ -242,7 +242,7 @@ Commands (in order):
   3) /use-llm <name>                    Switch active LLM profile
   4) /add-llm-profile [name]            Add/update an LLM profile (interactive)
   5) /remove-llm-profile <name>         Remove an LLM profile
-  6) /language [name]                   Show or set the preferred output language
+  6) /language [name]                   Show or set the metadata generation language
   7) /prompt-detail [level]             Show or set the prompt detail level
                                           Levels: minimal | standard | detailed | full
                                           Controls which DB fields are included in the LLM prompt.
@@ -256,9 +256,12 @@ Commands (in order):
 
 Model examples (what to type in "Model name"):
   - openai      -> gpt-4o
-  - openrouter  -> openrouter/openai/gpt-4o-mini
-                 -> openrouter/anthropic/claude-3.5-sonnet
-  - anthropic   -> claude-3-5-sonnet-20241022
+  - openrouter  -> openai/gpt-4o-mini
+                 -> anthropic/claude-3.5-sonnet
+                 -> qwen/qwen3.6-plus
+  - anthropic   -> claude-sonnet-4-20250514
+  - gemini      -> gemini-2.0-flash
+  - deepseek    -> deepseek-chat
   - ollama      -> llama3
 
 Navigation:
@@ -481,7 +484,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
         ("/add-llm-profile", "Add/update LLM profile"),
         ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
-        ("/language", "Show/set preferred output language (/language [name])"),
+        ("/language", "Show/set metadata generation language (/language [name])"),
         ("/prompt-detail", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
         ("/n-alternatives", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
         ("/llm-batch-size", "Show/set number of columns per LLM call (/llm-batch-size [N])"),

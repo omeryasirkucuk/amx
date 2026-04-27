@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from amx.config import AMXConfig
+from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.llm.provider import LLMProvider
 from amx.search.catalog import SearchAnswer, SearchCatalog
 from amx.utils.console import step_spinner
@@ -24,7 +25,21 @@ class SearchPlan:
     entity_hints: list[str]
     search_queries: list[str]
     needs_typo_recovery: bool
+    answer_language: str
     reason: str
+
+
+def _question_language_hint(text: str) -> str:
+    sample = (text or "").strip().lower()
+    if not sample:
+        return "english"
+    turkish_markers = {
+        "hangi", "kaç", "kac", "tablo", "tablolar", "schema", "şema", "sema",
+        "kolon", "kolonlar", "joinleyebilirim", "nedir", "hangi", "var", "içinde", "icinde",
+    }
+    if any(ch in sample for ch in "çğıöşü") or any(token in sample for token in turkish_markers):
+        return "turkish"
+    return "english"
 
 
 def _json_block(text: str) -> dict[str, Any]:
@@ -145,6 +160,7 @@ class SearchService:
             "If the question asks which databases are known, choose list_databases.\n"
             "If the question asks which schemas exist in a database or profile, choose list_schemas.\n"
             "If the question asks how many tables exist in a schema or database, choose count_tables.\n"
+            "Set answer_language to the language the final user-facing answer should use. By default this should match the user's question language.\n"
             "Otherwise choose semantic_concept."
         )
         user = json.dumps(
@@ -153,7 +169,7 @@ class SearchService:
                 "session_memory": memory,
                 "current_schema": self.cfg.current_schema or "",
                 "current_table": self.cfg.current_table or "",
-                "preferred_output_language": target_language,
+                "metadata_generation_language": target_language,
             },
             ensure_ascii=True,
         )
@@ -180,9 +196,138 @@ class SearchService:
             ]
             or [str(payload.get("normalized_question") or question).strip() or question],
             needs_typo_recovery=bool(payload.get("needs_typo_recovery")),
+            answer_language=str(payload.get("answer_language") or _question_language_hint(question)).strip() or _question_language_hint(question),
             reason=str(payload.get("reason") or "").strip(),
         )
         return plan, result.usage or {}
+
+    def _inventory_db(self) -> DatabaseConnector:
+        return DatabaseConnector(self.cfg.db)
+
+    def _known_database_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for profile_name, db_cfg in sorted(self.cfg.db_profiles.items()):
+            database_name = db_cfg.database or db_cfg.catalog or db_cfg.project or ""
+            key = (profile_name, database_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "row_type": "database",
+                    "db_profile": profile_name,
+                    "database_name": database_name,
+                    "backend": db_cfg.backend,
+                    "source": "config",
+                }
+            )
+        if not rows:
+            rows.append(
+                {
+                    "row_type": "database",
+                    "db_profile": self.db_profile,
+                    "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                    "backend": self.cfg.db.backend,
+                    "source": "config",
+                }
+            )
+        return rows
+
+    def _live_schema_rows(self) -> list[dict[str, Any]]:
+        db = self._inventory_db()
+        rows: list[dict[str, Any]] = []
+        for schema_name in db.list_schemas():
+            try:
+                table_count = len(db.list_tables(schema_name))
+            except Exception:
+                table_count = 0
+            rows.append(
+                {
+                    "row_type": "schema",
+                    "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                    "schema_name": schema_name,
+                    "table_count": table_count,
+                    "source": "live_db",
+                }
+            )
+        return rows
+
+    def _live_table_count(self, schema_name: str | None) -> tuple[int, dict[str, Any]]:
+        db = self._inventory_db()
+        if schema_name:
+            count = len(db.list_tables(schema_name))
+            return count, {
+                "scope_kind": "schema",
+                "schema_name": schema_name,
+                "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                "scope_assumption": "current_schema",
+            }
+        total = 0
+        schemas = db.list_schemas()
+        for item in schemas:
+            total += len(db.list_tables(item))
+        return total, {
+            "scope_kind": "database",
+            "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+            "schema_count": len(schemas),
+            "scope_assumption": "active_database",
+        }
+
+    def _live_joinable_tables(self, table_path: str, limit: int) -> list[dict[str, Any]]:
+        if "." not in table_path:
+            return []
+        schema_name, table_name = table_path.split(".", 1)
+        db = self._inventory_db()
+        try:
+            profile = db.profile_table(schema_name, table_name, sample_size=0)
+        except ProfilingError:
+            return []
+        rows: list[dict[str, Any]] = []
+        for fk in profile.foreign_keys:
+            rows.append(
+                {
+                    "row_type": "joinable_table",
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "target_schema_name": str(fk.get("referred_schema") or schema_name),
+                    "target_table_name": str(fk.get("referred_table") or ""),
+                    "left_column": ", ".join(str(item) for item in (fk.get("constrained_columns") or []) if str(item)),
+                    "right_column": ", ".join(str(item) for item in (fk.get("referred_columns") or []) if str(item)),
+                    "relationship_type": "foreign_key",
+                    "source": "live_db",
+                    "score": 10.0,
+                }
+            )
+        for fk in profile.referenced_by:
+            rows.append(
+                {
+                    "row_type": "joinable_table",
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "target_schema_name": str(fk.get("source_schema") or schema_name),
+                    "target_table_name": str(fk.get("source_table") or ""),
+                    "left_column": ", ".join(str(item) for item in (fk.get("referred_columns") or []) if str(item)),
+                    "right_column": ", ".join(str(item) for item in (fk.get("source_columns") or fk.get("constrained_columns") or []) if str(item)),
+                    "relationship_type": "incoming_foreign_key",
+                    "source": "live_db",
+                    "score": 10.0,
+                }
+            )
+        seen: set[tuple[str, str, str, str]] = set()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            key = (
+                str(row.get("target_schema_name") or "").lower(),
+                str(row.get("target_table_name") or "").lower(),
+                str(row.get("relationship_type") or "").lower(),
+                f"{row.get('left_column','')}|{row.get('right_column','')}",
+            )
+            if key in seen or not row.get("target_table_name"):
+                continue
+            seen.add(key)
+            out.append(row)
+        return out[:limit]
 
     def _resolve_table_paths(self, hints: list[str], question: str) -> list[str]:
         resolved: list[str] = []
@@ -231,7 +376,9 @@ class SearchService:
             details["resolved_tables"] = table_paths[:1]
             if not table_paths:
                 return [], details
-            rows = self.catalog.joinable_tables(self.db_profile, table_paths[0], limit=limit)
+            rows = self._live_joinable_tables(table_paths[0], limit=limit)
+            if not rows:
+                rows = self.catalog.joinable_tables(self.db_profile, table_paths[0], limit=limit)
             details["display_rows"] = True
             return rows, details
         if plan.search_mode == "table_explain":
@@ -261,23 +408,13 @@ class SearchService:
             details["query_text"] = query_text
             return rows, details
         if plan.search_mode == "list_databases":
-            rows = self.catalog.known_databases(self.db_profile)
+            rows = self._known_database_rows()
             details["display_rows"] = False
             details["result_kind"] = "catalog_overview"
             return rows, details
         if plan.search_mode == "list_schemas":
-            database_name = ""
-            known_databases = {
-                str(row.get("database_name") or "").lower(): str(row.get("database_name") or "")
-                for row in self.catalog.known_databases(self.db_profile)
-            }
-            for hint in plan.entity_hints:
-                normalized = str(hint or "").strip().lower()
-                if normalized and "." not in normalized and normalized in known_databases:
-                    database_name = known_databases[normalized]
-                    break
-            rows = self.catalog.known_schemas(self.db_profile, database_name=database_name or None)
-            details["database_name"] = database_name
+            rows = self._live_schema_rows()
+            details["database_name"] = self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or ""
             details["display_rows"] = False
             details["result_kind"] = "catalog_overview"
             return rows, details
@@ -285,40 +422,50 @@ class SearchService:
             schema_name = ""
             database_name = ""
             schema_lookup = {
-                str(row.get("schema_name") or "").lower(): str(row.get("schema_name") or "")
-                for row in self.catalog.known_schemas(self.db_profile)
+                str(item).lower(): str(item)
+                for item in self._inventory_db().list_schemas()
             }
             db_lookup = {
                 str(row.get("database_name") or "").lower(): str(row.get("database_name") or "")
-                for row in self.catalog.known_databases(self.db_profile)
+                for row in self._known_database_rows()
             }
+            explicit_scope = False
             for hint in plan.entity_hints:
                 normalized = str(hint or "").strip().lower()
                 if not normalized or "." in normalized:
                     continue
                 if normalized in schema_lookup and not schema_name:
                     schema_name = schema_lookup[normalized]
+                    explicit_scope = True
                     continue
                 if normalized in db_lookup and not database_name:
                     database_name = db_lookup[normalized]
+                    explicit_scope = True
                     continue
                 if self.catalog.find_table_candidates(self.db_profile, normalized, limit=1):
                     table_paths = self._resolve_table_paths([normalized], question)
                     if table_paths and not schema_name:
                         schema_name = table_paths[0].split(".", 1)[0]
+                        explicit_scope = True
                         continue
             if not schema_name and self.cfg.current_schema:
                 schema_name = self.cfg.current_schema
-            count = self.catalog.count_tables(
-                self.db_profile,
-                schema_name=schema_name or None,
-                database_name=database_name or None,
-            )
-            details["schema_name"] = schema_name
-            details["database_name"] = database_name
+            count, scope_meta = self._live_table_count(schema_name or None)
+            if explicit_scope:
+                scope_meta["scope_assumption"] = ""
+            details.update(scope_meta)
             details["display_rows"] = False
             details["result_kind"] = "aggregate"
-            return [{"row_type": "aggregate", "metric": "table_count", "value": count}], details
+            return [
+                {
+                    "row_type": "aggregate",
+                    "metric": "table_count",
+                    "value": count,
+                    "schema_name": scope_meta.get("schema_name", ""),
+                    "database_name": scope_meta.get("database_name", ""),
+                    "source": "live_db",
+                }
+            ], details
         rows = self.catalog.search_columns(
             self.db_profile,
             plan.normalized_question or question,
@@ -359,7 +506,7 @@ class SearchService:
         retrieval_details: dict[str, Any],
     ) -> tuple[str, dict[str, Any]]:
         llm = self._llm_provider()
-        target_language = self.cfg.llm.language or "english"
+        target_language = plan.answer_language or _question_language_hint(question)
         system = (
             "You are AMX /search, a metadata copilot.\n"
             "Answer only from the retrieved metadata evidence you are given.\n"
@@ -390,8 +537,70 @@ class SearchService:
         )
         return result.content.strip(), result.usage or {}
 
+    def _deterministic_inventory_answer(
+        self,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        retrieval_details: dict[str, Any],
+    ) -> str | None:
+        lang = (plan.answer_language or "english").lower()
+        if plan.search_mode == "count_tables" and rows:
+            value = int(rows[0].get("value") or 0)
+            schema_name = str(retrieval_details.get("schema_name") or rows[0].get("schema_name") or "")
+            database_name = str(retrieval_details.get("database_name") or rows[0].get("database_name") or "")
+            assumption = str(retrieval_details.get("scope_assumption") or "").strip()
+            if lang == "turkish":
+                if schema_name:
+                    answer = f"`{schema_name}` schema'sinda toplam **{value}** tablo var."
+                elif database_name:
+                    answer = f"`{database_name}` veritabaninda toplam **{value}** tablo var."
+                else:
+                    answer = f"Toplam **{value}** tablo var."
+                if assumption == "current_schema":
+                    answer += f" Acik scope verilmedigi icin aktif schema `{schema_name}` varsayildi."
+                elif assumption == "active_database":
+                    answer += f" Acik schema verilmedigi icin aktif veritabani/profil `{self.db_profile}` kullanildi."
+                return answer
+            if schema_name:
+                answer = f"There are **{value}** tables in the `{schema_name}` schema."
+            elif database_name:
+                answer = f"There are **{value}** tables in the `{database_name}` database."
+            else:
+                answer = f"There are **{value}** tables."
+            if assumption == "current_schema":
+                answer += f" No explicit scope was given, so the current schema `{schema_name}` was used."
+            elif assumption == "active_database":
+                answer += f" No explicit schema was given, so the active database/profile `{self.db_profile}` was used."
+            return answer
+        if plan.search_mode == "list_databases":
+            names = [str(row.get("database_name") or "").strip() for row in rows if str(row.get("database_name") or "").strip()]
+            if not names:
+                return "Bilinen veritabani bulunamadi." if lang == "turkish" else "No known databases were found."
+            joined = ", ".join(f"`{name}`" for name in names)
+            return (
+                f"Su anda su veritabanlari hakkinda bilgi var: {joined}."
+                if lang == "turkish"
+                else f"I currently have information about these databases: {joined}."
+            )
+        if plan.search_mode == "list_schemas":
+            names = [str(row.get("schema_name") or "").strip() for row in rows if str(row.get("schema_name") or "").strip()]
+            if not names:
+                return "Schema bulunamadi." if lang == "turkish" else "No schemas were found."
+            database_name = str(retrieval_details.get("database_name") or "").strip()
+            joined = ", ".join(f"`{name}`" for name in names[:25])
+            if lang == "turkish":
+                lead = f"`{database_name}` veritabanindaki schemalar" if database_name else "Bulunan schemalar"
+                return f"{lead}: {joined}."
+            lead = f"Schemas in `{database_name}`" if database_name else "Schemas found"
+            return f"{lead}: {joined}."
+        return None
+
     def _provenance(self, plan: SearchPlan, rows: list[dict[str, Any]]) -> list[str]:
         labels: list[str] = []
+        if any((row.get("source") or "") == "live_db" for row in rows):
+            labels.append("live database introspection")
+        if any((row.get("source") or "") == "config" for row in rows):
+            labels.append("configured database profiles")
         if plan.search_mode == "join_candidates":
             labels.append("structural relationships")
         if plan.search_mode == "joinable_tables":
@@ -434,6 +643,7 @@ class SearchService:
 
     def ask(self, question: str) -> SearchAnswer:
         clean_question = (question or "").strip()
+        question_language = _question_language_hint(clean_question)
         if not clean_question:
             return SearchAnswer(
                 intent="unsupported",
@@ -450,20 +660,13 @@ class SearchService:
                 question=question,
                 rows=[],
                 confidence="low",
-                summary="`/search` discussion requires an active LLM profile. Configure one under `/llm` first.",
+                summary=(
+                    "`/search` tartisma modu aktif bir LLM profili gerektirir. Once `/llm` altinda bir profil tanimlayin."
+                    if question_language == "turkish"
+                    else "`/search` discussion requires an active LLM profile. Configure one under `/llm` first."
+                ),
                 provenance=[],
                 details={"reason": "no_llm"},
-            )
-        ready, status = self._catalog_ready()
-        if not ready:
-            return SearchAnswer(
-                intent="unsupported",
-                question=question,
-                rows=[],
-                confidence="low",
-                summary="`/search` catalog is empty. Run `/search sync` or `/search rebuild` before asking metadata questions.",
-                provenance=[],
-                details={"reason": "catalog_not_ready", "status": status},
             )
         try:
             with step_spinner("Search Copilot: interpreting question"):
@@ -484,7 +687,11 @@ class SearchService:
                 question=question,
                 rows=[],
                 confidence="low",
-                summary="This does not look like a metadata question. `/search` is for discussing databases, schemas, tables, columns, joins, and metadata meaning.",
+                summary=(
+                    "Bu soru metadata sorusu gibi gorunmuyor. `/search`; database, schema, tablo, kolon, join ve metadata anlami icin kullanilir."
+                    if plan.answer_language == "turkish"
+                    else "This does not look like a metadata question. `/search` is for discussing databases, schemas, tables, columns, joins, and metadata meaning."
+                ),
                 provenance=[],
                 details={
                     "reason": "out_of_domain",
@@ -492,26 +699,44 @@ class SearchService:
                     "tokens": interpretation_usage,
                 },
             )
-        with step_spinner("Search Copilot: retrieving grounded evidence"):
-            rows, retrieval_details = self._retrieve(clean_question, plan)
-        try:
-            with step_spinner("Search Copilot: synthesizing answer"):
-                answer_text, answer_usage = self._synthesize_answer(clean_question, plan, rows, retrieval_details)
-        except Exception as exc:
+        ready, status = self._catalog_ready()
+        if plan.search_mode in {"semantic_concept", "name_lookup", "join_candidates", "table_explain"} and not ready:
             return SearchAnswer(
                 intent=plan.intent,
                 question=question,
-                rows=rows,
+                rows=[],
                 confidence="low",
-                summary=f"`/search` could not synthesize an answer with the active LLM profile: {exc}",
-                provenance=self._provenance(plan, rows),
-                details={
-                    "reason": "llm_failure",
-                    "stage": "answer",
-                    "plan": asdict(plan),
-                    "retrieval": retrieval_details,
-                },
+                summary=(
+                    "`/search` katalogu bos. Metadata sorulari icin once `/search sync` veya `/search rebuild` calistirin."
+                    if plan.answer_language == "turkish"
+                    else "`/search` catalog is empty. Run `/search sync` or `/search rebuild` before asking metadata questions."
+                ),
+                provenance=[],
+                details={"reason": "catalog_not_ready", "status": status, "plan": asdict(plan)},
             )
+        with step_spinner("Search Copilot: retrieving grounded evidence"):
+            rows, retrieval_details = self._retrieve(clean_question, plan)
+        answer_usage: dict[str, Any] = {}
+        answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details)
+        if answer_text is None:
+            try:
+                with step_spinner("Search Copilot: synthesizing answer"):
+                    answer_text, answer_usage = self._synthesize_answer(clean_question, plan, rows, retrieval_details)
+            except Exception as exc:
+                return SearchAnswer(
+                    intent=plan.intent,
+                    question=question,
+                    rows=rows,
+                    confidence="low",
+                    summary=f"`/search` could not synthesize an answer with the active LLM profile: {exc}",
+                    provenance=self._provenance(plan, rows),
+                    details={
+                        "reason": "llm_failure",
+                        "stage": "answer",
+                        "plan": asdict(plan),
+                        "retrieval": retrieval_details,
+                    },
+                )
         confidence = self._confidence(plan, rows)
         provenance = self._provenance(plan, rows)
         tables = retrieval_details.get("resolved_tables") or []

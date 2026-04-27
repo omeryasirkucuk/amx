@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
-from amx.config import LLMConfig
+from amx.config import LLMConfig, normalize_llm_model
 from amx.utils.logging import get_logger
 
 log = get_logger("llm.provider")
@@ -31,7 +31,7 @@ def _litellm() -> ModuleType:
 
 PROVIDER_MODEL_PREFIX = {
     "openai": "openai/",
-    "openrouter": "openrouter/",
+    "openrouter": "",
     "anthropic": "anthropic/",
     "gemini": "gemini/",
     "deepseek": "deepseek/",
@@ -307,7 +307,7 @@ class LLMProvider:
 
     @property
     def model_name(self) -> str:
-        raw = (self.cfg.model or "").strip()
+        raw = normalize_llm_model(self.cfg.provider, self.cfg.model)
         if not raw:
             return raw
         if "/" in raw:

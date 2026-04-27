@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.102] — 2026-04-27
+### Search Language + Inventory Truth + Provider UX
+- **amx/search/service.py**: Made `/search ask` answer in the user's question language, moved count/schema/database inventory questions onto deterministic live DB introspection, and added explicit scope assumptions for ambiguous count questions.
+- **amx/config.py / amx/llm/provider.py / amx/cli_support/commands/profiles.py / amx/cli_support/session.py / amx/cli.py / amx/cli_support/root_commands.py**: Normalized provider-prefixed model ids, removed the need to type duplicated OpenRouter prefixes, and clarified that `/llm /language` controls metadata generation rather than `/search` answer language.
+- **tests/test_search_catalog.py / tests/test_regressions.py**: Added coverage for question-language answer prompts, live inventory counts, and OpenRouter model normalization.
+
 ## [0.1.101] — 2026-04-27
 ### Broader Metadata Discussion In `/search`
 - **amx/search/service.py**: Expanded the LLM interpreter/retrieval contract so `/search ask` can answer catalog-overview questions like known databases, schema lists, scoped table counts, and single-table joinability in addition to column semantics and two-table joins.

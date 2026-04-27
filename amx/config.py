@@ -17,6 +17,23 @@ DISABLED_PROFILE = "__none__"
 PROFILING_MODES = ("full", "sampled", "metadata")
 
 
+def normalize_llm_model(provider: str, model: str) -> str:
+    """Store provider-specific model ids in a concise, non-duplicated form."""
+    raw = str(model or "").strip().strip("/")
+    if not raw:
+        return ""
+    lower = raw.lower()
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm and lower.startswith(f"{provider_norm}/"):
+        raw = raw[len(provider_norm) + 1 :]
+        lower = raw.lower()
+    if provider_norm in {"local", "kimi"} and lower.startswith("openai/"):
+        raw = raw.split("/", 1)[1]
+    if provider_norm == "openrouter" and lower.startswith("openrouter/"):
+        raw = raw.split("/", 1)[1]
+    return raw.strip().strip("/")
+
+
 # ── Prompt Detail Levels ──────────────────────────────────────────────────────
 
 
@@ -329,9 +346,11 @@ class LLMConfig:
 
 def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     n_alt = int(m.get("n_alternatives", 3))
+    provider = str(m.get("provider", ""))
+    model = normalize_llm_model(provider, str(m.get("model", "")))
     return LLMConfig(
-        provider=str(m.get("provider", "")),
-        model=str(m.get("model", "")),
+        provider=provider,
+        model=model,
         language=str(m.get("language", "english") or "english"),
         api_key=str(m.get("api_key", "")),
         api_base=m.get("api_base"),
@@ -351,7 +370,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
 def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
     return {
         "provider": llm.provider,
-        "model": llm.model,
+        "model": normalize_llm_model(llm.provider, llm.model),
         "language": llm.language,
         "api_key": llm.api_key,
         "api_base": llm.api_base,
@@ -584,7 +603,8 @@ class AMXConfig:
         self._autosave()
 
     def upsert_llm_profile(self, name: str, llm: LLMConfig) -> None:
-        self.llm_profiles[name] = replace(llm)
+        normalized = replace(llm, model=normalize_llm_model(llm.provider, llm.model))
+        self.llm_profiles[name] = normalized
         self._autosave()
 
     def remove_llm_profile(self, name: str) -> None:

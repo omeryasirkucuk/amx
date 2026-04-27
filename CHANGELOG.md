@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.102] — 2026-04-27
+### Changed
+- **Question-language `/search` answers**: `/search ask` now answers in the user's question language instead of reusing the LLM profile's metadata-generation language.
+- **Deterministic inventory answers**: Table counts and schema inventory questions now use live database introspection instead of relying on the search catalog's synced description coverage, so counts stay correct even when metadata generation is incomplete.
+- **Cleaner LLM profile UX**: Provider-specific model handling now normalizes stored model ids so users can enter natural model names like `qwen/qwen3.6-plus` for OpenRouter without duplicating the provider prefix in config or UI.
+
+### Added
+- **Regression coverage**: Added tests for question-language answer synthesis, live table counts from the active schema, and OpenRouter model normalization.
+
 ## [0.1.101] — 2026-04-27
 ### Changed
 - **Broader `/search ask` coverage**: `/search` now treats database inventory, schema listing, table counting, and single-table join-discovery questions as valid metadata discussion instead of rejecting them as out-of-domain.
@@ -20,7 +29,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - **Improved `/search` UX**: `/search ask` now shows live progress stages while interpreting, retrieving, and synthesizing, and search-result descriptions wrap cleanly in the table output instead of truncating awkwardly.
 
 ### Added
-- **`/llm /language`**: Added a dedicated command for viewing or changing the preferred output language of the active LLM profile.
+- **`/llm /language`**: Added a dedicated command for viewing or changing the preferred metadata-generation language of the active LLM profile.
 - **Regression coverage**: Added tests for multilingual semantic retrieval and language-aware `/search` behavior.
 
 ## [0.1.99] — 2026-04-27

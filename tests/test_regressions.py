@@ -20,7 +20,7 @@ from amx.cli_support.commands.manual import _run_edit_wizard
 from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
-from amx.config import AMXConfig, DBConfig
+from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.cli_support.commands.db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
@@ -28,6 +28,7 @@ from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 from amx.docs.scanner import _resolve_github, _resolve_s3, cleanup_scan_artifacts
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
+from amx.llm.provider import LLMProvider
 from amx.services.analyze_scope import filter_non_business_assets
 from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
 
@@ -258,6 +259,17 @@ class HistoryFormattingTests(unittest.TestCase):
 class ProfileHelperTests(unittest.TestCase):
     def test_default_model_includes_openrouter(self) -> None:
         self.assertEqual(default_model("openrouter"), "openai/gpt-4o-mini")
+
+    def test_openrouter_model_normalization_strips_duplicate_provider_prefix(self) -> None:
+        self.assertEqual(
+            normalize_llm_model("openrouter", "openrouter/qwen/qwen3.6-plus"),
+            "qwen/qwen3.6-plus",
+        )
+
+    def test_openrouter_provider_does_not_reprefix_normalized_model(self) -> None:
+        provider = LLMProvider.__new__(LLMProvider)
+        provider.cfg = SimpleNamespace(provider="openrouter", model="qwen/qwen3.6-plus")
+        self.assertEqual(provider.model_name, "qwen/qwen3.6-plus")
 
     def test_use_doc_accepts_disable_alias(self) -> None:
         cfg = AMXConfig()

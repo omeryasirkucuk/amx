@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from amx.config import AMXConfig, DISABLED_PROFILE, LLMConfig
+from amx.config import AMXConfig, DISABLED_PROFILE, LLMConfig, normalize_llm_model
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -39,18 +39,21 @@ def interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
         default=defaults.provider or "openai",
     )
     info(
-        "Model: use a short id (e.g. gpt-4o) or LiteLLM form openai/gpt-4o - "
-        "see https://docs.litellm.ai/docs/providers"
+        "Model: use the provider's natural model id. AMX will add any required provider prefix internally."
     )
     if provider == "openrouter":
-        info("OpenRouter model examples: openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet")
+        info("OpenRouter model examples: openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, qwen/qwen3.6-plus")
     elif provider == "openai":
         info("OpenAI model example: gpt-4o")
     elif provider == "anthropic":
-        info("Anthropic model example: claude-3-5-sonnet-20241022")
+        info("Anthropic model example: claude-sonnet-4-20250514")
+    elif provider == "gemini":
+        info("Gemini model example: gemini-2.0-flash")
+    elif provider == "deepseek":
+        info("DeepSeek model example: deepseek-chat")
     elif provider == "ollama":
         info("Ollama model example: llama3")
-    model = ask("Model name", defaults.model or default_model(provider))
+    model = ask("Model name", normalize_llm_model(provider, defaults.model) or default_model(provider))
     language = ask("Preferred language", defaults.language or "english").strip() or "english"
     api_base = defaults.api_base
     if provider in ("local", "ollama", "kimi", "openrouter"):
@@ -74,7 +77,7 @@ def interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
 
     return LLMConfig(
         provider=provider,
-        model=model.strip(),
+        model=normalize_llm_model(provider, model),
         language=language,
         api_key=api_key,
         api_base=api_base,
@@ -247,13 +250,13 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def cmd_language(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set the preferred generation and answer language for the active LLM profile."""
+    """Show or set the preferred metadata generation language for the active LLM profile."""
     if not rest:
         info(
             f"Current language: [cyan]{cfg.llm.language or 'english'}[/cyan] "
             f"for LLM profile '{cfg.active_llm_profile}'."
         )
-        info("Run [cyan]/language <name>[/cyan] to change (examples: english, turkish, german).")
+        info("Run [cyan]/language <name>[/cyan] to change metadata generation language (examples: english, turkish, german).")
         return
 
     value = " ".join(rest).strip()

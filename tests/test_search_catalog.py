@@ -392,6 +392,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["column_name"], "date_from")
         self.assertEqual(answer.confidence, "high")
         self.assertIn("date related columns", answer.details["plan"]["search_queries"])
+        self.assertIn("Write the final answer in turkish.", _FakeLLMProvider.calls[-1][0]["content"])
 
     def test_catalog_overview_question_lists_known_databases(self) -> None:
         self.catalog.sync_table_profile(
@@ -415,31 +416,28 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["database_name"], "SAP")
 
     def test_count_tables_question_is_not_out_of_domain(self) -> None:
-        self.catalog.sync_table_profile(
-            db_profile="default",
-            db_backend="postgresql",
-            database_name="SAP",
-            profile=self._profile(),
-            query_usage={},
-        )
-        self.catalog.sync_table_profile(
-            db_profile="default",
-            db_backend="postgresql",
-            database_name="SAP",
-            profile=self._customer_profile(),
-            query_usage={},
-        )
         cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        fake_db = type(
+            "FakeDB",
+            (),
+            {
+                "list_schemas": lambda self: ["sap", "hr"],
+                "list_tables": lambda self, schema: ["vbak", "kna1", "mara"] if schema == "sap" else ["employees"],
+            },
+        )()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"how many tables are in sap","search_mode":"count_tables","entity_hints":["sap"],"search_queries":["sap icinde kac tablo var","how many tables are in sap"],"needs_typo_recovery":false,"reason":"aggregate metadata question"}',
-                "`sap` schema icinde 2 tablo var.",
+                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"how many tables do we have","search_mode":"count_tables","entity_hints":[],"search_queries":["kac tablomuz var","how many tables do we have"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"aggregate metadata question"}',
+                "Mevcut `sap` schemasinda 3 tablo var.",
             )
-            service = SearchService(cfg, self.catalog)
-            answer = service.ask("sap icinde kac tablo var")
+            with patch.object(SearchService, "_inventory_db", return_value=fake_db):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("kac tablomuz var")
         self.assertEqual(answer.intent, "count_tables")
-        self.assertEqual(answer.rows[0]["value"], 2)
+        self.assertEqual(answer.rows[0]["value"], 3)
         self.assertEqual(answer.confidence, "high")
+        self.assertEqual(answer.details["retrieval"]["schema_name"], "sap")
 
     def test_single_table_join_question_returns_joinable_tables(self) -> None:
         self.catalog.sync_table_profile(
