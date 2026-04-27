@@ -6,8 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from amx.agents.base import Confidence, MetadataSuggestion
+from amx.config import AMXConfig
 from amx.db.connector import AssetKind, ColumnProfile, TableProfile
 from amx.search.catalog import SearchCatalog
+from amx.search.service import SearchService, _SESSION_MEMORY
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
@@ -35,6 +37,30 @@ class _FakeIndex:
         return []
 
 
+class _FakeLLMProvider:
+    responses: list[str] = []
+    usages: list[dict] = []
+    calls: list[list[dict[str, str]]] = []
+
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+
+    @classmethod
+    def queue(cls, *contents: str) -> None:
+        cls.responses = list(contents)
+        cls.usages = []
+        cls.calls = []
+
+    def chat(self, messages, **kwargs):
+        self.__class__.calls.append(messages)
+        if not self.__class__.responses:
+            raise AssertionError("no fake LLM response queued")
+        content = self.__class__.responses.pop(0)
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model_processing_sec": 0.1}
+        self.__class__.usages.append(usage)
+        return type("ChatResult", (), {"content": content, "usage": usage})()
+
+
 class SearchCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -44,9 +70,11 @@ class SearchCatalogTests(unittest.TestCase):
         self.index_patcher = patch("amx.search.catalog.SearchIndex", _FakeIndex)
         self.index_patcher.start()
         self.catalog = SearchCatalog(self.db_path)
+        _SESSION_MEMORY.clear()
 
     def tearDown(self) -> None:
         self.index_patcher.stop()
+        _SESSION_MEMORY.clear()
         self.tmp.cleanup()
 
     def _profile(self) -> TableProfile:
@@ -71,6 +99,13 @@ class SearchCatalogTests(unittest.TestCase):
                 ColumnProfile(name="kunnr", dtype="TEXT", nullable=True, existing_comment="Customer"),
             ],
         )
+
+    def _search_cfg(self) -> AMXConfig:
+        cfg = AMXConfig()
+        cfg.active_db_profile = "default"
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+        return cfg
 
     def test_generated_reviewed_manual_precedence(self) -> None:
         run_id = self.store.create_run(
@@ -205,3 +240,91 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(joins[0]["left_column"], "kunnr")
         self.assertEqual(joins[0]["right_column"], "kunnr")
 
+    def test_out_of_domain_question_returns_no_matches(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"unsupported","out_of_domain":true,"normalized_question":"nasilsin","search_mode":"unsupported","entity_hints":[],"needs_typo_recovery":false,"reason":"small talk"}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("nasılsın")
+        self.assertEqual(answer.intent, "unsupported")
+        self.assertEqual(answer.rows, [])
+        self.assertEqual(answer.details.get("reason"), "out_of_domain")
+
+    def test_name_lookup_prefers_mandt_for_typo(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=TableProfile(
+                schema="sap",
+                name="bkpf",
+                asset_kind=AssetKind.TABLE,
+                row_count=10,
+                columns=[
+                    ColumnProfile(name="mandt", dtype="TEXT", nullable=False, existing_comment="SAP client"),
+                    ColumnProfile(name="bukrs", dtype="TEXT", nullable=False, existing_comment="Company code"),
+                ],
+            ),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"mandt","search_mode":"name_lookup","entity_hints":["mangdt"],"needs_typo_recovery":true,"reason":"field lookup"}',
+                "The closest field match is `sap.bkpf.mandt`, which is the SAP client column.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("mangdt")
+        self.assertTrue(answer.rows)
+        self.assertEqual(answer.rows[0]["column_name"], "mandt")
+        self.assertEqual(answer.confidence, "high")
+
+    def test_search_requires_llm_profile(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        cfg = AMXConfig()
+        cfg.active_db_profile = "default"
+        cfg.llm.provider = ""
+        cfg.llm.model = ""
+        service = SearchService(cfg, self.catalog)
+        answer = service.ask("price columns")
+        self.assertEqual(answer.details.get("reason"), "no_llm")
+        self.assertIn("requires an active LLM profile", answer.summary)
+
+    def test_follow_up_uses_session_memory_for_table_explain(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"sales order price","search_mode":"semantic_concept","entity_hints":["vbak"],"needs_typo_recovery":false,"reason":"business meaning"}',
+                "The best match is `sap.vbak.netwr`, the net value column on the sales header.",
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what does this table do","search_mode":"table_explain","entity_hints":[],"needs_typo_recovery":false,"reason":"follow-up table explanation"}',
+                "The table `sap.vbak` is the sales document header table.",
+            )
+            service = SearchService(cfg, self.catalog)
+            first = service.ask("Which column stores sales order price?")
+            second = service.ask("What does this table do?")
+        self.assertTrue(first.rows)
+        self.assertEqual(second.intent, "explain_table")
+        self.assertTrue(second.rows)
+        self.assertEqual(second.rows[0]["table_name"], "vbak")

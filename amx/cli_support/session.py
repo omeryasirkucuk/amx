@@ -318,17 +318,13 @@ Navigation:
 [heading]Help — /search namespace[/heading]
 Commands:
   1) /back                                     Return to root namespace
-  2) /ask "<question>"                         Ask a natural-language metadata question
-  3) /find-columns "<business meaning>"        Find matching columns
-  4) /join-candidates <schema.table> <schema.table>
-                                               Find likely join columns between two tables
-  5) /explain "<question>"                     Show retrieval path and provenance
-  6) /explain-table <schema.table>             Show effective metadata and relationships
-  7) /status                                   Catalog health, counts, and last sync jobs
-  8) /sources                                  Enabled sources, settings, and evidence coverage
-  9) /config [key] [value]                     Show or update search settings
- 10) /sync [--schema …] [--table …]            Sync DB structure/comments + cached code evidence
- 11) /rebuild                                  Rebuild effective search state and vector index
+  2) /ask <question>                           Ask a metadata question with LLM grounding
+  3) <question>                                In /search, plain text is treated like /ask
+  4) /status                                   Catalog health, LLM readiness, and last sync jobs
+  5) /sources                                  Enabled sources, settings, and evidence coverage
+  6) /config [key] [value]                     Show or update search settings
+  7) /sync [--schema …] [--table …]            Sync DB structure/comments + cached code evidence
+  8) /rebuild                                  Rebuild effective search state and vector index
 """
         )
         return
@@ -370,7 +366,7 @@ Getting started (in order):
   6) /llm                          LLM profile management
   7) /code                         Codebase profile management
   8) /analyze                      Metadata inference (/run, /apply, …)
-  9) /search                       Search catalog, join candidates, and provenance
+  9) /search                       LLM-backed metadata discussion grounded on the search catalog
  10) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
@@ -379,7 +375,7 @@ Inside namespaces (examples):
   [bright_white]/metadata[/bright_white] → /inspect, /edit, /monitor
   [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
   [bright_white]/code[/bright_white] → /code-profiles, /add-code-profile, …
-  [bright_white]/search[/bright_white] → /ask, /status, /sync, /join-candidates, …
+  [bright_white]/search[/bright_white] → /ask, /status, /sync, or just type a metadata question
 
 Global shortcuts (work anywhere):
   /save                            Persist ~/.amx/config.yml
@@ -512,11 +508,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
     search_cmds = [
         ("/back", "Return to root namespace"),
         ("/clear", "Clear terminal output"),
-        ("/ask", "Ask a natural-language metadata question (/ask <text>)"),
-        ("/find-columns", "Search columns by business meaning"),
-        ("/join-candidates", "Find join candidates (/join-candidates schema.a schema.b)"),
-        ("/explain", "Show search provenance and ranking details"),
-        ("/explain-table", "Show table-level catalog context"),
+        ("/ask", "Ask a metadata question with LLM grounding (/ask <text>)"),
         ("/status", "Show catalog/index status"),
         ("/sources", "Show evidence sources and settings"),
         ("/config", "Show/set search config (/config [key] [value])"),
@@ -711,8 +703,16 @@ def _handle_session_builtin(
 
 def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
-    if namespace == "search" and head in {"ask", "find-columns", "join-candidates", "explain", "explain-table", "status", "sources", "config", "sync", "rebuild"}:
-        return ["search"] + parts
+    if head == "search" and len(parts) > 1:
+        if parts[1] in {"ask", "status", "sources", "config", "sync", "rebuild", "find-columns", "join-candidates", "explain", "explain-table"}:
+            return parts
+        return ["search", "ask"] + parts[1:]
+    if namespace == "search":
+        if head in {"ask", "status", "sources", "config", "sync", "rebuild"}:
+            return ["search"] + parts
+        if head in {"find-columns", "join-candidates", "explain", "explain-table"}:
+            return ["search"] + parts
+        return ["search", "ask"] + parts
     shortcut_map = {
         "connect": ["db", "connect"],
         "schemas": ["db", "schemas"],
@@ -735,10 +735,6 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "code-analyze": ["code", "analyze"],
         "export-code-report": ["code", "export-report"],
         "ask": ["search", "ask"],
-        "find-columns": ["search", "find-columns"],
-        "join-candidates": ["search", "join-candidates"],
-        "explain": ["search", "explain"],
-        "explain-table": ["search", "explain-table"],
         "status": ["search", "status"],
         "sources": ["search", "sources"],
         "sync": ["search", "sync"],
@@ -859,7 +855,7 @@ def run_interactive_session(
         }
     )
     analyze_cmd_heads = frozenset({"run", "run-apply", "apply"})
-    search_cmd_heads = frozenset({"ask", "find-columns", "join-candidates", "explain", "explain-table", "status", "sources", "config", "sync", "rebuild"})
+    search_cmd_heads = frozenset({"ask", "status", "sources", "config", "sync", "rebuild"})
     history_cmd_heads = frozenset({"list", "show", "stats", "events", "results", "review"})
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
@@ -945,8 +941,11 @@ def run_interactive_session(
             if not raw:
                 continue
             if not raw.startswith("/"):
-                warn("Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
-                continue
+                if namespace == "search":
+                    raw = f"/ask {raw}"
+                else:
+                    warn("Use slash commands (example: /db, /connect, /run --schema sap_s6p)")
+                    continue
 
             cmdline = raw[1:].strip()
             if not cmdline:
@@ -1021,7 +1020,7 @@ def run_interactive_session(
                 elif head in analyze_cmd_heads:
                     namespace = "analyze"
                     info("Assumed /analyze namespace for this command.")
-                elif head in search_cmd_heads:
+                elif head in search_cmd_heads or head in {"find-columns", "join-candidates", "explain", "explain-table"}:
                     namespace = "search"
                     info("Assumed /search namespace for this command.")
                 elif head in history_cmd_heads:

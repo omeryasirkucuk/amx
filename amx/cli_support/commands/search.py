@@ -12,7 +12,9 @@ from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search.catalog import SearchCatalog
 from amx.search.service import SearchService
-from amx.utils.console import error, info, render_table, success, warn
+from amx.services.analyze_scope import finalize_scope as _finalize_scope
+from amx.storage.sqlite_store import history_store
+from amx.utils.console import ask_choice, ask_multi_choice, confirm, error, info, render_table, success, warn
 
 LogEvent = Callable[..., None]
 
@@ -60,11 +62,111 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
                 row.get("column_name", "") or "-",
                 row.get("effective_source_kind", ""),
                 row.get("current_confidence", ""),
-                f"{float(row.get('rank_score') or 0):.2f}",
-                str(row.get("search_text", "")).split("effective_description=", 1)[-1][:80],
+                f"{float(row.get('rank_score') or row.get('score') or 0):.2f}",
+                str(row.get("effective_description", "") or "")[:100],
             ]
             for row in rows
         ],
+    )
+
+
+def _search_scope_from_answer(answer: Any) -> dict[str, list[str]]:
+    scope = answer.details.get("scope") or {}
+    if isinstance(scope, dict) and scope:
+        out: dict[str, list[str]] = {}
+        for key, values in scope.items():
+            if not key or not isinstance(values, list):
+                continue
+            uniq = [str(value) for value in values if str(value)]
+            if uniq:
+                out[str(key)] = uniq
+        if out:
+            return out
+    rows = answer.rows or []
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        schema_name = str(row.get("schema_name") or "")
+        table_name = str(row.get("table_name") or "")
+        if not schema_name or not table_name:
+            continue
+        grouped.setdefault(schema_name, [])
+        if table_name not in grouped[schema_name]:
+            grouped[schema_name].append(table_name)
+    return grouped
+
+
+def _search_results_payload(answer: Any) -> dict[str, Any]:
+    return {
+        "intent": answer.intent,
+        "question": answer.question,
+        "confidence": answer.confidence,
+        "summary": answer.summary,
+        "provenance": answer.provenance,
+        "retrieval": answer.details.get("retrieval", {}),
+        "plan": answer.details.get("plan", {}),
+        "reason": answer.details.get("reason", ""),
+        "rows": [
+            {
+                "schema": row.get("schema_name", ""),
+                "table": row.get("table_name", ""),
+                "column": row.get("column_name", ""),
+                "score": row.get("rank_score", row.get("score", 0)),
+                "source": row.get("effective_source_kind", row.get("source", "")),
+                "relationship_type": row.get("relationship_type", ""),
+            }
+            for row in (answer.rows or [])[:10]
+        ],
+    }
+
+
+def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, log_event: LogEvent) -> None:
+    answer = svc.ask(question_text)
+    hs = history_store()
+    run_id: int | None = None
+    if hs is not None:
+        run_id = hs.create_run(
+            command="search.ask",
+            mode="chat",
+            db_backend=cfg.db.backend,
+            db_profile=cfg.active_db_profile or "default",
+            llm_provider=cfg.llm.provider,
+            llm_model=cfg.llm.model,
+            scope=_search_scope_from_answer(answer),
+        )
+    info(answer.summary)
+    if answer.provenance and svc.settings.get("show_provenance", "true").lower() == "true":
+        info("Provenance: " + "; ".join(answer.provenance))
+    if svc.settings.get("show_confidence", "true").lower() == "true":
+        info(f"Confidence: {answer.confidence}")
+    if answer.rows:
+        _render_search_rows(answer.rows)
+    payload = _search_results_payload(answer)
+    status = "success"
+    error_text = ""
+    if answer.details.get("reason") in {"no_llm", "llm_failure"}:
+        status = "failed"
+        error_text = answer.summary
+    if hs is not None and run_id is not None:
+        hs.finish_run(
+            run_id,
+            status=status,
+            metrics=answer.details.get("llm_usage", {}),
+            tokens=answer.details.get("tokens", {}),
+            results=payload,
+            error_text=error_text,
+        )
+    log_event(
+        event_type="search_ask",
+        status=status,
+        command="search.ask",
+        details={
+            "question": question_text,
+            "intent": answer.intent,
+            "confidence": answer.confidence,
+            "reason": answer.details.get("reason", ""),
+            "scope": _search_scope_from_answer(answer),
+            "provenance": answer.provenance,
+        },
     )
 
 
@@ -72,20 +174,16 @@ def _sync_db_scope(
     cfg: AMXConfig,
     catalog: SearchCatalog,
     *,
-    schema: str | None = None,
-    table: str | None = None,
+    scope: dict[str, list[str]],
 ) -> tuple[int, int]:
     db = DatabaseConnector(cfg.db)
     db_profile = cfg.active_db_profile or "default"
     database_name = cfg.db.database or cfg.db.catalog or cfg.db.project or ""
-    schemas = [schema] if schema else ([cfg.current_schema] if cfg.current_schema else db.list_schemas())
     inserted = 0
     updated = 0
-    for schema_name in schemas:
-        if not schema_name:
-            continue
-        assets = [(table, db.resolve_asset_kind(schema_name, table))] if table else db.list_assets(schema_name)
-        for asset_name, asset_kind in assets:
+    for schema_name, asset_names in scope.items():
+        for asset_name in asset_names:
+            asset_kind = db.resolve_asset_kind(schema_name, asset_name)
             try:
                 profile = db.profile_table(schema_name, asset_name, sample_size=0, asset_kind=asset_kind)
             except ProfilingError as exc:
@@ -102,6 +200,37 @@ def _sync_db_scope(
     return inserted, updated
 
 
+def _interactive_sync_scope(
+    cfg: AMXConfig,
+    schema_name: str | None,
+    table_name: str | None,
+) -> tuple[AMXConfig, dict[str, list[str]] | None]:
+    if not schema_name and not table_name and len(cfg.db_profiles) > 1:
+        if not confirm(
+            f"Continue with current DB profile '{cfg.active_db_profile or 'default'}'?",
+            default=True,
+        ):
+            selected = ask_choice(
+                "Select DB profile for /search sync",
+                sorted(cfg.db_profiles.keys()),
+                default=cfg.active_db_profile or sorted(cfg.db_profiles.keys())[0],
+            )
+            cfg.set_active_db_profile(selected)
+            info(f"Active DB: [bold cyan]{selected}[/]")
+    db = DatabaseConnector(cfg.db)
+    scope = _finalize_scope(
+        cfg,
+        db,
+        schema_name,
+        [table_name] if table_name else [],
+        ask_choice=ask_choice,
+        ask_multi_choice=ask_multi_choice,
+        error=error,
+        warn=warn,
+    )
+    return cfg, scope
+
+
 def register_search_commands(
     main: click.Group,
     *,
@@ -113,116 +242,25 @@ def register_search_commands(
     @main.group(invoke_without_command=True)
     @click.pass_context
     def search(ctx: click.Context) -> None:
-        """Search catalog, metadata, and code evidence."""
+        """Chat-first metadata discussion surface."""
         if ctx.invoked_subcommand is None:
             info(
-                "Use /search ask for natural-language questions, /status for catalog health, "
-                "/sync or /rebuild to refresh derived search state."
+                "Use `/search ask <question>` or just type a question inside the /search tab. "
+                "Use `/status`, `/sync`, or `/rebuild` for catalog operations."
             )
 
     @search.command("ask")
-    @click.argument("question")
+    @click.argument("question", nargs=-1, required=True)
     @pass_config
-    def search_ask(cfg: AMXConfig, question: str) -> None:
+    def search_ask(cfg: AMXConfig, question: tuple[str, ...]) -> None:
         svc = _service(cfg)
         if svc is None:
             return
-        answer = svc.ask(question)
-        info(answer.summary)
-        info(f"Confidence: {answer.confidence}")
-        if answer.provenance:
-            info("Provenance: " + "; ".join(answer.provenance))
-        _render_search_rows(answer.rows)
-
-    @search.command("find-columns")
-    @click.argument("question")
-    @pass_config
-    def search_find_columns(cfg: AMXConfig, question: str) -> None:
-        svc = _service(cfg)
-        if svc is None:
+        question_text = " ".join(question).strip()
+        if not question_text:
+            error("Usage: /search ask <question>")
             return
-        answer = svc.ask(question)
-        _render_search_rows(answer.rows)
-
-    @search.command("join-candidates")
-    @click.argument("left_path")
-    @click.argument("right_path")
-    @pass_config
-    def search_join_candidates(cfg: AMXConfig, left_path: str, right_path: str) -> None:
-        catalog = _catalog()
-        if catalog is None:
-            error("Search catalog is not initialized.")
-            return
-        rows = catalog.join_candidates(cfg.active_db_profile or "default", left_path, right_path)
-        if rows:
-            info(f"Top join candidates between {left_path} and {right_path}")
-        else:
-            warn(f"No join candidates found between {left_path} and {right_path}.")
-        _render_search_rows(rows)
-
-    @search.command("explain")
-    @click.argument("question")
-    @pass_config
-    def search_explain(cfg: AMXConfig, question: str) -> None:
-        svc = _service(cfg)
-        if svc is None:
-            return
-        payload = svc.explain(question)
-        info(f"Intent: {payload['intent']}")
-        info(f"Confidence: {payload['confidence']}")
-        info("Provenance: " + "; ".join(payload.get("provenance") or []))
-        _render_search_rows(payload.get("rows") or [])
-        info(json.dumps(payload.get("details") or {}, ensure_ascii=True))
-
-    @search.command("explain-table")
-    @click.argument("table_path")
-    @pass_config
-    def search_explain_table(cfg: AMXConfig, table_path: str) -> None:
-        catalog = _catalog()
-        if catalog is None:
-            error("Search catalog is not initialized.")
-            return
-        result = catalog.explain_table(cfg.active_db_profile or "default", table_path)
-        if result is None:
-            error(f"No catalog entry for {table_path}. Run /search sync first.")
-            return
-        table = result["table"]
-        info(
-            f"{table.get('schema_name')}.{table.get('table_name')} "
-            f"[{table.get('asset_kind')}] source={table.get('effective_source_kind')} "
-            f"confidence={table.get('current_confidence')}"
-        )
-        info("Columns:")
-        render_table(
-            f"Catalog table: {table_path}",
-            ["Column", "Type", "Nullable", "PK", "FK", "Source"],
-            [
-                [
-                    row.get("column_name", ""),
-                    row.get("dtype", ""),
-                    "yes" if row.get("nullable") else "no",
-                    "yes" if row.get("pk_flag") else "no",
-                    "yes" if row.get("fk_flag") else "no",
-                    row.get("effective_source_kind", ""),
-                ]
-                for row in result["columns"]
-            ],
-        )
-        if result["relationships"]:
-            render_table(
-                "Relationships",
-                ["Type", "Target schema", "Target table", "Score", "Source"],
-                [
-                    [
-                        row.get("relationship_type", ""),
-                        row.get("target_schema", ""),
-                        row.get("target_table", ""),
-                        f"{float(row.get('score') or 0):.2f}",
-                        row.get("source", ""),
-                    ]
-                    for row in result["relationships"]
-                ],
-            )
+        _run_search_ask(cfg, svc, question_text, log_event=log_event)
 
     @search.command("status")
     @pass_config
@@ -232,8 +270,12 @@ def register_search_commands(
             error("Search catalog is not initialized.")
             return
         status = catalog.sync_status(cfg.active_db_profile or "default")
+        llm_ready = "yes" if (cfg.llm.provider and cfg.llm.model) else "no"
+        total_entities = int(status["entities"].get("total_entities", 0) or 0)
         rows = [
-            ["entities.total", status["entities"].get("total_entities", 0)],
+            ["qa.ready", "yes" if total_entities > 0 else "no"],
+            ["llm.ready", llm_ready],
+            ["entities.total", total_entities],
             ["entities.effective", status["entities"].get("effective_entities", 0)],
             ["descriptions.total", status["descriptions"].get("total_descriptions", 0)],
             ["descriptions.manual", status["descriptions"].get("manual_count", 0)],
@@ -319,12 +361,15 @@ def register_search_commands(
         if catalog is None:
             error("Search catalog is not initialized.")
             return
+        cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
+        if not scope:
+            return
         db_profile = cfg.active_db_profile or "default"
-        job_id = catalog.start_sync_job(db_profile, "sync", {"schema": schema_name or "", "table": table_name or ""})
+        job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope})
         inserted = 0
         updated = 0
         try:
-            inserted, updated = _sync_db_scope(cfg, catalog, schema=schema_name, table=table_name)
+            inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
             try:
                 from amx.codebase.cache import load_latest_cached_report
 
@@ -337,7 +382,7 @@ def register_search_commands(
                             db_profile=db_profile,
                             db_backend=cfg.db.backend,
                             database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
-                            schema_name=str(manifest.get("schema") or schema_name or cfg.current_schema or ""),
+                            schema_name=str(manifest.get("schema") or next(iter(scope.keys()), cfg.current_schema or "")),
                             source_path=code_path,
                             report=report,
                         )
@@ -345,7 +390,7 @@ def register_search_commands(
                 warn(f"Code evidence sync skipped: {exc}")
             catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
             success(f"Search sync complete. inserted={inserted}, updated={updated}")
-            log_event(event_type="search_sync", status="success", command="search.sync", details={"schema": schema_name, "table": table_name, "updated": updated})
+            log_event(event_type="search_sync", status="success", command="search.sync", details={"scope": scope, "updated": updated})
         except Exception as exc:
             catalog.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
             log_event(event_type="search_sync", status="failed", command="search.sync", details={"error": str(exc)})
@@ -366,3 +411,40 @@ def register_search_commands(
             command="search.rebuild",
             details={"inserted": inserted, "updated": updated, "db_profile": cfg.active_db_profile or "default"},
         )
+
+    @search.command("find-columns", hidden=True)
+    @click.argument("question", nargs=-1, required=True)
+    @pass_config
+    def search_find_columns(cfg: AMXConfig, question: tuple[str, ...]) -> None:
+        svc = _service(cfg)
+        if svc is None:
+            return
+        _run_search_ask(cfg, svc, " ".join(question).strip(), log_event=log_event)
+
+    @search.command("join-candidates", hidden=True)
+    @click.argument("left_path")
+    @click.argument("right_path")
+    @pass_config
+    def search_join_candidates(cfg: AMXConfig, left_path: str, right_path: str) -> None:
+        svc = _service(cfg)
+        if svc is None:
+            return
+        _run_search_ask(cfg, svc, f"Which columns should I join between {left_path} and {right_path}?", log_event=log_event)
+
+    @search.command("explain", hidden=True)
+    @click.argument("question", nargs=-1, required=True)
+    @pass_config
+    def search_explain(cfg: AMXConfig, question: tuple[str, ...]) -> None:
+        svc = _service(cfg)
+        if svc is None:
+            return
+        _run_search_ask(cfg, svc, " ".join(question).strip(), log_event=log_event)
+
+    @search.command("explain-table", hidden=True)
+    @click.argument("table_path")
+    @pass_config
+    def search_explain_table(cfg: AMXConfig, table_path: str) -> None:
+        svc = _service(cfg)
+        if svc is None:
+            return
+        _run_search_ask(cfg, svc, f"What does table {table_path} do?", log_event=log_event)

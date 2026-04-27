@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.99] — 2026-04-27
+### LLM-Native Search Copilot
+- **amx/search/service.py**: Replaced the rule-based `/search` router with an LLM-backed interpretation, retrieval-planning, short session-memory, and grounded answer-synthesis flow.
+- **amx/search/catalog.py**: Added name-first field lookup, fuzzy table resolution, LLM-oriented retrieval settings, and better effective-description loading for `/search` rendering.
+- **amx/cli_support/commands/search.py / amx/cli_support/session.py**: Simplified `/search` to a chat-first surface, enabled plain-text questions inside the `/search` tab, logged `/search ask` runs/events into history, and kept sync/rebuild as admin operations.
+- **tests/test_search_catalog.py / tests/test_cli_integration.py**: Added coverage for fail-closed no-LLM behavior, typo correction toward `mandt`, out-of-domain rejection, and follow-up table explanations using session memory.
+
 ## [0.1.98] — 2026-04-27
 ### Search Catalog + History Lifecycle
 - **amx/search/catalog.py / amx/search/index.py / amx/search/service.py**: Added the SQLite-backed search catalog, effective-description resolver, relationship/evidence storage, and the `amx_search` Chroma index.

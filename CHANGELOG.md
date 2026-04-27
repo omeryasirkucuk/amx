@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.99] — 2026-04-27
+### Changed
+- **LLM-native `/search` copilot**: `/search ask` is now a chat-first metadata discussion surface that uses the active LLM for query interpretation, typo recovery, follow-up handling, and grounded answer synthesis.
+- **Search UX simplification**: Interactive `/search` now treats plain text as a metadata question, and the public command surface focuses on `ask`, `status`, `sources`, `config`, `sync`, and `rebuild`.
+- **Grounded search behavior**: Name-like lookups such as `MANDT`/`mangdt` prioritize exact and fuzzy field-name matches before semantic description matches, while table explanation and join questions route through intent-specific retrieval paths.
+- **Search history**: `/search ask` now records structured run history and app events with intent, confidence, provenance, and retrieved scope summaries.
+
+### Added
+- **Session memory for `/search`**: Follow-up questions in the `/search` tab can reuse recent table/column context during the current process.
+- **Regression coverage**: Added tests for no-LLM fail-closed behavior, typo-oriented name lookup, out-of-domain rejection, and follow-up table explanation.
+
 ## [0.1.98] — 2026-04-27
 ### Added
 - **`/search` namespace**: Added a dedicated search surface for natural-language metadata questions, join-candidate discovery, provenance, config, sync, and rebuild operations.

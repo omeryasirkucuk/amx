@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import time
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,17 +30,23 @@ SOURCE_PRIORITY = {
 
 DEFAULT_SETTINGS: dict[str, str] = {
     "auto_sync_on_writeback": "true",
+    "llm_enabled": "true",
     "enable_generated_metadata": "true",
     "enable_manual_metadata": "true",
     "enable_reviewed_metadata": "true",
     "enable_code_evidence": "true",
     "enable_vector_search": "true",
     "enable_exact_search": "true",
+    "allow_code_evidence": "true",
+    "allow_vector_support": "true",
     "manual_weight": "6.0",
     "reviewed_weight": "4.5",
     "generated_weight": "3.0",
     "code_evidence_weight": "2.0",
     "freshness_weight": "1.0",
+    "conversation_memory_turns": "4",
+    "max_retrieved_entities": "8",
+    "answer_style": "concise",
     "show_provenance": "true",
     "show_confidence": "true",
     "max_results": "8",
@@ -93,6 +100,17 @@ class SearchCatalog:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
+
+    def _entity_row(self, conn: sqlite3.Connection, entity_id: int) -> sqlite3.Row | None:
+        return conn.execute(
+            """
+            SELECT ce.*, cd.description_text AS effective_description
+            FROM catalog_entities ce
+            LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+            WHERE ce.id = ?
+            """,
+            (entity_id,),
+        ).fetchone()
 
     def get_settings(self, db_profile: str) -> dict[str, str]:
         out = dict(DEFAULT_SETTINGS)
@@ -1064,7 +1082,14 @@ class SearchCatalog:
         return [dict(row) for row in rows]
 
     def _tokens(self, text: str) -> list[str]:
-        return [token for token in re.split(r"[^a-zA-Z0-9_]+", text.lower()) if token]
+        return [token for token in re.findall(r"\w+", text.lower(), flags=re.UNICODE) if len(token) >= 2]
+
+    def _similarity(self, left: str, right: str) -> float:
+        a = (left or "").strip().lower()
+        b = (right or "").strip().lower()
+        if not a or not b:
+            return 0.0
+        return SequenceMatcher(None, a, b).ratio()
 
     def _exact_candidates(self, db_profile: str, question: str, limit: int = 20) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
@@ -1097,9 +1122,101 @@ class SearchCatalog:
         hits.sort(key=lambda item: item["match_score"], reverse=True)
         return hits[:limit]
 
-    def search_columns(self, db_profile: str, question: str, limit: int = 8) -> list[dict[str, Any]]:
+    def name_search_columns(self, db_profile: str, question: str, limit: int = 8) -> list[dict[str, Any]]:
+        tokens = self._tokens(question)
+        needle = (tokens[0] if tokens else question.strip().lower())[:128]
+        if not needle:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ce.*, cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ? AND ce.entity_kind = 'column'
+                """,
+                (db_profile,),
+            ).fetchall()
+        ranked: list[dict[str, Any]] = []
+        for row in rows:
+            column_name = str(row["column_name"] or "")
+            table_name = str(row["table_name"] or "")
+            description = str(row["effective_description"] or "")
+            col_lower = column_name.lower()
+            table_lower = table_name.lower()
+            score = 0.0
+            if needle == col_lower:
+                score += 12.0
+            elif col_lower.startswith(needle):
+                score += 9.0
+            elif needle in col_lower:
+                score += 7.0
+            similarity = self._similarity(needle, col_lower)
+            if similarity >= 0.72:
+                score += similarity * 8.0
+            if needle == table_lower:
+                score += 4.0
+            elif table_lower.startswith(needle):
+                score += 2.5
+            if needle and needle in description.lower():
+                score += 1.0
+            if score <= 0:
+                continue
+            item = dict(row)
+            item["match_score"] = score
+            ranked.append(item)
+        ranked = self._rank_rows(ranked, self.get_settings(db_profile), limit * 2)
+        return ranked[:limit]
+
+    def find_table_candidates(self, db_profile: str, hint: str, limit: int = 5) -> list[dict[str, Any]]:
+        needle = (hint or "").strip().lower()
+        if not needle:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ce.*, cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ? AND ce.entity_kind = 'table'
+                """,
+                (db_profile,),
+            ).fetchall()
+        ranked: list[dict[str, Any]] = []
+        for row in rows:
+            table_name = str(row["table_name"] or "")
+            search_text = str(row["search_text"] or "").lower()
+            score = 0.0
+            if needle == table_name.lower():
+                score += 10.0
+            elif table_name.lower().startswith(needle):
+                score += 7.0
+            elif needle in table_name.lower():
+                score += 5.0
+            similarity = self._similarity(needle, table_name)
+            if similarity >= 0.72:
+                score += similarity * 6.0
+            if needle in search_text:
+                score += 1.0
+            if score <= 0:
+                continue
+            item = dict(row)
+            item["rank_score"] = score
+            ranked.append(item)
+        ranked.sort(key=lambda item: float(item.get("rank_score") or 0.0), reverse=True)
+        return ranked[:limit]
+
+    def search_columns(
+        self,
+        db_profile: str,
+        question: str,
+        limit: int = 8,
+        entity_hints: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         settings = self.get_settings(db_profile)
         exact_hits = self._exact_candidates(db_profile, question, limit=max(limit * 2, 10))
+        if not exact_hits:
+            return []
         by_id: dict[int, dict[str, Any]] = {}
         for row in exact_hits:
             if row.get("entity_kind") != "column":
@@ -1113,19 +1230,29 @@ class SearchCatalog:
                 row = by_id.get(entity_id)
                 if row is None:
                     with self._connect() as conn:
-                        fetched = conn.execute(
-                            "SELECT * FROM catalog_entities WHERE id = ?",
-                            (entity_id,),
-                        ).fetchone()
+                        fetched = self._entity_row(conn, entity_id)
                     if not fetched or fetched["entity_kind"] != "column":
                         continue
                     row = dict(fetched)
                     row["match_score"] = 0.0
+                    row["vector_only"] = True
                     by_id[entity_id] = row
                 dist = hit.get("distance")
                 if dist is not None:
                     row["match_score"] = float(row.get("match_score") or 0.0) + max(0.0, 3.0 - float(dist))
-        return self._rank_rows(list(by_id.values()), settings, limit)
+        hints = [str(item).strip().lower() for item in (entity_hints or []) if str(item).strip()]
+        rows = list(by_id.values())
+        if hints:
+            for row in rows:
+                table_name = str(row.get("table_name") or "").lower()
+                schema_name = str(row.get("schema_name") or "").lower()
+                column_name = str(row.get("column_name") or "").lower()
+                for hint in hints:
+                    if hint in {table_name, column_name, f"{schema_name}.{table_name}"}:
+                        row["match_score"] = float(row.get("match_score") or 0.0) + 2.5
+        ranked = self._rank_rows(rows, settings, limit * 2)
+        ranked = [row for row in ranked if not row.get("vector_only") or float(row.get("match_score") or 0.0) >= 2.5]
+        return ranked[:limit]
 
     def _rank_rows(self, rows: list[dict[str, Any]], settings: dict[str, str], limit: int) -> list[dict[str, Any]]:
         weight_map = {
@@ -1146,6 +1273,7 @@ class SearchCatalog:
                 total += 0.5
             row = dict(row)
             row["rank_score"] = total
+            row["evidence_score"] = float(row.get("match_score") or 0.0)
             scored.append(row)
         scored.sort(key=lambda item: item["rank_score"], reverse=True)
         return scored[:limit]

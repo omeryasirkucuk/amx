@@ -102,7 +102,7 @@ In an interactive `amx` session, configuration is grouped by namespace:
 - `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
-- `/search` — search generated/manual metadata, join candidates, provenance, and code evidence
+- `/search` — LLM-backed metadata discussion grounded on generated/manual metadata, relationships, and code evidence
 
 AMX may **auto-select** the right namespace when you run an unambiguous command from the root prompt (it will print which namespace it assumed).
 
@@ -190,11 +190,7 @@ Notes:
 | `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
 | `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
-| `/search` + `/ask "<question>"` | Ask natural-language metadata questions against the internal search catalog |
-| `/search` + `/find-columns "<business meaning>"` | Find likely matching columns and rank them by effective metadata + evidence |
-| `/search` + `/join-candidates <schema.table1> <schema.table2>` | Suggest join columns using FK, heuristics, and code evidence |
-| `/search` + `/explain "<question>"` | Show retrieval intent, provenance, and ranking evidence |
-| `/search` + `/explain-table <schema.table>` | Show a table’s effective metadata, columns, and relationships from the catalog |
+| `/search` + `/ask <question>` | Ask conversational metadata questions with LLM grounding over the internal search catalog |
 | `/search` + `/status` | Show catalog counts, freshness, and recent sync jobs |
 | `/search` + `/sources` | Show enabled search settings and evidence-source coverage |
 | `/search` + `/config [key] [value]` | View or update `/search` settings for the active DB profile |
@@ -370,9 +366,12 @@ Sync behavior:
 
 Answering behavior:
 
-- semantic questions use effective metadata, exact token overlap, vector similarity, and code evidence
+- `/search` is chat-first: inside the `/search` tab, plain text is treated as a metadata question
+- each question is interpreted by the active LLM, then grounded against catalog rows, relationships, and code evidence
+- semantic questions use effective metadata first, with exact/fuzzy name matching and vector support as secondary signals
 - join questions prioritize FK relationships, then heuristics, then observed code usage
-- `/search explain` shows the provenance AMX used to produce an answer
+- follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
+- if no active LLM profile exists, `/search ask` fails closed and tells you to configure `/llm`
 
 ## Project Structure
 
@@ -405,7 +404,7 @@ amx/
 ├── search/
 │   ├── catalog.py      # SQLite-backed metadata catalog and lifecycle sync
 │   ├── index.py        # Chroma `amx_search` vector index
-│   └── service.py      # Intent routing and answer shaping for /search
+│   └── service.py      # LLM-backed query planning, memory, retrieval orchestration, and answer synthesis
 ├── services/
 │   ├── __init__.py         # Service-layer package marker
 │   ├── analyze_scope.py    # Scope resolution, asset filtering, and codebase preparation

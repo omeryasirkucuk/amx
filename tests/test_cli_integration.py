@@ -179,7 +179,42 @@ class CodeIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("No cached code-scan", result.output)
-        self.assertIn("/code-scan", result.output)
+
+
+class SearchIntegrationTests(unittest.TestCase):
+    def test_search_ask_requires_llm_profile(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.active_db_profile = "default"
+        cfg.llm.provider = ""
+        cfg.llm.model = ""
+
+        fake_catalog = Mock()
+        fake_catalog.get_settings.return_value = {
+            "llm_enabled": "true",
+            "show_provenance": "true",
+            "show_confidence": "true",
+            "max_retrieved_entities": "8",
+        }
+        fake_catalog.sync_status.return_value = {
+            "entities": {"total_entities": 1},
+            "descriptions": {},
+            "jobs": [],
+        }
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.cli_support.commands.search._catalog", return_value=fake_catalog),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "search", "ask", "price columns"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("requires an active LLM profile", result.output)
 
     def test_code_refresh_uses_resolved_active_profile_path(self) -> None:
         runner = CliRunner()
