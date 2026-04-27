@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import unittest
 from types import SimpleNamespace
+import unittest
 from unittest.mock import Mock, patch
 
 from click.testing import CliRunner
 
 from amx.cli import main
+from amx.config import AMXConfig
 
 
 class AnalyzeApplyIntegrationTests(unittest.TestCase):
@@ -122,6 +123,74 @@ class DocsIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         search_docs.assert_called_once_with("sales order", 3)
+
+
+class CodeIntegrationTests(unittest.TestCase):
+    def test_code_results_without_cache_shows_guidance(self) -> None:
+        runner = CliRunner()
+
+        with (
+            patch("amx.config.AMXConfig.resolve_code_path", return_value="."),
+            patch("amx.codebase.cache.load_latest_cached_report", return_value=(None, None)),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "code", "results"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("No cached code-scan", result.output)
+        self.assertIn("/code-scan", result.output)
+
+    def test_code_refresh_uses_resolved_active_profile_path(self) -> None:
+        runner = CliRunner()
+
+        with (
+            patch("amx.config.AMXConfig.resolve_code_path", return_value="."),
+            patch("amx.codebase.cache.invalidate_cache") as invalidate_cache,
+            patch("amx.codebase.code_rag.delete_code_collection") as delete_code_collection,
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "code", "refresh"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        invalidate_cache.assert_called_once_with("default", ".")
+        delete_code_collection.assert_called_once_with(source_filters=["."])
+
+    def test_code_analyze_without_cache_stops_before_db_work(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def test_connection(self) -> bool:
+                raise AssertionError("should not test DB when code cache is missing")
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.config.AMXConfig.resolve_code_path", return_value="."),
+            patch("amx.codebase.cache.load_latest_cached_report", return_value=(None, None)),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "code", "analyze", "--schema", "sap", "vbak"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("No cached code-scan", result.output)
 
 
 if __name__ == "__main__":

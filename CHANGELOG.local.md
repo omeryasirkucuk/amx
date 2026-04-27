@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.83] — 2026-04-27
+### CLI Refactor
+- **amx/cli_code.py**: Added a dedicated module for `/code` scan, refresh, results, export-report, and standalone analyze commands.
+- **amx/cli.py**: Replaced the in-file code namespace block with `register_code_commands(...)`, bringing the file down to roughly 1.8k lines.
+- **tests/test_cli_integration.py**: Added Click integration coverage for `/code results`, `/code refresh`, and `/code analyze` guardrails.
+
 ## [0.1.82] — 2026-04-27
 ### CLI Refactor
 - **amx/cli_docs.py**: Added a dedicated module for `/docs` scan, ingest, search, export-report, and standalone analyze commands.

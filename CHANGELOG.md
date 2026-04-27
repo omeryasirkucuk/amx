@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.83] — 2026-04-27
+### Changed
+- **CLI maintainability**: Extracted the `/code` namespace commands from `amx/cli.py` into `amx/cli_code.py`, reducing `amx/cli.py` to roughly 1.8k lines while preserving scan, refresh, results, report export, and standalone Code Agent analysis behavior.
+
+### Added
+- **Integration coverage**: Added Click-level tests for `/code results` empty-cache guidance, `/code refresh` cache invalidation wiring, and `/code analyze` missing-cache guardrails.
+
 ## [0.1.82] — 2026-04-27
 ### Changed
 - **CLI maintainability**: Extracted the `/docs` namespace commands from `amx/cli.py` into `amx/cli_docs.py`, reducing `amx/cli.py` to roughly 2.26k lines while preserving scan, ingest, search, export, and standalone RAG analysis behavior.
