@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.84] — 2026-04-27
+### CLI Refactor
+- **amx/cli_analyze_flow.py**: Added a dedicated module for `/analyze run`, including profile switching, completion-mode selection, orchestration execution, interrupt handling, and run-history finalization.
+- **amx/cli.py**: Replaced the in-file `/analyze run` block with `register_analyze_run_command(...)`, bringing the file down to roughly 1.3k lines.
+- **tests/test_cli_integration.py**: Added Click integration coverage to verify `/analyze run` dispatches through the extracted module.
+
 ## [0.1.83] — 2026-04-27
 ### CLI Refactor
 - **amx/cli_code.py**: Added a dedicated module for `/code` scan, refresh, results, export-report, and standalone analyze commands.

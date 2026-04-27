@@ -329,6 +329,7 @@ Query it directly in AMX via `/history` namespace:
 ```
 amx/
 ├── cli.py              # Interactive shell, command routing, and top-level workflows
+├── cli_analyze_flow.py # /analyze run command flow, mode selection, and history finalization
 ├── cli_code.py         # /code namespace commands for scan, results, report export, refresh, and analyze
 ├── cli_db.py           # /db namespace profile and profiling command helpers
 ├── cli_docs.py         # /docs namespace commands for scan, ingest, search, report, and analyze
@@ -369,9 +370,9 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
-### v0.1.83
+### v0.1.84
 
-- **CLI maintainability**: The `/code` command namespace now lives in `amx.cli_code`, cutting `amx.cli` down to roughly 1.8k lines while keeping scan, refresh, results, export, and standalone Code Agent analysis together.
+- **CLI maintainability**: The `/analyze run` command flow now lives in `amx.cli_analyze_flow`, cutting `amx.cli` down to roughly 1.3k lines while isolating mode selection, profile switching, orchestration, and history finalization from the shell entrypoint.
 
 ## Programmatic API
 

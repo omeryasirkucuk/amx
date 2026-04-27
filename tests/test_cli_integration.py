@@ -59,6 +59,42 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         clear_pending.assert_called_once()
         fake_history.record_applied.assert_called_once_with(17)
 
+    def test_analyze_run_routes_through_cli_analyze_flow_module(self) -> None:
+        runner = CliRunner()
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def test_connection(self) -> bool:
+                return True
+
+        class FakeDisplay:
+            is_active = False
+
+            def start(self, **kwargs) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+        with (
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+            patch("amx.utils.live_display.get_display", return_value=FakeDisplay()),
+            patch("amx.cli_analyze_flow.execute_analyze_run") as execute_run,
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "analyze", "run", "--schema", "sap", "vbak"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        execute_run.assert_called_once()
+        self.assertEqual(execute_run.call_args.kwargs["schema"], "sap")
+        self.assertEqual(execute_run.call_args.kwargs["tables_pos"], ("vbak",))
+
 
 class HistoryListIntegrationTests(unittest.TestCase):
     def test_history_list_renders_scope_summary(self) -> None:

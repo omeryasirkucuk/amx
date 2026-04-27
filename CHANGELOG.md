@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.84] — 2026-04-27
+### Changed
+- **CLI maintainability**: Extracted the `/analyze run` command flow from `amx/cli.py` into `amx/cli_analyze_flow.py`, reducing `amx/cli.py` to roughly 1.3k lines while preserving profile switching, completion-mode selection, orchestration, review persistence, and run-history finalization.
+
+### Added
+- **Integration coverage**: Added Click-level routing coverage for `/analyze run` to verify the command now dispatches through the extracted analyze-flow module.
+
 ## [0.1.83] — 2026-04-27
 ### Changed
 - **CLI maintainability**: Extracted the `/code` namespace commands from `amx/cli.py` into `amx/cli_code.py`, reducing `amx/cli.py` to roughly 1.8k lines while preserving scan, refresh, results, report export, and standalone Code Agent analysis behavior.
