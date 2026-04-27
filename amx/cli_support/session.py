@@ -52,6 +52,13 @@ PrintDbHint = Callable[[], None]
 _NS_STATE: dict[str, str] = {"namespace": ""}
 
 
+def _format_session_click_error(cmdline: str, exc: click.ClickException) -> str:
+    """Render slash-session-friendly Click errors."""
+    if isinstance(exc, click.UsageError) and "No such command" in str(exc):
+        return f"Unknown command: /{cmdline}. Type /help."
+    return str(exc)
+
+
 def _kb_escape_namespace() -> KeyBindings:
     kb = KeyBindings()
 
@@ -973,10 +980,7 @@ def run_interactive_session(
             try:
                 main_command.main(args=args, prog_name="amx", standalone_mode=False)
             except click.ClickException as exc:
-                if isinstance(exc, click.UsageError):
-                    error(f"Unknown command: /{cmdline}. Type /help.")
-                else:
-                    error(str(exc))
+                error(_format_session_click_error(cmdline, exc))
             except SystemExit:
                 pass
             except Exception as exc:  # pragma: no cover

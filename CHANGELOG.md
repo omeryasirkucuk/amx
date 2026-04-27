@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.90] — 2026-04-27
+### Fixed
+- **Manual session UX**: In the interactive shell, known slash commands with missing required arguments now show their real usage error instead of being mislabeled as unknown commands. This fixes `/manual` workflows such as `/edit` where the session should tell you that a target like `database`, `schema`, `table`, or `column` is required.
+
+### Added
+- **Regression coverage**: Added session-level error-formatting tests for missing-argument and unknown-command cases.
+
 ## [0.1.89] — 2026-04-27
 ### Changed
 - **Service extraction**: Moved manual metadata logic and analyze-scope/codebase-preparation logic into `amx/services/manual_metadata.py` and `amx/services/analyze_scope.py`. The `manual` and `run` command modules now act as thin wrappers over service-layer functions instead of owning the business logic directly.

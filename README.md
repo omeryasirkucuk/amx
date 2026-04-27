@@ -402,6 +402,10 @@ Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md
 - **Command thinness**: `amx.cli_support.commands.manual` and `amx.cli_support.commands.run` now mostly handle CLI wiring and defer to service functions.
 - **Coverage**: Added direct regression coverage for the new service-layer helpers.
 
+### v0.1.90
+
+- **Manual session fix**: Inside `/manual`, incomplete slash commands like `/edit` now report the real missing-argument error instead of the misleading `Unknown command` message.
+
 ### v0.1.88
 
 - **CLI package layout**: Extracted command modules now live under `amx.cli_support.commands`, and `amx.cli_support.root_commands` owns setup, config, and DB registration.

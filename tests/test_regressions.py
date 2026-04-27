@@ -4,6 +4,8 @@ import json
 import unittest
 from unittest.mock import patch
 
+import click
+
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator
@@ -12,6 +14,7 @@ from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_support.commands.history import format_run_scope
 from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
+from amx.cli_support.session import _format_session_click_error
 from amx.config import AMXConfig, DBConfig
 from amx.cli_support.commands.db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -212,6 +215,20 @@ class SessionHelperTests(unittest.TestCase):
             session_to_click_args("manual", ["edit", "column", "vbeln"]),
             ["manual", "edit", "column", "vbeln"],
         )
+
+    def test_format_session_click_error_preserves_missing_argument_message(self) -> None:
+        exc = click.UsageError("Missing argument 'SCOPE'.")
+
+        msg = _format_session_click_error("edit", exc)
+
+        self.assertEqual(msg, "Missing argument 'SCOPE'.")
+
+    def test_format_session_click_error_keeps_unknown_command_message_slash_native(self) -> None:
+        exc = click.UsageError("No such command 'wat'.")
+
+        msg = _format_session_click_error("wat", exc)
+
+        self.assertEqual(msg, "Unknown command: /wat. Type /help.")
 
 
 class ManualMetadataTests(unittest.TestCase):
