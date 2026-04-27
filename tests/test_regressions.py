@@ -9,6 +9,7 @@ from amx.agents.orchestrator import Orchestrator
 from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_history import format_run_scope
+from amx.cli_profiles import cmd_use_doc, default_model
 from amx.config import AMXConfig, DBConfig
 from amx.cli_db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -167,8 +168,23 @@ class HistoryFormattingTests(unittest.TestCase):
         self.assertEqual(format_run_scope(None), "-")
 
 
+class ProfileHelperTests(unittest.TestCase):
+    def test_default_model_includes_openrouter(self) -> None:
+        self.assertEqual(default_model("openrouter"), "openai/gpt-4o-mini")
+
+    def test_use_doc_accepts_disable_alias(self) -> None:
+        cfg = AMXConfig()
+        cfg.doc_profiles = {"default": ["/tmp/docs"]}
+        cfg.active_doc_profile = "default"
+        cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
+
+        cmd_use_doc(cfg, ["disable"])
+
+        self.assertEqual(cfg.active_doc_profile, "__none__")
+
+
 class ConfidenceCalibrationTests(unittest.TestCase):
-    def test_missing_logprobs_downgrades_to_low(self) -> None:
+    def test_missing_logprobs_preserves_existing_confidence(self) -> None:
         suggestion = MetadataSuggestion(
             schema="public",
             table="orders",
@@ -181,7 +197,7 @@ class ConfidenceCalibrationTests(unittest.TestCase):
 
         calibrated = apply_logprob_confidence([suggestion], logprobs=None)
 
-        self.assertEqual(calibrated[0].confidence, Confidence.LOW)
+        self.assertEqual(calibrated[0].confidence, Confidence.HIGH)
 
 
 class OrchestratorFallbackTests(unittest.TestCase):

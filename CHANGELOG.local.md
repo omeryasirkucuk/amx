@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.81] — 2026-04-27
+### CLI Refactor
+- **amx/cli_profiles.py**: Added a dedicated module for interactive LLM profile editing, prompt/detail batch settings, and document/code profile helper commands.
+- **amx/cli.py**: Replaced the in-file LLM/doc/code profile helper block with imports from `cli_profiles`, while keeping existing OpenRouter-aware prompts and setup flow behavior.
+- **tests/test_regressions.py**: Added profile-helper coverage and aligned the missing-logprobs confidence expectation with the current implementation.
+
 ## [0.1.77] — 2026-04-26
 ### CLI Refactor
 - **amx/cli_run.py**: Added a dedicated module for `analyze` scope resolution helpers, codebase report setup, and `/analyze apply`.

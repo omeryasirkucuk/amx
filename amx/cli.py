@@ -10,6 +10,7 @@ import time
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 from prompt_toolkit.completion import Completer, Completion
@@ -20,7 +21,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 
 from amx import __version__
-from amx.config import AMXConfig, LLMConfig, SUPPORTED_BACKENDS, DISABLED_PROFILE
+from amx.config import AMXConfig, SUPPORTED_BACKENDS, DISABLED_PROFILE
 from amx.cli_db import (
     cmd_add_profile as _cmd_add_profile,
     cmd_profiles as _cmd_profiles,
@@ -31,6 +32,27 @@ from amx.cli_db import (
     print_db_namespace_hint as _print_db_namespace_hint,
 )
 from amx.cli_history import register_history_commands
+from amx.cli_profiles import (
+    cmd_add_code_profile as _cmd_add_code_profile,
+    cmd_add_doc_profile as _cmd_add_doc_profile,
+    cmd_add_llm_profile as _cmd_add_llm_profile,
+    cmd_batch_context_columns as _cmd_batch_context_columns,
+    cmd_code_profiles as _cmd_code_profiles,
+    cmd_doc_profiles as _cmd_doc_profiles,
+    cmd_llm_batch_size as _cmd_llm_batch_size,
+    cmd_llm_profiles as _cmd_llm_profiles,
+    cmd_logprob_thresholds as _cmd_logprob_thresholds,
+    cmd_n_alternatives as _cmd_n_alternatives,
+    cmd_prompt_detail as _cmd_prompt_detail,
+    cmd_remove_code_profile as _cmd_remove_code_profile,
+    cmd_remove_doc_profile as _cmd_remove_doc_profile,
+    cmd_remove_llm_profile as _cmd_remove_llm_profile,
+    cmd_use_code as _cmd_use_code,
+    cmd_use_doc as _cmd_use_doc,
+    cmd_use_llm as _cmd_use_llm,
+    interactive_llm_block as _interactive_llm_block,
+    warn_no_doc_paths_for_scan_or_ingest as _warn_no_doc_paths_for_scan_or_ingest,
+)
 from amx.cli_run import (
     _asset_display_list,
     _finalize_scope,
@@ -44,7 +66,6 @@ from amx.utils.console import (
     ask,
     ask_choice,
     ask_multi_choice,
-    ask_password,
     confirm,
     console,
     error,
@@ -60,6 +81,9 @@ from amx.utils.console import (
 from amx.utils.logging import get_logger
 from amx.storage.sqlite_store import history_store, init_history_store
 from amx.utils.token_tracker import tracker as token_tracker
+
+if TYPE_CHECKING:
+    from amx.db.connector import DatabaseConnector
 
 log = get_logger("cli")
 
@@ -982,526 +1006,6 @@ def _handle_session_builtin(cfg: AMXConfig, namespace: str, parts: list[str]) ->
     return False
 
 
-def _interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
-    provider = ask_choice(
-        "Select AI provider",
-        ["openai", "openrouter", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
-        default=defaults.provider or "openai",
-    )
-    info(
-        "Model: use a short id (e.g. gpt-4o) or LiteLLM form openai/gpt-4o — "
-        "see https://docs.litellm.ai/docs/providers"
-    )
-    if provider == "openrouter":
-        info("OpenRouter model examples: openrouter/openai/gpt-4o-mini, openrouter/anthropic/claude-3.5-sonnet")
-    elif provider == "openai":
-        info("OpenAI model example: gpt-4o")
-    elif provider == "anthropic":
-        info("Anthropic model example: claude-3-5-sonnet-20241022")
-    elif provider == "ollama":
-        info("Ollama model example: llama3")
-    model = ask("Model name", defaults.model or _default_model(provider))
-    api_base = defaults.api_base
-    if provider in ("local", "ollama", "kimi", "openrouter"):
-        default_api_base = "http://localhost:11434" if provider == "ollama" else "http://localhost:11434/v1"
-        if provider == "openrouter":
-            default_api_base = "https://openrouter.ai/api/v1"
-        api_base = ask("API base URL", api_base or default_api_base)
-
-    if provider in ("local", "ollama"):
-        api_key = ask("API key (optional)", defaults.api_key or "")
-    else:
-        api_key = ask_password("API key") or defaults.api_key
-
-    info("Generation settings:")
-    n_alt = ask("  Alternatives (1\u20135)", default=str(getattr(defaults, "n_alternatives", 3)))
-    batch = ask("  Column batch size", default=str(getattr(defaults, "column_batch_size", 10)))
-
-    info("Confidence thresholds (token probability 0.0\u20131.0):")
-    high = ask("  High threshold", default=str(getattr(defaults, "logprob_high", 0.85)))
-    med = ask("  Medium threshold", default=str(getattr(defaults, "logprob_medium", 0.50)))
-
-    return LLMConfig(
-        provider=provider,
-        model=model.strip(),
-        api_key=api_key,
-        api_base=api_base,
-        temperature=defaults.temperature,
-        max_tokens=defaults.max_tokens,
-        n_alternatives=int(n_alt),
-        column_batch_size=int(batch),
-        batch_context_column_names=int(getattr(defaults, "batch_context_column_names", 0)),
-        logprob_high=float(high),
-        logprob_medium=float(med),
-    )
-
-
-def _cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set logprob confidence thresholds for the active LLM profile."""
-    if not rest:
-        high = getattr(cfg.llm, "logprob_high", 0.85)
-        med = getattr(cfg.llm, "logprob_medium", 0.50)
-        info(f"Current logprob thresholds: [bold]HIGH[/] >= {high:.2f} | [bold]MEDIUM[/] >= {med:.2f}")
-        info("Run [cyan]/logprob-thresholds <high> <med>[/cyan] to change (e.g. 0.9 0.6).")
-        return
-
-    try:
-        if len(rest) < 2:
-            error("Usage: /logprob-thresholds <high> <medium>")
-            return
-        h = float(rest[0])
-        m = float(rest[1])
-    except ValueError:
-        error(f"Expected numeric values, got: {rest}")
-        return
-
-    if not (0.0 <= m < h <= 1.0):
-        error("Thresholds must be 0.0\u20131.0, and high must be greater than medium.")
-        return
-
-    cfg.llm.logprob_high = h
-    cfg.llm.logprob_medium = m
-    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
-        prof = cfg.llm_profiles[cfg.active_llm_profile]
-        prof.logprob_high = h
-        prof.logprob_medium = m
-    cfg.save()
-    success(
-        f"Logprob thresholds saved for LLM profile '{cfg.active_llm_profile}': "
-        f"HIGH >= {h:.2f}, MEDIUM >= {m:.2f}"
-    )
-
-
-def _cmd_llm_profiles(cfg: AMXConfig) -> None:
-    rows = []
-    for name, llm in sorted(cfg.llm_profiles.items(), key=lambda x: x[0]):
-        mark = "*" if name == cfg.active_llm_profile else " "
-        rows.append([f"{mark} {name}", llm.provider, llm.model])
-    render_table("LLM profiles (* = active)", ["Profile", "Provider", "Model"], rows)
-
-
-def _cmd_use_llm(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        names = sorted(cfg.llm_profiles.keys())
-        if not names:
-            error("No LLM profiles configured.")
-            return
-        name = ask_choice("Select LLM profile", names, default=cfg.active_llm_profile)
-    try:
-        cfg.set_active_llm_profile(name)
-        cfg.save()
-        success(f"Switched active LLM profile to: {name}")
-    except Exception as exc:
-        error(str(exc))
-
-
-def _cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        name = ask("LLM profile name", default="work")
-    base = cfg.llm_profiles.get(name, cfg.llm)
-    info(f"Creating/updating LLM profile: {name}")
-    llm = _interactive_llm_block(replace(base))
-    cfg.upsert_llm_profile(name, llm)
-    if confirm(f"Activate profile {name} now?", default=True):
-        cfg.set_active_llm_profile(name)
-    cfg.save()
-    success(f"LLM profile saved: {name} (active: {cfg.active_llm_profile})")
-
-
-def _cmd_remove_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-llm-profile <name>")
-        return
-    name = rest[0]
-    try:
-        cfg.remove_llm_profile(name)
-        cfg.save()
-        success(f"Removed LLM profile: {name} (active: {cfg.active_llm_profile})")
-    except Exception as exc:
-        error(str(exc))
-
-
-def _cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set the prompt detail level for the active LLM profile."""
-    from amx.config import PROMPT_DETAIL_LEVELS, prompt_detail_for
-
-    if not rest:
-        # Show current level + comparison table
-        current = cfg.llm.prompt_detail or "standard"
-        heading(f"Prompt detail level: {current}")
-        rows = []
-        flags = [
-            ("samples", "include_samples"),
-            ("null counts", "include_null_counts"),
-            ("min / max", "include_min_max"),
-            ("cardinality ratio", "include_cardinality"),
-            ("col. comment", "include_existing_col_comment"),
-            ("PK / FK keys", "include_pk_fk"),
-            ("unique+check constraints", "include_unique_check"),
-            ("usage stats (pg_stat)", "include_usage_stats"),
-            ("schema+db comments", "include_schema_db_comments"),
-            ("FK neighbour comments", "include_related_comments"),
-            ("query-log analysis", "include_query_log_analysis"),
-            ("RAG table hits", "rag_table_hits"),
-            ("RAG col hits", "rag_col_hits"),
-            ("RAG max chunks", "rag_max_chunks"),
-        ]
-        for label, attr in flags:
-            row = [label]
-            for lv in PROMPT_DETAIL_LEVELS:
-                pd = prompt_detail_for(lv)
-                val = getattr(pd, attr)
-                if isinstance(val, bool):
-                    mark = "✓" if val else "—"
-                else:
-                    mark = str(val)
-                row.append(f"[{'success' if val else 'dim'}]{mark}[/]" if isinstance(val, bool) else mark)
-            rows.append(row)
-        render_table(
-            "Preset comparison",
-            ["Field", *PROMPT_DETAIL_LEVELS],
-            rows,
-        )
-        info(
-            f"Current level: [cyan]{current}[/cyan]  "
-            f"(n_alternatives={cfg.llm.n_alternatives})  "
-            "— run [cyan]/prompt-detail <level>[/cyan] to change."
-        )
-        return
-
-    level = rest[0].lower().strip()
-    if level not in PROMPT_DETAIL_LEVELS:
-        error(
-            f"Unknown level: {level!r}. "
-            f"Valid levels: {', '.join(PROMPT_DETAIL_LEVELS)}"
-        )
-        return
-
-    cfg.llm.prompt_detail = level
-    # Persist to the active profile so it survives session
-    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
-        cfg.llm_profiles[cfg.active_llm_profile].prompt_detail = level
-    cfg.save()
-    success(
-        f"Prompt detail set to [cyan]{level}[/cyan] and saved "
-        f"for LLM profile '{cfg.active_llm_profile}'."
-    )
-    pd = prompt_detail_for(level)
-    info(
-        f"  samples={pd.include_samples}(max={pd.max_samples})  "
-        f"null_counts={pd.include_null_counts}  "
-        f"min_max={pd.include_min_max}  "
-        f"cardinality={pd.include_cardinality}  "
-        f"pk_fk={pd.include_pk_fk}  "
-        f"usage_stats={pd.include_usage_stats}  "
-        f"query_log_analysis={pd.include_query_log_analysis}  "
-        f"rag_chunks={pd.rag_max_chunks}"
-    )
-
-
-def _cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set number of description alternatives per column."""
-    if not rest:
-        current = getattr(cfg.llm, "n_alternatives", 3)
-        info(
-            f"Current n_alternatives: [cyan]{current}[/cyan]  "
-            "(1 = cheapest, 5 = maximum alternatives)  "
-            "— run [cyan]/n-alternatives <N>[/cyan] to change."
-        )
-        return
-
-    try:
-        n = int(rest[0])
-    except ValueError:
-        error(f"Expected an integer 1–5, got: {rest[0]!r}")
-        return
-
-    if not 1 <= n <= 5:
-        error("n_alternatives must be between 1 and 5.")
-        return
-
-    cfg.llm.n_alternatives = n
-    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
-        cfg.llm_profiles[cfg.active_llm_profile].n_alternatives = n
-    cfg.save()
-    cost_note = {1: "cheapest — 1 option shown at review", 2: "lean", 3: "balanced (default)",
-                 4: "rich", 5: "maximum context, highest cost"}.get(n, "")
-    success(
-        f"n_alternatives set to [cyan]{n}[/cyan] ({cost_note}) and saved "
-        f"for LLM profile '{cfg.active_llm_profile}'."
-    )
-
-
-def _cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set the number of columns processed in a single LLM call."""
-    if not rest:
-        current = getattr(cfg.llm, "column_batch_size", 10)
-        info(
-            f"Current LLM batch size: [cyan]{current}[/cyan] columns  "
-            "(Small = safer/more precise, Large = faster/cheaper)  "
-            "— run [cyan]/llm-batch-size <N>[/cyan] to change."
-        )
-        return
-
-    try:
-        n = int(rest[0])
-    except ValueError:
-        error(f"Expected an integer, got: {rest[0]!r}")
-        return
-
-    if n < 1:
-        error("Batch size must be at least 1.")
-        return
-
-    cfg.llm.column_batch_size = n
-    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
-        cfg.llm_profiles[cfg.active_llm_profile].column_batch_size = n
-    cfg.save()
-    success(f"LLM batch size set to {n} columns and saved for LLM profile '{cfg.active_llm_profile}'.")
-
-
-def _cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set how many remaining column names are sent with each batch."""
-    if not rest:
-        current = int(getattr(cfg.llm, "batch_context_column_names", 0))
-        if current == -1:
-            current_label = "all remaining names"
-        elif current == 0:
-            current_label = "off"
-        else:
-            current_label = f"{current} names"
-        info(
-            f"Current batch context columns: [cyan]{current_label}[/cyan]. "
-            "Use [cyan]/batch-context-columns off[/cyan], [cyan]all[/cyan], "
-            "or [cyan]/batch-context-columns <N>[/cyan]."
-        )
-        return
-
-    raw = (rest[0] or "").strip().lower()
-    if raw in {"off", "none", "0"}:
-        value = 0
-    elif raw == "all":
-        value = -1
-    else:
-        try:
-            value = int(raw)
-        except ValueError:
-            error(f"Expected off, all, or an integer; got: {rest[0]!r}")
-            return
-        if value < 0:
-            error("Value must be >= 0, or use 'all'.")
-            return
-
-    cfg.llm.batch_context_column_names = value
-    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
-        cfg.llm_profiles[cfg.active_llm_profile].batch_context_column_names = value
-    cfg.save()
-    if value == -1:
-        success(f"Batch context columns set to all remaining names and saved for LLM profile '{cfg.active_llm_profile}'.")
-    elif value == 0:
-        success(f"Batch context columns disabled and saved for LLM profile '{cfg.active_llm_profile}'.")
-    else:
-        success(f"Batch context columns set to {value} and saved for LLM profile '{cfg.active_llm_profile}'.")
-
-
-def _cmd_doc_profiles(cfg: AMXConfig) -> None:
-    if not cfg.doc_profiles:
-        info("No document profiles. Use /add-doc-profile <name>")
-        return
-    rows = []
-    if cfg.active_doc_profile == DISABLED_PROFILE:
-        rows.append(["* (none)", "0", "profiles disabled"])
-    for name, paths in sorted(cfg.doc_profiles.items(), key=lambda x: x[0]):
-        mark = "*" if name == cfg.active_doc_profile else " "
-        preview = "; ".join(paths[:2]) + (" …" if len(paths) > 2 else "")
-        rows.append([f"{mark} {name}", str(len(paths)), preview])
-    render_table("Document profiles (* = active)", ["Profile", "# paths", "Preview"], rows)
-
-
-def _cmd_use_doc(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        raw = rest[0].strip().lower()
-        name = DISABLED_PROFILE if raw in {"none", "(none)", "off", "disable"} else rest[0]
-    else:
-        names = sorted(cfg.doc_profiles.keys())
-        if not names:
-            error("No document profiles.")
-            return
-        choices = ["(none)"] + names
-        default_choice = "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else cfg.active_doc_profile
-        picked = ask_choice("Select document profile", choices, default=default_choice)
-        name = DISABLED_PROFILE if picked == "(none)" else picked
-    if name != DISABLED_PROFILE and name not in cfg.doc_profiles:
-        error(f"Unknown document profile: {name}")
-        return
-    cfg.active_doc_profile = name
-    cfg.save()
-    if name == DISABLED_PROFILE:
-        success("Document profiles disabled for this session/config.")
-    else:
-        success(f"Active document profile: {name}")
-
-
-def _cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        name = ask("Document profile name", default="default")
-    from amx.docs.scanner import test_source_reachable
-
-    existing = list(cfg.doc_profiles.get(name, []))
-    new_paths: list[str] = []
-    info(
-        "Enter document roots (local dir, s3://, GitHub URL, Google Drive, SharePoint/OneDrive). "
-        "Each path is checked for reachability only (no full scan)."
-    )
-    while True:
-        p = ask("Path (empty to finish)" if new_paths else "Path", default="")
-        if not p:
-            if new_paths:
-                break
-            error("No paths added.")
-            return
-        if p in existing or p in new_paths:
-            if not confirm(f"This path is already in profile {name!r}: {p}. Add duplicate anyway?", default=False):
-                continue
-        try:
-            test_source_reachable(p)
-            success(f"Source reachable: {p}")
-            new_paths.append(p)
-        except Exception as exc:
-            error(f"Source not reachable: {p}")
-            warn(str(exc))
-        if not confirm("Add another path?", default=False):
-            break
-    if not new_paths:
-        error("No valid document sources to save.")
-        return
-    merged = existing + new_paths
-    cfg.upsert_doc_profile(name, merged)
-    if not cfg.active_doc_profile or confirm(f"Switch active document profile to {name}?", default=True):
-        cfg.active_doc_profile = name
-    cfg.save()
-    success(f"Document profile saved: {name} ({len(merged)} path(s))")
-
-
-
-def _warn_no_doc_paths_for_scan_or_ingest(cfg: AMXConfig, *, cmd: str) -> None:
-    """User-friendly hint when /scan or /ingest has no paths and no configured profile."""
-    error(f"No document paths to {cmd}.")
-    if not cfg.doc_profiles and not cfg.doc_paths:
-        info("Add a document profile first: /add-doc-profile (or run /setup).")
-    elif cfg.doc_profiles and not cfg.effective_doc_paths():
-        info("Your document profiles look empty. Run /add-doc-profile to add paths.")
-    else:
-        info("Pass paths on the command (e.g. /ingest /path/to/docs) or set an active profile with /use-doc.")
-
-
-def _cmd_remove_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-doc-profile <name>")
-        return
-    try:
-        cfg.remove_doc_profile(rest[0])
-        cfg.save()
-        success(f"Removed document profile: {rest[0]}")
-    except Exception as exc:
-        error(str(exc))
-
-
-def _cmd_code_profiles(cfg: AMXConfig) -> None:
-    if not cfg.code_profiles:
-        info("No codebase profiles. Use /add-code-profile <name>")
-        return
-    rows = []
-    if cfg.active_code_profile == DISABLED_PROFILE:
-        rows.append(["* (none)", "disabled"])
-    for name, path in sorted(cfg.code_profiles.items(), key=lambda x: x[0]):
-        mark = "*" if name == cfg.active_code_profile else " "
-        rows.append([f"{mark} {name}", path])
-    render_table("Codebase profiles (* = active)", ["Profile", "Path / URL"], rows)
-
-
-def _cmd_use_code(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        raw = rest[0].strip().lower()
-        name = DISABLED_PROFILE if raw in {"none", "(none)", "off", "disable"} else rest[0]
-    else:
-        names = sorted(cfg.code_profiles.keys())
-        if not names:
-            error("No codebase profiles.")
-            return
-        choices = ["(none)"] + names
-        default_choice = "(none)" if cfg.active_code_profile == DISABLED_PROFILE else cfg.active_code_profile
-        picked = ask_choice("Select codebase profile", choices, default=default_choice)
-        name = DISABLED_PROFILE if picked == "(none)" else picked
-    if name != DISABLED_PROFILE and name not in cfg.code_profiles:
-        error(f"Unknown codebase profile: {name}")
-        return
-    cfg.active_code_profile = name
-    cfg.save()
-    if name == DISABLED_PROFILE:
-        success("Codebase profiles disabled for this session/config.")
-    else:
-        success(f"Active codebase profile: {name}")
-
-
-def _cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-        path = " ".join(rest[1:]).strip() if len(rest) > 1 else ""
-    else:
-        name = ask("Codebase profile name", default="default")
-        path = ""
-    if not path:
-        path = ask("Codebase path (local dir or Git URL)", default="")
-    if not path:
-        error("Path required.")
-        return
-    from amx.codebase.analyzer import test_codebase_path_reachable
-
-    prev = cfg.code_profiles.get(name)
-    if prev == path:
-        success(f"Codebase profile {name!r} already points to this path — nothing to change.")
-        return
-    others = [n for n, p in cfg.code_profiles.items() if p == path and n != name]
-    if others:
-        olist = ", ".join(sorted(others))
-        if not confirm(
-            f"This path is already used by codebase profile(s): {olist}. Point {name!r} here too?",
-            default=True,
-        ):
-            return
-    try:
-        test_codebase_path_reachable(path)
-        success(f"Codebase reachable: {path}")
-    except Exception as exc:
-        error(f"Codebase not reachable: {path}")
-        warn(str(exc))
-        return
-    cfg.upsert_code_profile(name, path)
-    if not cfg.active_code_profile or confirm(f"Switch active codebase profile to {name}?", default=True):
-        cfg.active_code_profile = name
-    cfg.save()
-    success(f"Codebase profile saved: {name}")
-
-
-def _cmd_remove_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) < 1:
-        error("Usage: /remove-code-profile <name>")
-        return
-    try:
-        cfg.remove_code_profile(rest[0])
-        cfg.save()
-        success(f"Removed codebase profile: {rest[0]}")
-    except Exception as exc:
-        error(str(exc))
-
-
 def _session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
 
@@ -1659,21 +1163,6 @@ def setup(cfg: AMXConfig) -> None:
 
     saved = cfg.save()
     success(f"Configuration saved to {saved}")
-
-
-def _default_model(provider: str) -> str:
-    return {
-        "openai": "gpt-4o",
-        "openrouter": "openai/gpt-4o-mini",
-        "anthropic": "claude-sonnet-4-20250514",
-        "gemini": "gemini-2.0-flash",
-        "deepseek": "deepseek-chat",
-        "local": "llama3",
-        "kimi": "kimi",
-        "ollama": "llama3",
-    }.get(provider, "gpt-4o")
-
-
 # ── Database Commands ───────────────────────────────────────────────────────
 
 
@@ -2565,6 +2054,7 @@ def _analyze_run_logic(
     from amx.llm.batch import supported_providers as batch_supported_providers
     from amx.llm.provider import LLMProvider
     from amx.config import DISABLED_PROFILE
+    from amx.db.connector import ProfilingError
 
     # Safe defaults used by interrupt/failure handlers before run setup completes.
     use_batch = False
@@ -2725,6 +2215,7 @@ def _analyze_run_logic(
         skipped = []
         all_results: list = []  # tracks all ReviewResult objects; used for cancel vs fail detection
         processed_assets: list[str] = []
+        skipped_assets: list[str] = []
         try:
             scope_summary = (
                 f"{total_assets} asset(s) across {total_schemas} schema(s)"
@@ -2798,13 +2289,20 @@ def _analyze_run_logic(
                     else:
                         for asset_name in assets:
                             display.set_context(table=asset_name)
-                            results = orch.process_table(
-                                schema_name, asset_name,
-                                asset_kind=asset_kinds.get(asset_name),
-                                interactive_review=(review_strategy == "individual"),
-                            )
-                            all_results.extend(results)
-                            processed_assets.append(f"{schema_name}.{asset_name}")
+                            try:
+                                results = orch.process_table(
+                                    schema_name, asset_name,
+                                    asset_kind=asset_kinds.get(asset_name),
+                                    interactive_review=(review_strategy == "individual"),
+                                )
+                                all_results.extend(results)
+                                processed_assets.append(f"{schema_name}.{asset_name}")
+                            except ProfilingError as exc:
+                                skipped_assets.append(f"{schema_name}.{asset_name}")
+                                warn(
+                                    f"Skipping {schema_name}.{asset_name}: {exc}"
+                                )
+                                continue
 
                         # Point 1: Schema-level meta analysis
                         if len(assets) > 1 or total_schemas > 1:
@@ -2840,12 +2338,13 @@ def _analyze_run_logic(
 
                 render_table(
                     "Approved metadata",
-                    ["Asset", "Description", "Confidence", "Source"],
+                    ["Asset", "Description", "Confidence", "Logprob", "Source"],
                     [
                         [
                             f"{r.schema}.{r.table}.{r.column}" if r.column else (f"{r.schema}.{r.table}" if r.table else r.schema),
                             (r.final_description or "")[:60],
                             r.confidence.value,
+                            f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A",
                             r.source,
                         ]
                         for r in approved
@@ -2935,6 +2434,8 @@ def _analyze_run_logic(
                             "total_schemas": total_schemas,
                             "processed_assets_count": len(processed_assets),
                             "processed_assets": processed_assets,
+                            "skipped_assets_count": len(skipped_assets),
+                            "skipped_assets": skipped_assets,
                             "approved_count": len(approved),
                             "skipped_count": len(skipped),
                             "applied_flag": bool(apply),
@@ -2952,6 +2453,7 @@ def _analyze_run_logic(
                                     "column": r.column,
                                     "description": r.final_description,
                                     "confidence": r.confidence.value,
+                                    "logprob_score": r.logprob_score,
                                     "source": r.source,
                                     "asset_kind": r.asset_kind,
                                     "applied": bool(r.applied),
@@ -2965,6 +2467,7 @@ def _analyze_run_logic(
                                     "column": r.column,
                                     "description": r.final_description,
                                     "confidence": r.confidence.value,
+                                    "logprob_score": r.logprob_score,
                                     "source": r.source,
                                     "asset_kind": r.asset_kind,
                                 }
@@ -2976,6 +2479,7 @@ def _analyze_run_logic(
                                     "table": r.table,
                                     "column": r.column,
                                     "confidence": r.confidence.value,
+                                    "logprob_score": r.logprob_score,
                                     "source": r.source,
                                     "asset_kind": r.asset_kind,
                                 }

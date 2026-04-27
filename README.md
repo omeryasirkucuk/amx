@@ -153,6 +153,9 @@ amx
 Notes:
 - `/llm` settings are saved per **active LLM profile** and command feedback prints the profile name that was updated.
 - Profile selections made in the interactive `/run` wizard are persisted to `~/.amx/config.yml` immediately.
+- `max_tokens` defaults to `4096`; when `finish_reason=length`, AMX now halts processing so truncated JSON is not parsed silently.
+- `force_logprobs` defaults to `true` to force-request logprobs even when provider capability metadata is inconsistent.
+- `write_through_config` defaults to `true` to save profile switches and config mutations immediately.
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
 | `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
@@ -328,6 +331,7 @@ amx/
 ├── cli.py              # Interactive shell, command routing, and top-level workflows
 ├── cli_db.py           # /db namespace profile and profiling command helpers
 ├── cli_history.py      # /history namespace commands and review/results flows
+├── cli_profiles.py     # /llm, /docs, and /code profile helper commands
 ├── cli_run.py          # /analyze namespace helpers, scope resolution, and apply flow
 ├── config.py           # Configuration management
 ├── agents/
@@ -349,6 +353,9 @@ amx/
 ├── llm/
 │   ├── provider.py     # Unified LLM interface via LiteLLM
 │   └── batch.py        # Provider-agnostic Batch API (OpenAI, Anthropic)
+├── core/
+│   ├── __init__.py     # Importable core surface
+│   └── inference.py    # Programmatic metadata inference API (no CLI shell)
 └── utils/
     ├── console.py       # Rich console helpers
     ├── live_display.py  # Live terminal UI for agent runs (rich.Live)
@@ -359,6 +366,23 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.81
+
+- **CLI maintainability**: Interactive LLM/profile helpers for `/llm`, `/docs`, and `/code` now live in `amx.cli_profiles`, which keeps `amx.cli` focused on routing and the larger command flows.
+
+## Programmatic API
+
+Run AMX inference without entering the interactive CLI shell:
+
+```python
+from amx.config import AMXConfig
+from amx.core import infer_table_metadata
+
+cfg = AMXConfig.load()
+results = infer_table_metadata(cfg, schema="sap_test", table="adr6")
+print(results[0])
+```
 
 ### v0.1.79
 

@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.81] — 2026-04-27
+### Changed
+- **CLI maintainability**: Extracted interactive LLM, document-profile, and codebase-profile helper commands from `amx/cli.py` into `amx/cli_profiles.py`, reducing `amx/cli.py` to roughly 2.5k lines.
+
+### Added
+- **Regression coverage**: Added helper coverage for OpenRouter default-model selection and document-profile disable aliases.
+
+## [0.1.80] — 2026-04-26
+### Added
+- **Importable core API**: Added `amx.core.infer_table_metadata(...)` so metadata inference can run from Python scripts without entering the CLI shell.
+
+### Changed
+- **Confidence calibration math**: Logprob confidence now uses a weighted geometric mean over value-bearing tokens instead of relying on a single confidence-label token.
+- **Truncation guard**: LLM responses with `finish_reason=length` now fail fast with an explicit truncation error, preventing partial JSON from reaching metadata extractors.
+- **Write-through config**: Added `write_through_config` (default `true`) and autosave hooks so profile switches and profile CRUD operations persist immediately.
+
+### Fixed
+- **PostgreSQL profiling resilience**: Added actionable remediation hints for common Postgres profiling failures and non-blocking skip behavior for failed assets/columns during `/run`.
+
 ## [0.1.79] — 2026-04-26
 ### Changed
 - **Immediate config persistence**: `/run` wizard profile selections (DB/LLM/docs/code) are now saved to `~/.amx/config.yml` immediately after selection instead of remaining in-memory for the current session only.
