@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.97] — 2026-04-27
+### Remote Git Cleanup
+- **amx/docs/scanner.py / amx/cli_support/commands/docs.py**: Tagged GitHub document scan results with their temporary clone root and removed those roots after scan preview and optional ingestion finish.
+- **amx/codebase/analyzer.py**: Replaced persistent remote code clone directories with a `TemporaryDirectory` context that spans scanning and semantic indexing.
+- **tests/test_regressions.py**: Added mocked Git clone coverage for document and codebase cleanup.
+
 ## [0.1.96] — 2026-04-27
 ### S3 Document Ingestion
 - **amx/docs/scanner.py**: Preserved S3 object key prefixes when staging downloads, preventing duplicate basenames from different prefixes from overwriting each other.

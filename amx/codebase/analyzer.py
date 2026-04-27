@@ -5,8 +5,10 @@ from __future__ import annotations
 import ast
 import re
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 from amx.utils.logging import get_logger
 
@@ -41,18 +43,20 @@ class CodebaseReport:
     external_mentions: dict[str, list[CodeReference]] = field(default_factory=dict)
 
 
-def _clone_if_remote(path: str) -> str:
+@contextmanager
+def _codebase_root(path: str) -> Iterator[str]:
     if path.startswith("https://github.com") or path.startswith("git@"):
         import git as gitpython
 
         from amx.docs.scanner import normalize_github_url
 
         clone_url = normalize_github_url(path)
-        dest = tempfile.mkdtemp(prefix="amx_code_")
-        log.info("Cloning %s → %s", clone_url, dest)
-        gitpython.Repo.clone_from(clone_url, dest, depth=1)
-        return dest
-    return path
+        with tempfile.TemporaryDirectory(prefix="amx_code_") as dest:
+            log.info("Cloning %s → %s", clone_url, dest)
+            gitpython.Repo.clone_from(clone_url, dest, depth=1)
+            yield dest
+        return
+    yield path
 
 
 _SPARK_READ_TABLE = re.compile(
@@ -346,142 +350,142 @@ def analyze_codebase(
     index_semantic: bool = False,
     progress_callback: object | None = None,
 ) -> CodebaseReport:
-    local_path = _clone_if_remote(path)
-    root = Path(local_path).expanduser().resolve()
-    report = CodebaseReport(path=path)
+    with _codebase_root(path) as local_path:
+        root = Path(local_path).expanduser().resolve()
+        report = CodebaseReport(path=path)
 
-    if not root.exists():
-        raise RuntimeError(
-            f"Codebase path does not exist: {root}. "
-            "Use a full directory path, a https://github.com/... URL, or git@… — "
-            "not a profile name (profile names are for /code /add-code-profile only)."
-        )
-    if not root.is_dir():
-        raise RuntimeError(f"Codebase path must be a directory or Git URL, not a single file: {root}")
+        if not root.exists():
+            raise RuntimeError(
+                f"Codebase path does not exist: {root}. "
+                "Use a full directory path, a https://github.com/... URL, or git@… — "
+                "not a profile name (profile names are for /code /add-code-profile only)."
+            )
+        if not root.is_dir():
+            raise RuntimeError(f"Codebase path must be a directory or Git URL, not a single file: {root}")
 
-    catalog = known_catalog_tables or frozenset(t.lower() for t in table_names)
+        catalog = known_catalog_tables or frozenset(t.lower() for t in table_names)
 
-    ordered: list[str] = [t.lower() for t in sorted(table_names, key=len, reverse=True)]
-    for c in sorted((column_names or []), key=lambda x: len(str(x)), reverse=True):
-        cl = str(c).lower()
-        if cl not in ordered:
-            ordered.append(cl)
-        if len(ordered) >= MAX_REGEX_ASSETS:
-            break
-    assets_list = ordered[:MAX_REGEX_ASSETS]
-    assets: set[str] = set(assets_list)
-    if not assets_list:
-        pattern = re.compile(r"$^")
-    else:
-        pattern = re.compile(
-            r"\b(" + "|".join(re.escape(a) for a in sorted(assets_list, key=len, reverse=True)) + r")\b",
-            re.IGNORECASE,
-        )
+        ordered: list[str] = [t.lower() for t in sorted(table_names, key=len, reverse=True)]
+        for c in sorted((column_names or []), key=lambda x: len(str(x)), reverse=True):
+            cl = str(c).lower()
+            if cl not in ordered:
+                ordered.append(cl)
+            if len(ordered) >= MAX_REGEX_ASSETS:
+                break
+        assets_list = ordered[:MAX_REGEX_ASSETS]
+        assets: set[str] = set(assets_list)
+        if not assets_list:
+            pattern = re.compile(r"$^")
+        else:
+            pattern = re.compile(
+                r"\b(" + "|".join(re.escape(a) for a in sorted(assets_list, key=len, reverse=True)) + r")\b",
+                re.IGNORECASE,
+            )
 
-    code_files = [
-        f for f in root.rglob("*")
-        if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
-    ]
-    report.total_files = len(code_files)
-    if report.total_files == 0:
-        exts = ", ".join(sorted(CODE_EXTENSIONS))
-        log.warning(
-            "No scannable source files under %s (extensions: %s).",
-            root,
-            exts,
-        )
+        code_files = [
+            f for f in root.rglob("*")
+            if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
+        ]
+        report.total_files = len(code_files)
+        if report.total_files == 0:
+            exts = ", ".join(sorted(CODE_EXTENSIONS))
+            log.warning(
+                "No scannable source files under %s (extensions: %s).",
+                root,
+                exts,
+            )
 
-    _cb = progress_callback if callable(progress_callback) else None
-    if _cb:
-        try:
-            _cb("__total__", len(code_files))
-        except Exception:
-            pass
+        _cb = progress_callback if callable(progress_callback) else None
+        if _cb:
+            try:
+                _cb("__total__", len(code_files))
+            except Exception:
+                pass
 
-    for fpath in code_files:
-        try:
-            lines = fpath.read_text(errors="replace").splitlines()
-        except Exception:
+        for fpath in code_files:
+            try:
+                lines = fpath.read_text(errors="replace").splitlines()
+            except Exception:
+                if _cb:
+                    try:
+                        _cb("__advance__", fpath.name)
+                    except Exception:
+                        pass
+                continue
+            report.scanned_files += 1
+            rel = str(fpath.relative_to(root))
+
+            for i, line in enumerate(lines):
+                for match in pattern.finditer(line):
+                    asset = match.group(1).lower()
+                    start = max(0, i - context_lines)
+                    end = min(len(lines), i + context_lines + 1)
+                    ctx = "\n".join(lines[start:end])
+
+                    ref = CodeReference(
+                        file=rel,
+                        line_no=i + 1,
+                        line_text=line.strip(),
+                        matched_asset=asset,
+                        context=ctx,
+                    )
+                    report.references.setdefault(asset, []).append(ref)
+
+                _scan_spark_sql_literals_in_line(
+                    line,
+                    i,
+                    rel,
+                    lines,
+                    context_lines,
+                    assets,
+                    catalog,
+                    report.references,
+                    report.external_mentions,
+                )
+
+            if fpath.suffix.lower() == ".py":
+                _scan_python_ast_strings(
+                    fpath,
+                    rel,
+                    lines,
+                    context_lines,
+                    assets,
+                    catalog,
+                    report.references,
+                    report.external_mentions,
+                )
+
+            if fpath.suffix.lower() == ".sql":
+                _scan_sqlglot_sql_file(
+                    rel,
+                    lines,
+                    context_lines,
+                    assets,
+                    catalog,
+                    report.references,
+                    report.external_mentions,
+                )
+
             if _cb:
                 try:
                     _cb("__advance__", fpath.name)
                 except Exception:
                     pass
-            continue
-        report.scanned_files += 1
-        rel = str(fpath.relative_to(root))
 
-        for i, line in enumerate(lines):
-            for match in pattern.finditer(line):
-                asset = match.group(1).lower()
-                start = max(0, i - context_lines)
-                end = min(len(lines), i + context_lines + 1)
-                ctx = "\n".join(lines[start:end])
-
-                ref = CodeReference(
-                    file=rel,
-                    line_no=i + 1,
-                    line_text=line.strip(),
-                    matched_asset=asset,
-                    context=ctx,
-                )
-                report.references.setdefault(asset, []).append(ref)
-
-            _scan_spark_sql_literals_in_line(
-                line,
-                i,
-                rel,
-                lines,
-                context_lines,
-                assets,
-                catalog,
-                report.references,
-                report.external_mentions,
-            )
-
-        if fpath.suffix.lower() == ".py":
-            _scan_python_ast_strings(
-                fpath,
-                rel,
-                lines,
-                context_lines,
-                assets,
-                catalog,
-                report.references,
-                report.external_mentions,
-            )
-
-        if fpath.suffix.lower() == ".sql":
-            _scan_sqlglot_sql_file(
-                rel,
-                lines,
-                context_lines,
-                assets,
-                catalog,
-                report.references,
-                report.external_mentions,
-            )
-
-        if _cb:
+        ext_n = sum(len(v) for v in report.external_mentions.values())
+        log.info(
+            "Scanned %d/%d files in %s, %d catalog hits, %d external-style mentions",
+            report.scanned_files,
+            report.total_files,
+            path,
+            sum(len(v) for v in report.references.values()),
+            ext_n,
+        )
+        if index_semantic and report.total_files:
             try:
-                _cb("__advance__", fpath.name)
-            except Exception:
-                pass
+                from amx.codebase.code_rag import index_codebase_tree
 
-    ext_n = sum(len(v) for v in report.external_mentions.values())
-    log.info(
-        "Scanned %d/%d files in %s, %d catalog hits, %d external-style mentions",
-        report.scanned_files,
-        report.total_files,
-        path,
-        sum(len(v) for v in report.references.values()),
-        ext_n,
-    )
-    if index_semantic and report.total_files:
-        try:
-            from amx.codebase.code_rag import index_codebase_tree
-
-            index_codebase_tree(root, report=report, source_root=path)
-        except Exception as exc:
-            log.warning("Semantic code index failed: %s", exc)
-    return report
+                index_codebase_tree(root, report=report, source_root=path)
+            except Exception as exc:
+                log.warning("Semantic code index failed: %s", exc)
+        return report

@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.97] — 2026-04-27
+### Fixed
+- **Remote Git clone cleanup**: Document GitHub scans now mark temporary clone roots for cleanup after preview/ingestion, and codebase Git scans use a temporary-directory context so cloned repos are removed after scanning and semantic indexing finish.
+
+### Added
+- **Regression coverage**: Added coverage for cleanup of temporary document and codebase Git clones.
+
 ## [0.1.96] — 2026-04-27
 ### Fixed
 - **S3 document ingestion path collisions**: S3 downloads now preserve object key prefixes under the local staging directory, so objects such as `team-a/spec.md` and `team-b/spec.md` no longer overwrite each other during `/docs scan` or `/docs ingest`.

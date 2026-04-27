@@ -203,6 +203,7 @@ Notes:
 - **Semantic code RAG**: Chroma collection **`amx_code`** holds embedded chunks (Python by function/class span; other languages by text split). Chunks are tagged by source path, and the Code Agent filters nearest-neighbor retrieval to the active code profile. This is **assistive**, not a proof of dataflow—wide schemas use **capped** table/column lists for performance.
 - **Identifiers outside the DB**: strings that look like catalog objects but are not in the connected table list appear as **secondary context** for the LLM (for example external lake tables).
 - **Doc RAG refresh**: **`/ingest --refresh`** removes existing chunks whose stored resolved file path or original profile source path matches the files you are ingesting, then re-upserts—useful when files shrink or move, including remote sources downloaded to temporary paths.
+- **Remote Git cleanup**: GitHub document and codebase sources are cloned into temporary directories only for the active scan/ingest operation, then removed after AMX finishes reading and indexing them.
 
 ## Supported Document Sources
 

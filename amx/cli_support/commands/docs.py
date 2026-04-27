@@ -67,7 +67,7 @@ def register_docs_commands(
     @click.pass_obj
     def docs_scan(cfg: AMXConfig, paths: tuple[str, ...], doc_profile: str | None) -> None:
         """Scan document sources and show what would be ingested."""
-        from amx.docs.scanner import scan_all_sources, total_size_mb
+        from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources, total_size_mb
 
         try:
             all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
@@ -78,29 +78,33 @@ def register_docs_commands(
             warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="scan")
             return
 
-        documents = scan_all_sources(all_paths)
-        size = total_size_mb(documents)
+        documents = []
+        try:
+            documents = scan_all_sources(all_paths)
+            size = total_size_mb(documents)
 
-        render_table(
-            f"Found {len(documents)} documents ({size:.1f} MB)",
-            ["File", "Size (KB)", "Type", "Source"],
-            [[d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type] for d in documents[:50]],
-        )
+            render_table(
+                f"Found {len(documents)} documents ({size:.1f} MB)",
+                ["File", "Size (KB)", "Type", "Source"],
+                [[d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type] for d in documents[:50]],
+            )
 
-        if len(documents) > 50:
-            info(f"... and {len(documents) - 50} more files")
+            if len(documents) > 50:
+                info(f"... and {len(documents) - 50} more files")
 
-        if size > 100:
-            warn(f"Total size is {size:.1f} MB — ingestion may take a while.")
-            if not confirm("Proceed with ingestion?"):
-                return
+            if size > 100:
+                warn(f"Total size is {size:.1f} MB — ingestion may take a while.")
+                if not confirm("Proceed with ingestion?"):
+                    return
 
-        if confirm("Ingest these documents into the RAG store?"):
-            from amx.docs.rag import RAGStore
+            if confirm("Ingest these documents into the RAG store?"):
+                from amx.docs.rag import RAGStore
 
-            store = RAGStore()
-            chunks = store.ingest(documents, refresh=False)
-            success(f"Ingested {chunks} chunks from {len(documents)} documents")
+                store = RAGStore()
+                chunks = store.ingest(documents, refresh=False)
+                success(f"Ingested {chunks} chunks from {len(documents)} documents")
+        finally:
+            cleanup_scan_artifacts(documents)
 
     @docs.command("ingest")
     @click.argument("paths", nargs=-1)
@@ -124,7 +128,7 @@ def register_docs_commands(
     ) -> None:
         """Ingest documents directly into the RAG store."""
         from amx.docs.rag import RAGStore
-        from amx.docs.scanner import scan_all_sources, total_size_mb
+        from amx.docs.scanner import cleanup_scan_artifacts, scan_all_sources, total_size_mb
 
         try:
             all_paths = list(paths) if paths else cfg.resolve_doc_paths(doc_profile, [])
@@ -135,21 +139,25 @@ def register_docs_commands(
             warn_no_doc_paths_for_scan_or_ingest(cfg, cmd="ingest")
             return
 
-        documents = scan_all_sources(all_paths)
-        size = total_size_mb(documents)
+        documents = []
+        try:
+            documents = scan_all_sources(all_paths)
+            size = total_size_mb(documents)
 
-        info(f"Found {len(documents)} documents ({size:.1f} MB)")
+            info(f"Found {len(documents)} documents ({size:.1f} MB)")
 
-        if size > 100:
-            warn(f"Large document set ({size:.1f} MB). This will take some time.")
-            if not confirm("Continue?"):
-                return
+            if size > 100:
+                warn(f"Large document set ({size:.1f} MB). This will take some time.")
+                if not confirm("Continue?"):
+                    return
 
-        store = RAGStore()
-        chunks = store.ingest(documents, refresh=refresh)
-        if refresh:
-            info("Refreshed: removed prior chunks for the same source paths before ingest.")
-        success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
+            store = RAGStore()
+            chunks = store.ingest(documents, refresh=refresh)
+            if refresh:
+                info("Refreshed: removed prior chunks for the same source paths before ingest.")
+            success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
+        finally:
+            cleanup_scan_artifacts(documents)
 
     @docs.command("search-docs")
     @click.argument("question")

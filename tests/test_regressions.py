@@ -13,7 +13,7 @@ import click
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator
-from amx.codebase.analyzer import CodebaseReport
+from amx.codebase.analyzer import CodebaseReport, analyze_codebase
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_support.commands.history import format_run_scope
 from amx.cli_support.commands.manual import _run_edit_wizard
@@ -26,13 +26,37 @@ from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
-from amx.docs.scanner import _resolve_s3
+from amx.docs.scanner import _resolve_github, _resolve_s3, cleanup_scan_artifacts
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
 from amx.services.analyze_scope import filter_non_business_assets
 from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
 
 
 class DocumentScannerTests(unittest.TestCase):
+    def test_github_scan_artifacts_are_marked_for_cleanup(self) -> None:
+        cloned: list[str] = []
+
+        class FakeRepo:
+            @staticmethod
+            def clone_from(url: str, dest: str, depth: int) -> None:
+                cloned.append(dest)
+                docs_dir = Path(dest) / "docs"
+                docs_dir.mkdir(parents=True)
+                (docs_dir / "guide.md").write_text("hello", encoding="utf-8")
+
+        fake_git = SimpleNamespace(Repo=FakeRepo)
+
+        with patch.dict(sys.modules, {"git": fake_git}):
+            docs = list(_resolve_github("https://github.com/acme/docs"))
+
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(docs[0].cleanup_root, cloned[0])
+        self.assertTrue(Path(docs[0].path).exists())
+
+        cleanup_scan_artifacts(docs)
+
+        self.assertFalse(Path(cloned[0]).exists())
+
     def test_s3_download_preserves_key_prefixes_for_duplicate_basenames(self) -> None:
         class FakePaginator:
             def paginate(self, Bucket: str, Prefix: str):
@@ -59,6 +83,26 @@ class DocumentScannerTests(unittest.TestCase):
 
         paths = {Path(doc.path).relative_to(tmp).as_posix() for doc in docs}
         self.assertEqual(paths, {"team-a/spec.md", "team-b/spec.md"})
+
+
+class CodebaseCleanupTests(unittest.TestCase):
+    def test_remote_codebase_clone_is_removed_after_scan(self) -> None:
+        cloned: list[str] = []
+
+        class FakeRepo:
+            @staticmethod
+            def clone_from(url: str, dest: str, depth: int) -> None:
+                cloned.append(dest)
+                (Path(dest) / "job.py").write_text("spark.read.table('orders')\n", encoding="utf-8")
+
+        fake_git = SimpleNamespace(Repo=FakeRepo)
+
+        with patch.dict(sys.modules, {"git": fake_git}):
+            report = analyze_codebase("https://github.com/acme/app", ["orders"])
+
+        self.assertEqual(report.scanned_files, 1)
+        self.assertIn("orders", report.references)
+        self.assertFalse(Path(cloned[0]).exists())
 
 
 class RAGSourceFilteringTests(unittest.TestCase):

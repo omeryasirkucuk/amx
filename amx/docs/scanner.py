@@ -32,6 +32,7 @@ class DocInfo:
     extension: str
     source_type: str  # local | github | s3 | gcs | azure | sharepoint | drive
     source_root: str = ""  # original configured source path used for profile filtering
+    cleanup_root: str = ""  # temporary source directory to remove after callers finish reading
 
 
 def _resolve_local(path: str) -> Iterator[DocInfo]:
@@ -71,10 +72,25 @@ def _resolve_github(url: str, target_dir: str | None = None) -> Iterator[DocInfo
     import git as gitpython
 
     clone_url = normalize_github_url(url)
+    created_temp = target_dir is None
     dest = target_dir or tempfile.mkdtemp(prefix="amx_gh_")
     log.info("Cloning %s → %s", clone_url, dest)
-    gitpython.Repo.clone_from(clone_url, dest, depth=1)
-    yield from _resolve_local(dest)
+    try:
+        gitpython.Repo.clone_from(clone_url, dest, depth=1)
+    except Exception:
+        if created_temp:
+            shutil.rmtree(dest, ignore_errors=True)
+        raise
+    for doc in _resolve_local(dest):
+        if created_temp:
+            doc.cleanup_root = dest
+        yield doc
+
+
+def cleanup_scan_artifacts(docs: list[DocInfo]) -> None:
+    """Remove temporary source directories associated with scanned documents."""
+    for root in sorted({doc.cleanup_root for doc in docs if doc.cleanup_root}):
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def _s3_local_path(dest: Path, key: str) -> Path:
