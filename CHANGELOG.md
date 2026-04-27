@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.94] — 2026-04-27
+### Changed
+- **Metadata namespace UX**: Added `/metadata` as the primary database-metadata editing namespace and moved the interactive tab label from `MANUAL` to `METADATA`. `/manual` remains a compatibility alias.
+- **Guided edit workflow**: Bare `/edit` now prints a guided workflow that starts with DB profile selection, then schema/table context, then concrete edit examples.
+- **Softer usage guardrails**: Expected target-selection problems in `/metadata edit` now render as guidance warnings instead of red command failures.
+
+### Added
+- **Regression coverage**: Added coverage for `/metadata` shortcut routing and the guided bare-`/edit` workflow.
+
 ## [0.1.93] — 2026-04-27
 ### Fixed
 - **Manual edit target safety**: `/manual edit schema` and `/manual edit table` now require an explicit schema/table target instead of silently editing the current context. This prevents typed text such as `edit table sap_test.adr6` from being saved as a comment on the wrong table.

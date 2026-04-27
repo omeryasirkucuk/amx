@@ -1,4 +1,4 @@
-"""Manual metadata editing and monitoring commands for AMX."""
+"""Database metadata editing and monitoring commands for AMX."""
 
 from __future__ import annotations
 
@@ -44,11 +44,11 @@ def register_manual_commands(
     pass_config: Callable[..., object],
     log_event: LogEvent | None = None,
 ) -> click.Group:
-    """Attach `/manual` namespace commands to the main Click group."""
+    """Attach database metadata editing commands to the main Click group."""
 
-    @main.group("manual")
+    @main.group("metadata")
     def manual() -> None:
-        """Manual metadata editing and monitoring."""
+        """Inspect, edit, and monitor database metadata."""
 
     @manual.command("inspect")
     @click.argument("schema", required=False)
@@ -87,7 +87,7 @@ def register_manual_commands(
 
         db = DatabaseConnector(cfg.db)
         try:
-            target = _resolve_manual_target(cfg, db, scope, list(names), error=error)
+            target = _resolve_manual_target(cfg, db, scope, list(names), error=warn)
         except Exception as exc:
             _report_manual_db_error("resolve the manual edit target", exc)
             return
@@ -152,4 +152,5 @@ def register_manual_commands(
             rows,
         )
 
+    main.add_command(manual, "manual")
     return manual

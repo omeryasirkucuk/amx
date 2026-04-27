@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.94] — 2026-04-27
+### Metadata Namespace UX
+- **amx/cli_support/session.py**: Promoted `/metadata` as the primary interactive namespace, updated the tab label, root help, completion catalog, shortcut routing, namespace assumptions, and bare-`/edit` guidance.
+- **amx/cli_support/commands/manual.py**: Registered the Click group as `/metadata` while keeping `/manual` as a compatibility alias, and downgraded target-selection guidance from red errors to warnings.
+- **tests/test_regressions.py**: Updated session routing and bare-`/edit` coverage for the new metadata-first UX.
+
 ## [0.1.93] — 2026-04-27
 ### Manual Target UX
 - **amx/services/manual_metadata.py**: Added explicit target parsing for manual edits, dotted schema/table/column target support, and guardrails that reject implicit schema/table edits.

@@ -98,7 +98,7 @@ This interactive wizard walks you through:
 In an interactive `amx` session, configuration is grouped by namespace:
 
 - `/db` — database profiles + introspection. Entering `/db` explains how to list profiles, switch engines with `/use-db` (each option shows `[backend] connection summary`), and add a profile with `/add-db-profile` (engine first, then credentials)
-- `/manual` — inspect, edit, and monitor database/schema/table/column metadata manually without running LLM agents
+- `/metadata` — inspect, edit, and monitor database/schema/table/column comments without running LLM agents (`/manual` is a compatibility alias)
 - `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
@@ -143,12 +143,13 @@ amx
 | `/db` + `/schemas` | List available schemas |
 | `/db` + `/tables [schema]` | List all assets (tables, views, materialized views) in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
-| `/manual` + `/inspect [schema] [table]` | Show current database, schema, table/view, and column comments. This namespace is for **database metadata**, not document manuals. |
-| `/manual` + `/edit database\|db` | Edit the active database comment. Switch DB profiles under `/db` to edit another database. |
-| `/manual` + `/edit schema <schema>` | Edit one schema comment. Schema edits require an explicit schema target. |
-| `/manual` + `/edit table <table>` or `/edit table <schema>.<table>` | Edit one table/view comment. Table edits require an explicit table target; a single table name uses the current schema. |
-| `/manual` + `/edit column <column>`, `<table>.<column>`, or `<schema>.<table>.<column>` | Edit one column comment. A single column name uses the current schema/table context. |
-| `/manual` + `/monitor [schema]` | Show table/view and column comment coverage for one schema or all user schemas. |
+| `/metadata` + `/inspect [schema] [table]` | Show current database, schema, table/view, and column comments. This namespace is for **database metadata**, not document manuals. |
+| `/metadata` + `/edit` | Show the guided edit workflow: select DB profile, choose schema/table context, then edit a concrete target. |
+| `/metadata` + `/edit database\|db` | Edit the active database comment. Switch DB profiles under `/db` to edit another database. |
+| `/metadata` + `/edit schema <schema>` | Edit one schema comment. Schema edits require an explicit schema target. |
+| `/metadata` + `/edit table <table>` or `/edit table <schema>.<table>` | Edit one table/view comment. Table edits require an explicit table target; a single table name uses the current schema. |
+| `/metadata` + `/edit column <column>`, `<table>.<column>`, or `<schema>.<table>.<column>` | Edit one column comment. A single column name uses the current schema/table context. |
+| `/metadata` + `/monitor [schema]` | Show table/view and column comment coverage for one schema or all user schemas. |
 | `/llm` + `/llm-profiles` | List LLM profiles |
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
 | `/llm` + `/add-llm-profile [name]` | Add/update an LLM profile (interactive) |
@@ -358,13 +359,13 @@ amx/
 │       ├── db.py           # /db profile and profiling helpers
 │       ├── docs.py         # /docs namespace commands
 │       ├── history.py      # /history namespace commands
-│       ├── manual.py       # /manual namespace commands
+│       ├── manual.py       # /metadata namespace commands (/manual alias)
 │       ├── profiles.py     # /llm plus document/code profile helpers
 │       └── run.py          # /analyze helpers, scope resolution, and apply flow
 ├── services/
 │   ├── __init__.py         # Service-layer package marker
 │   ├── analyze_scope.py    # Scope resolution, asset filtering, and codebase preparation
-│   └── manual_metadata.py  # Manual inspect/edit/coverage business logic
+│   └── manual_metadata.py  # Metadata inspect/edit/coverage business logic
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -398,6 +399,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.94
+
+- **Metadata namespace**: `/metadata` is now the primary tab for database comment inspection/editing/coverage; `/manual` remains as a compatibility alias.
+- **Guided `/edit`**: Bare `/edit` now explains the workflow: select DB profile, set schema/table context if needed, then choose a concrete database/schema/table/column target.
+- **Softer target guidance**: Missing edit targets now show guidance warnings instead of red command errors.
 
 ### v0.1.93
 

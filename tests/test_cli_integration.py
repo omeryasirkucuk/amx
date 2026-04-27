@@ -360,6 +360,47 @@ class ManualIntegrationTests(unittest.TestCase):
         self.assertIn("Updated table sap_test.adr6", result.output)
         self.assertEqual(FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)])
 
+    def test_metadata_namespace_is_primary_for_edit(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+
+        class FakeDatabaseConnector:
+            calls = []
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def resolve_asset_kind(self, schema, table):
+                return AssetKind.TABLE
+
+            def set_table_comment(self, schema, table, comment, *, asset_kind):
+                self.calls.append((schema, table, comment, asset_kind))
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "--config",
+                    "test-config.yml",
+                    "metadata",
+                    "edit",
+                    "table",
+                    "sap_test.adr6",
+                    "--comment",
+                    "Address data",
+                    "--yes",
+                ],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Updated table sap_test.adr6", result.output)
+        self.assertEqual(FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)])
+
 
 if __name__ == "__main__":
     unittest.main()

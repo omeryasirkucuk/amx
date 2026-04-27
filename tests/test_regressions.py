@@ -206,14 +206,18 @@ class SessionHelperTests(unittest.TestCase):
 
         self.assertEqual(args, ["code", "scan", "/tmp/repo", "--schema", "sap_s6p"])
 
-    def test_session_to_click_args_maps_manual_shortcuts(self) -> None:
+    def test_session_to_click_args_maps_metadata_shortcuts(self) -> None:
         self.assertEqual(
             session_to_click_args("", ["monitor", "sap"]),
-            ["manual", "monitor", "sap"],
+            ["metadata", "monitor", "sap"],
+        )
+        self.assertEqual(
+            session_to_click_args("metadata", ["edit", "column", "vbeln"]),
+            ["metadata", "edit", "column", "vbeln"],
         )
         self.assertEqual(
             session_to_click_args("manual", ["edit", "column", "vbeln"]),
-            ["manual", "edit", "column", "vbeln"],
+            ["metadata", "edit", "column", "vbeln"],
         )
 
     def test_format_session_click_error_preserves_missing_argument_message(self) -> None:
@@ -235,13 +239,14 @@ class SessionHelperTests(unittest.TestCase):
             patch("amx.cli_support.session.error") as error_mock,
             patch("amx.cli_support.session.info") as info_mock,
         ):
-            handled = _handle_manual_usage_shortcuts("manual", ["edit"])
+            handled = _handle_manual_usage_shortcuts("metadata", ["edit"])
 
         self.assertTrue(handled)
-        error_mock.assert_called_once_with("Usage: /edit <database|schema|table|column> [...]")
-        info_mock.assert_called_once_with(
-            "Examples: /edit database  |  /edit schema sap  |  /edit column vbeln"
-        )
+        error_mock.assert_not_called()
+        self.assertEqual(info_mock.call_count, 8)
+        self.assertEqual(info_mock.call_args_list[0].args[0], "Metadata edit workflow:")
+        self.assertIn("/use-db", info_mock.call_args_list[1].args[0])
+        self.assertIn("/edit table <table>", info_mock.call_args_list[6].args[0])
 
 
 class ManualMetadataTests(unittest.TestCase):
