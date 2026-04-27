@@ -22,6 +22,9 @@ Write descriptions and reasoning in {target_language}. Keep the response labels
 (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, `TABLE_DESCRIPTION_1`, etc.)
 in English exactly as shown.
 
+Write descriptions assertively and directly (e.g. "Telephone extension number" or "Indicates the fax number").
+Do NOT start descriptions with "This column likely represents" or "This column likely is". Be concise.
+
 For EACH column provide:
 1. A concise description (1-2 sentences).
 {alt_instruction}
@@ -80,7 +83,7 @@ class ProfileAgent(BaseAgent):
 
     @property
     def batch_size(self) -> int:
-        return max(1, min(100, getattr(self.llm.cfg, "column_batch_size", 10)))
+        return max(1, getattr(self.llm.cfg, "column_batch_size", 10))
 
     @property
     def _n_alternatives(self) -> int:
@@ -238,11 +241,13 @@ class ProfileAgent(BaseAgent):
         for idx, batch in enumerate(batches):
             batch_ctx = self._ctx_with_columns(ctx, batch)
             msgs = self._build_messages(batch_ctx)
+            
+            mt = max(self.llm.cfg.max_tokens, len(batch) * 150)
             requests.append(
                 BatchRequest(
                     custom_id=f"profile:{ctx.schema}:{ctx.table}:{idx}",
                     messages=msgs,
-                    max_tokens=self.llm.cfg.max_tokens,
+                    max_tokens=mt,
                     temperature=self.llm.cfg.temperature,
                     metadata={"schema": ctx.schema, "table": ctx.table, "batch_idx": idx},
                 )
@@ -277,9 +282,13 @@ class ProfileAgent(BaseAgent):
         )
         est = estimate_tokens(messages)
         label = f"Profile Agent {batch_label}" if batch_label else "Profile Agent"
+        
+        # dynamically adjust max_tokens based on columns count if model defaults are too low
+        mt = max(self.llm.cfg.max_tokens, len(columns) * 150)
+        
         try:
             with step_spinner(label, token_estimate=est):
-                result = self.llm.chat(messages)
+                result = self.llm.chat(messages, max_tokens=mt)
         except Exception as exc:
             log.error("LLM call failed in profile agent: %s", exc)
             return []

@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.108] — 2026-04-28
+### Assertive Agent Descriptions & Dynamic `max_tokens` Limit
+- **amx/agents/profile_agent.py**, **amx/agents/code_agent.py**, **amx/agents/rag_agent.py**: Updated `_BASE_SYSTEM_PROMPT` adding "Write descriptions assertively and directly" rule to stop fuzzy beginnings ("This column likely represents", "This column may contain").
+- **amx/agents/profile_agent.py**: Removed the hardcoded `100` column `batch_size` limit in `batch_size` property, so `/llm-batch-size 300` works as expected. Added a dynamic `max_tokens` bump (`len(columns) * 150`) before running `chat` to avoid truncation on massive batch processing.
+- **amx/__init__.py**, **pyproject.toml**: Bumped version to `0.1.108`.
+
 ## [0.1.107] — 2026-04-27
 ### Table-Level Semantic Search Routing
 - **amx/search/agent.py**: Added `target_entity` planning, a shape-alignment repair step, and a dedicated table-semantic retrieval policy so concept questions about tables no longer collapse into inventory counts.

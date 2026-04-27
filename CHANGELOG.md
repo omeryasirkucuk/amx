@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.108] — 2026-04-28
+### Changed
+- **More assertive descriptions**: System prompts in `profile_agent`, `code_agent`, and `rag_agent` were updated to force the LLM to generate assertive and direct descriptions, stopping it from starting with phrases like "This column likely represents...".
+- **Dynamic max_tokens**: The `ProfileAgent` now dynamically increases `max_tokens` based on the number of columns in the batch if the user-configured limit (`4096`) is too low for large tables, preventing truncation (`finish_reason=length`) errors during `/run`.
+- **Unlock batch size limit**: The `ProfileAgent` unrestricted the hard-coded `100` maximum batch size limit, so the configured `/llm-batch-size` value is correctly honored.
+
 ## [0.1.107] — 2026-04-27
 ### Changed
 - **Table-level semantic discovery in `/search`**: `/search` now distinguishes between semantic questions about columns and semantic questions about tables, so prompts like "içinde adres detayları olan tüm tablolar" no longer fall back to `count_tables` inventory answers.

@@ -24,6 +24,9 @@ Based on how the code uses these assets, infer a description for EACH column.
 Write descriptions and reasoning in {target_language}. Keep the response labels
 (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
 
+Write descriptions assertively and directly (e.g. "Telephone extension number").
+Do NOT start descriptions with "This column likely represents" or "This column is". Be concise.
+
 Respond in this format for each column (one block per column):
 
 COLUMN: <column_name>
