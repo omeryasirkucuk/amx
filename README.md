@@ -374,6 +374,7 @@ Answering behavior:
 - `/search` is chat-first: inside the `/search` tab, plain text is treated as a metadata question
 - each question now runs through a dedicated **Search Agent** pipeline: interpretation, retrieval planning, grounded retrieval, live verification for high-risk structural claims, answer synthesis, and optional follow-up action suggestions
 - `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
+- `/search ask` now distinguishes table-level semantic discovery from inventory questions, so prompts like "which tables contain address details" route to ranked table matches instead of accidental table-count answers
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as secondary signals
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`

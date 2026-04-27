@@ -1662,6 +1662,117 @@ class SearchCatalog:
         ranked = [row for row in ranked if not row.get("vector_only") or float(row.get("match_score") or 0.0) >= 2.5]
         return ranked[:limit]
 
+    def search_tables(
+        self,
+        db_profile: str,
+        question: str,
+        limit: int = 8,
+        entity_hints: list[str] | None = None,
+        query_variants: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        settings = self.get_settings(db_profile)
+        variants: list[str] = []
+        for value in [question] + list(query_variants or []):
+            text = str(value or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        exact_hits: dict[int, dict[str, Any]] = {}
+        for variant in variants:
+            for row in self._exact_candidates(db_profile, variant, limit=max(limit * 8, 40)):
+                entity_id = int(row["id"])
+                existing = exact_hits.get(entity_id)
+                if existing is None:
+                    exact_hits[entity_id] = dict(row)
+                    continue
+                merged = dict(existing)
+                merged["match_score"] = float(merged.get("match_score") or 0.0) + float(row.get("match_score") or 0.0)
+                exact_hits[entity_id] = merged
+        if not exact_hits:
+            return []
+        table_rows: dict[int, dict[str, Any]] = {}
+        column_match_counts: dict[int, int] = {}
+        with self._connect() as conn:
+            for row in exact_hits.values():
+                if row.get("entity_kind") == "table":
+                    table_row = dict(row)
+                    table_row["row_type"] = "table"
+                    table_row.setdefault("matched_columns", [])
+                    table_rows[int(row["id"])] = table_row
+                    continue
+                if row.get("entity_kind") != "column":
+                    continue
+                table = conn.execute(
+                    """
+                    SELECT ce.*, cd.description_text AS effective_description
+                    FROM catalog_entities ce
+                    LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                    WHERE ce.db_profile = ? AND ce.schema_name = ? AND ce.table_name = ? AND ce.entity_kind = 'table'
+                    LIMIT 1
+                    """,
+                    (db_profile, str(row["schema_name"] or ""), str(row["table_name"] or "")),
+                ).fetchone()
+                if not table:
+                    continue
+                table_id = int(table["id"])
+                table_row = table_rows.get(table_id) or dict(table)
+                table_row["row_type"] = "table"
+                table_row["match_score"] = float(table_row.get("match_score") or 0.0) + float(row.get("match_score") or 0.0) + 0.75
+                matched_columns = list(table_row.get("matched_columns") or [])
+                column_name = str(row.get("column_name") or "")
+                if column_name and column_name not in matched_columns:
+                    matched_columns.append(column_name)
+                table_row["matched_columns"] = matched_columns
+                table_rows[table_id] = table_row
+                column_match_counts[table_id] = column_match_counts.get(table_id, 0) + 1
+            if settings.get("enable_vector_search", "true").lower() == "true":
+                for variant in variants:
+                    for hit in self.index.query(variant, db_profile=db_profile, n_results=max(limit * 4, 20)):
+                        metadata = hit.get("metadata") or {}
+                        entity_id = int(metadata.get("entity_id") or 0)
+                        if not entity_id:
+                            continue
+                        entity = self._entity_row(conn, entity_id)
+                        if not entity:
+                            continue
+                        table: sqlite3.Row | None = None
+                        if entity["entity_kind"] == "table":
+                            table = entity
+                        elif entity["entity_kind"] == "column":
+                            table = conn.execute(
+                                """
+                                SELECT ce.*, cd.description_text AS effective_description
+                                FROM catalog_entities ce
+                                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                                WHERE ce.db_profile = ? AND ce.schema_name = ? AND ce.table_name = ? AND ce.entity_kind = 'table'
+                                LIMIT 1
+                                """,
+                                (db_profile, str(entity["schema_name"] or ""), str(entity["table_name"] or "")),
+                            ).fetchone()
+                        if not table:
+                            continue
+                        table_id = int(table["id"])
+                        table_row = table_rows.get(table_id) or dict(table)
+                        table_row["row_type"] = "table"
+                        table_row.setdefault("matched_columns", [])
+                        distance = hit.get("distance")
+                        if distance is not None:
+                            table_row["match_score"] = float(table_row.get("match_score") or 0.0) + max(0.0, 2.0 - float(distance))
+                        table_rows[table_id] = table_row
+        hints = [str(item).strip().lower() for item in (entity_hints or []) if str(item).strip()]
+        rows = list(table_rows.values())
+        for row in rows:
+            table_id = int(row["id"])
+            match_count = int(column_match_counts.get(table_id, 0))
+            if match_count > 1:
+                row["match_score"] = float(row.get("match_score") or 0.0) + min(3.0, 0.8 * match_count)
+            table_name = str(row.get("table_name") or "").lower()
+            schema_name = str(row.get("schema_name") or "").lower()
+            for hint in hints:
+                if hint in {table_name, schema_name, f"{schema_name}.{table_name}"}:
+                    row["match_score"] = float(row.get("match_score") or 0.0) + 2.5
+        ranked = self._rank_rows(rows, settings, limit * 3)
+        return ranked[:limit]
+
     def _rank_rows(self, rows: list[dict[str, Any]], settings: dict[str, str], limit: int) -> list[dict[str, Any]]:
         weight_map = {
             "manual": float(settings.get("manual_weight", "6.0")),

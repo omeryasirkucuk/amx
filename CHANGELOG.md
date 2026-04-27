@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.107] — 2026-04-27
+### Changed
+- **Table-level semantic discovery in `/search`**: `/search` now distinguishes between semantic questions about columns and semantic questions about tables, so prompts like "içinde adres detayları olan tüm tablolar" no longer fall back to `count_tables` inventory answers.
+- **Smarter search-plan correction**: The Search Agent now repairs common interpreter misroutes by rerouting table-listing concept questions from inventory/count mode into table-focused semantic discovery before retrieval runs.
+
+### Added
+- **Aggregated table retrieval**: Added table-level semantic retrieval that groups evidence from table descriptions and matching child-column metadata to surface the most relevant tables for concept-oriented discovery questions.
+- **Regression coverage**: Added a test that forces the interpreter to misclassify an address-detail table question as inventory and verifies that `/search` still returns the matching tables.
+
 ## [0.1.106] — 2026-04-27
 ### Changed
 - **Join-answer synthesis fix**: `/search` now includes resolved `left_column` and `right_column` evidence in the answer-synthesis payload for one-table join discovery, fixing responses that listed joinable tables but then incorrectly claimed no specific join columns were available.

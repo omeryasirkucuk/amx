@@ -24,6 +24,7 @@ class SearchPlan:
     normalized_question: str
     search_mode: str
     question_class: str
+    target_entity: str
     entity_hints: list[str]
     search_queries: list[str]
     needs_typo_recovery: bool
@@ -194,6 +195,7 @@ class SearchAgent:
             "table_explain, list_databases, list_schemas, count_tables, compare_entities, unsupported.\n"
             "Allowed question_class values: inventory, entity_lookup, semantic_discovery, join_discovery, "
             "table_understanding, comparative_reasoning, unsupported.\n"
+            "Allowed target_entity values: column, table, schema, database, aggregate, join_path, unknown.\n"
             "Allowed intent values: find_columns, join_candidates, explain_table, list_databases, list_schemas, "
             "count_tables, compare_entities, unsupported.\n"
             "Set out_of_domain=true for greetings, small talk, or requests unrelated to database metadata.\n"
@@ -210,6 +212,9 @@ class SearchAgent:
             "If the question asks which schemas exist, choose list_schemas and inventory.\n"
             "If the question asks how many tables or columns exist, choose count_tables and inventory.\n"
             "If the question compares tables or asks for equivalents, choose compare_entities and comparative_reasoning.\n"
+            "If the question asks which tables contain a concept such as address details, price data, customer identifiers, "
+            "or date-related fields, keep question_class=semantic_discovery, choose search_mode=semantic_concept, and set target_entity=table.\n"
+            "For field or concept questions about columns, set target_entity=column.\n"
             "Set answer_language to the language of the user's question. "
             "Return ambiguity_flags as a list, for example missing_scope, ambiguous_table_name, or cross_schema_risk.\n"
             "Otherwise choose semantic_concept and semantic_discovery."
@@ -244,6 +249,7 @@ class SearchAgent:
                 normalized_question=str(payload.get("normalized_question") or question).strip() or question,
                 search_mode=search_mode,
                 question_class=question_class,
+                target_entity=str(payload.get("target_entity") or "unknown").strip() or "unknown",
                 entity_hints=[str(item).strip() for item in (payload.get("entity_hints") or []) if str(item).strip()],
                 search_queries=[
                     str(item).strip()
@@ -288,6 +294,7 @@ class SearchAgent:
             normalized_question=plan.normalized_question,
             search_mode=plan.search_mode,
             question_class=plan.question_class,
+            target_entity=plan.target_entity,
             entity_hints=list(plan.entity_hints),
             search_queries=list(plan.search_queries),
             needs_typo_recovery=plan.needs_typo_recovery,
@@ -295,6 +302,64 @@ class SearchAgent:
             ambiguity_flags=list(plan.ambiguity_flags),
             reason=plan.reason,
         )
+
+    def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
+        sample = (question or "").strip().lower()
+        asks_count = any(token in sample for token in ("kaç", "kac", "how many", "count"))
+        asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
+        asks_listing = any(token in sample for token in ("hangi", "tüm", "tum", "list", "show", "söyle", "soyle", "tell"))
+        asks_semantic_table_concept = any(
+            token in sample
+            for token in (
+                "içinde",
+                "icinde",
+                "alak",
+                "related",
+                "detail",
+                "detay",
+                "contain",
+                "containing",
+                "with",
+                "olan",
+            )
+        )
+        if (
+            plan.search_mode == "count_tables"
+            and asks_table_word
+            and asks_listing
+            and asks_semantic_table_concept
+            and not asks_count
+        ):
+            return SearchPlan(
+                intent="find_tables",
+                out_of_domain=plan.out_of_domain,
+                normalized_question=plan.normalized_question,
+                search_mode="semantic_concept",
+                question_class="semantic_discovery",
+                target_entity="table",
+                entity_hints=list(plan.entity_hints),
+                search_queries=list(plan.search_queries),
+                needs_typo_recovery=plan.needs_typo_recovery,
+                answer_language=plan.answer_language,
+                ambiguity_flags=list(plan.ambiguity_flags),
+                reason=(plan.reason + "; rerouted to table semantic discovery").strip("; "),
+            )
+        if plan.question_class == "semantic_discovery" and plan.target_entity in {"", "unknown"} and asks_table_word and asks_listing:
+            return SearchPlan(
+                intent=plan.intent,
+                out_of_domain=plan.out_of_domain,
+                normalized_question=plan.normalized_question,
+                search_mode=plan.search_mode,
+                question_class=plan.question_class,
+                target_entity="table",
+                entity_hints=list(plan.entity_hints),
+                search_queries=list(plan.search_queries),
+                needs_typo_recovery=plan.needs_typo_recovery,
+                answer_language=plan.answer_language,
+                ambiguity_flags=list(plan.ambiguity_flags),
+                reason=plan.reason,
+            )
+        return plan
 
     def _context_detail(self) -> str:
         value = str(self.settings.get("context_detail", "standard") or "standard").strip().lower()
@@ -314,6 +379,8 @@ class SearchAgent:
             return SearchPolicy(plan.question_class, "table_context_plus_neighbors", True, False, True, allow_vector, allow_code, "table_summary", "suggest_sync_if_sparse")
         if plan.question_class == "comparative_reasoning":
             return SearchPolicy(plan.question_class, "semantic_then_structural_compare", True, False, True, allow_vector, allow_code, "comparative", "ask_follow_up")
+        if plan.question_class == "semantic_discovery" and plan.target_entity == "table":
+            return SearchPolicy(plan.question_class, "semantic_table_search", True, False, False, allow_vector, allow_code, "table_matches", "suggest_sync_if_sparse")
         return SearchPolicy(plan.question_class, "semantic_catalog_search", True, False, False, allow_vector, allow_code, "ranked_matches", "suggest_sync_if_sparse")
 
     def _inventory_db(self) -> DatabaseConnector:
@@ -622,6 +689,18 @@ class SearchAgent:
                 query_variants=plan.search_queries,
             )
             details["evidence_sources"] = ["effective_metadata", "vector_support"]
+            return rows, details
+        if plan.question_class == "semantic_discovery" and plan.target_entity == "table":
+            rows = self.catalog.search_tables(
+                self.db_profile,
+                plan.normalized_question or question,
+                limit=limit,
+                entity_hints=plan.entity_hints,
+                query_variants=plan.search_queries,
+            )
+            details["display_rows"] = True
+            details["result_kind"] = "table_matches"
+            details["evidence_sources"] = ["effective_metadata", "aggregated_column_metadata", "vector_support"]
             return rows, details
         rows = self.catalog.search_columns(
             self.db_profile,
@@ -959,6 +1038,7 @@ class SearchAgent:
             with step_spinner("Search Agent: interpreting question"):
                 plan, interpretation_usage = self._interpret_question(clean_question)
                 plan = self._align_answer_language(plan, question_language)
+                plan = self._align_plan_shape(plan, clean_question)
             stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
             return SearchAnswer(

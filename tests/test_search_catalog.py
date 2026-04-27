@@ -124,6 +124,34 @@ class SearchCatalogTests(unittest.TestCase):
             ],
         )
 
+    def _address_profile(self) -> TableProfile:
+        return TableProfile(
+            schema="sap_s6p",
+            name="adr6",
+            asset_kind=AssetKind.TABLE,
+            row_count=12,
+            existing_comment="Address communication details",
+            columns=[
+                ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
+                ColumnProfile(name="date_from", dtype="DATE", nullable=True, existing_comment="Valid-from date for address communication details"),
+                ColumnProfile(name="smtp_addr", dtype="TEXT", nullable=True, existing_comment="Email address detail"),
+            ],
+        )
+
+    def _address_text_profile(self) -> TableProfile:
+        return TableProfile(
+            schema="sap_s6p",
+            name="adrt",
+            asset_kind=AssetKind.TABLE,
+            row_count=8,
+            existing_comment="Address remarks and text details",
+            columns=[
+                ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
+                ColumnProfile(name="date_from", dtype="DATE", nullable=True, existing_comment="Valid-from date"),
+                ColumnProfile(name="remark", dtype="TEXT", nullable=True, existing_comment="Address detail remark text"),
+            ],
+        )
+
     def _search_cfg(self) -> AMXConfig:
         cfg = AMXConfig()
         cfg.active_db_profile = "default"
@@ -471,6 +499,38 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["value"], 3)
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.details["retrieval"]["schema_name"], "sap")
+
+    def test_table_concept_question_reroutes_from_inventory_to_semantic_table_search(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_text_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"tables with address details","search_mode":"count_tables","question_class":"inventory","target_entity":"aggregate","entity_hints":[],"search_queries":["icinde adres detaylari olan tum tablolari soyler misin","tables with address details"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"misclassified inventory"}',
+                "`sap_s6p.adr6` ve `sap_s6p.adrt` adres detaylariyla ilgili tablolar olarak gorunuyor.",
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("içinde adres detayları olan tüm tabloları söyler misin?")
+        self.assertEqual(answer.details["plan"]["question_class"], "semantic_discovery")
+        self.assertEqual(answer.details["plan"]["target_entity"], "table")
+        self.assertNotEqual(answer.intent, "count_tables")
+        self.assertTrue(answer.rows)
+        top_tables = {f"{row.get('schema_name')}.{row.get('table_name')}" for row in answer.rows[:2]}
+        self.assertIn("sap_s6p.adr6", top_tables)
+        self.assertIn("sap_s6p.adrt", top_tables)
 
     def test_single_table_join_question_returns_joinable_tables(self) -> None:
         self.catalog.sync_table_profile(

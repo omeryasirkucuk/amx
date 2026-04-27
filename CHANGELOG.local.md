@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.107] — 2026-04-27
+### Table-Level Semantic Search Routing
+- **amx/search/agent.py**: Added `target_entity` planning, a shape-alignment repair step, and a dedicated table-semantic retrieval policy so concept questions about tables no longer collapse into inventory counts.
+- **amx/search/catalog.py**: Added `search_tables()` to aggregate table descriptions plus matching child-column evidence into ranked table candidates for concept-based discovery.
+- **tests/test_search_catalog.py**: Added regression coverage for the Turkish "adres detaylari olan tum tablolar" case, including a deliberately misclassified interpreter payload.
+- **README.md / CHANGELOG.md**: Documented the new table-level semantic discovery behavior in `/search`.
+
 ## [0.1.106] — 2026-04-27
 ### Join-Column Prompt Fix
 - **amx/search/agent.py**: Added `left_column` and `right_column` to the grounded synthesis payload so joinable-table answers can explicitly mention the discovered join columns instead of only the target tables.
