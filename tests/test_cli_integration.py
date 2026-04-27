@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from amx.cli import main
 from amx.config import AMXConfig
+from amx.db.connector import AssetKind
 
 
 class AnalyzeApplyIntegrationTests(unittest.TestCase):
@@ -286,6 +287,78 @@ class ManualIntegrationTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Could not resolve the manual edit target", result.output)
         self.assertIn("run /db then /connect", result.output)
+        self.assertIn("Cause: Database connection refused.", result.output)
+
+    def test_manual_edit_table_requires_explicit_target(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.current_schema = "sap"
+        cfg.current_table = "vbak"
+
+        class FakeDatabaseConnector:
+            calls = []
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def set_table_comment(self, schema, table, comment, *, asset_kind):
+                self.calls.append((schema, table, comment, asset_kind))
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "manual", "edit", "table", "--comment", "x", "--yes"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Choose a table/view explicitly", result.output)
+        self.assertEqual(FakeDatabaseConnector.calls, [])
+
+    def test_manual_edit_table_accepts_qualified_target(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+
+        class FakeDatabaseConnector:
+            calls = []
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def resolve_asset_kind(self, schema, table):
+                return AssetKind.TABLE
+
+            def set_table_comment(self, schema, table, comment, *, asset_kind):
+                self.calls.append((schema, table, comment, asset_kind))
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "--config",
+                    "test-config.yml",
+                    "manual",
+                    "edit",
+                    "table",
+                    "sap_test.adr6",
+                    "--comment",
+                    "Address data",
+                    "--yes",
+                ],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Updated table sap_test.adr6", result.output)
+        self.assertEqual(FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)])
 
 
 if __name__ == "__main__":

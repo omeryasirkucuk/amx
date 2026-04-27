@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.93] — 2026-04-27
+### Fixed
+- **Manual edit target safety**: `/manual edit schema` and `/manual edit table` now require an explicit schema/table target instead of silently editing the current context. This prevents typed text such as `edit table sap_test.adr6` from being saved as a comment on the wrong table.
+- **Manual DB error summaries**: Database failures in `/manual` now show a short cause summary instead of dumping raw driver/SQLAlchemy exception text.
+
+### Added
+- **Qualified manual targets**: `/manual edit` now accepts dotted target forms such as `table sap_test.adr6`, `column adr6.smtp_addr`, and `column sap_test.adr6.smtp_addr`.
+- **Regression coverage**: Added tests for explicit manual target parsing, implicit-table rejection, and the cleaned database-error path.
+
 ## [0.1.92] — 2026-04-27
 ### Fixed
 - **Manual command error handling**: `/manual` commands now catch database-resolution/connection failures and report them with actionable guidance instead of leaking raw driver exceptions into the session. Interactive prompt cancellation during manual edits is also handled cleanly instead of surfacing as an empty `Command failed:` message.

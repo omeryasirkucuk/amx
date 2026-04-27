@@ -143,8 +143,11 @@ amx
 | `/db` + `/schemas` | List available schemas |
 | `/db` + `/tables [schema]` | List all assets (tables, views, materialized views) in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
-| `/manual` + `/inspect [schema] [table]` | Show current database, schema, table/view, and column comments. |
-| `/manual` + `/edit database\|schema\|table\|column ...` | Manually write one metadata comment. Use `--comment "text"` and `--yes` for non-interactive edits. |
+| `/manual` + `/inspect [schema] [table]` | Show current database, schema, table/view, and column comments. This namespace is for **database metadata**, not document manuals. |
+| `/manual` + `/edit database\|db` | Edit the active database comment. Switch DB profiles under `/db` to edit another database. |
+| `/manual` + `/edit schema <schema>` | Edit one schema comment. Schema edits require an explicit schema target. |
+| `/manual` + `/edit table <table>` or `/edit table <schema>.<table>` | Edit one table/view comment. Table edits require an explicit table target; a single table name uses the current schema. |
+| `/manual` + `/edit column <column>`, `<table>.<column>`, or `<schema>.<table>.<column>` | Edit one column comment. A single column name uses the current schema/table context. |
 | `/manual` + `/monitor [schema]` | Show table/view and column comment coverage for one schema or all user schemas. |
 | `/llm` + `/llm-profiles` | List LLM profiles |
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
@@ -395,6 +398,13 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.93
+
+- **Manual target safety**: `/manual edit schema` and `/manual edit table` now require explicit targets, so AMX will not silently edit the current schema/table when the user intended to type a target.
+- **Qualified manual targets**: Manual edits accept dotted targets such as `/edit table sap_test.adr6`, `/edit column adr6.smtp_addr`, and `/edit column sap_test.adr6.smtp_addr`.
+- **Manual terminology**: `/manual` help now states that it edits database metadata; document workflows remain under `/docs`.
+- **Short DB errors**: Manual DB connection failures now show a concise cause summary instead of raw driver output.
 
 ### v0.1.89
 

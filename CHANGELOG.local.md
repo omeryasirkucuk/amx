@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.93] — 2026-04-27
+### Manual Target UX
+- **amx/services/manual_metadata.py**: Added explicit target parsing for manual edits, dotted schema/table/column target support, and guardrails that reject implicit schema/table edits.
+- **amx/cli_support/commands/manual.py**: Accepted `db` as a database scope alias and shortened database exception reporting to a concise cause summary.
+- **amx/cli_support/session.py**: Clarified `/manual` help as database metadata editing and pointed document workflows to `/docs`.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added coverage for explicit table/column targets, rejected implicit table edits, and concise DB error output.
+
 ## [0.1.92] — 2026-04-27
 ### Manual UX Fix
 - **amx/cli_support/commands/manual.py**: Added friendly database error reporting for inspect/edit/monitor paths and clean cancellation handling for interactive manual-edit prompts.

@@ -52,6 +52,26 @@ def display_comment(value: str | None) -> str:
     return value if value else "[dim](empty)[/dim]"
 
 
+def _split_qualified_name(value: str) -> list[str]:
+    parts = [part.strip() for part in value.split(".")]
+    return parts if all(parts) else [value]
+
+
+def _manual_table_usage(error: ErrorFn) -> None:
+    error("Choose a table/view explicitly: /edit table <table> or /edit table <schema>.<table>")
+
+
+def _manual_schema_usage(error: ErrorFn) -> None:
+    error("Choose a schema explicitly: /edit schema <schema>")
+
+
+def _manual_column_usage(error: ErrorFn) -> None:
+    error(
+        "Choose a column explicitly: /edit column <column>, /edit column <table>.<column>, "
+        "or /edit column <schema>.<table>.<column>"
+    )
+
+
 def collect_metadata_coverage(db: object, schema: str) -> MetadataCoverage:
     """Collect table/view and column comment coverage for one schema."""
     coverage = MetadataCoverage(schema=schema)
@@ -144,28 +164,38 @@ def resolve_manual_target(
     error: ErrorFn,
 ) -> tuple[str, Callable[[str], None]] | None:
     """Resolve a manual-edit target and return a writer callback."""
-    if scope == "database":
+    normalized_scope = "database" if scope == "db" else scope
+
+    if normalized_scope == "database":
         if names:
-            error("Usage: /edit database [--comment TEXT]")
+            error("The active database is edited with /edit database. Switch DB profiles under /db to edit another database.")
             return None
         return "database", lambda comment: db.set_database_comment(comment)  # type: ignore[attr-defined]
 
-    if scope == "schema":
-        schema = names[0] if names else resolve_schema_arg(cfg, None, error=error)
-        if not schema:
+    if normalized_scope == "schema":
+        if len(names) != 1 or len(_split_qualified_name(names[0])) != 1:
+            _manual_schema_usage(error)
             return None
-        if len(names) > 1:
-            error("Usage: /edit schema [schema] [--comment TEXT]")
-            return None
+        schema = names[0]
         return f"schema {schema}", lambda comment: db.set_schema_comment(schema, comment)  # type: ignore[attr-defined]
 
-    if scope == "table":
-        schema = names[0] if len(names) >= 2 else resolve_schema_arg(cfg, None, error=error)
-        table = names[1] if len(names) >= 2 else (names[0] if names else resolve_table_arg(cfg, None, error=error))
-        if not schema or not table:
+    if normalized_scope == "table":
+        if len(names) == 1:
+            parts = _split_qualified_name(names[0])
+            if len(parts) == 1:
+                schema = resolve_schema_arg(cfg, None, error=error)
+                table = parts[0]
+            elif len(parts) == 2:
+                schema, table = parts
+            else:
+                _manual_table_usage(error)
+                return None
+        elif len(names) == 2:
+            schema, table = names[0], names[1]
+        else:
+            _manual_table_usage(error)
             return None
-        if len(names) > 2:
-            error("Usage: /edit table [schema] [table] [--comment TEXT]")
+        if not schema or not table:
             return None
         kind = db.resolve_asset_kind(schema, table)  # type: ignore[attr-defined]
         if not isinstance(kind, AssetKind):
@@ -175,25 +205,30 @@ def resolve_manual_target(
             lambda comment: db.set_table_comment(schema, table, comment, asset_kind=kind),  # type: ignore[attr-defined]
         )
 
-    if scope == "column":
-        if len(names) >= 3:
-            schema, table, column = names[0], names[1], names[2]
+    if normalized_scope == "column":
+        if len(names) == 1:
+            parts = _split_qualified_name(names[0])
+            if len(parts) == 1:
+                schema = resolve_schema_arg(cfg, None, error=error)
+                table = resolve_table_arg(cfg, None, error=error)
+                column = parts[0]
+            elif len(parts) == 2:
+                schema = resolve_schema_arg(cfg, None, error=error)
+                table, column = parts
+            elif len(parts) == 3:
+                schema, table, column = parts
+            else:
+                _manual_column_usage(error)
+                return None
         elif len(names) == 2:
             schema = resolve_schema_arg(cfg, None, error=error)
             table, column = names[0], names[1]
-        elif len(names) == 1:
-            schema = resolve_schema_arg(cfg, None, error=error)
-            table = resolve_table_arg(cfg, None, error=error)
-            column = names[0]
+        elif len(names) == 3:
+            schema, table, column = names[0], names[1], names[2]
         else:
-            schema = resolve_schema_arg(cfg, None, error=error)
-            table = resolve_table_arg(cfg, None, error=error)
-            column = None
-        if not schema or not table or not column:
-            error("Usage: /edit column [schema] [table] <column> [--comment TEXT]")
+            _manual_column_usage(error)
             return None
-        if len(names) > 3:
-            error("Usage: /edit column [schema] [table] <column> [--comment TEXT]")
+        if not schema or not table or not column:
             return None
         return (
             f"column {schema}.{table}.{column}",
@@ -201,4 +236,3 @@ def resolve_manual_target(
         )
 
     return None
-

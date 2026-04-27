@@ -283,6 +283,58 @@ class ManualMetadataTests(unittest.TestCase):
         self.assertEqual(db.last_call, ("sap", "vbak", "vbeln", "Sales document"))
         self.assertEqual(errors, [])
 
+    def test_resolve_manual_target_rejects_implicit_table_edit(self) -> None:
+        cfg = AMXConfig()
+        cfg.current_schema = "sap"
+        cfg.current_table = "vbak"
+        errors: list[str] = []
+
+        class FakeDB:
+            pass
+
+        target = resolve_manual_target(cfg, FakeDB(), "table", [], error=errors.append)
+
+        self.assertIsNone(target)
+        self.assertEqual(
+            errors,
+            ["Choose a table/view explicitly: /edit table <table> or /edit table <schema>.<table>"],
+        )
+
+    def test_resolve_manual_target_accepts_dotted_table_target(self) -> None:
+        cfg = AMXConfig()
+        errors: list[str] = []
+
+        class FakeDB:
+            def resolve_asset_kind(self, schema, table):
+                return AssetKind.TABLE
+
+            def set_table_comment(self, schema, table, comment, *, asset_kind):
+                self.last_call = (schema, table, comment, asset_kind)
+
+        db = FakeDB()
+        target = resolve_manual_target(cfg, db, "table", ["sap_test.adr6"], error=errors.append)
+
+        self.assertEqual(target[0], "table sap_test.adr6")
+        target[1]("Address data")
+        self.assertEqual(db.last_call, ("sap_test", "adr6", "Address data", AssetKind.TABLE))
+        self.assertEqual(errors, [])
+
+    def test_resolve_manual_target_accepts_dotted_column_target(self) -> None:
+        cfg = AMXConfig()
+        errors: list[str] = []
+
+        class FakeDB:
+            def set_column_comment(self, schema, table, column, comment):
+                self.last_call = (schema, table, column, comment)
+
+        db = FakeDB()
+        target = resolve_manual_target(cfg, db, "column", ["sap_test.adr6.smtp_addr"], error=errors.append)
+
+        self.assertEqual(target[0], "column sap_test.adr6.smtp_addr")
+        target[1]("Email address")
+        self.assertEqual(db.last_call, ("sap_test", "adr6", "smtp_addr", "Email address"))
+        self.assertEqual(errors, [])
+
 
 class AnalyzeScopeServiceTests(unittest.TestCase):
     def test_filter_non_business_assets_drops_pg_stat_objects(self) -> None:

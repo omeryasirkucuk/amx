@@ -202,13 +202,19 @@ Navigation:
         out.print(
             """
 [heading]Help — /manual namespace[/heading]
+Database metadata commands. This namespace edits database comments; document
+profiles and document search are under /docs.
+
 Commands:
   1) /back                         Return to root namespace
   2) /inspect [schema] [table]     Show current database/schema/table/column comments
-  3) /edit database                Edit the database comment
-  4) /edit schema [schema]         Edit a schema comment
-  5) /edit table [schema] [table]  Edit a table/view comment
-  6) /edit column [schema] [table] <column>
+  3) /edit database                Edit the active database comment
+  4) /edit schema <schema>         Edit a schema comment
+  5) /edit table <table>           Edit a table/view comment in the current schema
+     /edit table <schema>.<table>  Edit a table/view comment in a specific schema
+  6) /edit column <column>         Edit a column in the current schema/table
+     /edit column <table>.<column> Edit a column in the current schema
+     /edit column <schema>.<table>.<column>
                                   Edit a column comment
   7) /monitor [schema]             Show table/view and column comment coverage
 
