@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.82] — 2026-04-27
+### CLI Refactor
+- **amx/cli_docs.py**: Added a dedicated module for `/docs` scan, ingest, search, export-report, and standalone analyze commands.
+- **amx/cli.py**: Replaced the in-file document namespace block with `register_docs_commands(...)`, bringing the file down to roughly 2.26k lines.
+- **tests/test_cli_integration.py**: Added Click integration coverage for `/docs scan` empty-path guidance and `/docs search-docs`.
+
 ## [0.1.81] — 2026-04-27
 ### CLI Refactor
 - **amx/cli_profiles.py**: Added a dedicated module for interactive LLM profile editing, prompt/detail batch settings, and document/code profile helper commands.

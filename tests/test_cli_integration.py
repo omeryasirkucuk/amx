@@ -94,5 +94,35 @@ class HistoryListIntegrationTests(unittest.TestCase):
         self.assertIn("tables)", result.output)
 
 
+class DocsIntegrationTests(unittest.TestCase):
+    def test_docs_scan_without_paths_shows_guidance(self) -> None:
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["--config", "test-config.yml", "docs", "scan"],
+            env={"AMX_SESSION_CHILD": "1"},
+            catch_exceptions=False,
+        )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("No document paths to scan.", result.output)
+        self.assertIn("/add-doc-profile", result.output)
+
+    def test_docs_search_docs_routes_through_cli_docs_module(self) -> None:
+        runner = CliRunner()
+
+        with patch("amx.cli_docs._run_docs_semantic_search") as search_docs:
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "docs", "search-docs", "sales order", "--results", "3"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        search_docs.assert_called_once_with("sales order", 3)
+
+
 if __name__ == "__main__":
     unittest.main()

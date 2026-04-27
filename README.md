@@ -330,8 +330,9 @@ Query it directly in AMX via `/history` namespace:
 amx/
 ├── cli.py              # Interactive shell, command routing, and top-level workflows
 ├── cli_db.py           # /db namespace profile and profiling command helpers
+├── cli_docs.py         # /docs namespace commands for scan, ingest, search, report, and analyze
 ├── cli_history.py      # /history namespace commands and review/results flows
-├── cli_profiles.py     # /llm, /docs, and /code profile helper commands
+├── cli_profiles.py     # /llm plus /docs and /code profile helper commands
 ├── cli_run.py          # /analyze namespace helpers, scope resolution, and apply flow
 ├── config.py           # Configuration management
 ├── agents/
@@ -367,9 +368,9 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
-### v0.1.81
+### v0.1.82
 
-- **CLI maintainability**: Interactive LLM/profile helpers for `/llm`, `/docs`, and `/code` now live in `amx.cli_profiles`, which keeps `amx.cli` focused on routing and the larger command flows.
+- **CLI maintainability**: The `/docs` command namespace now lives in `amx.cli_docs`, cutting another ~270 lines out of `amx.cli` and keeping document scan/ingest/analyze flows together.
 
 ## Programmatic API
 
