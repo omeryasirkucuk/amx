@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.96] — 2026-04-27
+### Fixed
+- **S3 document ingestion path collisions**: S3 downloads now preserve object key prefixes under the local staging directory, so objects such as `team-a/spec.md` and `team-b/spec.md` no longer overwrite each other during `/docs scan` or `/docs ingest`.
+
+### Added
+- **Regression coverage**: Added coverage for duplicate S3 basenames under different prefixes.
+
 ## [0.1.95] — 2026-04-27
 ### Changed
 - **Flexible metadata edit targeting**: `/metadata edit` now accepts path targets: `<db>`, `<db>.<schema>`, `<db>.<schema>.<table>`, and `<db>.<schema>.<table>.<column>`.

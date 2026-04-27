@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import sys
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -22,9 +26,39 @@ from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
+from amx.docs.scanner import _resolve_s3
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
 from amx.services.analyze_scope import filter_non_business_assets
 from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
+
+
+class DocumentScannerTests(unittest.TestCase):
+    def test_s3_download_preserves_key_prefixes_for_duplicate_basenames(self) -> None:
+        class FakePaginator:
+            def paginate(self, Bucket: str, Prefix: str):
+                yield {
+                    "Contents": [
+                        {"Key": "team-a/spec.md", "Size": 3},
+                        {"Key": "team-b/spec.md", "Size": 4},
+                    ]
+                }
+
+        class FakeS3:
+            def get_paginator(self, name: str):
+                self.paginator_name = name
+                return FakePaginator()
+
+            def download_file(self, bucket: str, key: str, filename: str) -> None:
+                Path(filename).write_text(key, encoding="utf-8")
+
+        fake_s3 = FakeS3()
+        fake_boto3 = SimpleNamespace(client=lambda service: fake_s3)
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, {"boto3": fake_boto3}):
+            docs = list(_resolve_s3("s3://bucket", target_dir=tmp))
+
+        paths = {Path(doc.path).relative_to(tmp).as_posix() for doc in docs}
+        self.assertEqual(paths, {"team-a/spec.md", "team-b/spec.md"})
 
 
 class RAGSourceFilteringTests(unittest.TestCase):

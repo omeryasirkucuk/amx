@@ -77,6 +77,14 @@ def _resolve_github(url: str, target_dir: str | None = None) -> Iterator[DocInfo
     yield from _resolve_local(dest)
 
 
+def _s3_local_path(dest: Path, key: str) -> Path:
+    """Map an S3 object key to a nested local path under dest."""
+    safe_parts = [part for part in key.split("/") if part not in {"", ".", ".."}]
+    if not safe_parts:
+        raise ValueError(f"Invalid S3 object key: {key!r}")
+    return dest.joinpath(*safe_parts)
+
+
 def _resolve_s3(uri: str, target_dir: str | None = None) -> Iterator[DocInfo]:
     import boto3
 
@@ -93,7 +101,8 @@ def _resolve_s3(uri: str, target_dir: str | None = None) -> Iterator[DocInfo]:
             key = obj["Key"]
             ext = Path(key).suffix.lower()
             if ext in SUPPORTED_EXTENSIONS:
-                local_path = dest / Path(key).name
+                local_path = _s3_local_path(dest, key)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
                 s3.download_file(bucket, key, str(local_path))
                 yield DocInfo(str(local_path), obj["Size"], ext, "s3")
 

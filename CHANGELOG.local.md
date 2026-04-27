@@ -2,6 +2,11 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.96] — 2026-04-27
+### S3 Document Ingestion
+- **amx/docs/scanner.py**: Preserved S3 object key prefixes when staging downloads, preventing duplicate basenames from different prefixes from overwriting each other.
+- **tests/test_regressions.py**: Added a mocked S3 regression test for duplicate `spec.md` basenames under separate prefixes.
+
 ## [0.1.95] — 2026-04-27
 ### Metadata Edit Wizard
 - **amx/cli_support/commands/manual.py**: Refactored `/metadata edit` to accept free-form target paths, dispatch legacy scope syntax, and fall back to an interactive DB/profile/schema/table/column wizard.

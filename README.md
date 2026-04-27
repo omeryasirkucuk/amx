@@ -216,6 +216,8 @@ When you add paths with `/add-doc-profile` or during `/setup`, AMX checks **reac
 | Google Drive links | `https://drive.google.com/...` | Supported — public links work with zero setup; private files need credentials (see below) |
 | SharePoint / OneDrive links | `https://...sharepoint.com/...` or `https://onedrive.live.com/...` | Supported — public sharing links work with zero setup; private files need Azure credentials (see below) |
 
+S3 scans and ingests preserve object key prefixes in the temporary download tree, so files with the same basename under different prefixes remain distinct.
+
 ### Cloud document access
 
 AMX always **tries the public/anonymous download first** — no credentials needed if the file is shared as "Anyone with the link". Credentials are only required for private files or folder listings.
