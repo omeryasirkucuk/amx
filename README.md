@@ -381,6 +381,7 @@ Answering behavior:
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
 - `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, and action suggestions into history/event payloads so answers remain diagnosable
 - `/search /context-detail` controls how much neighborhood, code, and history context is exposed to the search synthesizer for cost/latency tuning
+- `/search` answer language is forced to the detected language of the user's question, even if the interpreter LLM suggests a different `answer_language`
 - aggregate answers avoid dumping the generic schema/table/column result grid when that grid would be irrelevant to the user question
 - if no active LLM profile exists, `/search ask` fails closed and tells you to configure `/llm`
 

@@ -278,6 +278,24 @@ class SearchAgent:
             return "unsupported"
         return "semantic_discovery"
 
+    def _align_answer_language(self, plan: SearchPlan, question_language: str) -> SearchPlan:
+        normalized = (question_language or "english").strip().lower() or "english"
+        if plan.answer_language == normalized:
+            return plan
+        return SearchPlan(
+            intent=plan.intent,
+            out_of_domain=plan.out_of_domain,
+            normalized_question=plan.normalized_question,
+            search_mode=plan.search_mode,
+            question_class=plan.question_class,
+            entity_hints=list(plan.entity_hints),
+            search_queries=list(plan.search_queries),
+            needs_typo_recovery=plan.needs_typo_recovery,
+            answer_language=normalized,
+            ambiguity_flags=list(plan.ambiguity_flags),
+            reason=plan.reason,
+        )
+
     def _context_detail(self) -> str:
         value = str(self.settings.get("context_detail", "standard") or "standard").strip().lower()
         return value if value in {"minimal", "standard", "rich", "deep"} else "standard"
@@ -938,6 +956,7 @@ class SearchAgent:
             t0 = time.monotonic()
             with step_spinner("Search Agent: interpreting question"):
                 plan, interpretation_usage = self._interpret_question(clean_question)
+                plan = self._align_answer_language(plan, question_language)
             stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
             return SearchAnswer(

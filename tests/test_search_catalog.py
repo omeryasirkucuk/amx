@@ -428,6 +428,26 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.rows[0]["database_name"], "SAP")
 
+    def test_turkish_inventory_question_overrides_llm_answer_language(self) -> None:
+        cfg = self._search_cfg()
+        fake_db = type(
+            "FakeDB",
+            (),
+            {
+                "list_schemas": lambda self: ["public", "sap_s6p", "sap_test"],
+                "list_tables": lambda self, schema: ["adr6"] if schema in {"sap_s6p", "sap_test"} else [],
+            },
+        )()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"list_schemas","out_of_domain":false,"normalized_question":"which schemas contain adr6","search_mode":"list_schemas","question_class":"inventory","entity_hints":["adr6"],"search_queries":["adr6 tablosu hangi semalarda var","which schemas contain adr6"],"needs_typo_recovery":false,"answer_language":"english","reason":"schema inventory"}'
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=fake_db):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("adr6 tablosu hangi şemalarda var")
+        self.assertEqual(answer.details["plan"]["answer_language"], "turkish")
+        self.assertIn("veritabanindaki schemalar", answer.summary)
+
     def test_count_tables_question_is_not_out_of_domain(self) -> None:
         cfg = self._search_cfg()
         cfg.current_schema = "sap"

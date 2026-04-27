@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.105] — 2026-04-27
+### Changed
+- **Question-language enforcement in `/search`**: `/search` now forces the final answer language to match the detected language of the user's question even when the interpreter LLM returns the wrong `answer_language`, which fixes Turkish inventory questions incorrectly answering in English.
+
+### Added
+- **Regression coverage**: Added a search test for Turkish inventory questions where the interpreter wrongly asks for an English answer.
+
 ## [0.1.104] — 2026-04-27
 ### Changed
 - **More robust LLM model normalization**: AMX now corrects common provider-prefix typos in model ids before persisting them or sending them to LiteLLM, which fixes failures such as `oepnai/gpt-4o-mini` under OpenRouter or OpenAI profiles.

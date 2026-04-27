@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.105] — 2026-04-27
+### Search Answer-Language Enforcement
+- **amx/search/agent.py**: Forced `/search` answers to use the detected question language after interpretation so deterministic and synthesized answers no longer drift back to the LLM-returned `answer_language`.
+- **tests/test_search_catalog.py**: Added regression coverage for Turkish schema-inventory questions where the interpreter incorrectly returns `answer_language="english"`.
+- **README.md / CHANGELOG.md**: Documented that `/search` answer language is hard-aligned with the user's question language.
+
 ## [0.1.104] — 2026-04-27
 ### LLM Model Normalization Guardrails
 - **amx/config.py**: Hardened `normalize_llm_model()` so provider-prefixed model ids recover common namespace typos such as `oepnai/...` and cleanly strip redundant prefixes according to the selected provider.
