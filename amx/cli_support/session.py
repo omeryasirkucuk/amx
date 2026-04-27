@@ -61,7 +61,7 @@ def _kb_escape_namespace() -> KeyBindings:
 
         return len(get_app().current_buffer.text) == 0
 
-    tabs = ["", "db", "docs", "llm", "code", "analyze", "history"]
+    tabs = ["", "db", "manual", "docs", "llm", "code", "analyze", "history"]
 
     @kb.add("escape")
     def _(event) -> None:  # type: ignore[no-untyped-def]
@@ -105,6 +105,8 @@ def _print_namespace_hint(
         info("Type /help for commands, /back to return, /exit to quit (from any namespace).")
     elif namespace == "db":
         print_db_namespace_hint()
+    elif namespace == "manual":
+        info("Inspect, edit, and monitor database metadata manually without running LLM agents.")
     elif namespace == "docs":
         info("Manage RAG document paths for schema context. Use /add-doc-profile to map paths.")
     elif namespace == "llm":
@@ -173,6 +175,30 @@ Commands (in order):
  10) /export-doc-report [FILE]    Export document RAG summary to a markdown file
 
 Tip: configure sources first (steps 2–5), then scan/ingest, then /search-docs.
+
+Navigation:
+  Esc (empty line)                 Go back to root namespace
+"""
+        )
+        return
+
+    if namespace == "manual":
+        out.print(
+            """
+[heading]Help — /manual namespace[/heading]
+Commands:
+  1) /back                         Return to root namespace
+  2) /inspect [schema] [table]     Show current database/schema/table/column comments
+  3) /edit database                Edit the database comment
+  4) /edit schema [schema]         Edit a schema comment
+  5) /edit table [schema] [table]  Edit a table/view comment
+  6) /edit column [schema] [table] <column>
+                                  Edit a column comment
+  7) /monitor [schema]             Show table/view and column comment coverage
+
+Options:
+  /edit ... --comment "text"       Provide the new comment non-interactively
+  /edit ... --yes                  Skip confirmation
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -294,10 +320,11 @@ Getting started (in order):
   2) /config                       Show current configuration
   3) /db                           Database introspection + DB profiles
   4) /docs                         Document roots + RAG (scan/ingest/search-docs)
-  5) /llm                          LLM profile management
-  6) /code                         Codebase profile management
-  7) /analyze                      Metadata inference (/run, /apply, …)
-  8) /history                      Local SQLite history (/list, /show, /stats, /events)
+  5) /manual                       Manual metadata editing and coverage monitoring
+  6) /llm                          LLM profile management
+  7) /code                         Codebase profile management
+  8) /analyze                      Metadata inference (/run, /apply, …)
+  9) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
   [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, …
@@ -355,6 +382,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/config", "Show configuration"),
         ("/db", "Enter /db namespace"),
         ("/docs", "Enter /docs namespace"),
+        ("/manual", "Enter /manual namespace"),
         ("/llm", "Enter /llm namespace"),
         ("/code", "Enter /code namespace"),
         ("/analyze", "Enter /analyze namespace"),
@@ -389,6 +417,13 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/search-docs", "Similarity search (/search-docs <text>, no LLM)"),
         ("/doc-analyze", "Run RAG Agent standalone (/doc-analyze [TABLE …])"),
         ("/export-doc-report", "Export doc RAG summary (/export-doc-report [FILE])"),
+    ]
+    manual_cmds = [
+        ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
+        ("/inspect", "Inspect current metadata (/inspect [schema] [table])"),
+        ("/edit", "Edit metadata (/edit database|schema|table|column ... --comment TEXT)"),
+        ("/monitor", "Show metadata coverage (/monitor [schema])"),
     ]
     llm_cmds = [
         ("/back", "Return to root namespace"),
@@ -437,6 +472,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         return db_cmds
     if namespace == "docs":
         return docs_cmds
+    if namespace == "manual":
+        return manual_cmds
     if namespace == "llm":
         return llm_cmds
     if namespace == "code":
@@ -617,6 +654,9 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "search-docs": ["docs", "search-docs"],
         "doc-analyze": ["docs", "analyze"],
         "export-doc-report": ["docs", "export-report"],
+        "inspect": ["manual", "inspect"],
+        "edit": ["manual", "edit"],
+        "monitor": ["manual", "monitor"],
         "run": ["analyze", "run"],
         "run-apply": ["analyze", "run", "--apply"],
         "apply": ["analyze", "apply"],
@@ -629,7 +669,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "config": ["config"],
         "help": ["--help"],
     }
-    if head in {"db", "docs", "llm", "code", "analyze", "history", "setup", "config"}:
+    if head in {"db", "manual", "docs", "llm", "code", "analyze", "history", "setup", "config"}:
         return parts
     if namespace and head in shortcut_map:
         return shortcut_map[head] + parts[1:]
@@ -698,6 +738,7 @@ def run_interactive_session(
             "profile",
         }
     )
+    manual_cmd_heads = frozenset({"inspect", "edit", "monitor"})
     docs_cmd_heads = frozenset(
         {
             "doc-profiles",
@@ -774,7 +815,7 @@ def run_interactive_session(
     )
 
     def _build_prompt_message(ns: str) -> HTML:
-        tabs = ["root", "db", "docs", "llm", "code", "analyze", "history"]
+        tabs = ["root", "db", "manual", "docs", "llm", "code", "analyze", "history"]
         curr = ns or "root"
         parts = []
         for tab in tabs:
@@ -858,7 +899,7 @@ def run_interactive_session(
                     print_db_namespace_hint=print_db_namespace_hint,
                 )
                 continue
-            if cmdline in {"db", "docs", "llm", "code", "analyze", "history"}:
+            if cmdline in {"db", "manual", "docs", "llm", "code", "analyze", "history"}:
                 namespace = cmdline
                 console.clear()
                 show_banner(force=True)
@@ -884,6 +925,9 @@ def run_interactive_session(
                 if head in db_cmd_heads:
                     namespace = "db"
                     info("Assumed /db namespace for this command.")
+                elif head in manual_cmd_heads:
+                    namespace = "manual"
+                    info("Assumed /manual namespace for this command.")
                 elif head in docs_cmd_heads:
                     namespace = "docs"
                     info("Assumed /docs namespace for this command.")

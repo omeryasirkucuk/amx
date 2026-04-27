@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.87] — 2026-04-27
+### Added
+- **Manual metadata namespace**: Added a `/manual` interactive tab for inspecting current comments, manually editing database/schema/table/column metadata, and monitoring schema-level comment coverage without running LLM agents.
+- **Manual command coverage**: Added regression and integration tests for manual command routing, comment coverage counting, and context-based column edits.
+
 ## [0.1.86] — 2026-04-27
 ### Fixed
 - **Logprob calibration granularity**: Confidence calibration now scores the generated description text for each suggestion when response text is available instead of copying one whole-response logprob score to every column/table suggestion.

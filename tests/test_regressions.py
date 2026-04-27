@@ -19,6 +19,7 @@ from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
+from amx.cli_manual import collect_metadata_coverage
 
 
 class RAGSourceFilteringTests(unittest.TestCase):
@@ -200,6 +201,38 @@ class SessionHelperTests(unittest.TestCase):
         args = inject_session_defaults(cfg, "code", ["code", "scan", "/tmp/repo"])
 
         self.assertEqual(args, ["code", "scan", "/tmp/repo", "--schema", "sap_s6p"])
+
+    def test_session_to_click_args_maps_manual_shortcuts(self) -> None:
+        self.assertEqual(
+            session_to_click_args("", ["monitor", "sap"]),
+            ["manual", "monitor", "sap"],
+        )
+        self.assertEqual(
+            session_to_click_args("manual", ["edit", "column", "vbeln"]),
+            ["manual", "edit", "column", "vbeln"],
+        )
+
+
+class ManualMetadataTests(unittest.TestCase):
+    def test_collect_metadata_coverage_counts_asset_and_column_comments(self) -> None:
+        class FakeDB:
+            def list_assets(self, schema):
+                return [("orders", object()), ("customers", object())]
+
+            def get_table_comment(self, schema, table):
+                return "Orders table" if table == "orders" else None
+
+            def get_column_comments(self, schema, table):
+                if table == "orders":
+                    return {"id": "Identifier", "note": None}
+                return {"id": None}
+
+        coverage = collect_metadata_coverage(FakeDB(), "public")
+
+        self.assertEqual(coverage.assets, 2)
+        self.assertEqual(coverage.assets_with_comments, 1)
+        self.assertEqual(coverage.columns, 3)
+        self.assertEqual(coverage.columns_with_comments, 1)
 
 
 class ConfidenceCalibrationTests(unittest.TestCase):

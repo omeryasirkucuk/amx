@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.87] — 2026-04-27
+### Manual Metadata
+- **amx/cli_manual.py**: Added `/manual inspect`, `/manual edit`, and `/manual monitor` commands for direct comment inspection, write-back, and coverage reporting.
+- **amx/cli_support/session.py**: Added a Manual tab to keyboard namespace navigation, slash completion, root help, contextual help, and root auto-routing.
+- **amx/cli.py**: Registered the manual command group with the main interactive CLI.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added coverage for manual shortcut routing, coverage counting, and context-based column edits.
+
 ## [0.1.86] — 2026-04-27
 ### Logprob Calibration
 - **amx/llm/provider.py**: Added best-effort token-span reconstruction and description-fragment scoring so AMX can score the generated description text rather than the full structured response.

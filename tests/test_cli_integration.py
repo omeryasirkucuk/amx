@@ -229,5 +229,37 @@ class CodeIntegrationTests(unittest.TestCase):
         self.assertIn("No cached code-scan", result.output)
 
 
+class ManualIntegrationTests(unittest.TestCase):
+    def test_manual_edit_column_uses_current_context(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.current_schema = "sap"
+        cfg.current_table = "vbak"
+
+        class FakeDatabaseConnector:
+            calls = []
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def set_column_comment(self, schema, table, column, comment):
+                self.calls.append((schema, table, column, comment))
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "manual", "edit", "column", "vbeln", "--comment", "Sales document", "--yes"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Updated column sap.vbak.vbeln", result.output)
+        self.assertEqual(FakeDatabaseConnector.calls, [("sap", "vbak", "vbeln", "Sales document")])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,7 @@ This interactive wizard walks you through:
 In an interactive `amx` session, configuration is grouped by namespace:
 
 - `/db` — database profiles + introspection. Entering `/db` explains how to list profiles, switch engines with `/use-db` (each option shows `[backend] connection summary`), and add a profile with `/add-db-profile` (engine first, then credentials)
+- `/manual` — inspect, edit, and monitor database/schema/table/column metadata manually without running LLM agents
 - `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
@@ -142,6 +143,9 @@ amx
 | `/db` + `/schemas` | List available schemas |
 | `/db` + `/tables [schema]` | List all assets (tables, views, materialized views) in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
+| `/manual` + `/inspect [schema] [table]` | Show current database, schema, table/view, and column comments. |
+| `/manual` + `/edit database\|schema\|table\|column ...` | Manually write one metadata comment. Use `--comment "text"` and `--yes` for non-interactive edits. |
+| `/manual` + `/monitor [schema]` | Show table/view and column comment coverage for one schema or all user schemas. |
 | `/llm` + `/llm-profiles` | List LLM profiles |
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
 | `/llm` + `/add-llm-profile [name]` | Add/update an LLM profile (interactive) |
@@ -337,6 +341,7 @@ amx/
 ├── cli_db.py           # /db namespace profile and profiling command helpers
 ├── cli_docs.py         # /docs namespace commands for scan, ingest, search, report, and analyze
 ├── cli_history.py      # /history namespace commands and review/results flows
+├── cli_manual.py       # /manual namespace commands for direct metadata editing and coverage
 ├── cli_profiles.py     # /llm plus /docs and /code profile helper commands
 ├── cli_run.py          # /analyze namespace helpers, scope resolution, and apply flow
 ├── cli_support/
@@ -375,6 +380,10 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.87
+
+- **Manual metadata tab**: Added a `/manual` namespace for direct database/schema/table/column comment inspection, editing, and coverage monitoring without running LLM agents.
 
 ### v0.1.86
 
