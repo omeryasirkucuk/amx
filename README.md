@@ -150,13 +150,14 @@ amx
 | `/llm` + `/n-alternatives [N]` | Show or set number of description alternatives per column (1–5, default 3). Fewer = lower cost. |
 | `/llm` + `/llm-batch-size [N]` | Show or set how many columns the Profile Agent sends in one LLM call. |
 | `/llm` + `/batch-context-columns [off\|all\|N]` | Show or set how many non-batch column names are added as context in each profile batch. |
-| `/llm` + `/logprob-thresholds [high] [medium]` | Show or set token-probability thresholds used to calibrate confidence labels when logprobs are available. |
+| `/llm` + `/logprob-thresholds [high] [medium]` | Show or set token-probability thresholds used to calibrate confidence labels when logprobs are available. AMX scores generated description text per suggestion when provider token offsets can be reconstructed, with a whole-response fallback. |
 
 Notes:
 - `/llm` settings are saved per **active LLM profile** and command feedback prints the profile name that was updated.
 - Profile selections made in the interactive `/run` wizard are persisted to `~/.amx/config.yml` immediately.
 - `max_tokens` defaults to `4096`; when `finish_reason=length`, AMX now halts processing so truncated JSON is not parsed silently.
 - `force_logprobs` defaults to `true` to force-request logprobs even when provider capability metadata is inconsistent.
+- OpenAI Batch mode requests and stores returned logprobs; Anthropic Batch mode does not provide token logprobs, so those batch results keep model-declared confidence labels until merged by a logprob-capable chat call.
 - `write_through_config` defaults to `true` to save profile switches and config mutations immediately.
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
@@ -374,6 +375,11 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.86
+
+- **Logprob calibration granularity**: AMX now calibrates confidence from the generated description text for each suggestion when response text and token logprobs are available, instead of assigning every parsed suggestion the same whole-response score.
+- **Batch logprob propagation**: OpenAI Batch requests now include logprob parameters and parsed batch results preserve returned token logprobs for calibration before merge/review.
 
 ### v0.1.85
 

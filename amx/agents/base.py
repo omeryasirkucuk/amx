@@ -19,38 +19,56 @@ def apply_logprob_confidence(
     logprobs: list | None,
     high_threshold: float = 0.85,
     medium_threshold: float = 0.50,
+    response_text: str | None = None,
 ) -> list["MetadataSuggestion"]:
     """Set confidence from logprob statistics (text labels are ignored).
 
-    If logprobs are unavailable/unparseable, default to LOW so confidence
-    is never based on model-declared text labels.
+    If logprobs are unavailable/unparseable, keep existing confidence labels.
     """
     if not suggestions:
         return suggestions
     if not logprobs:
-        for s in suggestions:
-            s.confidence = Confidence.LOW
         return suggestions
     try:
-        from amx.llm.provider import confidence_from_logprobs
-
-        raw = confidence_from_logprobs(
-            logprobs,
-            high_threshold=high_threshold,
-            medium_threshold=medium_threshold,
+        from amx.llm.provider import (
+            confidence_from_logprobs,
+            logprob_confidence_score,
+            logprob_confidence_score_for_text,
         )
-        if raw is None:
-            for s in suggestions:
-                s.confidence = Confidence.LOW
-            return suggestions
-        calibrated = Confidence[raw]
-    except Exception:
-        for s in suggestions:
-            s.confidence = Confidence.LOW
-        return suggestions
 
-    for s in suggestions:
-        s.confidence = calibrated
+        fallback_score = logprob_confidence_score(logprobs)
+
+        for s in suggestions:
+            score = None
+            if response_text:
+                for desc in s.suggestions:
+                    score = logprob_confidence_score_for_text(logprobs, response_text, desc)
+                    if score is not None:
+                        break
+            if score is None:
+                score = fallback_score
+            s.logprob_score = score
+            if score is None:
+                continue
+            if score >= high_threshold:
+                s.confidence = Confidence.HIGH
+            elif score >= medium_threshold:
+                s.confidence = Confidence.MEDIUM
+            else:
+                s.confidence = Confidence.LOW
+
+        if not response_text:
+            raw = confidence_from_logprobs(
+                logprobs,
+                high_threshold=high_threshold,
+                medium_threshold=medium_threshold,
+            )
+            if raw is not None:
+                calibrated = Confidence[raw]
+                for s in suggestions:
+                    s.confidence = calibrated
+    except Exception:
+        return suggestions
     return suggestions
 
 
@@ -64,6 +82,7 @@ class MetadataSuggestion:
     reasoning: str
     source: str  # db_profile | rag | codebase | combined
     accepted: str | None = None  # final user-approved value
+    logprob_score: float | None = None
 
 
 @dataclass

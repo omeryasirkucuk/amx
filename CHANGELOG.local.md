@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.86] — 2026-04-27
+### Logprob Calibration
+- **amx/llm/provider.py**: Added best-effort token-span reconstruction and description-fragment scoring so AMX can score the generated description text rather than the full structured response.
+- **amx/agents/base.py**: `apply_logprob_confidence()` now accepts `response_text` and calibrates each suggestion independently when its description text can be matched in the completion.
+- **amx/agents/profile_agent.py / rag_agent.py / code_agent.py / orchestrator.py**: Passed raw response text into logprob calibration for chat-mode agent, schema, database, and merge outputs.
+- **amx/llm/batch.py / amx/agents/orchestrator.py**: OpenAI Batch JSONL now requests logprobs, result parsing keeps them, and batch-mode parsed suggestions are calibrated before merging.
+- **tests/test_regressions.py**: Added coverage for per-suggestion scoring and batch logprob request generation.
+
 ## [0.1.85] — 2026-04-27
 ### CLI Refactor
 - **amx/cli_support/session.py**: Added a dedicated session-layer module for prompt-toolkit handling, slash-command completion, namespace navigation, and session-only shortcut/default injection.

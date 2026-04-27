@@ -314,6 +314,7 @@ class ProfileAgent(BaseAgent):
             _logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
+            response_text=response,
         )
 
     def _save_failed_response_for_debug(self, response: str, ctx: AgentContext) -> None:

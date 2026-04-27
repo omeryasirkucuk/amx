@@ -105,6 +105,8 @@ class OpenAIBatchProvider(BatchProvider):
             body: dict[str, Any] = {
                 "model": model,
                 "messages": req.messages,
+                "logprobs": bool(getattr(req, "use_logprobs", True)),
+                "top_logprobs": 5,
             }
             # GPT-5 / o-series currently accept only the default temperature (1)
             # in batch; passing 0.2 yields "Unsupported value" errors.
@@ -200,10 +202,12 @@ class OpenAIBatchProvider(BatchProvider):
             cid = obj.get("custom_id", "")
             body = (obj.get("response") or {}).get("body") or {}
             choices = body.get("choices") or []
-            content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+            first_choice = choices[0] if choices else {}
+            content = ((first_choice.get("message") or {}).get("content") or "") if choices else ""
+            raw_logprobs = (first_choice.get("logprobs") or {}).get("content") if choices else None
             usage = body.get("usage")
             usage_dict = _normalize_usage(usage) if usage else None
-            results[cid] = ChatResult(content=content, usage=usage_dict)
+            results[cid] = ChatResult(content=content, usage=usage_dict, logprobs=raw_logprobs)
 
         log.debug("Parsed %d results from batch output", len(results))
         if not results and getattr(batch, "error_file_id", None):

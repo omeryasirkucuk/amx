@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
+from amx.llm.batch import BatchRequest, OpenAIBatchProvider
 
 
 class RAGSourceFilteringTests(unittest.TestCase):
@@ -215,6 +217,77 @@ class ConfidenceCalibrationTests(unittest.TestCase):
         calibrated = apply_logprob_confidence([suggestion], logprobs=None)
 
         self.assertEqual(calibrated[0].confidence, Confidence.HIGH)
+
+    def test_response_text_scores_each_suggestion_description(self) -> None:
+        response = (
+            "COLUMN: id\n"
+            "DESCRIPTION_1: Certain identifier\n"
+            "CONFIDENCE: HIGH\n"
+            "REASONING: clear\n"
+            "COLUMN: note\n"
+            "DESCRIPTION_1: Ambiguous free text\n"
+            "CONFIDENCE: HIGH\n"
+            "REASONING: unclear\n"
+        )
+        logprobs = []
+        pos = 0
+        high_desc = "Certain identifier"
+        low_desc = "Ambiguous free text"
+        while pos < len(response):
+            if response.startswith(high_desc, pos):
+                logprobs.append({"token": high_desc, "logprob": -0.01})
+                pos += len(high_desc)
+            elif response.startswith(low_desc, pos):
+                logprobs.append({"token": low_desc, "logprob": -2.0})
+                pos += len(low_desc)
+            else:
+                logprobs.append({"token": response[pos], "logprob": -0.05})
+                pos += 1
+        suggestions = [
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column="id",
+                suggestions=["Certain identifier"],
+                confidence=Confidence.LOW,
+                reasoning="",
+                source="profile",
+            ),
+            MetadataSuggestion(
+                schema="public",
+                table="orders",
+                column="note",
+                suggestions=["Ambiguous free text"],
+                confidence=Confidence.HIGH,
+                reasoning="",
+                source="profile",
+            ),
+        ]
+
+        calibrated = apply_logprob_confidence(
+            suggestions,
+            logprobs,
+            high_threshold=0.85,
+            medium_threshold=0.50,
+            response_text=response,
+        )
+
+        self.assertEqual(calibrated[0].confidence, Confidence.HIGH)
+        self.assertEqual(calibrated[1].confidence, Confidence.LOW)
+        self.assertGreater(calibrated[0].logprob_score or 0, calibrated[1].logprob_score or 0)
+
+
+class BatchLogprobTests(unittest.TestCase):
+    def test_openai_batch_requests_logprobs(self) -> None:
+        req = BatchRequest(
+            custom_id="profile:public:orders:0",
+            messages=[{"role": "user", "content": "Describe columns"}],
+        )
+
+        body = json.loads(OpenAIBatchProvider._build_jsonl([req], "gpt-4o-mini").decode().splitlines()[0])["body"]
+
+        self.assertTrue(body["logprobs"])
+        self.assertEqual(body["top_logprobs"], 5)
 
 
 class OrchestratorFallbackTests(unittest.TestCase):

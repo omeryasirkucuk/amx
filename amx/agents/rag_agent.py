@@ -148,6 +148,7 @@ class RAGAgent(BaseAgent):
             result.logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
+            response_text=result.content,
         )
 
     def _parse_response(

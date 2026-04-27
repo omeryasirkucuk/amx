@@ -87,6 +87,7 @@ class ReviewResult:
     asset_kind: str = "table"
     result_id: int | None = None  # FK to run_results.id (for re-evaluation)
     alternatives: list[str] = field(default_factory=list)
+    logprob_score: float | None = None
 
 
 def apply_review_results_to_db(
@@ -203,7 +204,8 @@ class Orchestrator:
                     source=s.source,
                     applied=False,
                     asset_kind=ak,
-                    result_id=result_id_map.get(s.column or "__table__")
+                    result_id=result_id_map.get(s.column or "__table__"),
+                    logprob_score=s.logprob_score,
                 ))
             self.results.extend(results)
             return results
@@ -254,7 +256,7 @@ class Orchestrator:
             confidence=conf,
             source="combined",
             applied=False,  # keep reviewable in both immediate and deferred flows
-            asset_kind=AssetKind.SCHEMA.value
+            asset_kind=AssetKind.SCHEMA.value,
         )
         calibrated = apply_logprob_confidence(
             [
@@ -271,9 +273,11 @@ class Orchestrator:
             res.logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
+            response_text=res.content,
         )
         if calibrated:
             result.confidence = calibrated[0].confidence
+            result.logprob_score = calibrated[0].logprob_score
         self.results.append(result)
         return [result]
 
@@ -308,7 +312,7 @@ class Orchestrator:
             confidence=conf,
             source="combined",
             applied=False,  # keep reviewable in both immediate and deferred flows
-            asset_kind=AssetKind.DATABASE.value
+            asset_kind=AssetKind.DATABASE.value,
         )
         calibrated = apply_logprob_confidence(
             [
@@ -325,9 +329,11 @@ class Orchestrator:
             res.logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
+            response_text=res.content,
         )
         if calibrated:
             result.confidence = calibrated[0].confidence
+            result.logprob_score = calibrated[0].logprob_score
         self.results.append(result)
         return [result]
 
@@ -600,6 +606,7 @@ class Orchestrator:
             result.logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
+            response_text=result.content,
         ))
         return merged
 
@@ -628,6 +635,7 @@ class Orchestrator:
                 "asset_kind": getattr(asset_kind, "value", str(asset_kind)),
                 "source": s.source,
                 "confidence": s.confidence.value,
+                "logprob_score": s.logprob_score,
                 "reasoning": s.reasoning,
                 "alternatives": s.suggestions,
             }
@@ -729,11 +737,12 @@ class Orchestrator:
                     s.column,
                     s.suggestions[0] if s.suggestions else "N/A",
                     s.confidence.value,
+                    f"{s.logprob_score:.4f}" if s.logprob_score is not None else "N/A",
                     s.source,
                 ])
             render_table(
                 "Suggested descriptions",
-                ["Column", "Best Suggestion", "Confidence", "Source"],
+                ["Column", "Best Suggestion", "Confidence", "Logprob", "Source"],
                 rows,
             )
             console.print()
@@ -752,6 +761,7 @@ class Orchestrator:
                         final_description=s.suggestions[0],
                         confidence=s.confidence, source=s.source, applied=True,
                         asset_kind=asset_kind, result_id=rid,
+                        logprob_score=s.logprob_score,
                     )
                     self._record_evaluation(rid, chosen_description=s.suggestions[0], evaluation="accepted")
                     results.append(rr)
@@ -761,6 +771,7 @@ class Orchestrator:
                         final_description=s.suggestions[0],
                         confidence=s.confidence, source=s.source, applied=True,
                         asset_kind=asset_kind, result_id=rid,
+                        logprob_score=s.logprob_score,
                     )
                     self._record_evaluation(rid, chosen_description=s.suggestions[0], evaluation="accepted")
                     results.append(rr)
@@ -770,6 +781,7 @@ class Orchestrator:
                         final_description="",
                         confidence=s.confidence, source=s.source, applied=False,
                         asset_kind=asset_kind, result_id=rid,
+                        logprob_score=s.logprob_score,
                     )
                     self._record_evaluation(rid, chosen_description="", evaluation="skipped")
                     results.append(rr)
@@ -779,6 +791,7 @@ class Orchestrator:
                         final_description="",
                         confidence=s.confidence, source=s.source, applied=False,
                         asset_kind=asset_kind, result_id=rid,
+                        logprob_score=s.logprob_score,
                     )
                     self._record_evaluation(rid, chosen_description="", evaluation="skipped")
                     results.append(rr)
@@ -823,8 +836,17 @@ class Orchestrator:
                 noun = "column" if col_count == 1 else "columns"
                 info(f"Found {col_count} {noun} for {sch}.{tbl}")
                 
-                rows = [[r.column, r.final_description[:60], r.confidence.value, r.source] for r in col_items]
-                render_table("Suggested descriptions", ["Column", "Best Suggestion", "Confidence", "Source"], rows)
+                rows = [
+                    [
+                        r.column,
+                        r.final_description[:60],
+                        r.confidence.value,
+                        f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A",
+                        r.source,
+                    ]
+                    for r in col_items
+                ]
+                render_table("Suggested descriptions", ["Column", "Best Suggestion", "Confidence", "Logprob", "Source"], rows)
                 
                 review_mode = ask_choice(
                     "How would you like to review these columns?",
@@ -868,6 +890,8 @@ class Orchestrator:
             confidence=r.confidence,
             reasoning="Deferred review",
             source=r.source
+            ,
+            logprob_score=r.logprob_score,
         )
         return self._review_single(s, is_table=(r.column is None), asset_kind=r.asset_kind, result_id=r.result_id)
 
@@ -882,6 +906,9 @@ class Orchestrator:
         asset = f"{kind_label}: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
         console.print(f"\n  [heading]{asset}[/heading]")
         console.print(f"  Confidence: [{'success' if s.confidence == Confidence.HIGH else 'warning'}]{s.confidence.value}[/]")
+        console.print(
+            f"  Logprob: {f'{s.logprob_score:.4f}' if s.logprob_score is not None else 'N/A'}"
+        )
         console.print(f"  Source: {s.source}")
         console.print(f"  Reasoning: {s.reasoning}")
         console.print()
@@ -896,6 +923,7 @@ class Orchestrator:
                 final_description="", confidence=s.confidence,
                 source=s.source, applied=False, asset_kind=asset_kind,
                 result_id=result_id,
+                logprob_score=s.logprob_score,
             )
         elif choice == "Other (type your own)":
             custom = ask("Enter your description")
@@ -905,6 +933,7 @@ class Orchestrator:
                 final_description=custom, confidence=Confidence.HIGH,
                 source="human", applied=True, asset_kind=asset_kind,
                 result_id=result_id,
+                logprob_score=s.logprob_score,
             )
         else:
             self._record_evaluation(result_id, chosen_description=choice, evaluation="accepted")
@@ -913,6 +942,7 @@ class Orchestrator:
                 final_description=choice, confidence=s.confidence,
                 source=s.source, applied=True, asset_kind=asset_kind,
                 result_id=result_id,
+                logprob_score=s.logprob_score,
             )
 
     # ── Batch mode ────────────────────────────────────────────────────────────
@@ -1002,8 +1032,15 @@ class Orchestrator:
                     ]
                     batch_ctx = self.profile_agent._ctx_with_columns(ctx, col_dicts)
                     tracker.record("profile_agent(batch)", 0, chat_result.usage)
+                    parsed = self.profile_agent.parse_batch_result(chat_result.content, batch_ctx)
                     all_suggestions.extend(
-                        self.profile_agent.parse_batch_result(chat_result.content, batch_ctx)
+                        apply_logprob_confidence(
+                            parsed,
+                            chat_result.logprobs,
+                            high_threshold=self.llm.cfg.logprob_high,
+                            medium_threshold=self.llm.cfg.logprob_medium,
+                            response_text=chat_result.content,
+                        )
                     )
 
             if self.rag_agent:
@@ -1011,8 +1048,15 @@ class Orchestrator:
                 chat_result = batch_results.get(cid)
                 if chat_result and chat_result.content:
                     tracker.record("rag_agent(batch)", 0, chat_result.usage)
+                    parsed = self.rag_agent.parse_batch_result(chat_result.content, ctx)
                     all_suggestions.extend(
-                        self.rag_agent.parse_batch_result(chat_result.content, ctx)
+                        apply_logprob_confidence(
+                            parsed,
+                            chat_result.logprobs,
+                            high_threshold=self.llm.cfg.logprob_high,
+                            medium_threshold=self.llm.cfg.logprob_medium,
+                            response_text=chat_result.content,
+                        )
                     )
 
             if self.code_agent:
@@ -1020,8 +1064,15 @@ class Orchestrator:
                 chat_result = batch_results.get(cid)
                 if chat_result and chat_result.content:
                     tracker.record("code_agent(batch)", 0, chat_result.usage)
+                    parsed = self.code_agent.parse_batch_result(chat_result.content, ctx)
                     all_suggestions.extend(
-                        self.code_agent.parse_batch_result(chat_result.content, ctx)
+                        apply_logprob_confidence(
+                            parsed,
+                            chat_result.logprobs,
+                            high_threshold=self.llm.cfg.logprob_high,
+                            medium_threshold=self.llm.cfg.logprob_medium,
+                            response_text=chat_result.content,
+                        )
                     )
 
             if not all_suggestions:

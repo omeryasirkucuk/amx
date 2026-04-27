@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.86] — 2026-04-27
+### Fixed
+- **Logprob calibration granularity**: Confidence calibration now scores the generated description text for each suggestion when response text is available instead of copying one whole-response logprob score to every column/table suggestion.
+- **Batch logprob propagation**: OpenAI Batch requests now ask for logprobs and preserve returned token logprobs so batch-mode results can be calibrated like chat-mode results.
+
+### Added
+- **Regression coverage**: Added tests for per-suggestion logprob scoring and OpenAI Batch logprob request generation.
+
 ## [0.1.85] — 2026-04-27
 ### Changed
 - **CLI maintainability**: Extracted the interactive session shell from `amx/cli.py` into `amx/cli_support/session.py` and turned `amx/cli_support/` into the first dedicated CLI support package so new CLI modules do not keep accumulating directly under `amx/`. `amx/cli.py` now focuses on entrypoint wiring, setup, and top-level commands at roughly 400 lines.

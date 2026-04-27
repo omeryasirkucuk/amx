@@ -59,12 +59,142 @@ class ChatResult:
     content: str
     usage: dict | None = None
     logprobs: list | None = None
+    finish_reason: str | None = None
+    confidence_score: float | None = None
 
     def __str__(self) -> str:  # noqa: D105
         return self.content
 
 
-_CONF_TOKEN_UPPER: frozenset[str] = frozenset({"HIGH", "MEDIUM", "LOW"})
+_BOILERPLATE_TOKENS: frozenset[str] = frozenset(
+    {
+        "COLUMN",
+        "DESCRIPTION",
+        "DESCRIPTION_1",
+        "DESCRIPTION_2",
+        "DESCRIPTION_3",
+        "DESCRIPTION_4",
+        "DESCRIPTION_5",
+        "TABLE_DESCRIPTION",
+        "TABLE_DESCRIPTION_1",
+        "TABLE_DESCRIPTION_2",
+        "TABLE_DESCRIPTION_3",
+        "TABLE_DESCRIPTION_4",
+        "TABLE_DESCRIPTION_5",
+        "CONFIDENCE",
+        "REASONING",
+        "BEST_DESCRIPTION",
+    }
+)
+
+
+class LLMTruncationError(RuntimeError):
+    """Raised when model output is truncated by max_tokens."""
+
+
+def _lp_token_text(token_obj: object) -> str:
+    if isinstance(token_obj, dict):
+        return str(token_obj.get("token", "") or "")
+    return str(getattr(token_obj, "token", "") or "")
+
+
+def _lp_token_logprob(token_obj: object) -> float | None:
+    raw = token_obj.get("logprob") if isinstance(token_obj, dict) else getattr(token_obj, "logprob", None)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _is_value_token(token_text: str) -> bool:
+    t = (token_text or "").strip()
+    if not t:
+        return False
+    upper = t.upper().strip(":")
+    if upper in _BOILERPLATE_TOKENS:
+        return False
+    if t in {"{", "}", "[", "]", ":", ",", '"', "```"}:
+        return False
+    if all(ch in "-_=*#`|:;,.()[]{} " for ch in t):
+        return False
+    return True
+
+
+def logprob_confidence_score(logprobs_content: list | None) -> float | None:
+    """Weighted geometric-mean confidence from value-bearing completion tokens."""
+    if not logprobs_content:
+        return None
+    weighted_logprob_sum = 0.0
+    total_weight = 0.0
+    for token_obj in logprobs_content:
+        token_text = _lp_token_text(token_obj)
+        if not _is_value_token(token_text):
+            continue
+        lp = _lp_token_logprob(token_obj)
+        if lp is None:
+            continue
+        weight = max(1.0, float(len(token_text.strip())))
+        weighted_logprob_sum += lp * weight
+        total_weight += weight
+    if total_weight <= 0:
+        return None
+    avg_lp = weighted_logprob_sum / total_weight
+    return math.exp(avg_lp)
+
+
+def _logprob_token_spans(logprobs_content: list | None) -> list[tuple[int, int, object]]:
+    """Best-effort offsets for completion tokens reconstructed from token text."""
+    if not logprobs_content:
+        return []
+    spans: list[tuple[int, int, object]] = []
+    pos = 0
+    for token_obj in logprobs_content:
+        token_text = _lp_token_text(token_obj)
+        start = pos
+        pos += len(token_text)
+        spans.append((start, pos, token_obj))
+    return spans
+
+
+def logprob_confidence_score_for_text(
+    logprobs_content: list | None,
+    generated_text: str,
+    target_text: str,
+) -> float | None:
+    """Score the logprob confidence for one generated text fragment.
+
+    Provider APIs return logprobs for completion tokens, not for parsed AMX
+    suggestions. AMX reconstructs token offsets and scores only the tokens
+    overlapping the selected description text, falling back to the full
+    response score when the fragment cannot be located exactly.
+    """
+    if not logprobs_content or not generated_text or not target_text:
+        return None
+
+    start = generated_text.find(target_text)
+    if start < 0:
+        return None
+    end = start + len(target_text)
+
+    weighted_logprob_sum = 0.0
+    total_weight = 0.0
+    for tok_start, tok_end, token_obj in _logprob_token_spans(logprobs_content):
+        if tok_end <= start or tok_start >= end:
+            continue
+        token_text = _lp_token_text(token_obj)
+        if not _is_value_token(token_text):
+            continue
+        lp = _lp_token_logprob(token_obj)
+        if lp is None:
+            continue
+        weight = max(1.0, float(len(token_text.strip())))
+        weighted_logprob_sum += lp * weight
+        total_weight += weight
+    if total_weight <= 0:
+        return None
+    return math.exp(weighted_logprob_sum / total_weight)
 
 
 def confidence_from_logprobs(
@@ -72,36 +202,16 @@ def confidence_from_logprobs(
     high_threshold: float = 0.85,
     medium_threshold: float = 0.50,
 ) -> "str | None":
-    """Map the token probability of the CONFIDENCE label to HIGH/MEDIUM/LOW."""
-    if not logprobs_content:
+    """Map weighted geometric-mean token probability to HIGH/MEDIUM/LOW."""
+    score = logprob_confidence_score(logprobs_content)
+    if score is None:
         return None
-
-    for i, token_obj in enumerate(logprobs_content):
-        token_str = (getattr(token_obj, "token", None) or "").strip().upper()
-        if token_str not in _CONF_TOKEN_UPPER:
-            continue
-
-        prev_window = "".join(
-            (getattr(t, "token", None) or "")
-            for t in logprobs_content[max(0, i - 8) : i]
-        ).upper()
-        if "CONFIDENCE" not in prev_window:
-            continue
-
-        logprob = getattr(token_obj, "logprob", None)
-        if logprob is None:
-            continue
-
-        prob = math.exp(float(logprob))
-        log.debug("Logprob confidence token=%s prob=%.3f", token_str, prob)
-        if prob >= high_threshold:
-            return "HIGH"
-        elif prob >= medium_threshold:
-            return "MEDIUM"
-        else:
-            return "LOW"
-
-    return None
+    log.debug("Weighted logprob confidence score=%.6f", score)
+    if score >= high_threshold:
+        return "HIGH"
+    if score >= medium_threshold:
+        return "MEDIUM"
+    return "LOW"
 
 
 def _openai_model_id(model: str) -> str:
@@ -217,7 +327,7 @@ class LLMProvider:
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
 
-        if use_logprobs and self.supports_logprobs:
+        if use_logprobs:
             # Force-request logprobs regardless of provider capability metadata.
             extra["logprobs"] = True
             # Keep OpenAI-compatible top-k logprob detail where supported.
@@ -308,7 +418,7 @@ class LLMProvider:
             raw_lp = getattr(choice, "logprobs", None)
             if raw_lp is not None:
                 logprobs_content = getattr(raw_lp, "content", None) or None
-            if use_logprobs and self.supports_logprobs and not logprobs_content:
+            if use_logprobs and not logprobs_content:
                 log.warning(
                     "Requested logprobs but response had none (provider=%s, model=%s).",
                     self.cfg.provider,
@@ -330,6 +440,21 @@ class LLMProvider:
             usage_dict,
             "yes" if logprobs_content else "no",
         )
+        confidence_score = logprob_confidence_score(logprobs_content)
+        if confidence_score is None:
+            log.debug(
+                "Logprob confidence score unavailable (provider=%s, model=%s)",
+                self.cfg.provider,
+                model,
+            )
+        else:
+            log.debug("Logprob confidence score=%.6f", confidence_score)
+
+        if finish == "length":
+            raise LLMTruncationError(
+                f"LLM response truncated (finish_reason=length, model={model}, max_tokens={mt}). "
+                "Increase max_tokens and retry before metadata extraction."
+            )
 
         if not content:
             if finish == "length":
@@ -348,7 +473,13 @@ class LLMProvider:
                     finish,
                     model,
                 )
-        return ChatResult(content=content, usage=usage_dict, logprobs=logprobs_content)
+        return ChatResult(
+            content=content,
+            usage=usage_dict,
+            logprobs=logprobs_content,
+            finish_reason=finish,
+            confidence_score=confidence_score,
+        )
 
     def test(self) -> bool:
         try:
