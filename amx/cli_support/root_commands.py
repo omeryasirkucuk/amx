@@ -1,0 +1,211 @@
+"""Top-level setup, database, and config command registration."""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Callable
+from dataclasses import replace
+
+import click
+
+from amx.config import AMXConfig, DISABLED_PROFILE
+from amx.utils.console import ask, confirm, error, heading, info, render_table, success, warn
+
+InteractiveDbBlock = Callable[[object], object]
+InteractiveLlmBlock = Callable[[object], object]
+
+
+def register_root_commands(
+    main: click.Group,
+    *,
+    interactive_db_block: InteractiveDbBlock,
+    interactive_llm_block: InteractiveLlmBlock,
+) -> None:
+    """Attach setup, db, and config commands to the main Click group."""
+
+    @main.command()
+    @click.pass_obj
+    def setup(cfg: AMXConfig) -> None:
+        """Interactive first-time setup wizard."""
+        heading("AMX Setup Wizard")
+
+        info("Step 1/3 — Database Connection")
+        cfg.db = interactive_db_block(cfg.db)
+
+        if not cfg.active_db_profile:
+            cfg.active_db_profile = "default"
+        cfg.upsert_db_profile(cfg.active_db_profile, cfg.db)
+        cfg.apply_active_db_profile()
+
+        from amx.db.connector import DatabaseConnector
+
+        db = DatabaseConnector(cfg.db)
+        if db.test_connection():
+            success(f"Database connection successful! (backend: {cfg.db.backend})")
+        else:
+            error("Database connection failed. Check credentials and try again.")
+            if not confirm("Continue anyway?", default=False):
+                sys.exit(1)
+
+        info("Step 2/3 — AI Model Configuration")
+        cfg.llm = interactive_llm_block(cfg.llm)
+        cfg.active_llm_profile = cfg.active_llm_profile or "default"
+        cfg.upsert_llm_profile(cfg.active_llm_profile, replace(cfg.llm))
+        cfg.apply_active_llm_profile()
+
+        from amx.llm.provider import LLMProvider
+
+        llm = LLMProvider(cfg.llm)
+        if llm.test():
+            success("LLM connection successful!")
+        else:
+            warn("LLM test failed — you can reconfigure later with `amx setup`.")
+
+        info("Step 3/3 — Optional Data Sources (named profiles)")
+        if confirm("Add a document profile for RAG?", default=False):
+            from amx.docs.scanner import test_source_reachable
+
+            name = ask("Profile name", default="default")
+            existing = list(cfg.doc_profiles.get(name, []))
+            new_paths: list[str] = []
+            while True:
+                prompt = "Document path" if not new_paths else "Another path (empty to finish)"
+                path = ask(prompt, default="")
+                if not path:
+                    break
+                if path in existing or path in new_paths:
+                    duplicate = f"This path is already in profile {name!r}: {path}. Add duplicate anyway?"
+                    if not confirm(duplicate, default=False):
+                        continue
+                try:
+                    test_source_reachable(path)
+                    success(f"Source reachable: {path}")
+                    new_paths.append(path)
+                except Exception as exc:
+                    error(f"Source not reachable: {path}")
+                    warn(str(exc))
+                if not confirm("Add another path?", default=False):
+                    break
+            if new_paths:
+                cfg.upsert_doc_profile(name, existing + new_paths)
+                cfg.active_doc_profile = name
+            else:
+                warn("Skipping document profile — no valid sources were provided.")
+
+        if confirm("Add a codebase profile?", default=False):
+            from amx.codebase.analyzer import test_codebase_path_reachable
+
+            name = ask("Profile name", default="default")
+            path = ask("Codebase path (local dir or Git URL)", default="")
+            if path:
+                try:
+                    test_codebase_path_reachable(path)
+                    success(f"Codebase reachable: {path}")
+                    cfg.upsert_code_profile(name, path)
+                    cfg.active_code_profile = name
+                except Exception as exc:
+                    error(f"Codebase not reachable: {path}")
+                    warn(str(exc))
+
+        saved = cfg.save()
+        success(f"Configuration saved to {saved}")
+
+    @main.group()
+    def db() -> None:
+        """Database inspection and profiling commands."""
+
+    @db.command("connect")
+    @click.pass_obj
+    def db_connect(cfg: AMXConfig) -> None:
+        """Test database connectivity."""
+        from amx.db.connector import DatabaseConnector
+
+        db_conn = DatabaseConnector(cfg.db)
+        if db_conn.test_connection():
+            success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
+        else:
+            error("Connection failed.")
+            sys.exit(1)
+
+    @db.command("schemas")
+    @click.pass_obj
+    def db_schemas(cfg: AMXConfig) -> None:
+        """List available schemas."""
+        from amx.db.connector import DatabaseConnector
+
+        db_conn = DatabaseConnector(cfg.db)
+        render_table("Schemas", ["Schema Name"], [[s] for s in db_conn.list_schemas()])
+
+    @db.command("tables")
+    @click.argument("schema")
+    @click.pass_obj
+    def db_tables(cfg: AMXConfig, schema: str) -> None:
+        """List all assets (tables, views, materialized views) in a schema."""
+        from amx.db.connector import DatabaseConnector
+
+        db_conn = DatabaseConnector(cfg.db)
+        assets = db_conn.list_assets(schema)
+        render_table(
+            f"Assets in {schema}",
+            ["Name", "Type"],
+            [[name, kind.label] for name, kind in assets],
+        )
+
+    @db.command("profile")
+    @click.argument("schema")
+    @click.argument("table")
+    @click.pass_obj
+    def db_profile(cfg: AMXConfig, schema: str, table: str) -> None:
+        """Profile a specific table (stats, types, samples)."""
+        from amx.db.connector import DatabaseConnector
+
+        db_conn = DatabaseConnector(cfg.db)
+        profile = db_conn.profile_table(schema, table)
+        rows = [
+            [
+                col.name,
+                col.dtype,
+                str(col.null_count),
+                str(col.distinct_count),
+                str(col.min_val)[:30],
+                str(col.max_val)[:30],
+                ", ".join(str(sample)[:20] for sample in col.samples[:3]),
+            ]
+            for col in profile.columns
+        ]
+        render_table(
+            f"{schema}.{table} ({profile.row_count} rows)",
+            ["Column", "Type", "Nulls", "Distinct", "Min", "Max", "Samples"],
+            rows,
+        )
+
+    @main.command("config")
+    @click.pass_obj
+    def show_config(cfg: AMXConfig) -> None:
+        """Display current configuration."""
+        info(
+            f"Active DB profile: {cfg.active_db_profile} → "
+            f"[{cfg.db.backend}] {cfg.db.display_summary}"
+        )
+        if cfg.db_profiles:
+            info("DB profiles: " + ", ".join(sorted(cfg.db_profiles.keys())))
+        max_rows = int(getattr(cfg.db, "profiling_max_rows", 1_000_000) or 0)
+        max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
+        info(
+            f"Profiling: mode={cfg.db.profiling_mode}, "
+            f"max_full_scan_rows={max_label}, sample_size={cfg.db.profiling_sample_size}"
+        )
+        info(f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}")
+        info(
+            f"Active LLM profile: {cfg.active_llm_profile} → "
+            f"{cfg.llm.provider}/{cfg.llm.model}"
+        )
+        if cfg.llm_profiles:
+            info("LLM profiles: " + ", ".join(sorted(cfg.llm_profiles.keys())))
+        doc_prof = "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else (cfg.active_doc_profile or "-")
+        info(f"Active document profile: {doc_prof}")
+        info(f"Document paths (active): {cfg.effective_doc_paths() or 'none'}")
+        code_prof = "(none)" if cfg.active_code_profile == DISABLED_PROFILE else (cfg.active_code_profile or "-")
+        info(f"Active codebase profile: {code_prof}")
+        info(f"Codebase paths (active): {cfg.effective_code_paths() or 'none'}")
+        info(f"Selected schemas: {cfg.selected_schemas or 'all'}")

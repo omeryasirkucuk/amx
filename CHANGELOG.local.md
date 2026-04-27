@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.88] — 2026-04-27
+### CLI Refactor
+- **amx/cli_support/commands/**: Moved the extracted CLI command implementations into a dedicated command package (`analyze_flow`, `code`, `db`, `docs`, `history`, `manual`, `profiles`, `run`) so the codebase no longer treats them as a flat top-level namespace.
+- **amx/cli_support/root_commands.py**: Added dedicated registration for `/setup`, `/config`, and top-level `/db` command wiring.
+- **amx/cli.py**: Replaced in-file setup, DB, and config command definitions with imports/registration from the support package and reduced the file to roughly 200 lines.
+- **amx/cli_*.py**: Reintroduced top-level modules as compatibility shims that re-export from `amx.cli_support.commands.*`.
+- **tests/test_cli_integration.py / tests/test_regressions.py**: Updated imports and patch targets to the canonical `amx.cli_support.commands.*` modules.
+
 ## [0.1.87] — 2026-04-27
 ### Manual Metadata
 - **amx/cli_manual.py**: Added `/manual inspect`, `/manual edit`, and `/manual monitor` commands for direct comment inspection, write-back, and coverage reporting.

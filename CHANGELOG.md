@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.88] — 2026-04-27
+### Changed
+- **CLI package layout**: Moved the extracted command implementations under `amx/cli_support/commands/` and added `amx/cli_support/root_commands.py` for setup, DB, and config registration. `amx/cli.py` is now a thin bootstrap at roughly 200 lines.
+
+### Added
+- **Compatibility shims**: Kept import-compatible top-level `amx/cli_*.py` shim modules so existing imports continue working while the command package becomes the canonical layout.
+
 ## [0.1.87] — 2026-04-27
 ### Added
 - **Manual metadata namespace**: Added a `/manual` interactive tab for inspecting current comments, manually editing database/schema/table/column metadata, and monitoring schema-level comment coverage without running LLM agents.

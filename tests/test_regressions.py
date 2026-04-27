@@ -9,17 +9,17 @@ from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator
 from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
-from amx.cli_history import format_run_scope
-from amx.cli_profiles import cmd_use_doc, default_model
+from amx.cli_support.commands.history import format_run_scope
+from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.config import AMXConfig, DBConfig
-from amx.cli_db import cmd_profiling
+from amx.cli_support.commands.db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
-from amx.cli_manual import collect_metadata_coverage
+from amx.cli_support.commands.manual import collect_metadata_coverage
 
 
 class RAGSourceFilteringTests(unittest.TestCase):

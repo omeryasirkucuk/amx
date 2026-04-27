@@ -43,8 +43,8 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
                 "amx.agents.orchestrator.apply_review_results_to_db",
                 side_effect=fake_apply_review_results_to_db,
             ),
-            patch("amx.cli_run.history_store", return_value=fake_history),
-            patch("amx.cli_run.confirm", return_value=True),
+            patch("amx.cli_support.commands.run.history_store", return_value=fake_history),
+            patch("amx.cli_support.commands.run.confirm", return_value=True),
         ):
             result = runner.invoke(
                 main,
@@ -81,7 +81,7 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         with (
             patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
             patch("amx.utils.live_display.get_display", return_value=FakeDisplay()),
-            patch("amx.cli_analyze_flow.execute_analyze_run") as execute_run,
+            patch("amx.cli_support.commands.analyze_flow.execute_analyze_run") as execute_run,
         ):
             result = runner.invoke(
                 main,
@@ -115,7 +115,7 @@ class HistoryListIntegrationTests(unittest.TestCase):
             }
         ]
 
-        with patch("amx.cli_history.history_store", return_value=fake_store):
+        with patch("amx.cli_support.commands.history.history_store", return_value=fake_store):
             result = runner.invoke(
                 main,
                 ["--config", "test-config.yml", "history", "list"],
@@ -149,7 +149,7 @@ class DocsIntegrationTests(unittest.TestCase):
     def test_docs_search_docs_routes_through_cli_docs_module(self) -> None:
         runner = CliRunner()
 
-        with patch("amx.cli_docs._run_docs_semantic_search") as search_docs:
+        with patch("amx.cli_support.commands.docs._run_docs_semantic_search") as search_docs:
             result = runner.invoke(
                 main,
                 ["--config", "test-config.yml", "docs", "search-docs", "sales order", "--results", "3"],

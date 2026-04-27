@@ -16,14 +16,14 @@ from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 from prompt_toolkit.styles import Style
 
 from amx.config import AMXConfig, SUPPORTED_BACKENDS
-from amx.cli_db import (
+from amx.cli_support.commands.db import (
     cmd_add_profile as _cmd_add_profile,
     cmd_profiles as _cmd_profiles,
     cmd_profiling as _cmd_profiling,
     cmd_remove_profile as _cmd_remove_profile,
     cmd_use as _cmd_use,
 )
-from amx.cli_profiles import (
+from amx.cli_support.commands.profiles import (
     cmd_add_code_profile as _cmd_add_code_profile,
     cmd_add_doc_profile as _cmd_add_doc_profile,
     cmd_add_llm_profile as _cmd_add_llm_profile,

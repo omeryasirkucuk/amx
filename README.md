@@ -335,18 +335,28 @@ Query it directly in AMX via `/history` namespace:
 
 ```
 amx/
-├── cli.py              # Entry point, setup/config commands, and top-level command registration
-├── cli_analyze_flow.py # /analyze run command flow, mode selection, and history finalization
-├── cli_code.py         # /code namespace commands for scan, results, report export, refresh, and analyze
-├── cli_db.py           # /db namespace profile and profiling command helpers
-├── cli_docs.py         # /docs namespace commands for scan, ingest, search, report, and analyze
-├── cli_history.py      # /history namespace commands and review/results flows
-├── cli_manual.py       # /manual namespace commands for direct metadata editing and coverage
-├── cli_profiles.py     # /llm plus /docs and /code profile helper commands
-├── cli_run.py          # /analyze namespace helpers, scope resolution, and apply flow
+├── cli.py              # Thin CLI bootstrap, session wiring, and command registration
+├── cli_analyze_flow.py # Compatibility shim -> amx.cli_support.commands.analyze_flow
+├── cli_code.py         # Compatibility shim -> amx.cli_support.commands.code
+├── cli_db.py           # Compatibility shim -> amx.cli_support.commands.db
+├── cli_docs.py         # Compatibility shim -> amx.cli_support.commands.docs
+├── cli_history.py      # Compatibility shim -> amx.cli_support.commands.history
+├── cli_manual.py       # Compatibility shim -> amx.cli_support.commands.manual
+├── cli_profiles.py     # Compatibility shim -> amx.cli_support.commands.profiles
+├── cli_run.py          # Compatibility shim -> amx.cli_support.commands.run
 ├── cli_support/
 │   ├── __init__.py     # Session-helper export surface
 │   └── session.py      # Interactive shell, slash completion, namespace switching, and session defaults
+│   ├── root_commands.py # /setup, /config, and top-level /db registration
+│   └── commands/
+│       ├── analyze_flow.py # /analyze run command flow
+│       ├── code.py         # /code namespace commands
+│       ├── db.py           # /db profile and profiling helpers
+│       ├── docs.py         # /docs namespace commands
+│       ├── history.py      # /history namespace commands
+│       ├── manual.py       # /manual namespace commands
+│       ├── profiles.py     # /llm plus document/code profile helpers
+│       └── run.py          # /analyze helpers, scope resolution, and apply flow
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -380,6 +390,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.88
+
+- **CLI package layout**: Extracted command modules now live under `amx.cli_support.commands`, and `amx.cli_support.root_commands` owns setup, config, and DB registration.
+- **Bootstrap size**: `amx.cli` is now roughly 200 lines and is limited to entrypoint, session wiring, and module registration.
+- **Compatibility**: Top-level `amx.cli_*` modules remain as re-export shims so existing imports do not break immediately.
 
 ### v0.1.87
 
