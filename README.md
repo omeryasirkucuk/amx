@@ -406,6 +406,10 @@ Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md
 
 - **Manual session fix**: Inside `/manual`, incomplete slash commands like `/edit` now report the real missing-argument error instead of the misleading `Unknown command` message.
 
+### v0.1.91
+
+- **Manual edit guidance**: Inside `/manual`, typing bare `/edit` now prints the valid targets and concrete examples like `/edit database` and `/edit column vbeln`.
+
 ### v0.1.88
 
 - **CLI package layout**: Extracted command modules now live under `amx.cli_support.commands`, and `amx.cli_support.root_commands` owns setup, config, and DB registration.

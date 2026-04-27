@@ -52,6 +52,15 @@ PrintDbHint = Callable[[], None]
 _NS_STATE: dict[str, str] = {"namespace": ""}
 
 
+def _handle_manual_usage_shortcuts(namespace: str, parts: list[str]) -> bool:
+    """Show friendlier guidance for incomplete `/manual` commands."""
+    if namespace == "manual" and parts == ["edit"]:
+        error("Usage: /edit <database|schema|table|column> [...]")
+        info("Examples: /edit database  |  /edit schema sap  |  /edit column vbeln")
+        return True
+    return False
+
+
 def _format_session_click_error(cmdline: str, exc: click.ClickException) -> str:
     """Render slash-session-friendly Click errors."""
     if isinstance(exc, click.UsageError) and "No such command" in str(exc):
@@ -959,6 +968,8 @@ def run_interactive_session(
                 if parts[0] in {"ingest", "scan"} and len(parts) == 1 and not cfg.effective_doc_paths():
                     warn_no_doc_paths_for_scan_or_ingest(cfg, cmd=parts[0])
                     continue
+            if _handle_manual_usage_shortcuts(namespace, parts):
+                continue
 
             handled = _handle_session_builtin(cfg, namespace, parts, log_event=log_event)
             if handled == "exit":

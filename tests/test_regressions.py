@@ -14,7 +14,7 @@ from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_support.commands.history import format_run_scope
 from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
-from amx.cli_support.session import _format_session_click_error
+from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
 from amx.config import AMXConfig, DBConfig
 from amx.cli_support.commands.db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -229,6 +229,19 @@ class SessionHelperTests(unittest.TestCase):
         msg = _format_session_click_error("wat", exc)
 
         self.assertEqual(msg, "Unknown command: /wat. Type /help.")
+
+    def test_handle_manual_usage_shortcuts_catches_bare_edit(self) -> None:
+        with (
+            patch("amx.cli_support.session.error") as error_mock,
+            patch("amx.cli_support.session.info") as info_mock,
+        ):
+            handled = _handle_manual_usage_shortcuts("manual", ["edit"])
+
+        self.assertTrue(handled)
+        error_mock.assert_called_once_with("Usage: /edit <database|schema|table|column> [...]")
+        info_mock.assert_called_once_with(
+            "Examples: /edit database  |  /edit schema sap  |  /edit column vbeln"
+        )
 
 
 class ManualMetadataTests(unittest.TestCase):

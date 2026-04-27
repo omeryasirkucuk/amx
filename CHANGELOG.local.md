@@ -2,6 +2,11 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.91] — 2026-04-27
+### Session UX Fix
+- **amx/cli_support/session.py**: Added a `/manual` shortcut guard so bare `/edit` prints the valid targets and examples before Click dispatch.
+- **tests/test_regressions.py**: Added direct coverage for the new bare-`/edit` guidance path.
+
 ## [0.1.90] — 2026-04-27
 ### Session UX Fix
 - **amx/cli_support/session.py**: Added slash-session-specific Click error formatting so known commands with missing arguments surface their real usage error while unknown commands still use the custom slash-native message.

@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.91] — 2026-04-27
+### Fixed
+- **Manual edit guidance**: In the interactive `/manual` namespace, typing bare `/edit` now shows the valid targets and concrete examples instead of only a generic missing-parameter error.
+
+### Added
+- **Regression coverage**: Added a session-level test for the new `/manual /edit` shortcut guidance.
+
 ## [0.1.90] — 2026-04-27
 ### Fixed
 - **Manual session UX**: In the interactive shell, known slash commands with missing required arguments now show their real usage error instead of being mislabeled as unknown commands. This fixes `/manual` workflows such as `/edit` where the session should tell you that a target like `database`, `schema`, `table`, or `column` is required.
