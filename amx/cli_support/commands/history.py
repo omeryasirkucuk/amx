@@ -121,6 +121,15 @@ def register_history_commands(
             "results": row.get("results_json"),
             "error": row.get("error_text"),
         }
+        result_rows = hs.get_run_results(run_id)
+        payload["metadata_decisions"] = {
+            "total": len(result_rows),
+            "pending": sum(1 for r in result_rows if not r.get("evaluation")),
+            "reviewed": sum(1 for r in result_rows if r.get("evaluation") in {"accepted", "custom"}),
+            "rejected": sum(1 for r in result_rows if r.get("evaluation") == "skipped"),
+            "indexed": sum(1 for r in result_rows if r.get("catalog_indexed_at")),
+            "applied": sum(1 for r in result_rows if r.get("applied_at")),
+        }
         console.print(json.dumps(payload, indent=2, ensure_ascii=True))
 
     @history.command("stats")
@@ -130,6 +139,15 @@ def register_history_commands(
             error("History store is not initialized.")
             return
         stats = hs.stats()
+        search_counts = {}
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog = SearchCatalog.from_history_store()
+            if catalog is not None:
+                search_counts = catalog.history_counts()
+        except Exception:
+            search_counts = {}
         render_table(
             "History stats",
             ["Metric", "Value"],
@@ -141,6 +159,12 @@ def register_history_commands(
                 ["avg_model_processing_sec", f"{float(stats.get('avg_model_processing_sec') or 0):.2f}"],
                 ["last_started_at", f"{float(stats.get('last_started_at') or 0):.0f}"],
                 ["total_events", stats.get("total_events", 0)],
+                ["reviewed_descriptions", search_counts.get("reviewed_count", 0)],
+                ["rejected_descriptions", search_counts.get("rejected_count", 0)],
+                ["manual_overrides", search_counts.get("manual_count", 0)],
+                ["indexed_descriptions", search_counts.get("indexed_count", 0)],
+                ["applied_descriptions", search_counts.get("applied_count", 0)],
+                ["stale_entities", search_counts.get("stale_count", 0)],
             ],
         )
 
@@ -245,6 +269,10 @@ def register_history_commands(
                 alternatives_str,
                 row.get("evaluation") or "pending",
                 (row.get("chosen_description") or "")[:40],
+                row.get("catalog_status") or "-",
+                row.get("effective_source_kind") or "-",
+                "yes" if row.get("catalog_indexed_at") else "no",
+                row.get("db_applied_status") or ("applied" if row.get("applied_at") else "-"),
                 datetime.fromtimestamp(evaluated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if evaluated_at else "",
                 datetime.fromtimestamp(applied_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if applied_at else "",
             ])
@@ -260,6 +288,10 @@ def register_history_commands(
                     "Alternatives (all)",
                     "Status",
                     "Chosen",
+                    "Catalog",
+                    "Effective source",
+                    "Indexed",
+                    "DB apply",
                     "Selected at",
                     "Applied at",
                 ],
@@ -361,7 +393,7 @@ def register_history_commands(
 
         db = DatabaseConnector(cfg.db)
         llm = LLMProvider(cfg.llm)
-        orch = Orchestrator(db=db, llm=llm)
+        orch = Orchestrator(db=db, llm=llm, search_profile=cfg.active_db_profile or "default")
 
         final_results = orch.batch_review(results_to_review)
         newly_approved = [result for result in final_results if result.applied]
@@ -404,6 +436,15 @@ def register_history_commands(
                     inner_hs = history_store()
                     if result.result_id is not None and inner_hs is not None:
                         inner_hs.record_applied(result.result_id)
+                    if result.result_id is not None:
+                        try:
+                            from amx.search.catalog import SearchCatalog
+
+                            catalog = SearchCatalog.from_history_store()
+                            if catalog is not None:
+                                catalog.mark_applied(result.result_id)
+                        except Exception as exc:
+                            warn(f"Could not update /search apply state for result {result.result_id}: {exc}")
 
                 applied = apply_review_results_to_db(db, newly_approved, on_applied=_on_applied)
                 success(f"Applied {applied} metadata comment(s) to the database.")

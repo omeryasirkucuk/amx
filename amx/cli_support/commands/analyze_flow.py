@@ -351,7 +351,14 @@ def execute_analyze_run(
         display = get_display()
         for schema_name, assets in scope.items():
             asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
-            orch = Orchestrator(db, llm, rag_store=rag_store, code_report=code_report, run_id=run_id)
+            orch = Orchestrator(
+                db,
+                llm,
+                rag_store=rag_store,
+                code_report=code_report,
+                run_id=run_id,
+                search_profile=cfg.active_db_profile or "default",
+            )
 
             display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
             display.start(

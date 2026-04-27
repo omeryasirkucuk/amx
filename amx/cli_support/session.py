@@ -77,7 +77,7 @@ def _kb_escape_namespace() -> KeyBindings:
 
         return len(get_app().current_buffer.text) == 0
 
-    tabs = ["", "db", "metadata", "docs", "llm", "code", "analyze", "history"]
+    tabs = ["", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
 
     @kb.add("escape")
     def _(event) -> None:  # type: ignore[no-untyped-def]
@@ -131,6 +131,8 @@ def _print_namespace_hint(
         info("Scan your codebase to find how tables are used. Run /code-scan after adding a path.")
     elif namespace == "analyze":
         info("Run the AMX pipeline (/run) to generate metadata, or (/apply) to push to your DB.")
+    elif namespace == "search":
+        info("Search generated/manual metadata, join candidates, and code usage evidence.")
     elif namespace == "history":
         info("View past metadata extractions. Use /review to inspect results.")
 
@@ -310,6 +312,27 @@ Navigation:
         )
         return
 
+    if namespace == "search":
+        out.print(
+            """
+[heading]Help — /search namespace[/heading]
+Commands:
+  1) /back                                     Return to root namespace
+  2) /ask "<question>"                         Ask a natural-language metadata question
+  3) /find-columns "<business meaning>"        Find matching columns
+  4) /join-candidates <schema.table> <schema.table>
+                                               Find likely join columns between two tables
+  5) /explain "<question>"                     Show retrieval path and provenance
+  6) /explain-table <schema.table>             Show effective metadata and relationships
+  7) /status                                   Catalog health, counts, and last sync jobs
+  8) /sources                                  Enabled sources, settings, and evidence coverage
+  9) /config [key] [value]                     Show or update search settings
+ 10) /sync [--schema …] [--table …]            Sync DB structure/comments + cached code evidence
+ 11) /rebuild                                  Rebuild effective search state and vector index
+"""
+        )
+        return
+
     if namespace == "history":
         out.print(
             """
@@ -347,7 +370,8 @@ Getting started (in order):
   6) /llm                          LLM profile management
   7) /code                         Codebase profile management
   8) /analyze                      Metadata inference (/run, /apply, …)
-  9) /history                      Local SQLite history (/list, /show, /stats, /events)
+  9) /search                       Search catalog, join candidates, and provenance
+ 10) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
   [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, …
@@ -355,6 +379,7 @@ Inside namespaces (examples):
   [bright_white]/metadata[/bright_white] → /inspect, /edit, /monitor
   [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
   [bright_white]/code[/bright_white] → /code-profiles, /add-code-profile, …
+  [bright_white]/search[/bright_white] → /ask, /status, /sync, /join-candidates, …
 
 Global shortcuts (work anywhere):
   /save                            Persist ~/.amx/config.yml
@@ -411,6 +436,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/llm", "Enter /llm namespace"),
         ("/code", "Enter /code namespace"),
         ("/analyze", "Enter /analyze namespace"),
+        ("/search", "Enter /search namespace"),
         ("/history", "Enter /history namespace"),
         ("/save", "Save config to disk"),
     ]
@@ -483,6 +509,20 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/run-apply", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
         ("/apply", "Write pending comments to the database"),
     ]
+    search_cmds = [
+        ("/back", "Return to root namespace"),
+        ("/clear", "Clear terminal output"),
+        ("/ask", "Ask a natural-language metadata question (/ask <text>)"),
+        ("/find-columns", "Search columns by business meaning"),
+        ("/join-candidates", "Find join candidates (/join-candidates schema.a schema.b)"),
+        ("/explain", "Show search provenance and ranking details"),
+        ("/explain-table", "Show table-level catalog context"),
+        ("/status", "Show catalog/index status"),
+        ("/sources", "Show evidence sources and settings"),
+        ("/config", "Show/set search config (/config [key] [value])"),
+        ("/sync", "Sync DB structure/comments and code evidence"),
+        ("/rebuild", "Rebuild effective search state and vector index"),
+    ]
     history_cmds = [
         ("/back", "Return to root namespace"),
         ("/clear", "Clear terminal output"),
@@ -505,6 +545,8 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         return code_cmds
     if namespace == "analyze":
         return analyze_cmds
+    if namespace == "search":
+        return search_cmds
     if namespace == "history":
         return history_cmds
     return root
@@ -669,6 +711,8 @@ def _handle_session_builtin(
 
 def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
+    if namespace == "search" and head in {"ask", "find-columns", "join-candidates", "explain", "explain-table", "status", "sources", "config", "sync", "rebuild"}:
+        return ["search"] + parts
     shortcut_map = {
         "connect": ["db", "connect"],
         "schemas": ["db", "schemas"],
@@ -690,11 +734,20 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "code-results": ["code", "results"],
         "code-analyze": ["code", "analyze"],
         "export-code-report": ["code", "export-report"],
+        "ask": ["search", "ask"],
+        "find-columns": ["search", "find-columns"],
+        "join-candidates": ["search", "join-candidates"],
+        "explain": ["search", "explain"],
+        "explain-table": ["search", "explain-table"],
+        "status": ["search", "status"],
+        "sources": ["search", "sources"],
+        "sync": ["search", "sync"],
+        "rebuild": ["search", "rebuild"],
         "setup": ["setup"],
         "config": ["config"],
         "help": ["--help"],
     }
-    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "history", "setup", "config"}:
+    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history", "setup", "config"}:
         if head == "manual":
             return ["metadata"] + parts[1:]
         return parts
@@ -806,6 +859,7 @@ def run_interactive_session(
         }
     )
     analyze_cmd_heads = frozenset({"run", "run-apply", "apply"})
+    search_cmd_heads = frozenset({"ask", "find-columns", "join-candidates", "explain", "explain-table", "status", "sources", "config", "sync", "rebuild"})
     history_cmd_heads = frozenset({"list", "show", "stats", "events", "results", "review"})
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
@@ -842,7 +896,7 @@ def run_interactive_session(
     )
 
     def _build_prompt_message(ns: str) -> HTML:
-        tabs = ["root", "db", "metadata", "docs", "llm", "code", "analyze", "history"]
+        tabs = ["root", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
         curr = ns or "root"
         parts = []
         for tab in tabs:
@@ -926,7 +980,7 @@ def run_interactive_session(
                     print_db_namespace_hint=print_db_namespace_hint,
                 )
                 continue
-            if cmdline in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "history"}:
+            if cmdline in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history"}:
                 namespace = "metadata" if cmdline == "manual" else cmdline
                 console.clear()
                 show_banner(force=True)
@@ -967,6 +1021,9 @@ def run_interactive_session(
                 elif head in analyze_cmd_heads:
                     namespace = "analyze"
                     info("Assumed /analyze namespace for this command.")
+                elif head in search_cmd_heads:
+                    namespace = "search"
+                    info("Assumed /search namespace for this command.")
                 elif head in history_cmd_heads:
                     namespace = "history"
                     info("Assumed /history namespace for this command.")

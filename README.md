@@ -102,6 +102,7 @@ In an interactive `amx` session, configuration is grouped by namespace:
 - `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles (`/llm-profiles`, `/add-llm-profile`, …)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
+- `/search` — search generated/manual metadata, join candidates, provenance, and code evidence
 
 AMX may **auto-select** the right namespace when you run an unambiguous command from the root prompt (it will print which namespace it assumed).
 
@@ -189,11 +190,21 @@ Notes:
 | `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
 | `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
+| `/search` + `/ask "<question>"` | Ask natural-language metadata questions against the internal search catalog |
+| `/search` + `/find-columns "<business meaning>"` | Find likely matching columns and rank them by effective metadata + evidence |
+| `/search` + `/join-candidates <schema.table1> <schema.table2>` | Suggest join columns using FK, heuristics, and code evidence |
+| `/search` + `/explain "<question>"` | Show retrieval intent, provenance, and ranking evidence |
+| `/search` + `/explain-table <schema.table>` | Show a table’s effective metadata, columns, and relationships from the catalog |
+| `/search` + `/status` | Show catalog counts, freshness, and recent sync jobs |
+| `/search` + `/sources` | Show enabled search settings and evidence-source coverage |
+| `/search` + `/config [key] [value]` | View or update `/search` settings for the active DB profile |
+| `/search` + `/sync [--schema …] [--table …]` | Sync DB structure/comments and cached code evidence into the catalog |
+| `/search` + `/rebuild` | Rebuild effective search state and the `amx_search` vector index |
 | `/history` + `/list [-n N]` | List recent runs with end-to-end and model-processing duration |
 | `/history` + `/show <run_id>` | Show full JSON payload for one run (scope, metrics, tokens, results, errors) |
-| `/history` + `/stats` | Aggregate local run/event statistics |
+| `/history` + `/stats` | Aggregate local run/event statistics plus search lifecycle counts |
 | `/history` + `/events [-n N]` | List recent app events (profile switches, run status, apply outcomes, etc.) |
-| `/history` + `/results <run_id>` | Show all saved LLM alternatives for a past run (table, column, confidence, choices, evaluation status) |
+| `/history` + `/results <run_id>` | Show all saved LLM alternatives for a past run, including catalog state, effective source, index state, and DB-apply state |
 | `/history` + `/review <run_id>` | Re-evaluate saved alternatives for a past run; `--unevaluated-only` to skip already-decided rows; `--apply` to write to DB immediately |
 
 ## Codebase and document intelligence
@@ -339,6 +350,30 @@ Query it directly in AMX via `/history` namespace:
 | `/results <run_id>` | All saved LLM alternatives for a run |
 | `/review <run_id>` | Re-evaluate alternatives interactively; `--unevaluated-only` / `--apply` |
 
+## Search Catalog
+
+AMX now maintains an internal `/search` catalog inside the same local SQLite history database (`~/.amx/history.db`). It stores:
+
+- effective metadata state per database/schema/table/column
+- generated, reviewed, manual, imported, and rejected description candidates
+- FK and inferred relationships
+- normalized code-usage evidence from `/code scan`
+- sync/rebuild job history and per-profile `/search` settings
+
+Sync behavior:
+
+- `/analyze run` and `/run-apply` automatically persist generated alternatives and refresh `/search`
+- `/history review` mirrors accepted/custom/skipped decisions into the catalog
+- `/metadata edit` writes a `manual` catalog description immediately
+- `/code scan` refreshes code-usage evidence for `/search`
+- `/search rebuild` recomputes effective state and rebuilds the `amx_search` vector index
+
+Answering behavior:
+
+- semantic questions use effective metadata, exact token overlap, vector similarity, and code evidence
+- join questions prioritize FK relationships, then heuristics, then observed code usage
+- `/search explain` shows the provenance AMX used to produce an answer
+
 ## Project Structure
 
 ```
@@ -365,7 +400,12 @@ amx/
 │       ├── history.py      # /history namespace commands
 │       ├── manual.py       # /metadata namespace commands (/manual alias)
 │       ├── profiles.py     # /llm plus document/code profile helpers
+│       ├── search.py       # /search namespace commands
 │       └── run.py          # /analyze helpers, scope resolution, and apply flow
+├── search/
+│   ├── catalog.py      # SQLite-backed metadata catalog and lifecycle sync
+│   ├── index.py        # Chroma `amx_search` vector index
+│   └── service.py      # Intent routing and answer shaping for /search
 ├── services/
 │   ├── __init__.py         # Service-layer package marker
 │   ├── analyze_scope.py    # Scope resolution, asset filtering, and codebase preparation

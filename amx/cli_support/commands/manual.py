@@ -163,6 +163,59 @@ def _resolve_explicit_edit_target(
     return resolve_path_target(cfg, db, profile_name, target_parts[0], error=warn)
 
 
+def _sync_manual_comment_to_search_catalog(
+    cfg: AMXConfig,
+    target: ManualEditTarget,
+    value: str,
+) -> None:
+    try:
+        from amx.search.catalog import SearchCatalog
+    except Exception:
+        return
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        return
+    profile_cfg = cfg.db_profiles.get(target.profile, cfg.db)
+    database_name = profile_cfg.database or profile_cfg.catalog or profile_cfg.project or ""
+    path = target.label.split()[-1]
+    parts = split_metadata_path(path)
+    schema_name = ""
+    table_name = ""
+    column_name: str | None = None
+    entity_kind = "table"
+    asset_kind = AssetKind.TABLE.value
+    if target.kind == ManualTargetKind.DATABASE:
+        entity_kind = "database"
+        asset_kind = AssetKind.DATABASE.value
+    elif target.kind == ManualTargetKind.SCHEMA:
+        entity_kind = "schema"
+        asset_kind = AssetKind.SCHEMA.value
+        if parts:
+            schema_name = parts[-1]
+    elif target.kind == ManualTargetKind.TABLE:
+        entity_kind = "table"
+        if len(parts) >= 2:
+            schema_name = parts[-2]
+            table_name = parts[-1]
+    elif target.kind == ManualTargetKind.COLUMN:
+        entity_kind = "column"
+        if len(parts) >= 3:
+            schema_name = parts[-3]
+            table_name = parts[-2]
+            column_name = parts[-1]
+    catalog.record_manual_description(
+        db_profile=target.profile,
+        db_backend=profile_cfg.backend,
+        database_name=database_name,
+        schema_name=schema_name,
+        table_name=table_name,
+        column_name=column_name,
+        entity_kind=entity_kind,
+        asset_kind=asset_kind,
+        description=value,
+    )
+
+
 def _select_db_profile_for_wizard(cfg: AMXConfig) -> tuple[str, DBConfig] | None:
     active = cfg.active_db_profile or "default"
     current = cfg.db_profiles.get(active, cfg.db)
@@ -366,6 +419,7 @@ def register_manual_commands(
                     details={"target": target_label, "error": str(exc)},
                 )
             return
+        _sync_manual_comment_to_search_catalog(cfg, target, value)
         success(f"Updated {target_label}.")
         if log_event is not None:
             log_event(

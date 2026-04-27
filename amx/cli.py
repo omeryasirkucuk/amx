@@ -18,6 +18,7 @@ from amx.cli_support.commands.db import (
 from amx.cli_support.commands.docs import register_docs_commands
 from amx.cli_support.commands.history import register_history_commands
 from amx.cli_support.commands.manual import register_manual_commands
+from amx.cli_support.commands.search import register_search_commands
 from amx.cli_support.commands.profiles import (
     interactive_llm_block as _interactive_llm_block,
     warn_no_doc_paths_for_scan_or_ingest as _warn_no_doc_paths_for_scan_or_ingest,
@@ -169,6 +170,7 @@ def main(ctx: click.Context, cfg_path: str | None) -> None:
 
 
 register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
+register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_manual_commands(main, pass_config=pass_config, log_event=_log_app_event)
 analyze = register_analyze_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_analyze_run_command(

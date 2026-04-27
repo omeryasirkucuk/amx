@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.98] — 2026-04-27
+### Search Catalog + History Lifecycle
+- **amx/search/catalog.py / amx/search/index.py / amx/search/service.py**: Added the SQLite-backed search catalog, effective-description resolver, relationship/evidence storage, and the `amx_search` Chroma index.
+- **amx/cli_support/commands/search.py / amx/cli.py / amx/cli_support/session.py**: Registered the `/search` namespace and wired help text, completion, namespace inference, and command routing.
+- **amx/agents/orchestrator.py / amx/cli_support/commands/manual.py / amx/cli_support/commands/code.py / amx/cli_support/commands/history.py**: Auto-synced generated metadata, review outcomes, manual edits, code scans, and DB apply state into the search catalog.
+- **amx/storage/sqlite_store.py**: Extended `run_results` with catalog lifecycle columns and created the new search catalog tables inside `history.db`.
+- **tests/test_search_catalog.py**: Added coverage for precedence, semantic column lookup, and join candidate extraction.
+
 ## [0.1.97] — 2026-04-27
 ### Remote Git Cleanup
 - **amx/docs/scanner.py / amx/cli_support/commands/docs.py**: Tagged GitHub document scan results with their temporary clone root and removed those roots after scan preview and optional ingestion finish.

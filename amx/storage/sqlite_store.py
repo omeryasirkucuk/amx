@@ -80,12 +80,19 @@ class SQLiteHistoryStore:
                     asset_kind TEXT NOT NULL DEFAULT 'table',
                     source TEXT NOT NULL,
                     confidence TEXT NOT NULL,
+                    logprob_score REAL,
                     reasoning TEXT,
                     alternatives_json TEXT NOT NULL,
                     evaluated_at REAL,
                     applied_at REAL,
                     chosen_description TEXT,
                     evaluation TEXT,
+                    catalog_status TEXT NOT NULL DEFAULT '',
+                    catalog_indexed_at REAL,
+                    db_applied_status TEXT NOT NULL DEFAULT '',
+                    effective_source_kind TEXT NOT NULL DEFAULT '',
+                    superseded_at REAL,
+                    rejection_reason TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
                 )
                 """
@@ -99,6 +106,22 @@ class SQLiteHistoryStore:
                 conn.execute("ALTER TABLE run_results ADD COLUMN applied_at REAL")
             except sqlite3.OperationalError:
                 pass
+            try:
+                conn.execute("ALTER TABLE run_results ADD COLUMN logprob_score REAL")
+            except sqlite3.OperationalError:
+                pass
+            for stmt in (
+                "ALTER TABLE run_results ADD COLUMN catalog_status TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE run_results ADD COLUMN catalog_indexed_at REAL",
+                "ALTER TABLE run_results ADD COLUMN db_applied_status TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE run_results ADD COLUMN effective_source_kind TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE run_results ADD COLUMN superseded_at REAL",
+                "ALTER TABLE run_results ADD COLUMN rejection_reason TEXT NOT NULL DEFAULT ''",
+            ):
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_run_id "
                 "ON run_results(run_id)"
@@ -106,6 +129,141 @@ class SQLiteHistoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
                 "ON run_results(schema_name, table_name, column_name)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    db_profile TEXT NOT NULL,
+                    db_backend TEXT NOT NULL DEFAULT '',
+                    database_name TEXT NOT NULL DEFAULT '',
+                    schema_name TEXT NOT NULL DEFAULT '',
+                    table_name TEXT NOT NULL DEFAULT '',
+                    column_name TEXT,
+                    entity_kind TEXT NOT NULL,
+                    asset_kind TEXT NOT NULL DEFAULT 'table',
+                    dtype TEXT NOT NULL DEFAULT '',
+                    nullable INTEGER NOT NULL DEFAULT 1,
+                    pk_flag INTEGER NOT NULL DEFAULT 0,
+                    fk_flag INTEGER NOT NULL DEFAULT 0,
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    search_text TEXT NOT NULL DEFAULT '',
+                    current_confidence TEXT NOT NULL DEFAULT '',
+                    effective_status TEXT NOT NULL DEFAULT '',
+                    effective_source_kind TEXT NOT NULL DEFAULT '',
+                    effective_description_id INTEGER,
+                    updated_at REAL NOT NULL DEFAULT 0,
+                    last_synced_at REAL NOT NULL DEFAULT 0,
+                    last_code_sync_at REAL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_entities_identity
+                ON catalog_entities(db_profile, schema_name, table_name, COALESCE(column_name, ''), entity_kind)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_descriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_id INTEGER NOT NULL,
+                    description_text TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_agent TEXT NOT NULL DEFAULT '',
+                    confidence TEXT NOT NULL DEFAULT '',
+                    logprob_score REAL,
+                    reasoning TEXT NOT NULL DEFAULT '',
+                    run_id INTEGER,
+                    result_id INTEGER,
+                    created_at REAL NOT NULL,
+                    superseded INTEGER NOT NULL DEFAULT 0,
+                    indexed INTEGER NOT NULL DEFAULT 0,
+                    indexed_at REAL,
+                    applied_to_db INTEGER NOT NULL DEFAULT 0,
+                    applied_at REAL,
+                    chosen_description INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (entity_id) REFERENCES catalog_entities(id),
+                    FOREIGN KEY (run_id) REFERENCES analysis_runs(id),
+                    FOREIGN KEY (result_id) REFERENCES run_results(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalog_descriptions_entity_id ON catalog_descriptions(entity_id, created_at DESC)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_relationships (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_entity_id INTEGER NOT NULL,
+                    to_entity_id INTEGER NOT NULL,
+                    relationship_type TEXT NOT NULL,
+                    score REAL NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT '',
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    last_seen REAL NOT NULL DEFAULT 0,
+                    FOREIGN KEY (from_entity_id) REFERENCES catalog_entities(id),
+                    FOREIGN KEY (to_entity_id) REFERENCES catalog_entities(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalog_relationships_from_to ON catalog_relationships(from_entity_id, to_entity_id, relationship_type)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_usage_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    db_profile TEXT NOT NULL DEFAULT '',
+                    entity_id INTEGER,
+                    source_kind TEXT NOT NULL,
+                    evidence_type TEXT NOT NULL,
+                    source_path TEXT NOT NULL DEFAULT '',
+                    count_value INTEGER NOT NULL DEFAULT 0,
+                    score_value REAL NOT NULL DEFAULT 0,
+                    sample_snippets_json TEXT NOT NULL DEFAULT '[]',
+                    last_seen REAL NOT NULL DEFAULT 0,
+                    FOREIGN KEY (entity_id) REFERENCES catalog_entities(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalog_usage_entity ON catalog_usage_evidence(db_profile, entity_id, source_kind, evidence_type)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_sync_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    db_profile TEXT NOT NULL,
+                    job_type TEXT NOT NULL,
+                    scope_json TEXT NOT NULL DEFAULT '{}',
+                    started_at REAL NOT NULL,
+                    completed_at REAL,
+                    status TEXT NOT NULL,
+                    inserted_count INTEGER NOT NULL DEFAULT 0,
+                    updated_count INTEGER NOT NULL DEFAULT 0,
+                    error_text TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_catalog_sync_jobs_profile_started ON catalog_sync_jobs(db_profile, started_at DESC)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS search_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    db_profile TEXT NOT NULL,
+                    key_name TEXT NOT NULL,
+                    value_text TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_search_settings_profile_key ON search_settings(db_profile, key_name)"
             )
 
     def create_run(
@@ -226,8 +384,8 @@ class SQLiteHistoryStore:
                     """
                     INSERT INTO run_results (
                         run_id, saved_at, schema_name, table_name, column_name,
-                        asset_kind, source, confidence, reasoning, alternatives_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        asset_kind, source, confidence, logprob_score, reasoning, alternatives_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -238,6 +396,7 @@ class SQLiteHistoryStore:
                         s.get("asset_kind", "table"),
                         s.get("source", "unknown"),
                         s.get("confidence", "medium"),
+                        s.get("logprob_score"),
                         s.get("reasoning", ""),
                         json.dumps(s.get("alternatives", []), ensure_ascii=True),
                     ),
@@ -536,4 +695,3 @@ def init_history_store(config_dir: str) -> SQLiteHistoryStore:
 
 def history_store() -> SQLiteHistoryStore | None:
     return _store
-

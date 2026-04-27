@@ -202,6 +202,21 @@ def register_code_commands(
             success(f"Saved scan results to cache (profile {profile_nm!r})")
         except Exception as exc:
             warn(f"Could not save cache: {exc}")
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog_store = SearchCatalog.from_history_store()
+            if catalog_store is not None:
+                catalog_store.sync_code_report(
+                    db_profile=cfg.active_db_profile or "default",
+                    db_backend=cfg.db.backend,
+                    database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
+                    schema_name=schema_name,
+                    source_path=resolved,
+                    report=report,
+                )
+        except Exception as exc:
+            warn(f"Could not sync code evidence into /search catalog: {exc}")
 
         _render_code_report_summary(report)
         info("Results saved. Next `/run` will use them from cache (use `/code-refresh` to clear).")
@@ -229,6 +244,14 @@ def register_code_commands(
         profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
         invalidate_cache(profile_nm, code_path)
         delete_code_collection(source_filters=[code_path])
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog_store = SearchCatalog.from_history_store()
+            if catalog_store is not None:
+                catalog_store.clear_code_evidence(cfg.active_db_profile or "default", code_path)
+        except Exception as exc:
+            warn(f"Could not clear /search code evidence: {exc}")
         success(
             f"Cleared codebase cache for profile {profile_nm!r} and reset semantic code index (`amx_code`)."
         )

@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.98] — 2026-04-27
+### Added
+- **`/search` namespace**: Added a dedicated search surface for natural-language metadata questions, join-candidate discovery, provenance, config, sync, and rebuild operations.
+- **Search catalog**: Added SQLite-backed catalog tables and the `amx_search` vector index for effective metadata, relationships, code evidence, and sync job tracking.
+- **Regression coverage**: Added catalog tests covering generated/reviewed/manual precedence, semantic column search, and join candidate extraction.
+
+### Changed
+- **Automatic catalog sync**: `/analyze`, `/run`, `/history review`, `/metadata edit`, `/code scan`, and successful DB apply flows now refresh `/search` automatically.
+- **`/history` lifecycle visibility**: `/history show`, `/history stats`, and `/history results` now expose catalog status, effective source kind, indexed state, and DB-apply state for saved metadata.
+
 ## [0.1.97] — 2026-04-27
 ### Fixed
 - **Remote Git clone cleanup**: Document GitHub scans now mark temporary clone roots for cleanup after preview/ingestion, and codebase Git scans use a temporary-directory context so cloned repos are removed after scanning and semantic indexing finish.

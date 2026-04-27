@@ -130,10 +130,12 @@ class Orchestrator:
         rag_store: RAGStore | None = None,
         code_report: CodebaseReport | None = None,
         run_id: int | None = None,
+        search_profile: str = "default",
     ):
         self.db = db
         self.llm = llm
         self.run_id = run_id
+        self.search_profile = search_profile or "default"
         self.code_report = code_report
         self.profile_agent = ProfileAgent(llm)
         self.rag_agent = RAGAgent(llm, rag_store) if rag_store else None
@@ -189,6 +191,7 @@ class Orchestrator:
 
         # \u2014\u2014 Persist all alternatives before human review \u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014\u2014
         result_id_map = self._save_merged_suggestions(merged, asset_kind=asset_kind)
+        self._sync_search_catalog(profile, merged, result_id_map)
 
         ak = profile.asset_kind.value if profile.asset_kind else "table"
         if not interactive_review:
@@ -204,7 +207,7 @@ class Orchestrator:
                     source=s.source,
                     applied=False,
                     asset_kind=ak,
-                    result_id=result_id_map.get(s.column or "__table__"),
+                    result_id=result_id_map.get(s.column),
                     logprob_score=s.logprob_score,
                 ))
             self.results.extend(results)
@@ -674,6 +677,47 @@ class Orchestrator:
             )
         except Exception as exc:
             log.debug("Could not record evaluation: %s", exc)
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog = SearchCatalog.from_history_store()
+            if catalog is not None:
+                catalog.sync_review_decision(
+                    result_id,
+                    chosen_description=chosen_description,
+                    evaluation=evaluation,
+                )
+        except Exception as exc:
+            log.debug("Could not sync review result into search catalog: %s", exc)
+
+    def _sync_search_catalog(
+        self,
+        profile: TableProfile,
+        suggestions: list[MetadataSuggestion],
+        result_id_map: dict[str | None, int],
+    ) -> None:
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog = SearchCatalog.from_history_store()
+            if catalog is None:
+                return
+            catalog.sync_generated_suggestions(
+                db_profile=self.search_profile,
+                db_backend=self.db.backend,
+                database_name=(
+                    self.db.cfg.database
+                    or getattr(self.db.cfg, "catalog", "")
+                    or getattr(self.db.cfg, "project", "")
+                ),
+                run_id=self.run_id,
+                profile=profile,
+                suggestions=suggestions,
+                result_id_map=result_id_map,
+                query_usage=self._build_query_usage_hints(profile),
+            )
+        except Exception as exc:
+            log.debug("Could not sync generated metadata to search catalog: %s", exc)
 
     @staticmethod
     def _parse_merge_response(
@@ -1103,6 +1147,15 @@ class Orchestrator:
                     hs.record_applied(r.result_id)
                 except Exception as exc:
                     log.debug("Could not record applied timestamp for result_id=%s: %s", r.result_id, exc)
+            if r.result_id is not None:
+                try:
+                    from amx.search.catalog import SearchCatalog
+
+                    catalog = SearchCatalog.from_history_store()
+                    if catalog is not None:
+                        catalog.mark_applied(r.result_id)
+                except Exception as exc:
+                    log.debug("Could not mark applied search catalog state for result_id=%s: %s", r.result_id, exc)
 
         applied = apply_review_results_to_db(self.db, results, on_applied=_on_applied)
         success(f"Applied {applied} metadata comments to the database")
