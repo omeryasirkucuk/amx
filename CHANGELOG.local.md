@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.85] — 2026-04-27
+### CLI Refactor
+- **amx/cli_support/session.py**: Added a dedicated session-layer module for prompt-toolkit handling, slash-command completion, namespace navigation, and session-only shortcut/default injection.
+- **amx/cli_support/__init__.py**: Added a small support package export surface so session helpers live under `amx/cli_support/` instead of adding more top-level `cli_*.py` files.
+- **amx/cli.py**: Removed the in-file interactive shell implementation and reduced the file to entrypoint wiring, setup, DB commands, and config display at roughly 400 lines.
+- **tests/test_regressions.py**: Added focused regression coverage for session shortcut routing and schema-default injection.
+
 ## [0.1.84] — 2026-04-27
 ### CLI Refactor
 - **amx/cli_analyze_flow.py**: Added a dedicated module for `/analyze run`, including profile switching, completion-mode selection, orchestration execution, interrupt handling, and run-history finalization.

@@ -85,7 +85,9 @@ AMX focuses on **metadata inference**, not bulk data loading. Populate schemas a
 ### Configure AMX
 
 ```bash
-amx setup
+amx
+# then inside the session:
+/setup
 ```
 
 This interactive wizard walks you through:
@@ -328,7 +330,7 @@ Query it directly in AMX via `/history` namespace:
 
 ```
 amx/
-├── cli.py              # Interactive shell, command routing, and top-level workflows
+├── cli.py              # Entry point, setup/config commands, and top-level command registration
 ├── cli_analyze_flow.py # /analyze run command flow, mode selection, and history finalization
 ├── cli_code.py         # /code namespace commands for scan, results, report export, refresh, and analyze
 ├── cli_db.py           # /db namespace profile and profiling command helpers
@@ -336,6 +338,9 @@ amx/
 ├── cli_history.py      # /history namespace commands and review/results flows
 ├── cli_profiles.py     # /llm plus /docs and /code profile helper commands
 ├── cli_run.py          # /analyze namespace helpers, scope resolution, and apply flow
+├── cli_support/
+│   ├── __init__.py     # Session-helper export surface
+│   └── session.py      # Interactive shell, slash completion, namespace switching, and session defaults
 ├── config.py           # Configuration management
 ├── agents/
 │   ├── base.py         # Base agent types and shared data structures
@@ -369,6 +374,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.85
+
+- **CLI maintainability**: The interactive shell now lives in `amx.cli_support.session`, and `amx.cli` is down to roughly 400 lines focused on entrypoint wiring and top-level commands.
+- **Package structure**: Session helpers now live under `amx/cli_support/`, which is the first move away from putting every CLI module directly under `amx/`.
+- **Regression coverage**: Added tests for slash-command shortcut translation and schema-default injection in the extracted session helpers.
 
 ### v0.1.84
 

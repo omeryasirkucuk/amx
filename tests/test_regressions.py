@@ -10,6 +10,7 @@ from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_history import format_run_scope
 from amx.cli_profiles import cmd_use_doc, default_model
+from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.config import AMXConfig, DBConfig
 from amx.cli_db import cmd_profiling
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -181,6 +182,22 @@ class ProfileHelperTests(unittest.TestCase):
         cmd_use_doc(cfg, ["disable"])
 
         self.assertEqual(cfg.active_doc_profile, "__none__")
+
+
+class SessionHelperTests(unittest.TestCase):
+    def test_session_to_click_args_maps_run_apply_shortcut(self) -> None:
+        self.assertEqual(
+            session_to_click_args("", ["run-apply", "vbak"]),
+            ["analyze", "run", "--apply", "vbak"],
+        )
+
+    def test_inject_session_defaults_applies_schema_to_code_scan(self) -> None:
+        cfg = AMXConfig()
+        cfg.current_schema = "sap_s6p"
+
+        args = inject_session_defaults(cfg, "code", ["code", "scan", "/tmp/repo"])
+
+        self.assertEqual(args, ["code", "scan", "/tmp/repo", "--schema", "sap_s6p"])
 
 
 class ConfidenceCalibrationTests(unittest.TestCase):

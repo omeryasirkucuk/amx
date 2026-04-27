@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.85] — 2026-04-27
+### Changed
+- **CLI maintainability**: Extracted the interactive session shell from `amx/cli.py` into `amx/cli_support/session.py` and turned `amx/cli_support/` into the first dedicated CLI support package so new CLI modules do not keep accumulating directly under `amx/`. `amx/cli.py` now focuses on entrypoint wiring, setup, and top-level commands at roughly 400 lines.
+
+### Added
+- **Regression coverage**: Added tests for session shortcut translation and schema-default injection in the extracted session helpers.
+
 ## [0.1.84] — 2026-04-27
 ### Changed
 - **CLI maintainability**: Extracted the `/analyze run` command flow from `amx/cli.py` into `amx/cli_analyze_flow.py`, reducing `amx/cli.py` to roughly 1.3k lines while preserving profile switching, completion-mode selection, orchestration, review persistence, and run-history finalization.
