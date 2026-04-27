@@ -289,24 +289,15 @@ class ManualIntegrationTests(unittest.TestCase):
         self.assertIn("run /db then /connect", result.output)
         self.assertIn("Cause: Database connection refused.", result.output)
 
-    def test_manual_edit_table_requires_explicit_target(self) -> None:
+    def test_manual_edit_table_starts_wizard_for_ambiguous_scope(self) -> None:
         runner = CliRunner()
         cfg = AMXConfig()
         cfg.current_schema = "sap"
         cfg.current_table = "vbak"
 
-        class FakeDatabaseConnector:
-            calls = []
-
-            def __init__(self, cfg):
-                self.cfg = cfg
-
-            def set_table_comment(self, schema, table, comment, *, asset_kind):
-                self.calls.append((schema, table, comment, asset_kind))
-
         with (
             patch("amx.config.AMXConfig.load", return_value=cfg),
-            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+            patch("amx.cli_support.commands.manual._run_edit_wizard", return_value=None) as wizard,
         ):
             result = runner.invoke(
                 main,
@@ -316,8 +307,7 @@ class ManualIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Choose a table/view explicitly", result.output)
-        self.assertEqual(FakeDatabaseConnector.calls, [])
+        wizard.assert_called_once_with(cfg)
 
     def test_manual_edit_table_accepts_qualified_target(self) -> None:
         runner = CliRunner()
@@ -346,8 +336,7 @@ class ManualIntegrationTests(unittest.TestCase):
                     "test-config.yml",
                     "manual",
                     "edit",
-                    "table",
-                    "sap_test.adr6",
+                    "default.sap_test.adr6",
                     "--comment",
                     "Address data",
                     "--yes",
@@ -357,7 +346,7 @@ class ManualIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Updated table sap_test.adr6", result.output)
+        self.assertIn("Updated table default.sap_test.adr6", result.output)
         self.assertEqual(FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)])
 
     def test_metadata_namespace_is_primary_for_edit(self) -> None:

@@ -58,16 +58,6 @@ def _canonical_namespace(namespace: str) -> str:
 
 def _handle_manual_usage_shortcuts(namespace: str, parts: list[str]) -> bool:
     """Show guided metadata-edit workflow for incomplete edit commands."""
-    if _canonical_namespace(namespace) == "metadata" and parts == ["edit"]:
-        info("Metadata edit workflow:")
-        info("1) Select the active DB profile: /db then /use-db")
-        info("2) Pick context if useful: /schema <schema> and /table <table>")
-        info("3) Edit a target:")
-        info("   /edit database")
-        info("   /edit schema <schema>")
-        info("   /edit table <table> or /edit table <schema>.<table>")
-        info("   /edit column <column>, <table>.<column>, or <schema>.<table>.<column>")
-        return True
     return False
 
 
@@ -218,15 +208,13 @@ comments. Document profiles and document search are under /docs.
 Commands:
   1) /back                         Return to root namespace
   2) /inspect [schema] [table]     Show current database/schema/table/column comments
-  3) /edit database                Edit the active database comment
-  4) /edit schema <schema>         Edit a schema comment
-  5) /edit table <table>           Edit a table/view comment in the current schema
-     /edit table <schema>.<table>  Edit a table/view comment in a specific schema
-  6) /edit column <column>         Edit a column in the current schema/table
-     /edit column <table>.<column> Edit a column in the current schema
-     /edit column <schema>.<table>.<column>
+  3) /edit                         Start the interactive edit wizard
+  4) /edit <db>                    Edit a database/profile comment
+  5) /edit <db>.<schema>           Edit a schema comment
+  6) /edit <db>.<schema>.<table>   Edit a table/view comment
+  7) /edit <db>.<schema>.<table>.<column>
                                   Edit a column comment
-  7) /monitor [schema]             Show table/view and column comment coverage
+  8) /monitor [schema]             Show table/view and column comment coverage
 
 Options:
   /edit ... --comment "text"       Provide the new comment non-interactively
@@ -459,7 +447,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/back", "Return to root namespace"),
         ("/clear", "Clear terminal output"),
         ("/inspect", "Inspect current metadata (/inspect [schema] [table])"),
-        ("/edit", "Guided metadata edit help or /edit database|schema|table|column ..."),
+        ("/edit", "Edit wizard or /edit <db>[.<schema>[.<table>[.<column>]]]"),
         ("/monitor", "Show metadata coverage (/monitor [schema])"),
     ]
     llm_cmds = [

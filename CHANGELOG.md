@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.95] — 2026-04-27
+### Changed
+- **Flexible metadata edit targeting**: `/metadata edit` now accepts path targets: `<db>`, `<db>.<schema>`, `<db>.<schema>.<table>`, and `<db>.<schema>.<table>.<column>`.
+- **Interactive edit wizard**: Missing or ambiguous edit targets now launch a guided wizard that selects DB profile, granularity, schema, table/view, and column as needed. Database-level edits stop immediately after choosing the database target.
+- **Edit screen context**: Interactive comment entry now displays the resolved target before prompting for the new comment.
+
+### Fixed
+- **Graceful edit cancellation**: Typing `exit`, `quit`, `q`, `cancel`, or pressing Ctrl+C during the wizard cancels with `Manual edit cancelled.` and performs no write.
+
+### Added
+- **Coverage**: Added tests for path-based database/column targets and wizard drilling to a column target.
+
 ## [0.1.94] — 2026-04-27
 ### Changed
 - **Metadata namespace UX**: Added `/metadata` as the primary database-metadata editing namespace and moved the interactive tab label from `MANUAL` to `METADATA`. `/manual` remains a compatibility alias.

@@ -144,11 +144,12 @@ amx
 | `/db` + `/tables [schema]` | List all assets (tables, views, materialized views) in a schema |
 | `/db` + `/profile [schema] [table]` | Profile table structure and data |
 | `/metadata` + `/inspect [schema] [table]` | Show current database, schema, table/view, and column comments. This namespace is for **database metadata**, not document manuals. |
-| `/metadata` + `/edit` | Show the guided edit workflow: select DB profile, choose schema/table context, then edit a concrete target. |
-| `/metadata` + `/edit database\|db` | Edit the active database comment. Switch DB profiles under `/db` to edit another database. |
-| `/metadata` + `/edit schema <schema>` | Edit one schema comment. Schema edits require an explicit schema target. |
-| `/metadata` + `/edit table <table>` or `/edit table <schema>.<table>` | Edit one table/view comment. Table edits require an explicit table target; a single table name uses the current schema. |
-| `/metadata` + `/edit column <column>`, `<table>.<column>`, or `<schema>.<table>.<column>` | Edit one column comment. A single column name uses the current schema/table context. |
+| `/metadata` + `/edit` | Start the interactive edit wizard: DB profile, granularity, schema, table/view, column, then comment text. |
+| `/metadata` + `/edit <db>` | Edit a database/profile comment. |
+| `/metadata` + `/edit <db>.<schema>` | Edit one schema comment. |
+| `/metadata` + `/edit <db>.<schema>.<table>` | Edit one table/view comment. |
+| `/metadata` + `/edit <db>.<schema>.<table>.<column>` | Edit one column comment. |
+| `/metadata` + `/edit table <schema>.<table>` | Legacy scoped form remains supported; ambiguous forms like `/edit table` start the wizard. |
 | `/metadata` + `/monitor [schema]` | Show table/view and column comment coverage for one schema or all user schemas. |
 | `/llm` + `/llm-profiles` | List LLM profiles |
 | `/llm` + `/use-llm <name>` | Switch active LLM profile |
@@ -399,6 +400,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.95
+
+- **Flexible `/metadata edit` targets**: Edit database/schema/table/column comments with `<db>`, `<db>.<schema>`, `<db>.<schema>.<table>`, or `<db>.<schema>.<table>.<column>`.
+- **Interactive edit wizard**: Missing or ambiguous targets now prompt for DB profile, target granularity, schema, table/view, and column as needed. Database-level edits do not force schema/table selection.
+- **Cancellation**: Typing `exit`, `quit`, `q`, `cancel`, or pressing Ctrl+C cancels the wizard without writing metadata.
 
 ### v0.1.94
 

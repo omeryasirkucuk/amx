@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from amx.config import AMXConfig
 from amx.db.connector import AssetKind
@@ -26,6 +27,21 @@ class MetadataCoverage:
     @property
     def column_percent(self) -> float:
         return _percent(self.columns_with_comments, self.columns)
+
+
+class ManualTargetKind(str, Enum):
+    DATABASE = "database"
+    SCHEMA = "schema"
+    TABLE = "table"
+    COLUMN = "column"
+
+
+@dataclass(frozen=True)
+class ManualEditTarget:
+    profile: str
+    kind: ManualTargetKind
+    label: str
+    writer: Callable[[str], None]
 
 
 def _percent(part: int, total: int) -> float:
@@ -55,6 +71,11 @@ def display_comment(value: str | None) -> str:
 def _split_qualified_name(value: str) -> list[str]:
     parts = [part.strip() for part in value.split(".")]
     return parts if all(parts) else [value]
+
+
+def split_metadata_path(value: str) -> list[str]:
+    """Split a user-facing metadata target path into non-empty dotted parts."""
+    return _split_qualified_name(value)
 
 
 def _manual_table_usage(error: ErrorFn) -> None:
@@ -235,4 +256,65 @@ def resolve_manual_target(
             lambda comment: db.set_column_comment(schema, table, column, comment),  # type: ignore[attr-defined]
         )
 
+    return None
+
+
+def resolve_path_target(
+    cfg: AMXConfig,
+    db: object,
+    profile_name: str,
+    path: str,
+    *,
+    error: ErrorFn,
+) -> ManualEditTarget | None:
+    """Resolve `/edit <db>[.<schema>[.<table>[.<column>]]]` path syntax."""
+    parts = split_metadata_path(path)
+    if len(parts) == 1:
+        db_name = parts[0]
+        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+            error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
+            return None
+        return ManualEditTarget(
+            profile=profile_name,
+            kind=ManualTargetKind.DATABASE,
+            label=f"database {profile_name}",
+            writer=lambda comment: db.set_database_comment(comment),  # type: ignore[attr-defined]
+        )
+    if len(parts) == 2:
+        db_name, schema = parts
+        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+            error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
+            return None
+        return ManualEditTarget(
+            profile=profile_name,
+            kind=ManualTargetKind.SCHEMA,
+            label=f"schema {db_name}.{schema}",
+            writer=lambda comment: db.set_schema_comment(schema, comment),  # type: ignore[attr-defined]
+        )
+    if len(parts) == 3:
+        db_name, schema, table = parts
+        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+            error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
+            return None
+        kind = db.resolve_asset_kind(schema, table)  # type: ignore[attr-defined]
+        if not isinstance(kind, AssetKind):
+            kind = AssetKind.TABLE
+        return ManualEditTarget(
+            profile=profile_name,
+            kind=ManualTargetKind.TABLE,
+            label=f"{kind.label} {db_name}.{schema}.{table}",
+            writer=lambda comment: db.set_table_comment(schema, table, comment, asset_kind=kind),  # type: ignore[attr-defined]
+        )
+    if len(parts) == 4:
+        db_name, schema, table, column = parts
+        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+            error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
+            return None
+        return ManualEditTarget(
+            profile=profile_name,
+            kind=ManualTargetKind.COLUMN,
+            label=f"column {db_name}.{schema}.{table}.{column}",
+            writer=lambda comment: db.set_column_comment(schema, table, column, comment),  # type: ignore[attr-defined]
+        )
+    error("Use /edit <db>, <db>.<schema>, <db>.<schema>.<table>, or <db>.<schema>.<table>.<column>.")
     return None

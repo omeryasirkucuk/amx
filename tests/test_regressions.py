@@ -12,6 +12,7 @@ from amx.agents.orchestrator import Orchestrator
 from amx.codebase.analyzer import CodebaseReport
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_support.commands.history import format_run_scope
+from amx.cli_support.commands.manual import _run_edit_wizard
 from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
@@ -23,7 +24,7 @@ from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
 from amx.services.analyze_scope import filter_non_business_assets
-from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target
+from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
 
 
 class RAGSourceFilteringTests(unittest.TestCase):
@@ -241,12 +242,9 @@ class SessionHelperTests(unittest.TestCase):
         ):
             handled = _handle_manual_usage_shortcuts("metadata", ["edit"])
 
-        self.assertTrue(handled)
+        self.assertFalse(handled)
         error_mock.assert_not_called()
-        self.assertEqual(info_mock.call_count, 8)
-        self.assertEqual(info_mock.call_args_list[0].args[0], "Metadata edit workflow:")
-        self.assertIn("/use-db", info_mock.call_args_list[1].args[0])
-        self.assertIn("/edit table <table>", info_mock.call_args_list[6].args[0])
+        info_mock.assert_not_called()
 
 
 class ManualMetadataTests(unittest.TestCase):
@@ -339,6 +337,79 @@ class ManualMetadataTests(unittest.TestCase):
         target[1]("Email address")
         self.assertEqual(db.last_call, ("sap_test", "adr6", "smtp_addr", "Email address"))
         self.assertEqual(errors, [])
+
+    def test_resolve_path_target_maps_four_part_path_to_column(self) -> None:
+        cfg = AMXConfig()
+        cfg.db_profiles = {"warehouse": cfg.db}
+        cfg.active_db_profile = "warehouse"
+        errors: list[str] = []
+
+        class FakeDB:
+            def set_column_comment(self, schema, table, column, comment):
+                self.last_call = (schema, table, column, comment)
+
+        db = FakeDB()
+        target = resolve_path_target(cfg, db, "warehouse", "warehouse.sap_test.adr6.smtp_addr", error=errors.append)
+
+        self.assertEqual(target.label, "column warehouse.sap_test.adr6.smtp_addr")
+        target.writer("Email address")
+        self.assertEqual(db.last_call, ("sap_test", "adr6", "smtp_addr", "Email address"))
+        self.assertEqual(errors, [])
+
+    def test_resolve_path_target_maps_one_part_path_to_database(self) -> None:
+        cfg = AMXConfig()
+        cfg.db_profiles = {"warehouse": cfg.db}
+        cfg.active_db_profile = "warehouse"
+        errors: list[str] = []
+
+        class FakeDB:
+            def set_database_comment(self, comment):
+                self.last_call = comment
+
+        db = FakeDB()
+        target = resolve_path_target(cfg, db, "warehouse", "warehouse", error=errors.append)
+
+        self.assertEqual(target.label, "database warehouse")
+        target.writer("Warehouse profile")
+        self.assertEqual(db.last_call, "Warehouse profile")
+        self.assertEqual(errors, [])
+
+    def test_edit_wizard_drills_to_column_target(self) -> None:
+        cfg = AMXConfig()
+        cfg.db_profiles = {"default": cfg.db}
+        cfg.active_db_profile = "default"
+
+        class Column:
+            name = "smtp_addr"
+            dtype = "TEXT"
+
+        class FakeDB:
+            def list_schemas(self):
+                return ["sap"]
+
+            def list_assets(self, schema):
+                return [("adr6", AssetKind.TABLE)]
+
+            def list_column_profiles(self, schema, table):
+                return [Column()]
+
+            def set_column_comment(self, schema, table, column, comment):
+                self.last_call = (schema, table, column, comment)
+
+        db = FakeDB()
+        with (
+            patch("amx.cli_support.commands.manual._connector_for_profile", return_value=db),
+            patch("amx.cli_support.commands.manual._ask_text_or_cancel", return_value="y"),
+            patch(
+                "amx.cli_support.commands.manual._ask_choice_or_cancel",
+                side_effect=["Column", "sap", "adr6", "smtp_addr"],
+            ),
+        ):
+            target = _run_edit_wizard(cfg)
+
+        self.assertEqual(target.label, "column default.sap.adr6.smtp_addr")
+        target.writer("Email address")
+        self.assertEqual(db.last_call, ("sap", "adr6", "smtp_addr", "Email address"))
 
 
 class AnalyzeScopeServiceTests(unittest.TestCase):

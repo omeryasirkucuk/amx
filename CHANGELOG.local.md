@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.95] — 2026-04-27
+### Metadata Edit Wizard
+- **amx/cli_support/commands/manual.py**: Refactored `/metadata edit` to accept free-form target paths, dispatch legacy scope syntax, and fall back to an interactive DB/profile/schema/table/column wizard.
+- **amx/services/manual_metadata.py**: Added path-target parsing and typed edit target descriptors for database/schema/table/column writer callbacks.
+- **amx/cli_support/session.py**: Updated metadata help/completion text for path-based targets and the edit wizard.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added coverage for path targets, wizard drilling, and ambiguous-target wizard dispatch.
+
 ## [0.1.94] — 2026-04-27
 ### Metadata Namespace UX
 - **amx/cli_support/session.py**: Promoted `/metadata` as the primary interactive namespace, updated the tab label, root help, completion catalog, shortcut routing, namespace assumptions, and bare-`/edit` guidance.
