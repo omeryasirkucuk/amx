@@ -446,7 +446,57 @@ def register_history_commands(
                         except Exception as exc:
                             warn(f"Could not update /search apply state for result {result.result_id}: {exc}")
 
-                applied = apply_review_results_to_db(db, newly_approved, on_applied=_on_applied)
+                def _on_failed(result: Any, exc: Exception) -> None:
+                    inner_hs = history_store()
+                    if result.result_id is not None and inner_hs is not None:
+                        try:
+                            inner_hs.record_db_apply_failure(result.result_id, str(exc))
+                        except Exception as inner_exc:
+                            warn(f"Could not record failed DB apply state for result {result.result_id}: {inner_exc}")
+
+                from amx.utils.live_display import get_display
+
+                display = get_display()
+                started_display = False
+                activity_index_by_result_id: dict[object, int] = {}
+                if newly_approved and not display.is_active:
+                    display.start(schema="", table=f"{len(newly_approved)} comments", mode="apply", provider="", model="")
+                    started_display = True
+
+                def _asset_label(result: Any) -> str:
+                    schema = getattr(result, "schema", "")
+                    table = getattr(result, "table", "")
+                    column = getattr(result, "column", None)
+                    if column:
+                        return ".".join(part for part in (schema, table, column) if part)
+                    if table:
+                        return ".".join(part for part in (schema, table) if part)
+                    return schema or db.backend
+
+                def _on_progress(result: Any, status: str, index: int, total: int, detail: str) -> None:
+                    label = f"Writeback {index}/{total}: {_asset_label(result)}"
+                    key = result.result_id if getattr(result, "result_id", None) is not None else f"{result.schema}:{result.table}:{result.column or ''}:{index}"
+                    if key not in activity_index_by_result_id:
+                        activity_index_by_result_id[key] = display.add_activity(label)
+                    act_idx = activity_index_by_result_id[key]
+                    if status == "started":
+                        display.begin_activity(act_idx)
+                    elif status == "applied":
+                        display.complete_activity(act_idx, "Applied to database")
+                    elif status == "failed":
+                        display.fail_activity(act_idx, detail[:240])
+
+                try:
+                    applied = apply_review_results_to_db(
+                        db,
+                        newly_approved,
+                        on_applied=_on_applied,
+                        on_failed=_on_failed,
+                        on_progress=_on_progress,
+                    )
+                finally:
+                    if started_display:
+                        display.stop()
                 success(f"Applied {applied} metadata comment(s) to the database.")
                 log_event(
                     event_type="history_review_apply",

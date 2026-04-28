@@ -432,10 +432,28 @@ class SQLiteHistoryStore:
             conn.execute(
                 """
                 UPDATE run_results
-                SET applied_at = ?
+                SET applied_at = ?,
+                    db_applied_status = 'applied',
+                    rejection_reason = ''
                 WHERE id = ?
                 """,
                 (now, result_id),
+            )
+
+    def record_db_apply_failure(self, result_id: int, error_text: str = "") -> None:
+        """Record when a reviewed description failed during DB write-back."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE run_results
+                SET db_applied_status = 'failed',
+                    rejection_reason = CASE
+                        WHEN ? != '' THEN ?
+                        ELSE rejection_reason
+                    END
+                WHERE id = ?
+                """,
+                (error_text, error_text, result_id),
             )
 
     def update_run_status(self, run_id: int, status: str, error_text: str = "") -> None:

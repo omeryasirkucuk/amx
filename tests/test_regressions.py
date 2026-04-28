@@ -35,6 +35,7 @@ from amx.llm.batch import BatchRequest, OpenAIBatchProvider
 from amx.llm.provider import LLMProvider
 from amx.services.analyze_scope import filter_non_business_assets
 from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
+from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
 class DocumentScannerTests(unittest.TestCase):
@@ -258,6 +259,52 @@ class BackendCapabilityTests(unittest.TestCase):
         self.assertEqual(begin_calls, 1)
         self.assertEqual(len(executed), 2)
 
+    def test_apply_flow_calls_failed_callback_for_writeback_errors(self) -> None:
+        db = DatabaseConnector(DBConfig(backend="postgresql", database="sap"))
+        failed: list[tuple[int | None, str]] = []
+
+        class FakeConnection:
+            pass
+
+        class FakeBegin:
+            def __enter__(self):
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeEngine:
+            def begin(self):
+                return FakeBegin()
+
+        db._engine = FakeEngine()
+
+        def fail_apply_comment(**kwargs):
+            raise RuntimeError("writeback failed")
+
+        db.apply_comment = fail_apply_comment  # type: ignore[method-assign]
+
+        row = ReviewResult(
+            schema="public",
+            table="orders",
+            column="id",
+            final_description="Order identifier",
+            confidence=Confidence.HIGH,
+            source="manual",
+            applied=True,
+            asset_kind=AssetKind.TABLE.value,
+            result_id=42,
+        )
+
+        applied = apply_review_results_to_db(
+            db,
+            [row],
+            on_failed=lambda result, exc: failed.append((result.result_id, str(exc))),
+        )
+
+        self.assertEqual(applied, 0)
+        self.assertEqual(failed, [(42, "writeback failed")])
+
     def test_comment_sql_generation_per_backend(self) -> None:
         pg = PostgreSQLAdapter(DBConfig(backend="postgresql", database="sap"))
         sf = SnowflakeAdapter(DBConfig(backend="snowflake", database="sap"))
@@ -367,6 +414,40 @@ class BackendCapabilityTests(unittest.TestCase):
             adapter.create_engine()
 
         disable_warnings.assert_called_once()
+
+
+class SQLiteHistoryStoreTests(unittest.TestCase):
+    def test_record_db_apply_failure_marks_failed_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            with store._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO analysis_runs (
+                        started_at, status, command, mode, db_backend, db_profile,
+                        llm_provider, llm_model, scope_json, metrics_json, tokens_json, results_json, error_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (1.0, "success", "run", "chat", "databricks", "default", "openai", "gpt", "{}", "{}", "{}", "{}", ""),
+                )
+                run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO run_results (
+                        run_id, saved_at, schema_name, table_name, column_name, asset_kind,
+                        source, confidence, reasoning, alternatives_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (run_id, 1.0, "public", "orders", "id", "table", "manual", "high", "", '["Order identifier"]'),
+                )
+                result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+            store.record_db_apply_failure(result_id, "permission denied")
+            rows = store.get_run_results(run_id)
+
+            self.assertEqual(rows[0]["db_applied_status"], "failed")
+            self.assertEqual(rows[0]["rejection_reason"], "permission denied")
 
     def test_databricks_ssl_error_is_actionable(self) -> None:
         adapter = DatabricksAdapter(DBConfig(backend="databricks"))

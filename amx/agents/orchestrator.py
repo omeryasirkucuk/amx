@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 import re
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
@@ -103,6 +103,8 @@ def apply_review_results_to_db(
     results: list[ReviewResult],
     *,
     on_applied: "Callable[[ReviewResult], None] | None" = None,
+    on_failed: "Callable[[ReviewResult, Exception], None] | None" = None,
+    on_progress: "Callable[[ReviewResult, str, int, int, str], None] | None" = None,
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
     applied = 0
@@ -110,12 +112,15 @@ def apply_review_results_to_db(
     if not pending:
         return 0
     with db.engine.begin() as conn:
-        for r in pending:
+        total = len(pending)
+        for index, r in enumerate(pending, 1):
             try:
                 kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
             except ValueError:
                 kind = AssetKind.TABLE
             try:
+                if on_progress is not None:
+                    on_progress(r, "started", index, total, "")
                 db.apply_comment(
                     schema=r.schema,
                     table=r.table,
@@ -125,9 +130,15 @@ def apply_review_results_to_db(
                     conn=conn,
                 )
                 applied += 1
+                if on_progress is not None:
+                    on_progress(r, "applied", index, total, "")
                 if on_applied is not None:
                     on_applied(r)
             except Exception as exc:
+                if on_progress is not None:
+                    on_progress(r, "failed", index, total, str(exc))
+                if on_failed is not None:
+                    on_failed(r, exc)
                 error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
     return applied
 
@@ -1163,6 +1174,7 @@ class Orchestrator:
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
         hs = history_store()
+        from amx.utils.live_display import get_display
 
         def _on_applied(r: ReviewResult) -> None:
             if hs is not None and r.result_id is not None:
@@ -1180,6 +1192,57 @@ class Orchestrator:
                 except Exception as exc:
                     log.debug("Could not mark applied search catalog state for result_id=%s: %s", r.result_id, exc)
 
-        applied = apply_review_results_to_db(self.db, results, on_applied=_on_applied)
+        def _on_failed(r: ReviewResult, exc: Exception) -> None:
+            if hs is not None and r.result_id is not None:
+                try:
+                    hs.record_db_apply_failure(r.result_id, str(exc))
+                except Exception as inner_exc:
+                    log.debug("Could not record failed DB apply state for result_id=%s: %s", r.result_id, inner_exc)
+
+        display = get_display()
+        started_display = False
+        activity_index_by_result_id: dict[Any, int] = {}
+
+        def _asset_label(r: ReviewResult) -> str:
+            if r.column:
+                return f"{r.schema}.{r.table}.{r.column}"
+            if r.table:
+                return f"{r.schema}.{r.table}"
+            return r.schema or self.db.backend
+
+        if results and not display.is_active:
+            display.start(
+                schema="",
+                table=f"{len([r for r in results if r.applied and r.final_description])} comments",
+                mode="apply",
+                provider=getattr(self.llm.cfg, "provider", ""),
+                model=getattr(self.llm.cfg, "model", ""),
+            )
+            started_display = True
+
+        def _on_progress(r: ReviewResult, status: str, index: int, total: int, detail: str) -> None:
+            label = f"Writeback {index}/{total}: {_asset_label(r)}"
+            key = r.result_id if r.result_id is not None else f"{r.schema}:{r.table}:{r.column or ''}:{index}"
+            if key not in activity_index_by_result_id:
+                activity_index_by_result_id[key] = display.add_activity(label)
+            act_idx = activity_index_by_result_id[key]
+            if status == "started":
+                display.begin_activity(act_idx)
+            elif status == "applied":
+                display.complete_activity(act_idx, "Applied to database")
+            elif status == "failed":
+                display.fail_activity(act_idx, detail[:240])
+
+        try:
+            applied = apply_review_results_to_db(
+                self.db,
+                results,
+                on_applied=_on_applied,
+                on_failed=_on_failed,
+                on_progress=_on_progress,
+            )
+        finally:
+            if started_display:
+                display.stop()
         success(f"Applied {applied} metadata comments to the database")
         return applied

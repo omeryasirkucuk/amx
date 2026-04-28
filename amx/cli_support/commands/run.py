@@ -184,7 +184,57 @@ def register_analyze_commands(
                 except Exception:
                     pass
 
-        applied_count = apply_review_results_to_db(db, pending, on_applied=_on_applied)
+        def _on_failed(result: Any, exc: Exception) -> None:
+            hs = history_store()
+            if result.result_id is not None and hs is not None:
+                try:
+                    hs.record_db_apply_failure(result.result_id, str(exc))
+                except Exception:
+                    pass
+
+        from amx.utils.live_display import get_display
+
+        display = get_display()
+        started_display = False
+        activity_index_by_result_id: dict[object, int] = {}
+        if pending and not display.is_active:
+            display.start(schema="", table=f"{len(pending)} comments", mode="apply", provider="", model="")
+            started_display = True
+
+        def _asset_label(result: Any) -> str:
+            schema = getattr(result, "schema", "")
+            table = getattr(result, "table", "")
+            column = getattr(result, "column", None)
+            if getattr(result, "column", None):
+                return ".".join(part for part in (schema, table, column) if part)
+            if table:
+                return ".".join(part for part in (schema, table) if part)
+            return schema or db.backend
+
+        def _on_progress(result: Any, status: str, index: int, total: int, detail: str) -> None:
+            label = f"Writeback {index}/{total}: {_asset_label(result)}"
+            key = result.result_id if getattr(result, "result_id", None) is not None else f"{result.schema}:{result.table}:{result.column or ''}:{index}"
+            if key not in activity_index_by_result_id:
+                activity_index_by_result_id[key] = display.add_activity(label)
+            act_idx = activity_index_by_result_id[key]
+            if status == "started":
+                display.begin_activity(act_idx)
+            elif status == "applied":
+                display.complete_activity(act_idx, "Applied to database")
+            elif status == "failed":
+                display.fail_activity(act_idx, detail[:240])
+
+        try:
+            applied_count = apply_review_results_to_db(
+                db,
+                pending,
+                on_applied=_on_applied,
+                on_failed=_on_failed,
+                on_progress=_on_progress,
+            )
+        finally:
+            if started_display:
+                display.stop()
         clear_pending()
         success(f"Applied {applied_count} comment(s). Pending file cleared.")
         log_event(

@@ -28,12 +28,38 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         class FakeDatabaseConnector:
             def __init__(self, cfg):
                 self.cfg = cfg
+                self.backend = getattr(cfg, "backend", "unknown")
 
             def test_connection(self) -> bool:
                 return True
 
-        def fake_apply_review_results_to_db(db, rows, on_applied):
+        class FakeDisplay:
+            is_active = False
+
+            def start(self, **kwargs) -> None:
+                self.is_active = True
+
+            def stop(self) -> None:
+                self.is_active = False
+
+            def add_activity(self, label: str) -> int:
+                return 0
+
+            def begin_activity(self, idx: int) -> None:
+                return None
+
+            def complete_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def fail_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+        def fake_apply_review_results_to_db(db, rows, on_applied, on_failed=None, on_progress=None):
             for row in rows:
+                if on_progress is not None:
+                    on_progress(row, "started", 1, len(rows), "")
+                if on_progress is not None:
+                    on_progress(row, "applied", 1, len(rows), "")
                 on_applied(row)
             return len(rows)
 
@@ -45,6 +71,7 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
                 "amx.agents.orchestrator.apply_review_results_to_db",
                 side_effect=fake_apply_review_results_to_db,
             ),
+            patch("amx.utils.live_display.get_display", return_value=FakeDisplay()),
             patch("amx.cli_support.commands.run.history_store", return_value=fake_history),
             patch("amx.cli_support.commands.run.confirm", return_value=True),
         ):

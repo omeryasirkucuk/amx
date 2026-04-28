@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.122] — 2026-04-29
+### Added
+- **Realtime write-back progress**: `analyze apply`, `history review --apply`, and orchestrator-driven write-back now render a live activity view with elapsed time and per-asset progress, mirroring the runtime feel of `/run`.
+
+### Fixed
+- **Persistent DB write-back failure state**: When a comment fails during database write-back, AMX now stores `db_applied_status='failed'` for that `run_results.id`, so the SQLite-backed review/history views can show that the description was not written to the database.
+- **Applied status consistency**: Successful write-back now explicitly marks `db_applied_status='applied'` and clears any older stored failure reason for the same row.
+
 ## [0.1.121] — 2026-04-28
 ### Fixed
 - **Databricks batch write-back latency**: Database write-back now reuses a single transaction/connection across an apply batch, instead of opening a fresh transaction for every table or column comment.

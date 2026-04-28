@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.122] — 2026-04-29
+### Write-Back Visibility
+- **amx/agents/orchestrator.py / amx/cli_support/commands/run.py / amx/cli_support/commands/history.py**: Extended DB write-back callbacks with progress and failure hooks, then wired apply flows into the live display so write-back now shows elapsed time and per-item progress in real time.
+- **amx/storage/sqlite_store.py**: Successful DB writes now mark `db_applied_status='applied'`, and failed writes now mark `db_applied_status='failed'` with the error text persisted into `rejection_reason`.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added regression coverage for failed write-back callbacks, SQLite failure-state persistence, and the updated apply callback signature with live-display wiring.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.122` and documented the new write-back visibility behavior.
+
 ## [0.1.121] — 2026-04-28
 ### Databricks Apply Throughput
 - **amx/db/connector.py / amx/agents/orchestrator.py**: Added a shared `apply_comment()` path and updated apply-mode write-back to hold one transaction open for the whole batch instead of opening a new `engine.begin()` block per comment.
