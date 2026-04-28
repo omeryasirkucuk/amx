@@ -122,7 +122,8 @@ def register_root_commands(
 
         db_conn = DatabaseConnector(cfg.db)
         info(f"Testing [{cfg.db.backend}] connection to {cfg.db.display_summary} ...")
-        if db_conn.test_connection():
+        connected = db_conn.test_connection()
+        if connected:
             success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
         else:
             error("Connection failed.")

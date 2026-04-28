@@ -112,45 +112,14 @@ class DatabaseConnector:
         return getattr(self._adapter, "capabilities", BackendCapabilities())
 
     def test_connection(self) -> bool:
-        import threading
-
-        result_box: list[Any] = []
-
-        def _test():
-            try:
-                with self.engine.connect() as conn:
-                    conn.execute(text(self._adapter.test_connection_sql()))
-                result_box.append(True)
-            except Exception as e:
-                result_box.append(e)
-
-        timeout = float(getattr(self._adapter, "connect_timeout_seconds", 30))
-
-        # We use a daemon thread to prevent indefinite hanging (e.g. Databricks 
-        # warehouse STARTING state, or network proxy blackholes) from blocking CLI exit.
-        t = threading.Thread(target=_test, daemon=True)
-        t.start()
-        t.join(timeout)
-
-        if t.is_alive():
-            log.error(
-                "Connection timeout after %s seconds. "
-                "If this is a serverless or suspended warehouse, it may still be waking up. "
-                "Otherwise, check your host/network connectivity.",
-                timeout,
-            )
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text(self._adapter.test_connection_sql()))
+            return True
+        except Exception as exc:
+            actionable = self._adapter.actionable_profile_error(exc)
+            log.error("Connection failed: %s", actionable or exc)
             return False
-
-        if not result_box:
-            return False
-
-        res = result_box[0]
-        if isinstance(res, Exception):
-            actionable = self._adapter.actionable_profile_error(res)
-            log.error("Connection failed: %s", actionable or res)
-            return False
-
-        return True
 
     # ── Schema / asset listing ────────────────────────────────────────────
 
@@ -499,8 +468,9 @@ class DatabaseConnector:
         if asset_kind == AssetKind.TABLE and not self.capabilities.table_comments:
             raise UnsupportedDatabaseOperation(f"{self.backend} does not support table comments.")
         stmt = self._adapter.set_table_comment_sql(schema, table, keyword)
+        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
         with self.engine.begin() as conn:
-            conn.execute(text(stmt), {"cmt": comment})
+            conn.execute(text(final_sql), params)
         log.info("Set comment on %s.%s (%s)", schema, table, asset_kind.label)
 
     def set_column_comment(
@@ -509,24 +479,27 @@ class DatabaseConnector:
         if not self.capabilities.column_comments:
             raise UnsupportedDatabaseOperation(f"{self.backend} does not support column comments.")
         stmt = self._adapter.set_column_comment_sql(schema, table, column)
+        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
         with self.engine.begin() as conn:
-            conn.execute(text(stmt), {"cmt": comment})
+            conn.execute(text(final_sql), params)
         log.info("Set comment on %s.%s.%s", schema, table, column)
 
     def set_schema_comment(self, schema: str, comment: str) -> None:
         if not self.capabilities.schema_comments:
             raise UnsupportedDatabaseOperation(f"{self.backend} does not support schema comments.")
         stmt = self._adapter.set_schema_comment_sql(schema)
+        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
         with self.engine.begin() as conn:
-            conn.execute(text(stmt), {"cmt": comment})
+            conn.execute(text(final_sql), params)
         log.info("Set comment on schema %s", schema)
 
     def set_database_comment(self, comment: str) -> None:
         if not self.capabilities.database_comments:
             raise UnsupportedDatabaseOperation(f"{self.backend} does not support database comments.")
         stmt = self._adapter.set_database_comment_sql()
+        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
         with self.engine.begin() as conn:
-            conn.execute(text(stmt), {"cmt": comment})
+            conn.execute(text(final_sql), params)
         log.info("Set comment on database")
 
     # ── Adapter metadata ──────────────────────────────────────────────────

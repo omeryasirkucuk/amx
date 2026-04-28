@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.120] — 2026-04-28
+### Fixed
+- **Databricks write-back DDL**: Databricks table and column comment write-back no longer sends `:cmt` parameter markers inside DDL statements. AMX now inlines a safely quoted SQL literal for Databricks comment DDL, fixing failed `/run-apply` and manual metadata writes.
+
+### Changed
+- **Simpler `/connect` flow**: Removed the temporary threaded-connect and live-spinner path, keeping the bounded Databricks connector timeout/retry settings while returning the standard synchronous `/connect` behavior.
+- **Databricks profile defaults**: The interactive Databricks profile flow no longer silently forces `tls_no_verify=True`; TLS options are again explicit user choices.
+
+### Added
+- **Regression coverage**: Added a Databricks test proving comment DDL renders an inline quoted literal instead of bound parameters.
+
 ## [0.1.119] — 2026-04-28
 ### Fixed
 - **Databricks connection hang on startup**: Fixed an issue where testing the database connection would hang indefinitely if the Databricks SQL Warehouse was in a "STARTING" or "SUSPENDED" state. The test now runs in a non-blocking daemon thread and gracefully times out.

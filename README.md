@@ -475,6 +475,15 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
+### v0.1.120
+
+- **Databricks write-back fix**: Databricks table and column comment write-back now uses inline escaped SQL literals for `COMMENT` DDL, fixing failed `/run-apply` and metadata edit writes caused by `:cmt` parameter markers.
+- **Connector cleanup**: `/connect` is back to the standard synchronous flow, and the Databricks profile wizard no longer silently forces insecure TLS defaults.
+
+### v0.1.119
+
+- **Databricks connect timeout**: `/connect` added a bounded timeout path for warehouses that appear stuck while starting.
+
 ### v0.1.118
 
 - **Databricks TLS controls**: Databricks profiles now support a trusted CA bundle path and an optional insecure TLS bypass for corporate/self-signed certificate chains.

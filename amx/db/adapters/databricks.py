@@ -54,6 +54,13 @@ class DatabricksAdapter(DatabaseAdapter):
             connect_args=connect_args,
         )
 
+    def comment_sql_with_params(
+        self,
+        stmt_template: str,
+        comment: str,
+    ) -> tuple[str, dict[str, Any]]:
+        return stmt_template.replace(":cmt", self.quote_literal(comment)), {}
+
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"information_schema", "default"})
 

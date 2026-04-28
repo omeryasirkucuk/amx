@@ -329,6 +329,20 @@ class BackendCapabilityTests(unittest.TestCase):
         with self.assertRaises(UnsupportedDatabaseOperation):
             adapter.set_table_comment_sql("sales", "mv_orders", "MATERIALIZED VIEW")
 
+    def test_databricks_comment_sql_inlines_literal_for_ddl(self) -> None:
+        adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))
+
+        sql, params = adapter.comment_sql_with_params(
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS :cmt",
+            "Customer's order table",
+        )
+
+        self.assertEqual(
+            sql,
+            "COMMENT ON TABLE `main`.`sales`.`orders` IS 'Customer''s order table'",
+        )
+        self.assertEqual(params, {})
+
     def test_snowflake_metadata_uses_safe_show_and_mapping_rows(self) -> None:
         executed: list[tuple[str, dict | None]] = []
 

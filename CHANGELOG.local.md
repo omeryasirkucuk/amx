@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.120] — 2026-04-28
+### Databricks Write-Back Cleanup
+- **amx/db/adapters/base.py / amx/db/connector.py**: Added a small `comment_sql_with_params()` adapter hook so backends can choose bound params or inline comment literals for DDL execution.
+- **amx/db/adapters/databricks.py**: Databricks comment write-back now renders inline quoted literals instead of `:cmt` markers, which Databricks SQL rejects inside `COMMENT` DDL.
+- **amx/cli_support/commands/db.py / amx/cli_support/root_commands.py / amx/db/connector.py**: Removed the temporary forced `tls_no_verify=True`, restored explicit TLS prompts, and simplified `/connect` back to the normal synchronous flow.
+- **tests/test_regressions.py**: Added a regression proving Databricks DDL comment SQL is rendered with an inline escaped literal.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.120` and documented the cleanup.
+
 ## [0.1.119] — 2026-04-28
 ### Threaded Database Connection Verification
 - **amx/db/connector.py**: Moved `conn.execute(text("SELECT 1"))` into a daemon thread with `Thread.join(timeout)` when running `test_connection()`. Solved a critical hang where Databricks `pool_pre_ping=True` and cursor fetch calls block indefinitely while the SQL warehouse is starting/suspended.

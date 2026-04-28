@@ -86,6 +86,14 @@ class DatabaseAdapter(ABC):
         """Quote a SQL string literal for dialects that do not allow binds in metadata commands."""
         return "'" + str(value).replace("'", "''") + "'"
 
+    def comment_sql_with_params(
+        self,
+        stmt_template: str,
+        comment: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Return the final SQL plus execute params for comment DDL."""
+        return stmt_template, {"cmt": comment}
+
     def fully_qualified_name(self, schema: str, table: str) -> str:
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(table)}"
 
@@ -145,22 +153,22 @@ class DatabaseAdapter(ABC):
     def set_table_comment_sql(
         self, schema: str, table: str, asset_keyword: str
     ) -> str:
-        """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
+        """Return a SQL template for comment text write-back."""
         ...
 
     @abstractmethod
     def set_column_comment_sql(
         self, schema: str, table: str, column: str
     ) -> str:
-        """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
+        """Return a SQL template for comment text write-back."""
         ...
 
     @abstractmethod
     def set_schema_comment_sql(self, schema: str) -> str:
-        """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
+        """Return a SQL template for comment text write-back."""
         ...
 
     @abstractmethod
     def set_database_comment_sql(self) -> str:
-        """Return a SQL template with a ``:cmt`` bind parameter for the comment text."""
+        """Return a SQL template for comment text write-back."""
         ...
