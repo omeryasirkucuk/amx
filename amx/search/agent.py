@@ -522,9 +522,17 @@ class SearchAgent:
             out.append(row)
         return out[:limit]
 
-    def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
-        candidates = self._resolve_table_paths(hints, question)
-        seen = {item.lower() for item in candidates}
+    def _explicit_table_paths_for_question(self, question: str) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for inline in re.findall(r"\b([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", question or ""):
+            parts = inline.split(".", 1)
+            if len(parts) != 2:
+                continue
+            path = f"{parts[0]}.{parts[1]}"
+            if path.lower() not in seen:
+                seen.add(path.lower())
+                paths.append(path)
         explicit_table_tokens = [
             item
             for item in re.findall(
@@ -546,7 +554,21 @@ class SearchAgent:
                 path = f"{self.cfg.current_schema}.{token}"
                 if path.lower() not in seen:
                     seen.add(path.lower())
-                    candidates.append(path)
+                    paths.append(path)
+        return paths
+
+    def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
+        candidates = self._explicit_table_paths_for_question(question)
+        seen = {item.lower() for item in candidates}
+        for path in self._resolve_table_paths(hints, question):
+            if path.lower() not in seen:
+                seen.add(path.lower())
+                candidates.append(path)
+        explicit_tokens = {
+            path.split(".", 1)[1].lower()
+            for path in candidates
+            if "." in path
+        }
         tokens = [
             token
             for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", question or "")
@@ -565,6 +587,7 @@ class SearchAgent:
                 "yorum",
                 "yorumlar",
             }
+            and token.lower() not in explicit_tokens
         ]
         for token in tokens:
             for candidate in self.catalog.find_table_candidates(self.db_profile, token, limit=2):
@@ -712,10 +735,11 @@ class SearchAgent:
         rows: list[dict[str, Any]],
         retrieval_details: dict[str, Any],
     ) -> tuple[LiveProbePlan, dict[str, Any]]:
-        table_paths = self._candidate_table_paths_for_question(plan.entity_hints, question)
+        explicit_table_paths = self._explicit_table_paths_for_question(question)
+        table_paths = explicit_table_paths or self._candidate_table_paths_for_question(plan.entity_hints, question)
         if not self._should_plan_live_probe(question, plan, table_paths):
             return LiveProbePlan(False, "", []), {}
-        default_ops = self._default_live_probe_operations(question, table_paths)
+        default_ops = self._default_live_probe_operations(question, explicit_table_paths or table_paths)
         llm = self._llm_provider()
         system = (
             "You are the evidence planner inside AMX /search.\n"

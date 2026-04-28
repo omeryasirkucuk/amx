@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.112] — 2026-04-28
+### Explicit Table Targeting For Search Probes
+- **amx/search/agent.py**: Split explicit table-path extraction from fuzzy candidate discovery and made explicit user mentions take precedence for live probes. `schema.table`, `X table`, and `x tablosunda` now choose the intended target before any catalog fuzzy match or LLM hint.
+- **tests/test_search_catalog.py**: Added a regression where an `ADR6` fuzzy candidate and bad LLM hint cannot override an explicit `ADRC` probe target.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.112` and documented explicit table precedence.
+
 ## [0.1.111] — 2026-04-28
 ### Deterministic Search Tool Use
 - **amx/search/agent.py**: Added default live-probe operations for table-scoped factual metadata questions so the agent runs a live snapshot even when the planner LLM declines a probe. Added `table_metadata_snapshot`, better current-schema table extraction, and deterministic operation merging.

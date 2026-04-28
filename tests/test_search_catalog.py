@@ -566,6 +566,38 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertIn("Default live probe", answer.details["retrieval"]["live_probe"]["operations"][0]["rationale"])
         self.assertIn("agent-planned live metadata probe", answer.provenance)
 
+    def test_explicit_table_mention_wins_over_fuzzy_catalog_candidate_for_live_probe(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+
+        class FakeDB:
+            def get_column_comments(self, schema: str, table: str) -> dict[str, str | None]:
+                if table != "adrc":
+                    raise AssertionError(f"unexpected live probe table: {table}")
+                return {"addrnumber": "Address number", "name1": "Name line"}
+
+            def column_comments_probe_query(self, schema: str, table: str) -> str:
+                return f"comments probe for {schema}.{table}"
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"are all adrc columns commented","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"column","entity_hints":["adr6"],"search_queries":["are all adrc columns commented"],"needs_typo_recovery":false,"answer_language":"english","reason":"metadata completeness question"}',
+                '{"needs_live_probe":false,"reason":"semantic rows are enough","operations":[]}',
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?")
+
+        self.assertIn("`sap_s6p.adrc`", answer.summary)
+        self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc")
+
     def test_catalog_overview_question_lists_known_databases(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",

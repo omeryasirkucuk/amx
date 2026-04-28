@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.112] — 2026-04-28
+### Fixed
+- **Explicit table targeting in `/search` live probes**: Live probes now prioritize explicit user table mentions (`schema.table`, `ADRC table`, `adrc tablosunda`) over fuzzy catalog candidates and LLM-provided hints, preventing similarly named tables such as `ADR6` from being probed when the user asked for `ADRC`.
+
+### Added
+- **Regression coverage**: Added a test where the planner hint points at `ADR6` and the catalog only has an `ADR6` fuzzy candidate, but the explicit `adrc tablosunda` wording still forces the live probe to `sap_s6p.adrc`.
+
 ## [0.1.111] — 2026-04-28
 ### Changed
 - **Deterministic live-probe defaults in `/search`**: Table-scoped factual metadata questions now run a default live metadata probe/snapshot whenever catalog evidence cannot prove the answer, even if the planner LLM says no probe is needed.
