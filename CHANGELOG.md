@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.127] — 2026-04-29
+### Changed
+- **LLM-first `/search` interpretation**: `/search` question routing now always asks the interpreter LLM first instead of short-circuiting through rule-first intent detection.
+- **Safer fallback behavior**: Deterministic rule routing is still preserved as a resilience fallback only when LLM interpretation fails, reducing misrouted scope/intent decisions while keeping fail-safe continuity.
+- **Join-discovery answer consistency**: `joinable_tables` routing now keeps deterministic answer strategy where expected, so join-column outputs remain stable after the LLM-first transition.
+
 ## [0.1.126] — 2026-04-29
 ### Added
 - **Shared live progress across long-running CLI flows**: `/search sync`, `/search rebuild`, `/db schemas`, `/db tables`, `/db profile`, `/docs scan`, `/docs ingest`, `/docs analyze`, `/code scan`, `/code analyze`, and `/code refresh` now reuse the `/run`-style live activity display with continuously visible elapsed timing.

@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.127] — 2026-04-29
+### `/search` LLM-First Routing
+- **amx/search/agent.py**: Switched interpretation flow to LLM-first so `/search` always runs `_interpret_question()` before any deterministic routing logic.
+- **amx/search/agent.py**: Kept `_rule_first_plan()` only as a guarded fallback path when interpreter LLM classification fails, preserving continuity without dominating normal routing.
+- **amx/search/agent.py**: Updated join-discovery policy so `joinable_tables` keeps deterministic answer strategy after the interpreter flow change.
+- **tests/test_search_catalog.py / amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Verified `/search` regressions and bumped version to `0.1.127`.
+
 ## [0.1.126] — 2026-04-29
 ### Live Process Visibility Pass
 - **amx/utils/live_commands.py**: Added a shared helper for starting/stopping the common live display around non-`/run` commands without duplicating lifecycle logic.

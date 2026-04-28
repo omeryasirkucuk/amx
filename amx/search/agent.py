@@ -75,23 +75,16 @@ def _question_language_hint(text: str) -> str:
     if not sample:
         return "english"
     turkish_markers = {
-        "hangi",
-        "kaç",
-        "kac",
-        "tablo",
-        "tablolar",
-        "schema",
-        "şema",
-        "sema",
-        "kolon",
-        "kolonlar",
-        "joinleyebilirim",
-        "nedir",
-        "var",
-        "içinde",
-        "icinde",
+        "hangi", "hangileri", "kaç", "kac", "tablo", "tablol", "şema", "sema", 
+        "kolon", "join", "nedir", "nelerdir", "var", "yok", "içinde", "icinde",
+        "bütün", "butun", "tüm", "tum", "liste", "döküm", "detay", "kayıt", 
+        "sipariş", "müşteri", "fatura", "ürün", "satış", "bulabilirim", "nasıl"
     }
-    if any(ch in sample for ch in "çğıöşü") or any(token in sample for token in turkish_markers):
+    if any(ch in sample for ch in "çğıöşü"):
+        return "turkish"
+    # Word-based checks for fuzzy matches
+    words = sample.replace("?", " ").replace(".", " ").split()
+    if any(any(marker in word for marker in turkish_markers) for word in words):
         return "turkish"
     return "english"
 
@@ -202,8 +195,8 @@ class SearchAgent:
         return total > 0, status
 
     def _plan_with_overrides(self, *, question: str, base: SearchPlan | None, question_language: str) -> SearchPlan:
-        deterministic = self._rule_first_plan(question, question_language)
-        chosen = deterministic or base or SearchPlan(
+        deterministic_fallback = self._rule_first_plan(question, question_language)
+        chosen = base or deterministic_fallback or SearchPlan(
             intent="find_columns",
             out_of_domain=False,
             normalized_question=question,
@@ -226,15 +219,16 @@ class SearchAgent:
         if not sample:
             return None
 
-        inventory_database_terms = ("which databases", "hangi database", "hangi databaseler", "known databases")
-        inventory_schema_terms = ("which schemas", "hangi schema", "hangi sema", "hangi şema")
-        count_terms = ("kaç tablo", "kac tablo", "how many tables", "table count")
-        joinable_terms = ("hangi tablolar ile join", "hangi tablolarla join", "which tables can join", "joinleyebilirim")
-        join_terms = ("hangi kolon", "which columns", "joinlenir", "join edilir", "join columns")
-        explain_terms = ("nedir", "what is", "what does", "ne ise yarar", "what does this table do", "tablosu")
-        column_words = ("kolon", "kolonlar", "column", "columns", "field", "fields")
-        listing_words = ("hangi", "tüm", "tum", "list", "show", "getir", "listele")
-        concept_terms = ("içinde", "icinde", "related", "alak", "contain", "detay", "detail", "olan", "with")
+        inventory_database_terms = ("which databases", "hangi database", "hangi databaseler", "known databases", "tüm databaseler", "bütün databaseler")
+        inventory_schema_terms = ("which schemas", "hangi schema", "hangi sema", "hangi şema", "tüm şemalar", "bütün şemalar")
+        count_terms = ("kaç tablo", "kac tablo", "how many tables", "table count", "kaç tane tablo")
+        coverage_terms = ("eksik", "missing comment", "yorumsuz", "yorum yok", "açıklaması olmayan", "aciklamasi olmayan", "tanımsız")
+        joinable_terms = ("hangi tablolar ile join", "hangi tablolarla join", "which tables can join", "joinleyebilirim", "neyle joinlenir", "join yapılabilir")
+        join_terms = ("hangi kolon", "which columns", "joinlenir", "join edilir", "join columns", "üzerinden join", "nasıl join", "nasil bağlanır", "nasil baglanir")
+        explain_terms = ("nedir", "what is", "what does", "ne ise yarar", "what does this table do", "tablosu", "içeriği", "icerigi")
+        column_words = ("kolon", "kolonlar", "column", "columns", "field", "fields", "alan", "alanlar")
+        listing_words = ("hangi", "hangileri", "tüm", "tum", "bütün", "butun", "listesi", "nelerdir", "list", "show", "getir", "listele", "bulabilirim", "bulunur")
+        concept_terms = ("içinde", "icinde", "related", "alak", "contain", "detay", "detail", "olan", "with", "kayıtları", "sipariş", "müşteri", "fatura", "satış", "ürün")
 
         explicit_paths = self._explicit_table_paths_for_question(sample)
         explicit_mentions = self._explicit_table_mentions_for_question(sample)
@@ -247,6 +241,11 @@ class SearchAgent:
             return SearchPlan("list_schemas", False, normalized, "list_schemas", "inventory", "schema", [], search_queries, False, question_language, [], "rule-first inventory schema routing")
         if any(term in lower for term in count_terms):
             return SearchPlan("count_tables", False, normalized, "count_tables", "inventory", "aggregate", [], search_queries, False, question_language, [], "rule-first inventory count routing")
+
+        has_coverage_word = any(term in lower for term in coverage_terms)
+        has_comment_word = "comment" in lower or "yorum" in lower or "açıklama" in lower or "aciklama" in lower
+        if has_coverage_word and has_comment_word:
+            return SearchPlan("check_coverage", False, normalized, "check_coverage", "inventory", "database", [], search_queries, False, question_language, [], "rule-first metadata coverage check routing")
 
         tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", sample)
         if len(tokens) == 1 and len(sample.split()) == 1 and 2 <= len(tokens[0]) <= 20:
@@ -292,10 +291,10 @@ class SearchAgent:
             "Allowed intent values: find_columns, join_candidates, explain_table, list_databases, list_schemas, "
             "count_tables, compare_entities, unsupported.\n"
             "Core rules:\n"
-            "- Set out_of_domain=true only for greetings, small talk, or requests unrelated to database metadata.\n"
+            "- Set out_of_domain=true STRICTLY ONLY for greetings (e.g. hello, hi), small talk, or requests entirely unrelated to any kind of database or data context (e.g. write me Python code, tell me a joke).\n"
             "- Prefer exact metadata intent over broad semantic search when the user names a field, table, schema, or join target.\n"
-            "- Preserve entity_hints exactly as the user wrote them, even when they look misspelled.\n"
-            "- If the user references 'this table' or asks a follow-up about the current table, use session_memory/current_table to resolve the table-understanding intent.\n"
+            "- Preserve entity_hints exactly as the user wrote them, even when they look misspelled. Include table or column names here.\n"
+            "- Always use session_memory to resolve context! If the user asks a follow-up (e.g. 'what about its columns?', 'and the other table?'), map it to the active topic.\n"
             "- Always include search_queries. Put the original wording first. For non-English questions, also include one concise English retrieval phrase.\n"
             "- normalized_question should be the best retrieval phrase, usually English when it improves recall.\n"
             "Routing rules:\n"
@@ -308,9 +307,9 @@ class SearchAgent:
             "- Conceptual search for fields/columns -> semantic_concept, semantic_discovery, target_entity=column.\n"
             "- Table comparison or equivalence -> compare_entities, comparative_reasoning.\n"
             "Quality rules:\n"
-            "- Do not overuse unsupported; choose it only when the request truly cannot be mapped.\n"
+            "- NEVER use unsupported unless absolutely impossible to map. Default to search_mode=semantic_concept for ambiguous data requests.\n"
             "- Use ambiguity_flags for real risks such as missing_scope, ambiguous_table_name, cross_schema_risk, followup_scope_guess.\n"
-            "- Set answer_language to the language of the user's question."
+            "- Set answer_language to the exact language the user wrote the question in."
         )
         user = json.dumps(
             {
@@ -378,9 +377,11 @@ class SearchAgent:
         return "semantic_discovery"
 
     def _align_answer_language(self, plan: SearchPlan, question_language: str) -> SearchPlan:
-        normalized = (question_language or "english").strip().lower() or "english"
-        if plan.answer_language == normalized:
+        # Trust LLM's detected answer_language if provided and valid, otherwise fallback.
+        if plan.answer_language and plan.answer_language not in ("unknown", ""):
             return plan
+            
+        normalized = (question_language or "english").strip().lower() or "english"
         return SearchPlan(
             intent=plan.intent,
             out_of_domain=plan.out_of_domain,
@@ -500,7 +501,17 @@ class SearchAgent:
         if plan.question_class == "entity_lookup":
             return SearchPolicy(plan.question_class, "lexical_name_first", True, False, True, False, False, "ranked_matches", "suggest_narrow_scope")
         if plan.question_class == "join_discovery":
-            return SearchPolicy(plan.question_class, "verified_fk_then_semantic_join", True, False, True, allow_vector, allow_code, "join_candidates", "return_confidence_bands")
+            return SearchPolicy(
+                plan.question_class,
+                "verified_fk_then_semantic_join",
+                True,
+                plan.search_mode == "joinable_tables",
+                True,
+                allow_vector,
+                allow_code,
+                "join_candidates",
+                "return_confidence_bands",
+            )
         if plan.question_class == "table_understanding":
             return SearchPolicy(plan.question_class, "table_context_plus_neighbors", True, False, True, allow_vector, allow_code, "table_summary", "suggest_sync_if_sparse")
         if plan.question_class == "comparative_reasoning":
@@ -655,7 +666,7 @@ class SearchAgent:
         explicit_table_tokens = [
             item
             for item in re.findall(
-                r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tablo|tablosu|tablosunda)\b",
+                r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tablo|tablolar|tablosu|tablosunda|tablosuna|tablosundan|tabloları|tablosunu)\b",
                 question or "",
                 flags=re.IGNORECASE,
             )
@@ -663,7 +674,7 @@ class SearchAgent:
         explicit_table_tokens.extend(
             item
             for item in re.findall(
-                r"\b(?:table|tablo)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
+                r"\b(?:table|tables|tablo|tablolar|tablosu)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
                 question or "",
                 flags=re.IGNORECASE,
             )
@@ -1613,16 +1624,14 @@ class SearchAgent:
             "You are AMX /search, a grounded metadata copilot.\n"
             "Answer only from the retrieved metadata evidence you are given.\n"
             "Treat verified/live evidence as stronger than semantic or vector-only evidence.\n"
-            "If evidence is weak or empty, say so explicitly and suggest a narrower follow-up.\n"
+            "If evidence is weak or empty (e.g. no direct match), do NOT just say 'I found nothing'. Instead, be constructive: present the closest semantic matches or diagnostic rows provided as related/alternative suggestions.\n"
             "Do not invent table names, joins, counts, or column meanings not present in the evidence.\n"
-            "Keep the answer short and direct.\n"
-            "Use at most three short sentences.\n"
-            "First sentence: direct answer. Second sentence: scope or uncertainty when needed. Third sentence: one short next action only if needed.\n"
-            "Consider all provided rows, but summarize only decisive evidence. Do not present weak tail matches as if they were primary facts.\n"
+            "Keep the answer short and direct. Use natural, conversational language without strict sentence count limits.\n"
+            "Consider all provided rows. Summarize decisive evidence but also mention helpful related hints if direct answers are missing.\n"
             "When join evidence includes confidence bands, explain them.\n"
             "When scope was assumed, state that assumption.\n"
             "If action suggestions exist, mention only the most relevant one briefly.\n"
-            f"Write the final answer in {target_language}."
+            f"Write the final answer naturally in {target_language}."
         )
         user = json.dumps(
             {
@@ -1978,41 +1987,86 @@ class SearchAgent:
         try:
             t0 = time.monotonic()
             with step_spinner("Search Agent: interpreting question"):
-                rule_first_plan = self._rule_first_plan(clean_question, question_language)
-                llm_plan: SearchPlan | None = None
-                if rule_first_plan is None:
-                    llm_plan, interpretation_usage = self._interpret_question(clean_question)
-                plan = self._plan_with_overrides(question=clean_question, base=llm_plan or rule_first_plan, question_language=question_language)
+                llm_plan, interpretation_usage = self._interpret_question(clean_question)
+                plan = self._plan_with_overrides(question=clean_question, base=llm_plan, question_language=question_language)
             stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
-            return SearchAnswer(
-                intent="unsupported",
-                question=question,
-                rows=[],
-                confidence="low",
-                summary=f"`/search` could not interpret the question with the active LLM profile: {exc}",
-                provenance=[],
-                details={"reason": "llm_failure", "stage": "interpretation"},
+            fallback_plan = self._rule_first_plan(clean_question, question_language)
+            if fallback_plan is None:
+                return SearchAnswer(
+                    intent="unsupported",
+                    question=question,
+                    rows=[],
+                    confidence="low",
+                    summary=f"`/search` could not interpret the question with the active LLM profile: {exc}",
+                    provenance=[],
+                    details={"reason": "llm_failure", "stage": "interpretation"},
+                )
+            plan = self._plan_with_overrides(question=clean_question, base=fallback_plan, question_language=question_language)
+            stage_metrics.append(
+                {
+                    "stage": "interpretation",
+                    "duration_sec": round(time.monotonic() - t0, 4),
+                    "fallback": "rule_first_plan",
+                    "llm_error": str(exc),
+                }
             )
 
         if plan.out_of_domain or plan.search_mode == "unsupported":
+            has_hints = bool(plan.entity_hints) or bool(self._explicit_table_mentions_for_question(clean_question))
+            if has_hints:
+                # Soften rejection gate: fallback to semantic search if there are valid metadata keywords/hints
+                plan = SearchPlan(
+                    intent="find_columns",
+                    out_of_domain=False,
+                    normalized_question=plan.normalized_question,
+                    search_mode="semantic_concept",
+                    question_class="semantic_discovery",
+                    target_entity="unknown",
+                    entity_hints=list(plan.entity_hints),
+                    search_queries=list(plan.search_queries),
+                    needs_typo_recovery=plan.needs_typo_recovery,
+                    answer_language=plan.answer_language,
+                    ambiguity_flags=list(plan.ambiguity_flags),
+                    reason=(plan.reason + "; recovered from unsupported classification").strip("; "),
+                )
+            else:
+                return SearchAnswer(
+                    intent="unsupported",
+                    question=question,
+                    rows=[],
+                    confidence="low",
+                    summary=(
+                        "Bu soru veritabanı veya kod metadata konseptine uymuyor gibi görünüyor. Aramalar tablo, kolon ve yapı detayları üzerinde çalışır."
+                        if plan.answer_language == "turkish"
+                        else "This request doesn't appear related to database or code metadata. Search applies to tables, columns, and structural details."
+                    ),
+                    provenance=[],
+                    details={
+                        "reason": "out_of_domain",
+                        "plan": asdict(plan),
+                        "question_class": plan.question_class,
+                        "tokens": interpretation_usage,
+                        "stage_metrics": stage_metrics,
+                    },
+                )
+
+        if plan.intent == "check_coverage" or plan.search_mode == "check_coverage":
             return SearchAnswer(
-                intent="unsupported",
+                intent="check_coverage",
                 question=question,
                 rows=[],
-                confidence="low",
+                confidence="high",
                 summary=(
-                    "Bu soru metadata sorusu gibi gorunmuyor. `/search`; database, schema, tablo, kolon, join ve metadata anlami icin kullanilir."
+                    "Veritabanında henüz açıklama girilmemiş (comment eksik olan) tabloları ve kolonları listelemek / denetlemek için sistemin `/analyze pending` komutunu kullanmanız gerekir. Arama (Search) modülü sadece halihazırda var olan metadataları bulmaya odaklanır."
                     if plan.answer_language == "turkish"
-                    else "This does not look like a metadata question. `/search` is for discussing databases, schemas, tables, columns, joins, and metadata meaning."
+                    else "To scan the database for tables or columns missing comments, please use the `/analyze pending` command. Search is optimized for finding actual metadata content, not hunting for blanks."
                 ),
-                provenance=[],
+                provenance=["system_rules"],
                 details={
-                    "reason": "out_of_domain",
+                    "reason": "redirect_to_analyze",
                     "plan": asdict(plan),
-                    "question_class": plan.question_class,
-                    "tokens": interpretation_usage,
-                    "stage_metrics": stage_metrics,
+                    "stage_metrics": stage_metrics
                 },
             )
 
@@ -2086,17 +2140,22 @@ class SearchAgent:
 
         answer_usage: dict[str, Any] = {}
         answer_strategy = "deterministic"
-        answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
-        if answer_text is None:
-            answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details) if policy.deterministic_answer else None
-        if answer_text is None:
-            answer_text = self._deterministic_column_name_answer(plan, rows, retrieval_details)
-        if answer_text is None and live_probe.get("executed"):
-            answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
+        answer_text = None
+        if policy.deterministic_answer:
+            answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
+            if answer_text is None:
+                answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details)
+            if answer_text is None:
+                answer_text = self._deterministic_column_name_answer(plan, rows, retrieval_details)
+            if answer_text is None and live_probe.get("executed"):
+                answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
+        
         confidence = self._confidence(plan, rows, verification, retrieval_details)
         actions = self._action_suggestions(plan, rows, ready, retrieval_details, confidence)
         executed_actions = list(live_probe.get("operations") or [])
-        answer_text = answer_text or self._deterministic_ranked_answer(clean_question, plan, rows, retrieval_details, actions)
+        if policy.deterministic_answer:
+            answer_text = answer_text or self._deterministic_ranked_answer(clean_question, plan, rows, retrieval_details, actions)
+        
         if answer_text is None:
             try:
                 t0 = time.monotonic()

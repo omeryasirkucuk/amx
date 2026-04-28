@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.127`: `/search` question interpretation is now LLM-first (rule-based routing is fallback-only on LLM failure), which improves scope/intent understanding for ambiguous or conversational metadata questions while preserving deterministic resilience.
 - `v0.1.126`: Long-running CLI flows now reuse the `/run` live activity display more consistently, including `/search sync`, `/search rebuild`, `/db` inspection commands, `/docs scan`/`/docs ingest`/`/docs analyze`, `/code scan`/`/code analyze`/`/code refresh`, manual edit scope pickers, and batch polling heartbeats.
 - `v0.1.125`: `/search` and `/analyze` prompt stacks were hardened with stronger grounding rules, clearer confidence discipline, conservative merge precedence, and more robust fenced-output parsing.
 - `v0.1.124`: `/search` now uses rule-first routing, deterministic read-only live probes for table-scoped factual metadata questions, shorter template-first answers, tighter session-memory scope, and stronger suppression of weak vector-only tail matches.
