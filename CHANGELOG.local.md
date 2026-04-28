@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.125] — 2026-04-29
+### Prompt Quality Pass
+- **amx/search/agent.py**: Rewrote the `/search` interpretation and answer prompts to be more conservative about routing, ambiguity, evidence ranking, and weak-tail summarization.
+- **amx/agents/profile_agent.py / amx/agents/code_agent.py / amx/agents/rag_agent.py**: Hardened all analyze-agent prompts with explicit abstention/fallback guidance, confidence rules, and evidence-based reasoning requirements.
+- **amx/agents/orchestrator.py**: Strengthened merge/schema/database prompts with source precedence, conflict handling, and conservative summarization rules; added lightweight fenced-output stripping in prompt parsers.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.125` and documented the prompt-quality pass.
+
 ## [0.1.124] — 2026-04-29
 ### `/search` Hardening Refactor
 - **amx/search/agent.py**: Added rule-first routing, deterministic probe planning, row normalization/suppression, deterministic short-form answers, executed/suggested action separation, answer-strategy reporting, and tighter session-memory retention.

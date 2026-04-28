@@ -24,6 +24,15 @@ in English exactly as shown.
 
 Write descriptions assertively and directly (e.g. "Telephone extension number" or "Indicates the fax number").
 Do NOT start descriptions with "This column likely represents" or "This column likely is". Be concise.
+Ground every claim in the provided profile, keys, comments, samples, stats, or usage hints.
+If evidence is weak, stay generic but still useful; do not invent business jargon, SAP module names, legal meanings, or workflow claims that are not supported.
+Confidence rules:
+- HIGH: multiple strong clues agree (name + dtype + keys/comments/usage/samples).
+- MEDIUM: some plausible evidence exists but business meaning is not fully proven.
+- LOW: only weak naming or type clues exist; prefer a careful generic description.
+Reasoning must cite concrete evidence categories, not vague statements.
+Do not copy existing comments verbatim unless they are already the clearest available description.
+If a column cannot be resolved precisely, prefer a broader neutral description over hallucinating a specific one.
 
 For EACH column provide:
 1. A concise description (1-2 sentences).
@@ -44,6 +53,12 @@ Also include ONE table-level description block (even when processing column batc
 TABLE_DESCRIPTION_1: <most likely table description>
 {table_desc_lines}
 TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>
+
+Example style:
+COLUMN: KUNNR
+DESCRIPTION_1: Customer account identifier.
+CONFIDENCE: HIGH
+REASONING: Column name matches a common business-key pattern, appears in key relationships, and neighboring columns indicate customer master data.
 """
 
 
@@ -499,6 +514,8 @@ class ProfileAgent(BaseAgent):
         return "\n".join(lines)
 
     def _parse_response(self, text: str, ctx: AgentContext) -> list[MetadataSuggestion]:
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", (text or "").strip())
+        text = re.sub(r"\s*```$", "", text).strip()
         suggestions: list[MetadataSuggestion] = []
         current_col: str | None = None
         descs: list[str] = []

@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.125] — 2026-04-29
+### Changed
+- **Prompt hardening across `/search` and `/analyze`**: Search interpretation/answer prompts and analyze-agent prompts now use stricter grounding language, clearer ambiguity handling, stronger confidence discipline, and more conservative fallback behavior.
+- **Conservative merge guidance**: The orchestrator merge prompt now uses explicit source precedence and conflict-resolution guidance instead of implicitly averaging profile, code, and RAG suggestions.
+
+### Fixed
+- **Prompt-output resilience**: Profile, code, RAG, merge, and metadata-summary parsers now tolerate fenced LLM output more reliably, reducing avoidable parse failures from otherwise valid responses.
+- **Schema/database summarization guardrails**: Schema-level and database-level metadata prompts now explicitly forbid unsupported business-scope extrapolation from table summaries alone.
+
 ## [0.1.124] — 2026-04-29
 ### Changed
 - **`/search` rule-first routing**: High-confidence intents such as exact field lookups, explicit table explanations, join questions, and inventory questions now route through deterministic guardrails before the interpreter LLM is consulted.

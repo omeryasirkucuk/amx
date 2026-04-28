@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.codebase.analyzer import CodeReference, CodebaseReport
 from amx.llm.provider import LLMProvider
@@ -26,6 +28,15 @@ Write descriptions and reasoning in {target_language}. Keep the response labels
 
 Write descriptions assertively and directly (e.g. "Telephone extension number").
 Do NOT start descriptions with "This column likely represents" or "This column is". Be concise.
+Use code behavior as primary evidence: joins, filters, comparisons, assignments, formatting, validations, DTO names, API payload names, and query aliases.
+Do not infer meaning from a mere name mention if the snippet does not show behavior.
+Never invent a business process, document type, or regulatory meaning unless the code clearly supports it.
+If evidence is weak or only the column name appears, give a broader neutral description and lower confidence.
+Confidence rules:
+- HIGH: behavior is explicit in multiple snippets or naming plus usage strongly agree.
+- MEDIUM: the code suggests a likely role but the exact business meaning is not fully proven.
+- LOW: only superficial or sparse references exist.
+Reasoning must mention the concrete code patterns that justify the description.
 
 Respond in this format for each column (one block per column):
 
@@ -34,6 +45,12 @@ DESCRIPTION_1: <best description based on code usage>
 {desc_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <what code patterns support this>
+
+Example style:
+COLUMN: BUKRS
+DESCRIPTION_1: Company code identifier used to scope accounting records.
+CONFIDENCE: HIGH
+REASONING: The code joins, filters, and groups records by this field in accounting-related queries and request payloads.
 """
 
 
@@ -196,6 +213,8 @@ class CodeAgent(BaseAgent):
     def _parse_response(
         self, text: str, ctx: AgentContext, default_col: str = ""
     ) -> list[MetadataSuggestion]:
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", (text or "").strip())
+        text = re.sub(r"\s*```$", "", text).strip()
         suggestions: list[MetadataSuggestion] = []
         current_col = default_col
         descs: list[str] = []

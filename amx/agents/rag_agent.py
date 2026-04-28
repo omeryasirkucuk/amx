@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.config import PromptDetail, prompt_detail_for
 from amx.docs.rag import RAGStore
@@ -27,6 +29,15 @@ Write descriptions and reasoning in {target_language}. Keep the response labels
 
 Write descriptions assertively and directly (e.g. "Telephone extension number").
 Do NOT start descriptions with "This column likely represents" or "This column is". Be concise.
+Only use claims supported by the retrieved excerpts. Documentation can be stale or generic, so do not over-claim.
+Prefer excerpt-specific terminology over guesses from column names alone.
+If the excerpts describe the table but not a particular column, keep the column description broad and lower confidence.
+Do not invent business semantics, process stages, or cross-system mappings that are absent from the excerpts.
+Confidence rules:
+- HIGH: excerpts clearly describe the field or an unmistakable equivalent.
+- MEDIUM: excerpts strongly suggest the meaning but indirect mapping is required.
+- LOW: excerpts provide only weak surrounding context.
+Reasoning must cite the document evidence pattern, not just repeat the description.
 
 Respond in this format for each column (one block per column):
 
@@ -35,6 +46,12 @@ DESCRIPTION_1: <best description based on docs>
 {desc_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <what doc evidence supports this>
+
+Example style:
+COLUMN: WAERS
+DESCRIPTION_1: Transaction currency code.
+CONFIDENCE: HIGH
+REASONING: The retrieved excerpts describe the table's monetary amounts and refer to a companion currency field with the same naming pattern.
 """
 
 
@@ -160,6 +177,8 @@ class RAGAgent(BaseAgent):
     def _parse_response(
         self, text: str, ctx: AgentContext, default_col: str = ""
     ) -> list[MetadataSuggestion]:
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", (text or "").strip())
+        text = re.sub(r"\s*```$", "", text).strip()
         suggestions: list[MetadataSuggestion] = []
         current_col = default_col
         descs: list[str] = []

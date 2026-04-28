@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.125`: `/search` and `/analyze` prompt stacks were hardened with stronger grounding rules, clearer confidence discipline, conservative merge precedence, and more robust fenced-output parsing.
 - `v0.1.124`: `/search` now uses rule-first routing, deterministic read-only live probes for table-scoped factual metadata questions, shorter template-first answers, tighter session-memory scope, and stronger suppression of weak vector-only tail matches.
 - `v0.1.123`: Databricks column comment write-back now groups same-table column updates into a single `ALTER TABLE ... ALTER COLUMN ...` statement when supported, and apply-mode progress now stays on one rolling write-back line instead of printing one line per column.
 - `v0.1.122`: Apply-mode write-back now shows live elapsed time and per-asset progress in the terminal, and failed writes persist a `failed` DB-apply status for the corresponding saved result row.
@@ -394,6 +395,7 @@ Answering behavior:
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
 - synthesized answers still receive the visible grounded result set, but `/search` now suppresses low-confidence tail rows before answering so weak vector-only matches do not dominate the user-facing summary
+- `/search` prompting now treats explicit/live evidence as stronger than semantic fallback evidence, and its interpreter prompt is more conservative about follow-up scope, ambiguity, and enum selection
 - table-scoped factual questions are live-first: questions such as "what is the ADRC table?" or "are all ADRC columns commented?" resolve the requested table and run safe live metadata probes before answering structural facts like column count, types, nullability, table comments, and column-comment coverage. Open-ended semantic column searches, such as "city related column names", stay on catalog/vector retrieval unless the user explicitly scopes them to a table.
 - table-scoped factual verification now uses deterministic read-only probe selection instead of a second LLM planning hop, so `/search` can take safe metadata actions automatically without drifting into irrelevant planner output
 - explicit table mentions such as `schema.table`, `ADRC table`, or `adrc tablosunda` take precedence over fuzzy catalog matches. If the exact live table cannot be verified, AMX refuses to substitute a similar candidate such as `ADR6`; fuzzy matches are shown only as suggestions.
@@ -408,6 +410,7 @@ Answering behavior:
 - `/search` answer language is forced to the detected language of the user's question, even if the interpreter LLM suggests a different `answer_language`
 - aggregate answers avoid dumping the generic schema/table/column result grid when that grid would be irrelevant to the user question
 - if no active LLM profile exists, `/search ask` fails closed and tells you to configure `/llm`
+- `/analyze` agent prompts are now more conservative: profile, code, and RAG agents explicitly avoid unsupported business claims, explain confidence using evidence classes, and the orchestrator merge prompt now uses source precedence instead of averaging conflicting descriptions
 
 ## Project Structure
 

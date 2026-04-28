@@ -38,11 +38,20 @@ log = get_logger("agents.orchestrator")
 
 MERGE_PROMPT = """\
 You are merging metadata suggestions from multiple sources for database columns.
-
-For each column below, multiple sources have proposed descriptions.
-Produce a single best description that combines insights from all sources.
+Produce one best description per column using evidence discipline, not averaging.
 Write descriptions and reasoning in {target_language}. Keep the response labels
 (`COLUMN`, `BEST_DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+
+Source precedence:
+- Prefer descriptions supported by explicit code behavior or strong database/profile evidence.
+- Use documentation when it clearly matches the asset, but do not let generic docs override stronger direct evidence.
+- If sources disagree, choose the narrower description that is directly supported.
+- If no source proves a specific business meaning, prefer a broader neutral description rather than hallucinating a precise one.
+Confidence rules:
+- HIGH: multiple strong sources agree or one source is highly explicit.
+- MEDIUM: one reasonable interpretation dominates but some ambiguity remains.
+- LOW: evidence is sparse, conflicting, or generic.
+Reasoning must mention which source types won and why.
 
 {columns_text}
 
@@ -61,6 +70,9 @@ Based on the following tables and their primary purposes:
 
 Write the description and reasoning in {target_language}. Keep the response labels
 (`DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+Summarize only the shared business or technical domain visible across the provided tables.
+Do not invent organizational ownership, compliance scope, or process stages that are not evident from the summaries.
+Prefer one compact description sentence.
 
 Respond in this exact format:
 DESCRIPTION: <concise schema description>
@@ -75,11 +87,26 @@ The following schemas and their purposes were identified:
 
 Write the description and reasoning in {target_language}. Keep the response labels
 (`DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+Summarize only the common platform or business landscape implied by the schema summaries.
+Do not invent enterprise-wide claims or implementation details that are not visible in the provided summaries.
+Prefer one compact description sentence.
 
 Respond in this exact format:
 DESCRIPTION: <concise database description>
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why>
+"""
+
+MERGE_SYSTEM_PROMPT = """\
+You merge metadata suggestions conservatively.
+Do not invent meaning not present in the source proposals or their reasoning.
+Prefer directly supported and reusable catalog language over verbose prose.
+"""
+
+META_SYSTEM_PROMPT = """\
+You summarize catalog structure conservatively.
+Do not invent business scope beyond the provided table/schema summaries.
+Return only the requested labeled fields.
 """
 
 
@@ -92,6 +119,13 @@ def _writeback_asset_label(result: "ReviewResult", *, include_column: bool = Tru
     if table:
         return ".".join(part for part in (schema, table) if part)
     return schema
+
+
+def _strip_code_fences(text: str) -> str:
+    text = (text or "").strip()
+    text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
 
 
 def create_live_writeback_progress(
@@ -393,7 +427,12 @@ class Orchestrator:
         )
         
         with step_spinner(f"Generating description for schema {schema}"):
-            res = self.llm.chat([{"role": "user", "content": prompt}])
+            res = self.llm.chat(
+                [
+                    {"role": "system", "content": META_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
         
         desc, conf, reasoning = self._parse_meta_response(res.content)
         if not desc:
@@ -452,7 +491,12 @@ class Orchestrator:
         )
         
         with step_spinner("Generating description for database"):
-            res = self.llm.chat([{"role": "user", "content": prompt}])
+            res = self.llm.chat(
+                [
+                    {"role": "system", "content": META_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ]
+            )
         
         desc, conf, reasoning = self._parse_meta_response(res.content)
         if not desc:
@@ -544,6 +588,7 @@ class Orchestrator:
 
     def _parse_meta_response(self, text: str) -> tuple[str, Confidence, str]:
         """Parse meta DESCRIPTION/CONFIDENCE/REASONING blocks."""
+        text = _strip_code_fences(text)
         desc = ""
         conf = Confidence.MEDIUM
         reasoning = ""
@@ -723,6 +768,7 @@ class Orchestrator:
 
         columns_text = "\n\n".join(columns_blocks)
         messages = [
+            {"role": "system", "content": MERGE_SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": MERGE_PROMPT.format(
@@ -881,6 +927,7 @@ class Orchestrator:
         text: str,
     ) -> dict[str, tuple[str, Confidence, str]]:
         """Parse batched merge response into {column: (description, confidence, reasoning)}."""
+        text = _strip_code_fences(text)
         results: dict[str, tuple[str, Confidence, str]] = {}
         current_col = ""
         best = ""
