@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.110] — 2026-04-28
+### Changed
+- **Agentic live evidence probing in `/search`**: `/search ask` can now detect when catalog/semantic evidence is insufficient for a table-scoped metadata fact and ask the LLM to choose a safe live metadata probe from an allow-list.
+- **Live column-comment coverage answers**: Table-scoped comment/completeness questions can resolve the table, inspect live column comments, and answer deterministically with coverage counts, missing columns, and the probe query used.
+
+### Added
+- **Probe-query visibility**: Database adapters can expose the metadata query/operation used for column-comment probes, with PostgreSQL returning the concrete `pg_class`/`pg_attribute`/`col_description` query shape.
+- **Regression coverage**: Added a search test for the ADRC-style "are all columns commented?" question that verifies `/search` plans and runs a live `column_comments` probe instead of relying on semantic matches.
+
 ## [0.1.109] — 2026-04-28
 ### Changed
 - **Fuller `/search` evidence use**: Semantic column and table search now keeps vector-only matches when lexical/exact matching finds nothing, so AMX can use the available vector index instead of returning an empty result set prematurely.

@@ -115,6 +115,17 @@ class PostgreSQLAdapter(DatabaseAdapter):
             ).fetchone()
         return row[0] if row else None
 
+    def column_comments_probe_query(self, schema: str, table: str) -> str:
+        return (
+            "SELECT a.attname AS column_name, col_description(c.oid, a.attnum) AS comment "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "JOIN pg_attribute a ON a.attrelid = c.oid "
+            "WHERE n.nspname = :schema AND c.relname = :table "
+            "AND a.attnum > 0 AND NOT a.attisdropped "
+            "ORDER BY a.attnum"
+        )
+
     # ── Incoming foreign keys ─────────────────────────────────────────────
 
     def get_incoming_foreign_keys(

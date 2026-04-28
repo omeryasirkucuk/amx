@@ -157,6 +157,20 @@ class SearchCatalogTests(unittest.TestCase):
             ],
         )
 
+    def _adrc_profile(self) -> TableProfile:
+        return TableProfile(
+            schema="sap_s6p",
+            name="adrc",
+            asset_kind=AssetKind.TABLE,
+            row_count=20,
+            existing_comment="Address master",
+            columns=[
+                ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
+                ColumnProfile(name="name1", dtype="TEXT", nullable=True, existing_comment="Name line"),
+                ColumnProfile(name="city1", dtype="TEXT", nullable=True, existing_comment="City"),
+            ],
+        )
+
     def _search_cfg(self) -> AMXConfig:
         cfg = AMXConfig()
         cfg.active_db_profile = "default"
@@ -511,6 +525,45 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.confidence, "high")
         self.assertIn("date related columns", answer.details["plan"]["search_queries"])
         self.assertIn("Write the final answer in turkish.", _FakeLLMProvider.calls[-1][0]["content"])
+
+    def test_table_scoped_comment_question_runs_agent_planned_live_probe(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._adrc_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        fake_db = type(
+            "FakeDB",
+            (),
+            {
+                "get_column_comments": lambda self, schema, table: {
+                    "addrnumber": "Address number",
+                    "name1": "Name line",
+                    "city1": None,
+                },
+                "column_comments_probe_query": lambda self, schema, table: (
+                    "SELECT column_name, comment FROM metadata WHERE table_name = :table"
+                ),
+            },
+        )()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"are all adrc columns commented","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"column","entity_hints":["adrc"],"search_queries":["adrc tablosunda commentler tum kolonlar icin girili mi","are all ADRC columns commented"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"metadata completeness question"}',
+                '{"needs_live_probe":true,"reason":"Retrieved semantic rows do not prove table-wide comment coverage.","operations":[{"operation":"column_comments","table_path":"sap_s6p.adrc","rationale":"Need live column comment coverage for ADRC."}]}',
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=fake_db):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?")
+
+        self.assertEqual(answer.confidence, "high")
+        self.assertIn("Hayir", answer.summary)
+        self.assertIn("`city1`", answer.summary)
+        self.assertIn("SELECT column_name, comment", answer.summary)
+        self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["operation"], "column_comments")
+        self.assertIn("agent-planned live metadata probe", answer.provenance)
 
     def test_catalog_overview_question_lists_known_databases(self) -> None:
         self.catalog.sync_table_profile(

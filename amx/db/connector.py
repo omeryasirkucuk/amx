@@ -185,6 +185,9 @@ class DatabaseConnector:
         cols = insp.get_columns(table, schema=schema)
         return {c["name"]: c.get("comment") for c in cols}
 
+    def column_comments_probe_query(self, schema: str, table: str) -> str:
+        return self._adapter.column_comments_probe_query(schema, table)
+
     def get_schema_comment(self, schema: str) -> str | None:
         return self._adapter.get_schema_comment(self.engine, schema)
 

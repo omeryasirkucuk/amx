@@ -380,6 +380,7 @@ Answering behavior:
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
 - synthesized answers receive every retrieved row in the current result set, with result indexes, so AMX can answer across all returned candidates instead of only the first few matches
+- when retrieved/catalog evidence cannot prove a table-scoped metadata fact, the Search Agent can plan and run a safe live metadata probe itself. For example, a question like "are all ADRC columns commented?" resolves the table, runs a column-comment metadata probe, and answers from the live result instead of guessing from semantic matches.
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
 - join answers now pass the resolved base/target join columns into the synthesis prompt, so AMX can explain not just which tables are joinable but also which column pairs it found
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally

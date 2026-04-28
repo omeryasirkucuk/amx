@@ -52,6 +52,13 @@ class SearchActionSuggestion:
     reason: str
 
 
+@dataclass
+class LiveProbePlan:
+    needs_live_probe: bool
+    reason: str
+    operations: list[dict[str, str]]
+
+
 def _question_language_hint(text: str) -> str:
     sample = (text or "").strip().lower()
     if not sample:
@@ -515,6 +522,37 @@ class SearchAgent:
             out.append(row)
         return out[:limit]
 
+    def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
+        candidates = self._resolve_table_paths(hints, question)
+        seen = {item.lower() for item in candidates}
+        tokens = [
+            token
+            for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", question or "")
+            if token.lower()
+            not in {
+                "table",
+                "tablo",
+                "tablosu",
+                "tablosunda",
+                "column",
+                "columns",
+                "kolon",
+                "kolonlar",
+                "comment",
+                "commentler",
+                "yorum",
+                "yorumlar",
+            }
+        ]
+        for token in tokens:
+            for candidate in self.catalog.find_table_candidates(self.db_profile, token, limit=2):
+                path = f"{candidate.get('schema_name', '')}.{candidate.get('table_name', '')}"
+                if path == "." or path.lower() in seen:
+                    continue
+                seen.add(path.lower())
+                candidates.append(path)
+        return candidates[:6]
+
     def _resolve_table_paths(self, hints: list[str], question: str) -> list[str]:
         resolved: list[str] = []
         seen: set[str] = set()
@@ -556,6 +594,163 @@ class SearchAgent:
         if question_class == "join_discovery":
             return max(base, 10)
         return base
+
+    def _should_plan_live_probe(self, question: str, plan: SearchPlan, table_paths: list[str]) -> bool:
+        if not table_paths or plan.search_mode in {"list_databases", "list_schemas", "count_tables", "join_candidates", "joinable_tables", "table_explain"}:
+            return False
+        sample = (question or "").strip().lower()
+        metadata_terms = {
+            "comment",
+            "comments",
+            "commentler",
+            "yorum",
+            "yorumlar",
+            "description",
+            "descriptions",
+            "açıklama",
+            "aciklama",
+            "metadata",
+        }
+        short_verification_tokens = {"mi", "mı", "mu", "mü"}
+        verification_terms = {
+            "var mı",
+            "girili",
+            "dolu",
+            "tüm",
+            "tum",
+            "all",
+            "every",
+            "whether",
+            "has",
+            "have",
+            "exists",
+            "complete",
+            "coverage",
+        }
+        tokens = set(re.findall(r"\w+", sample, flags=re.UNICODE))
+        return (
+            any(term in sample for term in metadata_terms)
+            or any(term in sample for term in verification_terms)
+            or bool(tokens.intersection(short_verification_tokens))
+        )
+
+    def _plan_live_probe(
+        self,
+        question: str,
+        plan: SearchPlan,
+        policy: SearchPolicy,
+        rows: list[dict[str, Any]],
+        retrieval_details: dict[str, Any],
+    ) -> tuple[LiveProbePlan, dict[str, Any]]:
+        table_paths = self._candidate_table_paths_for_question(plan.entity_hints, question)
+        if not self._should_plan_live_probe(question, plan, table_paths):
+            return LiveProbePlan(False, "", []), {}
+        llm = self._llm_provider()
+        system = (
+            "You are the evidence planner inside AMX /search.\n"
+            "Decide whether the current retrieved metadata is enough to answer, or whether AMX should run a safe live metadata probe.\n"
+            "Return JSON only.\n"
+            "Allowed operations are: column_comments, table_profile, table_exists, schema_tables.\n"
+            "Use column_comments when the user asks whether table columns have comments/descriptions or asks comment coverage.\n"
+            "Only choose operations for the candidate table paths provided. Do not invent schemas or tables.\n"
+            "Set needs_live_probe=false when retrieved rows already directly answer the question."
+        )
+        user = json.dumps(
+            {
+                "question": question,
+                "plan": asdict(plan),
+                "policy": asdict(policy),
+                "candidate_table_paths": table_paths,
+                "retrieval_details": retrieval_details,
+                "retrieved_rows": self._rows_for_prompt(rows, policy),
+            },
+            ensure_ascii=True,
+        )
+        result = llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.0,
+            max_tokens=700,
+            use_logprobs=False,
+        )
+        payload = _json_block(result.content)
+        ops: list[dict[str, str]] = []
+        allowed = {"column_comments", "table_profile", "table_exists", "schema_tables"}
+        for item in payload.get("operations") or []:
+            if not isinstance(item, dict):
+                continue
+            operation = str(item.get("operation") or "").strip()
+            table_path = str(item.get("table_path") or "").strip()
+            if operation not in allowed:
+                continue
+            if table_path and table_path not in table_paths:
+                continue
+            ops.append(
+                {
+                    "operation": operation,
+                    "table_path": table_path,
+                    "rationale": str(item.get("rationale") or "").strip(),
+                }
+            )
+        return (
+            LiveProbePlan(
+                needs_live_probe=bool(payload.get("needs_live_probe")) and bool(ops),
+                reason=str(payload.get("reason") or "").strip(),
+                operations=ops[:3],
+            ),
+            result.usage or {},
+        )
+
+    def _execute_live_probe(self, probe_plan: LiveProbePlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if not probe_plan.needs_live_probe:
+            return [], {"executed": False, "reason": probe_plan.reason, "operations": []}
+        db = self._inventory_db()
+        rows: list[dict[str, Any]] = []
+        executed: list[dict[str, Any]] = []
+        for op in probe_plan.operations:
+            operation = op.get("operation", "")
+            table_path = op.get("table_path", "")
+            if operation == "column_comments" and "." in table_path:
+                schema_name, table_name = table_path.split(".", 1)
+                query_text = db.column_comments_probe_query(schema_name, table_name)
+                comments = db.get_column_comments(schema_name, table_name)
+                total = len(comments)
+                filled = sum(1 for value in comments.values() if str(value or "").strip())
+                missing = [name for name, value in comments.items() if not str(value or "").strip()]
+                rows.append(
+                    {
+                        "row_type": "live_probe",
+                        "probe_operation": "column_comments",
+                        "schema_name": schema_name,
+                        "table_name": table_name,
+                        "metric": "column_comment_coverage",
+                        "value": filled,
+                        "total_columns": total,
+                        "commented_columns": filled,
+                        "missing_columns": missing,
+                        "all_columns_commented": total > 0 and filled == total,
+                        "source": "live_db",
+                        "verified_live": True,
+                        "executed_query": query_text,
+                    }
+                )
+                for column_name, comment in comments.items():
+                    rows.append(
+                        {
+                            "row_type": "live_column_comment",
+                            "schema_name": schema_name,
+                            "table_name": table_name,
+                            "column_name": column_name,
+                            "effective_description": comment or "",
+                            "has_comment": bool(str(comment or "").strip()),
+                            "source": "live_db",
+                            "verified_live": True,
+                        }
+                    )
+                executed.append({"operation": operation, "table_path": table_path, "query": query_text})
+        return rows, {"executed": bool(executed), "reason": probe_plan.reason, "operations": executed}
 
     def _retrieve(self, question: str, plan: SearchPlan, policy: SearchPolicy) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         limit = self._candidate_limit(policy.question_class)
@@ -772,6 +967,9 @@ class SearchAgent:
             "live_verified": False,
             "checks": [],
         }
+        if any(row.get("row_type") == "live_probe" and row.get("verified_live") for row in rows):
+            verification["live_verified"] = True
+            verification["checks"].append("agent_planned_live_metadata_probe")
         if not policy.verify_live:
             return rows, verification
         if plan.question_class == "inventory":
@@ -826,6 +1024,13 @@ class SearchAgent:
                 "table_count": row.get("table_count", ""),
                 "confidence_band": row.get("confidence_band", ""),
                 "verified_live": bool(row.get("verified_live")),
+                "probe_operation": row.get("probe_operation", ""),
+                "total_columns": row.get("total_columns", ""),
+                "commented_columns": row.get("commented_columns", ""),
+                "missing_columns": row.get("missing_columns", []),
+                "all_columns_commented": row.get("all_columns_commented", ""),
+                "executed_query": row.get("executed_query", ""),
+                "has_comment": row.get("has_comment", ""),
             }
             payload.append(item)
         return payload
@@ -936,10 +1141,58 @@ class SearchAgent:
             return f"{lead}: {joined}."
         return None
 
+    def _deterministic_live_probe_answer(
+        self,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        live_probe: dict[str, Any],
+    ) -> str | None:
+        lang = (plan.answer_language or "english").lower()
+        coverage = next(
+            (
+                row
+                for row in rows
+                if row.get("row_type") == "live_probe"
+                and row.get("probe_operation") == "column_comments"
+            ),
+            None,
+        )
+        if not coverage:
+            return None
+        schema_name = str(coverage.get("schema_name") or "")
+        table_name = str(coverage.get("table_name") or "")
+        total = int(coverage.get("total_columns") or 0)
+        filled = int(coverage.get("commented_columns") or 0)
+        missing = [str(item) for item in (coverage.get("missing_columns") or []) if str(item)]
+        query_text = str(coverage.get("executed_query") or "")
+        all_done = bool(coverage.get("all_columns_commented"))
+        table_path = f"{schema_name}.{table_name}" if schema_name and table_name else table_name
+        if lang == "turkish":
+            if all_done:
+                answer = f"Evet. `{table_path}` tablosundaki **{total}/{total}** kolonun comment'i live DB metadata'sinda girili gorunuyor."
+            else:
+                answer = f"Hayir. `{table_path}` tablosunda **{filled}/{total}** kolonun comment'i girili; **{len(missing)}** kolon eksik."
+                if missing:
+                    answer += " Eksik kolonlar: " + ", ".join(f"`{name}`" for name in missing[:25]) + "."
+            if query_text:
+                answer += f" Kontrol icin kullanilan probe: `{query_text}`."
+            return answer
+        if all_done:
+            answer = f"Yes. Live DB metadata shows comments for **{total}/{total}** columns on `{table_path}`."
+        else:
+            answer = f"No. Live DB metadata shows comments for **{filled}/{total}** columns on `{table_path}`; **{len(missing)}** columns are missing comments."
+            if missing:
+                answer += " Missing columns: " + ", ".join(f"`{name}`" for name in missing[:25]) + "."
+        if query_text:
+            answer += f" Probe used: `{query_text}`."
+        return answer
+
     def _provenance(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]) -> list[str]:
         labels: list[str] = []
         if any((row.get("source") or "") == "live_db" for row in rows):
             labels.append("live database introspection")
+        if any((row.get("row_type") or "") == "live_probe" for row in rows):
+            labels.append("agent-planned live metadata probe")
         if any((row.get("source") or "") == "config" for row in rows):
             labels.append("configured database profiles")
         if plan.question_class == "inventory":
@@ -971,6 +1224,8 @@ class SearchAgent:
             return "low"
         if plan.question_class == "inventory":
             return "high" if verification.get("live_verified") else "medium"
+        if any(bool(row.get("verified_live")) for row in rows):
+            return "high"
         top = rows[0]
         if plan.question_class == "join_discovery":
             band = str(top.get("confidence_band") or "")
@@ -1116,6 +1371,28 @@ class SearchAgent:
             rows, retrieval_details = self._retrieve(clean_question, plan, policy)
         stage_metrics.append({"stage": "retrieval", "duration_sec": round(time.monotonic() - t0, 4)})
 
+        live_probe_usage: dict[str, Any] = {}
+        live_probe: dict[str, Any] = {"executed": False, "operations": []}
+        try:
+            t0 = time.monotonic()
+            with step_spinner("Search Agent: checking evidence gaps"):
+                probe_plan, live_probe_usage = self._plan_live_probe(clean_question, plan, policy, rows, retrieval_details)
+                live_rows, live_probe = self._execute_live_probe(probe_plan)
+                if live_rows:
+                    rows = live_rows + rows
+                    retrieval_details.setdefault("evidence_sources", [])
+                    if "live_db" not in retrieval_details["evidence_sources"]:
+                        retrieval_details["evidence_sources"].append("live_db")
+                    if "agent_planned_live_probe" not in retrieval_details["evidence_sources"]:
+                        retrieval_details["evidence_sources"].append("agent_planned_live_probe")
+                    retrieval_details["live_probe"] = live_probe
+            stage_metrics.append({"stage": "live_probe", "duration_sec": round(time.monotonic() - t0, 4)})
+        except Exception as exc:
+            live_probe = {"executed": False, "error": str(exc), "operations": []}
+            retrieval_details["live_probe"] = live_probe
+            retrieval_details.setdefault("ambiguity_flags", [])
+            retrieval_details["ambiguity_flags"].append("live_probe_failed")
+
         t0 = time.monotonic()
         with step_spinner("Search Agent: verifying high-risk claims"):
             rows, verification = self._verify_rows(plan, policy, rows, retrieval_details)
@@ -1123,6 +1400,8 @@ class SearchAgent:
 
         answer_usage: dict[str, Any] = {}
         answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details) if policy.deterministic_answer else None
+        if answer_text is None and live_probe.get("executed"):
+            answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
         confidence = self._confidence(plan, rows, verification)
         actions = self._action_suggestions(plan, rows, ready, retrieval_details, confidence)
         if answer_text is None:
@@ -1191,9 +1470,10 @@ class SearchAgent:
                 "ambiguity_flags": list(plan.ambiguity_flags) + list(retrieval_details.get("ambiguity_flags") or []),
                 "evidence_sources": retrieval_details.get("evidence_sources", []),
                 "stage_metrics": stage_metrics,
-                "tokens": _merge_usage(interpretation_usage, answer_usage),
+                "tokens": _merge_usage(interpretation_usage, live_probe_usage, answer_usage),
                 "llm_usage": {
                     "interpretation": interpretation_usage,
+                    "live_probe": live_probe_usage,
                     "answer": answer_usage,
                 },
             },

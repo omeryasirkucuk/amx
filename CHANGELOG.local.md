@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.110] — 2026-04-28
+### Agentic Live Metadata Probes
+- **amx/search/agent.py**: Added an evidence-gap planning step that lets the Search Agent ask the LLM whether retrieved evidence is enough, choose safe live metadata probes from an allow-list, execute `column_comments`, and answer deterministically from live coverage rows.
+- **amx/db/adapters/base.py / amx/db/adapters/postgresql.py / amx/db/connector.py**: Added `column_comments_probe_query()` so live probe answers can disclose the concrete metadata operation/query used.
+- **tests/test_search_catalog.py**: Added ADRC-style coverage regression proving `/search` resolves the table, runs a live column-comment probe, reports missing columns, and avoids semantic-only guessing.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.110` and documented agentic live-probe behavior.
+
 ## [0.1.109] — 2026-04-28
 ### Search Evidence Coverage & HITL Actions
 - **amx/search/catalog.py**: Removed the premature exact-hit requirement from `search_columns()` and `search_tables()` so vector-only matches are used when lexical matching misses.
