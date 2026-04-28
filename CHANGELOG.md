@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.109] — 2026-04-28
+### Changed
+- **Fuller `/search` evidence use**: Semantic column and table search now keeps vector-only matches when lexical/exact matching finds nothing, so AMX can use the available vector index instead of returning an empty result set prematurely.
+- **All-result answer synthesis**: `/search` now passes every retrieved result row in the current answer set into the grounded synthesis prompt, with result indexes, so answers can cover all returned candidates rather than only the first few.
+- **Actionable profiling failures**: Backend profiling failures can now surface actionable remediation text, including PostgreSQL guidance for unavailable `pg_stat_statements`, missing relations, and insufficient privileges.
+
+### Added
+- **Human-approved search actions**: Added `/search ask --actions`, which prompts before running executable follow-up actions such as catalog sync, cached code-evidence refresh, or single-table metadata analysis.
+- **Programmatic inference entrypoint**: Added `amx.core.inference.infer_table_metadata()` so approved search actions can run single-table metadata analysis without invoking the interactive CLI flow.
+- **Regression coverage**: Added tests for vector-only column/table retrieval, full synthesis payload coverage, and declined human-in-the-loop search actions.
+
 ## [0.1.108] — 2026-04-28
 ### Changed
 - **More assertive descriptions**: System prompts in `profile_agent`, `code_agent`, and `rag_agent` were updated to force the LLM to generate assertive and direct descriptions, stopping it from starting with phrases like "This column likely represents...".

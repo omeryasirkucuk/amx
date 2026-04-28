@@ -2,6 +2,16 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.109] — 2026-04-28
+### Search Evidence Coverage & HITL Actions
+- **amx/search/catalog.py**: Removed the premature exact-hit requirement from `search_columns()` and `search_tables()` so vector-only matches are used when lexical matching misses.
+- **amx/search/agent.py**: Expanded synthesis evidence payloads to include every retrieved row in the active result set, added result indexes, and added low-confidence action suggestions for empty semantic/entity answers.
+- **amx/cli_support/commands/search.py / amx/cli_support/session.py**: Added `/search ask --actions`, a human-in-the-loop execution path that asks before running catalog sync, cached code-evidence refresh, or single-table metadata analysis.
+- **amx/core/inference.py / amx/core/__init__.py**: Added a programmatic single-table metadata inference entrypoint for approved search actions.
+- **amx/db/adapters/base.py / amx/db/adapters/postgresql.py / amx/db/connector.py**: Added backend-specific actionable profiling errors and tolerant column-stat warnings so search-triggered sync/analyze actions fail with clearer remediation.
+- **tests/test_search_catalog.py / tests/test_cli_integration.py**: Added regression coverage for vector-only retrieval, all-result synthesis payloads, and declined action execution.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.109` and documented the search behavior changes.
+
 ## [0.1.108] — 2026-04-28
 ### Assertive Agent Descriptions & Dynamic `max_tokens` Limit
 - **amx/agents/profile_agent.py**, **amx/agents/code_agent.py**, **amx/agents/rag_agent.py**: Updated `_BASE_SYSTEM_PROMPT` adding "Write descriptions assertively and directly" rule to stop fuzzy beginnings ("This column likely represents", "This column may contain").

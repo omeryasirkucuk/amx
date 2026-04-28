@@ -16,6 +16,20 @@ class PostgreSQLAdapter(DatabaseAdapter):
     def create_engine(self) -> Engine:
         return create_engine(self.cfg.url, pool_pre_ping=True)
 
+    def actionable_profile_error(self, exc: Exception) -> str | None:
+        msg = str(exc).lower()
+        if "pg_stat_statements must be loaded via shared_preload_libraries" in msg:
+            return (
+                "pg_stat_statements view is unavailable in this session. "
+                "Enable it in postgresql.conf (shared_preload_libraries='pg_stat_statements') "
+                "and restart PostgreSQL, or skip telemetry/system views from AMX scope."
+            )
+        if "permission denied" in msg:
+            return "Insufficient privileges for profiling. Grant SELECT on this object or use a higher-privileged role."
+        if "undefined_table" in msg or "does not exist" in msg:
+            return "Referenced relation is missing or inaccessible in the current schema search path."
+        return None
+
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"information_schema", "pg_catalog", "pg_toast"})
 

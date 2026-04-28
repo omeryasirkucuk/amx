@@ -194,7 +194,7 @@ Notes:
 | `/analyze` + `/run [ASSET …]` | Run all agents with scope picker: Database / Schema / Asset; `--code-profile`, `--code-refresh` |
 | `/analyze` + `/run-apply [ASSET …]` | Same as `/run --apply` |
 | `/analyze` + `/apply` | Write pending approved metadata to the database |
-| `/search` + `/ask <question>` | Ask conversational metadata questions with LLM grounding over the internal search catalog, including databases, schemas, table counts, joins, and column meaning |
+| `/search` + `/ask [--actions] <question>` | Ask conversational metadata questions with LLM grounding over the internal search catalog; `--actions` prompts before running approved follow-up actions |
 | `/search` + `/status` | Show catalog counts, freshness, and recent sync jobs |
 | `/search` + `/sources` | Show enabled search settings and evidence-source coverage |
 | `/search` + `/config [key] [value]` | View or update `/search` settings for the active DB profile |
@@ -320,6 +320,8 @@ Each DB profile has profiling guardrails to control warehouse cost:
 
 Use `/db` then `/profiling` to view the active settings. Use `/profiling sampled 500000 3`, `/profiling metadata`, or `/profiling full off 5` to update them. Settings are saved on the active DB profile in `~/.amx/config.yml`.
 
+Backend profiling failures are normalized into actionable messages where possible. PostgreSQL errors for unavailable `pg_stat_statements`, missing relations, or insufficient privileges now surface remediation text instead of leaking raw driver traces, and AMX can skip expensive per-column stats when a single column-level stats query fails.
+
 ## Configuration
 
 AMX stores its configuration at `~/.amx/config.yml`. To use a different file, start the CLI with `amx --config path/to/config.yml`.
@@ -376,12 +378,14 @@ Answering behavior:
 - `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
 - `/search ask` now distinguishes table-level semantic discovery from inventory questions, so prompts like "which tables contain address details" route to ranked table matches instead of accidental table-count answers
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
-- semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as secondary signals
+- semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
+- synthesized answers receive every retrieved row in the current result set, with result indexes, so AMX can answer across all returned candidates instead of only the first few matches
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
 - join answers now pass the resolved base/target join columns into the synthesis prompt, so AMX can explain not just which tables are joinable but also which column pairs it found
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
 - `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, and action suggestions into history/event payloads so answers remain diagnosable
+- `/search ask --actions` turns selected suggestions into a human-approved execution loop: AMX asks before running catalog sync, cached code-evidence refresh, or single-table metadata analysis actions, then records the action outcome
 - `/search /context-detail` controls how much neighborhood, code, and history context is exposed to the search synthesizer for cost/latency tuning
 - `/search` answer language is forced to the detected language of the user's question, even if the interpreter LLM suggests a different `answer_language`
 - aggregate answers avoid dumping the generic schema/table/column result grid when that grid would be irrelevant to the user question
@@ -400,6 +404,9 @@ amx/
 ├── cli_manual.py       # Compatibility shim -> amx.cli_support.commands.manual
 ├── cli_profiles.py     # Compatibility shim -> amx.cli_support.commands.profiles
 ├── cli_run.py          # Compatibility shim -> amx.cli_support.commands.run
+├── core/
+│   ├── __init__.py      # Programmatic API exports
+│   └── inference.py     # Single-table metadata inference entrypoint used by approved search actions
 ├── cli_support/
 │   ├── __init__.py      # Session-helper export surface
 │   ├── session.py       # Interactive shell, slash completion, namespace switching, and session defaults

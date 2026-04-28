@@ -18,6 +18,15 @@ from amx.utils.logging import get_logger
 log = get_logger("db.connector")
 
 
+class ProfilingError(RuntimeError):
+    """Profiling failed for a specific asset, but the run can continue."""
+
+    def __init__(self, schema: str, table: str, message: str):
+        super().__init__(message)
+        self.schema = schema
+        self.table = table
+
+
 class AssetKind(Enum):
     TABLE = "table"
     VIEW = "view"
@@ -214,10 +223,19 @@ class DatabaseConnector:
             database_comment=self.get_database_comment(),
         )
 
-        stats = adapter.get_table_stats(self.engine, schema, table)
-        profile.stats_seq_scan = stats.get("seq_scan", 0)
-        profile.stats_idx_scan = stats.get("idx_scan", 0)
-        profile.stats_n_live_tup = stats.get("n_live_tup", 0)
+        try:
+            stats = adapter.get_table_stats(self.engine, schema, table)
+            profile.stats_seq_scan = stats.get("seq_scan", 0)
+            profile.stats_idx_scan = stats.get("idx_scan", 0)
+            profile.stats_n_live_tup = stats.get("n_live_tup", 0)
+        except Exception as exc:
+            actionable = adapter.actionable_profile_error(exc)
+            msg = (
+                f"Profiling failed for {schema}.{table}: {actionable}"
+                if actionable
+                else f"Profiling failed for {schema}.{table}: {exc}"
+            )
+            raise ProfilingError(schema, table, msg) from exc
         estimated_rows = int(profile.stats_n_live_tup or 0)
         full_scan_blocked = bool(max_rows and estimated_rows > max_rows)
 
@@ -274,7 +292,16 @@ class DatabaseConnector:
             profile.foreign_keys, profile.referenced_by
         )
 
-        raw_cols = insp.get_columns(table, schema=schema)
+        try:
+            raw_cols = insp.get_columns(table, schema=schema)
+        except Exception as exc:
+            actionable = adapter.actionable_profile_error(exc)
+            msg = (
+                f"Profiling failed for {schema}.{table}: {actionable}"
+                if actionable
+                else f"Profiling failed for {schema}.{table}: {exc}"
+            )
+            raise ProfilingError(schema, table, msg) from exc
 
         for col_info in raw_cols:
             col_name = col_info["name"]
@@ -287,27 +314,46 @@ class DatabaseConnector:
             )
 
             if scan_column_stats or scan_samples:
-                with self.engine.connect() as conn:
-                    if scan_column_stats:
-                        stats_sql = adapter.column_stats_sql(fqn, quoted_col)
-                        col_stats = conn.execute(text(stats_sql)).fetchone()
-                        if col_stats:
-                            cp.null_count = col_stats[0] or 0
-                            cp.distinct_count = col_stats[1] or 0
-                            cp.min_val = col_stats[2]
-                            cp.max_val = col_stats[3]
-                            cp.cardinality_ratio = (
-                                float(cp.distinct_count) / float(cp.row_count)
-                                if cp.row_count > 0
-                                else 0.0
-                            )
+                try:
+                    with self.engine.connect() as conn:
+                        if scan_column_stats:
+                            stats_sql = adapter.column_stats_sql(fqn, quoted_col)
+                            col_stats = conn.execute(text(stats_sql)).fetchone()
+                            if col_stats:
+                                cp.null_count = col_stats[0] or 0
+                                cp.distinct_count = col_stats[1] or 0
+                                cp.min_val = col_stats[2]
+                                cp.max_val = col_stats[3]
+                                cp.cardinality_ratio = (
+                                    float(cp.distinct_count) / float(cp.row_count)
+                                    if cp.row_count > 0
+                                    else 0.0
+                                )
 
-                    if scan_samples:
-                        sample_sql = adapter.column_sample_sql(fqn, quoted_col)
-                        samples_row = conn.execute(
-                            text(sample_sql), {"lim": effective_sample_size}
-                        ).fetchall()
-                        cp.samples = [r[0] for r in samples_row]
+                        if scan_samples:
+                            sample_sql = adapter.column_sample_sql(fqn, quoted_col)
+                            samples_row = conn.execute(
+                                text(sample_sql), {"lim": effective_sample_size}
+                            ).fetchall()
+                            cp.samples = [r[0] for r in samples_row]
+                except Exception as exc:
+                    actionable = adapter.actionable_profile_error(exc)
+                    if actionable:
+                        log.warning(
+                            "Skipping profile stats for %s.%s.%s: %s",
+                            schema,
+                            table,
+                            col_name,
+                            actionable,
+                        )
+                    else:
+                        log.warning(
+                            "Skipping profile stats for %s.%s.%s: %s",
+                            schema,
+                            table,
+                            col_name,
+                            exc,
+                        )
 
             cp.existing_comment = col_info.get("comment")
             profile.columns.append(cp)

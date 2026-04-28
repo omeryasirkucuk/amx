@@ -40,6 +40,10 @@ class DatabaseAdapter(ABC):
         """Override when the backend supports materialized views."""
         return []
 
+    def actionable_profile_error(self, exc: Exception) -> str | None:
+        """Return backend-specific remediation text for profiling failures."""
+        return None
+
     # ── Identifier quoting ────────────────────────────────────────────────
 
     def quote_identifier(self, name: str) -> str:

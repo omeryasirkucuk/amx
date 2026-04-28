@@ -323,7 +323,7 @@ Navigation:
 [heading]Help — /search namespace[/heading]
 Commands:
   1) /back                                     Return to root namespace
-  2) /ask <question>                           Ask a metadata question with LLM grounding
+  2) /ask [--actions] <question>               Ask a metadata question; --actions prompts before running follow-up actions
   3) <question>                                In /search, plain text is treated like /ask
   4) /status                                   Catalog health, LLM readiness, and last sync jobs
   5) /sources                                  Enabled sources, settings, and evidence coverage
@@ -514,7 +514,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
     search_cmds = [
         ("/back", "Return to root namespace"),
         ("/clear", "Clear terminal output"),
-        ("/ask", "Ask a metadata question with LLM grounding (/ask <text>)"),
+        ("/ask", "Ask a metadata question; add --actions for approved follow-up execution"),
         ("/status", "Show catalog/index status"),
         ("/sources", "Show evidence sources and settings"),
         ("/config", "Show/set search config (/config [key] [value])"),

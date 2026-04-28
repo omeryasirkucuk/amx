@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from amx.cli import main
 from amx.config import AMXConfig
 from amx.db.connector import AssetKind
+from amx.search.catalog import SearchAnswer
 
 
 class AnalyzeApplyIntegrationTests(unittest.TestCase):
@@ -215,6 +216,48 @@ class SearchIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("requires an active LLM profile", result.output)
+
+    def test_search_ask_actions_prompt_requires_human_approval(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.active_db_profile = "default"
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+        answer = SearchAnswer(
+            intent="find_columns",
+            question="price columns",
+            rows=[],
+            confidence="low",
+            summary="No strong matches.",
+            provenance=[],
+            details={
+                "actions": [{"action": "sync_catalog", "reason": "Refresh catalog structure and comments."}],
+                "retrieval": {},
+                "verification": {},
+                "policy": {},
+                "plan": {},
+            },
+        )
+        fake_service = Mock()
+        fake_service.ask.return_value = answer
+        fake_service.settings = {"show_provenance": "true", "show_confidence": "true"}
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.cli_support.commands.search._service", return_value=fake_service),
+            patch("amx.cli_support.commands.search.confirm", return_value=False),
+            patch("amx.cli_support.commands.search._run_search_action") as run_action,
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "search", "ask", "--actions", "price columns"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Suggested next step: sync_catalog", result.output)
+        run_action.assert_not_called()
 
     def test_code_refresh_uses_resolved_active_profile_path(self) -> None:
         runner = CliRunner()

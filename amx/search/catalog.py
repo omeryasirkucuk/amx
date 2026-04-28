@@ -1622,8 +1622,6 @@ class SearchCatalog:
                 existing["match_score"] = float(existing.get("match_score") or 0.0) + float(row.get("match_score") or 0.0)
                 seen_exact[entity_id] = existing
         exact_hits = list(seen_exact.values())
-        if not exact_hits:
-            return []
         by_id: dict[int, dict[str, Any]] = {}
         for row in exact_hits:
             if row.get("entity_kind") != "column":
@@ -1687,8 +1685,6 @@ class SearchCatalog:
                 merged = dict(existing)
                 merged["match_score"] = float(merged.get("match_score") or 0.0) + float(row.get("match_score") or 0.0)
                 exact_hits[entity_id] = merged
-        if not exact_hits:
-            return []
         table_rows: dict[int, dict[str, Any]] = {}
         column_match_counts: dict[int, int] = {}
         with self._connect() as conn:

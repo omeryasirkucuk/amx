@@ -800,10 +800,13 @@ class SearchAgent:
 
     def _rows_for_prompt(self, rows: list[dict[str, Any]], policy: SearchPolicy) -> list[dict[str, Any]]:
         detail = self._context_detail()
-        cap = {"minimal": 5, "standard": 8, "rich": 10, "deep": 14}.get(detail, 8)
+        base_cap = {"minimal": 8, "standard": 16, "rich": 24, "deep": 32}.get(detail, 16)
+        cap = min(max(base_cap, len(rows)), 40)
         payload: list[dict[str, Any]] = []
-        for row in rows[:cap]:
+        for idx, row in enumerate(rows[:cap], 1):
             item = {
+                "result_index": idx,
+                "total_results": len(rows),
                 "schema": row.get("schema_name", ""),
                 "table": row.get("table_name", ""),
                 "column": row.get("column_name", ""),
@@ -844,6 +847,7 @@ class SearchAgent:
             "Answer only from the retrieved metadata evidence you are given.\n"
             "If evidence is weak or empty, say so explicitly and suggest a narrower follow-up.\n"
             "Do not invent table names, joins, counts, or column meanings not present in the evidence.\n"
+            "Use every row in the provided rows array; if there are many rows, group them but do not ignore tail results.\n"
             "When join evidence includes confidence bands, explain them.\n"
             "When scope was assumed, state that assumption.\n"
             "If action suggestions exist, mention only the most relevant one briefly.\n"
@@ -857,6 +861,7 @@ class SearchAgent:
                 "session_memory": self._memory_summary() if self._context_detail() in {"rich", "deep"} else self._memory_summary()[-2:],
                 "retrieval_details": retrieval_details,
                 "verification": verification,
+                "result_count": len(rows),
                 "rows": self._rows_for_prompt(rows, policy),
                 "actions": [asdict(item) for item in actions],
             },
@@ -868,7 +873,7 @@ class SearchAgent:
                 {"role": "user", "content": user},
             ],
             temperature=0.1,
-            max_tokens=1200,
+            max_tokens=1600 if len(rows) > 12 else 1200,
             use_logprobs=False,
         )
         return result.content.strip(), result.usage or {}
@@ -994,6 +999,9 @@ class SearchAgent:
         actions: list[SearchActionSuggestion] = []
         if not ready and plan.question_class in {"semantic_discovery", "join_discovery", "table_understanding", "comparative_reasoning"}:
             actions.append(SearchActionSuggestion("sync_catalog", "Search catalog is empty for semantic reasoning."))
+        if ready and not rows and plan.question_class in {"semantic_discovery", "entity_lookup", "table_understanding", "comparative_reasoning"}:
+            actions.append(SearchActionSuggestion("sync_catalog", "Refresh catalog structure and comments, then retry the question."))
+            actions.append(SearchActionSuggestion("refresh_code_evidence", "Refresh code evidence so practical table and column usage can support retrieval."))
         if confidence == "low" and plan.question_class == "join_discovery":
             actions.append(SearchActionSuggestion("refresh_code_evidence", "Code evidence may reveal practical joins that are not explicit in metadata."))
         if confidence == "low" and plan.question_class in {"semantic_discovery", "table_understanding"}:
@@ -1079,6 +1087,7 @@ class SearchAgent:
         stage_metrics.append({"stage": "planning", "duration_sec": round(time.monotonic() - t0, 4)})
 
         if policy.requires_catalog and not ready:
+            actions = [SearchActionSuggestion("sync_catalog", "Search catalog is empty for semantic reasoning.")]
             return SearchAnswer(
                 intent=plan.intent,
                 question=question,
@@ -1095,6 +1104,9 @@ class SearchAgent:
                     "status": status,
                     "plan": asdict(plan),
                     "policy": asdict(policy),
+                    "actions": [asdict(item) for item in actions],
+                    "ambiguity_flags": list(plan.ambiguity_flags),
+                    "evidence_sources": [],
                     "stage_metrics": stage_metrics,
                 },
             )

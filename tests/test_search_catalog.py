@@ -8,12 +8,15 @@ from unittest.mock import patch
 from amx.agents.base import Confidence, MetadataSuggestion
 from amx.config import AMXConfig
 from amx.db.connector import AssetKind, ColumnProfile, TableProfile
+from amx.search.agent import SearchPolicy
 from amx.search.catalog import SearchCatalog
 from amx.search.service import SearchService, _SESSION_MEMORY
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
 class _FakeIndex:
+    query_hits: list[dict] = []
+
     def __init__(self, *args, **kwargs) -> None:
         self.rows: dict[str, dict] = {}
 
@@ -34,7 +37,7 @@ class _FakeIndex:
         }
 
     def query(self, question: str, *, db_profile: str, n_results: int = 8):
-        return []
+        return list(self.query_hits[:n_results])
 
 
 class _FakeLLMProvider:
@@ -70,10 +73,12 @@ class SearchCatalogTests(unittest.TestCase):
         self.index_patcher = patch("amx.search.catalog.SearchIndex", _FakeIndex)
         self.index_patcher.start()
         self.catalog = SearchCatalog(self.db_path)
+        _FakeIndex.query_hits = []
         _SESSION_MEMORY.clear()
 
     def tearDown(self) -> None:
         self.index_patcher.stop()
+        _FakeIndex.query_hits = []
         _SESSION_MEMORY.clear()
         self.tmp.cleanup()
 
@@ -284,6 +289,78 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertTrue(joins)
         self.assertEqual(joins[0]["left_column"], "kunnr")
         self.assertEqual(joins[0]["right_column"], "kunnr")
+
+    def test_vector_only_column_hits_are_used_when_exact_search_misses(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        with self.catalog._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM catalog_entities
+                WHERE schema_name = 'sap' AND table_name = 'vbak' AND column_name = 'netwr'
+                """
+            ).fetchone()
+        _FakeIndex.query_hits = [{"metadata": {"entity_id": int(row["id"])}, "distance": 0.2}]
+
+        results = self.catalog.search_columns("default", "unmatched glyph", query_variants=["semantic ghost"])
+
+        self.assertTrue(results)
+        self.assertEqual(results[0]["column_name"], "netwr")
+        self.assertTrue(results[0].get("vector_only"))
+
+    def test_vector_only_table_hits_are_used_when_exact_search_misses(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_profile(),
+            query_usage={},
+        )
+        with self.catalog._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM catalog_entities
+                WHERE schema_name = 'sap_s6p' AND table_name = 'adr6' AND entity_kind = 'table'
+                """
+            ).fetchone()
+        _FakeIndex.query_hits = [{"metadata": {"entity_id": int(row["id"])}, "distance": 0.1}]
+
+        results = self.catalog.search_tables("default", "communication endpoint")
+
+        self.assertTrue(results)
+        self.assertEqual(results[0]["table_name"], "adr6")
+
+    def test_synthesis_prompt_payload_keeps_all_retrieved_rows(self) -> None:
+        cfg = self._search_cfg()
+        service = SearchService(cfg, self.catalog)
+        rows = [
+            {"schema_name": "sap", "table_name": "t", "column_name": f"c{i}", "rank_score": i}
+            for i in range(18)
+        ]
+        policy = SearchPolicy(
+            "semantic_discovery",
+            "semantic_catalog_search",
+            True,
+            False,
+            False,
+            True,
+            False,
+            "ranked_matches",
+            "suggest_sync_if_sparse",
+        )
+
+        payload = service._agent._rows_for_prompt(rows, policy)
+
+        self.assertEqual(len(payload), 18)
+        self.assertEqual(payload[-1]["result_index"], 18)
+        self.assertEqual(payload[-1]["total_results"], 18)
 
     def test_catalog_inventory_and_joinable_tables(self) -> None:
         self.catalog.sync_table_profile(

@@ -137,6 +137,7 @@ def _search_results_payload(answer: Any) -> dict[str, Any]:
         "policy": answer.details.get("policy", {}),
         "plan": answer.details.get("plan", {}),
         "actions": answer.details.get("actions", []),
+        "action_results": answer.details.get("action_results", []),
         "ambiguity_flags": answer.details.get("ambiguity_flags", []),
         "evidence_sources": answer.details.get("evidence_sources", []),
         "stage_metrics": answer.details.get("stage_metrics", []),
@@ -157,7 +158,132 @@ def _search_results_payload(answer: Any) -> dict[str, Any]:
     }
 
 
-def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, log_event: LogEvent) -> None:
+def _answer_scope(answer: Any, cfg: AMXConfig) -> dict[str, list[str]]:
+    scope = _search_scope_from_answer(answer)
+    if scope:
+        return scope
+    if cfg.current_schema and cfg.current_table:
+        return {cfg.current_schema: [cfg.current_table]}
+    return {}
+
+
+def _sync_cached_code_evidence(
+    cfg: AMXConfig,
+    catalog: SearchCatalog,
+    *,
+    scope: dict[str, list[str]] | None = None,
+) -> bool:
+    try:
+        from amx.codebase.cache import load_latest_cached_report
+
+        code_path = cfg.resolve_code_path(cfg.active_code_profile or None, None)
+        if not code_path:
+            warn("No active code profile path is configured.")
+            return False
+        profile_nm = (cfg.active_code_profile or "default").strip() or "default"
+        manifest, report = load_latest_cached_report(profile_nm, code_path)
+        if report is None or manifest is None:
+            warn("No cached code-scan report found. Run `/code scan` first.")
+            return False
+        schema_name = str(manifest.get("schema") or next(iter((scope or {}).keys()), cfg.current_schema or ""))
+        catalog.sync_code_report(
+            db_profile=cfg.active_db_profile or "default",
+            db_backend=cfg.db.backend,
+            database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
+            schema_name=schema_name,
+            source_path=code_path,
+            report=report,
+        )
+        success("Refreshed `/search` code evidence from the latest cached code scan.")
+        return True
+    except Exception as exc:
+        warn(f"Could not refresh code evidence: {exc}")
+        return False
+
+
+def _run_search_action(
+    cfg: AMXConfig,
+    catalog: SearchCatalog,
+    answer: Any,
+    action_name: str,
+) -> dict[str, Any]:
+    scope = _answer_scope(answer, cfg)
+    db_profile = cfg.active_db_profile or "default"
+    if action_name == "sync_catalog":
+        if not scope:
+            cfg, scope = _interactive_sync_scope(cfg, cfg.current_schema or None, cfg.current_table or None)
+        if not scope:
+            return {"action": action_name, "status": "skipped", "reason": "no_scope"}
+        job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope, "trigger": "search_action"})
+        inserted = 0
+        updated = 0
+        try:
+            inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
+            _sync_cached_code_evidence(cfg, catalog, scope=scope)
+            catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
+            success(f"Approved search action complete: sync_catalog inserted={inserted}, updated={updated}")
+            return {"action": action_name, "status": "success", "inserted": inserted, "updated": updated, "scope": scope}
+        except Exception as exc:
+            catalog.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
+            warn(f"Approved search action failed: {exc}")
+            return {"action": action_name, "status": "failed", "reason": str(exc), "scope": scope}
+    if action_name == "refresh_code_evidence":
+        ok = _sync_cached_code_evidence(cfg, catalog, scope=scope)
+        return {"action": action_name, "status": "success" if ok else "skipped", "scope": scope}
+    if action_name == "analyze_table":
+        tables = answer.details.get("retrieval", {}).get("resolved_tables") or []
+        if not tables and answer.rows:
+            row = answer.rows[0]
+            if row.get("schema_name") and row.get("table_name"):
+                tables = [f"{row.get('schema_name')}.{row.get('table_name')}"]
+        if not tables:
+            return {"action": action_name, "status": "skipped", "reason": "no_resolved_table"}
+        schema_name, table_name = str(tables[0]).split(".", 1)
+        try:
+            from amx.core.inference import infer_table_metadata
+
+            results = infer_table_metadata(cfg, schema_name, table_name, include_rag=True, include_codebase=False)
+            success(f"Approved search action complete: analyze_table produced {len(results)} suggestions for {schema_name}.{table_name}")
+            return {"action": action_name, "status": "success", "table": tables[0], "suggestions": len(results)}
+        except Exception as exc:
+            warn(f"Approved search action failed: {exc}")
+            return {"action": action_name, "status": "failed", "table": tables[0], "reason": str(exc)}
+    info(f"Action `{action_name}` is advisory and has no automatic executor.")
+    return {"action": action_name, "status": "advisory"}
+
+
+def _run_approved_search_actions(cfg: AMXConfig, svc: SearchService, answer: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    actions = answer.details.get("actions", []) or []
+    if not actions:
+        return records
+    for action in actions:
+        action_name = str((action or {}).get("action") or "").strip()
+        if action_name not in {"sync_catalog", "refresh_code_evidence", "analyze_table"}:
+            continue
+        reason = str((action or {}).get("reason") or "").strip()
+        prompt = f"Run search action `{action_name}`?"
+        if reason:
+            prompt += f" {reason}"
+        try:
+            approved = confirm(prompt, default=False)
+        except (EOFError, KeyboardInterrupt):
+            approved = False
+        if not approved:
+            records.append({"action": action_name, "status": "declined"})
+            continue
+        records.append(_run_search_action(cfg, svc.catalog, answer, action_name))
+    return records
+
+
+def _run_search_ask(
+    cfg: AMXConfig,
+    svc: SearchService,
+    question_text: str,
+    *,
+    log_event: LogEvent,
+    take_actions: bool = False,
+) -> None:
     display = get_display()
     started_display = False
     if not display.is_active:
@@ -196,6 +322,11 @@ def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, l
         action_reason = str((action or {}).get("reason") or "").strip()
         if action_name:
             info(f"Suggested next step: {action_name}" + (f" — {action_reason}" if action_reason else ""))
+    action_results: list[dict[str, Any]] = []
+    if take_actions:
+        action_results = _run_approved_search_actions(cfg, svc, answer)
+        if action_results:
+            answer.details["action_results"] = action_results
     if answer.rows and bool(answer.details.get("display_rows", True)):
         _render_search_rows(answer.rows)
     payload = _search_results_payload(answer)
@@ -226,6 +357,7 @@ def _run_search_ask(cfg: AMXConfig, svc: SearchService, question_text: str, *, l
             "scope": _search_scope_from_answer(answer),
             "provenance": answer.provenance,
             "actions": answer.details.get("actions", []),
+            "action_results": action_results,
             "evidence_sources": answer.details.get("evidence_sources", []),
             "ambiguity_flags": answer.details.get("ambiguity_flags", []),
             "stage_metrics": answer.details.get("stage_metrics", []),
@@ -313,9 +445,10 @@ def register_search_commands(
             )
 
     @search.command("ask")
+    @click.option("--actions", "take_actions", is_flag=True, help="Prompt before running approved follow-up actions.")
     @click.argument("question", nargs=-1, required=True)
     @pass_config
-    def search_ask(cfg: AMXConfig, question: tuple[str, ...]) -> None:
+    def search_ask(cfg: AMXConfig, take_actions: bool, question: tuple[str, ...]) -> None:
         svc = _service(cfg)
         if svc is None:
             return
@@ -323,7 +456,7 @@ def register_search_commands(
         if not question_text:
             error("Usage: /search ask <question>")
             return
-        _run_search_ask(cfg, svc, question_text, log_event=log_event)
+        _run_search_ask(cfg, svc, question_text, log_event=log_event, take_actions=take_actions)
 
     @search.command("status")
     @pass_config
