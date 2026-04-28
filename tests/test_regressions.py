@@ -234,6 +234,28 @@ class BackendCapabilityTests(unittest.TestCase):
         with self.assertRaises(UnsupportedDatabaseOperation):
             adapter.set_database_comment_sql()
 
+    def test_databricks_engine_sets_non_deprecated_user_agent_entry(self) -> None:
+        adapter = DatabricksAdapter(
+            DBConfig(
+                backend="databricks",
+                host="workspace.cloud.databricks.com",
+                http_path="/sql/1.0/warehouses/abc",
+                access_token="token",
+            )
+        )
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def fake_create_engine(url: str, **kwargs):
+            calls.append((url, kwargs))
+            return object()
+
+        with patch("sqlalchemy.create_engine", side_effect=fake_create_engine):
+            engine = adapter.create_engine()
+
+        self.assertIsNotNone(engine)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["connect_args"], {"user_agent_entry": "amx"})
+
     def test_databricks_rejects_materialized_view_comments(self) -> None:
         adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))
 

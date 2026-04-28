@@ -34,7 +34,11 @@ class DatabricksAdapter(DatabaseAdapter):
                 "databricks-sqlalchemy is required for the Databricks backend. "
                 "Reinstall AMX: pip install -U amx"
             ) from exc
-        return create_engine(self.cfg.url, pool_pre_ping=True)
+        return create_engine(
+            self.cfg.url,
+            pool_pre_ping=True,
+            connect_args={"user_agent_entry": "amx"},
+        )
 
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"information_schema", "default"})

@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.116] — 2026-04-28
+### Databricks Connector Warning Cleanup
+- **amx/db/adapters/databricks.py**: Added `connect_args={"user_agent_entry": "amx"}` so Databricks SQLAlchemy stops triggering the connector's `_user_agent_entry` deprecation warning on connect.
+- **tests/test_regressions.py**: Added regression coverage for Databricks engine creation using the non-deprecated connect arg.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.116` and documented the warning cleanup.
+
 ## [0.1.115] — 2026-04-28
 ### Database Connector Backend Correctness
 - **amx/db/adapters/base.py / amx/db/connector.py**: Added backend capability metadata and explicit unsupported-operation handling for comments, relationships, materialized views, row-count stats, and profiling behavior.

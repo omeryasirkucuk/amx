@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.116] — 2026-04-28
+### Fixed
+- **Databricks connect deprecation warning**: AMX now passes `user_agent_entry` through SQLAlchemy `connect_args` so newer `databricks-sql-connector` releases no longer print the `_user_agent_entry` deprecation warning during `/connect`.
+
+### Added
+- **Regression coverage**: Added a Databricks adapter test that verifies engine creation uses the non-deprecated `user_agent_entry` connect arg.
+
 ## [0.1.115] — 2026-04-28
 ### Changed
 - **Database connector capabilities**: Backend adapters now advertise metadata/comment/profiling capabilities so AMX can block unsupported write-back operations before treating them as successful.

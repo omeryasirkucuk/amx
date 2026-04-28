@@ -468,6 +468,10 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
+### v0.1.116
+
+- **Databricks connect cleanup**: `/connect` no longer emits the Databricks SQL connector `_user_agent_entry` deprecation warning; AMX now passes the non-deprecated `user_agent_entry` connect arg.
+
 ### v0.1.115
 
 - **Connector capabilities**: Database adapters now declare supported comment, relationship, materialized-view, statistics, and profiling behavior so unsupported write-back fails clearly.
