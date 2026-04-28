@@ -235,6 +235,8 @@ class DBConfig:
     http_path: str = ""
     access_token: str = ""
     catalog: str = ""
+    tls_no_verify: bool = False
+    tls_trusted_ca_file: str = ""
 
     # BigQuery
     project: str = ""
@@ -322,6 +324,8 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         http_path=str(m.get("http_path", "")),
         access_token=str(m.get("access_token", "")),
         catalog=str(m.get("catalog", "")),
+        tls_no_verify=bool(m.get("tls_no_verify", False)),
+        tls_trusted_ca_file=str(m.get("tls_trusted_ca_file", "")),
         project=str(m.get("project", "")),
         dataset=str(m.get("dataset", "")),
         credentials_path=str(m.get("credentials_path", "")),
@@ -349,6 +353,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
             "host": db.host, "http_path": db.http_path,
             "access_token": db.access_token, "catalog": db.catalog,
             "database": db.database,
+            "tls_no_verify": db.tls_no_verify,
+            "tls_trusted_ca_file": db.tls_trusted_ca_file,
         })
     elif db.backend == "bigquery":
         base.update({

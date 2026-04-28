@@ -117,7 +117,8 @@ class DatabaseConnector:
                 conn.execute(text(self._adapter.test_connection_sql()))
             return True
         except Exception as exc:
-            log.error("Connection failed: %s", exc)
+            actionable = self._adapter.actionable_profile_error(exc)
+            log.error("Connection failed: %s", actionable or exc)
             return False
 
     # ── Schema / asset listing ────────────────────────────────────────────

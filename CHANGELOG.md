@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.118] — 2026-04-28
+### Added
+- **Databricks TLS profile controls**: Databricks DB profiles now support an optional trusted CA bundle path and an insecure TLS-verification bypass for environments with corporate proxies or private certificate authorities.
+
+### Changed
+- **Actionable Databricks TLS failures**: `/connect` now reports certificate-validation failures as a clear Databricks TLS setup problem instead of only surfacing the raw SSL exception text.
+- **Regression coverage**: Added Databricks adapter tests for TLS connect args and actionable certificate-verification failures.
+
 ## [0.1.117] — 2026-04-28
 ### Changed
 - **Faster Databricks connect failure**: Databricks `/connect` now uses bounded connector timeouts and retry limits so bad host/path/token configurations fail in seconds instead of appearing to hang.

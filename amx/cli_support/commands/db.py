@@ -10,6 +10,7 @@ from amx.utils.console import (
     ask,
     ask_choice,
     ask_password,
+    confirm,
     error,
     info,
     render_table,
@@ -151,6 +152,14 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         access_token = ask_password("Access token") or defaults.access_token or ""
         catalog = ask("Unity Catalog name (optional)", defaults.catalog or "")
         database = ask("Schema / database (optional)", defaults.database or "")
+        tls_trusted_ca_file = ask(
+            "Trusted CA bundle path (optional, for corporate/self-signed TLS)",
+            defaults.tls_trusted_ca_file or "",
+        )
+        tls_no_verify = confirm(
+            "Disable TLS certificate verification? (insecure; use only if a trusted CA bundle is not available)",
+            default=bool(defaults.tls_no_verify),
+        )
         return replace(
             defaults,
             backend="databricks",
@@ -159,6 +168,8 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             access_token=access_token,
             catalog=catalog,
             database=database,
+            tls_trusted_ca_file=tls_trusted_ca_file,
+            tls_no_verify=tls_no_verify,
         )
 
     if backend == "bigquery":

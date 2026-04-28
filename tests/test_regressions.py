@@ -264,6 +264,65 @@ class BackendCapabilityTests(unittest.TestCase):
             },
         )
 
+    def test_databricks_engine_passes_tls_overrides(self) -> None:
+        adapter = DatabricksAdapter(
+            DBConfig(
+                backend="databricks",
+                host="workspace.cloud.databricks.com",
+                http_path="/sql/1.0/warehouses/abc",
+                access_token="token",
+                tls_no_verify=True,
+                tls_trusted_ca_file="/tmp/corp-ca.pem",
+            )
+        )
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def fake_create_engine(url: str, **kwargs):
+            calls.append((url, kwargs))
+            return object()
+
+        with patch("sqlalchemy.create_engine", side_effect=fake_create_engine):
+            adapter.create_engine()
+
+        self.assertEqual(
+            calls[0][1]["connect_args"],
+            {
+                "user_agent_entry": "amx",
+                "_socket_timeout": adapter.connect_timeout_seconds,
+                "_retry_stop_after_attempts_count": adapter.connect_retry_attempts,
+                "_retry_stop_after_attempts_duration": adapter.connect_retry_duration_seconds,
+                "_tls_no_verify": True,
+                "_tls_trusted_ca_file": "/tmp/corp-ca.pem",
+            },
+        )
+
+    def test_databricks_ssl_error_is_actionable(self) -> None:
+        adapter = DatabricksAdapter(DBConfig(backend="databricks"))
+
+        message = adapter.actionable_profile_error(
+            Exception("SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain")
+        )
+
+        self.assertIsNotNone(message)
+        self.assertIn("trusted CA bundle path", message)
+
+    def test_connector_logs_actionable_databricks_tls_error(self) -> None:
+        db = DatabaseConnector(DBConfig(backend="databricks"))
+
+        class FakeEngine:
+            def connect(self):
+                raise Exception("SSLCertVerificationError: self-signed certificate in certificate chain")
+
+        db._engine = FakeEngine()
+        db._adapter = DatabricksAdapter(DBConfig(backend="databricks"))
+
+        with patch("amx.db.connector.log.error") as log_error:
+            ok = db.test_connection()
+
+        self.assertFalse(ok)
+        log_error.assert_called_once()
+        self.assertIn("trusted CA bundle path", log_error.call_args.args[1])
+
     def test_databricks_rejects_materialized_view_comments(self) -> None:
         adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))
 

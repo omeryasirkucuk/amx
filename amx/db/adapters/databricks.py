@@ -37,15 +37,21 @@ class DatabricksAdapter(DatabaseAdapter):
                 "databricks-sqlalchemy is required for the Databricks backend. "
                 "Reinstall AMX: pip install -U amx"
             ) from exc
+        connect_args: dict[str, object] = {
+            "user_agent_entry": "amx",
+            "_socket_timeout": self.connect_timeout_seconds,
+            "_retry_stop_after_attempts_count": self.connect_retry_attempts,
+            "_retry_stop_after_attempts_duration": self.connect_retry_duration_seconds,
+        }
+        if getattr(self.cfg, "tls_no_verify", False):
+            connect_args["_tls_no_verify"] = True
+        trusted_ca = str(getattr(self.cfg, "tls_trusted_ca_file", "") or "").strip()
+        if trusted_ca:
+            connect_args["_tls_trusted_ca_file"] = trusted_ca
         return create_engine(
             self.cfg.url,
             pool_pre_ping=True,
-            connect_args={
-                "user_agent_entry": "amx",
-                "_socket_timeout": self.connect_timeout_seconds,
-                "_retry_stop_after_attempts_count": self.connect_retry_attempts,
-                "_retry_stop_after_attempts_duration": self.connect_retry_duration_seconds,
-            },
+            connect_args=connect_args,
         )
 
     def system_schemas(self) -> frozenset[str]:
@@ -57,6 +63,12 @@ class DatabricksAdapter(DatabaseAdapter):
             return "Insufficient Databricks privileges. Grant USE CATALOG/SCHEMA and SELECT on the object."
         if "not found" in msg or "does not exist" in msg or "table_or_view_not_found" in msg:
             return "Databricks object is missing or not visible in the active catalog/schema."
+        if "certificate_verify_failed" in msg or "self-signed certificate" in msg:
+            return (
+                "TLS certificate validation failed. If your company uses a proxy or private CA, "
+                "set a Databricks trusted CA bundle path in the DB profile or, as a last resort, "
+                "disable TLS verification for that profile."
+            )
         if "http_path" in msg or "warehouse" in msg:
             return "Databricks SQL warehouse connection is unavailable. Check host, HTTP path, and token."
         return None

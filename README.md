@@ -322,6 +322,13 @@ Use `/db` then `/profiling` to view the active settings. Use `/profiling sampled
 
 Backend profiling failures are normalized into actionable messages where possible. PostgreSQL, Snowflake, Databricks, and BigQuery permission, missing-object, warehouse, quota, or connection failures surface remediation text instead of leaking raw driver traces, and AMX can skip expensive per-column stats when a single column-level stats query fails.
 
+### Databricks TLS notes
+
+If your Databricks workspace is reached through a company proxy or private CA, the default TLS trust chain may fail with `CERTIFICATE_VERIFY_FAILED`.
+
+- Set a **Trusted CA bundle path** in the Databricks DB profile to point at your corporate/root CA PEM bundle.
+- If you do not have the CA bundle yet, you can temporarily enable **Disable TLS certificate verification** in that DB profile. This is insecure and should only be a last resort for internal troubleshooting.
+
 ## Configuration
 
 AMX stores its configuration at `~/.amx/config.yml`. To use a different file, start the CLI with `amx --config path/to/config.yml`.
@@ -467,6 +474,11 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.118
+
+- **Databricks TLS controls**: Databricks profiles now support a trusted CA bundle path and an optional insecure TLS bypass for corporate/self-signed certificate chains.
+- **Clearer TLS failures**: `/connect` now classifies Databricks certificate verification problems explicitly instead of only echoing the raw SSL error.
 
 ### v0.1.117
 

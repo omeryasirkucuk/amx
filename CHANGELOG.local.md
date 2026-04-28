@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.118] — 2026-04-28
+### Databricks TLS Trust Controls
+- **amx/config.py / amx/cli_support/commands/db.py**: Added Databricks profile fields and setup prompts for a trusted CA bundle path and optional insecure TLS verification bypass.
+- **amx/db/adapters/databricks.py / amx/db/connector.py**: Forwarded Databricks TLS trust settings into connector `connect_args` and converted certificate verification failures into actionable operator guidance.
+- **tests/test_regressions.py**: Added coverage for Databricks TLS connect args and actionable TLS failure logging.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.118` and documented Databricks TLS trust controls.
+
 ## [0.1.117] — 2026-04-28
 ### Databricks Connect Timeout Guardrails
 - **amx/db/adapters/databricks.py**: Added bounded Databricks connect args for `_socket_timeout`, `_retry_stop_after_attempts_count`, and `_retry_stop_after_attempts_duration`, while keeping the non-deprecated `user_agent_entry`.
