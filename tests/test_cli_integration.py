@@ -42,8 +42,11 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             def stop(self) -> None:
                 self.is_active = False
 
-            def add_activity(self, label: str) -> int:
+            def add_activity(self, label: str, token_estimate: int = 0) -> int:
                 return 0
+
+            def set_context(self, **kwargs) -> None:
+                return None
 
             def update_activity(self, idx: int, *, label: str | None = None, reset_details: bool = False) -> None:
                 return None
@@ -113,6 +116,9 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             def stop(self) -> None:
                 return None
 
+            def set_context(self, **kwargs) -> None:
+                return None
+
         with (
             patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
             patch("amx.utils.live_display.get_display", return_value=FakeDisplay()),
@@ -129,6 +135,76 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         execute_run.assert_called_once()
         self.assertEqual(execute_run.call_args.kwargs["schema"], "sap")
         self.assertEqual(execute_run.call_args.kwargs["tables_pos"], ("vbak",))
+
+
+class RootCommandIntegrationTests(unittest.TestCase):
+    def test_db_schemas_starts_live_display(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def list_schemas(self):
+                return ["sap", "hr"]
+
+        class FakeDisplay:
+            def __init__(self) -> None:
+                self.is_active = False
+                self.started = 0
+                self.stopped = 0
+
+            def start(self, **kwargs) -> None:
+                self.is_active = True
+                self.started += 1
+
+            def stop(self) -> None:
+                self.is_active = False
+                self.stopped += 1
+
+            def set_context(self, **kwargs) -> None:
+                return None
+
+            def add_activity(self, label: str, token_estimate: int = 0) -> int:
+                return 0
+
+            def begin_activity(self, idx: int) -> None:
+                return None
+
+            def set_thinking(self, label: str = "Thinking") -> None:
+                return None
+
+            def stop_thinking(self) -> None:
+                return None
+
+            def complete_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def fail_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+        display = FakeDisplay()
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+            patch("amx.utils.live_display.get_display", return_value=display),
+            patch("amx.utils.live_commands.get_display", return_value=display),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "db", "schemas"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("sap", result.output)
+        self.assertEqual(display.started, 1)
+        self.assertEqual(display.stopped, 1)
 
 
 class HistoryListIntegrationTests(unittest.TestCase):
@@ -291,6 +367,73 @@ class SearchIntegrationTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Suggested next step: sync_catalog", result.output)
         run_action.assert_not_called()
+
+    def test_search_sync_starts_live_display(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+
+        fake_catalog = Mock()
+        fake_catalog.start_sync_job.return_value = 11
+
+        class FakeDisplay:
+            def __init__(self) -> None:
+                self.is_active = False
+                self.started = 0
+                self.stopped = 0
+
+            def start(self, **kwargs) -> None:
+                self.is_active = True
+                self.started += 1
+
+            def stop(self) -> None:
+                self.is_active = False
+                self.stopped += 1
+
+            def set_context(self, **kwargs) -> None:
+                return None
+
+            def add_activity(self, label: str, token_estimate: int = 0) -> int:
+                return 0
+
+            def begin_activity(self, idx: int) -> None:
+                return None
+
+            def update_activity(self, idx: int, *, label: str | None = None, reset_details: bool = False) -> None:
+                return None
+
+            def complete_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def fail_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def add_detail(self, idx: int, detail: str) -> None:
+                return None
+
+        display = FakeDisplay()
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.cli_support.commands.search._catalog", return_value=fake_catalog),
+            patch("amx.utils.live_display.get_display", return_value=display),
+            patch("amx.utils.live_commands.get_display", return_value=display),
+            patch("amx.cli_support.commands.search._interactive_sync_scope", return_value=(cfg, {"sap": ["vbak"]})),
+            patch("amx.cli_support.commands.search._sync_db_scope", return_value=(0, 1)),
+            patch("amx.cli_support.commands.search._sync_cached_code_evidence", return_value=True),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "search", "sync"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(display.started, 1)
+        self.assertEqual(display.stopped, 1)
+        fake_catalog.finish_sync_job.assert_called_once()
 
     def test_code_refresh_uses_resolved_active_profile_path(self) -> None:
         runner = CliRunner()

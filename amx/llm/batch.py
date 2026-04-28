@@ -141,10 +141,17 @@ class OpenAIBatchProvider(BatchProvider):
 
     @staticmethod
     def _poll(client: Any, batch: Any, total: int) -> tuple[Any, int]:
+        from amx.utils.live_display import get_display
+
         terminal = {"completed", "failed", "expired", "cancelled"}
         elapsed = 0
         last_snapshot: tuple[str, int, int] | None = None
         last_print_elapsed = -_POLL_HEARTBEAT
+        display = get_display()
+        activity_idx: int | None = None
+        if display.is_active:
+            activity_idx = display.add_activity("Batch polling 0/0")
+            display.begin_activity(activity_idx)
         time.sleep(_POLL_INITIAL_SLEEP)
         elapsed += _POLL_INITIAL_SLEEP
         while batch.status not in terminal:
@@ -154,14 +161,24 @@ class OpenAIBatchProvider(BatchProvider):
             # Reduce terminal spam: print only when state/progress changes,
             # or every heartbeat seconds as a keep-alive.
             if snap != last_snapshot or (elapsed - last_print_elapsed) >= _POLL_HEARTBEAT:
-                console.print(
-                    f"[dim]  ↳ [{elapsed:>4}s] {batch.status} — {done}/{cnt}[/dim]"
-                )
+                if activity_idx is not None:
+                    display.update_activity(activity_idx, label=f"Batch polling {done}/{cnt} — {batch.status}")
+                else:
+                    console.print(
+                        f"[dim]  ↳ [{elapsed:>4}s] {batch.status} — {done}/{cnt}[/dim]"
+                    )
                 last_snapshot = snap
                 last_print_elapsed = elapsed
             time.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             batch = client.batches.retrieve(batch.id)
+        if activity_idx is not None:
+            done = (batch.request_counts.completed or 0) if batch.request_counts else 0
+            cnt = (batch.request_counts.total or 0) if batch.request_counts else total
+            if batch.status == "completed":
+                display.complete_activity(activity_idx, f"Batch completed {done}/{cnt}")
+            else:
+                display.fail_activity(activity_idx, f"Batch ended with status {batch.status} ({done}/{cnt})")
         return batch, elapsed
 
     @staticmethod
@@ -333,24 +350,43 @@ class AnthropicBatchProvider(BatchProvider):
 
     @staticmethod
     def _poll(client: Any, batch: Any, total: int) -> tuple[Any, int]:
+        from amx.utils.live_display import get_display
+
         terminal = {"ended", "expired", "canceled", "canceling"}
         elapsed = 0
         last_snapshot: tuple[str, int, int] | None = None
         last_print_elapsed = -_POLL_HEARTBEAT
+        display = get_display()
+        activity_idx: int | None = None
+        if display.is_active:
+            activity_idx = display.add_activity("Batch polling 0/0")
+            display.begin_activity(activity_idx)
         time.sleep(_POLL_INITIAL_SLEEP)
         elapsed += _POLL_INITIAL_SLEEP
         while batch.processing_status not in terminal:
             done = (batch.request_counts.succeeded or 0) if batch.request_counts else 0
             snap = (str(batch.processing_status), int(done), int(total))
             if snap != last_snapshot or (elapsed - last_print_elapsed) >= _POLL_HEARTBEAT:
-                console.print(
-                    f"[dim]  ↳ [{elapsed:>4}s] {batch.processing_status} — {done}/{total}[/dim]"
-                )
+                if activity_idx is not None:
+                    display.update_activity(activity_idx, label=f"Batch polling {done}/{total} — {batch.processing_status}")
+                else:
+                    console.print(
+                        f"[dim]  ↳ [{elapsed:>4}s] {batch.processing_status} — {done}/{total}[/dim]"
+                    )
                 last_snapshot = snap
                 last_print_elapsed = elapsed
             time.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
             batch = client.messages.batches.retrieve(batch.id)
+        if activity_idx is not None:
+            done = (batch.request_counts.succeeded or 0) if batch.request_counts else 0
+            if batch.processing_status == "ended":
+                display.complete_activity(activity_idx, f"Batch completed {done}/{total}")
+            else:
+                display.fail_activity(
+                    activity_idx,
+                    f"Batch ended with status {batch.processing_status} ({done}/{total})",
+                )
         return batch, elapsed
 
     @staticmethod

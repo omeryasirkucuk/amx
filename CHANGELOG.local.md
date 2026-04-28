@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.126] — 2026-04-29
+### Live Process Visibility Pass
+- **amx/utils/live_commands.py**: Added a shared helper for starting/stopping the common live display around non-`/run` commands without duplicating lifecycle logic.
+- **amx/services/analyze_scope.py / amx/cli_support/commands/manual.py**: Added timed progress around schema, asset, and column discovery so interactive pickers no longer sit on a blank terminal while warehouse metadata loads.
+- **amx/cli_support/root_commands.py / amx/cli_support/commands/search.py / amx/cli_support/commands/docs.py / amx/cli_support/commands/code.py / amx/cli_support/commands/analyze_flow.py**: Wired long-running DB inspection, sync, docs, code, and analyze-setup flows into the shared live display and added visible timing for cache refresh and catalog-write stages.
+- **amx/search/catalog.py / amx/llm/batch.py**: Added progress callbacks for `/search rebuild` and surfaced batch polling status through the live activity tree when available.
+- **tests/test_cli_integration.py / amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Added CLI coverage for the new display lifecycle and bumped the release to `0.1.126`.
+
 ## [0.1.125] — 2026-04-29
 ### Prompt Quality Pass
 - **amx/search/agent.py**: Rewrote the `/search` interpretation and answer prompts to be more conservative about routing, ambiguity, evidence ranking, and weak-tail summarization.

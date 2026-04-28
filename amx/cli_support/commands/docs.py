@@ -22,6 +22,7 @@ from amx.utils.console import (
     success,
     warn,
 )
+from amx.utils.live_commands import command_display
 from amx.utils.token_tracker import tracker as token_tracker
 
 FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, list[str]] | None]
@@ -80,29 +81,32 @@ def register_docs_commands(
 
         documents = []
         try:
-            documents = scan_all_sources(all_paths)
-            size = total_size_mb(documents)
+            with command_display(mode="docs-scan", provider=cfg.llm.provider, model=cfg.llm.model):
+                with step_spinner("Scanning document sources"):
+                    documents = scan_all_sources(all_paths)
+                size = total_size_mb(documents)
 
-            render_table(
-                f"Found {len(documents)} documents ({size:.1f} MB)",
-                ["File", "Size (KB)", "Type", "Source"],
-                [[d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type] for d in documents[:50]],
-            )
+                render_table(
+                    f"Found {len(documents)} documents ({size:.1f} MB)",
+                    ["File", "Size (KB)", "Type", "Source"],
+                    [[d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type] for d in documents[:50]],
+                )
 
-            if len(documents) > 50:
-                info(f"... and {len(documents) - 50} more files")
+                if len(documents) > 50:
+                    info(f"... and {len(documents) - 50} more files")
 
-            if size > 100:
-                warn(f"Total size is {size:.1f} MB — ingestion may take a while.")
-                if not confirm("Proceed with ingestion?"):
-                    return
+                if size > 100:
+                    warn(f"Total size is {size:.1f} MB — ingestion may take a while.")
+                    if not confirm("Proceed with ingestion?"):
+                        return
 
-            if confirm("Ingest these documents into the RAG store?"):
-                from amx.docs.rag import RAGStore
+                if confirm("Ingest these documents into the RAG store?"):
+                    from amx.docs.rag import RAGStore
 
-                store = RAGStore()
-                chunks = store.ingest(documents, refresh=False)
-                success(f"Ingested {chunks} chunks from {len(documents)} documents")
+                    store = RAGStore()
+                    with step_spinner("Ingesting scanned documents"):
+                        chunks = store.ingest(documents, refresh=False)
+                    success(f"Ingested {chunks} chunks from {len(documents)} documents")
         finally:
             cleanup_scan_artifacts(documents)
 
@@ -141,21 +145,24 @@ def register_docs_commands(
 
         documents = []
         try:
-            documents = scan_all_sources(all_paths)
-            size = total_size_mb(documents)
+            with command_display(mode="docs-ingest", provider=cfg.llm.provider, model=cfg.llm.model):
+                with step_spinner("Scanning document sources"):
+                    documents = scan_all_sources(all_paths)
+                size = total_size_mb(documents)
 
-            info(f"Found {len(documents)} documents ({size:.1f} MB)")
+                info(f"Found {len(documents)} documents ({size:.1f} MB)")
 
-            if size > 100:
-                warn(f"Large document set ({size:.1f} MB). This will take some time.")
-                if not confirm("Continue?"):
-                    return
+                if size > 100:
+                    warn(f"Large document set ({size:.1f} MB). This will take some time.")
+                    if not confirm("Continue?"):
+                        return
 
-            store = RAGStore()
-            chunks = store.ingest(documents, refresh=refresh)
-            if refresh:
-                info("Refreshed: removed prior chunks for the same source paths before ingest.")
-            success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
+                store = RAGStore()
+                with step_spinner("Ingesting documents into RAG store"):
+                    chunks = store.ingest(documents, refresh=refresh)
+                if refresh:
+                    info("Refreshed: removed prior chunks for the same source paths before ingest.")
+                success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
         finally:
             cleanup_scan_artifacts(documents)
 
@@ -164,7 +171,9 @@ def register_docs_commands(
     @click.option("-n", "--results", default=5, help="Number of results.")
     def docs_search_docs(question: str, results: int) -> None:
         """Semantic similarity search over ingested documents (vector store only; no LLM reply)."""
-        _run_docs_semantic_search(question, results)
+        with command_display(mode="docs-search", provider="", model=""):
+            with step_spinner("Searching ingested documents"):
+                _run_docs_semantic_search(question, results)
 
     @docs.command("export-report")
     @click.argument("output_file", required=False, default=None)
@@ -259,35 +268,38 @@ def register_docs_commands(
 
         llm = LLMProvider(cfg.llm)
         db = DatabaseConnector(cfg.db)
-        if not db.test_connection():
-            error("Cannot connect to database.")
-            sys.exit(1)
+        with command_display(schema=schema or cfg.current_schema or "", mode="docs-analyze", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Testing database connection..."):
+                connected = db.test_connection()
+            if not connected:
+                error("Cannot connect to database.")
+                sys.exit(1)
 
-        tables_arg = list(tables_pos) + list(table)
-        scope = finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
-        if scope is None:
-            return
-        schema_name = next(iter(scope))
-        tables = scope[schema_name]
+            tables_arg = list(tables_pos) + list(table)
+            scope = finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
+            if scope is None:
+                return
+            schema_name = next(iter(scope))
+            tables = scope[schema_name]
 
-        agent = RAGAgent(llm, store)
-        all_suggestions = []
-        for table_name in tables:
-            with step_spinner(f"Profiling {schema_name}.{table_name}"):
-                table_profile = db.profile_table(schema_name, table_name)
-            ctx = AgentContext(
-                schema=schema_name,
-                table=table_name,
-                db_profile={
-                    "row_count": table_profile.row_count,
-                    "columns": [{"name": c.name, "dtype": c.dtype} for c in table_profile.columns],
-                },
-                existing_metadata={},
-            )
-            info(f"RAG Agent: {schema_name}.{table_name} ({len(table_profile.columns)} columns)")
-            suggestions = agent.run(ctx)
-            all_suggestions.extend(suggestions)
-            info(f"  -> {len(suggestions)} suggestions")
+            agent = RAGAgent(llm, store)
+            all_suggestions = []
+            for table_name in tables:
+                with step_spinner(f"Profiling {schema_name}.{table_name}"):
+                    table_profile = db.profile_table(schema_name, table_name)
+                ctx = AgentContext(
+                    schema=schema_name,
+                    table=table_name,
+                    db_profile={
+                        "row_count": table_profile.row_count,
+                        "columns": [{"name": c.name, "dtype": c.dtype} for c in table_profile.columns],
+                    },
+                    existing_metadata={},
+                )
+                info(f"RAG Agent: {schema_name}.{table_name} ({len(table_profile.columns)} columns)")
+                suggestions = agent.run(ctx)
+                all_suggestions.extend(suggestions)
+                info(f"  -> {len(suggestions)} suggestions")
 
         if not all_suggestions:
             warn("RAG Agent produced no suggestions.")

@@ -9,7 +9,8 @@ from dataclasses import replace
 import click
 
 from amx.config import AMXConfig, DISABLED_PROFILE
-from amx.utils.console import ask, confirm, error, heading, info, render_table, success, warn
+from amx.utils.console import ask, confirm, error, heading, info, render_table, step_spinner, success, warn
+from amx.utils.live_commands import command_display
 
 InteractiveDbBlock = Callable[[object], object]
 InteractiveLlmBlock = Callable[[object], object]
@@ -40,7 +41,10 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db = DatabaseConnector(cfg.db)
-        if db.test_connection():
+        with command_display(mode="setup-db", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Testing database connection..."):
+                connected = db.test_connection()
+        if connected:
             success(f"Database connection successful! (backend: {cfg.db.backend})")
         else:
             error("Database connection failed. Check credentials and try again.")
@@ -56,7 +60,10 @@ def register_root_commands(
         from amx.llm.provider import LLMProvider
 
         llm = LLMProvider(cfg.llm)
-        if llm.test():
+        with command_display(mode="setup-llm", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Testing LLM connection..."):
+                llm_ready = llm.test()
+        if llm_ready:
             success("LLM connection successful!")
         else:
             warn("LLM test failed — you can reconfigure later with `amx setup`.")
@@ -122,7 +129,9 @@ def register_root_commands(
 
         db_conn = DatabaseConnector(cfg.db)
         info(f"Testing [{cfg.db.backend}] connection to {cfg.db.display_summary} ...")
-        connected = db_conn.test_connection()
+        with command_display(mode="db-connect", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Testing database connection..."):
+                connected = db_conn.test_connection()
         if connected:
             success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
         else:
@@ -136,7 +145,10 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
-        render_table("Schemas", ["Schema Name"], [[s] for s in db_conn.list_schemas()])
+        with command_display(mode="db-schemas", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Listing schemas"):
+                schemas = db_conn.list_schemas()
+        render_table("Schemas", ["Schema Name"], [[s] for s in schemas])
 
     @db.command("tables")
     @click.argument("schema")
@@ -146,7 +158,9 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
-        assets = db_conn.list_assets(schema)
+        with command_display(schema=schema, mode="db-tables", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner(f"Listing assets in {schema}"):
+                assets = db_conn.list_assets(schema)
         render_table(
             f"Assets in {schema}",
             ["Name", "Type"],
@@ -162,7 +176,9 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
-        profile = db_conn.profile_table(schema, table)
+        with command_display(schema=schema, table=table, mode="db-profile", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner(f"Profiling {schema}.{table}"):
+                profile = db_conn.profile_table(schema, table)
         rows = [
             [
                 col.name,

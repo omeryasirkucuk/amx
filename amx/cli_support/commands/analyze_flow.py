@@ -23,6 +23,7 @@ from amx.utils.console import (
     step_spinner,
     warn,
 )
+from amx.utils.live_commands import command_display
 from amx.utils.token_tracker import tracker as token_tracker
 
 FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, list[str]] | None]
@@ -277,46 +278,53 @@ def execute_analyze_run(
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
         tables_arg = list(tables_pos) + list(table)
-        scope = finalize_scope(cfg, db, schema, tables_arg)
-        if scope is None:
-            return
+        with command_display(
+            schema=schema or cfg.current_schema or "",
+            table=(table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")),
+            mode="analyze-setup",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
+            scope = finalize_scope(cfg, db, schema, tables_arg)
+            if scope is None:
+                return
 
-        total_assets = sum(len(v) for v in scope.values())
+            total_assets = sum(len(v) for v in scope.values())
 
-        review_strategy = "individual"
-        if not use_batch and total_assets > 1:
-            review_strategy = ask_choice(
-                "Review strategy",
-                ["individual", "deferred"],
-                default="individual",
-                descriptions={
-                    "individual": "Assess each asset (table) as it becomes ready",
-                    "deferred": "Process everything first, then review all together at the end",
-                },
-            )
-
-        hs = history_store()
-        if hs is not None:
-            try:
-                run_id = hs.create_run(
-                    command="analyze.run",
-                    mode=("batch" if use_batch else "chat"),
-                    db_backend=cfg.db.backend,
-                    db_profile=cfg.active_db_profile,
-                    llm_provider=cfg.llm.provider,
-                    llm_model=cfg.llm.model,
-                    scope=scope,
+            review_strategy = "individual"
+            if not use_batch and total_assets > 1:
+                review_strategy = ask_choice(
+                    "Review strategy",
+                    ["individual", "deferred"],
+                    default="individual",
+                    descriptions={
+                        "individual": "Assess each asset (table) as it becomes ready",
+                        "deferred": "Process everything first, then review all together at the end",
+                    },
                 )
-            except Exception as exc:
-                warn(f"History persistence disabled for this run: {exc}")
 
-        total_schemas = len(scope)
-        scope_summary = (
-            f"{total_assets} asset(s) across {total_schemas} schema(s)"
-            if total_schemas > 1
-            else f"{total_assets} asset(s) in {next(iter(scope))}"
-        )
-        info(f"Scope: {scope_summary}")
+            hs = history_store()
+            if hs is not None:
+                try:
+                    run_id = hs.create_run(
+                        command="analyze.run",
+                        mode=("batch" if use_batch else "chat"),
+                        db_backend=cfg.db.backend,
+                        db_profile=cfg.active_db_profile,
+                        llm_provider=cfg.llm.provider,
+                        llm_model=cfg.llm.model,
+                        scope=scope,
+                    )
+                except Exception as exc:
+                    warn(f"History persistence disabled for this run: {exc}")
+
+            total_schemas = len(scope)
+            scope_summary = (
+                f"{total_assets} asset(s) across {total_schemas} schema(s)"
+                if total_schemas > 1
+                else f"{total_assets} asset(s) in {next(iter(scope))}"
+            )
+            info(f"Scope: {scope_summary}")
 
         rag_store = None
         try:
@@ -343,7 +351,14 @@ def execute_analyze_run(
         except Exception:
             pass
 
-        code_report = resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
+        with command_display(
+            schema=schema or cfg.current_schema or "",
+            table=f"{total_assets} assets" if total_assets else "",
+            mode="analyze-setup",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
+            code_report = resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
         token_tracker.reset()
 
         from amx.utils.live_display import get_display

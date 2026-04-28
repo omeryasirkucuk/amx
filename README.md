@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.126`: Long-running CLI flows now reuse the `/run` live activity display more consistently, including `/search sync`, `/search rebuild`, `/db` inspection commands, `/docs scan`/`/docs ingest`/`/docs analyze`, `/code scan`/`/code analyze`/`/code refresh`, manual edit scope pickers, and batch polling heartbeats.
 - `v0.1.125`: `/search` and `/analyze` prompt stacks were hardened with stronger grounding rules, clearer confidence discipline, conservative merge precedence, and more robust fenced-output parsing.
 - `v0.1.124`: `/search` now uses rule-first routing, deterministic read-only live probes for table-scoped factual metadata questions, shorter template-first answers, tighter session-memory scope, and stronger suppression of weak vector-only tail matches.
 - `v0.1.123`: Databricks column comment write-back now groups same-table column updates into a single `ALTER TABLE ... ALTER COLUMN ...` statement when supported, and apply-mode progress now stays on one rolling write-back line instead of printing one line per column.
@@ -726,6 +727,7 @@ print(results[0])
 
 - **Batched LLM calls**: RAG, Code, and Merge agents now process all columns in a single LLM call per table instead of one call per column (~80-90% cost reduction).
 - **Progress and token tracking**: Spinners, progress bars, and per-step token usage summary displayed during scans and agent runs.
+- **Live wait visibility beyond `/run`**: Long-running sync, scope-discovery, DB inspection, docs/code scan, and batch-polling flows now keep a visible live activity/timer on screen instead of leaving the terminal blank while warehouse or filesystem work is in progress.
 - **Table name normalization**: Codebase scanner now deduplicates fully-qualified (`schema.table`) and bare table names against the catalog.
 - **Input validation**: Interactive table selection validates against the database with similarity hints for typos.
 

@@ -22,6 +22,7 @@ from amx.utils.console import (
     success,
     warn,
 )
+from amx.utils.live_commands import command_display
 from amx.utils.token_tracker import tracker as token_tracker
 
 if TYPE_CHECKING:
@@ -32,7 +33,29 @@ def _build_scan_progress() -> tuple[dict[str, object | None], callable]:
     progress_state: dict[str, object | None] = {"obj": None, "task": None}
 
     def _scan_cb(action: str, value: object) -> None:
+        from amx.utils.live_display import get_display
         from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
+        display = get_display()
+        if display.is_active:
+            if action == "__total__":
+                progress_state["obj"] = "live"
+                progress_state["task"] = display.add_activity(f"Scanning files 0/{int(value)}")
+                display.begin_activity(progress_state["task"])  # type: ignore[arg-type]
+            elif action == "__advance__" and progress_state["task"] is not None:
+                idx = progress_state.setdefault("count", 0)
+                next_count = int(idx or 0) + 1
+                progress_state["count"] = next_count
+                total = int(progress_state.get("total") or 0)
+                if not total:
+                    total = next_count
+                display.update_activity(
+                    progress_state["task"],  # type: ignore[arg-type]
+                    label=f"Scanning files {next_count}/{total}: {value}",
+                )
+            if action == "__total__":
+                progress_state["total"] = int(value)
+            return
 
         if action == "__total__":
             progress = Progress(
@@ -150,55 +173,74 @@ def register_code_commands(
 
         profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
 
-        db = DatabaseConnector(cfg.db)
-        all_assets = db.list_assets(schema_name)
-        tables = [name for name, _ in all_assets]
-        catalog = frozenset(t.lower() for t in tables)
+        with command_display(schema=schema_name, mode="code-scan", provider=cfg.llm.provider, model=cfg.llm.model):
+            db = DatabaseConnector(cfg.db)
+            with step_spinner(f"Listing assets in {schema_name}"):
+                all_assets = db.list_assets(schema_name)
+            tables = [name for name, _ in all_assets]
+            catalog = frozenset(t.lower() for t in tables)
 
-        column_names: list[str] = []
-        seen_col: set[str] = set()
-        with step_spinner(f"Collecting column names from {len(tables)} asset(s)"):
-            for table_name in tables:
-                for column in db.list_column_profiles(schema_name, table_name):
-                    key = column.name.lower()
-                    if key not in seen_col:
-                        seen_col.add(key)
-                        column_names.append(column.name)
+            column_names: list[str] = []
+            seen_col: set[str] = set()
+            with step_spinner(f"Collecting column names from {len(tables)} asset(s)"):
+                for table_name in tables:
+                    for column in db.list_column_profiles(schema_name, table_name):
+                        key = column.name.lower()
+                        if key not in seen_col:
+                            seen_col.add(key)
+                            column_names.append(column.name)
+                        if len(column_names) >= 400:
+                            break
                     if len(column_names) >= 400:
                         break
-                if len(column_names) >= 400:
-                    break
 
-        info(
-            f"Scanning {resolved} for references to {len(tables)} tables and "
-            f"{len(column_names)} columns..."
-        )
-        progress_state, scan_cb = _build_scan_progress()
-        try:
-            report = analyze_codebase(
-                resolved,
-                tables,
-                column_names=column_names,
-                known_catalog_tables=catalog,
-                index_semantic=True,
-                progress_callback=scan_cb,
+            info(
+                f"Scanning {resolved} for references to {len(tables)} tables and "
+                f"{len(column_names)} columns..."
             )
-        except Exception as exc:
-            error(str(exc))
-            sys.exit(1)
-        finally:
-            if progress_state["obj"] is not None:
-                progress_state["obj"].stop()
+            progress_state, scan_cb = _build_scan_progress()
+            scan_failed = False
+            try:
+                report = analyze_codebase(
+                    resolved,
+                    tables,
+                    column_names=column_names,
+                    known_catalog_tables=catalog,
+                    index_semantic=True,
+                    progress_callback=scan_cb,
+                )
+            except Exception as exc:
+                scan_failed = True
+                error(str(exc))
+                sys.exit(1)
+            finally:
+                if progress_state["obj"] == "live" and progress_state["task"] is not None:
+                    from amx.utils.live_display import get_display
+
+                    if scan_failed:
+                        get_display().fail_activity(
+                            progress_state["task"],  # type: ignore[arg-type]
+                            "Code scan failed",
+                        )
+                    else:
+                        get_display().complete_activity(
+                            progress_state["task"],  # type: ignore[arg-type]
+                            f"Scanned {report.scanned_files if 'report' in locals() else int(progress_state.get('count') or 0)} file(s)",
+                        )
+                elif progress_state["obj"] is not None:
+                    progress_state["obj"].stop()
 
         try:
-            save_cached_report(
-                profile_name=profile_nm,
-                source_path=resolved,
-                schema=schema_name,
-                tables=tables,
-                column_names=column_names,
-                report=report,
-            )
+            with command_display(schema=schema_name, mode="code-scan", provider=cfg.llm.provider, model=cfg.llm.model):
+                with step_spinner("Saving code scan cache"):
+                    save_cached_report(
+                        profile_name=profile_nm,
+                        source_path=resolved,
+                        schema=schema_name,
+                        tables=tables,
+                        column_names=column_names,
+                        report=report,
+                    )
             success(f"Saved scan results to cache (profile {profile_nm!r})")
         except Exception as exc:
             warn(f"Could not save cache: {exc}")
@@ -207,14 +249,16 @@ def register_code_commands(
 
             catalog_store = SearchCatalog.from_history_store()
             if catalog_store is not None:
-                catalog_store.sync_code_report(
-                    db_profile=cfg.active_db_profile or "default",
-                    db_backend=cfg.db.backend,
-                    database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
-                    schema_name=schema_name,
-                    source_path=resolved,
-                    report=report,
-                )
+                with command_display(schema=schema_name, mode="code-sync", provider=cfg.llm.provider, model=cfg.llm.model):
+                    with step_spinner("Refreshing /search code evidence"):
+                        catalog_store.sync_code_report(
+                            db_profile=cfg.active_db_profile or "default",
+                            db_backend=cfg.db.backend,
+                            database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
+                            schema_name=schema_name,
+                            source_path=resolved,
+                            report=report,
+                        )
         except Exception as exc:
             warn(f"Could not sync code evidence into /search catalog: {exc}")
 
@@ -242,8 +286,10 @@ def register_code_commands(
             error("No codebase path configured.")
             sys.exit(1)
         profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
-        invalidate_cache(profile_nm, code_path)
-        delete_code_collection(source_filters=[code_path])
+        with command_display(mode="code-refresh", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Clearing cached code scan"):
+                invalidate_cache(profile_nm, code_path)
+                delete_code_collection(source_filters=[code_path])
         try:
             from amx.search.catalog import SearchCatalog
 
@@ -468,35 +514,38 @@ def register_code_commands(
 
         llm = LLMProvider(cfg.llm)
         db = DatabaseConnector(cfg.db)
-        if not db.test_connection():
-            error("Cannot connect to database.")
-            sys.exit(1)
+        with command_display(schema=schema or cfg.current_schema or "", mode="code-analyze", provider=cfg.llm.provider, model=cfg.llm.model):
+            with step_spinner("Testing database connection..."):
+                connected = db.test_connection()
+            if not connected:
+                error("Cannot connect to database.")
+                sys.exit(1)
 
-        tables_arg = list(tables_pos) + list(table)
-        scope = finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
-        if scope is None:
-            return
-        schema_name = next(iter(scope))
-        tables = scope[schema_name]
+            tables_arg = list(tables_pos) + list(table)
+            scope = finalize_scope(cfg, db, schema or cfg.current_schema, tables_arg)
+            if scope is None:
+                return
+            schema_name = next(iter(scope))
+            tables = scope[schema_name]
 
-        agent = CodeAgent(llm, code_report)
-        all_suggestions = []
-        for table_name in tables:
-            with step_spinner(f"Reading columns for {schema_name}.{table_name}"):
-                columns = db.list_column_profiles(schema_name, table_name)
-            ctx = AgentContext(
-                schema=schema_name,
-                table=table_name,
-                db_profile={
-                    "row_count": 0,
-                    "columns": [{"name": c.name, "dtype": c.dtype} for c in columns],
-                },
-                existing_metadata={},
-            )
-            info(f"Code Agent: {schema_name}.{table_name} ({len(columns)} columns)")
-            suggestions = agent.run(ctx)
-            all_suggestions.extend(suggestions)
-            info(f"  -> {len(suggestions)} suggestions")
+            agent = CodeAgent(llm, code_report)
+            all_suggestions = []
+            for table_name in tables:
+                with step_spinner(f"Reading columns for {schema_name}.{table_name}"):
+                    columns = db.list_column_profiles(schema_name, table_name)
+                ctx = AgentContext(
+                    schema=schema_name,
+                    table=table_name,
+                    db_profile={
+                        "row_count": 0,
+                        "columns": [{"name": c.name, "dtype": c.dtype} for c in columns],
+                    },
+                    existing_metadata={},
+                )
+                info(f"Code Agent: {schema_name}.{table_name} ({len(columns)} columns)")
+                suggestions = agent.run(ctx)
+                all_suggestions.extend(suggestions)
+                info(f"  -> {len(suggestions)} suggestions")
 
         if not all_suggestions:
             warn("Code Agent produced no suggestions.")

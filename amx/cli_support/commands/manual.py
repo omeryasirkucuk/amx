@@ -242,8 +242,11 @@ def _select_db_profile_for_wizard(cfg: AMXConfig) -> tuple[str, DBConfig] | None
 
 
 def _select_schema_for_wizard(db: object, default: str = "") -> str | None:
+    from amx.utils.console import step_spinner
+
     try:
-        schemas = list(db.list_schemas())  # type: ignore[attr-defined]
+        with step_spinner("Listing schemas for manual edit"):
+            schemas = list(db.list_schemas())  # type: ignore[attr-defined]
     except Exception:
         schemas = []
     if schemas:
@@ -252,8 +255,11 @@ def _select_schema_for_wizard(db: object, default: str = "") -> str | None:
 
 
 def _select_table_for_wizard(db: object, schema: str, default: str = "") -> str | None:
+    from amx.utils.console import step_spinner
+
     try:
-        assets = list(db.list_assets(schema))  # type: ignore[attr-defined]
+        with step_spinner(f"Listing assets in {schema}"):
+            assets = list(db.list_assets(schema))  # type: ignore[attr-defined]
     except Exception:
         assets = []
     names = [name for name, _kind in assets]
@@ -264,8 +270,11 @@ def _select_table_for_wizard(db: object, schema: str, default: str = "") -> str 
 
 
 def _select_column_for_wizard(db: object, schema: str, table: str) -> str | None:
+    from amx.utils.console import step_spinner
+
     try:
-        profiles = list(db.list_column_profiles(schema, table))  # type: ignore[attr-defined]
+        with step_spinner(f"Listing columns for {schema}.{table}"):
+            profiles = list(db.list_column_profiles(schema, table))  # type: ignore[attr-defined]
     except Exception:
         profiles = []
     names = [profile.name for profile in profiles]

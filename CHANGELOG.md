@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.126] — 2026-04-29
+### Added
+- **Shared live progress across long-running CLI flows**: `/search sync`, `/search rebuild`, `/db schemas`, `/db tables`, `/db profile`, `/docs scan`, `/docs ingest`, `/docs analyze`, `/code scan`, `/code analyze`, and `/code refresh` now reuse the `/run`-style live activity display with continuously visible elapsed timing.
+
+### Changed
+- **Interactive scope discovery visibility**: Schema/asset selection helpers and manual-edit pickers now show timed progress while AMX waits on `list_schemas()`, `list_assets()`, and column-introspection calls.
+- **Batch polling visibility**: Batch-mode LLM polling now updates the live activity tree when a live display is active, instead of only emitting intermittent plain terminal lines.
+
 ## [0.1.125] — 2026-04-29
 ### Changed
 - **Prompt hardening across `/search` and `/analyze`**: Search interpretation/answer prompts and analyze-agent prompts now use stricter grounding language, clearer ambiguity handling, stronger confidence discipline, and more conservative fallback behavior.

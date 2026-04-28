@@ -9,6 +9,7 @@ import time
 from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from amx.agents.base import MetadataSuggestion
@@ -1006,7 +1007,12 @@ class SearchCatalog:
             out.append((left, right, float(len(lines)), lines[:3]))
         return out
 
-    def rebuild_profile(self, db_profile: str) -> tuple[int, int]:
+    def rebuild_profile(
+        self,
+        db_profile: str,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[int, int]:
         job_id = self.start_sync_job(db_profile, "rebuild", {"db_profile": db_profile})
         inserted = 0
         updated = 0
@@ -1017,11 +1023,14 @@ class SearchCatalog:
                     (db_profile,),
                 ).fetchall()
                 self.index.reset_profile(db_profile)
-                for row in entities:
+                total = len(entities)
+                for index, row in enumerate(entities, start=1):
                     entity_id = int(row["id"])
                     self._resolve_effective_description(conn, entity_id)
                     self._index_entity(conn, entity_id)
                     updated += 1
+                    if on_progress is not None:
+                        on_progress(index, total)
                 self.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
             return inserted, updated
         except Exception as exc:

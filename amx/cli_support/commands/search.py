@@ -18,6 +18,7 @@ from amx.search.service import SearchService
 from amx.services.analyze_scope import finalize_scope as _finalize_scope
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import ask_choice, ask_multi_choice, confirm, console, error, info, render_table, success, warn
+from amx.utils.live_commands import command_display
 from amx.utils.live_display import get_display
 
 LogEvent = Callable[..., None]
@@ -175,25 +176,28 @@ def _sync_cached_code_evidence(
 ) -> bool:
     try:
         from amx.codebase.cache import load_latest_cached_report
+        from amx.utils.console import step_spinner
 
         code_path = cfg.resolve_code_path(cfg.active_code_profile or None, None)
         if not code_path:
             warn("No active code profile path is configured.")
             return False
         profile_nm = (cfg.active_code_profile or "default").strip() or "default"
-        manifest, report = load_latest_cached_report(profile_nm, code_path)
+        with step_spinner("Loading cached code evidence"):
+            manifest, report = load_latest_cached_report(profile_nm, code_path)
         if report is None or manifest is None:
             warn("No cached code-scan report found. Run `/code scan` first.")
             return False
         schema_name = str(manifest.get("schema") or next(iter((scope or {}).keys()), cfg.current_schema or ""))
-        catalog.sync_code_report(
-            db_profile=cfg.active_db_profile or "default",
-            db_backend=cfg.db.backend,
-            database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
-            schema_name=schema_name,
-            source_path=code_path,
-            report=report,
-        )
+        with step_spinner("Refreshing /search code evidence"):
+            catalog.sync_code_report(
+                db_profile=cfg.active_db_profile or "default",
+                db_backend=cfg.db.backend,
+                database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
+                schema_name=schema_name,
+                source_path=code_path,
+                report=report,
+            )
         success("Refreshed `/search` code evidence from the latest cached code scan.")
         return True
     except Exception as exc:
@@ -218,8 +222,15 @@ def _run_search_action(
         inserted = 0
         updated = 0
         try:
-            inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
-            _sync_cached_code_evidence(cfg, catalog, scope=scope)
+            with command_display(
+                schema=next(iter(scope.keys()), ""),
+                table=f"{sum(len(v) for v in scope.values())} assets",
+                mode="search-sync",
+                provider=cfg.llm.provider,
+                model=cfg.llm.model,
+            ):
+                inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
+                _sync_cached_code_evidence(cfg, catalog, scope=scope)
             catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
             success(f"Approved search action complete: sync_catalog inserted={inserted}, updated={updated}")
             return {"action": action_name, "status": "success", "inserted": inserted, "updated": updated, "scope": scope}
@@ -228,7 +239,13 @@ def _run_search_action(
             warn(f"Approved search action failed: {exc}")
             return {"action": action_name, "status": "failed", "reason": str(exc), "scope": scope}
     if action_name == "refresh_code_evidence":
-        ok = _sync_cached_code_evidence(cfg, catalog, scope=scope)
+        with command_display(
+            schema=next(iter(scope.keys()), "") if scope else "",
+            mode="search-sync",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
+            ok = _sync_cached_code_evidence(cfg, catalog, scope=scope)
         return {"action": action_name, "status": "success" if ok else "skipped", "scope": scope}
     if action_name == "analyze_table":
         tables = answer.details.get("retrieval", {}).get("resolved_tables") or []
@@ -376,22 +393,62 @@ def _sync_db_scope(
     database_name = cfg.db.database or cfg.db.catalog or cfg.db.project or ""
     inserted = 0
     updated = 0
+    total_assets = sum(len(asset_names) for asset_names in scope.values())
+    display = get_display()
+    activity_idx: int | None = None
+    if total_assets and display.is_active:
+        activity_idx = display.add_activity(f"Search sync 0/{total_assets}")
+        display.begin_activity(activity_idx)
+    processed = 0
+    failed = 0
     for schema_name, asset_names in scope.items():
         for asset_name in asset_names:
+            processed += 1
+            if activity_idx is not None:
+                display.set_context(schema=schema_name, table=asset_name)
+                display.update_activity(activity_idx, label=f"Search sync {processed}/{total_assets}: {schema_name}.{asset_name}")
             asset_kind = db.resolve_asset_kind(schema_name, asset_name)
             try:
-                profile = db.profile_table(schema_name, asset_name, sample_size=0, asset_kind=asset_kind)
+                if activity_idx is None:
+                    from amx.utils.console import step_spinner
+
+                    with step_spinner(f"Profiling {schema_name}.{asset_name} for /search"):
+                        profile = db.profile_table(schema_name, asset_name, sample_size=0, asset_kind=asset_kind)
+                else:
+                    profile = db.profile_table(schema_name, asset_name, sample_size=0, asset_kind=asset_kind)
             except ProfilingError as exc:
+                failed += 1
+                if activity_idx is not None:
+                    display.add_detail(activity_idx, f"Skipped {schema_name}.{asset_name}: {str(exc)[:220]}")
                 warn(str(exc))
                 continue
-            catalog.sync_table_profile(
-                db_profile=db_profile,
-                db_backend=cfg.db.backend,
-                database_name=database_name,
-                profile=profile,
-                query_usage={},
-            )
+            if activity_idx is None:
+                from amx.utils.console import step_spinner
+
+                with step_spinner(f"Writing {schema_name}.{asset_name} into search catalog"):
+                    catalog.sync_table_profile(
+                        db_profile=db_profile,
+                        db_backend=cfg.db.backend,
+                        database_name=database_name,
+                        profile=profile,
+                        query_usage={},
+                    )
+            else:
+                catalog.sync_table_profile(
+                    db_profile=db_profile,
+                    db_backend=cfg.db.backend,
+                    database_name=database_name,
+                    profile=profile,
+                    query_usage={},
+                )
             updated += 1
+    if activity_idx is not None:
+        summary = f"Synced {updated}/{total_assets} asset(s)"
+        if failed:
+            summary += f"; skipped {failed}"
+            display.fail_activity(activity_idx, summary)
+        else:
+            display.complete_activity(activity_idx, summary)
     return inserted, updated
 
 
@@ -579,40 +636,30 @@ def register_search_commands(
         if catalog is None:
             error("Search catalog is not initialized.")
             return
-        cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
-        if not scope:
-            return
-        db_profile = cfg.active_db_profile or "default"
-        job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope})
-        inserted = 0
-        updated = 0
-        try:
-            inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
+        with command_display(
+            schema=schema_name or cfg.current_schema or "",
+            table=table_name or cfg.current_table or "",
+            mode="search-sync",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
+            cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
+            if not scope:
+                return
+            db_profile = cfg.active_db_profile or "default"
+            job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope})
+            inserted = 0
+            updated = 0
             try:
-                from amx.codebase.cache import load_latest_cached_report
-
-                code_path = cfg.resolve_code_path(cfg.active_code_profile or None, None)
-                if code_path:
-                    profile_nm = (cfg.active_code_profile or "default").strip() or "default"
-                    manifest, report = load_latest_cached_report(profile_nm, code_path)
-                    if report is not None and manifest is not None:
-                        catalog.sync_code_report(
-                            db_profile=db_profile,
-                            db_backend=cfg.db.backend,
-                            database_name=cfg.db.database or cfg.db.catalog or cfg.db.project or "",
-                            schema_name=str(manifest.get("schema") or next(iter(scope.keys()), cfg.current_schema or "")),
-                            source_path=code_path,
-                            report=report,
-                        )
+                inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
+                _sync_cached_code_evidence(cfg, catalog, scope=scope)
+                catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
+                success(f"Search sync complete. inserted={inserted}, updated={updated}")
+                log_event(event_type="search_sync", status="success", command="search.sync", details={"scope": scope, "updated": updated})
             except Exception as exc:
-                warn(f"Code evidence sync skipped: {exc}")
-            catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
-            success(f"Search sync complete. inserted={inserted}, updated={updated}")
-            log_event(event_type="search_sync", status="success", command="search.sync", details={"scope": scope, "updated": updated})
-        except Exception as exc:
-            catalog.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
-            log_event(event_type="search_sync", status="failed", command="search.sync", details={"error": str(exc)})
-            raise
+                catalog.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
+                log_event(event_type="search_sync", status="failed", command="search.sync", details={"error": str(exc)})
+                raise
 
     @search.command("rebuild")
     @pass_config
@@ -621,7 +668,16 @@ def register_search_commands(
         if catalog is None:
             error("Search catalog is not initialized.")
             return
-        inserted, updated = catalog.rebuild_profile(cfg.active_db_profile or "default")
+        with command_display(mode="search-rebuild", provider=cfg.llm.provider, model=cfg.llm.model) as display:
+            total_entities = int(catalog.sync_status(cfg.active_db_profile or "default")["entities"].get("total_entities", 0) or 0)
+            activity_idx = display.add_activity(f"Search rebuild 0/{total_entities or '?'}")
+            display.begin_activity(activity_idx)
+
+            def _on_progress(index: int, total: int) -> None:
+                display.update_activity(activity_idx, label=f"Search rebuild {index}/{total}")
+
+            inserted, updated = catalog.rebuild_profile(cfg.active_db_profile or "default", on_progress=_on_progress)
+            display.complete_activity(activity_idx, f"Rebuilt {updated} catalog entity rows")
         success(f"Search rebuild complete. inserted={inserted}, updated={updated}")
         log_event(
             event_type="search_rebuild",

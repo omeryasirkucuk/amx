@@ -12,6 +12,20 @@ AskMultiChoiceFn = Callable[..., list[str]]
 ConsoleFn = Callable[[str], None]
 
 
+def _list_schemas(db: object, *, label: str) -> list[str]:
+    from amx.utils.console import step_spinner
+
+    with step_spinner(label):
+        return list(db.list_schemas())  # type: ignore[attr-defined]
+
+
+def _list_assets(db: object, schema: str, *, label: str | None = None) -> list[tuple[str, object]]:
+    from amx.utils.console import step_spinner
+
+    with step_spinner(label or f"Listing assets in {schema}"):
+        return list(db.list_assets(schema))  # type: ignore[attr-defined]
+
+
 def is_non_business_asset(name: str) -> bool:
     """Return True for telemetry/system assets that should not be described by AMX."""
     lowered = (name or "").strip().lower()
@@ -54,7 +68,7 @@ def validate_assets_in_schema(db: object, schema: str, names: list[str]) -> list
 
     if not names:
         raise ValueError("No assets selected.")
-    available = [asset[0] for asset in db.list_assets(schema)]  # type: ignore[attr-defined]
+    available = [asset[0] for asset in _list_assets(db, schema, label=f"Validating assets in {schema}")]
     available_set = set(available)
     by_lower = {asset.lower(): asset for asset in available}
     resolved: list[str] = []
@@ -81,7 +95,7 @@ def asset_display_list(db: object, schema: str) -> list[str]:
 
     assets = [
         (name, kind)
-        for name, kind in db.list_assets(schema)  # type: ignore[attr-defined]
+        for name, kind in _list_assets(db, schema, label=f"Loading selectable assets in {schema}")
         if not is_non_business_asset(name)
     ]
     lines: list[str] = []
@@ -110,7 +124,7 @@ def resolve_run_scope(
     """Three-level scope resolution: database -> schema -> asset."""
     if schema is not None or table_args:
         if not schema:
-            schemas = db.list_schemas()  # type: ignore[attr-defined]
+            schemas = _list_schemas(db, label="Listing schemas for scope resolution")
             schema = ask_choice("Select schema to analyze", schemas)
         assets = list(table_args)
         if not assets:
@@ -131,8 +145,8 @@ def resolve_run_scope(
 
     if scope_level == "Database":
         result: dict[str, list[str]] = {}
-        for schema_name in db.list_schemas():  # type: ignore[attr-defined]
-            names = [asset[0] for asset in db.list_assets(schema_name)]  # type: ignore[attr-defined]
+        for schema_name in _list_schemas(db, label="Listing schemas for database scope"):
+            names = [asset[0] for asset in _list_assets(db, schema_name)]
             if names:
                 result[schema_name] = names
         if not result:
@@ -140,11 +154,11 @@ def resolve_run_scope(
         return result
 
     if scope_level == "Schema":
-        schemas = db.list_schemas()  # type: ignore[attr-defined]
+        schemas = _list_schemas(db, label="Listing schemas for schema scope")
         selected = schemas if len(schemas) == 1 else ask_multi_choice("Select schema(s) to analyze", schemas)
         result: dict[str, list[str]] = {}
         for schema_name in selected:
-            names = [asset[0] for asset in db.list_assets(schema_name)]  # type: ignore[attr-defined]
+            names = [asset[0] for asset in _list_assets(db, schema_name)]
             if names:
                 result[schema_name] = names
         return result
@@ -153,14 +167,14 @@ def resolve_run_scope(
         if cfg.current_schema:
             if cfg.current_table:
                 return {cfg.current_schema: [cfg.current_table]}
-            return {cfg.current_schema: [asset[0] for asset in db.list_assets(cfg.current_schema)]}  # type: ignore[attr-defined]
+            return {cfg.current_schema: [asset[0] for asset in _list_assets(db, cfg.current_schema)]}
         warn(
             "Default scope requires /db context. Set /schema (and optionally /table) first, "
             "or pick Schema/Asset scope."
         )
         return {}
 
-    schema_name = ask_choice("Select schema", db.list_schemas())  # type: ignore[attr-defined]
+    schema_name = ask_choice("Select schema", _list_schemas(db, label="Listing schemas for asset scope"))
     chosen = pick_assets(asset_display_list(db, schema_name), ask_multi_choice=ask_multi_choice)
     return {schema_name: chosen}
 
@@ -270,7 +284,7 @@ def resolve_codebase_for_run(
 
     catalog_set: set[str] = set()
     for schema_name in scope:
-        for name, _kind in db.list_assets(schema_name):  # type: ignore[attr-defined]
+        for name, _kind in _list_assets(db, schema_name, label=f"Loading catalog assets in {schema_name}"):
             all_tables.append(name)
             catalog_set.add(name.lower())
     catalog = frozenset(catalog_set)
