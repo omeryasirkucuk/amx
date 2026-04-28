@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.129] — 2026-04-29
+### Changed
+- **LLM coverage-audit routing contract**: `/search` interpretation/review prompts now require `request_type`, and broad “missing comment” requests are explicitly modeled as `coverage_audit`.
+- **Safer LLM-to-route normalization**: If the LLM returns `request_type=coverage_audit`, plan normalization now forces `intent=check_coverage` and `search_mode=check_coverage` before retrieval, preventing semantic table-match drift.
+- **Regression coverage**: Added tests for both reviewer-corrected and single-pass classifier coverage-audit routing paths.
+
 ## [0.1.128] — 2026-04-29
 ### Changed
 - **LLM-native multilingual interpretation**: `/search` now uses an LLM-first interpretation contract with LLM-derived `answer_language`, and no longer relies on a rule-first intent router in the normal path.

@@ -811,8 +811,19 @@ class SearchCatalogTests(unittest.TestCase):
         cfg = self._search_cfg()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"find_tables","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"semantic guess","decision_confidence":"medium","needs_clarification":false}',
-                '{"intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
+                '{"request_type":"metadata_discovery","intent":"find_tables","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"semantic guess","decision_confidence":"medium","needs_clarification":false}',
+                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("veri tabanlarımızda comment kısmı eksik olanlar var mı")
+        self.assertEqual(answer.intent, "check_coverage")
+        self.assertEqual(answer.details["reason"], "redirect_to_analyze")
+
+    def test_classifier_can_route_coverage_audit_without_reviewer(self) -> None:
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
             )
             service = SearchService(cfg, self.catalog)
             answer = service.ask("veri tabanlarımızda comment kısmı eksik olanlar var mı")

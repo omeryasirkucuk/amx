@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.129`: `/search` now enforces an LLM-native `request_type` contract for routing, including explicit `coverage_audit` handling for broad missing-comment questions so those requests reliably route to coverage workflow instead of semantic table matches.
 - `v0.1.128`: `/search` interpretation moved to an LLM-native multilingual flow with balanced classifier/reviewer decisioning, confidence-aware clarification questions for ambiguous scope, and configurable interpretation settings (`interpretation_mode`, `clarification_on_low_confidence`).
 - `v0.1.127`: `/search` question interpretation is now LLM-first (rule-based routing is fallback-only on LLM failure), which improves scope/intent understanding for ambiguous or conversational metadata questions while preserving deterministic resilience.
 - `v0.1.126`: Long-running CLI flows now reuse the `/run` live activity display more consistently, including `/search sync`, `/search rebuild`, `/db` inspection commands, `/docs scan`/`/docs ingest`/`/docs analyze`, `/code scan`/`/code analyze`/`/code refresh`, manual edit scope pickers, and batch polling heartbeats.

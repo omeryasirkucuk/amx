@@ -220,16 +220,25 @@ class SearchAgent:
             raise ValueError("payload does not include routing fields")
         search_mode = str(payload.get("search_mode") or "semantic_concept").strip() or "semantic_concept"
         question_class = str(payload.get("question_class") or "").strip() or self._class_from_mode(search_mode)
+        request_type = str(payload.get("request_type") or "").strip().lower()
+        if request_type == "coverage_audit":
+            search_mode = "check_coverage"
+            question_class = "inventory"
         confidence = str(payload.get("decision_confidence") or "high").strip().lower() or "high"
         if confidence not in {"high", "medium", "low"}:
             confidence = "medium"
+        resolved_intent = str(payload.get("intent") or "find_columns")
+        resolved_target = str(payload.get("target_entity") or "unknown").strip() or "unknown"
+        if request_type == "coverage_audit":
+            resolved_intent = "check_coverage"
+            resolved_target = "database"
         return SearchPlan(
-            intent=str(payload.get("intent") or "find_columns"),
+            intent=resolved_intent,
             out_of_domain=bool(payload.get("out_of_domain")),
             normalized_question=str(payload.get("normalized_question") or question).strip() or question,
             search_mode=search_mode,
             question_class=question_class,
-            target_entity=str(payload.get("target_entity") or "unknown").strip() or "unknown",
+            target_entity=resolved_target,
             entity_hints=[str(item).strip() for item in (payload.get("entity_hints") or []) if str(item).strip()],
             search_queries=[str(item).strip() for item in (payload.get("search_queries") or []) if str(item).strip()]
             or [str(payload.get("normalized_question") or question).strip() or question],
@@ -258,6 +267,7 @@ class SearchAgent:
             "Allowed target_entity values: column, table, schema, database, aggregate, join_path, unknown.\n"
             "Allowed intent values: find_columns, join_candidates, explain_table, list_databases, list_schemas, "
             "count_tables, compare_entities, unsupported.\n"
+            "Allowed request_type values: metadata_discovery, coverage_audit, inventory, join, table_understanding, comparative_reasoning, unsupported.\n"
             "Core rules:\n"
             "- Set out_of_domain=true STRICTLY ONLY for greetings (e.g. hello, hi), small talk, or requests entirely unrelated to any kind of database or data context (e.g. write me Python code, tell me a joke).\n"
             "- Infer answer_language from the user question itself; do not rely on metadata_generation_language.\n"
@@ -268,11 +278,14 @@ class SearchAgent:
             "- Always include search_queries. Put the original wording first. For non-English questions, also include one concise English retrieval phrase.\n"
             "- normalized_question should be the best retrieval phrase, usually English when it improves recall.\n"
             "Routing rules:\n"
+            "- request_type MUST be set first, then intent/search_mode/question_class/target_entity must align with it.\n"
             "- Field/code lookup such as MANDT, VBELN, mangdt, bukrs -> search_mode=name_lookup, question_class=entity_lookup, target_entity=column.\n"
             "- 'How do these two tables join' -> join_candidates, join_discovery, target_entity=join_path.\n"
             "- 'Which tables can join with X' -> joinable_tables, join_discovery, target_entity=table.\n"
             "- 'What does this table do' or 'what is ADRC table' -> table_explain, table_understanding, target_entity=table.\n"
             "- 'Which databases/schemas are known' or 'how many tables' -> inventory routes.\n"
+            "- Broad missing-comment requests such as 'veri tabanlarımızda comment kısmı eksik olanlar var mı' are coverage_audit.\n"
+            "- For coverage_audit use intent=check_coverage and search_mode=check_coverage.\n"
             "- Conceptual search for tables containing a business concept such as address details, pricing, customer identifiers, or dates -> semantic_concept, semantic_discovery, target_entity=table.\n"
             "- Conceptual search for fields/columns -> semantic_concept, semantic_discovery, target_entity=column.\n"
             "- Table comparison or equivalence -> compare_entities, comparative_reasoning.\n"
@@ -280,6 +293,7 @@ class SearchAgent:
             "- NEVER use unsupported unless absolutely impossible to map. Default to search_mode=semantic_concept for ambiguous data requests.\n"
             "- Use ambiguity_flags for real risks such as missing_scope, ambiguous_table_name, cross_schema_risk, followup_scope_guess.\n"
             "- Set answer_language to the exact language the user wrote the question in.\n"
+            "- Always output request_type.\n"
             "- Output decision_confidence (high|medium|low).\n"
             "- Set needs_clarification=true only when proceeding without clarification would likely misroute retrieval.\n"
             "- If needs_clarification=true, provide one short clarification_question."
@@ -314,6 +328,8 @@ class SearchAgent:
             "Return JSON only.\n"
             "You receive a draft routing plan. Validate it against the question and session context.\n"
             "Correct the plan when needed, but keep smallest valid route change.\n"
+            "Always output request_type and ensure it aligns with intent/search_mode/question_class.\n"
+            "Broad missing-comment coverage questions must be request_type=coverage_audit with check_coverage route.\n"
             "If uncertainty remains, set needs_clarification=true with one short clarification_question.\n"
             "Always output decision_confidence (high|medium|low).\n"
             "Infer answer_language from question; keep multilingual behavior without hardcoded language lists.\n"
