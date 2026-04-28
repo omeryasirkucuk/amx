@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.114] — 2026-04-28
+### Fixed
+- **Column discovery no longer becomes table snapshots**: Global semantic column questions such as "city ile alakalı tüm kolon isimlerini getir" no longer run a live table metadata snapshot just because conversation memory or fuzzy matching can resolve a nearby table.
+- **Live probe scope guardrails**: Live-first probing is now limited to explicit table-scoped factual questions and table-understanding requests; open-ended column discovery stays on catalog/vector retrieval and synthesis.
+
+### Added
+- **Regression coverage**: Added a search test where prior ADRC session memory and a bad `table_explain` planner output cannot turn a global city-column search into an ADRC live snapshot answer.
+
 ## [0.1.113] — 2026-04-28
 ### Changed
 - **Live-first factual table answers in `/search`**: Table-understanding questions now resolve explicit table targets first and run a live `table_metadata_snapshot` before answering structural facts such as column counts, types, and table comments.

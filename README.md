@@ -380,7 +380,7 @@ Answering behavior:
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
 - synthesized answers receive every retrieved row in the current result set, with result indexes, so AMX can answer across all returned candidates instead of only the first few matches
-- table-scoped factual questions are live-first: questions such as "what is the ADRC table?" or "are all ADRC columns commented?" resolve the requested table and run safe live metadata probes before answering structural facts like column count, types, nullability, table comments, and column-comment coverage.
+- table-scoped factual questions are live-first: questions such as "what is the ADRC table?" or "are all ADRC columns commented?" resolve the requested table and run safe live metadata probes before answering structural facts like column count, types, nullability, table comments, and column-comment coverage. Open-ended semantic column searches, such as "city related column names", stay on catalog/vector retrieval unless the user explicitly scopes them to a table.
 - explicit table mentions such as `schema.table`, `ADRC table`, or `adrc tablosunda` take precedence over fuzzy catalog matches. If the exact live table cannot be verified, AMX refuses to substitute a similar candidate such as `ADR6`; fuzzy matches are shown only as suggestions.
 - `/search` only labels an answer as live verified when live metadata rows were actually collected; catalog-only or fuzzy evidence is capped to lower confidence.
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
@@ -467,6 +467,11 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.114
+
+- **Column search scope guardrail**: Open-ended semantic column searches no longer get converted into live table snapshots from fuzzy matches or prior session memory.
+- **Planner repair**: If the interpreter misclassifies a column-list query as table explanation, `/search` reroutes it back to semantic column discovery.
 
 ### v0.1.113
 

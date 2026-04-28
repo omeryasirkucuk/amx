@@ -168,6 +168,7 @@ class SearchCatalogTests(unittest.TestCase):
                 ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
                 ColumnProfile(name="name1", dtype="TEXT", nullable=True, existing_comment="Name line"),
                 ColumnProfile(name="city1", dtype="TEXT", nullable=True, existing_comment="City"),
+                ColumnProfile(name="city_code", dtype="TEXT", nullable=True, existing_comment="City code"),
             ],
         )
 
@@ -704,6 +705,54 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(rows[0]["row_type"], "table")
         self.assertFalse(verification["live_verified"])
         self.assertEqual(verification["checks"], ["table_resolution"])
+
+    def test_global_column_concept_query_does_not_turn_into_live_table_snapshot(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._adrc_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+
+        class FakeDB:
+            def get_table_metadata_snapshot(self, schema: str, table: str) -> dict:
+                raise AssertionError("global column discovery must not run table snapshot probes")
+
+            def table_metadata_probe_query(self, schema: str, table: str) -> str:
+                raise AssertionError("global column discovery must not build table snapshot probes")
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"city related column names","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adrc"],"search_queries":["city ile alakali tum kolon isimlerini getir","city related column names"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"misclassified from memory"}',
+                "City ile alakali kolonlar: `sap_s6p.adrc.city1` ve `sap_s6p.adrc.city2`.",
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                service._agent._remember(
+                    {
+                        "question": "adrc tablosu nedir",
+                        "intent": "explain_table",
+                        "topic": "what is adrc table",
+                        "tables": ["sap_s6p.adrc"],
+                        "columns": [],
+                    }
+                )
+                second = service.ask("city ile alakalı tüm kolon isimlerini getir")
+
+        self.assertEqual(second.details["plan"]["search_mode"], "semantic_concept")
+        self.assertEqual(second.details["plan"]["target_entity"], "column")
+        self.assertFalse(second.details["retrieval"].get("live_probe", {}).get("executed", False))
+        self.assertNotIn("Canli DB metadata'sina gore", second.summary)
+        self.assertEqual(second.details["retrieval"]["result_kind"], "exact_column_name_matches")
+        self.assertTrue(second.rows)
+        column_names = {str(row.get("column_name") or "").lower() for row in second.rows}
+        self.assertIn("city1", column_names)
+        self.assertIn("city_code", column_names)
+        self.assertNotIn("name2", column_names)
+        self.assertIn("`sap_s6p.adrc.city1`", second.summary)
 
     def test_catalog_overview_question_lists_known_databases(self) -> None:
         self.catalog.sync_table_profile(

@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.114] — 2026-04-28
+### Column Discovery Probe Guardrails
+- **amx/search/agent.py**: Rerouted misclassified global column-list questions away from `table_explain`, limited non-table-understanding live probes to explicit table mentions, and stopped candidate-table discovery from driving live probes for open-ended semantic column searches.
+- **tests/test_search_catalog.py**: Added a regression for `city ile alakalı tüm kolon isimlerini getir` with prior ADRC session memory and a bad planner response.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.114` and documented the table-scoped boundary for live-first probing.
+
 ## [0.1.113] — 2026-04-28
 ### Live-First Search Facts
 - **amx/search/agent.py**: Added explicit target-resolution records, live exact table checks, live-first `table_metadata_snapshot` probes for `table_explain`, deterministic live table summaries, and unresolved-target answers that refuse to replace explicit table names with fuzzy candidates.

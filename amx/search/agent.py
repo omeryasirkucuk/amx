@@ -325,6 +325,7 @@ class SearchAgent:
         sample = (question or "").strip().lower()
         asks_count = any(token in sample for token in ("kaç", "kac", "how many", "count"))
         asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
+        asks_column_word = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
         asks_listing = any(token in sample for token in ("hangi", "tüm", "tum", "list", "show", "söyle", "soyle", "tell"))
         asks_semantic_table_concept = any(
             token in sample
@@ -341,6 +342,21 @@ class SearchAgent:
                 "olan",
             )
         )
+        if asks_column_word and asks_listing and plan.search_mode == "table_explain" and not self._explicit_table_paths_for_question(question):
+            return SearchPlan(
+                intent="find_columns",
+                out_of_domain=plan.out_of_domain,
+                normalized_question=plan.normalized_question,
+                search_mode="semantic_concept",
+                question_class="semantic_discovery",
+                target_entity="column",
+                entity_hints=[],
+                search_queries=list(plan.search_queries),
+                needs_typo_recovery=plan.needs_typo_recovery,
+                answer_language=plan.answer_language,
+                ambiguity_flags=list(plan.ambiguity_flags),
+                reason=(plan.reason + "; rerouted from table explanation to column discovery").strip("; "),
+            )
         if (
             plan.search_mode == "count_tables"
             and asks_table_word
@@ -566,6 +582,12 @@ class SearchAgent:
                 if path.lower() not in seen:
                     seen.add(path.lower())
                     mentions.append({"requested": token, "path": path, "source": "explicit_current_schema"})
+        else:
+            for token in explicit_table_tokens:
+                key = token.lower()
+                if key not in seen:
+                    seen.add(key)
+                    mentions.append({"requested": token, "path": "", "source": "explicit_unqualified_table"})
         return mentions
 
     def _explicit_table_paths_for_question(self, question: str) -> list[str]:
@@ -761,11 +783,56 @@ class SearchAgent:
             return max(base, 10)
         return base
 
+    def _asks_column_name_listing(self, question: str, plan: SearchPlan) -> bool:
+        sample = (question or "").strip().lower()
+        asks_column = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
+        asks_names = any(token in sample for token in ("isim", "isimleri", "name", "names", "getir", "listele", "list"))
+        asks_comment_coverage = any(token in sample for token in ("comment", "comments", "commentler", "yorum", "yorumlar", "girili", "coverage"))
+        return asks_column and asks_names and not asks_comment_coverage and plan.question_class == "semantic_discovery" and plan.target_entity in {"column", "unknown", ""}
+
+    def _column_name_lookup_terms(self, question: str, plan: SearchPlan) -> list[str]:
+        stopwords = {
+            "ile",
+            "alakali",
+            "alakalı",
+            "ilgili",
+            "tüm",
+            "tum",
+            "kolon",
+            "kolonlar",
+            "kolonu",
+            "column",
+            "columns",
+            "field",
+            "fields",
+            "isim",
+            "isimleri",
+            "name",
+            "names",
+            "getir",
+            "listele",
+            "list",
+            "all",
+            "which",
+            "hangi",
+            "related",
+            "with",
+        }
+        terms: list[str] = []
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", question or ""):
+            normalized = token.lower()
+            if normalized in stopwords or normalized in terms:
+                continue
+            terms.append(normalized)
+        return terms[:4]
+
     def _should_plan_live_probe(self, question: str, plan: SearchPlan, table_paths: list[str]) -> bool:
         if not table_paths or plan.search_mode in {"list_databases", "list_schemas", "count_tables", "join_candidates", "joinable_tables"}:
             return False
         if plan.search_mode == "table_explain" or plan.question_class == "table_understanding":
             return True
+        if not self._explicit_table_mentions_for_question(question):
+            return False
         sample = (question or "").strip().lower()
         metadata_terms = {
             "comment",
@@ -867,7 +934,20 @@ class SearchAgent:
         if target_resolution.get("unresolved_explicit") and not resolved_targets:
             return LiveProbePlan(False, "Explicit table target was not found in live metadata.", []), {}
         explicit_table_paths = self._explicit_table_paths_for_question(question)
-        table_paths = resolved_targets or explicit_table_paths or self._candidate_table_paths_for_question(plan.entity_hints, question)
+        if plan.search_mode == "table_explain" or plan.question_class == "table_understanding":
+            table_paths = resolved_targets or explicit_table_paths or self._candidate_table_paths_for_question(plan.entity_hints, question)
+        else:
+            table_paths = resolved_targets or explicit_table_paths
+            if not table_paths:
+                seen_paths: set[str] = set()
+                for mention in self._explicit_table_mentions_for_question(question):
+                    requested = str(mention.get("requested") or "").strip()
+                    if not requested:
+                        continue
+                    for path in self._table_candidate_paths(requested, limit=2):
+                        if path.lower() not in seen_paths:
+                            seen_paths.add(path.lower())
+                            table_paths.append(path)
         if not self._should_plan_live_probe(question, plan, table_paths):
             return LiveProbePlan(False, "", []), {}
         default_ops = self._default_live_probe_operations(question, explicit_table_paths or table_paths)
@@ -1156,6 +1236,25 @@ class SearchAgent:
             )
             details["evidence_sources"] = ["effective_metadata", "vector_support"]
             return rows, details
+        if self._asks_column_name_listing(question, plan):
+            lookup_limit = max(limit, 50)
+            merged: list[dict[str, Any]] = []
+            seen_ids: set[int] = set()
+            for term in self._column_name_lookup_terms(question, plan):
+                candidates = self.catalog.name_search_columns(self.db_profile, term, limit=lookup_limit)
+                strict = [row for row in candidates if term in str(row.get("column_name") or "").lower()]
+                for row in strict or candidates:
+                    entity_id = int(row.get("id") or 0)
+                    if entity_id and entity_id in seen_ids:
+                        continue
+                    if entity_id:
+                        seen_ids.add(entity_id)
+                    merged.append(row)
+            if merged:
+                details["display_rows"] = True
+                details["result_kind"] = "exact_column_name_matches"
+                details["evidence_sources"] = ["lexical_index", "effective_metadata"]
+                return merged[:lookup_limit], details
         if plan.question_class == "semantic_discovery" and plan.target_entity == "table":
             rows = self.catalog.search_tables(
                 self.db_profile,
@@ -1414,6 +1513,32 @@ class SearchAgent:
             return f"{lead}: {joined}."
         return None
 
+    def _deterministic_column_name_answer(
+        self,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        retrieval_details: dict[str, Any],
+    ) -> str | None:
+        if retrieval_details.get("result_kind") != "exact_column_name_matches" or not rows:
+            return None
+        lang = (plan.answer_language or "english").lower()
+        names: list[str] = []
+        for row in rows:
+            schema_name = str(row.get("schema_name") or "")
+            table_name = str(row.get("table_name") or "")
+            column_name = str(row.get("column_name") or "")
+            if not column_name:
+                continue
+            label = f"{schema_name}.{table_name}.{column_name}" if schema_name and table_name else column_name
+            if label not in names:
+                names.append(label)
+        if not names:
+            return None
+        joined = ", ".join(f"`{name}`" for name in names)
+        if lang == "turkish":
+            return f"Kolon adi eslesmelerine gore bulunan kolonlar: {joined}."
+        return f"Column-name matches found: {joined}."
+
     def _deterministic_live_probe_answer(
         self,
         plan: SearchPlan,
@@ -1430,7 +1555,7 @@ class SearchAgent:
             ),
             None,
         )
-        if snapshot:
+        if snapshot and (plan.search_mode == "table_explain" or plan.question_class == "table_understanding"):
             schema_name = str(snapshot.get("schema_name") or "")
             table_name = str(snapshot.get("table_name") or "")
             table_path = f"{schema_name}.{table_name}" if schema_name and table_name else table_name
@@ -1757,6 +1882,8 @@ class SearchAgent:
         answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
         if answer_text is None:
             answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details) if policy.deterministic_answer else None
+        if answer_text is None:
+            answer_text = self._deterministic_column_name_answer(plan, rows, retrieval_details)
         if answer_text is None and live_probe.get("executed"):
             answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
         confidence = self._confidence(plan, rows, verification, retrieval_details)
