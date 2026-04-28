@@ -380,8 +380,9 @@ Answering behavior:
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
 - synthesized answers receive every retrieved row in the current result set, with result indexes, so AMX can answer across all returned candidates instead of only the first few matches
-- when retrieved/catalog evidence cannot prove a table-scoped metadata fact, the Search Agent runs a safe live metadata snapshot/probe itself. For example, a question like "are all ADRC columns commented?" resolves the table, runs a column-comment metadata probe, and answers from the live result instead of guessing from semantic matches. The default probe still runs even if the planner LLM fails to request it.
-- explicit table mentions such as `schema.table`, `ADRC table`, or `adrc tablosunda` take precedence over fuzzy catalog matches when choosing live-probe targets, so similarly named tables cannot silently steal the probe.
+- table-scoped factual questions are live-first: questions such as "what is the ADRC table?" or "are all ADRC columns commented?" resolve the requested table and run safe live metadata probes before answering structural facts like column count, types, nullability, table comments, and column-comment coverage.
+- explicit table mentions such as `schema.table`, `ADRC table`, or `adrc tablosunda` take precedence over fuzzy catalog matches. If the exact live table cannot be verified, AMX refuses to substitute a similar candidate such as `ADR6`; fuzzy matches are shown only as suggestions.
+- `/search` only labels an answer as live verified when live metadata rows were actually collected; catalog-only or fuzzy evidence is capped to lower confidence.
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
 - join answers now pass the resolved base/target join columns into the synthesis prompt, so AMX can explain not just which tables are joinable but also which column pairs it found
 - follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
@@ -466,6 +467,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.113
+
+- **Live-first table facts in `/search`**: Table-understanding questions now run live metadata snapshots before answering structural facts.
+- **No silent fuzzy substitution**: Explicit table names are not replaced by similar catalog candidates; unresolved targets are reported directly with candidates as suggestions only.
+- **Provenance guardrails**: `/search` no longer claims live verification unless live metadata evidence was actually collected.
 
 ### v0.1.95
 

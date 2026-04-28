@@ -598,6 +598,113 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertIn("`sap_s6p.adrc`", answer.summary)
         self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc")
 
+    def test_table_explain_uses_live_exact_table_before_fuzzy_catalog_candidate(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+
+        class FakeDB:
+            def list_tables(self, schema: str) -> list[str]:
+                return ["adrc"] if schema == "sap_s6p" else []
+
+            def table_metadata_probe_query(self, schema: str, table: str) -> str:
+                return f"metadata probe for {schema}.{table}"
+
+            def get_table_metadata_snapshot(self, schema: str, table: str) -> dict:
+                if table != "adrc":
+                    raise AssertionError(f"unexpected live probe table: {table}")
+                return {
+                    "schema": schema,
+                    "table": table,
+                    "table_comment": "Address master",
+                    "columns": [
+                        {"name": "addrnumber", "dtype": "TEXT", "nullable": False, "comment": "Address number"},
+                        {"name": "name1", "dtype": "TEXT", "nullable": True, "comment": "Name line"},
+                        {"name": "city1", "dtype": "TEXT", "nullable": True, "comment": "City"},
+                        {"name": "post_code1", "dtype": "TEXT", "nullable": True, "comment": "Postal code"},
+                    ],
+                }
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what is adrc table","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adr6"],"search_queries":["adrc tablosu nedir","what is ADRC table"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"table explanation"}',
+                '{"needs_live_probe":false,"reason":"catalog rows are enough","operations":[]}',
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("adrc tablosu nedir")
+
+        self.assertIn("`sap_s6p.adrc`", answer.summary)
+        self.assertIn("**4** kolon", answer.summary)
+        self.assertNotIn("adr6", answer.summary.lower())
+        self.assertEqual(answer.confidence, "high")
+        self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
+        self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc")
+        self.assertIn("live verification", answer.provenance)
+
+    def test_explicit_missing_table_is_not_replaced_by_fuzzy_candidate(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+
+        class FakeDB:
+            def list_tables(self, schema: str) -> list[str]:
+                return ["adr6"] if schema == "sap_s6p" else []
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what is adrc table","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adr6"],"search_queries":["adrc tablosu nedir","what is ADRC table"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"table explanation"}'
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("adrc tablosu nedir")
+
+        self.assertIn("exact olarak dogrulayamadim", answer.summary)
+        self.assertIn("`sap_s6p.adr6`", answer.summary)
+        self.assertEqual(answer.rows, [])
+        self.assertEqual(answer.confidence, "low")
+        self.assertNotIn("live verification", answer.provenance)
+        self.assertEqual(answer.details["retrieval"]["resolved_tables"], [])
+        self.assertIn("explicit_table_not_found_live", answer.details["ambiguity_flags"])
+
+    def test_table_resolution_does_not_mark_live_verified_without_live_rows(self) -> None:
+        cfg = self._search_cfg()
+        service = SearchService(cfg, self.catalog)
+        plan = type(
+            "Plan",
+            (),
+            {"question_class": "table_understanding", "search_mode": "table_explain"},
+        )()
+        policy = SearchPolicy(
+            "table_understanding",
+            "table_context_plus_neighbors",
+            True,
+            False,
+            True,
+            True,
+            True,
+            "table_summary",
+            "suggest_sync_if_sparse",
+        )
+
+        rows, verification = service._agent._verify_rows(plan, policy, [{"row_type": "table"}], {"resolved_tables": ["sap_s6p.adrc"]})
+
+        self.assertEqual(rows[0]["row_type"], "table")
+        self.assertFalse(verification["live_verified"])
+        self.assertEqual(verification["checks"], ["table_resolution"])
+
     def test_catalog_overview_question_lists_known_databases(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",

@@ -59,6 +59,17 @@ class LiveProbePlan:
     operations: list[dict[str, str]]
 
 
+@dataclass
+class ResolvedTarget:
+    requested: str
+    resolved_path: str
+    source: str
+    is_exact: bool
+    confidence: str
+    warnings: list[str]
+    candidates: list[str]
+
+
 def _question_language_hint(text: str) -> str:
     sample = (text or "").strip().lower()
     if not sample:
@@ -522,8 +533,8 @@ class SearchAgent:
             out.append(row)
         return out[:limit]
 
-    def _explicit_table_paths_for_question(self, question: str) -> list[str]:
-        paths: list[str] = []
+    def _explicit_table_mentions_for_question(self, question: str) -> list[dict[str, str]]:
+        mentions: list[dict[str, str]] = []
         seen: set[str] = set()
         for inline in re.findall(r"\b([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", question or ""):
             parts = inline.split(".", 1)
@@ -532,7 +543,7 @@ class SearchAgent:
             path = f"{parts[0]}.{parts[1]}"
             if path.lower() not in seen:
                 seen.add(path.lower())
-                paths.append(path)
+                mentions.append({"requested": inline, "path": path, "source": "explicit_schema_table"})
         explicit_table_tokens = [
             item
             for item in re.findall(
@@ -554,8 +565,118 @@ class SearchAgent:
                 path = f"{self.cfg.current_schema}.{token}"
                 if path.lower() not in seen:
                     seen.add(path.lower())
-                    paths.append(path)
+                    mentions.append({"requested": token, "path": path, "source": "explicit_current_schema"})
+        return mentions
+
+    def _explicit_table_paths_for_question(self, question: str) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for mention in self._explicit_table_mentions_for_question(question):
+            path = str(mention.get("path") or "")
+            if path and path.lower() not in seen:
+                seen.add(path.lower())
+                paths.append(path)
         return paths
+
+    def _live_table_exists(self, schema_name: str, table_name: str) -> bool | None:
+        """Return exact live existence when cheap metadata APIs are available."""
+        db = self._inventory_db()
+        target = table_name.lower()
+        try:
+            if hasattr(db, "list_assets"):
+                return any(str(name).lower() == target for name, _kind in db.list_assets(schema_name))
+        except Exception:
+            pass
+        checks = ("list_tables", "list_views", "list_materialized_views")
+        found_any_api = False
+        for method_name in checks:
+            method = getattr(db, method_name, None)
+            if not callable(method):
+                continue
+            found_any_api = True
+            try:
+                if any(str(name).lower() == target for name in method(schema_name)):
+                    return True
+            except Exception:
+                return None
+        return False if found_any_api else None
+
+    def _table_candidate_paths(self, hint: str, *, limit: int = 5) -> list[str]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for candidate in self.catalog.find_table_candidates(self.db_profile, hint, limit=limit):
+            schema_name = str(candidate.get("schema_name") or "")
+            table_name = str(candidate.get("table_name") or "")
+            path = f"{schema_name}.{table_name}" if schema_name and table_name else ""
+            if path and path.lower() not in seen:
+                seen.add(path.lower())
+                paths.append(path)
+        return paths
+
+    def _resolve_table_targets(self, hints: list[str], question: str) -> list[ResolvedTarget]:
+        targets: list[ResolvedTarget] = []
+        seen: set[str] = set()
+        explicit_mentions = self._explicit_table_mentions_for_question(question)
+        for mention in explicit_mentions:
+            path = str(mention.get("path") or "")
+            requested = str(mention.get("requested") or path)
+            if "." not in path:
+                continue
+            schema_name, table_name = path.split(".", 1)
+            exists = self._live_table_exists(schema_name, table_name)
+            candidates = self._table_candidate_paths(table_name, limit=3)
+            if exists is False:
+                target = ResolvedTarget(
+                    requested=requested,
+                    resolved_path="",
+                    source=str(mention.get("source") or "explicit"),
+                    is_exact=False,
+                    confidence="low",
+                    warnings=["explicit_table_not_found_live"],
+                    candidates=candidates,
+                )
+            else:
+                warnings = [] if exists is True else ["live_table_existence_unknown"]
+                target = ResolvedTarget(
+                    requested=requested,
+                    resolved_path=path,
+                    source=str(mention.get("source") or "explicit"),
+                    is_exact=True,
+                    confidence="high" if exists is True else "medium",
+                    warnings=warnings,
+                    candidates=[],
+                )
+            key = (target.resolved_path or target.requested).lower()
+            if key not in seen:
+                seen.add(key)
+                targets.append(target)
+        if targets:
+            return targets
+
+        for path in self._resolve_table_paths(hints, question):
+            if "." not in path or path.lower() in seen:
+                continue
+            schema_name, table_name = path.split(".", 1)
+            exists = self._live_table_exists(schema_name, table_name)
+            targets.append(
+                ResolvedTarget(
+                    requested=table_name,
+                    resolved_path=path,
+                    source="hint_or_memory",
+                    is_exact=exists is not False,
+                    confidence="medium" if exists is not False else "low",
+                    warnings=[] if exists is True else ["live_table_existence_unknown" if exists is None else "resolved_table_not_found_live"],
+                    candidates=[],
+                )
+            )
+            seen.add(path.lower())
+        return targets
+
+    def _target_resolution_details(self, targets: list[ResolvedTarget]) -> dict[str, Any]:
+        return {
+            "targets": [asdict(target) for target in targets],
+            "unresolved_explicit": any(not target.resolved_path and "explicit_table_not_found_live" in target.warnings for target in targets),
+        }
 
     def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
         candidates = self._explicit_table_paths_for_question(question)
@@ -641,8 +762,10 @@ class SearchAgent:
         return base
 
     def _should_plan_live_probe(self, question: str, plan: SearchPlan, table_paths: list[str]) -> bool:
-        if not table_paths or plan.search_mode in {"list_databases", "list_schemas", "count_tables", "join_candidates", "joinable_tables", "table_explain"}:
+        if not table_paths or plan.search_mode in {"list_databases", "list_schemas", "count_tables", "join_candidates", "joinable_tables"}:
             return False
+        if plan.search_mode == "table_explain" or plan.question_class == "table_understanding":
+            return True
         sample = (question or "").strip().lower()
         metadata_terms = {
             "comment",
@@ -735,8 +858,16 @@ class SearchAgent:
         rows: list[dict[str, Any]],
         retrieval_details: dict[str, Any],
     ) -> tuple[LiveProbePlan, dict[str, Any]]:
+        target_resolution = retrieval_details.get("target_resolution") or {}
+        resolved_targets = [
+            str(item.get("resolved_path") or "")
+            for item in target_resolution.get("targets", [])
+            if isinstance(item, dict) and str(item.get("resolved_path") or "")
+        ]
+        if target_resolution.get("unresolved_explicit") and not resolved_targets:
+            return LiveProbePlan(False, "Explicit table target was not found in live metadata.", []), {}
         explicit_table_paths = self._explicit_table_paths_for_question(question)
-        table_paths = explicit_table_paths or self._candidate_table_paths_for_question(plan.entity_hints, question)
+        table_paths = resolved_targets or explicit_table_paths or self._candidate_table_paths_for_question(plan.entity_hints, question)
         if not self._should_plan_live_probe(question, plan, table_paths):
             return LiveProbePlan(False, "", []), {}
         default_ops = self._default_live_probe_operations(question, explicit_table_paths or table_paths)
@@ -921,13 +1052,20 @@ class SearchAgent:
             rows = self._merge_joinable_rows(live_rows, catalog_rows, semantic_rows, limit)
             return rows, details
         if plan.search_mode == "table_explain":
-            table_paths = self._resolve_table_paths(plan.entity_hints, question)
-            details["resolved_tables"] = table_paths[:1]
-            if not table_paths:
+            targets = self._resolve_table_targets(plan.entity_hints, question)
+            details["target_resolution"] = self._target_resolution_details(targets)
+            resolved_paths = [target.resolved_path for target in targets if target.resolved_path]
+            details["resolved_tables"] = resolved_paths[:1]
+            if targets and not resolved_paths:
+                details["ambiguity_flags"] = ["explicit_table_not_found_live"]
+                details["evidence_sources"] = ["live_target_resolution"]
+                return [], details
+            if not resolved_paths:
                 details["ambiguity_flags"] = ["missing_table_scope"]
                 return [], details
-            explained = self.catalog.explain_table(self.db_profile, table_paths[0])
+            explained = self.catalog.explain_table(self.db_profile, resolved_paths[0])
             if not explained:
+                details["evidence_sources"] = ["live_target_resolution"]
                 return [], details
             table_row = dict(explained["table"])
             table_row["row_type"] = "table"
@@ -1126,7 +1264,6 @@ class SearchAgent:
             return rows, verification
         if plan.search_mode == "table_explain" and retrieval_details.get("resolved_tables"):
             verification["checks"].append("table_resolution")
-            verification["live_verified"] = True
         return rows, verification
 
     def _rows_for_prompt(self, rows: list[dict[str, Any]], policy: SearchPolicy) -> list[dict[str, Any]]:
@@ -1284,6 +1421,52 @@ class SearchAgent:
         live_probe: dict[str, Any],
     ) -> str | None:
         lang = (plan.answer_language or "english").lower()
+        snapshot = next(
+            (
+                row
+                for row in rows
+                if row.get("row_type") == "live_probe"
+                and row.get("probe_operation") == "table_metadata_snapshot"
+            ),
+            None,
+        )
+        if snapshot:
+            schema_name = str(snapshot.get("schema_name") or "")
+            table_name = str(snapshot.get("table_name") or "")
+            table_path = f"{schema_name}.{table_name}" if schema_name and table_name else table_name
+            total = int(snapshot.get("total_columns") or 0)
+            table_comment = str(snapshot.get("table_comment") or "").strip()
+            columns = [
+                row
+                for row in rows
+                if row.get("row_type") == "live_column_comment"
+                and row.get("schema_name") == schema_name
+                and row.get("table_name") == table_name
+            ]
+            preview = ", ".join(
+                f"`{str(row.get('column_name') or '')}`"
+                + (f" ({str(row.get('dtype') or '')})" if str(row.get("dtype") or "") else "")
+                for row in columns[:12]
+                if str(row.get("column_name") or "")
+            )
+            if lang == "turkish":
+                answer = f"Canli DB metadata'sina gore `{table_path}` tablosunda **{total}** kolon var."
+                if table_comment:
+                    answer += f" Tablo comment'i: {table_comment}."
+                else:
+                    answer += " Tablo comment'i live metadata'da bos gorunuyor; bu yuzden is anlamini kesinlestirmiyorum."
+                if preview:
+                    answer += f" Ilk kolonlar: {preview}."
+                return answer
+            answer = f"Live DB metadata shows **{total}** columns on `{table_path}`."
+            if table_comment:
+                answer += f" Table comment: {table_comment}."
+            else:
+                answer += " The table comment is empty in live metadata, so I am not inferring a business meaning."
+            if preview:
+                answer += f" First columns: {preview}."
+            return answer
+
         coverage = next(
             (
                 row
@@ -1323,6 +1506,33 @@ class SearchAgent:
             answer += f" Probe used: `{query_text}`."
         return answer
 
+    def _deterministic_target_resolution_answer(
+        self,
+        plan: SearchPlan,
+        retrieval_details: dict[str, Any],
+        live_probe: dict[str, Any],
+    ) -> str | None:
+        target_resolution = retrieval_details.get("target_resolution") or {}
+        if not target_resolution.get("unresolved_explicit"):
+            if live_probe.get("error"):
+                if (plan.answer_language or "english").lower() == "turkish":
+                    return f"Canli metadata kontrolu calistirilamadi: {live_probe.get('error')}. Bu nedenle kesin cevap vermiyorum."
+                return f"The live metadata check could not run: {live_probe.get('error')}. I am not returning a definitive answer."
+            return None
+        targets = [item for item in target_resolution.get("targets", []) if isinstance(item, dict)]
+        target = targets[0] if targets else {}
+        requested = str(target.get("requested") or "").strip() or "requested table"
+        candidates = [str(item) for item in (target.get("candidates") or []) if str(item)]
+        if (plan.answer_language or "english").lower() == "turkish":
+            answer = f"`{requested}` tablosunu canli DB metadata'sinda exact olarak dogrulayamadim; bu yuzden benzer bir tabloyu hedef yerine kullanmiyorum."
+            if candidates:
+                answer += " Katalogdaki benzer adaylar sadece oneridir: " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+            return answer
+        answer = f"I could not verify `{requested}` as an exact table in live DB metadata, so I am not substituting a similar table as the target."
+        if candidates:
+            answer += " Similar catalog candidates are suggestions only: " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+        return answer
+
     def _provenance(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]) -> list[str]:
         labels: list[str] = []
         if any((row.get("source") or "") == "live_db" for row in rows):
@@ -1355,13 +1565,20 @@ class SearchAgent:
                 out.append(label)
         return out
 
-    def _confidence(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]) -> str:
+    def _confidence(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any], retrieval_details: dict[str, Any] | None = None) -> str:
+        retrieval_details = retrieval_details or {}
+        if (retrieval_details.get("target_resolution") or {}).get("unresolved_explicit"):
+            return "low"
         if plan.out_of_domain or not rows:
             return "low"
         if plan.question_class == "inventory":
             return "high" if verification.get("live_verified") else "medium"
         if any(bool(row.get("verified_live")) for row in rows):
             return "high"
+        if plan.search_mode == "table_explain":
+            targets = (retrieval_details.get("target_resolution") or {}).get("targets") or []
+            if any(isinstance(target, dict) and target.get("is_exact") for target in targets):
+                return "medium"
         top = rows[0]
         if plan.question_class == "join_discovery":
             band = str(top.get("confidence_band") or "")
@@ -1388,6 +1605,8 @@ class SearchAgent:
         confidence: str,
     ) -> list[SearchActionSuggestion]:
         actions: list[SearchActionSuggestion] = []
+        if (retrieval_details.get("target_resolution") or {}).get("unresolved_explicit"):
+            return [SearchActionSuggestion("narrow_scope", "Specify the schema.table exactly or switch to the DB/schema where the requested table exists.")]
         if not ready and plan.question_class in {"semantic_discovery", "join_discovery", "table_understanding", "comparative_reasoning"}:
             actions.append(SearchActionSuggestion("sync_catalog", "Search catalog is empty for semantic reasoning."))
         if ready and not rows and plan.question_class in {"semantic_discovery", "entity_lookup", "table_understanding", "comparative_reasoning"}:
@@ -1535,10 +1754,12 @@ class SearchAgent:
         stage_metrics.append({"stage": "verification", "duration_sec": round(time.monotonic() - t0, 4)})
 
         answer_usage: dict[str, Any] = {}
-        answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details) if policy.deterministic_answer else None
+        answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
+        if answer_text is None:
+            answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details) if policy.deterministic_answer else None
         if answer_text is None and live_probe.get("executed"):
             answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
-        confidence = self._confidence(plan, rows, verification)
+        confidence = self._confidence(plan, rows, verification, retrieval_details)
         actions = self._action_suggestions(plan, rows, ready, retrieval_details, confidence)
         if answer_text is None:
             try:

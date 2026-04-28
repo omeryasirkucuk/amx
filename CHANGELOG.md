@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.113] — 2026-04-28
+### Changed
+- **Live-first factual table answers in `/search`**: Table-understanding questions now resolve explicit table targets first and run a live `table_metadata_snapshot` before answering structural facts such as column counts, types, and table comments.
+- **No silent fuzzy substitution**: Explicit user table mentions are no longer replaced by similar catalog candidates. If the requested table is not found in live metadata, AMX says so and lists fuzzy matches only as suggestions.
+- **Provenance and confidence guardrails**: `/search` no longer marks `table_explain` answers as live verified unless a live metadata row was actually collected; exact catalog-only table context is capped below live confidence.
+
+### Added
+- **Regression coverage**: Added tests for `adrc tablosu nedir` resolving to live `sap_s6p.adrc` instead of fuzzy `adr6`, unresolved explicit targets staying unresolved, and table resolution not producing fake live verification.
+
 ## [0.1.112] — 2026-04-28
 ### Fixed
 - **Explicit table targeting in `/search` live probes**: Live probes now prioritize explicit user table mentions (`schema.table`, `ADRC table`, `adrc tablosunda`) over fuzzy catalog candidates and LLM-provided hints, preventing similarly named tables such as `ADR6` from being probed when the user asked for `ADRC`.

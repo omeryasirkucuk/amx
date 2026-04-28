@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.113] — 2026-04-28
+### Live-First Search Facts
+- **amx/search/agent.py**: Added explicit target-resolution records, live exact table checks, live-first `table_metadata_snapshot` probes for `table_explain`, deterministic live table summaries, and unresolved-target answers that refuse to replace explicit table names with fuzzy candidates.
+- **amx/search/agent.py**: Fixed provenance/confidence so table resolution alone no longer counts as live verification.
+- **tests/test_search_catalog.py**: Added regressions for `adrc tablosu nedir`, missing explicit tables with fuzzy `adr6` candidates, and no fake live verification without live rows.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.113` and documented live-first factual search behavior.
+
 ## [0.1.112] — 2026-04-28
 ### Explicit Table Targeting For Search Probes
 - **amx/search/agent.py**: Split explicit table-path extraction from fuzzy candidate discovery and made explicit user mentions take precedence for live probes. `schema.table`, `X table`, and `x tablosunda` now choose the intended target before any catalog fuzzy match or LLM hint.
