@@ -525,6 +525,28 @@ class SearchAgent:
     def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
         candidates = self._resolve_table_paths(hints, question)
         seen = {item.lower() for item in candidates}
+        explicit_table_tokens = [
+            item
+            for item in re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tablo|tablosu|tablosunda)\b",
+                question or "",
+                flags=re.IGNORECASE,
+            )
+        ]
+        explicit_table_tokens.extend(
+            item
+            for item in re.findall(
+                r"\b(?:table|tablo)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
+                question or "",
+                flags=re.IGNORECASE,
+            )
+        )
+        if self.cfg.current_schema:
+            for token in explicit_table_tokens:
+                path = f"{self.cfg.current_schema}.{token}"
+                if path.lower() not in seen:
+                    seen.add(path.lower())
+                    candidates.append(path)
         tokens = [
             token
             for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", question or "")
@@ -634,6 +656,54 @@ class SearchAgent:
             or bool(tokens.intersection(short_verification_tokens))
         )
 
+    def _default_live_probe_operations(self, question: str, table_paths: list[str]) -> list[dict[str, str]]:
+        if not table_paths:
+            return []
+        sample = (question or "").strip().lower()
+        comments_question = any(
+            term in sample
+            for term in (
+                "comment",
+                "comments",
+                "commentler",
+                "yorum",
+                "yorumlar",
+                "description",
+                "descriptions",
+                "açıklama",
+                "aciklama",
+            )
+        )
+        operation = "column_comments" if comments_question else "table_metadata_snapshot"
+        return [
+            {
+                "operation": operation,
+                "table_path": table_path,
+                "rationale": "Default live probe for a table-scoped factual metadata question.",
+            }
+            for table_path in table_paths[:2]
+        ]
+
+    def _merge_probe_operations(self, *groups: list[dict[str, str]]) -> list[dict[str, str]]:
+        merged: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for group in groups:
+            for op in group:
+                operation = str(op.get("operation") or "").strip()
+                table_path = str(op.get("table_path") or "").strip()
+                key = (operation, table_path)
+                if not operation or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(
+                    {
+                        "operation": operation,
+                        "table_path": table_path,
+                        "rationale": str(op.get("rationale") or "").strip(),
+                    }
+                )
+        return merged[:4]
+
     def _plan_live_probe(
         self,
         question: str,
@@ -645,15 +715,17 @@ class SearchAgent:
         table_paths = self._candidate_table_paths_for_question(plan.entity_hints, question)
         if not self._should_plan_live_probe(question, plan, table_paths):
             return LiveProbePlan(False, "", []), {}
+        default_ops = self._default_live_probe_operations(question, table_paths)
         llm = self._llm_provider()
         system = (
             "You are the evidence planner inside AMX /search.\n"
             "Decide whether the current retrieved metadata is enough to answer, or whether AMX should run a safe live metadata probe.\n"
             "Return JSON only.\n"
-            "Allowed operations are: column_comments, table_profile, table_exists, schema_tables.\n"
+            "Allowed operations are: table_metadata_snapshot, column_comments, table_exists, schema_tables.\n"
+            "Use table_metadata_snapshot for table-scoped factual questions about columns, types, nullability, comments, or structure.\n"
             "Use column_comments when the user asks whether table columns have comments/descriptions or asks comment coverage.\n"
             "Only choose operations for the candidate table paths provided. Do not invent schemas or tables.\n"
-            "Set needs_live_probe=false when retrieved rows already directly answer the question."
+            "Set needs_live_probe=false only when retrieved rows already directly prove the answer."
         )
         user = json.dumps(
             {
@@ -661,23 +733,35 @@ class SearchAgent:
                 "plan": asdict(plan),
                 "policy": asdict(policy),
                 "candidate_table_paths": table_paths,
+                "default_operations": default_ops,
                 "retrieval_details": retrieval_details,
                 "retrieved_rows": self._rows_for_prompt(rows, policy),
             },
             ensure_ascii=True,
         )
-        result = llm.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.0,
-            max_tokens=700,
-            use_logprobs=False,
-        )
-        payload = _json_block(result.content)
+        try:
+            result = llm.chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.0,
+                max_tokens=700,
+                use_logprobs=False,
+            )
+            payload = _json_block(result.content)
+            usage = result.usage or {}
+        except Exception:
+            return (
+                LiveProbePlan(
+                    needs_live_probe=bool(default_ops),
+                    reason="Default live probe selected for a table-scoped factual metadata question.",
+                    operations=default_ops,
+                ),
+                {},
+            )
         ops: list[dict[str, str]] = []
-        allowed = {"column_comments", "table_profile", "table_exists", "schema_tables"}
+        allowed = {"table_metadata_snapshot", "column_comments", "table_exists", "schema_tables"}
         for item in payload.get("operations") or []:
             if not isinstance(item, dict):
                 continue
@@ -694,13 +778,14 @@ class SearchAgent:
                     "rationale": str(item.get("rationale") or "").strip(),
                 }
             )
+        merged_ops = self._merge_probe_operations(default_ops, ops)
         return (
             LiveProbePlan(
-                needs_live_probe=bool(payload.get("needs_live_probe")) and bool(ops),
+                needs_live_probe=bool(merged_ops),
                 reason=str(payload.get("reason") or "").strip(),
-                operations=ops[:3],
+                operations=merged_ops,
             ),
-            result.usage or {},
+            usage,
         )
 
     def _execute_live_probe(self, probe_plan: LiveProbePlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -712,44 +797,68 @@ class SearchAgent:
         for op in probe_plan.operations:
             operation = op.get("operation", "")
             table_path = op.get("table_path", "")
-            if operation == "column_comments" and "." in table_path:
+            if operation in {"column_comments", "table_metadata_snapshot"} and "." in table_path:
                 schema_name, table_name = table_path.split(".", 1)
-                query_text = db.column_comments_probe_query(schema_name, table_name)
-                comments = db.get_column_comments(schema_name, table_name)
+                query_text = (
+                    db.column_comments_probe_query(schema_name, table_name)
+                    if operation == "column_comments"
+                    else db.table_metadata_probe_query(schema_name, table_name)
+                )
+                snapshot = (
+                    {"columns": [{"name": name, "comment": comment or ""} for name, comment in db.get_column_comments(schema_name, table_name).items()], "table_comment": ""}
+                    if operation == "column_comments"
+                    else db.get_table_metadata_snapshot(schema_name, table_name)
+                )
+                columns = list(snapshot.get("columns") or [])
+                comments = {str(col.get("name") or ""): str(col.get("comment") or "") for col in columns if str(col.get("name") or "")}
                 total = len(comments)
                 filled = sum(1 for value in comments.values() if str(value or "").strip())
                 missing = [name for name, value in comments.items() if not str(value or "").strip()]
                 rows.append(
                     {
                         "row_type": "live_probe",
-                        "probe_operation": "column_comments",
+                        "probe_operation": operation,
                         "schema_name": schema_name,
                         "table_name": table_name,
-                        "metric": "column_comment_coverage",
+                        "metric": "table_metadata_snapshot" if operation == "table_metadata_snapshot" else "column_comment_coverage",
                         "value": filled,
                         "total_columns": total,
                         "commented_columns": filled,
                         "missing_columns": missing,
                         "all_columns_commented": total > 0 and filled == total,
+                        "table_comment": snapshot.get("table_comment", ""),
                         "source": "live_db",
                         "verified_live": True,
                         "executed_query": query_text,
                     }
                 )
-                for column_name, comment in comments.items():
+                for col in columns:
+                    column_name = str(col.get("name") or "")
+                    comment = str(col.get("comment") or "")
+                    if not column_name:
+                        continue
                     rows.append(
                         {
                             "row_type": "live_column_comment",
                             "schema_name": schema_name,
                             "table_name": table_name,
                             "column_name": column_name,
-                            "effective_description": comment or "",
-                            "has_comment": bool(str(comment or "").strip()),
+                            "dtype": col.get("dtype", ""),
+                            "nullable": col.get("nullable", ""),
+                            "effective_description": comment,
+                            "has_comment": bool(comment.strip()),
                             "source": "live_db",
                             "verified_live": True,
                         }
                     )
-                executed.append({"operation": operation, "table_path": table_path, "query": query_text})
+                executed.append(
+                    {
+                        "operation": operation,
+                        "table_path": table_path,
+                        "query": query_text,
+                        "rationale": op.get("rationale", ""),
+                    }
+                )
         return rows, {"executed": bool(executed), "reason": probe_plan.reason, "operations": executed}
 
     def _retrieve(self, question: str, plan: SearchPlan, policy: SearchPolicy) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1031,6 +1140,9 @@ class SearchAgent:
                 "all_columns_commented": row.get("all_columns_commented", ""),
                 "executed_query": row.get("executed_query", ""),
                 "has_comment": row.get("has_comment", ""),
+                "dtype": row.get("dtype", ""),
+                "nullable": row.get("nullable", ""),
+                "table_comment": row.get("table_comment", ""),
             }
             payload.append(item)
         return payload

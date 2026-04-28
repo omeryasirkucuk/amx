@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.111] — 2026-04-28
+### Changed
+- **Deterministic live-probe defaults in `/search`**: Table-scoped factual metadata questions now run a default live metadata probe/snapshot whenever catalog evidence cannot prove the answer, even if the planner LLM says no probe is needed.
+- **Broader live metadata snapshots**: Added a generic `table_metadata_snapshot` probe for table structure, column type/nullability, table comments, and column comments so `/search` has a reusable tool path beyond one-off comment coverage.
+- **More robust table resolution**: Search live probes now infer `current_schema.<table>` from phrases like `adrc tablosunda`, allowing factual table questions to probe the live DB even when the table was not explicitly written as `schema.table`.
+
+### Added
+- **Regression coverage**: Strengthened the ADRC comment coverage test to prove the default live probe runs even when the LLM planner declines to request one.
+
 ## [0.1.110] — 2026-04-28
 ### Changed
 - **Agentic live evidence probing in `/search`**: `/search ask` can now detect when catalog/semantic evidence is insufficient for a table-scoped metadata fact and ask the LLM to choose a safe live metadata probe from an allow-list.

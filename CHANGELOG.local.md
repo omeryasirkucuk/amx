@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.111] — 2026-04-28
+### Deterministic Search Tool Use
+- **amx/search/agent.py**: Added default live-probe operations for table-scoped factual metadata questions so the agent runs a live snapshot even when the planner LLM declines a probe. Added `table_metadata_snapshot`, better current-schema table extraction, and deterministic operation merging.
+- **amx/db/adapters/base.py / amx/db/adapters/postgresql.py / amx/db/connector.py**: Added `table_metadata_probe_query()` and `get_table_metadata_snapshot()` for reusable live table metadata snapshots.
+- **tests/test_search_catalog.py**: Updated ADRC coverage regression so the fake planner says no probe is needed, while AMX still executes the default `column_comments` probe and answers from live metadata.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.111` and documented deterministic live-probe defaults.
+
 ## [0.1.110] — 2026-04-28
 ### Agentic Live Metadata Probes
 - **amx/search/agent.py**: Added an evidence-gap planning step that lets the Search Agent ask the LLM whether retrieved evidence is enough, choose safe live metadata probes from an allow-list, execute `column_comments`, and answer deterministically from live coverage rows.

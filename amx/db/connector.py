@@ -188,6 +188,27 @@ class DatabaseConnector:
     def column_comments_probe_query(self, schema: str, table: str) -> str:
         return self._adapter.column_comments_probe_query(schema, table)
 
+    def table_metadata_probe_query(self, schema: str, table: str) -> str:
+        return self._adapter.table_metadata_probe_query(schema, table)
+
+    def get_table_metadata_snapshot(self, schema: str, table: str) -> dict[str, Any]:
+        columns = self.list_column_profiles(schema, table)
+        comments = self.get_column_comments(schema, table)
+        return {
+            "schema": schema,
+            "table": table,
+            "table_comment": self.get_table_comment(schema, table) or "",
+            "columns": [
+                {
+                    "name": column.name,
+                    "dtype": column.dtype,
+                    "nullable": column.nullable,
+                    "comment": comments.get(column.name) or "",
+                }
+                for column in columns
+            ],
+        }
+
     def get_schema_comment(self, schema: str) -> str | None:
         return self._adapter.get_schema_comment(self.engine, schema)
 

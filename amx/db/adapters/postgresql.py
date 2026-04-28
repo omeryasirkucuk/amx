@@ -126,6 +126,19 @@ class PostgreSQLAdapter(DatabaseAdapter):
             "ORDER BY a.attnum"
         )
 
+    def table_metadata_probe_query(self, schema: str, table: str) -> str:
+        return (
+            "SELECT a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS data_type, "
+            "a.attnotnull AS not_null, col_description(c.oid, a.attnum) AS comment, "
+            "obj_description(c.oid, 'pg_class') AS table_comment "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "JOIN pg_attribute a ON a.attrelid = c.oid "
+            "WHERE n.nspname = :schema AND c.relname = :table "
+            "AND a.attnum > 0 AND NOT a.attisdropped "
+            "ORDER BY a.attnum"
+        )
+
     # ── Incoming foreign keys ─────────────────────────────────────────────
 
     def get_incoming_foreign_keys(

@@ -1,3 +1,3 @@
 """AMX — Agentic Metadata Extractor."""
 
-__version__ = "0.1.110"
+__version__ = "0.1.111"

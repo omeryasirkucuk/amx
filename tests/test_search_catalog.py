@@ -552,7 +552,7 @@ class SearchCatalogTests(unittest.TestCase):
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"intent":"find_columns","out_of_domain":false,"normalized_question":"are all adrc columns commented","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"column","entity_hints":["adrc"],"search_queries":["adrc tablosunda commentler tum kolonlar icin girili mi","are all ADRC columns commented"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"metadata completeness question"}',
-                '{"needs_live_probe":true,"reason":"Retrieved semantic rows do not prove table-wide comment coverage.","operations":[{"operation":"column_comments","table_path":"sap_s6p.adrc","rationale":"Need live column comment coverage for ADRC."}]}',
+                '{"needs_live_probe":false,"reason":"The retrieved rows may be enough.","operations":[]}',
             )
             with patch.object(SearchService, "_inventory_db", return_value=fake_db):
                 service = SearchService(cfg, self.catalog)
@@ -563,6 +563,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertIn("`city1`", answer.summary)
         self.assertIn("SELECT column_name, comment", answer.summary)
         self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["operation"], "column_comments")
+        self.assertIn("Default live probe", answer.details["retrieval"]["live_probe"]["operations"][0]["rationale"])
         self.assertIn("agent-planned live metadata probe", answer.provenance)
 
     def test_catalog_overview_question_lists_known_databases(self) -> None:

@@ -92,6 +92,10 @@ class DatabaseAdapter(ABC):
         """Return the query or metadata operation used to inspect column comments."""
         return f"SQLAlchemy inspector get_columns(table={table!r}, schema={schema!r})"
 
+    def table_metadata_probe_query(self, schema: str, table: str) -> str:
+        """Return the query or metadata operation used to inspect table structure."""
+        return f"SQLAlchemy inspector get_columns/get_table_comment(table={table!r}, schema={schema!r})"
+
     # ── Incoming foreign keys ─────────────────────────────────────────────
 
     def get_incoming_foreign_keys(
