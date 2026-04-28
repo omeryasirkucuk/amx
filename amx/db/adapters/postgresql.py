@@ -7,11 +7,18 @@ from typing import Any
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from amx.db.adapters.base import DatabaseAdapter
+from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
 
 class PostgreSQLAdapter(DatabaseAdapter):
     name = "postgresql"
+    capabilities = BackendCapabilities(
+        materialized_view_comments=True,
+        materialized_views=True,
+        relationships=True,
+        row_count_stats=True,
+        comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+    )
 
     def create_engine(self) -> Engine:
         return create_engine(self.cfg.url, pool_pre_ping=True)

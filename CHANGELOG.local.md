@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.115] — 2026-04-28
+### Database Connector Backend Correctness
+- **amx/db/adapters/base.py / amx/db/connector.py**: Added backend capability metadata and explicit unsupported-operation handling for comments, relationships, materialized views, row-count stats, and profiling behavior.
+- **amx/db/adapters/snowflake.py**: Fixed materialized-view discovery to avoid unsupported SHOW bind syntax, made database comments read from named result fields, and kept exact-case metadata lookup before uppercase fallback.
+- **amx/db/adapters/databricks.py / amx/db/adapters/bigquery.py**: Replaced silent unsupported write-back paths with clear failures, added actionable profiling hints, and switched sampled profiling to backend sampling SQL.
+- **tests/test_regressions.py**: Added connector contract coverage for adapter SQL, unsupported database/catalog comments, sampled profiling, unknown cloud row-count scan blocking, and apply-flow failure accounting.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.115` and documented connector capability/profiling behavior.
+
 ## [0.1.114] — 2026-04-28
 ### Column Discovery Probe Guardrails
 - **amx/search/agent.py**: Rerouted misclassified global column-list questions away from `table_explain`, limited non-table-understanding live probes to explicit table mentions, and stopped candidate-table discovery from driving live probes for open-ended semantic column searches.

@@ -13,6 +13,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
 from amx.config import DBConfig
+from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.utils.logging import get_logger
 
 log = get_logger("db.connector")
@@ -106,6 +107,10 @@ class DatabaseConnector:
     def backend(self) -> str:
         return self._adapter.name
 
+    @property
+    def capabilities(self) -> BackendCapabilities:
+        return getattr(self._adapter, "capabilities", BackendCapabilities())
+
     def test_connection(self) -> bool:
         try:
             with self.engine.connect() as conn:
@@ -131,6 +136,8 @@ class DatabaseConnector:
         return insp.get_view_names(schema=schema)
 
     def list_materialized_views(self, schema: str) -> list[str]:
+        if not self.capabilities.materialized_views:
+            return []
         return self._adapter.list_materialized_views(self.engine, schema)
 
     def list_assets(self, schema: str) -> list[tuple[str, AssetKind]]:
@@ -173,6 +180,8 @@ class DatabaseConnector:
     # ── Comments (read) ───────────────────────────────────────────────────
 
     def get_table_comment(self, schema: str, table: str) -> str | None:
+        if not self.capabilities.table_comments and not self.capabilities.view_comments:
+            return None
         insp = inspect(self.engine)
         try:
             info = insp.get_table_comment(table, schema=schema)
@@ -181,6 +190,8 @@ class DatabaseConnector:
             return None
 
     def get_column_comments(self, schema: str, table: str) -> dict[str, str | None]:
+        if not self.capabilities.column_comments:
+            return {}
         insp = inspect(self.engine)
         cols = insp.get_columns(table, schema=schema)
         return {c["name"]: c.get("comment") for c in cols}
@@ -210,9 +221,13 @@ class DatabaseConnector:
         }
 
     def get_schema_comment(self, schema: str) -> str | None:
+        if not self.capabilities.schema_comments:
+            return None
         return self._adapter.get_schema_comment(self.engine, schema)
 
     def get_database_comment(self) -> str | None:
+        if not self.capabilities.database_comments:
+            return None
         return self._adapter.get_database_comment(self.engine)
 
     # ── Profiling ─────────────────────────────────────────────────────────
@@ -262,6 +277,13 @@ class DatabaseConnector:
             raise ProfilingError(schema, table, msg) from exc
         estimated_rows = int(profile.stats_n_live_tup or 0)
         full_scan_blocked = bool(max_rows and estimated_rows > max_rows)
+        if (
+            mode == "full"
+            and max_rows
+            and estimated_rows <= 0
+            and not self.capabilities.full_scan_when_row_count_unknown
+        ):
+            full_scan_blocked = True
 
         if mode == "full" and not full_scan_blocked:
             try:
@@ -309,9 +331,7 @@ class DatabaseConnector:
         except Exception:
             profile.check_constraints = []
 
-        profile.referenced_by = adapter.get_incoming_foreign_keys(
-            self.engine, schema, table
-        )
+        profile.referenced_by = self.get_incoming_foreign_keys(schema, table)
         profile.related_comments = self.get_related_table_comments(
             profile.foreign_keys, profile.referenced_by
         )
@@ -387,7 +407,20 @@ class DatabaseConnector:
     # ── Relationships ─────────────────────────────────────────────────────
 
     def get_incoming_foreign_keys(self, schema: str, table: str) -> list[dict[str, Any]]:
-        return self._adapter.get_incoming_foreign_keys(self.engine, schema, table)
+        if not self.capabilities.relationships:
+            return []
+        try:
+            return self._adapter.get_incoming_foreign_keys(self.engine, schema, table)
+        except Exception as exc:
+            actionable = self._adapter.actionable_profile_error(exc)
+            log.warning(
+                "Incoming foreign key introspection failed for %s.%s via %s: %s",
+                schema,
+                table,
+                self.backend,
+                actionable or exc,
+            )
+            return []
 
     def get_related_table_comments(
         self,
@@ -423,6 +456,16 @@ class DatabaseConnector:
         asset_kind: AssetKind = AssetKind.TABLE,
     ) -> None:
         keyword = asset_kind.comment_keyword
+        if keyword not in self.capabilities.comment_asset_keywords:
+            raise UnsupportedDatabaseOperation(
+                f"{self.backend} does not support comment write-back for {asset_kind.label} assets."
+            )
+        if asset_kind == AssetKind.VIEW and not self.capabilities.view_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support view comments.")
+        if asset_kind == AssetKind.MATERIALIZED_VIEW and not self.capabilities.materialized_view_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support materialized view comments.")
+        if asset_kind == AssetKind.TABLE and not self.capabilities.table_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support table comments.")
         stmt = self._adapter.set_table_comment_sql(schema, table, keyword)
         with self.engine.begin() as conn:
             conn.execute(text(stmt), {"cmt": comment})
@@ -431,18 +474,24 @@ class DatabaseConnector:
     def set_column_comment(
         self, schema: str, table: str, column: str, comment: str
     ) -> None:
+        if not self.capabilities.column_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support column comments.")
         stmt = self._adapter.set_column_comment_sql(schema, table, column)
         with self.engine.begin() as conn:
             conn.execute(text(stmt), {"cmt": comment})
         log.info("Set comment on %s.%s.%s", schema, table, column)
 
     def set_schema_comment(self, schema: str, comment: str) -> None:
+        if not self.capabilities.schema_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support schema comments.")
         stmt = self._adapter.set_schema_comment_sql(schema)
         with self.engine.begin() as conn:
             conn.execute(text(stmt), {"cmt": comment})
         log.info("Set comment on schema %s", schema)
 
     def set_database_comment(self, comment: str) -> None:
+        if not self.capabilities.database_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support database comments.")
         stmt = self._adapter.set_database_comment_sql()
         with self.engine.begin() as conn:
             conn.execute(text(stmt), {"cmt": comment})

@@ -3,15 +3,42 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.engine import Engine
+
+
+class UnsupportedDatabaseOperation(NotImplementedError):
+    """Raised when a backend cannot perform a requested metadata operation."""
+
+
+@dataclass(frozen=True)
+class BackendCapabilities:
+    """Advertised backend behavior used by the connector and CLI flows."""
+
+    database_comments: bool = True
+    schema_comments: bool = True
+    table_comments: bool = True
+    view_comments: bool = True
+    materialized_view_comments: bool = False
+    column_comments: bool = True
+    materialized_views: bool = False
+    relationships: bool = False
+    row_count_stats: bool = False
+    full_profiling: bool = True
+    sampled_profiling: bool = True
+    full_scan_when_row_count_unknown: bool = True
+    comment_asset_keywords: frozenset[str] = field(
+        default_factory=lambda: frozenset({"TABLE", "VIEW"})
+    )
 
 
 class DatabaseAdapter(ABC):
     """Each backend (PostgreSQL, Snowflake, Databricks, BigQuery) subclasses this."""
 
     name: str = "base"
+    capabilities = BackendCapabilities()
 
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
@@ -44,11 +71,20 @@ class DatabaseAdapter(ABC):
         """Return backend-specific remediation text for profiling failures."""
         return None
 
+    def unsupported(self, operation: str) -> UnsupportedDatabaseOperation:
+        return UnsupportedDatabaseOperation(
+            f"{operation} is not supported for the {self.name} backend."
+        )
+
     # ── Identifier quoting ────────────────────────────────────────────────
 
     def quote_identifier(self, name: str) -> str:
         """Quote a single identifier for use in raw SQL."""
         return f'"{name}"'
+
+    def quote_literal(self, value: str) -> str:
+        """Quote a SQL string literal for dialects that do not allow binds in metadata commands."""
+        return "'" + str(value).replace("'", "''") + "'"
 
     def fully_qualified_name(self, schema: str, table: str) -> str:
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(table)}"

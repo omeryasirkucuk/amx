@@ -7,11 +7,20 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from amx.db.adapters.base import DatabaseAdapter
+from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
 
 class BigQueryAdapter(DatabaseAdapter):
     name = "bigquery"
+    capabilities = BackendCapabilities(
+        database_comments=False,
+        materialized_view_comments=True,
+        materialized_views=False,
+        relationships=True,
+        row_count_stats=True,
+        full_scan_when_row_count_unknown=False,
+        comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+    )
 
     def create_engine(self) -> Engine:
         try:
@@ -29,6 +38,16 @@ class BigQueryAdapter(DatabaseAdapter):
 
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"INFORMATION_SCHEMA", "information_schema"})
+
+    def actionable_profile_error(self, exc: Exception) -> str | None:
+        msg = str(exc).lower()
+        if "access denied" in msg or "permission" in msg or "forbidden" in msg:
+            return "Insufficient BigQuery permissions. Grant metadata read and table data viewer permissions for profiling."
+        if "not found" in msg:
+            return "BigQuery dataset/table is missing or not visible in the configured project."
+        if "quota" in msg or "rate limit" in msg:
+            return "BigQuery quota or rate limit was reached. Retry later or switch profiling to metadata/sampled mode."
+        return None
 
     # ── Identifier quoting ────────────────────────────────────────────────
 
@@ -55,7 +74,7 @@ class BigQueryAdapter(DatabaseAdapter):
 
     def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
         return (
-            f"SELECT DISTINCT CAST({quoted_col} AS STRING) FROM {fqn} "
+            f"SELECT DISTINCT CAST({quoted_col} AS STRING) FROM {fqn} TABLESAMPLE SYSTEM (1 PERCENT) "
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
@@ -82,8 +101,9 @@ class BigQueryAdapter(DatabaseAdapter):
                 ).fetchone()
             n = int(row[0] or 0) if row else 0
             return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": n}
-        except Exception:
-            return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": 0}
+        except Exception as exc:
+            actionable = self.actionable_profile_error(exc)
+            raise RuntimeError(actionable or str(exc)) from exc
 
     def stats_label(self) -> str:
         return "INFORMATION_SCHEMA.TABLES"
@@ -152,14 +172,17 @@ class BigQueryAdapter(DatabaseAdapter):
                 }
                 for r in rows
             ]
-        except Exception:
-            return []
+        except Exception as exc:
+            actionable = self.actionable_profile_error(exc)
+            raise RuntimeError(actionable or str(exc)) from exc
 
     # ── Comment writing ───────────────────────────────────────────────────
 
     def set_table_comment_sql(
         self, schema: str, table: str, asset_keyword: str
     ) -> str:
+        if asset_keyword not in self.capabilities.comment_asset_keywords:
+            raise self.unsupported(f"Comment write-back for {asset_keyword.lower()} assets")
         fqn = self.fully_qualified_name(schema, table)
         return f"ALTER {asset_keyword} {fqn} SET OPTIONS(description = :cmt)"
 
@@ -176,6 +199,6 @@ class BigQueryAdapter(DatabaseAdapter):
         return f"ALTER SCHEMA {ds} SET OPTIONS(description = :cmt)"
 
     def set_database_comment_sql(self) -> str:
-        raise NotImplementedError(
+        raise self.unsupported(
             "BigQuery project descriptions are not supported through SQL write-back."
         )

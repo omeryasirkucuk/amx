@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.115] — 2026-04-28
+### Changed
+- **Database connector capabilities**: Backend adapters now advertise metadata/comment/profiling capabilities so AMX can block unsupported write-back operations before treating them as successful.
+- **Safer warehouse profiling**: Cloud backends no longer perform expensive full scans when row-count statistics are unknown, and sampled mode uses backend sampling syntax for Snowflake, Databricks, and BigQuery.
+- **Backend-specific connector hardening**: Snowflake materialized view discovery and database comment reads no longer rely on fragile bind/result-index behavior; Databricks database comment write-back without a catalog now fails clearly instead of silently no-oping.
+
+### Added
+- **Connector regression coverage**: Added adapter contract tests for SQL generation, unsupported write-back, Snowflake metadata commands, sampled profiling, unknown-row-count scan blocking, and apply-flow failure accounting.
+
 ## [0.1.114] — 2026-04-28
 ### Fixed
 - **Column discovery no longer becomes table snapshots**: Global semantic column questions such as "city ile alakalı tüm kolon isimlerini getir" no longer run a live table metadata snapshot just because conversation memory or fuzzy matching can resolve a nearby table.

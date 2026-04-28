@@ -268,7 +268,7 @@ AMX scans/ingests these extensions:
 | Databricks | `databricks` | SQL warehouse HTTP path + personal access token; Unity Catalog optional |
 | BigQuery | `bigquery` | GCP project, dataset; table/schema/column descriptions via `ALTER … SET OPTIONS`; project-level descriptions are not supported through SQL write-back |
 
-Introspection and profiling use backend-specific SQL where needed; metadata write-back uses each platform’s supported description/comment mechanism.
+Introspection and profiling use backend-specific SQL where needed; metadata write-back uses each platform’s supported description/comment mechanism. Each adapter advertises its capabilities so unsupported operations fail clearly instead of being counted as applied. For example, BigQuery project-level descriptions are blocked before connection, and Databricks catalog comments require a configured Unity Catalog name.
 
 ## Supported LLM Providers
 
@@ -314,13 +314,13 @@ AMX does not send full table dumps; it sends summarized profiling signals and sm
 
 Each DB profile has profiling guardrails to control warehouse cost:
 
-- `full` — exact row count plus per-column null count, distinct count, min/max, and samples. If table statistics report more rows than `profiling_max_rows`, AMX skips the expensive full column scans and keeps lightweight metadata plus samples.
-- `sampled` — skips exact row count and full per-column aggregate scans; uses backend table statistics when available and retrieves only small sample values.
+- `full` — exact row count plus per-column null count, distinct count, min/max, and samples. If table statistics report more rows than `profiling_max_rows`, AMX skips the expensive full column scans and keeps lightweight metadata plus samples. Snowflake, Databricks, and BigQuery also skip full scans when row-count statistics are unavailable.
+- `sampled` — skips exact row count and full per-column aggregate scans; uses backend table statistics when available and retrieves only small sample values with backend sampling syntax where supported.
 - `metadata` — skips table-data reads entirely; uses schema metadata, comments, constraints, and backend table statistics when available.
 
 Use `/db` then `/profiling` to view the active settings. Use `/profiling sampled 500000 3`, `/profiling metadata`, or `/profiling full off 5` to update them. Settings are saved on the active DB profile in `~/.amx/config.yml`.
 
-Backend profiling failures are normalized into actionable messages where possible. PostgreSQL errors for unavailable `pg_stat_statements`, missing relations, or insufficient privileges now surface remediation text instead of leaking raw driver traces, and AMX can skip expensive per-column stats when a single column-level stats query fails.
+Backend profiling failures are normalized into actionable messages where possible. PostgreSQL, Snowflake, Databricks, and BigQuery permission, missing-object, warehouse, quota, or connection failures surface remediation text instead of leaking raw driver traces, and AMX can skip expensive per-column stats when a single column-level stats query fails.
 
 ## Configuration
 
@@ -467,6 +467,12 @@ amx/
 ## Changelog
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
+
+### v0.1.115
+
+- **Connector capabilities**: Database adapters now declare supported comment, relationship, materialized-view, statistics, and profiling behavior so unsupported write-back fails clearly.
+- **Safer profiling**: Cloud backends avoid full scans when row-count statistics are unknown, and sampled mode uses backend sampling syntax for Snowflake, Databricks, and BigQuery.
+- **Backend fixes**: Snowflake metadata commands are less fragile, Databricks catalog comment write-back no longer silently no-ops, and connector/apply flows no longer count unsupported writes as applied.
 
 ### v0.1.114
 

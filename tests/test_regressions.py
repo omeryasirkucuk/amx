@@ -12,7 +12,7 @@ import click
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
-from amx.agents.orchestrator import Orchestrator
+from amx.agents.orchestrator import Orchestrator, ReviewResult, apply_review_results_to_db
 from amx.codebase.analyzer import CodebaseReport, analyze_codebase
 from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
 from amx.cli_support.commands.history import format_run_scope
@@ -22,7 +22,11 @@ from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.cli_support.commands.db import cmd_profiling
+from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
+from amx.db.adapters.databricks import DatabricksAdapter
+from amx.db.adapters.postgresql import PostgreSQLAdapter
+from amx.db.adapters.snowflake import SnowflakeAdapter
 from amx.db.connector import AssetKind, DatabaseConnector
 from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
@@ -169,6 +173,114 @@ class BackendCapabilityTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             adapter.set_database_comment_sql()
 
+    def test_connector_exposes_backend_capabilities(self) -> None:
+        db = DatabaseConnector(DBConfig(backend="bigquery", project="p", dataset="d"))
+
+        self.assertFalse(db.capabilities.database_comments)
+        self.assertTrue(db.capabilities.column_comments)
+        self.assertTrue(db.capabilities.sampled_profiling)
+
+    def test_connector_blocks_unsupported_database_comment_before_connecting(self) -> None:
+        db = DatabaseConnector(DBConfig(backend="bigquery", project="p", dataset="d"))
+
+        with self.assertRaises(UnsupportedDatabaseOperation):
+            db.set_database_comment("Project description")
+
+    def test_apply_flow_does_not_count_unsupported_writeback_as_applied(self) -> None:
+        db = DatabaseConnector(DBConfig(backend="bigquery", project="p", dataset="d"))
+        row = ReviewResult(
+            schema="",
+            table="",
+            column=None,
+            final_description="Project description",
+            confidence=Confidence.HIGH,
+            source="manual",
+            applied=True,
+            asset_kind=AssetKind.DATABASE.value,
+        )
+        applied_rows: list[ReviewResult] = []
+
+        applied = apply_review_results_to_db(db, [row], on_applied=applied_rows.append)
+
+        self.assertEqual(applied, 0)
+        self.assertEqual(applied_rows, [])
+
+    def test_comment_sql_generation_per_backend(self) -> None:
+        pg = PostgreSQLAdapter(DBConfig(backend="postgresql", database="sap"))
+        sf = SnowflakeAdapter(DBConfig(backend="snowflake", database="sap"))
+        dbx = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))
+        bq = BigQueryAdapter(DBConfig(backend="bigquery", project="p", dataset="d"))
+
+        self.assertEqual(
+            pg.set_table_comment_sql("public", "orders", "MATERIALIZED VIEW"),
+            'COMMENT ON MATERIALIZED VIEW "public"."orders" IS :cmt',
+        )
+        self.assertEqual(
+            sf.set_column_comment_sql("PUBLIC", "ORDERS", "ID"),
+            'COMMENT ON COLUMN "PUBLIC"."ORDERS"."ID" IS :cmt',
+        )
+        self.assertEqual(
+            dbx.set_database_comment_sql(),
+            "COMMENT ON CATALOG `main` IS :cmt",
+        )
+        self.assertEqual(
+            bq.set_schema_comment_sql("sales"),
+            "ALTER SCHEMA `p`.`sales` SET OPTIONS(description = :cmt)",
+        )
+
+    def test_databricks_database_comment_without_catalog_fails(self) -> None:
+        adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog=""))
+
+        with self.assertRaises(UnsupportedDatabaseOperation):
+            adapter.set_database_comment_sql()
+
+    def test_databricks_rejects_materialized_view_comments(self) -> None:
+        adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))
+
+        with self.assertRaises(UnsupportedDatabaseOperation):
+            adapter.set_table_comment_sql("sales", "mv_orders", "MATERIALIZED VIEW")
+
+    def test_snowflake_metadata_uses_safe_show_and_mapping_rows(self) -> None:
+        executed: list[tuple[str, dict | None]] = []
+
+        class FakeRow(tuple):
+            def __new__(cls, values, mapping):
+                obj = tuple.__new__(cls, values)
+                obj.mapping = mapping
+                return obj
+
+            @property
+            def _mapping(self):
+                return self.mapping
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, stmt, params=None):
+                sql = str(stmt)
+                executed.append((sql, params))
+                if sql.startswith("SHOW MATERIALIZED VIEWS"):
+                    return SimpleNamespace(fetchall=lambda: [FakeRow((None, "fallback_name"), {"name": "mv_orders"})])
+                if sql.startswith("SHOW DATABASES"):
+                    return SimpleNamespace(fetchall=lambda: [FakeRow((), {"comment": "Warehouse comment"})])
+                raise AssertionError(sql)
+
+        class FakeEngine:
+            def connect(self):
+                return FakeConn()
+
+        adapter = SnowflakeAdapter(DBConfig(backend="snowflake", database="SAP"))
+
+        self.assertEqual(adapter.list_materialized_views(FakeEngine(), "Sales"), ["mv_orders"])
+        self.assertEqual(adapter.get_database_comment(FakeEngine()), "Warehouse comment")
+        self.assertIn('SHOW MATERIALIZED VIEWS IN SCHEMA "Sales"', executed[0][0])
+        self.assertIsNone(executed[0][1])
+        self.assertIn("SHOW DATABASES LIKE 'SAP'", executed[1][0])
+
 
 class ProfilingGuardrailTests(unittest.TestCase):
     def test_cli_profiling_updates_active_profile(self) -> None:
@@ -241,6 +353,151 @@ class ProfilingGuardrailTests(unittest.TestCase):
             profile = db.profile_table("public", "orders", asset_kind=AssetKind.TABLE)
 
         self.assertEqual(profile.row_count, 2_500_000)
+        self.assertEqual(profile.columns[0].samples, [])
+        self.assertEqual(profile.columns[0].distinct_count, 0)
+
+    def test_sampled_mode_uses_samples_without_column_stats(self) -> None:
+        executed: list[str] = []
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, stmt, params=None):
+                executed.append(str(stmt))
+                return SimpleNamespace(fetchall=lambda: [("A",), ("B",)])
+
+        class FakeEngine:
+            def connect(self):
+                return FakeConn()
+
+        class FakeAdapter:
+            name = "fake"
+            capabilities = BackendCapabilities(row_count_stats=True)
+
+            def fully_qualified_name(self, schema: str, table: str) -> str:
+                return f'"{schema}"."{table}"'
+
+            def quote_identifier(self, name: str) -> str:
+                return f'"{name}"'
+
+            def get_table_stats(self, engine, schema: str, table: str) -> dict[str, int]:
+                return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": 42}
+
+            def get_schema_comment(self, engine, schema: str):
+                return None
+
+            def get_database_comment(self, engine):
+                return None
+
+            def column_stats_sql(self, fqn: str, quoted_col: str) -> str:
+                raise AssertionError("sampled mode must not run full column stats")
+
+            def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
+                return f"SAMPLE_SQL {fqn}.{quoted_col}"
+
+            def get_incoming_foreign_keys(self, engine, schema: str, table: str):
+                return []
+
+        class FakeInspector:
+            def get_table_comment(self, table: str, schema: str):
+                return {"text": ""}
+
+            def get_columns(self, table: str, schema: str):
+                return [{"name": "code", "type": "TEXT", "nullable": True, "comment": None}]
+
+            def get_pk_constraint(self, table: str, schema: str):
+                return {}
+
+            def get_foreign_keys(self, table: str, schema: str):
+                return []
+
+            def get_unique_constraints(self, table: str, schema: str):
+                return []
+
+            def get_check_constraints(self, table: str, schema: str):
+                return []
+
+        db = object.__new__(DatabaseConnector)
+        db.cfg = DBConfig(backend="postgresql", profiling_mode="sampled", profiling_sample_size=2)
+        db._engine = FakeEngine()
+        db._adapter = FakeAdapter()
+
+        with patch("amx.db.connector.inspect", return_value=FakeInspector()):
+            profile = db.profile_table("public", "orders", asset_kind=AssetKind.TABLE)
+
+        self.assertEqual(profile.row_count, 42)
+        self.assertEqual(profile.columns[0].samples, ["A", "B"])
+        self.assertEqual(profile.columns[0].distinct_count, 0)
+        self.assertEqual(executed, ['SAMPLE_SQL "public"."orders"."code"'])
+
+    def test_full_mode_blocks_column_scans_when_cloud_row_count_unknown(self) -> None:
+        class FakeEngine:
+            def connect(self):
+                raise AssertionError("unknown cloud row count should not trigger full table scans")
+
+        class FakeAdapter:
+            name = "fake-cloud"
+            capabilities = BackendCapabilities(
+                row_count_stats=True,
+                full_scan_when_row_count_unknown=False,
+            )
+
+            def fully_qualified_name(self, schema: str, table: str) -> str:
+                return f"`{schema}`.`{table}`"
+
+            def quote_identifier(self, name: str) -> str:
+                return f"`{name}`"
+
+            def get_table_stats(self, engine, schema: str, table: str) -> dict[str, int]:
+                return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": 0}
+
+            def get_schema_comment(self, engine, schema: str):
+                return None
+
+            def get_database_comment(self, engine):
+                return None
+
+            def column_stats_sql(self, fqn: str, quoted_col: str) -> str:
+                raise AssertionError("full stats must be blocked")
+
+            def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
+                raise AssertionError("samples must be blocked in this test")
+
+            def get_incoming_foreign_keys(self, engine, schema: str, table: str):
+                return []
+
+        class FakeInspector:
+            def get_table_comment(self, table: str, schema: str):
+                return {"text": ""}
+
+            def get_columns(self, table: str, schema: str):
+                return [{"name": "id", "type": "INT", "nullable": False, "comment": None}]
+
+            def get_pk_constraint(self, table: str, schema: str):
+                return {}
+
+            def get_foreign_keys(self, table: str, schema: str):
+                return []
+
+            def get_unique_constraints(self, table: str, schema: str):
+                return []
+
+            def get_check_constraints(self, table: str, schema: str):
+                return []
+
+        db = object.__new__(DatabaseConnector)
+        db.cfg = DBConfig(backend="bigquery", profiling_mode="full", profiling_max_rows=1_000_000, profiling_sample_size=0)
+        db._engine = FakeEngine()
+        db._adapter = FakeAdapter()
+
+        with patch("amx.db.connector.inspect", return_value=FakeInspector()):
+            profile = db.profile_table("sales", "orders", asset_kind=AssetKind.TABLE)
+
+        self.assertEqual(profile.row_count, 0)
         self.assertEqual(profile.columns[0].samples, [])
         self.assertEqual(profile.columns[0].distinct_count, 0)
 

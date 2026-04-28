@@ -7,11 +7,20 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from amx.db.adapters.base import DatabaseAdapter
+from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
 
 class DatabricksAdapter(DatabaseAdapter):
     name = "databricks"
+    capabilities = BackendCapabilities(
+        database_comments=True,
+        materialized_view_comments=False,
+        materialized_views=False,
+        relationships=False,
+        row_count_stats=True,
+        full_scan_when_row_count_unknown=False,
+        comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
+    )
 
     def create_engine(self) -> Engine:
         try:
@@ -29,6 +38,16 @@ class DatabricksAdapter(DatabaseAdapter):
 
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"information_schema", "default"})
+
+    def actionable_profile_error(self, exc: Exception) -> str | None:
+        msg = str(exc).lower()
+        if "permission denied" in msg or "not authorized" in msg or "privilege" in msg:
+            return "Insufficient Databricks privileges. Grant USE CATALOG/SCHEMA and SELECT on the object."
+        if "not found" in msg or "does not exist" in msg or "table_or_view_not_found" in msg:
+            return "Databricks object is missing or not visible in the active catalog/schema."
+        if "http_path" in msg or "warehouse" in msg:
+            return "Databricks SQL warehouse connection is unavailable. Check host, HTTP path, and token."
+        return None
 
     # ── Identifier quoting ────────────────────────────────────────────────
 
@@ -55,7 +74,7 @@ class DatabricksAdapter(DatabaseAdapter):
 
     def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
         return (
-            f"SELECT DISTINCT CAST({quoted_col} AS STRING) FROM {fqn} "
+            f"SELECT DISTINCT CAST({quoted_col} AS STRING) FROM {fqn} TABLESAMPLE (1 PERCENT) "
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
@@ -118,40 +137,15 @@ class DatabricksAdapter(DatabaseAdapter):
     def get_incoming_foreign_keys(
         self, engine: Engine, schema: str, table: str
     ) -> list[dict[str, Any]]:
-        fqn = self.fully_qualified_name(schema, table)
-        try:
-            with engine.connect() as conn:
-                rows = conn.execute(
-                    text(
-                        "SELECT "
-                        "  fk_schema, fk_table, fk_columns, pk_columns "
-                        f"FROM system.information_schema.table_constraints "
-                        "WHERE constraint_type = 'FOREIGN KEY' "
-                        "  AND pk_table_schema = :schema "
-                        "  AND pk_table_name = :table"
-                    ),
-                    {"schema": schema, "table": table},
-                ).fetchall()
-            results: list[dict[str, Any]] = []
-            for r in rows:
-                fk_cols = str(r[2]).split(",") if r[2] else []
-                pk_cols = str(r[3]).split(",") if r[3] else []
-                for fc, pc in zip(fk_cols, pk_cols):
-                    results.append({
-                        "source_schema": str(r[0]),
-                        "source_table": str(r[1]),
-                        "source_column": fc.strip(),
-                        "target_column": pc.strip(),
-                    })
-            return results
-        except Exception:
-            return []
+        return []
 
     # ── Comment writing ───────────────────────────────────────────────────
 
     def set_table_comment_sql(
         self, schema: str, table: str, asset_keyword: str
     ) -> str:
+        if asset_keyword not in self.capabilities.comment_asset_keywords:
+            raise self.unsupported(f"Comment write-back for {asset_keyword.lower()} assets")
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON {asset_keyword} {fqn} IS :cmt"
 
@@ -170,5 +164,5 @@ class DatabricksAdapter(DatabaseAdapter):
     def set_database_comment_sql(self) -> str:
         catalog = getattr(self.cfg, "catalog", "") or ""
         if not catalog:
-            return "SELECT 1 -- No catalog configured"
+            raise self.unsupported("Database/catalog comment write-back without a Databricks catalog")
         return f"COMMENT ON CATALOG `{catalog}` IS :cmt"

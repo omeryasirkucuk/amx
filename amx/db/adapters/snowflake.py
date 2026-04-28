@@ -7,11 +7,19 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from amx.db.adapters.base import DatabaseAdapter
+from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
 
 class SnowflakeAdapter(DatabaseAdapter):
     name = "snowflake"
+    capabilities = BackendCapabilities(
+        materialized_view_comments=True,
+        materialized_views=True,
+        relationships=True,
+        row_count_stats=True,
+        full_scan_when_row_count_unknown=False,
+        comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+    )
 
     def create_engine(self) -> Engine:
         try:
@@ -33,15 +41,31 @@ class SnowflakeAdapter(DatabaseAdapter):
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"INFORMATION_SCHEMA", "information_schema"})
 
+    def actionable_profile_error(self, exc: Exception) -> str | None:
+        msg = str(exc).lower()
+        if "insufficient privileges" in msg or "not authorized" in msg:
+            return "Insufficient Snowflake privileges. Grant USAGE on database/schema and SELECT on the object."
+        if "does not exist" in msg or "not exist or not authorized" in msg:
+            return "Snowflake object is missing or not visible to the active role."
+        if "warehouse" in msg and ("suspended" in msg or "not running" in msg):
+            return "Snowflake warehouse is unavailable. Start the warehouse or select an active warehouse."
+        return None
+
     # ── Materialized views ────────────────────────────────────────────────
 
     def list_materialized_views(self, engine: Engine, schema: str) -> list[str]:
+        stmt = f"SHOW MATERIALIZED VIEWS IN SCHEMA {self.quote_identifier(schema)}"
         with engine.connect() as conn:
-            rows = conn.execute(
-                text("SHOW MATERIALIZED VIEWS IN SCHEMA :schema"),
-                {"schema": schema},
-            ).fetchall()
-        return [r[1] for r in rows] if rows else []
+            rows = conn.execute(text(stmt)).fetchall()
+        out: list[str] = []
+        for row in rows:
+            mapping = row._mapping if hasattr(row, "_mapping") else {}
+            name = mapping.get("name") or mapping.get("NAME")
+            if name:
+                out.append(str(name))
+            elif len(row) > 1 and row[1]:
+                out.append(str(row[1]))
+        return out
 
     # ── Identifier quoting ────────────────────────────────────────────────
 
@@ -62,7 +86,7 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
         return (
-            f"SELECT DISTINCT {quoted_col}::VARCHAR FROM {fqn} "
+            f"SELECT DISTINCT {quoted_col}::VARCHAR FROM {fqn} SAMPLE (1) "
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
@@ -71,14 +95,7 @@ class SnowflakeAdapter(DatabaseAdapter):
     def get_table_stats(
         self, engine: Engine, schema: str, table: str
     ) -> dict[str, int]:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT ROW_COUNT FROM INFORMATION_SCHEMA.TABLES "
-                    "WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table"
-                ),
-                {"schema": schema.upper(), "table": table.upper()},
-            ).fetchone()
+        row = self._fetch_table_row(engine, schema, table, "ROW_COUNT")
         n_live = int(row[0] or 0) if row else 0
         return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": n_live}
 
@@ -88,28 +105,62 @@ class SnowflakeAdapter(DatabaseAdapter):
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT COMMENT FROM INFORMATION_SCHEMA.SCHEMATA "
-                    "WHERE SCHEMA_NAME = :schema"
-                ),
-                {"schema": schema.upper()},
-            ).fetchone()
+        row = self._fetch_schema_row(engine, schema, "COMMENT")
         return row[0] if row and row[0] else None
 
     def get_database_comment(self, engine: Engine) -> str | None:
         try:
             with engine.connect() as conn:
-                rows = conn.execute(text("SHOW DATABASES LIKE :db"), {"db": self.cfg.database}).fetchall()
+                rows = conn.execute(
+                    text(f"SHOW DATABASES LIKE {self.quote_literal(self.cfg.database)}")
+                ).fetchall()
             if rows:
                 for r in rows:
-                    comment_idx = 4
-                    if len(r) > comment_idx and r[comment_idx]:
-                        return str(r[comment_idx])
+                    mapping = r._mapping if hasattr(r, "_mapping") else {}
+                    comment = mapping.get("comment") or mapping.get("COMMENT")
+                    if comment:
+                        return str(comment)
         except Exception:
             pass
         return None
+
+    def _fetch_schema_row(self, engine: Engine, schema: str, column: str):
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    f"SELECT {column} FROM INFORMATION_SCHEMA.SCHEMATA "
+                    "WHERE SCHEMA_NAME = :schema"
+                ),
+                {"schema": schema},
+            ).fetchone()
+            if row or schema.upper() == schema:
+                return row
+            return conn.execute(
+                text(
+                    f"SELECT {column} FROM INFORMATION_SCHEMA.SCHEMATA "
+                    "WHERE SCHEMA_NAME = :schema"
+                ),
+                {"schema": schema.upper()},
+            ).fetchone()
+
+    def _fetch_table_row(self, engine: Engine, schema: str, table: str, column: str):
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    f"SELECT {column} FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table"
+                ),
+                {"schema": schema, "table": table},
+            ).fetchone()
+            if row or (schema.upper() == schema and table.upper() == table):
+                return row
+            return conn.execute(
+                text(
+                    f"SELECT {column} FROM INFORMATION_SCHEMA.TABLES "
+                    "WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table"
+                ),
+                {"schema": schema.upper(), "table": table.upper()},
+            ).fetchone()
 
     # ── Incoming foreign keys ─────────────────────────────────────────────
 
@@ -134,7 +185,7 @@ class SnowflakeAdapter(DatabaseAdapter):
                         "WHERE pk.TABLE_SCHEMA = :schema "
                         "  AND pk.TABLE_NAME = :table"
                     ),
-                    {"schema": schema.upper(), "table": table.upper()},
+                    {"schema": schema, "table": table},
                 ).fetchall()
             return [
                 {
@@ -145,8 +196,9 @@ class SnowflakeAdapter(DatabaseAdapter):
                 }
                 for r in rows
             ]
-        except Exception:
-            return []
+        except Exception as exc:
+            actionable = self.actionable_profile_error(exc)
+            raise RuntimeError(actionable or str(exc)) from exc
 
     # ── Comment writing ───────────────────────────────────────────────────
 
