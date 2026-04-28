@@ -121,6 +121,7 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
+        info(f"Testing [{cfg.db.backend}] connection to {cfg.db.display_summary} ...")
         if db_conn.test_connection():
             success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
         else:

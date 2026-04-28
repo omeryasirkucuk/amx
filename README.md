@@ -468,6 +468,10 @@ amx/
 
 Release notes for the latest versions also live in [`CHANGELOG.md`](CHANGELOG.md).
 
+### v0.1.117
+
+- **Databricks connect guardrails**: `/connect` now prints a short progress line and uses bounded Databricks connector timeouts/retries, so a bad workspace host, HTTP path, or token fails quickly instead of looking stuck.
+
 ### v0.1.116
 
 - **Databricks connect cleanup**: `/connect` no longer emits the Databricks SQL connector `_user_agent_entry` deprecation warning; AMX now passes the non-deprecated `user_agent_entry` connect arg.

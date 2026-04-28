@@ -12,6 +12,9 @@ from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
 class DatabricksAdapter(DatabaseAdapter):
     name = "databricks"
+    connect_timeout_seconds = 15
+    connect_retry_attempts = 3
+    connect_retry_duration_seconds = 20
     capabilities = BackendCapabilities(
         database_comments=True,
         materialized_view_comments=False,
@@ -37,7 +40,12 @@ class DatabricksAdapter(DatabaseAdapter):
         return create_engine(
             self.cfg.url,
             pool_pre_ping=True,
-            connect_args={"user_agent_entry": "amx"},
+            connect_args={
+                "user_agent_entry": "amx",
+                "_socket_timeout": self.connect_timeout_seconds,
+                "_retry_stop_after_attempts_count": self.connect_retry_attempts,
+                "_retry_stop_after_attempts_duration": self.connect_retry_duration_seconds,
+            },
         )
 
     def system_schemas(self) -> frozenset[str]:

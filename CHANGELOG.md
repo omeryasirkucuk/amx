@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.117] — 2026-04-28
+### Changed
+- **Faster Databricks connect failure**: Databricks `/connect` now uses bounded connector timeouts and retry limits so bad host/path/token configurations fail in seconds instead of appearing to hang.
+- **Connect progress feedback**: `/connect` now prints a short "Testing connection ..." line before attempting the network call.
+
+### Added
+- **Regression coverage**: Added Databricks adapter coverage for the explicit socket-timeout and retry connect args.
+
 ## [0.1.116] — 2026-04-28
 ### Fixed
 - **Databricks connect deprecation warning**: AMX now passes `user_agent_entry` through SQLAlchemy `connect_args` so newer `databricks-sql-connector` releases no longer print the `_user_agent_entry` deprecation warning during `/connect`.

@@ -254,7 +254,15 @@ class BackendCapabilityTests(unittest.TestCase):
 
         self.assertIsNotNone(engine)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1]["connect_args"], {"user_agent_entry": "amx"})
+        self.assertEqual(
+            calls[0][1]["connect_args"],
+            {
+                "user_agent_entry": "amx",
+                "_socket_timeout": adapter.connect_timeout_seconds,
+                "_retry_stop_after_attempts_count": adapter.connect_retry_attempts,
+                "_retry_stop_after_attempts_duration": adapter.connect_retry_duration_seconds,
+            },
+        )
 
     def test_databricks_rejects_materialized_view_comments(self) -> None:
         adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))

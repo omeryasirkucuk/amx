@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.117] — 2026-04-28
+### Databricks Connect Timeout Guardrails
+- **amx/db/adapters/databricks.py**: Added bounded Databricks connect args for `_socket_timeout`, `_retry_stop_after_attempts_count`, and `_retry_stop_after_attempts_duration`, while keeping the non-deprecated `user_agent_entry`.
+- **amx/cli_support/root_commands.py**: `/connect` now prints a short progress line before opening the DB connection.
+- **tests/test_regressions.py**: Expanded Databricks engine-creation coverage to verify the timeout and retry connect args.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.117` and documented the connect-timeout guardrails.
+
 ## [0.1.116] — 2026-04-28
 ### Databricks Connector Warning Cleanup
 - **amx/db/adapters/databricks.py**: Added `connect_args={"user_agent_entry": "amx"}` so Databricks SQLAlchemy stops triggering the connector's `_user_agent_entry` deprecation warning on connect.
