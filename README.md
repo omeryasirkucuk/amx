@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.124`: `/search` now uses rule-first routing, deterministic read-only live probes for table-scoped factual metadata questions, shorter template-first answers, tighter session-memory scope, and stronger suppression of weak vector-only tail matches.
 - `v0.1.123`: Databricks column comment write-back now groups same-table column updates into a single `ALTER TABLE ... ALTER COLUMN ...` statement when supported, and apply-mode progress now stays on one rolling write-back line instead of printing one line per column.
 - `v0.1.122`: Apply-mode write-back now shows live elapsed time and per-asset progress in the terminal, and failed writes persist a `failed` DB-apply status for the corresponding saved result row.
 - `v0.1.121`: Apply-mode database write-back now reuses one transaction per batch, and Databricks profiles with `tls_no_verify` no longer print one insecure-request warning per write-back request.
@@ -389,17 +390,19 @@ Answering behavior:
 - each question now runs through a dedicated **Search Agent** pipeline: interpretation, retrieval planning, grounded retrieval, live verification for high-risk structural claims, answer synthesis, and optional follow-up action suggestions
 - `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
 - `/search ask` now distinguishes table-level semantic discovery from inventory questions, so prompts like "which tables contain address details" route to ranked table matches instead of accidental table-count answers
+- `/search ask` now applies rule-first routing for high-confidence intents such as exact field lookups, explicit table explanations, join questions, and inventory questions before falling back to the interpreter LLM
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
-- synthesized answers receive every retrieved row in the current result set, with result indexes, so AMX can answer across all returned candidates instead of only the first few matches
+- synthesized answers still receive the visible grounded result set, but `/search` now suppresses low-confidence tail rows before answering so weak vector-only matches do not dominate the user-facing summary
 - table-scoped factual questions are live-first: questions such as "what is the ADRC table?" or "are all ADRC columns commented?" resolve the requested table and run safe live metadata probes before answering structural facts like column count, types, nullability, table comments, and column-comment coverage. Open-ended semantic column searches, such as "city related column names", stay on catalog/vector retrieval unless the user explicitly scopes them to a table.
+- table-scoped factual verification now uses deterministic read-only probe selection instead of a second LLM planning hop, so `/search` can take safe metadata actions automatically without drifting into irrelevant planner output
 - explicit table mentions such as `schema.table`, `ADRC table`, or `adrc tablosunda` take precedence over fuzzy catalog matches. If the exact live table cannot be verified, AMX refuses to substitute a similar candidate such as `ADR6`; fuzzy matches are shown only as suggestions.
 - `/search` only labels an answer as live verified when live metadata rows were actually collected; catalog-only or fuzzy evidence is capped to lower confidence.
 - join questions prioritize verified FK relationships, then semantic join inference, then observed code usage; one-table join questions can also surface non-FK semantic candidates with confidence bands such as `verified`, `high_likelihood`, `possible`, and `weak_hypothesis`
-- join answers now pass the resolved base/target join columns into the synthesis prompt, so AMX can explain not just which tables are joinable but also which column pairs it found
-- follow-up questions reuse short session memory so users can keep discussing the same table or field naturally
+- join answers now prefer a deterministic short-form summary when the top verified join target or join-column pair is clear, reducing unnecessary LLM synthesis
+- follow-up questions reuse narrower session memory so users can keep discussing the same table or field naturally without broad semantic result sets contaminating later table-scoped questions
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
-- `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, and action suggestions into history/event payloads so answers remain diagnosable
+- `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, suggested actions, executed read-only actions, answer strategy, and suppressed-row counts into history/event payloads so answers remain diagnosable
 - `/search ask --actions` turns selected suggestions into a human-approved execution loop: AMX asks before running catalog sync, cached code-evidence refresh, or single-table metadata analysis actions, then records the action outcome
 - `/search /context-detail` controls how much neighborhood, code, and history context is exposed to the search synthesizer for cost/latency tuning
 - `/search` answer language is forced to the detected language of the user's question, even if the interpreter LLM suggests a different `answer_language`

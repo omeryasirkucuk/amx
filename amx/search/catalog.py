@@ -1789,6 +1789,9 @@ class SearchCatalog:
             row = dict(row)
             row["rank_score"] = total
             row["evidence_score"] = float(row.get("match_score") or 0.0)
+            row.setdefault("evidence_tier", "strong" if total >= 4.5 else "weak")
+            row.setdefault("answer_role", "supporting")
+            row.setdefault("match_reason", "ranked_match")
             scored.append(row)
         scored.sort(key=lambda item: item["rank_score"], reverse=True)
         return scored[:limit]

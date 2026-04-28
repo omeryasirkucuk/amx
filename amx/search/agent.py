@@ -201,6 +201,81 @@ class SearchAgent:
         total = int((status.get("entities") or {}).get("total_entities") or 0)
         return total > 0, status
 
+    def _plan_with_overrides(self, *, question: str, base: SearchPlan | None, question_language: str) -> SearchPlan:
+        deterministic = self._rule_first_plan(question, question_language)
+        chosen = deterministic or base or SearchPlan(
+            intent="find_columns",
+            out_of_domain=False,
+            normalized_question=question,
+            search_mode="semantic_concept",
+            question_class="semantic_discovery",
+            target_entity="column",
+            entity_hints=[],
+            search_queries=[question],
+            needs_typo_recovery=False,
+            answer_language=question_language,
+            ambiguity_flags=[],
+            reason="default semantic discovery fallback",
+        )
+        chosen = self._align_answer_language(chosen, question_language)
+        return self._align_plan_shape(chosen, question)
+
+    def _rule_first_plan(self, question: str, question_language: str) -> SearchPlan | None:
+        sample = (question or "").strip()
+        lower = sample.lower()
+        if not sample:
+            return None
+
+        inventory_database_terms = ("which databases", "hangi database", "hangi databaseler", "known databases")
+        inventory_schema_terms = ("which schemas", "hangi schema", "hangi sema", "hangi şema")
+        count_terms = ("kaç tablo", "kac tablo", "how many tables", "table count")
+        joinable_terms = ("hangi tablolar ile join", "hangi tablolarla join", "which tables can join", "joinleyebilirim")
+        join_terms = ("hangi kolon", "which columns", "joinlenir", "join edilir", "join columns")
+        explain_terms = ("nedir", "what is", "what does", "ne ise yarar", "what does this table do", "tablosu")
+        column_words = ("kolon", "kolonlar", "column", "columns", "field", "fields")
+        listing_words = ("hangi", "tüm", "tum", "list", "show", "getir", "listele")
+        concept_terms = ("içinde", "icinde", "related", "alak", "contain", "detay", "detail", "olan", "with")
+
+        explicit_paths = self._explicit_table_paths_for_question(sample)
+        explicit_mentions = self._explicit_table_mentions_for_question(sample)
+        normalized = sample
+        search_queries = [sample]
+
+        if any(term in lower for term in inventory_database_terms):
+            return SearchPlan("list_databases", False, normalized, "list_databases", "inventory", "database", [], search_queries, False, question_language, [], "rule-first inventory database routing")
+        if any(term in lower for term in inventory_schema_terms):
+            return SearchPlan("list_schemas", False, normalized, "list_schemas", "inventory", "schema", [], search_queries, False, question_language, [], "rule-first inventory schema routing")
+        if any(term in lower for term in count_terms):
+            return SearchPlan("count_tables", False, normalized, "count_tables", "inventory", "aggregate", [], search_queries, False, question_language, [], "rule-first inventory count routing")
+
+        tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", sample)
+        if len(tokens) == 1 and len(sample.split()) == 1 and 2 <= len(tokens[0]) <= 20:
+            return SearchPlan("find_columns", False, tokens[0], "name_lookup", "entity_lookup", "column", [tokens[0]], search_queries, False, question_language, [], "rule-first single-token field lookup")
+
+        if any(term in lower for term in joinable_terms) and (explicit_paths or explicit_mentions):
+            hints = explicit_paths or [str(item.get("requested") or "") for item in explicit_mentions if str(item.get("requested") or "")]
+            return SearchPlan("join_candidates", False, normalized, "joinable_tables", "join_discovery", "table", hints, search_queries, False, question_language, [], "rule-first single-table join routing")
+
+        if " join" in lower and any(term in lower for term in join_terms):
+            hints = [item for item in re.findall(r"\b([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", sample) if item]
+            if len(hints) >= 2:
+                return SearchPlan("join_candidates", False, normalized, "join_candidates", "join_discovery", "join_path", hints[:2], search_queries, False, question_language, [], "rule-first explicit join-candidate routing")
+
+        if explicit_paths and any(term in lower for term in explain_terms) and not any(word in lower for word in column_words):
+            return SearchPlan("explain_table", False, normalized, "table_explain", "table_understanding", "table", explicit_paths[:1], search_queries, False, question_language, [], "rule-first explicit table explain routing")
+
+        asks_column = any(word in lower for word in column_words)
+        asks_listing = any(word in lower for word in listing_words)
+        asks_comment_coverage = any(word in lower for word in ("comment", "comments", "commentler", "yorum", "yorumlar", "coverage", "girili"))
+
+        if asks_column and asks_listing and explicit_mentions:
+            return SearchPlan("find_columns", False, normalized, "semantic_concept", "semantic_discovery", "column", [], search_queries, False, question_language, [], "rule-first column discovery routing")
+
+        if asks_comment_coverage and explicit_mentions:
+            hints = explicit_paths or [str(item.get("requested") or "") for item in explicit_mentions if str(item.get("requested") or "")]
+            return SearchPlan("find_columns", False, normalized, "semantic_concept", "semantic_discovery", "column", hints, search_queries, False, question_language, [], "rule-first table-scoped metadata verification routing")
+        return None
+
     def _interpret_question(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
         llm = self._llm_provider()
         memory = self._memory_summary()
@@ -394,6 +469,23 @@ class SearchAgent:
                 reason=plan.reason,
             )
         return plan
+
+    def _should_remember_table_scope(self, plan: SearchPlan, retrieval_details: dict[str, Any], question: str) -> bool:
+        if retrieval_details.get("resolved_tables"):
+            return True
+        if plan.search_mode in {"table_explain", "join_candidates", "joinable_tables"}:
+            return True
+        if self._explicit_table_paths_for_question(question):
+            return True
+        row_tables = {
+            f"{row.get('schema_name')}.{row.get('table_name')}"
+            for row in retrieval_details.get("visible_rows", [])
+            if row.get("schema_name") and row.get("table_name")
+        }
+        return len(row_tables) == 1 and bool(row_tables)
+
+    def _should_use_llm_probe_planner(self) -> bool:
+        return False
 
     def _context_detail(self) -> str:
         value = str(self.settings.get("context_detail", "standard") or "standard").strip().lower()
@@ -951,76 +1043,38 @@ class SearchAgent:
         if not self._should_plan_live_probe(question, plan, table_paths):
             return LiveProbePlan(False, "", []), {}
         default_ops = self._default_live_probe_operations(question, explicit_table_paths or table_paths)
-        llm = self._llm_provider()
-        system = (
-            "You are the evidence planner inside AMX /search.\n"
-            "Decide whether the current retrieved metadata is enough to answer, or whether AMX should run a safe live metadata probe.\n"
-            "Return JSON only.\n"
-            "Allowed operations are: table_metadata_snapshot, column_comments, table_exists, schema_tables.\n"
-            "Use table_metadata_snapshot for table-scoped factual questions about columns, types, nullability, comments, or structure.\n"
-            "Use column_comments when the user asks whether table columns have comments/descriptions or asks comment coverage.\n"
-            "Only choose operations for the candidate table paths provided. Do not invent schemas or tables.\n"
-            "Set needs_live_probe=false only when retrieved rows already directly prove the answer."
+        already_verified_comments = any(
+            row.get("row_type") == "live_probe" and row.get("probe_operation") == "column_comments"
+            for row in rows
         )
-        user = json.dumps(
-            {
-                "question": question,
-                "plan": asdict(plan),
-                "policy": asdict(policy),
-                "candidate_table_paths": table_paths,
-                "default_operations": default_ops,
-                "retrieval_details": retrieval_details,
-                "retrieved_rows": self._rows_for_prompt(rows, policy),
-            },
-            ensure_ascii=True,
+        already_verified_snapshot = any(
+            row.get("row_type") == "live_probe" and row.get("probe_operation") == "table_metadata_snapshot"
+            for row in rows
         )
-        try:
-            result = llm.chat(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=0.0,
-                max_tokens=700,
-                use_logprobs=False,
-            )
-            payload = _json_block(result.content)
-            usage = result.usage or {}
-        except Exception:
-            return (
-                LiveProbePlan(
-                    needs_live_probe=bool(default_ops),
-                    reason="Default live probe selected for a table-scoped factual metadata question.",
-                    operations=default_ops,
-                ),
-                {},
-            )
-        ops: list[dict[str, str]] = []
-        allowed = {"table_metadata_snapshot", "column_comments", "table_exists", "schema_tables"}
-        for item in payload.get("operations") or []:
-            if not isinstance(item, dict):
-                continue
-            operation = str(item.get("operation") or "").strip()
-            table_path = str(item.get("table_path") or "").strip()
-            if operation not in allowed:
-                continue
-            if table_path and table_path not in table_paths:
-                continue
-            ops.append(
-                {
-                    "operation": operation,
-                    "table_path": table_path,
-                    "rationale": str(item.get("rationale") or "").strip(),
-                }
-            )
-        merged_ops = self._merge_probe_operations(default_ops, ops)
+        ops = default_ops
+        if already_verified_comments or already_verified_snapshot:
+            ops = []
+        elif plan.search_mode == "table_explain" and rows:
+            table_row = next((row for row in rows if row.get("row_type") == "table"), None)
+            if table_row and table_row.get("effective_description"):
+                ops = self._merge_probe_operations(
+                    [
+                        {
+                            "operation": "table_metadata_snapshot",
+                            "table_path": path,
+                            "rationale": "Verify structural table facts from live metadata before answering.",
+                        }
+                        for path in (resolved_targets or explicit_table_paths or table_paths)[:1]
+                    ]
+                )
+        merged_ops = self._merge_probe_operations(ops)
         return (
             LiveProbePlan(
                 needs_live_probe=bool(merged_ops),
-                reason=str(payload.get("reason") or "").strip(),
+                reason="Deterministic live probe selected for a table-scoped factual metadata question." if merged_ops else "",
                 operations=merged_ops,
             ),
-            usage,
+            {},
         )
 
     def _execute_live_probe(self, probe_plan: LiveProbePlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1407,6 +1461,142 @@ class SearchAgent:
             payload.append(item)
         return payload
 
+    def _normalize_rows(self, plan: SearchPlan, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(rows):
+            row = dict(raw)
+            reason = "semantic_match"
+            tier = "strong"
+            role = "supporting"
+            if bool(row.get("verified_live")) or row.get("row_type") == "live_probe":
+                tier = "verified"
+                reason = "live_verified"
+                role = "primary" if idx == 0 or row.get("row_type") == "live_probe" else "supporting"
+            elif str(row.get("relationship_type") or "") in {"foreign_key", "incoming_foreign_key"}:
+                tier = "verified"
+                reason = "verified_relationship"
+                role = "primary"
+            elif row.get("vector_only"):
+                tier = "weak"
+                reason = "vector_only_match"
+                role = "diagnostic"
+            elif plan.search_mode == "name_lookup":
+                tier = "strong" if float(row.get("rank_score") or row.get("match_score") or 0.0) >= 8.0 else "weak"
+                reason = "lexical_name_match"
+                role = "primary" if idx == 0 else "supporting"
+            elif float(row.get("rank_score") or row.get("match_score") or row.get("score") or 0.0) < 4.5:
+                tier = "weak"
+                reason = "low_score_match"
+                role = "diagnostic"
+            elif idx == 0:
+                role = "primary"
+                reason = "top_ranked_match"
+            row["evidence_tier"] = tier
+            row["answer_role"] = role
+            row["match_reason"] = reason
+            normalized.append(row)
+        return normalized
+
+    def _suppress_rows(self, plan: SearchPlan, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+        visible: list[dict[str, Any]] = []
+        suppressed = 0
+        for idx, row in enumerate(rows):
+            if plan.question_class == "join_discovery":
+                visible.append(row)
+                continue
+            if row.get("answer_role") == "diagnostic":
+                if row.get("vector_only") and float(row.get("rank_score") or row.get("match_score") or 0.0) < 3.2:
+                    suppressed += 1
+                    continue
+                if idx >= 3:
+                    suppressed += 1
+                    continue
+            visible.append(row)
+        return visible, suppressed
+
+    def _deterministic_ranked_answer(
+        self,
+        question: str,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        retrieval_details: dict[str, Any],
+        actions: list[SearchActionSuggestion],
+    ) -> str | None:
+        if not rows:
+            return None
+        lang = (plan.answer_language or _question_language_hint(question)).lower()
+        primary = rows[0]
+        if plan.question_class == "join_discovery":
+            if plan.search_mode == "joinable_tables":
+                target = f"{primary.get('target_schema_name')}.{primary.get('target_table_name')}".strip(".")
+                left = str(primary.get("left_column") or "").strip()
+                right = str(primary.get("right_column") or "").strip()
+                if lang == "turkish":
+                    answer = f"En guclu join adayi `{target}`."
+                    if left or right:
+                        answer += f" Ana kolonlar: `{left}` -> `{right}`."
+                    return answer
+                answer = f"The strongest join target is `{target}`."
+                if left or right:
+                    answer += f" Primary columns: `{left}` -> `{right}`."
+                return answer
+            left = str(primary.get("left_column") or "").strip()
+            right = str(primary.get("right_column") or "").strip()
+            band = str(primary.get("confidence_band") or "").strip()
+            if left or right:
+                if lang == "turkish":
+                    return f"En guclu join kolonu eslesmesi `{left}` -> `{right}`. Guven seviyesi: `{band or 'unknown'}`."
+                return f"The strongest join-column match is `{left}` -> `{right}`. Confidence: `{band or 'unknown'}`."
+        if plan.search_mode == "table_explain" and retrieval_details.get("resolved_tables"):
+            table_path = retrieval_details["resolved_tables"][0]
+            column_count = primary.get("column_count") or retrieval_details.get("table_context", {}).get("column_count")
+            if lang == "turkish":
+                answer = f"`{table_path}` tablosu icin en guclu aciklama bulundu."
+                if column_count:
+                    answer += f" Katalogda **{int(column_count)}** kolon gorunuyor."
+                return answer
+            answer = f"The strongest match is the table `{table_path}`."
+            if column_count:
+                answer += f" The catalog shows **{int(column_count)}** columns."
+            return answer
+        if plan.target_entity == "table":
+            table_path = ".".join(part for part in (str(primary.get("schema_name") or ""), str(primary.get("table_name") or "")) if part)
+            if not table_path:
+                return None
+            if lang == "turkish":
+                answer = f"En guclu tablo eslesmesi `{table_path}`."
+                if primary.get("effective_description"):
+                    answer += f" Kisa anlam: {str(primary.get('effective_description')).strip()}."
+                return answer
+            answer = f"The strongest table match is `{table_path}`."
+            if primary.get("effective_description"):
+                answer += f" Summary: {str(primary.get('effective_description')).strip()}."
+            return answer
+        column_path = ".".join(
+            part
+            for part in (
+                str(primary.get("schema_name") or ""),
+                str(primary.get("table_name") or ""),
+                str(primary.get("column_name") or ""),
+            )
+            if part
+        )
+        if not column_path:
+            return None
+        if lang == "turkish":
+            answer = f"En guclu kolon eslesmesi `{column_path}`."
+            if primary.get("effective_description"):
+                answer += f" Kisa anlam: {str(primary.get('effective_description')).strip()}."
+            elif actions:
+                answer += f" Sonraki adim: {actions[0].reason}"
+            return answer
+        answer = f"The strongest column match is `{column_path}`."
+        if primary.get("effective_description"):
+            answer += f" Summary: {str(primary.get('effective_description')).strip()}."
+        elif actions:
+            answer += f" Next step: {actions[0].reason}"
+        return answer
+
     def _synthesize_answer(
         self,
         question: str,
@@ -1424,6 +1614,9 @@ class SearchAgent:
             "Answer only from the retrieved metadata evidence you are given.\n"
             "If evidence is weak or empty, say so explicitly and suggest a narrower follow-up.\n"
             "Do not invent table names, joins, counts, or column meanings not present in the evidence.\n"
+            "Keep the answer short and direct.\n"
+            "Use at most three short sentences.\n"
+            "First sentence: direct answer. Second sentence: scope or uncertainty when needed. Third sentence: one short next action only if needed.\n"
             "Use every row in the provided rows array; if there are many rows, group them but do not ignore tail results.\n"
             "When join evidence includes confidence bands, explain them.\n"
             "When scope was assumed, state that assumption.\n"
@@ -1705,6 +1898,8 @@ class SearchAgent:
             if any(isinstance(target, dict) and target.get("is_exact") for target in targets):
                 return "medium"
         top = rows[0]
+        if top.get("evidence_tier") == "weak":
+            return "low"
         if plan.question_class == "join_discovery":
             band = str(top.get("confidence_band") or "")
             if band == "verified":
@@ -1712,10 +1907,12 @@ class SearchAgent:
             if band == "high_likelihood":
                 return "medium"
             return "low"
+        if retrieval_details.get("resolved_tables"):
+            return "medium"
         score = float(top.get("rank_score") or top.get("score") or 0.0)
         if plan.search_mode == "name_lookup":
             return "high" if score >= 8.0 else "medium"
-        if score >= 6.0:
+        if score >= 7.5:
             return "high"
         if score >= 4.0:
             return "medium"
@@ -1776,12 +1973,15 @@ class SearchAgent:
             )
 
         stage_metrics: list[dict[str, Any]] = []
+        interpretation_usage: dict[str, Any] = {}
         try:
             t0 = time.monotonic()
             with step_spinner("Search Agent: interpreting question"):
-                plan, interpretation_usage = self._interpret_question(clean_question)
-                plan = self._align_answer_language(plan, question_language)
-                plan = self._align_plan_shape(plan, clean_question)
+                rule_first_plan = self._rule_first_plan(clean_question, question_language)
+                llm_plan: SearchPlan | None = None
+                if rule_first_plan is None:
+                    llm_plan, interpretation_usage = self._interpret_question(clean_question)
+                plan = self._plan_with_overrides(question=clean_question, base=llm_plan or rule_first_plan, question_language=question_language)
             stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
             return SearchAnswer(
@@ -1850,6 +2050,7 @@ class SearchAgent:
         with step_spinner("Search Agent: retrieving grounded evidence"):
             rows, retrieval_details = self._retrieve(clean_question, plan, policy)
         stage_metrics.append({"stage": "retrieval", "duration_sec": round(time.monotonic() - t0, 4)})
+        rows = self._normalize_rows(plan, rows)
 
         live_probe_usage: dict[str, Any] = {}
         live_probe: dict[str, Any] = {"executed": False, "operations": []}
@@ -1858,6 +2059,7 @@ class SearchAgent:
             with step_spinner("Search Agent: checking evidence gaps"):
                 probe_plan, live_probe_usage = self._plan_live_probe(clean_question, plan, policy, rows, retrieval_details)
                 live_rows, live_probe = self._execute_live_probe(probe_plan)
+                retrieval_details["live_probe"] = live_probe
                 if live_rows:
                     rows = live_rows + rows
                     retrieval_details.setdefault("evidence_sources", [])
@@ -1865,7 +2067,7 @@ class SearchAgent:
                         retrieval_details["evidence_sources"].append("live_db")
                     if "agent_planned_live_probe" not in retrieval_details["evidence_sources"]:
                         retrieval_details["evidence_sources"].append("agent_planned_live_probe")
-                    retrieval_details["live_probe"] = live_probe
+                    rows = self._normalize_rows(plan, rows)
             stage_metrics.append({"stage": "live_probe", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
             live_probe = {"executed": False, "error": str(exc), "operations": []}
@@ -1877,8 +2079,12 @@ class SearchAgent:
         with step_spinner("Search Agent: verifying high-risk claims"):
             rows, verification = self._verify_rows(plan, policy, rows, retrieval_details)
         stage_metrics.append({"stage": "verification", "duration_sec": round(time.monotonic() - t0, 4)})
+        rows = self._normalize_rows(plan, rows)
+        rows, suppressed_rows_count = self._suppress_rows(plan, rows)
+        retrieval_details["visible_rows"] = rows
 
         answer_usage: dict[str, Any] = {}
+        answer_strategy = "deterministic"
         answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
         if answer_text is None:
             answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details) if policy.deterministic_answer else None
@@ -1888,11 +2094,14 @@ class SearchAgent:
             answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
         confidence = self._confidence(plan, rows, verification, retrieval_details)
         actions = self._action_suggestions(plan, rows, ready, retrieval_details, confidence)
+        executed_actions = list(live_probe.get("operations") or [])
+        answer_text = answer_text or self._deterministic_ranked_answer(clean_question, plan, rows, retrieval_details, actions)
         if answer_text is None:
             try:
                 t0 = time.monotonic()
                 with step_spinner("Search Agent: synthesizing answer"):
                     answer_text, answer_usage = self._synthesize_answer(clean_question, plan, policy, rows, retrieval_details, verification, actions)
+                    answer_strategy = "llm_synthesis"
                 stage_metrics.append({"stage": "synthesis", "duration_sec": round(time.monotonic() - t0, 4)})
             except Exception as exc:
                 return SearchAnswer(
@@ -1915,7 +2124,7 @@ class SearchAgent:
 
         provenance = self._provenance(plan, rows, verification)
         tables = retrieval_details.get("resolved_tables") or []
-        if not tables:
+        if not tables and self._should_remember_table_scope(plan, retrieval_details, clean_question):
             seen_tables: list[str] = []
             for row in rows:
                 schema_name = str(row.get("schema_name") or "")
@@ -1931,7 +2140,7 @@ class SearchAgent:
                 "question": clean_question,
                 "intent": plan.intent,
                 "topic": plan.normalized_question or clean_question,
-                "tables": tables,
+                "tables": tables if self._should_remember_table_scope(plan, retrieval_details, clean_question) else [],
                 "columns": [col for col in columns if col],
             }
         )
@@ -1951,6 +2160,10 @@ class SearchAgent:
                 "display_rows": bool(retrieval_details.get("display_rows", True)),
                 "scope": self._scope_from_tables(tables),
                 "actions": [asdict(item) for item in actions],
+                "suggested_actions": [asdict(item) for item in actions],
+                "executed_actions": executed_actions,
+                "suppressed_rows_count": suppressed_rows_count,
+                "answer_strategy": answer_strategy,
                 "ambiguity_flags": list(plan.ambiguity_flags) + list(retrieval_details.get("ambiguity_flags") or []),
                 "evidence_sources": retrieval_details.get("evidence_sources", []),
                 "stage_metrics": stage_metrics,

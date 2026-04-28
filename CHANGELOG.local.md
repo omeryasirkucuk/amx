@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.124] — 2026-04-29
+### `/search` Hardening Refactor
+- **amx/search/agent.py**: Added rule-first routing, deterministic probe planning, row normalization/suppression, deterministic short-form answers, executed/suggested action separation, answer-strategy reporting, and tighter session-memory retention.
+- **amx/search/catalog.py**: Added normalized retrieval metadata defaults (`evidence_tier`, `answer_role`, `match_reason`) on ranked rows so the agent can reason over a stable retrieval shape.
+- **tests/test_search_catalog.py**: Updated `/search` regression coverage for deterministic answer paths, follow-up table memory, and executed read-only live-probe tracking.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.124` and documented the `/search` hardening changes.
+
 ## [0.1.123] — 2026-04-29
 ### Databricks Bulk Column Write-Back
 - **amx/db/adapters/base.py / amx/db/adapters/databricks.py / amx/db/connector.py**: Added backend support for multi-column comment DDL and used it to batch Databricks column comment updates per table when possible.

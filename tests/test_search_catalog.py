@@ -483,9 +483,7 @@ class SearchCatalogTests(unittest.TestCase):
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"intent":"find_columns","out_of_domain":false,"normalized_question":"sales order price","search_mode":"semantic_concept","entity_hints":["vbak"],"needs_typo_recovery":false,"reason":"business meaning"}',
-                "The best match is `sap.vbak.netwr`, the net value column on the sales header.",
                 '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what does this table do","search_mode":"table_explain","entity_hints":[],"needs_typo_recovery":false,"reason":"follow-up table explanation"}',
-                "The table `sap.vbak` is the sales document header table.",
             )
             service = SearchService(cfg, self.catalog)
             first = service.ask("Which column stores sales order price?")
@@ -494,6 +492,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(second.intent, "explain_table")
         self.assertTrue(second.rows)
         self.assertEqual(second.rows[0]["table_name"], "vbak")
+        self.assertEqual(second.details["answer_strategy"], "deterministic")
 
     def test_turkish_question_uses_multilingual_search_variants(self) -> None:
         self.catalog.sync_table_profile(
@@ -517,7 +516,6 @@ class SearchCatalogTests(unittest.TestCase):
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"intent":"find_columns","out_of_domain":false,"normalized_question":"date related columns","search_mode":"semantic_concept","entity_hints":[],"search_queries":["Tarihlerle alakali kolonlar hangileri","date related columns","date columns"],"needs_typo_recovery":false,"reason":"multilingual semantic search"}',
-                "Tarih ile ilgili en guclu kolonlar `sap_test.adr6.date_from` ve `sap_test.adr6.valid_to` gorunuyor.",
             )
             service = SearchService(cfg, self.catalog)
             answer = service.ask("Tarihlerle alakali kolonlar hangileri")
@@ -525,7 +523,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["column_name"], "date_from")
         self.assertEqual(answer.confidence, "high")
         self.assertIn("date related columns", answer.details["plan"]["search_queries"])
-        self.assertIn("Write the final answer in turkish.", _FakeLLMProvider.calls[-1][0]["content"])
+        self.assertEqual(answer.details["answer_strategy"], "deterministic")
 
     def test_table_scoped_comment_question_runs_agent_planned_live_probe(self) -> None:
         self.catalog.sync_table_profile(
@@ -566,6 +564,8 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["operation"], "column_comments")
         self.assertIn("Default live probe", answer.details["retrieval"]["live_probe"]["operations"][0]["rationale"])
         self.assertIn("agent-planned live metadata probe", answer.provenance)
+        self.assertTrue(answer.details["executed_actions"])
+        self.assertEqual(answer.details["executed_actions"][0]["operation"], "column_comments")
 
     def test_explicit_table_mention_wins_over_fuzzy_catalog_candidate_for_live_probe(self) -> None:
         self.catalog.sync_table_profile(
@@ -879,7 +879,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["target_table_name"], "kna1")
         self.assertEqual(answer.confidence, "high")
 
-    def test_joinable_table_synthesis_prompt_includes_join_columns(self) -> None:
+    def test_joinable_table_answer_is_deterministic_and_includes_join_columns(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",
             db_backend="postgresql",
@@ -898,14 +898,13 @@ class SearchCatalogTests(unittest.TestCase):
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"intent":"join_candidates","out_of_domain":false,"normalized_question":"which tables can join with sap.vbak","search_mode":"joinable_tables","question_class":"join_discovery","entity_hints":["sap.vbak"],"search_queries":["which tables can join with sap.vbak"],"needs_typo_recovery":false,"answer_language":"english","reason":"single-table join discovery"}',
-                "You can join `sap.vbak` to `sap.kna1` using `kunnr`.",
             )
             service = SearchService(cfg, self.catalog)
             answer = service.ask("sap.vbak tablosunu hangi tablolarla joinleyebilirim, hangi kolonlari kullanirim")
         self.assertTrue(answer.rows)
-        synthesis_user = _FakeLLMProvider.calls[-1][1]["content"]
-        self.assertIn('"left_column": "kunnr"', synthesis_user)
-        self.assertIn('"right_column": "kunnr"', synthesis_user)
+        self.assertEqual(answer.details["answer_strategy"], "deterministic")
+        self.assertIn("`sap.kna1`", answer.summary)
+        self.assertIn("`kunnr`", answer.summary)
 
     def test_semantic_join_inference_surfaces_non_fk_candidate(self) -> None:
         self.catalog.sync_table_profile(

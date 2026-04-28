@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.124] — 2026-04-29
+### Changed
+- **`/search` rule-first routing**: High-confidence intents such as exact field lookups, explicit table explanations, join questions, and inventory questions now route through deterministic guardrails before the interpreter LLM is consulted.
+- **Shorter `/search` answers**: Search responses now prefer deterministic short-form summaries and only fall back to LLM synthesis when the grounded evidence still needs comparative or grouped narration.
+- **Narrower search memory scope**: Follow-up memory now preserves table scope more carefully so broad semantic result sets are less likely to contaminate later table-scoped questions.
+
+### Fixed
+- **Deterministic live probe planning**: Table-scoped factual metadata checks now select safe read-only probes without a second planner LLM call, reducing irrelevant planner output while still executing live verification automatically.
+- **Weak result suppression**: Low-confidence vector-only tail matches are now deprioritized or suppressed before `/search` produces the user-facing answer, reducing noisy or irrelevant responses.
+- **Search diagnostics**: `/search` answers now persist the executed read-only actions, suppressed-row count, and answer strategy in addition to the existing retrieval and verification payloads.
+
 ## [0.1.123] — 2026-04-29
 ### Changed
 - **Single-line write-back progress**: Apply-mode live progress now uses one rolling write-back activity line instead of rendering one completed line per column comment.
