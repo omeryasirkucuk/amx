@@ -2,6 +2,11 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.119] — 2026-04-28
+### Threaded Database Connection Verification
+- **amx/db/connector.py**: Moved `conn.execute(text("SELECT 1"))` into a daemon thread with `Thread.join(timeout)` when running `test_connection()`. Solved a critical hang where Databricks `pool_pre_ping=True` and cursor fetch calls block indefinitely while the SQL warehouse is starting/suspended.
+- **amx/__init__.py**, **pyproject.toml**: Bumped version to `0.1.119`.
+
 ## [0.1.118] — 2026-04-28
 ### Databricks TLS Trust Controls
 - **amx/config.py / amx/cli_support/commands/db.py**: Added Databricks profile fields and setup prompts for a trusted CA bundle path and optional insecure TLS verification bypass.

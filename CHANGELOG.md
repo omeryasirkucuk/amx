@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.119] — 2026-04-28
+### Fixed
+- **Databricks connection hang on startup**: Fixed an issue where testing the database connection would hang indefinitely if the Databricks SQL Warehouse was in a "STARTING" or "SUSPENDED" state. The test now runs in a non-blocking daemon thread and gracefully times out.
+
 ## [0.1.118] — 2026-04-28
 ### Added
 - **Databricks TLS profile controls**: Databricks DB profiles now support an optional trusted CA bundle path and an insecure TLS-verification bypass for environments with corporate proxies or private certificate authorities.

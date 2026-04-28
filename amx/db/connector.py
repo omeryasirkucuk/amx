@@ -112,14 +112,45 @@ class DatabaseConnector:
         return getattr(self._adapter, "capabilities", BackendCapabilities())
 
     def test_connection(self) -> bool:
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(text(self._adapter.test_connection_sql()))
-            return True
-        except Exception as exc:
-            actionable = self._adapter.actionable_profile_error(exc)
-            log.error("Connection failed: %s", actionable or exc)
+        import threading
+
+        result_box: list[Any] = []
+
+        def _test():
+            try:
+                with self.engine.connect() as conn:
+                    conn.execute(text(self._adapter.test_connection_sql()))
+                result_box.append(True)
+            except Exception as e:
+                result_box.append(e)
+
+        timeout = float(getattr(self._adapter, "connect_timeout_seconds", 30))
+
+        # We use a daemon thread to prevent indefinite hanging (e.g. Databricks 
+        # warehouse STARTING state, or network proxy blackholes) from blocking CLI exit.
+        t = threading.Thread(target=_test, daemon=True)
+        t.start()
+        t.join(timeout)
+
+        if t.is_alive():
+            log.error(
+                "Connection timeout after %s seconds. "
+                "If this is a serverless or suspended warehouse, it may still be waking up. "
+                "Otherwise, check your host/network connectivity.",
+                timeout,
+            )
             return False
+
+        if not result_box:
+            return False
+
+        res = result_box[0]
+        if isinstance(res, Exception):
+            actionable = self._adapter.actionable_profile_error(res)
+            log.error("Connection failed: %s", actionable or res)
+            return False
+
+        return True
 
     # ── Schema / asset listing ────────────────────────────────────────────
 
