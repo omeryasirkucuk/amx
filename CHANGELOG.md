@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.128] — 2026-04-29
+### Changed
+- **LLM-native multilingual interpretation**: `/search` now uses an LLM-first interpretation contract with LLM-derived `answer_language`, and no longer relies on a rule-first intent router in the normal path.
+- **Balanced two-pass routing**: Added a classifier + selective reviewer interpretation flow, plus decision metadata (`decision_confidence`, `needs_clarification`, `clarification_question`) to improve routing quality before retrieval.
+- **Clarification-first safety**: When interpretation confidence is low (or clarification is explicitly required), `/search` now asks a scope clarification question instead of silently misrouting.
+- **Configurable interpretation behavior**: Added search settings for `interpretation_mode` and `clarification_on_low_confidence` to tune routing strictness without code changes.
+
 ## [0.1.127] — 2026-04-29
 ### Changed
 - **LLM-first `/search` interpretation**: `/search` question routing now always asks the interpreter LLM first instead of short-circuiting through rule-first intent detection.

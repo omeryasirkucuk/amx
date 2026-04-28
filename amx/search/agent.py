@@ -31,6 +31,10 @@ class SearchPlan:
     answer_language: str
     ambiguity_flags: list[str]
     reason: str
+    decision_confidence: str = "high"
+    needs_clarification: bool = False
+    clarification_question: str = ""
+    review_notes: str = ""
 
 
 @dataclass
@@ -71,20 +75,19 @@ class ResolvedTarget:
 
 
 def _question_language_hint(text: str) -> str:
-    sample = (text or "").strip().lower()
+    sample = (text or "").strip()
     if not sample:
         return "english"
-    turkish_markers = {
-        "hangi", "hangileri", "kaç", "kac", "tablo", "tablol", "şema", "sema", 
-        "kolon", "join", "nedir", "nelerdir", "var", "yok", "içinde", "icinde",
-        "bütün", "butun", "tüm", "tum", "liste", "döküm", "detay", "kayıt", 
-        "sipariş", "müşteri", "fatura", "ürün", "satış", "bulabilirim", "nasıl"
-    }
-    if any(ch in sample for ch in "çğıöşü"):
-        return "turkish"
-    # Word-based checks for fuzzy matches
-    words = sample.replace("?", " ").replace(".", " ").split()
-    if any(any(marker in word for marker in turkish_markers) for word in words):
+    lower = sample.lower()
+    if re.search(r"[\u0600-\u06FF]", sample):
+        return "arabic"
+    if re.search(r"[\u3040-\u30FF\u4E00-\u9FFF]", sample):
+        return "japanese"
+    if re.search(r"[\uAC00-\uD7AF]", sample):
+        return "korean"
+    if re.search(r"[\u0400-\u04FF]", sample):
+        return "russian"
+    if any(ch in lower for ch in "çğıöşü"):
         return "turkish"
     return "english"
 
@@ -195,8 +198,7 @@ class SearchAgent:
         return total > 0, status
 
     def _plan_with_overrides(self, *, question: str, base: SearchPlan | None, question_language: str) -> SearchPlan:
-        deterministic_fallback = self._rule_first_plan(question, question_language)
-        chosen = base or deterministic_fallback or SearchPlan(
+        chosen = base or SearchPlan(
             intent="find_columns",
             out_of_domain=False,
             normalized_question=question,
@@ -212,70 +214,36 @@ class SearchAgent:
         )
         chosen = self._align_answer_language(chosen, question_language)
         return self._align_plan_shape(chosen, question)
+    def _plan_from_payload(self, payload: dict[str, Any], question: str) -> SearchPlan:
+        routing_keys = {"intent", "search_mode", "question_class", "target_entity"}
+        if not any(key in payload for key in routing_keys):
+            raise ValueError("payload does not include routing fields")
+        search_mode = str(payload.get("search_mode") or "semantic_concept").strip() or "semantic_concept"
+        question_class = str(payload.get("question_class") or "").strip() or self._class_from_mode(search_mode)
+        confidence = str(payload.get("decision_confidence") or "high").strip().lower() or "high"
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "medium"
+        return SearchPlan(
+            intent=str(payload.get("intent") or "find_columns"),
+            out_of_domain=bool(payload.get("out_of_domain")),
+            normalized_question=str(payload.get("normalized_question") or question).strip() or question,
+            search_mode=search_mode,
+            question_class=question_class,
+            target_entity=str(payload.get("target_entity") or "unknown").strip() or "unknown",
+            entity_hints=[str(item).strip() for item in (payload.get("entity_hints") or []) if str(item).strip()],
+            search_queries=[str(item).strip() for item in (payload.get("search_queries") or []) if str(item).strip()]
+            or [str(payload.get("normalized_question") or question).strip() or question],
+            needs_typo_recovery=bool(payload.get("needs_typo_recovery")),
+            answer_language=str(payload.get("answer_language") or "").strip(),
+            ambiguity_flags=[str(item).strip() for item in (payload.get("ambiguity_flags") or []) if str(item).strip()],
+            reason=str(payload.get("reason") or "").strip(),
+            decision_confidence=confidence,
+            needs_clarification=bool(payload.get("needs_clarification")),
+            clarification_question=str(payload.get("clarification_question") or "").strip(),
+            review_notes=str(payload.get("review_notes") or "").strip(),
+        )
 
-    def _rule_first_plan(self, question: str, question_language: str) -> SearchPlan | None:
-        sample = (question or "").strip()
-        lower = sample.lower()
-        if not sample:
-            return None
-
-        inventory_database_terms = ("which databases", "hangi database", "hangi databaseler", "known databases", "tüm databaseler", "bütün databaseler")
-        inventory_schema_terms = ("which schemas", "hangi schema", "hangi sema", "hangi şema", "tüm şemalar", "bütün şemalar")
-        count_terms = ("kaç tablo", "kac tablo", "how many tables", "table count", "kaç tane tablo")
-        coverage_terms = ("eksik", "missing comment", "yorumsuz", "yorum yok", "açıklaması olmayan", "aciklamasi olmayan", "tanımsız")
-        joinable_terms = ("hangi tablolar ile join", "hangi tablolarla join", "which tables can join", "joinleyebilirim", "neyle joinlenir", "join yapılabilir")
-        join_terms = ("hangi kolon", "which columns", "joinlenir", "join edilir", "join columns", "üzerinden join", "nasıl join", "nasil bağlanır", "nasil baglanir")
-        explain_terms = ("nedir", "what is", "what does", "ne ise yarar", "what does this table do", "tablosu", "içeriği", "icerigi")
-        column_words = ("kolon", "kolonlar", "column", "columns", "field", "fields", "alan", "alanlar")
-        listing_words = ("hangi", "hangileri", "tüm", "tum", "bütün", "butun", "listesi", "nelerdir", "list", "show", "getir", "listele", "bulabilirim", "bulunur")
-        concept_terms = ("içinde", "icinde", "related", "alak", "contain", "detay", "detail", "olan", "with", "kayıtları", "sipariş", "müşteri", "fatura", "satış", "ürün")
-
-        explicit_paths = self._explicit_table_paths_for_question(sample)
-        explicit_mentions = self._explicit_table_mentions_for_question(sample)
-        normalized = sample
-        search_queries = [sample]
-
-        if any(term in lower for term in inventory_database_terms):
-            return SearchPlan("list_databases", False, normalized, "list_databases", "inventory", "database", [], search_queries, False, question_language, [], "rule-first inventory database routing")
-        if any(term in lower for term in inventory_schema_terms):
-            return SearchPlan("list_schemas", False, normalized, "list_schemas", "inventory", "schema", [], search_queries, False, question_language, [], "rule-first inventory schema routing")
-        if any(term in lower for term in count_terms):
-            return SearchPlan("count_tables", False, normalized, "count_tables", "inventory", "aggregate", [], search_queries, False, question_language, [], "rule-first inventory count routing")
-
-        has_coverage_word = any(term in lower for term in coverage_terms)
-        has_comment_word = "comment" in lower or "yorum" in lower or "açıklama" in lower or "aciklama" in lower
-        if has_coverage_word and has_comment_word:
-            return SearchPlan("check_coverage", False, normalized, "check_coverage", "inventory", "database", [], search_queries, False, question_language, [], "rule-first metadata coverage check routing")
-
-        tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", sample)
-        if len(tokens) == 1 and len(sample.split()) == 1 and 2 <= len(tokens[0]) <= 20:
-            return SearchPlan("find_columns", False, tokens[0], "name_lookup", "entity_lookup", "column", [tokens[0]], search_queries, False, question_language, [], "rule-first single-token field lookup")
-
-        if any(term in lower for term in joinable_terms) and (explicit_paths or explicit_mentions):
-            hints = explicit_paths or [str(item.get("requested") or "") for item in explicit_mentions if str(item.get("requested") or "")]
-            return SearchPlan("join_candidates", False, normalized, "joinable_tables", "join_discovery", "table", hints, search_queries, False, question_language, [], "rule-first single-table join routing")
-
-        if " join" in lower and any(term in lower for term in join_terms):
-            hints = [item for item in re.findall(r"\b([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", sample) if item]
-            if len(hints) >= 2:
-                return SearchPlan("join_candidates", False, normalized, "join_candidates", "join_discovery", "join_path", hints[:2], search_queries, False, question_language, [], "rule-first explicit join-candidate routing")
-
-        if explicit_paths and any(term in lower for term in explain_terms) and not any(word in lower for word in column_words):
-            return SearchPlan("explain_table", False, normalized, "table_explain", "table_understanding", "table", explicit_paths[:1], search_queries, False, question_language, [], "rule-first explicit table explain routing")
-
-        asks_column = any(word in lower for word in column_words)
-        asks_listing = any(word in lower for word in listing_words)
-        asks_comment_coverage = any(word in lower for word in ("comment", "comments", "commentler", "yorum", "yorumlar", "coverage", "girili"))
-
-        if asks_column and asks_listing and explicit_mentions:
-            return SearchPlan("find_columns", False, normalized, "semantic_concept", "semantic_discovery", "column", [], search_queries, False, question_language, [], "rule-first column discovery routing")
-
-        if asks_comment_coverage and explicit_mentions:
-            hints = explicit_paths or [str(item.get("requested") or "") for item in explicit_mentions if str(item.get("requested") or "")]
-            return SearchPlan("find_columns", False, normalized, "semantic_concept", "semantic_discovery", "column", hints, search_queries, False, question_language, [], "rule-first table-scoped metadata verification routing")
-        return None
-
-    def _interpret_question(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
+    def _interpret_question_pass1(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
         llm = self._llm_provider()
         memory = self._memory_summary()
         metadata_language = self.cfg.llm.language or "english"
@@ -292,6 +260,8 @@ class SearchAgent:
             "count_tables, compare_entities, unsupported.\n"
             "Core rules:\n"
             "- Set out_of_domain=true STRICTLY ONLY for greetings (e.g. hello, hi), small talk, or requests entirely unrelated to any kind of database or data context (e.g. write me Python code, tell me a joke).\n"
+            "- Infer answer_language from the user question itself; do not rely on metadata_generation_language.\n"
+            "- Think through alternatives before deciding, then output only final JSON.\n"
             "- Prefer exact metadata intent over broad semantic search when the user names a field, table, schema, or join target.\n"
             "- Preserve entity_hints exactly as the user wrote them, even when they look misspelled. Include table or column names here.\n"
             "- Always use session_memory to resolve context! If the user asks a follow-up (e.g. 'what about its columns?', 'and the other table?'), map it to the active topic.\n"
@@ -309,7 +279,10 @@ class SearchAgent:
             "Quality rules:\n"
             "- NEVER use unsupported unless absolutely impossible to map. Default to search_mode=semantic_concept for ambiguous data requests.\n"
             "- Use ambiguity_flags for real risks such as missing_scope, ambiguous_table_name, cross_schema_risk, followup_scope_guess.\n"
-            "- Set answer_language to the exact language the user wrote the question in."
+            "- Set answer_language to the exact language the user wrote the question in.\n"
+            "- Output decision_confidence (high|medium|low).\n"
+            "- Set needs_clarification=true only when proceeding without clarification would likely misroute retrieval.\n"
+            "- If needs_clarification=true, provide one short clarification_question."
         )
         user = json.dumps(
             {
@@ -332,34 +305,58 @@ class SearchAgent:
             use_logprobs=False,
         )
         payload = _json_block(result.content)
-        search_mode = str(payload.get("search_mode") or "semantic_concept")
-        question_class = str(payload.get("question_class") or "").strip() or self._class_from_mode(search_mode)
-        return (
-            SearchPlan(
-                intent=str(payload.get("intent") or "find_columns"),
-                out_of_domain=bool(payload.get("out_of_domain")),
-                normalized_question=str(payload.get("normalized_question") or question).strip() or question,
-                search_mode=search_mode,
-                question_class=question_class,
-                target_entity=str(payload.get("target_entity") or "unknown").strip() or "unknown",
-                entity_hints=[str(item).strip() for item in (payload.get("entity_hints") or []) if str(item).strip()],
-                search_queries=[
-                    str(item).strip()
-                    for item in (payload.get("search_queries") or [])
-                    if str(item).strip()
-                ]
-                or [str(payload.get("normalized_question") or question).strip() or question],
-                needs_typo_recovery=bool(payload.get("needs_typo_recovery")),
-                answer_language=str(payload.get("answer_language") or _question_language_hint(question)).strip() or _question_language_hint(question),
-                ambiguity_flags=[
-                    str(item).strip()
-                    for item in (payload.get("ambiguity_flags") or [])
-                    if str(item).strip()
-                ],
-                reason=str(payload.get("reason") or "").strip(),
-            ),
-            result.usage or {},
+        return (self._plan_from_payload(payload, question), result.usage or {})
+
+    def _review_question_plan_pass2(self, question: str, draft: SearchPlan) -> tuple[SearchPlan, dict[str, Any]]:
+        llm = self._llm_provider()
+        system = (
+            "You are a strict reviewer for AMX /search routing decisions.\n"
+            "Return JSON only.\n"
+            "You receive a draft routing plan. Validate it against the question and session context.\n"
+            "Correct the plan when needed, but keep smallest valid route change.\n"
+            "If uncertainty remains, set needs_clarification=true with one short clarification_question.\n"
+            "Always output decision_confidence (high|medium|low).\n"
+            "Infer answer_language from question; keep multilingual behavior without hardcoded language lists.\n"
         )
+        user = json.dumps(
+            {
+                "question": question,
+                "draft_plan": asdict(draft),
+                "session_memory": self._memory_summary(),
+                "current_schema": self.cfg.current_schema or "",
+                "current_table": self.cfg.current_table or "",
+                "active_db_profile": self.db_profile,
+            },
+            ensure_ascii=True,
+        )
+        result = llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.0,
+            max_tokens=700,
+            use_logprobs=False,
+        )
+        payload = _json_block(result.content)
+        payload.setdefault("review_notes", "reviewed_by_pass2")
+        return (self._plan_from_payload(payload, question), result.usage or {})
+
+    def _interpret_question_balanced(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
+        draft, usage_1 = self._interpret_question_pass1(question)
+        should_review = (
+            draft.decision_confidence in {"low", "medium"}
+            or draft.needs_clarification
+            or bool(draft.ambiguity_flags)
+            or draft.search_mode in {"unsupported", "check_coverage"}
+        )
+        if not should_review:
+            return draft, usage_1
+        try:
+            reviewed, usage_2 = self._review_question_plan_pass2(question, draft)
+            return reviewed, _merge_usage(usage_1, usage_2)
+        except Exception:
+            return draft, usage_1
 
     def _class_from_mode(self, search_mode: str) -> str:
         if search_mode in {"list_databases", "list_schemas", "count_tables"}:
@@ -377,10 +374,10 @@ class SearchAgent:
         return "semantic_discovery"
 
     def _align_answer_language(self, plan: SearchPlan, question_language: str) -> SearchPlan:
-        # Trust LLM's detected answer_language if provided and valid, otherwise fallback.
-        if plan.answer_language and plan.answer_language not in ("unknown", ""):
+        # Trust LLM answer_language unless empty/unknown.
+        if plan.answer_language and plan.answer_language.lower() not in {"unknown", ""}:
             return plan
-            
+
         normalized = (question_language or "english").strip().lower() or "english"
         return SearchPlan(
             intent=plan.intent,
@@ -395,6 +392,10 @@ class SearchAgent:
             answer_language=normalized,
             ambiguity_flags=list(plan.ambiguity_flags),
             reason=plan.reason,
+            decision_confidence=plan.decision_confidence,
+            needs_clarification=plan.needs_clarification,
+            clarification_question=plan.clarification_question,
+            review_notes=plan.review_notes,
         )
 
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
@@ -402,21 +403,9 @@ class SearchAgent:
         asks_count = any(token in sample for token in ("kaç", "kac", "how many", "count"))
         asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
         asks_column_word = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
-        asks_listing = any(token in sample for token in ("hangi", "tüm", "tum", "list", "show", "söyle", "soyle", "tell"))
+        asks_listing = any(token in sample for token in ("hangi", "tüm", "tum", "list", "show", "söyle", "soyle", "tell", "getir", "listele", "bul"))
         asks_semantic_table_concept = any(
-            token in sample
-            for token in (
-                "içinde",
-                "icinde",
-                "alak",
-                "related",
-                "detail",
-                "detay",
-                "contain",
-                "containing",
-                "with",
-                "olan",
-            )
+            token in sample for token in ("içinde", "icinde", "alak", "related", "detail", "detay", "contain", "containing", "with", "olan")
         )
         if asks_column_word and asks_listing and plan.search_mode == "table_explain" and not self._explicit_table_paths_for_question(question):
             return SearchPlan(
@@ -432,14 +421,12 @@ class SearchAgent:
                 answer_language=plan.answer_language,
                 ambiguity_flags=list(plan.ambiguity_flags),
                 reason=(plan.reason + "; rerouted from table explanation to column discovery").strip("; "),
+                decision_confidence=plan.decision_confidence,
+                needs_clarification=plan.needs_clarification,
+                clarification_question=plan.clarification_question,
+                review_notes=plan.review_notes,
             )
-        if (
-            plan.search_mode == "count_tables"
-            and asks_table_word
-            and asks_listing
-            and asks_semantic_table_concept
-            and not asks_count
-        ):
+        if plan.search_mode == "count_tables" and asks_table_word and not asks_count and (asks_listing or asks_semantic_table_concept):
             return SearchPlan(
                 intent="find_tables",
                 out_of_domain=plan.out_of_domain,
@@ -453,23 +440,50 @@ class SearchAgent:
                 answer_language=plan.answer_language,
                 ambiguity_flags=list(plan.ambiguity_flags),
                 reason=(plan.reason + "; rerouted to table semantic discovery").strip("; "),
+                decision_confidence=plan.decision_confidence,
+                needs_clarification=plan.needs_clarification,
+                clarification_question=plan.clarification_question,
+                review_notes=plan.review_notes,
             )
-        if plan.question_class == "semantic_discovery" and plan.target_entity in {"", "unknown"} and asks_table_word and asks_listing:
-            return SearchPlan(
-                intent=plan.intent,
-                out_of_domain=plan.out_of_domain,
-                normalized_question=plan.normalized_question,
-                search_mode=plan.search_mode,
-                question_class=plan.question_class,
-                target_entity="table",
-                entity_hints=list(plan.entity_hints),
-                search_queries=list(plan.search_queries),
-                needs_typo_recovery=plan.needs_typo_recovery,
-                answer_language=plan.answer_language,
-                ambiguity_flags=list(plan.ambiguity_flags),
-                reason=plan.reason,
+        normalized_mode = (plan.search_mode or "semantic_concept").strip()
+        normalized_class = (plan.question_class or "").strip() or self._class_from_mode(normalized_mode)
+        normalized_target = (plan.target_entity or "unknown").strip() or "unknown"
+        if normalized_target not in {"column", "table", "schema", "database", "aggregate", "join_path", "unknown"}:
+            normalized_target = "unknown"
+        if not plan.search_queries:
+            search_queries = [plan.normalized_question or question]
+        else:
+            search_queries = list(plan.search_queries)
+        normalized_confidence = (plan.decision_confidence or "medium").strip().lower() or "medium"
+        if normalized_confidence not in {"high", "medium", "low"}:
+            normalized_confidence = "medium"
+        if plan.needs_clarification and not plan.clarification_question:
+            fallback_clarify = (
+                "Could you clarify the exact schema/table scope so I can route this correctly?"
+                if (plan.answer_language or "english").lower() == "english"
+                else "Kapsami netlestirebilir misiniz (schema/tablo) ki dogru sekilde yonlendireyim?"
             )
-        return plan
+            clarification_question = fallback_clarify
+        else:
+            clarification_question = plan.clarification_question
+        return SearchPlan(
+            intent=plan.intent,
+            out_of_domain=plan.out_of_domain,
+            normalized_question=plan.normalized_question or question,
+            search_mode=normalized_mode,
+            question_class=normalized_class,
+            target_entity=normalized_target,
+            entity_hints=list(plan.entity_hints),
+            search_queries=search_queries,
+            needs_typo_recovery=plan.needs_typo_recovery,
+            answer_language=plan.answer_language,
+            ambiguity_flags=list(plan.ambiguity_flags),
+            reason=plan.reason,
+            decision_confidence=normalized_confidence,
+            needs_clarification=plan.needs_clarification,
+            clarification_question=clarification_question,
+            review_notes=plan.review_notes,
+        )
 
     def _should_remember_table_scope(self, plan: SearchPlan, retrieval_details: dict[str, Any], question: str) -> bool:
         if retrieval_details.get("resolved_tables"):
@@ -679,6 +693,21 @@ class SearchAgent:
                 flags=re.IGNORECASE,
             )
         )
+        table_token_stopwords = {
+            "nedir",
+            "ne",
+            "what",
+            "is",
+            "are",
+            "hangi",
+            "hangileri",
+            "var",
+            "mi",
+            "mı",
+            "mu",
+            "mü",
+        }
+        explicit_table_tokens = [token for token in explicit_table_tokens if token.lower() not in table_token_stopwords]
         if self.cfg.current_schema:
             for token in explicit_table_tokens:
                 path = f"{self.cfg.current_schema}.{token}"
@@ -798,9 +827,13 @@ class SearchAgent:
         return targets
 
     def _target_resolution_details(self, targets: list[ResolvedTarget]) -> dict[str, Any]:
+        has_resolved = any(bool(target.resolved_path) for target in targets)
+        has_unresolved_explicit = any(
+            not target.resolved_path and "explicit_table_not_found_live" in target.warnings for target in targets
+        )
         return {
             "targets": [asdict(target) for target in targets],
-            "unresolved_explicit": any(not target.resolved_path and "explicit_table_not_found_live" in target.warnings for target in targets),
+            "unresolved_explicit": has_unresolved_explicit and not has_resolved,
         }
 
     def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
@@ -1987,29 +2020,51 @@ class SearchAgent:
         try:
             t0 = time.monotonic()
             with step_spinner("Search Agent: interpreting question"):
-                llm_plan, interpretation_usage = self._interpret_question(clean_question)
+                interpretation_mode = str(self.settings.get("interpretation_mode", "balanced") or "balanced").strip().lower()
+                if interpretation_mode == "single":
+                    llm_plan, interpretation_usage = self._interpret_question_pass1(clean_question)
+                else:
+                    llm_plan, interpretation_usage = self._interpret_question_balanced(clean_question)
                 plan = self._plan_with_overrides(question=clean_question, base=llm_plan, question_language=question_language)
             stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
-            fallback_plan = self._rule_first_plan(clean_question, question_language)
-            if fallback_plan is None:
-                return SearchAnswer(
-                    intent="unsupported",
-                    question=question,
-                    rows=[],
-                    confidence="low",
-                    summary=f"`/search` could not interpret the question with the active LLM profile: {exc}",
-                    provenance=[],
-                    details={"reason": "llm_failure", "stage": "interpretation"},
+            return SearchAnswer(
+                intent="unsupported",
+                question=question,
+                rows=[],
+                confidence="low",
+                summary=f"`/search` could not interpret the question with the active LLM profile: {exc}",
+                provenance=[],
+                details={"reason": "llm_failure", "stage": "interpretation"},
+            )
+
+        should_clarify = (
+            str(self.settings.get("clarification_on_low_confidence", "true")).lower() == "true"
+            and (plan.needs_clarification or plan.decision_confidence == "low")
+        )
+        if should_clarify:
+            clarification = (
+                plan.clarification_question.strip()
+                or (
+                    "Could you clarify the exact scope (database/schema/table) so I can route this correctly?"
+                    if (plan.answer_language or "english").lower() == "english"
+                    else "Dogru yonlendirme icin tam kapsami (veritabani/sema/tablo) netlestirebilir misiniz?"
                 )
-            plan = self._plan_with_overrides(question=clean_question, base=fallback_plan, question_language=question_language)
-            stage_metrics.append(
-                {
-                    "stage": "interpretation",
-                    "duration_sec": round(time.monotonic() - t0, 4),
-                    "fallback": "rule_first_plan",
-                    "llm_error": str(exc),
-                }
+            )
+            return SearchAnswer(
+                intent="clarification",
+                question=question,
+                rows=[],
+                confidence="medium",
+                summary=clarification,
+                provenance=["llm_interpretation"],
+                details={
+                    "reason": "clarification_required",
+                    "plan": asdict(plan),
+                    "question_class": plan.question_class,
+                    "tokens": interpretation_usage,
+                    "stage_metrics": stage_metrics,
+                },
             )
 
         if plan.out_of_domain or plan.search_mode == "unsupported":
@@ -2141,19 +2196,21 @@ class SearchAgent:
         answer_usage: dict[str, Any] = {}
         answer_strategy = "deterministic"
         answer_text = None
-        if policy.deterministic_answer:
+        allow_language_optimized_deterministic = (plan.answer_language or "english").strip().lower() in {"english", "turkish"}
+        if allow_language_optimized_deterministic:
             answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
+        if policy.deterministic_answer and allow_language_optimized_deterministic:
             if answer_text is None:
                 answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details)
             if answer_text is None:
                 answer_text = self._deterministic_column_name_answer(plan, rows, retrieval_details)
-            if answer_text is None and live_probe.get("executed"):
-                answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
+        if answer_text is None and live_probe.get("executed") and allow_language_optimized_deterministic:
+            answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
         
         confidence = self._confidence(plan, rows, verification, retrieval_details)
         actions = self._action_suggestions(plan, rows, ready, retrieval_details, confidence)
         executed_actions = list(live_probe.get("operations") or [])
-        if policy.deterministic_answer:
+        if allow_language_optimized_deterministic:
             answer_text = answer_text or self._deterministic_ranked_answer(clean_question, plan, rows, retrieval_details, actions)
         
         if answer_text is None:

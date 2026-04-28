@@ -55,6 +55,8 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "show_provenance": "true",
     "show_confidence": "true",
     "max_results": "8",
+    "interpretation_mode": "balanced",
+    "clarification_on_low_confidence": "true",
 }
 
 

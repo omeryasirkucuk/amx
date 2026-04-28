@@ -775,7 +775,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.rows[0]["database_name"], "SAP")
 
-    def test_turkish_inventory_question_overrides_llm_answer_language(self) -> None:
+    def test_inventory_question_keeps_llm_answer_language_when_present(self) -> None:
         cfg = self._search_cfg()
         fake_db = type(
             "FakeDB",
@@ -792,8 +792,51 @@ class SearchCatalogTests(unittest.TestCase):
             with patch.object(SearchService, "_inventory_db", return_value=fake_db):
                 service = SearchService(cfg, self.catalog)
                 answer = service.ask("adr6 tablosu hangi şemalarda var")
-        self.assertEqual(answer.details["plan"]["answer_language"], "turkish")
-        self.assertIn("veritabanindaki schemalar", answer.summary)
+        self.assertEqual(answer.details["plan"]["answer_language"], "english")
+        self.assertIn("schemas", answer.summary.lower())
+
+    def test_low_confidence_plan_returns_clarification_question(self) -> None:
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"customer identifier columns","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"column","entity_hints":[],"search_queries":["customer identifiers"],"needs_typo_recovery":false,"answer_language":"english","ambiguity_flags":["missing_scope"],"reason":"ambiguous scope","decision_confidence":"low","needs_clarification":true,"clarification_question":"Do you want this for a specific schema or across all schemas?"}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("customer identifiers")
+        self.assertEqual(answer.intent, "clarification")
+        self.assertIn("specific schema", answer.summary.lower())
+        self.assertEqual(answer.details["reason"], "clarification_required")
+
+    def test_balanced_reviewer_can_correct_classifier_route(self) -> None:
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_tables","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"semantic guess","decision_confidence":"medium","needs_clarification":false}',
+                '{"intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("veri tabanlarımızda comment kısmı eksik olanlar var mı")
+        self.assertEqual(answer.intent, "check_coverage")
+        self.assertEqual(answer.details["reason"], "redirect_to_analyze")
+
+    def test_japanese_question_uses_japanese_answer_language(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._address_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"find_tables","out_of_domain":false,"normalized_question":"tables containing address details","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["住所の詳細を含むテーブル","tables containing address details"],"needs_typo_recovery":false,"answer_language":"japanese","reason":"table discovery","decision_confidence":"high","needs_clarification":false}',
+                "住所情報に関連する候補として `sap.adr6` が見つかりました。"
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("住所の詳細を含むテーブルはどれですか？")
+        self.assertEqual(answer.details["plan"]["answer_language"], "japanese")
+        self.assertIn("`sap.adr6`", answer.summary)
 
     def test_count_tables_question_is_not_out_of_domain(self) -> None:
         cfg = self._search_cfg()
