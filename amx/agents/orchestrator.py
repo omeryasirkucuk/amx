@@ -106,27 +106,29 @@ def apply_review_results_to_db(
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
     applied = 0
-    for r in results:
-        if not r.applied or not r.final_description:
-            continue
-        try:
-            kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
-        except ValueError:
-            kind = AssetKind.TABLE
-        try:
-            if r.asset_kind == AssetKind.SCHEMA.value:
-                db.set_schema_comment(r.schema, r.final_description)
-            elif r.asset_kind == AssetKind.DATABASE.value:
-                db.set_database_comment(r.final_description)
-            elif r.column is None:
-                db.set_table_comment(r.schema, r.table, r.final_description, asset_kind=kind)
-            else:
-                db.set_column_comment(r.schema, r.table, r.column, r.final_description)
-            applied += 1
-            if on_applied is not None:
-                on_applied(r)
-        except Exception as exc:
-            error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
+    pending = [r for r in results if r.applied and r.final_description]
+    if not pending:
+        return 0
+    with db.engine.begin() as conn:
+        for r in pending:
+            try:
+                kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
+            except ValueError:
+                kind = AssetKind.TABLE
+            try:
+                db.apply_comment(
+                    schema=r.schema,
+                    table=r.table,
+                    column=r.column,
+                    comment=r.final_description,
+                    asset_kind=kind,
+                    conn=conn,
+                )
+                applied += 1
+                if on_applied is not None:
+                    on_applied(r)
+            except Exception as exc:
+                error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
     return applied
 
 

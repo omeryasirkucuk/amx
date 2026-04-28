@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.121] — 2026-04-28
+### Fixed
+- **Databricks batch write-back latency**: Database write-back now reuses a single transaction/connection across an apply batch, instead of opening a fresh transaction for every table or column comment.
+- **Databricks insecure TLS warning spam**: When a Databricks profile explicitly sets `tls_no_verify=true`, AMX now suppresses the repeated `urllib3 InsecureRequestWarning` lines that were printed once per write-back request.
+
+### Added
+- **Regression coverage**: Added tests proving apply-mode write-back reuses one transaction and that Databricks suppresses insecure-request warnings only when TLS verification is intentionally disabled.
+
 ## [0.1.120] — 2026-04-28
 ### Fixed
 - **Databricks write-back DDL**: Databricks table and column comment write-back no longer sends `:cmt` parameter markers inside DDL statements. AMX now inlines a safely quoted SQL literal for Databricks comment DDL, fixing failed `/run-apply` and manual metadata writes.

@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 from amx.config import DBConfig
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
@@ -449,6 +449,75 @@ class DatabaseConnector:
 
     # ── Comments (write) ──────────────────────────────────────────────────
 
+    def _execute_comment_sql(self, conn: Connection, stmt: str, comment: str) -> None:
+        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
+        conn.execute(text(final_sql), params)
+
+    def apply_comment(
+        self,
+        *,
+        schema: str,
+        table: str = "",
+        column: str | None = None,
+        comment: str,
+        asset_kind: AssetKind = AssetKind.TABLE,
+        conn: Connection | None = None,
+    ) -> None:
+        if asset_kind == AssetKind.SCHEMA:
+            if not self.capabilities.schema_comments:
+                raise UnsupportedDatabaseOperation(f"{self.backend} does not support schema comments.")
+            stmt = self._adapter.set_schema_comment_sql(schema)
+            if conn is None:
+                with self.engine.begin() as local_conn:
+                    self._execute_comment_sql(local_conn, stmt, comment)
+            else:
+                self._execute_comment_sql(conn, stmt, comment)
+            log.info("Set comment on schema %s", schema)
+            return
+
+        if asset_kind == AssetKind.DATABASE:
+            if not self.capabilities.database_comments:
+                raise UnsupportedDatabaseOperation(f"{self.backend} does not support database comments.")
+            stmt = self._adapter.set_database_comment_sql()
+            if conn is None:
+                with self.engine.begin() as local_conn:
+                    self._execute_comment_sql(local_conn, stmt, comment)
+            else:
+                self._execute_comment_sql(conn, stmt, comment)
+            log.info("Set comment on database")
+            return
+
+        if column is None:
+            keyword = asset_kind.comment_keyword
+            if keyword not in self.capabilities.comment_asset_keywords:
+                raise UnsupportedDatabaseOperation(
+                    f"{self.backend} does not support comment write-back for {asset_kind.label} assets."
+                )
+            if asset_kind == AssetKind.VIEW and not self.capabilities.view_comments:
+                raise UnsupportedDatabaseOperation(f"{self.backend} does not support view comments.")
+            if asset_kind == AssetKind.MATERIALIZED_VIEW and not self.capabilities.materialized_view_comments:
+                raise UnsupportedDatabaseOperation(f"{self.backend} does not support materialized view comments.")
+            if asset_kind == AssetKind.TABLE and not self.capabilities.table_comments:
+                raise UnsupportedDatabaseOperation(f"{self.backend} does not support table comments.")
+            stmt = self._adapter.set_table_comment_sql(schema, table, keyword)
+            if conn is None:
+                with self.engine.begin() as local_conn:
+                    self._execute_comment_sql(local_conn, stmt, comment)
+            else:
+                self._execute_comment_sql(conn, stmt, comment)
+            log.info("Set comment on %s.%s (%s)", schema, table, asset_kind.label)
+            return
+
+        if not self.capabilities.column_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support column comments.")
+        stmt = self._adapter.set_column_comment_sql(schema, table, column)
+        if conn is None:
+            with self.engine.begin() as local_conn:
+                self._execute_comment_sql(local_conn, stmt, comment)
+        else:
+            self._execute_comment_sql(conn, stmt, comment)
+        log.info("Set comment on %s.%s.%s", schema, table, column)
+
     def set_table_comment(
         self,
         schema: str,
@@ -456,51 +525,18 @@ class DatabaseConnector:
         comment: str,
         asset_kind: AssetKind = AssetKind.TABLE,
     ) -> None:
-        keyword = asset_kind.comment_keyword
-        if keyword not in self.capabilities.comment_asset_keywords:
-            raise UnsupportedDatabaseOperation(
-                f"{self.backend} does not support comment write-back for {asset_kind.label} assets."
-            )
-        if asset_kind == AssetKind.VIEW and not self.capabilities.view_comments:
-            raise UnsupportedDatabaseOperation(f"{self.backend} does not support view comments.")
-        if asset_kind == AssetKind.MATERIALIZED_VIEW and not self.capabilities.materialized_view_comments:
-            raise UnsupportedDatabaseOperation(f"{self.backend} does not support materialized view comments.")
-        if asset_kind == AssetKind.TABLE and not self.capabilities.table_comments:
-            raise UnsupportedDatabaseOperation(f"{self.backend} does not support table comments.")
-        stmt = self._adapter.set_table_comment_sql(schema, table, keyword)
-        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
-        with self.engine.begin() as conn:
-            conn.execute(text(final_sql), params)
-        log.info("Set comment on %s.%s (%s)", schema, table, asset_kind.label)
+        self.apply_comment(schema=schema, table=table, comment=comment, asset_kind=asset_kind)
 
     def set_column_comment(
         self, schema: str, table: str, column: str, comment: str
     ) -> None:
-        if not self.capabilities.column_comments:
-            raise UnsupportedDatabaseOperation(f"{self.backend} does not support column comments.")
-        stmt = self._adapter.set_column_comment_sql(schema, table, column)
-        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
-        with self.engine.begin() as conn:
-            conn.execute(text(final_sql), params)
-        log.info("Set comment on %s.%s.%s", schema, table, column)
+        self.apply_comment(schema=schema, table=table, column=column, comment=comment)
 
     def set_schema_comment(self, schema: str, comment: str) -> None:
-        if not self.capabilities.schema_comments:
-            raise UnsupportedDatabaseOperation(f"{self.backend} does not support schema comments.")
-        stmt = self._adapter.set_schema_comment_sql(schema)
-        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
-        with self.engine.begin() as conn:
-            conn.execute(text(final_sql), params)
-        log.info("Set comment on schema %s", schema)
+        self.apply_comment(schema=schema, comment=comment, asset_kind=AssetKind.SCHEMA)
 
     def set_database_comment(self, comment: str) -> None:
-        if not self.capabilities.database_comments:
-            raise UnsupportedDatabaseOperation(f"{self.backend} does not support database comments.")
-        stmt = self._adapter.set_database_comment_sql()
-        final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
-        with self.engine.begin() as conn:
-            conn.execute(text(final_sql), params)
-        log.info("Set comment on database")
+        self.apply_comment(schema="", comment=comment, asset_kind=AssetKind.DATABASE)
 
     # ── Adapter metadata ──────────────────────────────────────────────────
 

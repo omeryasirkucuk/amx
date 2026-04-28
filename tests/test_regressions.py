@@ -205,6 +205,59 @@ class BackendCapabilityTests(unittest.TestCase):
         self.assertEqual(applied, 0)
         self.assertEqual(applied_rows, [])
 
+    def test_apply_flow_reuses_single_transaction_connection(self) -> None:
+        executed: list[tuple[str, dict[str, object]]] = []
+        begin_calls = 0
+
+        class FakeConnection:
+            def execute(self, stmt, params):
+                executed.append((str(stmt), params))
+
+        class FakeBegin:
+            def __enter__(self):
+                nonlocal begin_calls
+                begin_calls += 1
+                return FakeConnection()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeEngine:
+            def begin(self):
+                return FakeBegin()
+
+        db = DatabaseConnector(DBConfig(backend="postgresql", database="sap"))
+        db._engine = FakeEngine()
+
+        rows = [
+            ReviewResult(
+                schema="public",
+                table="orders",
+                column=None,
+                final_description="Order header",
+                confidence=Confidence.HIGH,
+                source="manual",
+                applied=True,
+                asset_kind=AssetKind.TABLE.value,
+            ),
+            ReviewResult(
+                schema="public",
+                table="orders",
+                column="id",
+                final_description="Order identifier",
+                confidence=Confidence.HIGH,
+                source="manual",
+                applied=True,
+                asset_kind=AssetKind.TABLE.value,
+            ),
+        ]
+
+        applied = apply_review_results_to_db(db, rows)
+
+        self.assertEqual(applied, 2)
+        self.assertEqual(begin_calls, 1)
+        self.assertEqual(len(executed), 2)
+
     def test_comment_sql_generation_per_backend(self) -> None:
         pg = PostgreSQLAdapter(DBConfig(backend="postgresql", database="sap"))
         sf = SnowflakeAdapter(DBConfig(backend="snowflake", database="sap"))
@@ -295,6 +348,25 @@ class BackendCapabilityTests(unittest.TestCase):
                 "_tls_trusted_ca_file": "/tmp/corp-ca.pem",
             },
         )
+
+    def test_databricks_engine_disables_insecure_request_warning_only_for_no_verify(self) -> None:
+        adapter = DatabricksAdapter(
+            DBConfig(
+                backend="databricks",
+                host="workspace.cloud.databricks.com",
+                http_path="/sql/1.0/warehouses/abc",
+                access_token="token",
+                tls_no_verify=True,
+            )
+        )
+
+        with (
+            patch("amx.db.adapters.databricks.urllib3.disable_warnings") as disable_warnings,
+            patch("sqlalchemy.create_engine", return_value=object()),
+        ):
+            adapter.create_engine()
+
+        disable_warnings.assert_called_once()
 
     def test_databricks_ssl_error_is_actionable(self) -> None:
         adapter = DatabricksAdapter(DBConfig(backend="databricks"))

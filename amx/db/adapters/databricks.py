@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import urllib3
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
@@ -44,6 +45,7 @@ class DatabricksAdapter(DatabaseAdapter):
             "_retry_stop_after_attempts_duration": self.connect_retry_duration_seconds,
         }
         if getattr(self.cfg, "tls_no_verify", False):
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             connect_args["_tls_no_verify"] = True
         trusted_ca = str(getattr(self.cfg, "tls_trusted_ca_file", "") or "").strip()
         if trusted_ca:

@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.121] — 2026-04-28
+### Databricks Apply Throughput
+- **amx/db/connector.py / amx/agents/orchestrator.py**: Added a shared `apply_comment()` path and updated apply-mode write-back to hold one transaction open for the whole batch instead of opening a new `engine.begin()` block per comment.
+- **amx/db/adapters/databricks.py**: Suppressed `urllib3.exceptions.InsecureRequestWarning` only when the operator explicitly enables `tls_no_verify` for Databricks.
+- **tests/test_regressions.py**: Added regression coverage for single-transaction apply batches and intentional Databricks insecure-request warning suppression.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.121` and documented the throughput and warning cleanup.
+
 ## [0.1.120] — 2026-04-28
 ### Databricks Write-Back Cleanup
 - **amx/db/adapters/base.py / amx/db/connector.py**: Added a small `comment_sql_with_params()` adapter hook so backends can choose bound params or inline comment literals for DDL execution.

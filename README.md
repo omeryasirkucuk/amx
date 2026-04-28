@@ -24,6 +24,10 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Bulk-accept high-confidence results
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
+Latest release notes (`v0.1.121`):
+- Apply-mode database write-back now reuses one transaction per batch, which removes the worst Databricks overhead from per-column metadata updates.
+- Databricks profiles that explicitly disable TLS verification no longer print one `urllib3 InsecureRequestWarning` for every write-back request.
+
 ## Architecture
 
 ```
