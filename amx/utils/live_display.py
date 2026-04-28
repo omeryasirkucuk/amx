@@ -193,6 +193,22 @@ class LiveDisplay:
                 self._activities[idx].details.append(detail)
         self._refresh()
 
+    def update_activity(
+        self,
+        idx: int,
+        *,
+        label: str | None = None,
+        reset_details: bool = False,
+    ) -> None:
+        with self._lock:
+            if 0 <= idx < len(self._activities):
+                act = self._activities[idx]
+                if label is not None:
+                    act.label = label
+                if reset_details:
+                    act.details.clear()
+        self._refresh()
+
     def update_tokens(self, idx: int, tokens_used: int) -> None:
         with self._lock:
             if 0 <= idx < len(self._activities):

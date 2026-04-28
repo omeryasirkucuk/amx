@@ -83,6 +83,83 @@ REASONING: <why>
 """
 
 
+def _writeback_asset_label(result: "ReviewResult", *, include_column: bool = True) -> str:
+    schema = getattr(result, "schema", "") or ""
+    table = getattr(result, "table", "") or ""
+    column = getattr(result, "column", "") or ""
+    if include_column and column:
+        return ".".join(part for part in (schema, table, column) if part)
+    if table:
+        return ".".join(part for part in (schema, table) if part)
+    return schema
+
+
+def create_live_writeback_progress(
+    *,
+    total: int,
+    backend: str,
+    provider: str = "",
+    model: str = "",
+) -> tuple[Callable[[ReviewResult, str, int, int, str], None], Callable[[], None]]:
+    from amx.utils.live_display import get_display
+
+    display = get_display()
+    started_display = False
+    if total and not display.is_active:
+        display.start(
+            schema="",
+            table=f"{total} comments",
+            mode="apply",
+            provider=provider,
+            model=model,
+        )
+        started_display = True
+
+    activity_idx = display.add_activity(f"Writeback 0/{total}")
+    applied_count = 0
+    failed_count = 0
+    started = False
+
+    def _on_progress(result: ReviewResult, status: str, index: int, total_count: int, detail: str) -> None:
+        nonlocal applied_count, failed_count, started
+        if status == "started":
+            label = f"Writeback {index}/{total_count}: {_writeback_asset_label(result)}"
+            display.update_activity(activity_idx, label=label)
+            if not started:
+                display.begin_activity(activity_idx)
+                started = True
+            return
+        if status == "applied":
+            applied_count += 1
+            label = f"Writeback {applied_count}/{total_count} applied"
+            if failed_count:
+                label += f", {failed_count} failed"
+            display.update_activity(activity_idx, label=label)
+            return
+        if status == "failed":
+            failed_count += 1
+            label = f"Writeback {applied_count + failed_count}/{total_count} processed"
+            if failed_count:
+                label += f", {failed_count} failed"
+            display.update_activity(activity_idx, label=label)
+            display.add_detail(
+                activity_idx,
+                f"Failed {_writeback_asset_label(result)}: {detail[:220]}",
+            )
+
+    def _finish() -> None:
+        summary = f"Applied {applied_count}/{total} comment(s)"
+        if failed_count:
+            summary += f"; failed {failed_count}"
+            display.fail_activity(activity_idx, summary)
+        else:
+            display.complete_activity(activity_idx, summary)
+        if started_display:
+            display.stop()
+
+    return _on_progress, _finish
+
+
 @dataclass
 class ReviewResult:
     schema: str
@@ -113,14 +190,59 @@ def apply_review_results_to_db(
         return 0
     with db.engine.begin() as conn:
         total = len(pending)
-        for index, r in enumerate(pending, 1):
+        index = 0
+        while index < total:
+            r = pending[index]
             try:
                 kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
             except ValueError:
                 kind = AssetKind.TABLE
+            if (
+                r.column is not None
+                and kind == AssetKind.TABLE
+                and index + 1 < total
+            ):
+                group = [r]
+                next_index = index + 1
+                while next_index < total:
+                    candidate = pending[next_index]
+                    try:
+                        candidate_kind = AssetKind(candidate.asset_kind) if candidate.asset_kind else AssetKind.TABLE
+                    except ValueError:
+                        candidate_kind = AssetKind.TABLE
+                    if (
+                        candidate.column is None
+                        or candidate_kind != AssetKind.TABLE
+                        or candidate.schema != r.schema
+                        or candidate.table != r.table
+                    ):
+                        break
+                    group.append(candidate)
+                    next_index += 1
+                if len(group) > 1:
+                    batched_comments = [(item.column or "", item.final_description) for item in group]
+                    try:
+                        if on_progress is not None:
+                            on_progress(group[0], "started", index + 1, total, f"batch:{len(group)}")
+                        if db.apply_column_comments_batch(r.schema, r.table, batched_comments, conn=conn):
+                            for offset, item in enumerate(group, start=1):
+                                applied += 1
+                                if on_progress is not None:
+                                    on_progress(item, "applied", index + offset, total, f"batch:{len(group)}")
+                                if on_applied is not None:
+                                    on_applied(item)
+                            index = next_index
+                            continue
+                    except Exception as batch_exc:
+                        log.debug(
+                            "Falling back to per-column writeback for %s.%s after batch failure: %s",
+                            r.schema,
+                            r.table,
+                            batch_exc,
+                        )
             try:
                 if on_progress is not None:
-                    on_progress(r, "started", index, total, "")
+                    on_progress(r, "started", index + 1, total, "")
                 db.apply_comment(
                     schema=r.schema,
                     table=r.table,
@@ -131,15 +253,16 @@ def apply_review_results_to_db(
                 )
                 applied += 1
                 if on_progress is not None:
-                    on_progress(r, "applied", index, total, "")
+                    on_progress(r, "applied", index + 1, total, "")
                 if on_applied is not None:
                     on_applied(r)
             except Exception as exc:
                 if on_progress is not None:
-                    on_progress(r, "failed", index, total, str(exc))
+                    on_progress(r, "failed", index + 1, total, str(exc))
                 if on_failed is not None:
                     on_failed(r, exc)
                 error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
+            index += 1
     return applied
 
 
@@ -1174,7 +1297,6 @@ class Orchestrator:
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
         hs = history_store()
-        from amx.utils.live_display import get_display
 
         def _on_applied(r: ReviewResult) -> None:
             if hs is not None and r.result_id is not None:
@@ -1199,39 +1321,13 @@ class Orchestrator:
                 except Exception as inner_exc:
                     log.debug("Could not record failed DB apply state for result_id=%s: %s", r.result_id, inner_exc)
 
-        display = get_display()
-        started_display = False
-        activity_index_by_result_id: dict[Any, int] = {}
-
-        def _asset_label(r: ReviewResult) -> str:
-            if r.column:
-                return f"{r.schema}.{r.table}.{r.column}"
-            if r.table:
-                return f"{r.schema}.{r.table}"
-            return r.schema or self.db.backend
-
-        if results and not display.is_active:
-            display.start(
-                schema="",
-                table=f"{len([r for r in results if r.applied and r.final_description])} comments",
-                mode="apply",
-                provider=getattr(self.llm.cfg, "provider", ""),
-                model=getattr(self.llm.cfg, "model", ""),
-            )
-            started_display = True
-
-        def _on_progress(r: ReviewResult, status: str, index: int, total: int, detail: str) -> None:
-            label = f"Writeback {index}/{total}: {_asset_label(r)}"
-            key = r.result_id if r.result_id is not None else f"{r.schema}:{r.table}:{r.column or ''}:{index}"
-            if key not in activity_index_by_result_id:
-                activity_index_by_result_id[key] = display.add_activity(label)
-            act_idx = activity_index_by_result_id[key]
-            if status == "started":
-                display.begin_activity(act_idx)
-            elif status == "applied":
-                display.complete_activity(act_idx, "Applied to database")
-            elif status == "failed":
-                display.fail_activity(act_idx, detail[:240])
+        total = len([r for r in results if r.applied and r.final_description])
+        _on_progress, _finish_progress = create_live_writeback_progress(
+            total=total,
+            backend=self.db.backend,
+            provider=getattr(self.llm.cfg, "provider", ""),
+            model=getattr(self.llm.cfg, "model", ""),
+        )
 
         try:
             applied = apply_review_results_to_db(
@@ -1239,10 +1335,10 @@ class Orchestrator:
                 results,
                 on_applied=_on_applied,
                 on_failed=_on_failed,
-                on_progress=_on_progress,
+                on_progress=_on_progress if total else None,
             )
         finally:
-            if started_display:
-                display.stop()
+            if total:
+                _finish_progress()
         success(f"Applied {applied} metadata comments to the database")
         return applied

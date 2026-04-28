@@ -189,6 +189,21 @@ class DatabricksAdapter(DatabaseAdapter):
         col = self.quote_identifier(column)
         return f"ALTER TABLE {fqn} ALTER COLUMN {col} COMMENT :cmt"
 
+    def set_multi_column_comments_sql(
+        self,
+        schema: str,
+        table: str,
+        comments: list[tuple[str, str]],
+    ) -> str | None:
+        if not comments:
+            return None
+        fqn = self.fully_qualified_name(schema, table)
+        clauses = [
+            f"{self.quote_identifier(column)} COMMENT {self.quote_literal(comment)}"
+            for column, comment in comments
+        ]
+        return f"ALTER TABLE {fqn} ALTER COLUMN " + ", ".join(clauses)
+
     def set_schema_comment_sql(self, schema: str) -> str:
         catalog = getattr(self.cfg, "catalog", "") or ""
         qualified = f"`{catalog}`.`{schema}`" if catalog else f"`{schema}`"

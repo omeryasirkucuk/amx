@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.123] — 2026-04-29
+### Changed
+- **Single-line write-back progress**: Apply-mode live progress now uses one rolling write-back activity line instead of rendering one completed line per column comment.
+- **Databricks grouped column comment writes**: AMX now groups adjacent Databricks column comment updates for the same table into one `ALTER TABLE ... ALTER COLUMN ...` statement when the warehouse accepts the syntax, reducing request count substantially.
+
+### Fixed
+- **Databricks fallback safety**: If a grouped Databricks column-comment statement fails, AMX falls back to per-column write-back rather than aborting the remaining items in that table batch.
+
 ## [0.1.122] — 2026-04-29
 ### Added
 - **Realtime write-back progress**: `analyze apply`, `history review --apply`, and orchestrator-driven write-back now render a live activity view with elapsed time and per-asset progress, mirroring the runtime feel of `/run`.

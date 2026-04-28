@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.123`: Databricks column comment write-back now groups same-table column updates into a single `ALTER TABLE ... ALTER COLUMN ...` statement when supported, and apply-mode progress now stays on one rolling write-back line instead of printing one line per column.
 - `v0.1.122`: Apply-mode write-back now shows live elapsed time and per-asset progress in the terminal, and failed writes persist a `failed` DB-apply status for the corresponding saved result row.
 - `v0.1.121`: Apply-mode database write-back now reuses one transaction per batch, and Databricks profiles with `tls_no_verify` no longer print one insecure-request warning per write-back request.
 

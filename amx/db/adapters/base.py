@@ -94,6 +94,15 @@ class DatabaseAdapter(ABC):
         """Return the final SQL plus execute params for comment DDL."""
         return stmt_template, {"cmt": comment}
 
+    def set_multi_column_comments_sql(
+        self,
+        schema: str,
+        table: str,
+        comments: list[tuple[str, str]],
+    ) -> str | None:
+        """Return a backend-specific SQL statement for updating multiple column comments."""
+        return None
+
     def fully_qualified_name(self, schema: str, table: str) -> str:
         return f"{self.quote_identifier(schema)}.{self.quote_identifier(table)}"
 

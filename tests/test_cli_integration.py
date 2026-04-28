@@ -45,6 +45,9 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             def add_activity(self, label: str) -> int:
                 return 0
 
+            def update_activity(self, idx: int, *, label: str | None = None, reset_details: bool = False) -> None:
+                return None
+
             def begin_activity(self, idx: int) -> None:
                 return None
 
@@ -52,6 +55,9 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
                 return None
 
             def fail_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def add_detail(self, idx: int, detail: str) -> None:
                 return None
 
         def fake_apply_review_results_to_db(db, rows, on_applied, on_failed=None, on_progress=None):

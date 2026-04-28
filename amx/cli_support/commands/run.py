@@ -125,7 +125,7 @@ def register_analyze_commands(
     @pass_config
     def analyze_apply(cfg: AMXConfig) -> None:
         """Write pending approved descriptions to the database (COMMENT ON TABLE/COLUMN)."""
-        from amx.agents.orchestrator import apply_review_results_to_db
+        from amx.agents.orchestrator import apply_review_results_to_db, create_live_writeback_progress
         from amx.db.connector import DatabaseConnector
         from amx.pending_review import clear_pending, load_pending
 
@@ -192,37 +192,10 @@ def register_analyze_commands(
                 except Exception:
                     pass
 
-        from amx.utils.live_display import get_display
-
-        display = get_display()
-        started_display = False
-        activity_index_by_result_id: dict[object, int] = {}
-        if pending and not display.is_active:
-            display.start(schema="", table=f"{len(pending)} comments", mode="apply", provider="", model="")
-            started_display = True
-
-        def _asset_label(result: Any) -> str:
-            schema = getattr(result, "schema", "")
-            table = getattr(result, "table", "")
-            column = getattr(result, "column", None)
-            if getattr(result, "column", None):
-                return ".".join(part for part in (schema, table, column) if part)
-            if table:
-                return ".".join(part for part in (schema, table) if part)
-            return schema or db.backend
-
-        def _on_progress(result: Any, status: str, index: int, total: int, detail: str) -> None:
-            label = f"Writeback {index}/{total}: {_asset_label(result)}"
-            key = result.result_id if getattr(result, "result_id", None) is not None else f"{result.schema}:{result.table}:{result.column or ''}:{index}"
-            if key not in activity_index_by_result_id:
-                activity_index_by_result_id[key] = display.add_activity(label)
-            act_idx = activity_index_by_result_id[key]
-            if status == "started":
-                display.begin_activity(act_idx)
-            elif status == "applied":
-                display.complete_activity(act_idx, "Applied to database")
-            elif status == "failed":
-                display.fail_activity(act_idx, detail[:240])
+        _on_progress, _finish_progress = create_live_writeback_progress(
+            total=len(pending),
+            backend=db.backend,
+        )
 
         try:
             applied_count = apply_review_results_to_db(
@@ -230,11 +203,11 @@ def register_analyze_commands(
                 pending,
                 on_applied=_on_applied,
                 on_failed=_on_failed,
-                on_progress=_on_progress,
+                on_progress=_on_progress if pending else None,
             )
         finally:
-            if started_display:
-                display.stop()
+            if pending:
+                _finish_progress()
         clear_pending()
         success(f"Applied {applied_count} comment(s). Pending file cleared.")
         log_event(

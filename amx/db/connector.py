@@ -453,6 +453,27 @@ class DatabaseConnector:
         final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
         conn.execute(text(final_sql), params)
 
+    def apply_column_comments_batch(
+        self,
+        schema: str,
+        table: str,
+        comments: list[tuple[str, str]],
+        *,
+        conn: Connection | None = None,
+    ) -> bool:
+        if not self.capabilities.column_comments:
+            raise UnsupportedDatabaseOperation(f"{self.backend} does not support column comments.")
+        stmt = self._adapter.set_multi_column_comments_sql(schema, table, comments)
+        if not stmt:
+            return False
+        if conn is None:
+            with self.engine.begin() as local_conn:
+                local_conn.execute(text(stmt))
+        else:
+            conn.execute(text(stmt))
+        log.info("Set %d column comments on %s.%s", len(comments), schema, table)
+        return True
+
     def apply_comment(
         self,
         *,

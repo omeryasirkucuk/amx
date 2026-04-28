@@ -324,7 +324,12 @@ def register_history_commands(
     def history_review(cfg: AMXConfig, run_id: int, unevaluated_only: bool, apply: bool) -> None:
         """Re-evaluate saved LLM alternatives for a past run."""
         from amx.agents.base import Confidence
-        from amx.agents.orchestrator import Orchestrator, ReviewResult, apply_review_results_to_db
+        from amx.agents.orchestrator import (
+            Orchestrator,
+            ReviewResult,
+            apply_review_results_to_db,
+            create_live_writeback_progress,
+        )
         from amx.db.connector import DatabaseConnector
         from amx.llm.provider import LLMProvider
 
@@ -454,37 +459,10 @@ def register_history_commands(
                         except Exception as inner_exc:
                             warn(f"Could not record failed DB apply state for result {result.result_id}: {inner_exc}")
 
-                from amx.utils.live_display import get_display
-
-                display = get_display()
-                started_display = False
-                activity_index_by_result_id: dict[object, int] = {}
-                if newly_approved and not display.is_active:
-                    display.start(schema="", table=f"{len(newly_approved)} comments", mode="apply", provider="", model="")
-                    started_display = True
-
-                def _asset_label(result: Any) -> str:
-                    schema = getattr(result, "schema", "")
-                    table = getattr(result, "table", "")
-                    column = getattr(result, "column", None)
-                    if column:
-                        return ".".join(part for part in (schema, table, column) if part)
-                    if table:
-                        return ".".join(part for part in (schema, table) if part)
-                    return schema or db.backend
-
-                def _on_progress(result: Any, status: str, index: int, total: int, detail: str) -> None:
-                    label = f"Writeback {index}/{total}: {_asset_label(result)}"
-                    key = result.result_id if getattr(result, "result_id", None) is not None else f"{result.schema}:{result.table}:{result.column or ''}:{index}"
-                    if key not in activity_index_by_result_id:
-                        activity_index_by_result_id[key] = display.add_activity(label)
-                    act_idx = activity_index_by_result_id[key]
-                    if status == "started":
-                        display.begin_activity(act_idx)
-                    elif status == "applied":
-                        display.complete_activity(act_idx, "Applied to database")
-                    elif status == "failed":
-                        display.fail_activity(act_idx, detail[:240])
+                _on_progress, _finish_progress = create_live_writeback_progress(
+                    total=len(newly_approved),
+                    backend=db.backend,
+                )
 
                 try:
                     applied = apply_review_results_to_db(
@@ -492,11 +470,11 @@ def register_history_commands(
                         newly_approved,
                         on_applied=_on_applied,
                         on_failed=_on_failed,
-                        on_progress=_on_progress,
+                        on_progress=_on_progress if newly_approved else None,
                     )
                 finally:
-                    if started_display:
-                        display.stop()
+                    if newly_approved:
+                        _finish_progress()
                 success(f"Applied {applied} metadata comment(s) to the database.")
                 log_event(
                     event_type="history_review_apply",

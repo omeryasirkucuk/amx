@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.1.123] — 2026-04-29
+### Databricks Bulk Column Write-Back
+- **amx/db/adapters/base.py / amx/db/adapters/databricks.py / amx/db/connector.py**: Added backend support for multi-column comment DDL and used it to batch Databricks column comment updates per table when possible.
+- **amx/agents/orchestrator.py**: Apply-mode write-back now detects adjacent Databricks column rows for the same table, issues a grouped write when supported, and falls back to per-column statements if the grouped SQL is rejected.
+- **amx/utils/live_display.py / amx/cli_support/commands/run.py / amx/cli_support/commands/history.py / amx/agents/orchestrator.py**: Reworked write-back live progress to use one rolling activity line instead of one line per asset; failure details are still preserved as subordinate detail rows only when needed.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added coverage for Databricks multi-column SQL generation, grouped apply behavior, and the updated single-activity live display contract.
+- **amx/__init__.py / pyproject.toml / README.md / CHANGELOG.md**: Bumped version to `0.1.123` and documented the grouped write-back behavior.
+
 ## [0.1.122] — 2026-04-29
 ### Write-Back Visibility
 - **amx/agents/orchestrator.py / amx/cli_support/commands/run.py / amx/cli_support/commands/history.py**: Extended DB write-back callbacks with progress and failure hooks, then wired apply flows into the live display so write-back now shows elapsed time and per-item progress in real time.

@@ -305,6 +305,65 @@ class BackendCapabilityTests(unittest.TestCase):
         self.assertEqual(applied, 0)
         self.assertEqual(failed, [(42, "writeback failed")])
 
+    def test_apply_flow_batches_adjacent_databricks_column_comments(self) -> None:
+        class FakeBegin:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeEngine:
+            def begin(self):
+                return FakeBegin()
+
+        db = DatabaseConnector(DBConfig(backend="databricks", catalog="main"))
+        db._engine = FakeEngine()
+        batched: list[list[tuple[str, str]]] = []
+        singles: list[str] = []
+
+        def fake_batch(schema, table, comments, *, conn=None):
+            batched.append(comments)
+            return True
+
+        def fake_single(**kwargs):
+            singles.append(kwargs["column"])
+
+        db.apply_column_comments_batch = fake_batch  # type: ignore[method-assign]
+        db.apply_comment = fake_single  # type: ignore[method-assign]
+
+        rows = [
+            ReviewResult(
+                schema="sales",
+                table="orders",
+                column="id",
+                final_description="Order identifier",
+                confidence=Confidence.HIGH,
+                source="manual",
+                applied=True,
+                asset_kind=AssetKind.TABLE.value,
+            ),
+            ReviewResult(
+                schema="sales",
+                table="orders",
+                column="status",
+                final_description="Order status",
+                confidence=Confidence.HIGH,
+                source="manual",
+                applied=True,
+                asset_kind=AssetKind.TABLE.value,
+            ),
+        ]
+
+        applied = apply_review_results_to_db(db, rows)
+
+        self.assertEqual(applied, 2)
+        self.assertEqual(
+            batched,
+            [[("id", "Order identifier"), ("status", "Order status")]],
+        )
+        self.assertEqual(singles, [])
+
     def test_comment_sql_generation_per_backend(self) -> None:
         pg = PostgreSQLAdapter(DBConfig(backend="postgresql", database="sap"))
         sf = SnowflakeAdapter(DBConfig(backend="snowflake", database="sap"))
@@ -322,6 +381,14 @@ class BackendCapabilityTests(unittest.TestCase):
         self.assertEqual(
             dbx.set_database_comment_sql(),
             "COMMENT ON CATALOG `main` IS :cmt",
+        )
+        self.assertEqual(
+            dbx.set_multi_column_comments_sql(
+                "sales",
+                "orders",
+                [("id", "Order identifier"), ("status", "Order status")],
+            ),
+            "ALTER TABLE `main`.`sales`.`orders` ALTER COLUMN `id` COMMENT 'Order identifier', `status` COMMENT 'Order status'",
         )
         self.assertEqual(
             bq.set_schema_comment_sql("sales"),
