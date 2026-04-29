@@ -142,6 +142,7 @@ def _search_results_payload(answer: Any) -> dict[str, Any]:
         "ambiguity_flags": answer.details.get("ambiguity_flags", []),
         "evidence_sources": answer.details.get("evidence_sources", []),
         "stage_metrics": answer.details.get("stage_metrics", []),
+        "thought_trace": answer.details.get("thought_trace", []),
         "reason": answer.details.get("reason", ""),
         "rows": [
             {

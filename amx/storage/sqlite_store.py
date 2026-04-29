@@ -67,6 +67,17 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_app_events_created_at "
                 "ON app_events(created_at DESC)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_state (
+                    namespace TEXT NOT NULL,
+                    key_name TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (namespace, key_name)
+                )
+                """
+            )
             # ── run_results: all alternatives produced per column per run ──────
             conn.execute(
                 """
@@ -81,6 +92,9 @@ class SQLiteHistoryStore:
                     source TEXT NOT NULL,
                     confidence TEXT NOT NULL,
                     logprob_score REAL,
+                    raw_logprob REAL,
+                    token_count INTEGER,
+                    model_version TEXT NOT NULL DEFAULT '',
                     reasoning TEXT,
                     alternatives_json TEXT NOT NULL,
                     evaluated_at REAL,
@@ -110,6 +124,15 @@ class SQLiteHistoryStore:
                 conn.execute("ALTER TABLE run_results ADD COLUMN logprob_score REAL")
             except sqlite3.OperationalError:
                 pass
+            for stmt in (
+                "ALTER TABLE run_results ADD COLUMN raw_logprob REAL",
+                "ALTER TABLE run_results ADD COLUMN token_count INTEGER",
+                "ALTER TABLE run_results ADD COLUMN model_version TEXT NOT NULL DEFAULT ''",
+            ):
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
             for stmt in (
                 "ALTER TABLE run_results ADD COLUMN catalog_status TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE run_results ADD COLUMN catalog_indexed_at REAL",
@@ -384,8 +407,9 @@ class SQLiteHistoryStore:
                     """
                     INSERT INTO run_results (
                         run_id, saved_at, schema_name, table_name, column_name,
-                        asset_kind, source, confidence, logprob_score, reasoning, alternatives_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        asset_kind, source, confidence, logprob_score, raw_logprob,
+                        token_count, model_version, reasoning, alternatives_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -397,12 +421,43 @@ class SQLiteHistoryStore:
                         s.get("source", "unknown"),
                         s.get("confidence", "medium"),
                         s.get("logprob_score"),
+                        s.get("raw_logprob", s.get("logprob_score")),
+                        s.get("token_count"),
+                        s.get("model_version", ""),
                         s.get("reasoning", ""),
                         json.dumps(s.get("alternatives", []), ensure_ascii=True),
                     ),
                 )
                 ids.append(int(cur.lastrowid))
         return ids
+
+    def set_session_state(self, namespace: str, key: str, value: Any) -> None:
+        """Write-through session/agent state storage."""
+        payload = json.dumps(value, ensure_ascii=True)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO session_state (namespace, key_name, value_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, key_name) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (namespace, key, payload, time.time()),
+            )
+
+    def get_session_state(self, namespace: str, key: str, default: Any = None) -> Any:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM session_state WHERE namespace = ? AND key_name = ?",
+                (namespace, key),
+            ).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(str(row["value_json"] or ""))
+        except Exception:
+            return default
 
     def record_evaluation(
         self,

@@ -12,7 +12,7 @@ AMX employs three **sub-agents** that independently analyze your data and then m
 
 | Agent | Source | What It Does |
 |-------|--------|-------------|
-| **Profile Agent** | Database | Analyzes column types, statistics (min/max/null counts/distinct values), sample data, and naming patterns to infer meaning |
+| **Profile Agent** | Database | Analyzes column types, statistics (min/max/null counts/distinct values), sample data, comments, and relationships to infer meaning |
 | **RAG Agent** | Documents | Ingests your documentation (PDFs, Word docs, Markdown, HTML, etc.) into a vector store and retrieves relevant context for each asset |
 | **Code Agent** | Codebase | Scans application code (Python, SQL, Java, etc.) for references to tables/columns to understand how they're used |
 
@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.1.130`: Added a headless `AMXApplication` core facade, Universal Metadata Interface objects, write-through session/config state persistence, tool-loop `/ask` primitives, thought-trace diagnostics, SQLite audit columns, and RAG token-budget compaction.
 - `v0.1.129`: `/search` now enforces an LLM-native `request_type` contract for routing, including explicit `coverage_audit` handling for broad missing-comment questions so those requests reliably route to coverage workflow instead of semantic table matches.
 - `v0.1.128`: `/search` interpretation moved to an LLM-native multilingual flow with balanced classifier/reviewer decisioning, confidence-aware clarification questions for ambiguous scope, and configurable interpretation settings (`interpretation_mode`, `clarification_on_low_confidence`).
 - `v0.1.127`: `/search` question interpretation is now LLM-first (rule-based routing is fallback-only on LLM failure), which improves scope/intent understanding for ambiguous or conversational metadata questions while preserving deterministic resilience.
@@ -184,6 +185,7 @@ Notes:
 - `force_logprobs` defaults to `true` to force-request logprobs even when provider capability metadata is inconsistent.
 - OpenAI Batch mode requests and stores returned logprobs; Anthropic Batch mode does not provide token logprobs, so those batch results keep model-declared confidence labels until merged by a logprob-capable chat call.
 - `write_through_config` defaults to `true` to save profile switches and config mutations immediately.
+- Direct changes to loaded top-level and nested DB/LLM config fields are write-through as well; AMX saves the active `config.yml` atomically after each mutation.
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
 | `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |
@@ -409,6 +411,7 @@ Answering behavior:
 - follow-up questions reuse narrower session memory so users can keep discussing the same table or field naturally without broad semantic result sets contaminating later table-scoped questions
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
 - `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, suggested actions, executed read-only actions, answer strategy, and suppressed-row counts into history/event payloads so answers remain diagnosable
+- `/search ask` now also records a concise thought trace of observable planning/tool stages (`interpret_question`, `metadata_query`, `data_peek`, `verify_evidence`) for debugging without exposing hidden model chain-of-thought
 - `/search ask --actions` turns selected suggestions into a human-approved execution loop: AMX asks before running catalog sync, cached code-evidence refresh, or single-table metadata analysis actions, then records the action outcome
 - `/search /context-detail` controls how much neighborhood, code, and history context is exposed to the search synthesizer for cost/latency tuning
 - `/search` answer language is forced to the detected language of the user's question, even if the interpreter LLM suggests a different `answer_language`
@@ -431,7 +434,12 @@ amx/
 ├── cli_run.py          # Compatibility shim -> amx.cli_support.commands.run
 ├── core/
 │   ├── __init__.py      # Programmatic API exports
-│   └── inference.py     # Single-table metadata inference entrypoint used by approved search actions
+│   ├── application.py   # Headless AMXApplication facade for `import amx`
+│   ├── ask_agent.py     # Tool-loop ask primitives and trace/result types
+│   ├── inference.py     # Single-table metadata inference entrypoint used by approved search actions
+│   ├── metadata.py      # Universal Metadata Interface canonical entities
+│   ├── state.py         # Write-through config/session state manager
+│   └── token_budget.py  # Prompt-size guard and deterministic context compaction
 ├── cli_support/
 │   ├── __init__.py      # Session-helper export surface
 │   ├── session.py       # Interactive shell, slash completion, namespace switching, and session defaults

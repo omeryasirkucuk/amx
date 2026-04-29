@@ -1,0 +1,179 @@
+"""Tool-based ask agent primitives for headless AMX usage."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Callable
+
+from amx.config import AMXConfig
+from amx.db.connector import DatabaseConnector, ProfilingError
+from amx.search.catalog import SearchCatalog
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    tool: str
+    query: str
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class ReasoningTraceStep:
+    step: int
+    action: str
+    observation: str
+
+
+@dataclass(frozen=True)
+class ToolAskResponse:
+    question: str
+    answer: str
+    trace: list[ReasoningTraceStep]
+    tool_results: list[ToolResult]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "question": self.question,
+            "answer": self.answer,
+            "trace": [asdict(item) for item in self.trace],
+            "tool_results": [asdict(item) for item in self.tool_results],
+        }
+
+
+class AskToolbox:
+    """Bounded metadata tools available to loop-based ask agents."""
+
+    def __init__(
+        self,
+        cfg: AMXConfig,
+        catalog: SearchCatalog,
+        *,
+        db_factory: Callable[[], DatabaseConnector] | None = None,
+        doc_query: Callable[[str, int], list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.cfg = cfg
+        self.catalog = catalog
+        self.db_profile = cfg.active_db_profile or "default"
+        self._db_factory = db_factory or (lambda: DatabaseConnector(cfg.db))
+        self._doc_query = doc_query
+
+    def metadata_query(self, query: str, *, limit: int = 8) -> ToolResult:
+        try:
+            rows = self.catalog.search_columns(self.db_profile, query, limit=limit)
+            if not rows:
+                rows = self.catalog.search_tables(self.db_profile, query, limit=limit)
+            return ToolResult("metadata_query", query, rows=[dict(row) for row in rows])
+        except Exception as exc:
+            return ToolResult("metadata_query", query, error=str(exc))
+
+    def semantic_search(self, query: str, *, limit: int = 8) -> ToolResult:
+        try:
+            rows = []
+            for hit in self.catalog.index.query(query, db_profile=self.db_profile, n_results=limit):
+                rows.append(
+                    {
+                        "text": hit.get("text", ""),
+                        "metadata": hit.get("metadata", {}),
+                        "distance": hit.get("distance"),
+                    }
+                )
+            return ToolResult("semantic_search", query, rows=rows)
+        except Exception as exc:
+            return ToolResult("semantic_search", query, error=str(exc))
+
+    def doc_rag_query(self, query: str, *, limit: int = 5) -> ToolResult:
+        if self._doc_query is None:
+            return ToolResult("doc_rag_query", query, error="No document RAG store is configured.")
+        try:
+            return ToolResult("doc_rag_query", query, rows=self._doc_query(query, limit))
+        except Exception as exc:
+            return ToolResult("doc_rag_query", query, error=str(exc))
+
+    def sample_data_query(self, schema: str, table: str, *, sample_size: int = 3) -> ToolResult:
+        try:
+            profile = self._db_factory().profile_table(schema, table, sample_size=sample_size)
+            rows = [
+                {
+                    "column": column.name,
+                    "dtype": column.dtype,
+                    "nullable": column.nullable,
+                    "samples": list(column.samples),
+                    "null_count": column.null_count,
+                    "distinct_count": column.distinct_count,
+                }
+                for column in profile.columns
+            ]
+            return ToolResult("sample_data_query", f"{schema}.{table}", rows=rows)
+        except ProfilingError as exc:
+            return ToolResult("sample_data_query", f"{schema}.{table}", error=str(exc))
+        except Exception as exc:
+            return ToolResult("sample_data_query", f"{schema}.{table}", error=str(exc))
+
+
+class LoopBasedAskAgent:
+    """Small deterministic tool loop that can be used without the CLI."""
+
+    def __init__(self, toolbox: AskToolbox) -> None:
+        self.toolbox = toolbox
+
+    def answer(self, question: str) -> ToolAskResponse:
+        trace: list[ReasoningTraceStep] = []
+        tool_results: list[ToolResult] = []
+
+        metadata = self.toolbox.metadata_query(question)
+        tool_results.append(metadata)
+        trace.append(
+            ReasoningTraceStep(
+                1,
+                "metadata_query",
+                f"Retrieved {len(metadata.rows)} catalog row(s) for the technical metadata question.",
+            )
+        )
+
+        semantic = self.toolbox.semantic_search(question)
+        tool_results.append(semantic)
+        trace.append(
+            ReasoningTraceStep(
+                2,
+                "semantic_search",
+                f"Retrieved {len(semantic.rows)} semantic index hit(s) for meaning-oriented evidence.",
+            )
+        )
+
+        sample_result: ToolResult | None = None
+        first = metadata.rows[0] if metadata.rows else {}
+        schema = str(first.get("schema_name") or "")
+        table = str(first.get("table_name") or "")
+        if schema and table:
+            sample_result = self.toolbox.sample_data_query(schema, table)
+            tool_results.append(sample_result)
+            trace.append(
+                ReasoningTraceStep(
+                    3,
+                    "sample_data_query",
+                    "Checked real sample/statistical signals for the top catalog candidate."
+                    if not sample_result.error
+                    else f"Sample check could not run: {sample_result.error}",
+                )
+            )
+
+        if metadata.rows:
+            top = metadata.rows[0]
+            path = ".".join(
+                str(top.get(part) or "")
+                for part in ("schema_name", "table_name", "column_name")
+                if str(top.get(part) or "")
+            )
+            desc = str(top.get("effective_description") or "").strip()
+            answer = f"Best grounded match: `{path}`"
+            if desc:
+                answer += f" - {desc}"
+            return ToolAskResponse(question, answer + ".", trace, tool_results)
+
+        return ToolAskResponse(
+            question,
+            "I could not find a grounded catalog match. Sync or enrich the search catalog, then retry.",
+            trace,
+            tool_results,
+        )

@@ -842,6 +842,8 @@ class Orchestrator:
                 "source": s.source,
                 "confidence": s.confidence.value,
                 "logprob_score": s.logprob_score,
+                "raw_logprob": s.logprob_score,
+                "model_version": self.llm.model_name,
                 "reasoning": s.reasoning,
                 "alternatives": s.suggestions,
             }

@@ -21,6 +21,7 @@ from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
+from amx.core import AMXApplication, UniversalMetadataAdapter
 from amx.cli_support.commands.db import cmd_profiling
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -36,6 +37,93 @@ from amx.llm.provider import LLMProvider
 from amx.services.analyze_scope import filter_non_business_assets
 from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
 from amx.storage.sqlite_store import SQLiteHistoryStore
+
+
+class CoreArchitectureTests(unittest.TestCase):
+    def test_universal_metadata_adapter_normalizes_profile_without_name_rules(self) -> None:
+        profile = TableProfile(
+            schema="raw",
+            name="orders",
+            asset_kind=AssetKind.TABLE,
+            row_count=12,
+            primary_key=["c1"],
+            columns=[
+                ColumnProfile(
+                    name="c1",
+                    dtype="INTEGER",
+                    nullable=False,
+                    row_count=12,
+                    null_count=0,
+                    distinct_count=12,
+                    cardinality_ratio=1.0,
+                    samples=[1, 2, 3],
+                    existing_comment="Business key from source file",
+                )
+            ],
+        )
+
+        entities = UniversalMetadataAdapter.from_table_profile(profile)
+
+        self.assertEqual(len(entities), 2)
+        self.assertEqual(entities[0].path, "raw.orders")
+        self.assertEqual(entities[1].path, "raw.orders.c1")
+        self.assertEqual(entities[1].structural.dtype, "INTEGER")
+        self.assertEqual(entities[1].statistical.samples, (1, 2, 3))
+        self.assertEqual(entities[1].semantic.description, "Business key from source file")
+
+    def test_config_nested_write_through_persists_immediately_after_load(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.save(str(cfg_path))
+
+            loaded = AMXConfig.load(str(cfg_path))
+            loaded.llm.logprob_high = 0.91
+
+            reloaded = AMXConfig.load(str(cfg_path))
+            self.assertAlmostEqual(reloaded.llm.logprob_high, 0.91)
+
+    def test_sqlite_session_state_and_audit_columns_are_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = SQLiteHistoryStore(Path(td) / "history.sqlite3")
+            store.init()
+            run_id = store.create_run(
+                command="test",
+                mode="chat",
+                db_backend="postgresql",
+                db_profile="default",
+                llm_provider="unit",
+                llm_model="unit-model",
+                scope={},
+            )
+            ids = store.save_run_results(
+                run_id,
+                [
+                    {
+                        "schema": "s",
+                        "table": "t",
+                        "column": "c",
+                        "source": "unit",
+                        "confidence": "high",
+                        "logprob_score": 0.8,
+                        "raw_logprob": 0.7,
+                        "token_count": 42,
+                        "model_version": "unit-model",
+                        "alternatives": ["desc"],
+                    }
+                ],
+            )
+            store.set_session_state("unit", "agent:ask", {"step": 1})
+
+            rows = store.get_run_results(run_id)
+            self.assertEqual(ids[0], rows[0]["id"])
+            self.assertEqual(rows[0]["raw_logprob"], 0.7)
+            self.assertEqual(rows[0]["token_count"], 42)
+            self.assertEqual(rows[0]["model_version"], "unit-model")
+            self.assertEqual(store.get_session_state("unit", "agent:ask"), {"step": 1})
+
+    def test_import_amx_exposes_headless_application(self) -> None:
+        self.assertTrue(hasattr(AMXApplication, "load"))
 
 
 class DocumentScannerTests(unittest.TestCase):

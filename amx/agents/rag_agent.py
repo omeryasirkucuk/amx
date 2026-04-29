@@ -6,6 +6,7 @@ import re
 
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.config import PromptDetail, prompt_detail_for
+from amx.core.token_budget import MaxTokenValidator
 from amx.docs.rag import RAGStore
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
@@ -110,10 +111,15 @@ class RAGAgent(BaseAgent):
         if not unique_hits:
             return None
 
-        doc_text = "\n\n---\n\n".join(
+        doc_chunks = [
             f"[{h['metadata'].get('source', 'unknown')}]\n{h['text']}"
             for h in unique_hits[: pd.rag_max_chunks]
+        ]
+        validator = MaxTokenValidator(
+            comfortable_input_tokens=max(1_000, int(getattr(self.llm.cfg, "max_tokens", 4096) or 4096) * 3)
         )
+        doc_chunks = validator.compact_chunks(doc_chunks)
+        doc_text = "\n\n---\n\n".join(doc_chunks)
         col_lines = "\n".join(
             f"  - {c['name']} (type={c['dtype']}, samples={c.get('samples', [])})"
             for c in columns

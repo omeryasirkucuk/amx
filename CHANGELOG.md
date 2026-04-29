@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.130] — 2026-04-29
+### Added
+- **Headless core facade**: Added `AMXApplication` plus public `import amx` exports so AMX can be embedded as a library without entering the interactive CLI.
+- **Universal Metadata Interface**: Added canonical `AbstractEntity` metadata objects and a `UniversalMetadataAdapter` for table profiles and catalog rows, separating downstream reasoning from backend-specific names.
+- **Tool-loop ask foundation**: Added `AskToolbox` and `LoopBasedAskAgent` primitives with `metadata_query`, `semantic_search`, `doc_rag_query`, and `sample_data_query` tool surfaces.
+- **State and audit persistence**: Added SQLite `session_state` plus `raw_logprob`, `token_count`, and `model_version` audit columns on saved inference results.
+
+### Changed
+- **Write-through config persistence**: Loaded top-level and nested DB/LLM config mutations now trigger atomic config saves immediately.
+- **Search diagnostics**: `/search ask` now records a concise observable thought trace for interpretation, retrieval, live probe, and verification stages.
+- **RAG token guard**: RAG prompts now compact oversized document chunks deterministically before inference to reduce truncation risk.
+
 ## [0.1.129] — 2026-04-29
 ### Changed
 - **LLM coverage-audit routing contract**: `/search` interpretation/review prompts now require `request_type`, and broad “missing comment” requests are explicitly modeled as `coverage_audit`.

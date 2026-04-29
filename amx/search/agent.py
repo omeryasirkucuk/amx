@@ -2032,6 +2032,7 @@ class SearchAgent:
             )
 
         stage_metrics: list[dict[str, Any]] = []
+        thought_trace: list[dict[str, str]] = []
         interpretation_usage: dict[str, Any] = {}
         try:
             t0 = time.monotonic()
@@ -2042,6 +2043,12 @@ class SearchAgent:
                 else:
                     llm_plan, interpretation_usage = self._interpret_question_balanced(clean_question)
                 plan = self._plan_with_overrides(question=clean_question, base=llm_plan, question_language=question_language)
+            thought_trace.append(
+                {
+                    "step": "interpret_question",
+                    "observation": f"Route selected: {plan.search_mode}/{plan.question_class} targeting {plan.target_entity}.",
+                }
+            )
             stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
             return SearchAnswer(
@@ -2145,6 +2152,12 @@ class SearchAgent:
         with step_spinner("Search Agent: planning retrieval"):
             policy = self._policy_for_plan(plan)
             ready, status = self._catalog_ready()
+        thought_trace.append(
+            {
+                "step": "plan_retrieval",
+                "observation": f"Retrieval policy: {policy.retrieval_policy}; catalog_ready={ready}.",
+            }
+        )
         stage_metrics.append({"stage": "planning", "duration_sec": round(time.monotonic() - t0, 4)})
 
         if policy.requires_catalog and not ready:
@@ -2175,6 +2188,12 @@ class SearchAgent:
         t0 = time.monotonic()
         with step_spinner("Search Agent: retrieving grounded evidence"):
             rows, retrieval_details = self._retrieve(clean_question, plan, policy)
+        thought_trace.append(
+            {
+                "step": "metadata_query",
+                "observation": f"Retrieved {len(rows)} candidate row(s) from {', '.join(retrieval_details.get('evidence_sources') or []) or 'metadata sources'}.",
+            }
+        )
         stage_metrics.append({"stage": "retrieval", "duration_sec": round(time.monotonic() - t0, 4)})
         rows = self._normalize_rows(plan, rows)
 
@@ -2194,6 +2213,16 @@ class SearchAgent:
                     if "agent_planned_live_probe" not in retrieval_details["evidence_sources"]:
                         retrieval_details["evidence_sources"].append("agent_planned_live_probe")
                     rows = self._normalize_rows(plan, rows)
+            thought_trace.append(
+                {
+                    "step": "data_peek",
+                    "observation": (
+                        f"Executed {len(live_probe.get('operations') or [])} live probe operation(s)."
+                        if live_probe.get("executed")
+                        else "No live probe was required for this question."
+                    ),
+                }
+            )
             stage_metrics.append({"stage": "live_probe", "duration_sec": round(time.monotonic() - t0, 4)})
         except Exception as exc:
             live_probe = {"executed": False, "error": str(exc), "operations": []}
@@ -2204,6 +2233,12 @@ class SearchAgent:
         t0 = time.monotonic()
         with step_spinner("Search Agent: verifying high-risk claims"):
             rows, verification = self._verify_rows(plan, policy, rows, retrieval_details)
+        thought_trace.append(
+            {
+                "step": "verify_evidence",
+                "observation": f"Verification checks: {', '.join(verification.get('checks') or []) or 'none'}; live_verified={bool(verification.get('live_verified'))}.",
+            }
+        )
         stage_metrics.append({"stage": "verification", "duration_sec": round(time.monotonic() - t0, 4)})
         rows = self._normalize_rows(plan, rows)
         rows, suppressed_rows_count = self._suppress_rows(plan, rows)
@@ -2300,6 +2335,7 @@ class SearchAgent:
                 "ambiguity_flags": list(plan.ambiguity_flags) + list(retrieval_details.get("ambiguity_flags") or []),
                 "evidence_sources": retrieval_details.get("evidence_sources", []),
                 "stage_metrics": stage_metrics,
+                "thought_trace": thought_trace,
                 "tokens": _merge_usage(interpretation_usage, live_probe_usage, answer_usage),
                 "llm_usage": {
                     "interpretation": interpretation_usage,

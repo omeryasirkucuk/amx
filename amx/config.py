@@ -7,7 +7,7 @@ import tempfile
 from difflib import get_close_matches
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import quote_plus
 
 import yaml
@@ -29,6 +29,18 @@ _OPENROUTER_MODEL_NAMESPACES = (
     "moonshotai",
     "openrouter",
 )
+
+
+class _ObservableConfig:
+    """Notify the owning AMXConfig when nested config values change."""
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name.startswith("_"):
+            return
+        owner = getattr(self, "_amx_owner", None)
+        if owner is not None:
+            owner._autosave_nested()
 
 
 def _closest_provider_namespace(value: str, choices: tuple[str, ...]) -> str:
@@ -216,7 +228,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
 
 
 @dataclass
-class DBConfig:
+class DBConfig(_ObservableConfig):
     backend: str = "postgresql"
 
     # Common fields (PostgreSQL / generic)
@@ -375,7 +387,7 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
 
 
 @dataclass
-class LLMConfig:
+class LLMConfig(_ObservableConfig):
     provider: str = ""  # openai | openrouter | anthropic | gemini | local | deepseek | …
     model: str = ""
     language: str = "english"
@@ -464,11 +476,53 @@ class AMXConfig:
     CONFIG_DIR: str = field(
         default_factory=lambda: str(Path.home() / ".amx"), init=False
     )
+    _config_path: str = field(default="", init=False, repr=False)
+    _autosave_ready: bool = field(default=False, init=False, repr=False)
+    _autosave_suspended: int = field(default=0, init=False, repr=False)
+
+    _PERSISTED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "db",
+            "llm",
+            "doc_paths",
+            "code_paths",
+            "selected_schemas",
+            "selected_tables",
+            "db_profiles",
+            "active_db_profile",
+            "current_schema",
+            "current_table",
+            "llm_profiles",
+            "active_llm_profile",
+            "doc_profiles",
+            "active_doc_profile",
+            "code_profiles",
+            "active_code_profile",
+            "write_through_config",
+        }
+    )
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name.startswith("_") or name == "CONFIG_DIR":
+            return
+        if name in {"db", "llm", "db_profiles", "llm_profiles"}:
+            self._attach_children()
+        if name in self._PERSISTED_FIELDS:
+            if name == "write_through_config" and getattr(self, "_autosave_ready", False):
+                try:
+                    self.save()
+                except Exception:
+                    pass
+                return
+            self._autosave_nested()
 
     @classmethod
     def load(cls, path: str | None = None) -> "AMXConfig":
         cfg = cls()
         p = Path(path) if path else Path(cfg.CONFIG_DIR) / "config.yml"
+        object.__setattr__(cfg, "_config_path", str(p))
+        object.__setattr__(cfg, "_autosave_suspended", 1)
         if p.exists():
             data: dict[str, Any] = yaml.safe_load(p.read_text()) or {}
             if "db" in data:
@@ -562,51 +616,61 @@ class AMXConfig:
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
+        object.__setattr__(cfg, "_autosave_suspended", 0)
+        cfg._attach_children()
+        object.__setattr__(cfg, "_autosave_ready", True)
         return cfg
 
     def save(self, path: str | None = None) -> Path:
-        p = Path(path) if path else Path(self.CONFIG_DIR) / "config.yml"
+        p = Path(path) if path else Path(self._config_path or Path(self.CONFIG_DIR) / "config.yml")
         p.parent.mkdir(parents=True, exist_ok=True)
-        if self.active_db_profile:
-            self.db_profiles[self.active_db_profile] = self.db
-        if self.active_llm_profile:
-            self.llm_profiles[self.active_llm_profile] = replace(self.llm)
+        object.__setattr__(self, "_autosave_suspended", self._autosave_suspended + 1)
+        try:
+            if self.active_db_profile:
+                self.db_profiles[self.active_db_profile] = self.db
+            if self.active_llm_profile:
+                self.llm_profiles[self.active_llm_profile] = replace(self.llm)
 
-        doc_paths_yaml = self._doc_paths_for_yaml()
-        code_paths_yaml = self._code_paths_for_yaml()
+            doc_paths_yaml = self._doc_paths_for_yaml()
+            code_paths_yaml = self._code_paths_for_yaml()
 
-        data = {
-            "db": _db_to_mapping(self.db),
-            "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
-            "active_db_profile": self.active_db_profile,
-            "current_schema": self.current_schema,
-            "current_table": self.current_table,
-            "llm": _llm_to_mapping(self.llm),
-            "llm_profiles": {k: _llm_to_mapping(v) for k, v in self.llm_profiles.items()},
-            "active_llm_profile": self.active_llm_profile,
-            "doc_paths": doc_paths_yaml,
-            "doc_profiles": {k: list(v) for k, v in self.doc_profiles.items()},
-            "active_doc_profile": self.active_doc_profile,
-            "code_paths": code_paths_yaml,
-            "code_profiles": dict(self.code_profiles),
-            "active_code_profile": self.active_code_profile,
-            "selected_schemas": self.selected_schemas,
-            "selected_tables": self.selected_tables,
-            "write_through_config": self.write_through_config,
-        }
-        payload = yaml.dump(data, default_flow_style=False, sort_keys=False)
-        # Atomic write to reduce config corruption/state loss on interruptions.
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=str(p.parent),
-            delete=False,
-            prefix=f".{p.name}.",
-            suffix=".tmp",
-        ) as tmp:
-            tmp.write(payload)
-            tmp_path = Path(tmp.name)
-        os.replace(tmp_path, p)
+            data = {
+                "db": _db_to_mapping(self.db),
+                "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
+                "active_db_profile": self.active_db_profile,
+                "current_schema": self.current_schema,
+                "current_table": self.current_table,
+                "llm": _llm_to_mapping(self.llm),
+                "llm_profiles": {k: _llm_to_mapping(v) for k, v in self.llm_profiles.items()},
+                "active_llm_profile": self.active_llm_profile,
+                "doc_paths": doc_paths_yaml,
+                "doc_profiles": {k: list(v) for k, v in self.doc_profiles.items()},
+                "active_doc_profile": self.active_doc_profile,
+                "code_paths": code_paths_yaml,
+                "code_profiles": dict(self.code_profiles),
+                "active_code_profile": self.active_code_profile,
+                "selected_schemas": self.selected_schemas,
+                "selected_tables": self.selected_tables,
+                "write_through_config": self.write_through_config,
+            }
+            payload = yaml.dump(data, default_flow_style=False, sort_keys=False)
+            # Atomic write to reduce config corruption/state loss on interruptions.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(p.parent),
+                delete=False,
+                prefix=f".{p.name}.",
+                suffix=".tmp",
+            ) as tmp:
+                tmp.write(payload)
+                tmp_path = Path(tmp.name)
+            os.replace(tmp_path, p)
+            object.__setattr__(self, "_config_path", str(p))
+            self._attach_children()
+            object.__setattr__(self, "_autosave_ready", True)
+        finally:
+            object.__setattr__(self, "_autosave_suspended", max(0, self._autosave_suspended - 1))
         return p
 
     def apply_active_db_profile(self) -> None:
@@ -704,6 +768,33 @@ class AMXConfig:
         except Exception:
             # Write-through persistence is best-effort and should never break runtime flow.
             pass
+
+    def _autosave_nested(self) -> None:
+        if not getattr(self, "_autosave_ready", False):
+            return
+        if getattr(self, "_autosave_suspended", 0) > 0:
+            return
+        self._autosave()
+
+    def _attach_children(self) -> None:
+        try:
+            object.__setattr__(self.db, "_amx_owner", self)
+        except Exception:
+            pass
+        try:
+            object.__setattr__(self.llm, "_amx_owner", self)
+        except Exception:
+            pass
+        for profile in getattr(self, "db_profiles", {}).values():
+            try:
+                object.__setattr__(profile, "_amx_owner", self)
+            except Exception:
+                pass
+        for profile in getattr(self, "llm_profiles", {}).values():
+            try:
+                object.__setattr__(profile, "_amx_owner", self)
+            except Exception:
+                pass
 
     def effective_doc_paths(self) -> list[str]:
         if self.doc_profiles:
