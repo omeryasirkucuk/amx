@@ -113,40 +113,14 @@ def _normalize_click_argv(args: list[str], cfg: AMXConfig) -> list[str]:
 def _install_embedding_provider(cfg: AMXConfig) -> None:
     """Configure the search-index embedding provider for this process.
 
-    Reads ``cfg.embedding`` and registers a factory with
-    :func:`amx.search.embeddings.set_default_embedding_function` so any
-    later ``SearchIndex`` constructor picks it up. Failures are surfaced
-    as a themed warning and we fall back to the bundled MiniLM default.
+    Thin shim around :func:`amx.search.embeddings.configure_from_amx_config`
+    that wires the themed ``warn()`` console helper into the
+    ``on_warning`` hook so misconfigured providers surface as a themed
+    one-line warning rather than a stack trace.
     """
-    from amx.search.embeddings import (
-        DEFAULT_KIND,
-        make_embedding_function,
-        set_default_embedding_function,
-    )
+    from amx.search.embeddings import configure_from_amx_config
 
-    kind = (cfg.embedding.kind or DEFAULT_KIND).lower().strip()
-    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
-        # Default behaviour (Chroma's bundled MiniLM); nothing to install.
-        set_default_embedding_function(None)
-        return
-
-    if not cfg.embedding.is_configured():
-        warn(
-            f"Embedding provider '{cfg.embedding.kind}' is not fully configured "
-            "(missing model). Falling back to MiniLM. Run /embeddings to fix."
-        )
-        set_default_embedding_function(None)
-        return
-
-    def _factory():
-        return make_embedding_function(
-            cfg.embedding.kind,
-            model=cfg.embedding.model,
-            api_key=cfg.embedding.api_key,
-            base_url=cfg.embedding.base_url,
-        )
-
-    set_default_embedding_function(_factory)
+    configure_from_amx_config(cfg, on_warning=warn)
 
 
 def _rewrite_sys_argv_for_codebase(argv: list[str]) -> None:

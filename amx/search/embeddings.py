@@ -79,6 +79,47 @@ def get_default_embedding_function() -> EmbeddingFunction | None:
         return None
 
 
+def configure_from_amx_config(cfg: Any, *, on_warning: Callable[[str], None] | None = None) -> None:
+    """Install the default embedding factory based on ``cfg.embedding``.
+
+    Called once at CLI startup and again whenever the user changes the
+    embedding provider via the ``/embeddings`` command.
+
+    ``on_warning`` is called with a single themed message string when
+    the configured provider is incomplete (e.g. ``openai_compatible``
+    selected but no model). The behaviour falls back to MiniLM rather
+    than failing retrieval, so the warning is the only signal.
+    """
+    embedding = getattr(cfg, "embedding", None)
+    if embedding is None:
+        set_default_embedding_function(None)
+        return
+
+    kind = (embedding.kind or DEFAULT_KIND).lower().strip()
+    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
+        set_default_embedding_function(None)
+        return
+
+    if not embedding.is_configured():
+        if on_warning is not None:
+            on_warning(
+                f"Embedding provider {embedding.kind!r} is not fully configured "
+                "(missing model). Falling back to MiniLM. Run /embeddings to fix."
+            )
+        set_default_embedding_function(None)
+        return
+
+    def _factory() -> EmbeddingFunction | None:
+        return make_embedding_function(
+            embedding.kind,
+            model=embedding.model,
+            api_key=embedding.api_key,
+            base_url=embedding.base_url,
+        )
+
+    set_default_embedding_function(_factory)
+
+
 def _openai_client_factory(
     *, api_key: str, base_url: str, timeout: float | None
 ) -> Any:
