@@ -18,6 +18,7 @@ from prompt_toolkit.styles import Style
 from amx.config import AMXConfig, SUPPORTED_BACKENDS
 from amx.cli_support.commands.db import (
     cmd_add_profile as _cmd_add_profile,
+    cmd_inspect as _cmd_inspect,
     cmd_profiles as _cmd_profiles,
     cmd_profiling as _cmd_profiling,
     cmd_remove_profile as _cmd_remove_profile,
@@ -172,6 +173,8 @@ Commands (in order):
  12) /schemas                      List schemas
  13) /tables [schema]             List tables (defaults to current schema)
  14) /profile [schema] [table]    Profile a table (defaults to current context)
+ 15) /inspect [profile]           Diagnose a profile: backend, capabilities, connection
+                                   test, visible schemas, table counts. Read-only.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -697,6 +700,15 @@ def _handle_session_builtin(
         from amx.cli_support.commands.db import cmd_tls as _cmd_tls
 
         _cmd_tls(cfg, parts[1:])
+        return True
+    if head == "inspect":
+        # Lives under /db so it shares the namespace of the other DB
+        # commands. /inspect [profile] dumps backend, connection summary,
+        # capabilities, connection-test result, and per-schema table counts
+        # so users can self-diagnose connector and permission problems.
+        if not _require_namespace(head, namespace, "db", "inspect"):
+            return True
+        _cmd_inspect(cfg, parts[1:])
         return True
     if head == "save":
         path = cfg.save()
