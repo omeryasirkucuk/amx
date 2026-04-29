@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.6] — 2026-04-29
+### Changed
+- **Deterministic `/add-db-profile` editing**: Interactive DB profile edits now use explicit update semantics instead of implicit default reuse. Pressing Enter keeps the current value, `-` clears optional fields, and Databricks TLS selection now uses an explicit yes/no choice list.
+
+### Added
+- **Regression coverage**: Added tests proving Databricks profile edits correctly overwrite, clear, and preserve values during `/add-db-profile`.
+
 ## [0.2.5] — 2026-04-29
 ### Added
 - **Deterministic Databricks TLS command**: `/db tls [on|off] [ca_path|clear]` now updates the active Databricks profile directly and prints the saved value, so operators do not have to rely on interactive yes/no prompts.

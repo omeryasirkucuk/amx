@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.6`: Reworked `/add-db-profile` editing so profile updates are deterministic: `Enter` keeps the current value, `-` clears optional fields, and Databricks TLS choices no longer depend on ambiguous prompt behavior.
 - `v0.2.5`: Added a deterministic `db tls` command so Databricks TLS settings can be set and verified from the app without relying on interactive yes/no prompts.
 - `v0.2.4`: Databricks `db connect` now uses the native `databricks-sql-connector` test path directly, so TLS and invalid-token failures are classified more accurately before SQLAlchemy-based introspection starts.
 - `v0.2.3`: `db connect` now runs staged Databricks recovery attempts, reports which TLS mechanism passed, and persists the successful CA bundle or last-resort no-verify setting back into the active profile.

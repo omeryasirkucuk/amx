@@ -12,7 +12,6 @@ from amx.utils.console import (
     ask,
     ask_choice,
     ask_password,
-    confirm,
     error,
     info,
     render_table,
@@ -28,6 +27,78 @@ class DBConnectAttempt:
     label: str
     ok: bool
     detail: str = ""
+
+
+def _ask_update_text(
+    label: str,
+    current: str = "",
+    *,
+    required: bool = False,
+    allow_clear: bool = True,
+) -> str:
+    current_clean = str(current or "")
+    if current_clean:
+        hint = "Enter keeps current"
+        if allow_clear:
+            hint += ", '-' clears"
+        prompt = f"{label} [{hint}]"
+    else:
+        prompt = label
+
+    while True:
+        value = ask(prompt, "")
+        if not value:
+            if current_clean:
+                return current_clean
+            if required:
+                warn(f"{label} is required.")
+                continue
+            return ""
+        if allow_clear and value.strip() == "-":
+            if required:
+                warn(f"{label} cannot be cleared.")
+                continue
+            return ""
+        return value.strip()
+
+
+def _ask_update_secret(
+    label: str,
+    current: str = "",
+    *,
+    required: bool = False,
+) -> str:
+    has_current = bool(str(current or ""))
+    prompt = f"{label} [Enter keeps current, '-' clears]" if has_current else label
+
+    while True:
+        value = ask_password(prompt)
+        if not value:
+            if has_current:
+                return str(current or "")
+            if required:
+                warn(f"{label} is required.")
+                continue
+            return ""
+        if value.strip() == "-":
+            if required:
+                warn(f"{label} cannot be cleared.")
+                continue
+            return ""
+        return value.strip()
+
+
+def _ask_update_bool(label: str, current: bool = False) -> bool:
+    picked = ask_choice(
+        label,
+        ["yes", "no"],
+        default="yes" if current else "no",
+        descriptions={
+            "yes": "Enable this setting",
+            "no": "Disable this setting",
+        },
+    )
+    return picked == "yes"
 
 
 def _save_active_db_profile(cfg: AMXConfig, db: DBConfig) -> None:
@@ -189,14 +260,14 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
     )
 
     if backend == "postgresql":
-        host = ask("Database host", defaults.host or "localhost")
-        port_raw = ask("Port", str(defaults.port or 5432))
+        host = _ask_update_text("Database host", defaults.host or "localhost", required=True, allow_clear=False)
+        port_raw = _ask_update_text("Port", str(defaults.port or 5432), required=True, allow_clear=False)
         while not port_raw.isdigit():
             warn("Port must be a number.")
-            port_raw = ask("Port", str(defaults.port or 5432))
-        user = ask("Username", defaults.user or "amx")
-        password = ask_password("Password") or defaults.password or ""
-        database = ask("Database name", defaults.database or "postgres")
+            port_raw = _ask_update_text("Port", str(defaults.port or 5432), required=True, allow_clear=False)
+        user = _ask_update_text("Username", defaults.user or "amx", required=True, allow_clear=False)
+        password = _ask_update_secret("Password", defaults.password or "", required=True)
+        database = _ask_update_text("Database name", defaults.database or "postgres", required=True, allow_clear=False)
         return replace(
             defaults,
             backend="postgresql",
@@ -208,12 +279,12 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
 
     if backend == "snowflake":
-        account = ask("Snowflake account identifier (e.g. xy12345.us-east-1)", defaults.account)
-        user = ask("Username", defaults.user)
-        password = ask_password("Password") or defaults.password or ""
-        database = ask("Database name", defaults.database)
-        warehouse = ask("Warehouse (optional)", defaults.warehouse or "")
-        role = ask("Role (optional)", defaults.role or "")
+        account = _ask_update_text("Snowflake account identifier (e.g. xy12345.us-east-1)", defaults.account, required=True, allow_clear=False)
+        user = _ask_update_text("Username", defaults.user, required=True, allow_clear=False)
+        password = _ask_update_secret("Password", defaults.password or "", required=True)
+        database = _ask_update_text("Database name", defaults.database, required=True, allow_clear=False)
+        warehouse = _ask_update_text("Warehouse (optional)", defaults.warehouse or "")
+        role = _ask_update_text("Role (optional)", defaults.role or "")
         return replace(
             defaults,
             backend="snowflake",
@@ -226,18 +297,28 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
 
     if backend == "databricks":
-        host = ask("Databricks host (e.g. adb-xxx.azuredatabricks.net)", defaults.host)
-        http_path = ask("SQL warehouse HTTP path", defaults.http_path)
-        access_token = ask_password("Access token") or defaults.access_token or ""
-        catalog = ask("Unity Catalog name (optional)", defaults.catalog or "")
-        database = ask("Schema / database (optional)", defaults.database or "")
-        tls_trusted_ca_file = ask(
+        host = _ask_update_text(
+            "Databricks host (e.g. adb-xxx.azuredatabricks.net)",
+            defaults.host,
+            required=True,
+            allow_clear=False,
+        )
+        http_path = _ask_update_text(
+            "SQL warehouse HTTP path",
+            defaults.http_path,
+            required=True,
+            allow_clear=False,
+        )
+        access_token = _ask_update_secret("Access token", defaults.access_token or "", required=True)
+        catalog = _ask_update_text("Unity Catalog name (optional)", defaults.catalog or "")
+        database = _ask_update_text("Schema / database (optional)", defaults.database or "")
+        tls_trusted_ca_file = _ask_update_text(
             "Trusted CA bundle path (optional, for corporate/self-signed TLS)",
             defaults.tls_trusted_ca_file or "",
         )
-        tls_no_verify = confirm(
+        tls_no_verify = _ask_update_bool(
             "Disable TLS certificate verification? (insecure; use only if a trusted CA bundle is not available)",
-            default=bool(defaults.tls_no_verify),
+            bool(defaults.tls_no_verify),
         )
         return replace(
             defaults,
@@ -252,9 +333,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
 
     if backend == "bigquery":
-        project = ask("GCP project ID", defaults.project)
-        dataset = ask("Default dataset (optional)", defaults.dataset or "")
-        creds = ask("Service account JSON path (optional, uses ADC if empty)", defaults.credentials_path or "")
+        project = _ask_update_text("GCP project ID", defaults.project, required=True, allow_clear=False)
+        dataset = _ask_update_text("Default dataset (optional)", defaults.dataset or "")
+        creds = _ask_update_text("Service account JSON path (optional, uses ADC if empty)", defaults.credentials_path or "")
         return replace(
             defaults,
             backend="bigquery",

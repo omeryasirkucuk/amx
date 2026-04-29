@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.6] — 2026-04-29
+### Stable Profile Editing
+- **amx/cli_support/commands/db.py**: Reworked interactive DB profile prompts so editing existing profiles is deterministic: Enter keeps current values, `-` clears optional values, secrets follow the same keep/clear semantics, and Databricks TLS uses explicit yes/no selection.
+- **tests/test_regressions.py**: Added coverage for Databricks profile edits that overwrite values, clear optional fields, and preserve existing values on blank input.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the profile-editing behavior and bumped the release to `0.2.6`.
+
 ## [0.2.5] — 2026-04-29
 ### Deterministic Databricks TLS Control
 - **amx/cli_support/commands/db.py / amx/cli_support/root_commands.py / amx/cli_support/session.py**: Added `db tls` / `/tls` so Databricks TLS settings can be set explicitly from the app and confirmed immediately after save.

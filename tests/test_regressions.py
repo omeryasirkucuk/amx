@@ -24,7 +24,7 @@ from amx.cli_support.session import _format_session_click_error, _handle_manual_
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.core import AMXApplication, UniversalMetadataAdapter
 from amx.core.errors import ErrorMapper
-from amx.cli_support.commands.db import cmd_profiling, cmd_tls, databricks_connect_with_recovery
+from amx.cli_support.commands.db import cmd_profiling, cmd_tls, databricks_connect_with_recovery, interactive_db_block
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.adapters.databricks import DatabricksAdapter
@@ -936,6 +936,68 @@ class ProfilingGuardrailTests(unittest.TestCase):
 
         self.assertFalse(cfg.db.tls_no_verify)
         self.assertEqual(cfg.db.tls_trusted_ca_file, "")
+
+    def test_interactive_databricks_profile_edit_is_deterministic(self) -> None:
+        defaults = DBConfig(
+            backend="databricks",
+            host="old-host",
+            http_path="/sql/old",
+            access_token="old-token",
+            catalog="oldcat",
+            database="olddb",
+            tls_no_verify=False,
+            tls_trusted_ca_file="/tmp/old.pem",
+        )
+
+        ask_values = iter(["databricks", "new-host", "/sql/new", "newcat", "-", "-"])
+        secret_values = iter(["new-token"])
+        choice_values = iter(["yes"])
+
+        with (
+            patch("amx.cli_support.commands.db.ask_choice", side_effect=lambda *args, **kwargs: next(ask_values) if args and "Select database backend" in args[0] else next(choice_values)),
+            patch("amx.cli_support.commands.db.ask", side_effect=lambda *args, **kwargs: next(ask_values)),
+            patch("amx.cli_support.commands.db.ask_password", side_effect=lambda *args, **kwargs: next(secret_values)),
+        ):
+            updated = interactive_db_block(defaults)
+
+        self.assertEqual(updated.host, "new-host")
+        self.assertEqual(updated.http_path, "/sql/new")
+        self.assertEqual(updated.access_token, "new-token")
+        self.assertEqual(updated.catalog, "newcat")
+        self.assertEqual(updated.database, "")
+        self.assertEqual(updated.tls_trusted_ca_file, "")
+        self.assertTrue(updated.tls_no_verify)
+
+    def test_interactive_databricks_profile_edit_keeps_existing_on_blank(self) -> None:
+        defaults = DBConfig(
+            backend="databricks",
+            host="old-host",
+            http_path="/sql/old",
+            access_token="old-token",
+            catalog="oldcat",
+            database="olddb",
+            tls_no_verify=True,
+            tls_trusted_ca_file="/tmp/old.pem",
+        )
+
+        ask_values = iter(["databricks", "", "", "", "", ""])
+        secret_values = iter([""])
+        choice_values = iter(["no"])
+
+        with (
+            patch("amx.cli_support.commands.db.ask_choice", side_effect=lambda *args, **kwargs: next(ask_values) if args and "Select database backend" in args[0] else next(choice_values)),
+            patch("amx.cli_support.commands.db.ask", side_effect=lambda *args, **kwargs: next(ask_values)),
+            patch("amx.cli_support.commands.db.ask_password", side_effect=lambda *args, **kwargs: next(secret_values)),
+        ):
+            updated = interactive_db_block(defaults)
+
+        self.assertEqual(updated.host, "old-host")
+        self.assertEqual(updated.http_path, "/sql/old")
+        self.assertEqual(updated.access_token, "old-token")
+        self.assertEqual(updated.catalog, "oldcat")
+        self.assertEqual(updated.database, "olddb")
+        self.assertEqual(updated.tls_trusted_ca_file, "/tmp/old.pem")
+        self.assertFalse(updated.tls_no_verify)
 
     def test_metadata_mode_does_not_open_data_connection(self) -> None:
         class FakeEngine:
