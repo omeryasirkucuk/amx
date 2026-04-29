@@ -24,7 +24,10 @@ from amx.utils.console import (
     warn,
 )
 from amx.utils.live_commands import command_display
+from amx.utils.logging import get_logger
 from amx.utils.token_tracker import tracker as token_tracker
+
+log = get_logger("cli.analyze_flow")
 
 FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, list[str]] | None]
 ResolveCodebaseForRun = Callable[[AMXConfig, object, dict[str, list[str]], str | None, bool], object | None]
@@ -257,6 +260,19 @@ def execute_analyze_run(
     from amx.db.connector import DatabaseConnector, ProfilingError
     from amx.docs.rag import RAGStore
     from amx.llm.provider import LLMProvider
+    from amx.utils.logging import clear_request_id, set_request_id
+
+    # Tag every log line emitted during this analyze run with a stable
+    # short id so users can `jq 'select(.request_id == "...")' amx.log`
+    # to extract a single run from the structured log file.
+    request_id = set_request_id()
+    log.info(
+        "analyze run started: request_id=%s, db_profile=%s, llm=%s/%s",
+        request_id,
+        cfg.active_db_profile,
+        cfg.llm.provider,
+        cfg.llm.model,
+    )
 
     use_batch = False
     all_results: list[object] = []
@@ -548,6 +564,7 @@ def execute_analyze_run(
             all_results=all_results,
             final_error_text=final_error_text,
         )
+        clear_request_id()
 
 
 def register_analyze_run_command(
