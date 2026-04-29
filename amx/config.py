@@ -26,11 +26,14 @@ from amx.storage.secrets import (
 SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 DISABLED_PROFILE = "__none__"
 PROFILING_MODES = ("full", "sampled", "metadata")
+SUPPORTED_EMBEDDING_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
+DEFAULT_EMBEDDING_KIND = "minilm"
 
 # Secret-bearing fields per scope. These are externalised to the OS keyring
 # on save and resolved back to plaintext on load via amx.storage.secrets.
 _DB_SECRET_FIELDS = ("password", "access_token")
 _LLM_SECRET_FIELDS = ("api_key",)
+_EMBEDDING_SECRET_FIELDS = ("api_key",)
 
 
 def _externalise_secret(
@@ -102,6 +105,11 @@ def _externalise_secrets_in_data(
             _externalise_secret(
                 llm_top, fld, f"llm_profiles/{active_llm_profile}/{fld}", store
             )
+
+    embedding = data.get("embedding")
+    if isinstance(embedding, dict):
+        for fld in _EMBEDDING_SECRET_FIELDS:
+            _externalise_secret(embedding, fld, f"embedding/{fld}", store)
     return data
 
 
@@ -148,6 +156,11 @@ def _resolve_secrets_in_data(data: dict[str, Any], store: SecretStore) -> dict[s
     if isinstance(llm_top, dict):
         for fld in _LLM_SECRET_FIELDS:
             _resolve_secret_field(llm_top, fld, store)
+
+    embedding = data.get("embedding")
+    if isinstance(embedding, dict):
+        for fld in _EMBEDDING_SECRET_FIELDS:
+            _resolve_secret_field(embedding, fld, store)
     return data
 
 _OPENROUTER_MODEL_NAMESPACES = (
@@ -608,9 +621,52 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
 
 
 @dataclass
+class EmbeddingConfig(_ObservableConfig):
+    """Search-index embedding provider settings.
+
+    Maps onto :mod:`amx.search.embeddings` providers; ``kind="minilm"``
+    keeps the historical Chroma default. ``api_key`` is treated as a
+    secret and stored in the OS keyring just like DB passwords.
+    """
+
+    kind: str = DEFAULT_EMBEDDING_KIND  # minilm | openai_compatible | sentence_transformers
+    model: str = ""        # provider-specific (e.g. text-embedding-3-small, BAAI/bge-large-en-v1.5)
+    api_key: str = ""      # only used by openai_compatible; secret-managed
+    base_url: str = ""     # only used by openai_compatible; defaults to OpenAI proper
+
+    def is_configured(self) -> bool:
+        """True when the configured provider has the minimum fields to operate.
+
+        MiniLM needs no setup; the other two need at least a model id."""
+        normalised = (self.kind or "").lower().strip()
+        if normalised in {"", "minilm", "default"}:
+            return True
+        return bool(self.model)
+
+
+def _embedding_from_mapping(m: dict[str, Any]) -> EmbeddingConfig:
+    return EmbeddingConfig(
+        kind=str(m.get("kind", DEFAULT_EMBEDDING_KIND) or DEFAULT_EMBEDDING_KIND),
+        model=str(m.get("model", "") or ""),
+        api_key=str(m.get("api_key", "") or ""),
+        base_url=str(m.get("base_url", "") or ""),
+    )
+
+
+def _embedding_to_mapping(emb: EmbeddingConfig) -> dict[str, Any]:
+    return {
+        "kind": emb.kind or DEFAULT_EMBEDDING_KIND,
+        "model": emb.model,
+        "api_key": emb.api_key,
+        "base_url": emb.base_url,
+    }
+
+
+@dataclass
 class AMXConfig:
     db: DBConfig = field(default_factory=DBConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     doc_paths: list[str] = field(default_factory=list)
     code_paths: list[str] = field(default_factory=list)
     selected_schemas: list[str] = field(default_factory=list)
@@ -639,6 +695,7 @@ class AMXConfig:
         {
             "db",
             "llm",
+            "embedding",
             "doc_paths",
             "code_paths",
             "selected_schemas",
@@ -661,7 +718,7 @@ class AMXConfig:
         object.__setattr__(self, name, value)
         if name.startswith("_") or name == "CONFIG_DIR":
             return
-        if name in {"db", "llm", "db_profiles", "llm_profiles"}:
+        if name in {"db", "llm", "embedding", "db_profiles", "llm_profiles"}:
             self._attach_children()
         if name in self._PERSISTED_FIELDS:
             if name == "write_through_config" and getattr(self, "_autosave_ready", False):
@@ -734,6 +791,10 @@ class AMXConfig:
 
             cfg.active_code_profile = str(data.get("active_code_profile") or "")
             cfg.write_through_config = bool(data.get("write_through_config", True))
+
+            embedding_raw = data.get("embedding")
+            if isinstance(embedding_raw, dict):
+                cfg.embedding = _embedding_from_mapping(embedding_raw)
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
@@ -823,6 +884,7 @@ class AMXConfig:
                 "selected_schemas": self.selected_schemas,
                 "selected_tables": self.selected_tables,
                 "write_through_config": self.write_through_config,
+                "embedding": _embedding_to_mapping(self.embedding),
             }
             # Move plaintext secrets to the OS keyring; the YAML now stores only
             # opaque "keyring:..." references. No-op when keyring is unavailable.
@@ -1028,6 +1090,10 @@ class AMXConfig:
             pass
         try:
             object.__setattr__(self.llm, "_amx_owner", self)
+        except Exception:
+            pass
+        try:
+            object.__setattr__(self.embedding, "_amx_owner", self)
         except Exception:
             pass
         for profile in getattr(self, "db_profiles", {}).values():
