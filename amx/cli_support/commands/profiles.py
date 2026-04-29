@@ -32,12 +32,37 @@ def default_model(provider: str) -> str:
     }.get(provider, "gpt-4o")
 
 
-def interactive_llm_block(defaults: LLMConfig) -> LLMConfig:
+def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
+    """Interactive prompts to build an LLMConfig.
+
+    When ``defaults`` is ``None``, every prompt starts blank and the
+    user explicitly types every value — this is the path used by
+    ``/add-llm-profile`` for a new profile name, so the active
+    profile's API key, model, etc. never silently fill into the new
+    profile.
+
+    When editing an existing profile, the caller passes that profile
+    so the user can press Enter to keep current values.
+    """
+    new_profile = defaults is None
+    if defaults is None:
+        defaults = LLMConfig()
     provider = ask_choice(
         "Select AI provider",
         ["openai", "openrouter", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
         default=defaults.provider or "openai",
     )
+
+    # If the user picked a different provider than the existing
+    # profile's, drop those defaults — model name + api_base + key
+    # belong to the previous provider and would otherwise leak.
+    if defaults.provider and provider != defaults.provider:
+        defaults = LLMConfig(provider=provider)
+
+    # Brand-new profile? Start every prompt empty so values cannot
+    # silently leak from the active profile via Enter-to-keep.
+    if new_profile:
+        defaults = LLMConfig(provider=provider)
     info(
         "Model: use the provider's natural model id. AMX will add any required provider prefix internally."
     )
@@ -157,9 +182,17 @@ def cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
         name = rest[0]
     else:
         name = ask("LLM profile name", default="work")
-    base = cfg.llm_profiles.get(name, cfg.llm)
-    info(f"Creating/updating LLM profile: {name}")
-    llm = interactive_llm_block(replace(base))
+    existing = cfg.llm_profiles.get(name)
+    if existing is not None:
+        info(f"Editing LLM profile: {name}")
+        llm = interactive_llm_block(replace(existing))
+    else:
+        info(f"Creating new LLM profile: {name}")
+        # New profile — every prompt starts blank. We deliberately do
+        # NOT use ``cfg.llm`` (the active profile) as defaults: doing
+        # so would silently pre-fill /add-llm-profile with the active
+        # profile's model name, API key, base URL, and language.
+        llm = interactive_llm_block(None)
     cfg.upsert_llm_profile(name, llm)
     if confirm(f"Activate profile {name} now?", default=True):
         cfg.set_active_llm_profile(name)

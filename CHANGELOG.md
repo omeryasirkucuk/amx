@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-04-29
+### Fixed
+- **Profile creation no longer pre-fills with the active profile's secrets** (`amx/cli_support/commands/db.py`, `amx/cli_support/commands/profiles.py`): typing `/add-db-profile newname` (or `/add-llm-profile`) for a name that does not exist used to call `interactive_db_block(cfg.db)` (or `interactive_llm_block(cfg.llm)`) — passing the **active** profile as the form's defaults. The "Enter to keep" hints would silently inherit values from a different profile, including the host, password, API key, Databricks PAT, and base URL. If the active profile was Databricks and a user typed `/add-db-profile new-postgres`, pressing Enter would fill the new postgres profile with the Databricks workspace URL.
+- **Cross-backend reset inside the form**: even when editing an existing profile, switching the backend mid-flow (e.g. PostgreSQL → Databricks) now drops every default. Previously, the postgres host could leak into the Databricks form's `host` field as an Enter-to-keep value.
+- **Empty form for new profiles**: brand-new DB and LLM profiles now start every prompt blank rather than inheriting the dataclass placeholders (`host="localhost"`, `user="amx"`, `database="SAP"`, etc.). Example values are surfaced in the prompt label (e.g. `"Database host (e.g. db.example.com)"`) instead of being pre-filled.
+- **Better example placeholders** in `/add-db-profile` prompt labels: postgres, snowflake, databricks, and bigquery prompts now include `(e.g. ...)` hints with obviously-fake examples like `adb-xxxxxxxxxxxxxxxx.0.azuredatabricks.net`, `xy12345.us-east-1`, `my-company-prod`, `/sql/1.0/warehouses/abc1234567890` rather than relying on dataclass defaults.
+
+### Added
+- **4 new `ProfileCreationLeakageTests`** covering: new DB profile gets blank defaults (active Databricks values do not leak), editing an existing DB profile passes existing values through, cross-backend reset clears the host default when switching backends, new LLM profile gets blank defaults (active OpenAI key does not leak).
+
 ## [0.3.0] — 2026-04-29
 ### Added
 - **Crash reports with secret redaction** (`amx/utils/crash.py`): when the top-level CLI handler catches an unhandled exception (and `AMX_DEBUG` is not set), AMX now writes a sanitized crash report to `~/.amx/logs/crashes/<timestamp>-<request_id>.txt` and prints the path so the user can attach it to a GitHub issue without leaking their DB password or API key. The report contains the timestamp, request id, exception class + message, full traceback, AMX-prefixed env vars, and any caller-supplied extra context — every component runs through `redact_secrets` before being written. Files are `chmod 0o600` on POSIX. The crash-report writer is itself wrapped in a try/except so a redaction failure cannot crash the crash handler.
