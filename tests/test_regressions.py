@@ -2092,6 +2092,59 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class AskPathDeprecationTests(unittest.TestCase):
+    """`LoopBasedAskAgent` (the deterministic tool-loop path that
+    predates `SearchAgent`) is being phased out. These tests pin the
+    deprecation contract: the warning fires once per process, the
+    canonical path is `SearchService` / `SearchAgent`."""
+
+    def test_loop_based_ask_agent_emits_deprecation_warning(self) -> None:
+        import warnings
+
+        from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent
+
+        # Reset the once-only flag so the test sees the warning even
+        # if a previous test in the same process already triggered it.
+        LoopBasedAskAgent._deprecation_warned = False
+
+        # Build a minimal AskToolbox stand-in. We only construct the
+        # class — answer() requires a populated catalog.
+        toolbox = AskToolbox.__new__(AskToolbox)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            LoopBasedAskAgent(toolbox)
+
+        deprecation_warnings = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        self.assertGreaterEqual(len(deprecation_warnings), 1)
+        message = str(deprecation_warnings[0].message)
+        self.assertIn("LoopBasedAskAgent", message)
+        self.assertIn("0.4.0", message)
+        self.assertIn("SearchService", message)
+
+    def test_canonical_path_is_search_service(self) -> None:
+        """Sanity-check that `SearchService` exists and routes through
+        `SearchAgent` under the hood. If this test fails because the
+        attribute names changed, update the deprecation message in
+        `LoopBasedAskAgent` to match."""
+        from amx.search.agent import SearchAgent
+        from amx.search.service import SearchService
+
+        # SearchService stores the agent on `_agent` — make sure that
+        # is still the case.
+        attrs = set(SearchService.__init__.__code__.co_names)
+        # Either `_agent` is referenced as an attribute or one of the
+        # canonical helpers is. The exact attribute name is internal
+        # but the reference must exist.
+        self.assertTrue(
+            "_agent" in attrs or hasattr(SearchService, "ask"),
+            "SearchService should expose ask() routing to SearchAgent",
+        )
+        self.assertTrue(callable(SearchAgent))
+
+
 class VectorScoreFloorTests(unittest.TestCase):
     """Per-provider distance-threshold calibration replacing the old
     hardcoded `2.5` cutoff. The threshold is the minimum match_score

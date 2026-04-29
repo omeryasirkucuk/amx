@@ -140,10 +140,42 @@ class AskToolbox:
 
 
 class LoopBasedAskAgent:
-    """Small deterministic tool loop that can be used without the CLI."""
+    """Deterministic tool-loop ask agent — DEPRECATED.
+
+    .. deprecated:: 0.3.0
+
+       The canonical ``/search ask`` path is :class:`amx.search.agent.SearchAgent`,
+       which performs full multi-stage interpretation, retrieval, live
+       probes, verification, and synthesis. ``LoopBasedAskAgent`` was an
+       earlier deterministic alternative used by ``AMXApplication.ask_with_tools``;
+       it predates the unified search pipeline and is kept for one
+       release cycle to avoid breaking any library users that imported
+       it directly.
+
+       New code must use ``AMXApplication.ask()`` (or the underlying
+       ``SearchService``); ``ask_with_tools()`` will be removed in
+       0.4.0.
+    """
+
+    _deprecation_warned = False
 
     def __init__(self, toolbox: AskToolbox) -> None:
         self.toolbox = toolbox
+        self._emit_deprecation_warning()
+
+    @classmethod
+    def _emit_deprecation_warning(cls) -> None:
+        if cls._deprecation_warned:
+            return
+        cls._deprecation_warned = True
+        import warnings
+
+        warnings.warn(
+            "LoopBasedAskAgent is deprecated and will be removed in 0.4.0; "
+            "use AMXApplication.ask() / SearchService instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     def answer(self, question: str) -> ToolAskResponse:
         trace: list[ReasoningTraceStep] = []

@@ -1,4 +1,16 @@
-"""Thin facade over the production-oriented /search agent."""
+"""Thin facade over the production-oriented `/search ask` agent.
+
+This is the **canonical** entry point for natural-language metadata
+questions. ``AMXApplication.ask()`` and the interactive CLI's
+``/search ask`` both route through :class:`SearchService` →
+:class:`amx.search.agent.SearchAgent`.
+
+There is a second tool-loop path
+(:class:`amx.core.ask_agent.LoopBasedAskAgent`, exposed as
+``AMXApplication.ask_with_tools()``) that predates this pipeline. It
+is **deprecated as of 0.3.0** and will be removed in 0.4.0; new code
+must use :class:`SearchService`.
+"""
 
 from __future__ import annotations
 
