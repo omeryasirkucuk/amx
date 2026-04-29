@@ -2013,6 +2013,87 @@ class SecretKeychainTests(unittest.TestCase):
             set_default_store(self._store)
 
 
+class ConfigTransactionTests(unittest.TestCase):
+    """Regression tests for the Week-2 transactional config writes."""
+
+    def _save_count_wrapper(self, cfg: AMXConfig) -> list[int]:
+        """Replace cfg.save with a counter-incrementing wrapper. Returns a
+        single-element list so callers can read the running count."""
+        counter = [0]
+        original = cfg.save
+
+        def counting_save(path: str | None = None) -> Path:
+            counter[0] += 1
+            return original(path)
+
+        cfg.save = counting_save  # type: ignore[method-assign]
+        return counter
+
+    def test_transaction_collapses_multiple_mutations_into_one_save(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            counter = self._save_count_wrapper(cfg)
+
+            with cfg.transaction():
+                cfg.db.host = "db.prod.example.com"
+                cfg.db.user = "alice"
+                cfg.db.password = "secret"
+                cfg.db.database = "orders"
+
+            self.assertEqual(counter[0], 1)
+            self.assertEqual(cfg.db.host, "db.prod.example.com")
+
+    def test_transaction_block_raises_does_not_save(self) -> None:
+        """If the block raises, the YAML must not be updated — the in-memory
+        state may be partially mutated, but the disk stays consistent."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.save(str(cfg_path))
+
+            counter = self._save_count_wrapper(cfg)
+            with self.assertRaises(RuntimeError):
+                with cfg.transaction():
+                    cfg.db.host = "should-not-persist"
+                    raise RuntimeError("boom")
+
+            # No save fired despite the mutation.
+            self.assertEqual(counter[0], 0)
+
+    def test_nested_transactions_only_save_on_outermost_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            counter = self._save_count_wrapper(cfg)
+
+            with cfg.transaction():
+                cfg.db.host = "outer"
+                with cfg.transaction():
+                    cfg.db.user = "inner-user"
+                    cfg.db.password = "inner-pw"
+                # Inner block exited, but outer still active — no save yet.
+                self.assertEqual(counter[0], 0)
+                cfg.db.database = "outer-db"
+
+            self.assertEqual(counter[0], 1)
+
+    def test_transaction_with_autosave_disabled_does_not_save(self) -> None:
+        """Honour ``write_through_config = False`` even inside a transaction —
+        users who opt out of write-through should not get a stealth save."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            cfg.write_through_config = False
+            counter = self._save_count_wrapper(cfg)
+
+            with cfg.transaction():
+                cfg.db.host = "h"
+                cfg.db.user = "u"
+
+            self.assertEqual(counter[0], 0)
+
+
 class FirstRunConfigTests(unittest.TestCase):
     """Regression tests for the Week-2 first-run UX hardening."""
 

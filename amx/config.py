@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from difflib import get_close_matches
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -855,6 +857,55 @@ class AMXConfig:
         finally:
             object.__setattr__(self, "_autosave_suspended", max(0, self._autosave_suspended - 1))
         return p
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Defer write-through saves until the ``with`` block exits.
+
+        Without this guard, every leaf-level mutation on ``cfg`` (or its
+        nested ``cfg.db`` / ``cfg.llm`` dataclasses) triggers an immediate
+        full YAML write. A bulk update like::
+
+            cfg.db.host = "db.prod.example.com"
+            cfg.db.user = "alice"
+            cfg.db.password = "..."
+
+        therefore performs three serialised writes, and a failure on
+        the second silently loses the third change. Wrapping the block
+        in ``with cfg.transaction():`` collapses that to a single
+        atomic save at exit.
+
+        If the block raises, the in-memory state remains as-is but the
+        YAML is *not* updated — preventing a half-written profile from
+        being persisted. The next successful mutation will re-converge
+        disk and memory.
+
+        Nested transactions are supported; only the outermost exit
+        flushes.
+        """
+        object.__setattr__(
+            self, "_autosave_suspended", self._autosave_suspended + 1
+        )
+        raised = False
+        try:
+            yield
+        except BaseException:
+            raised = True
+            raise
+        finally:
+            new_level = max(0, self._autosave_suspended - 1)
+            object.__setattr__(self, "_autosave_suspended", new_level)
+            if (
+                not raised
+                and new_level == 0
+                and getattr(self, "_autosave_ready", False)
+                and self.write_through_config
+            ):
+                try:
+                    self.save()
+                except Exception:
+                    # Same best-effort policy as _autosave_nested.
+                    pass
 
     @property
     def is_first_run(self) -> bool:
