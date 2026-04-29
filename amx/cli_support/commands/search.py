@@ -302,6 +302,35 @@ def _run_search_ask(
     log_event: LogEvent,
     take_actions: bool = False,
 ) -> None:
+    from amx.utils.logging import clear_request_id, get_logger, set_request_id
+
+    # Tag every log line emitted while answering this question with a
+    # short id so users can extract the trace from amx.log via:
+    #   jq 'select(.request_id == "...")' ~/.amx/logs/amx.log
+    request_id = set_request_id()
+    log = get_logger("cli.search")
+    log.info(
+        "search ask started: request_id=%s, question_len=%d",
+        request_id,
+        len(question_text),
+    )
+    try:
+        _run_search_ask_body(
+            cfg, svc, question_text,
+            log_event=log_event, take_actions=take_actions,
+        )
+    finally:
+        clear_request_id()
+
+
+def _run_search_ask_body(
+    cfg: AMXConfig,
+    svc: SearchService,
+    question_text: str,
+    *,
+    log_event: LogEvent,
+    take_actions: bool,
+) -> None:
     display = get_display()
     started_display = False
     if not display.is_active:
