@@ -2092,6 +2092,275 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class PostgreSQLAdapterUnitTests(unittest.TestCase):
+    """Pure-functional unit tests for the PostgreSQL adapter.
+
+    The audit flagged that none of the four DB adapters had unit tests.
+    This first batch covers the SQL-builder methods and the actionable-
+    error categoriser — the parts that can be exercised without a live
+    Postgres engine. Engine-bound methods (``list_materialized_views``,
+    ``get_table_stats``, ``get_incoming_foreign_keys``) will get
+    SQLAlchemy-mocked tests in a follow-up PR.
+    """
+
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="postgresql",
+            host="db.example.com",
+            port=5432,
+            user="alice",
+            password="secret",
+            database="orders",
+        )
+        self.adapter = PostgreSQLAdapter(self.cfg)
+
+    def test_system_schemas_excludes_expected_set(self) -> None:
+        self.assertEqual(
+            self.adapter.system_schemas(),
+            frozenset({"information_schema", "pg_catalog", "pg_toast"}),
+        )
+
+    def test_actionable_profile_error_pg_stat_statements(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError(
+                "ERROR: pg_stat_statements must be loaded via shared_preload_libraries"
+            )
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("pg_stat_statements", msg)
+        self.assertIn("postgresql.conf", msg)
+
+    def test_actionable_profile_error_permission_denied(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("ERROR: permission denied for relation users")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("Insufficient privileges", msg)
+        self.assertIn("SELECT", msg)
+
+    def test_actionable_profile_error_undefined_table(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("UndefinedTable: relation does not exist")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("missing", msg.lower())
+
+    def test_actionable_profile_error_unrecognised_returns_none(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("Some weird internal error AMX has not seen before")
+        )
+        self.assertIsNone(msg)
+
+    def test_column_stats_sql_includes_required_aggregates(self) -> None:
+        sql = self.adapter.column_stats_sql('"public"."users"', '"email"')
+        self.assertIn('FROM "public"."users"', sql)
+        # Must compute null_cnt, dist_cnt, min, max — each underpins a
+        # different prompt-detail field in the LLM batch payload.
+        for fragment in (
+            "COUNT(*) FILTER (WHERE \"email\" IS NULL)",
+            "COUNT(DISTINCT \"email\")",
+            'MIN("email"::text)',
+            'MAX("email"::text)',
+        ):
+            self.assertIn(fragment, sql)
+
+    def test_column_sample_sql_uses_distinct_and_lim_param(self) -> None:
+        sql = self.adapter.column_sample_sql('"public"."users"', '"email"')
+        self.assertIn("DISTINCT", sql)
+        self.assertIn(":lim", sql)
+        self.assertIn("IS NOT NULL", sql)
+
+    def test_set_table_comment_sql_uses_keyword_and_param(self) -> None:
+        sql = self.adapter.set_table_comment_sql("public", "users", "TABLE")
+        # COMMENT ON TABLE "public"."users" IS :cmt
+        self.assertIn("COMMENT ON TABLE", sql)
+        self.assertIn('"public"."users"', sql)
+        self.assertIn(":cmt", sql)
+
+    def test_set_table_comment_sql_supports_materialized_view(self) -> None:
+        sql = self.adapter.set_table_comment_sql("rep", "daily_sales", "MATERIALIZED VIEW")
+        self.assertIn("COMMENT ON MATERIALIZED VIEW", sql)
+
+    def test_set_column_comment_sql_quotes_column(self) -> None:
+        sql = self.adapter.set_column_comment_sql("public", "users", "email")
+        self.assertIn("COMMENT ON COLUMN", sql)
+        self.assertIn('"public"."users"."email"', sql)
+        self.assertIn(":cmt", sql)
+
+    def test_set_schema_and_database_comment_sql(self) -> None:
+        schema_sql = self.adapter.set_schema_comment_sql("rep")
+        self.assertEqual(schema_sql, 'COMMENT ON SCHEMA "rep" IS :cmt')
+
+        # database name comes from cfg.database — must reflect the active config.
+        db_sql = self.adapter.set_database_comment_sql()
+        self.assertEqual(db_sql, 'COMMENT ON DATABASE "orders" IS :cmt')
+
+    def test_capabilities_advertise_postgres_features(self) -> None:
+        caps = self.adapter.capabilities
+        self.assertTrue(caps.relationships)
+        self.assertTrue(caps.row_count_stats)
+        self.assertTrue(caps.materialized_views)
+        self.assertTrue(caps.materialized_view_comments)
+        self.assertIn("MATERIALIZED VIEW", caps.comment_asset_keywords)
+
+
+class SnowflakeAdapterUnitTests(unittest.TestCase):
+    """Pure-functional Snowflake adapter unit tests."""
+
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="snowflake",
+            account="acct.region",
+            user="alice",
+            password="secret",
+            database="ANALYTICS",
+            warehouse="COMPUTE_WH",
+            role="ANALYST",
+        )
+        self.adapter = SnowflakeAdapter(self.cfg)
+
+    def test_system_schemas_excludes_information_schema_both_cases(self) -> None:
+        # Snowflake matches by case-insensitive lookups but the adapter
+        # ships both forms so callers can compare without lowercasing.
+        self.assertIn("INFORMATION_SCHEMA", self.adapter.system_schemas())
+        self.assertIn("information_schema", self.adapter.system_schemas())
+
+    def test_actionable_profile_error_insufficient_privileges(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("Insufficient privileges to operate on schema 'CORE'")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("Snowflake", msg)
+        self.assertIn("USAGE", msg)
+
+    def test_actionable_profile_error_warehouse_suspended(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("Warehouse COMPUTE_WH is currently suspended")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("warehouse", msg.lower())
+
+    def test_column_stats_uses_snowflake_varchar_cast(self) -> None:
+        sql = self.adapter.column_stats_sql('"CORE"."USERS"', '"EMAIL"')
+        # Snowflake uses VARCHAR for cast and SUM(CASE…) instead of FILTER.
+        self.assertIn("::VARCHAR", sql)
+        self.assertIn("SUM(CASE WHEN", sql)
+        self.assertNotIn("::text", sql)
+
+    def test_column_sample_uses_snowflake_sample_clause(self) -> None:
+        sql = self.adapter.column_sample_sql('"CORE"."USERS"', '"EMAIL"')
+        self.assertIn("SAMPLE (1)", sql)
+        self.assertIn(":lim", sql)
+
+    def test_set_database_comment_uses_active_database(self) -> None:
+        # Critical: the SQL must reference cfg.database, not a hardcoded value.
+        sql = self.adapter.set_database_comment_sql()
+        self.assertEqual(sql, 'COMMENT ON DATABASE "ANALYTICS" IS :cmt')
+
+
+class DatabricksAdapterUnitTests(unittest.TestCase):
+    """Pure-functional Databricks adapter unit tests."""
+
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="databricks",
+            host="dbc-xyz.cloud.databricks.com",
+            access_token="dapi-test",
+            http_path="/sql/1.0/warehouses/abc123",
+            catalog="main",
+            database="default",
+        )
+        self.adapter = DatabricksAdapter(self.cfg)
+
+    def test_actionable_profile_error_invalid_token(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("HTTP 401: invalid access token")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("Databricks access token", msg)
+        self.assertIn("PAT", msg)
+
+    def test_actionable_profile_error_ca_bundle_missing(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("trusted CA bundle file was not found at /etc/ssl/corp.pem")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("tls_trusted_ca_file", msg)
+        self.assertIn("AMX_DATABRICKS_TRUSTED_CA_FILE", msg)
+
+    def test_actionable_profile_error_certificate_verify_failed(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("SSLError: CERTIFICATE_VERIFY_FAILED self-signed certificate")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("TLS", msg)
+
+    def test_fully_qualified_name_uses_catalog_when_set(self) -> None:
+        fqn = self.adapter.fully_qualified_name("retail", "orders")
+        self.assertEqual(fqn, "`main`.`retail`.`orders`")
+
+    def test_fully_qualified_name_omits_catalog_when_empty(self) -> None:
+        cfg = DBConfig(
+            backend="databricks",
+            host="h",
+            access_token="t",
+            http_path="/p",
+            catalog="",
+            database="d",
+        )
+        adapter = DatabricksAdapter(cfg)
+        self.assertEqual(adapter.fully_qualified_name("retail", "orders"), "`retail`.`orders`")
+
+    def test_column_stats_uses_databricks_string_cast(self) -> None:
+        sql = self.adapter.column_stats_sql("`main`.`retail`.`orders`", "`status`")
+        self.assertIn("CAST(`status` AS STRING)", sql)
+        self.assertIn("SUM(CASE WHEN", sql)
+
+
+class BigQueryAdapterUnitTests(unittest.TestCase):
+    """Pure-functional BigQuery adapter unit tests."""
+
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="bigquery",
+            project="my-project",
+            dataset="analytics",
+            credentials_path="/tmp/sa.json",
+        )
+        self.adapter = BigQueryAdapter(self.cfg)
+
+    def test_actionable_profile_error_access_denied(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("403 Access Denied: BigQuery dataset")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("BigQuery", msg)
+        self.assertIn("metadata read", msg.lower())
+
+    def test_actionable_profile_error_quota_exhausted(self) -> None:
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError("Quota exceeded: rate limit on tabledata.list")
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("quota", msg.lower())
+
+    def test_fully_qualified_name_uses_project(self) -> None:
+        fqn = self.adapter.fully_qualified_name("retail", "orders")
+        self.assertEqual(fqn, "`my-project`.`retail`.`orders`")
+
+    def test_column_stats_uses_countif_idiom(self) -> None:
+        # COUNTIF is a BigQuery-specific builtin; keep it instead of FILTER /
+        # SUM-CASE so the query uses the optimised approximate counter.
+        sql = self.adapter.column_stats_sql("`my-project`.`retail`.`orders`", "`status`")
+        self.assertIn("COUNTIF(`status` IS NULL)", sql)
+        self.assertIn("CAST(`status` AS STRING)", sql)
+
+    def test_column_sample_uses_tablesample_system(self) -> None:
+        sql = self.adapter.column_sample_sql("`my-project`.`retail`.`orders`", "`status`")
+        self.assertIn("TABLESAMPLE SYSTEM (1 PERCENT)", sql)
+        self.assertIn(":lim", sql)
+
+
 class PerProfileCollectionTests(unittest.TestCase):
     """The Week-3 SearchIndex now uses one Chroma collection per db_profile
     so cross-profile pollution is impossible — these tests pin the naming
