@@ -2092,6 +2092,161 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class DatabaseConnectionRetryTests(unittest.TestCase):
+    """Connector-level transient retry, parallel to LLM transient retry.
+
+    DNS glitches, connection resets, and timeouts get one retry with
+    backoff. Auth / permission / missing-DB / SSL-trust errors do NOT
+    retry — they propagate immediately so the categorised actionable
+    message reaches the user without artificial delay."""
+
+    def setUp(self) -> None:
+        self._sleep_patcher = patch("amx.db.connector.time.sleep", return_value=None)
+        self._sleep_patcher.start()
+
+    def tearDown(self) -> None:
+        self._sleep_patcher.stop()
+
+    def _make_connector(self, attempts: list[Exception | None]):
+        """Build a DatabaseConnector whose adapter.test_connection iterates
+        through *attempts* (None = success on that attempt; an Exception =
+        raise it). Returns the connector + a counter list."""
+        cfg = DBConfig(
+            backend="postgresql",
+            host="db.example.com",
+            port=5432,
+            user="alice",
+            database="orders",
+            password="secret",
+        )
+        connector = DatabaseConnector.__new__(DatabaseConnector)
+        connector.cfg = cfg
+        connector._engine = None
+
+        attempt_counter = {"count": 0}
+
+        class FakeAdapter:
+            name = "postgresql"
+            capabilities = BackendCapabilities()
+
+            def test_connection(self, _engine):
+                idx = attempt_counter["count"]
+                attempt_counter["count"] += 1
+                outcome = attempts[idx] if idx < len(attempts) else None
+                if outcome is not None:
+                    raise outcome
+
+            def actionable_profile_error(self, exc):
+                return None
+
+            def create_engine(self):
+                return SimpleNamespace()
+
+        connector._adapter = FakeAdapter()
+        return connector, attempt_counter
+
+    def test_transient_failure_retried_then_succeeds(self) -> None:
+        """First attempt fails with a network error, second succeeds — the
+        retry loop must return ok=True without surfacing the first error."""
+        connector, attempts = self._make_connector(
+            [
+                ConnectionResetError("Connection reset by peer"),
+                None,  # success
+            ]
+        )
+        result = connector.test_connection_result()
+        self.assertTrue(result.ok)
+        self.assertEqual(attempts["count"], 2)
+
+    def test_transient_dns_failure_retried_max_once_then_categorised(self) -> None:
+        """Persistent DNS failures exhaust the retry budget and surface the
+        categorised actionable message from ErrorMapper."""
+        connector, attempts = self._make_connector(
+            [
+                RuntimeError("getaddrinfo failed: Name or service not known"),
+                RuntimeError("getaddrinfo failed: Name or service not known"),
+            ]
+        )
+        result = connector.test_connection_result()
+        self.assertFalse(result.ok)
+        # MAX_CONNECTION_RETRIES = 1 → 2 total attempts.
+        self.assertEqual(attempts["count"], 2)
+        self.assertIn("network unreachable", result.message.lower())
+
+    def test_auth_failure_does_not_retry(self) -> None:
+        """Authentication errors must propagate immediately so the user
+        sees the categorised auth message without waiting through a
+        pointless retry."""
+        connector, attempts = self._make_connector(
+            [
+                RuntimeError(
+                    'FATAL: password authentication failed for user "alice"'
+                )
+            ]
+        )
+        result = connector.test_connection_result()
+        self.assertFalse(result.ok)
+        self.assertEqual(attempts["count"], 1)
+        self.assertIn("authentication failed", result.message.lower())
+
+    def test_permission_denied_does_not_retry(self) -> None:
+        connector, attempts = self._make_connector(
+            [RuntimeError("permission denied for relation users")]
+        )
+        result = connector.test_connection_result()
+        self.assertFalse(result.ok)
+        self.assertEqual(attempts["count"], 1)
+
+    def test_certificate_verify_failed_does_not_retry(self) -> None:
+        connector, attempts = self._make_connector(
+            [RuntimeError("SSL: CERTIFICATE_VERIFY_FAILED self-signed certificate")]
+        )
+        result = connector.test_connection_result()
+        self.assertFalse(result.ok)
+        # CertVerify is in _NON_TRANSIENT_DB_PATTERNS — single attempt.
+        self.assertEqual(attempts["count"], 1)
+
+    def test_is_transient_db_connection_error_classifications(self) -> None:
+        from amx.db.connector import _is_transient_db_connection_error
+
+        # Transient.
+        self.assertTrue(
+            _is_transient_db_connection_error(ConnectionResetError("Connection reset"))
+        )
+        self.assertTrue(
+            _is_transient_db_connection_error(TimeoutError("timed out"))
+        )
+        self.assertTrue(
+            _is_transient_db_connection_error(
+                RuntimeError("getaddrinfo failed: Name or service not known")
+            )
+        )
+        self.assertTrue(
+            _is_transient_db_connection_error(RuntimeError("503 Service Unavailable"))
+        )
+        # Non-transient (auth / permission / missing-db / SSL-trust).
+        self.assertFalse(
+            _is_transient_db_connection_error(
+                RuntimeError("password authentication failed")
+            )
+        )
+        self.assertFalse(
+            _is_transient_db_connection_error(
+                RuntimeError("permission denied for relation orders")
+            )
+        )
+        self.assertFalse(
+            _is_transient_db_connection_error(
+                RuntimeError("certificate_verify_failed: self-signed certificate")
+            )
+        )
+        self.assertFalse(
+            _is_transient_db_connection_error(
+                RuntimeError('database "missing_db" does not exist')
+            )
+        )
+
+
 class UsageCommandTests(unittest.TestCase):
     """Week-5 /usage command — local-only token + cost summary read from
     ~/.amx/history.db. These tests cover the pure-functional helpers and
