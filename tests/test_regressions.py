@@ -2013,6 +2013,144 @@ class SecretKeychainTests(unittest.TestCase):
             set_default_store(self._store)
 
 
+class EmbeddingProviderTests(unittest.TestCase):
+    """Regression tests for the Week-3 pluggable embedding providers."""
+
+    def test_minilm_default_returns_none(self) -> None:
+        """The MiniLM kind hands ``None`` back so callers can pass it to
+        Chroma unchanged and get the historical bundled default."""
+        from amx.search.embeddings import make_embedding_function
+
+        for kind in ("minilm", "default", "minilm-l6-v2", "", "MiniLM"):
+            self.assertIsNone(make_embedding_function(kind))
+
+    def test_openai_compatible_requires_model(self) -> None:
+        from amx.search.embeddings import make_embedding_function
+
+        with self.assertRaises(ValueError):
+            make_embedding_function("openai_compatible", model="")
+
+    def test_unknown_kind_raises_value_error(self) -> None:
+        from amx.search.embeddings import make_embedding_function
+
+        with self.assertRaises(ValueError):
+            make_embedding_function("magic-ai-7b")
+
+    def test_openai_compatible_invokes_client_with_provided_args(self) -> None:
+        """Chroma's EmbeddingFunction base class normalises the subclass return
+        value into numpy arrays before handing it to callers, so the assertions
+        compare element-by-element rather than expecting plain Python lists."""
+        from amx.search.embeddings import OpenAICompatibleEmbedding
+
+        captured: dict[str, object] = {}
+
+        class FakeEmbeddings:
+            @staticmethod
+            def create(*, model: str, input: list[str]) -> SimpleNamespace:
+                captured["call"] = {"model": model, "input": list(input)}
+                return SimpleNamespace(
+                    data=[SimpleNamespace(embedding=[0.1, 0.2, 0.3]) for _ in input]
+                )
+
+        class FakeClient:
+            embeddings = FakeEmbeddings()
+
+        def fake_factory(*, api_key: str, base_url: str, timeout: float | None) -> FakeClient:
+            captured["init"] = {"api_key": api_key, "base_url": base_url, "timeout": timeout}
+            return FakeClient()
+
+        with patch("amx.search.embeddings._openai_client_factory", fake_factory):
+            ef = OpenAICompatibleEmbedding(
+                model="text-embedding-3-small",
+                api_key="sk-test",
+                base_url="https://api.example.com/v1",
+            )
+            vectors = ef(["hello", "world"])
+
+        self.assertEqual(len(vectors), 2)
+        # Chroma normalises to float32 numpy arrays, so compare element-by-
+        # element with assertAlmostEqual to absorb the precision loss.
+        for vec in vectors:
+            self.assertEqual(len(vec), 3)
+            for got, expected in zip(vec, [0.1, 0.2, 0.3]):
+                self.assertAlmostEqual(float(got), expected, places=5)
+        self.assertEqual(captured["init"]["api_key"], "sk-test")
+        self.assertEqual(captured["init"]["base_url"], "https://api.example.com/v1")
+        self.assertEqual(captured["call"]["model"], "text-embedding-3-small")
+        self.assertEqual(captured["call"]["input"], ["hello", "world"])
+
+    def test_sentence_transformers_missing_dep_returns_actionable_error(self) -> None:
+        """When sentence-transformers is not installed the wrapper must raise
+        a RuntimeError pointing at the install extra rather than a bare
+        ImportError, so a CLI handler can render a themed message."""
+        from amx.search import embeddings
+
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            with self.assertRaises(RuntimeError) as ctx:
+                embeddings.SentenceTransformerEmbedding(model="some/model")
+
+        self.assertIn("local-embeddings", str(ctx.exception))
+
+
+class SearchIndexEmbeddingTests(unittest.TestCase):
+    """Verify SearchIndex wires the embedding_function param through to Chroma."""
+
+    def setUp(self) -> None:
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tempdir.cleanup)
+
+    def test_default_construction_does_not_pass_embedding_function(self) -> None:
+        from amx.search import index as index_module
+
+        captured: dict[str, object] = {}
+
+        class FakeCollection:
+            def __init__(self, **_: object) -> None:
+                pass
+
+        class FakeClient:
+            def __init__(self, *, path: str) -> None:  # noqa: ARG002
+                pass
+
+            def get_or_create_collection(self, **kwargs: object) -> FakeCollection:
+                captured.update(kwargs)
+                return FakeCollection()
+
+        with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+            index_module.SearchIndex(persist_dir=self._tempdir.name)
+
+        # Default behaviour: no embedding_function → Chroma uses MiniLM.
+        self.assertNotIn("embedding_function", captured)
+        self.assertEqual(captured.get("name"), "amx_search")
+
+    def test_custom_embedding_function_is_passed_through(self) -> None:
+        from amx.search import index as index_module
+
+        captured: dict[str, object] = {}
+
+        class FakeCollection:
+            def __init__(self, **_: object) -> None:
+                pass
+
+        class FakeClient:
+            def __init__(self, *, path: str) -> None:  # noqa: ARG002
+                pass
+
+            def get_or_create_collection(self, **kwargs: object) -> FakeCollection:
+                captured.update(kwargs)
+                return FakeCollection()
+
+        sentinel_ef = object()
+        with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+            idx = index_module.SearchIndex(
+                persist_dir=self._tempdir.name,
+                embedding_function=sentinel_ef,  # type: ignore[arg-type]
+            )
+
+        self.assertIs(captured.get("embedding_function"), sentinel_ef)
+        self.assertIs(idx.embedding_function, sentinel_ef)
+
+
 class ConfigTransactionTests(unittest.TestCase):
     """Regression tests for the Week-2 transactional config writes."""
 
