@@ -6,6 +6,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 ### Added
+- **`/embeddings` slash command** (`amx/cli_support/commands/embeddings.py`): users can switch the search-index embedding provider without hand-editing `~/.amx/config.yml`. Forms:
+  - `/embeddings` — show the current provider + interactive picker.
+  - `/embeddings minilm` — switch to Chroma's bundled default (no setup).
+  - `/embeddings openai [model]` — switch to an OpenAI-compatible endpoint; prompts for `base_url` and `api_key` (the key is stored in the OS keyring, never in YAML).
+  - `/embeddings local [model]` — switch to a local sentence-transformers model (requires `pip install "amx[local-embeddings]"`).
+  Switching reinstalls the runtime factory immediately and reminds the user to run `/search rebuild` so the catalog is re-embedded with the new provider.
+- **`amx.search.embeddings.configure_from_amx_config`**: extracted from `cli.py` so the slash command can re-install the runtime factory without depending on the CLI module. Accepts an optional `on_warning` callback so misconfigured providers surface as themed warnings.
+- **5 new `EmbeddingsSlashCommandTests`** covering the MiniLM / OpenAI / local branches, unknown-kind error, and OpenAI-with-empty-model rejection.
 - **Runtime wire-up of `cfg.embedding`** (`amx/cli.py`, `amx/search/embeddings.py`, `amx/search/index.py`): the configured embedding provider is now actually used at runtime, not just stored in `~/.amx/config.yml`. The CLI installs a process-wide factory at startup based on `cfg.embedding`, and `SearchIndex(...)` falls back to that factory when no explicit `embedding_function` is passed. Misconfigured profiles emit a themed warning ("Embedding provider 'X' is not fully configured…") and gracefully fall back to MiniLM rather than failing retrieval.
 - **`set_default_embedding_function` / `get_default_embedding_function`**: small singleton in `amx/search/embeddings.py` so `SearchIndex` constructors deep in the codebase pick up the user-chosen provider without needing the live `AMXConfig` plumbed through every caller. Test suite resets the singleton between cases to avoid cross-test bleed.
 - **5 new `EmbeddingDefaultFactoryTests`** covering get-without-set, set/get round-trip, factory failure is swallowed (so retrieval keeps working with MiniLM fallback), `SearchIndex` picks up the default factory, and explicit `embedding_function` arg overrides the default.

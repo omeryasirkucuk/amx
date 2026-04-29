@@ -23,6 +23,7 @@ from amx.cli_support.commands.db import (
     cmd_remove_profile as _cmd_remove_profile,
     cmd_use as _cmd_use,
 )
+from amx.cli_support.commands.embeddings import cmd_embeddings as _cmd_embeddings
 from amx.cli_support.commands.profiles import (
     cmd_add_code_profile as _cmd_add_code_profile,
     cmd_add_doc_profile as _cmd_add_doc_profile,
@@ -697,6 +698,11 @@ def _handle_session_builtin(
     if head == "save":
         path = cfg.save()
         success(f"Saved configuration to {path}")
+        return True
+    if head == "embeddings":
+        # Available from any namespace — embedding provider config is a quick
+        # one-shot mutation that doesn't require entering /search first.
+        _cmd_embeddings(cfg, parts[1:])
         return True
     if head == "schema":
         if not _require_namespace(head, namespace, "db", "schema"):
