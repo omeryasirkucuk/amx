@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 ### Added
+- **First-run safety**: A truly fresh install (no `~/.amx/config.yml`) now leaves `db_profiles` and `llm_profiles` empty instead of silently creating a "default" DB profile pointing at `localhost / amx / amx_pass / SAP`. The startup banner now warns "First run detected — run /setup" so new users no longer see a phantom broken connection. Legacy configs that already exist on disk keep their previous fallback behavior. (`amx/config.py`, `amx/cli.py`)
+- **`AMXConfig.is_first_run`** property and `_fresh_install` field record whether the config file was found on load — callers can route to `/setup` instead of fabricating placeholder state.
+- **`DBConfig.is_configured()` / `LLMConfig.is_configured()`**: lightweight per-backend "do we have the minimum fields to actually connect / dispatch" check used by the startup banner to distinguish "not configured yet" from "incomplete profile".
+- **`--debug` flag** on `amx`: shows full tracebacks, sets `AMX_DEBUG=1` in the environment so other subsystems can opt in to verbose logging.
+- **Top-level CLI crash handler**: unexpected exceptions are rendered as a themed error line with a pointer to `~/.amx/logs/amx.log` and the `--debug` flag, instead of dumping a raw traceback to the terminal. `KeyboardInterrupt` exits with code 130 cleanly.
+- **`os.chmod(config_path, 0o600)`** after every config save (POSIX): the YAML holds DB passwords and API keys, so it must not be world-readable. No-op on Windows.
+- **Regression coverage**: 5 new tests in `tests/test_regressions.py::FirstRunConfigTests` covering fresh-install detection, legacy-config fallback, chmod-on-save, and `is_configured()` per backend.
 - **GitHub Actions CI** (`.github/workflows/ci.yml`): ruff lint + format check, mypy (advisory), `pytest` on Python 3.10/3.11/3.12, and a build/`twine check` job that uploads the sdist + wheel as artifacts on every PR and push to `main`.
 - **GitHub Actions release pipeline** (`.github/workflows/release.yml`): tag-driven (`v*.*.*`) build → PyPI publish via OIDC Trusted Publisher (no API token in repo) → GitHub Release with auto-generated notes. Verifies `pyproject.toml` version matches the tag before publishing.
 - **`python-semantic-release` configuration** in `pyproject.toml`: future versions and changelog entries are derived from Conventional Commit subjects (`feat:` → minor, `fix:`/`perf:` → patch, `BREAKING CHANGE:` → major). Repo PyPI/GitHub-release upload steps are owned by `release.yml` so semantic-release only computes the version + writes the changelog.

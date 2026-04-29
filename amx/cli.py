@@ -34,6 +34,7 @@ from amx.utils.console import (
     error,
     info,
     show_banner,
+    warn,
 )
 from amx.utils.logging import get_logger
 from amx.storage.sqlite_store import history_store, init_history_store
@@ -44,18 +45,36 @@ pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 
 
 def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
-    """Show a concise startup summary."""
+    """Show a concise startup summary, with first-run guidance when needed."""
     info(f"Version {__version__}")
-    info(
-        f"Database: profile '{cfg.active_db_profile}' → "
-        f"[{cfg.db.backend}] {cfg.db.display_summary}"
-    )
-    llm_line = (
-        f"{cfg.llm.provider or '(unset)'}/{cfg.llm.model or '(unset)'} [{cfg.llm.language or 'english'}]"
-        if cfg.llm.model or cfg.llm.provider
-        else "(not configured — use /llm or /setup)"
-    )
-    info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line} (metadata language)")
+
+    if cfg.is_first_run:
+        warn(
+            "First run detected — no profiles configured yet. "
+            "Run /setup to connect a database and an LLM."
+        )
+
+    if not cfg.active_db_profile or not cfg.db_profiles:
+        info("Database: (not configured — run /setup or /add-db-profile)")
+    elif not cfg.db.is_configured():
+        info(
+            f"Database: profile '{cfg.active_db_profile}' (incomplete — "
+            f"run /add-db-profile to fill in the connection)"
+        )
+    else:
+        info(
+            f"Database: profile '{cfg.active_db_profile}' → "
+            f"[{cfg.db.backend}] {cfg.db.display_summary}"
+        )
+
+    if not cfg.active_llm_profile or not cfg.llm_profiles or not cfg.llm.is_configured():
+        info("LLM: (not configured — run /setup or /add-llm-profile)")
+    else:
+        llm_line = (
+            f"{cfg.llm.provider}/{cfg.llm.model} [{cfg.llm.language or 'english'}]"
+        )
+        info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line} (metadata language)")
+
     if cfg.current_schema or cfg.current_table:
         info(f"Context: schema={cfg.current_schema or '—'} · table={cfg.current_table or '—'}")
 
@@ -102,10 +121,30 @@ def _rewrite_sys_argv_for_codebase(argv: list[str]) -> None:
 
 
 def run_cli() -> None:
-    """Entry point for the `amx` console script (argv normalization + Click)."""
+    """Entry point for the `amx` console script (argv normalization + Click).
+
+    Wraps ``main()`` with a top-level crash handler so unhandled exceptions are
+    rendered as a themed error line instead of a raw traceback. Set
+    ``AMX_DEBUG=1`` (or pass ``--debug`` to ``amx``) to see the full traceback.
+    """
     if len(sys.argv) >= 4:
         _rewrite_sys_argv_for_codebase(sys.argv)
-    main()
+    try:
+        main()
+    except (click.ClickException, SystemExit):
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as exc:  # noqa: BLE001 — last-resort crash handler
+        if os.getenv("AMX_DEBUG", "").lower() in {"1", "true", "yes"}:
+            raise
+        error(f"AMX crashed: {exc.__class__.__name__}: {exc}")
+        info(
+            "Run with --debug (or set AMX_DEBUG=1) to see the full traceback. "
+            "Detailed logs: ~/.amx/logs/amx.log"
+        )
+        log.exception("Unhandled exception in CLI")
+        sys.exit(1)
 
 
 def _log_app_event(
@@ -132,13 +171,21 @@ def _log_app_event(
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="amx")
 @click.option("--config", "cfg_path", default=None, help="Path to config YAML file.")
+@click.option(
+    "--debug/--no-debug",
+    default=False,
+    envvar="AMX_DEBUG",
+    help="Show full tracebacks on errors and verbose internal logs.",
+)
 @click.pass_context
-def main(ctx: click.Context, cfg_path: str | None) -> None:
+def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
     """AMX — Agentic Metadata Extractor.
 
     AI-powered CLI to infer, review, and apply database metadata
     using database profiling, document RAG, and codebase analysis.
     """
+    if debug:
+        os.environ["AMX_DEBUG"] = "1"
     ctx.ensure_object(dict)
     ctx.obj = AMXConfig.load(cfg_path)
     init_history_store(ctx.obj.CONFIG_DIR)
