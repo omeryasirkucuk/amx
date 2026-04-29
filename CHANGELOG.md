@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
 
 ## [Unreleased]
+### Added
+- **Unit tests for all four DB adapters** (`tests/test_regressions.py`): the audit flagged that none of `PostgreSQLAdapter`, `SnowflakeAdapter`, `DatabricksAdapter`, `BigQueryAdapter` had any unit tests. This PR adds 29 pure-functional tests covering the SQL builders, identifier quoting, fully-qualified-name composition, `system_schemas()` exclusions, and `actionable_profile_error()` categorisation per backend:
+  - **PostgreSQL** (12 tests): `pg_stat_statements`, permission denied, undefined-table mappings; null-filter / distinct-count / min-max stats SQL; sample SQL with `:lim` parameter; `COMMENT ON TABLE/COLUMN/SCHEMA/DATABASE` SQL including the `MATERIALIZED VIEW` keyword.
+  - **Snowflake** (6 tests): insufficient-privileges and warehouse-suspended categorisation; `::VARCHAR` cast and `SUM(CASE…)` null counter; `SAMPLE (1)` clause; `set_database_comment_sql` references the active `cfg.database`.
+  - **Databricks** (6 tests): invalid-token, missing CA bundle, certificate-verify-failed categorisation; backtick-quoted catalog/schema/table FQN with the catalog optionally omitted; `CAST(... AS STRING)` casts.
+  - **BigQuery** (5 tests): access-denied and quota-exhausted categorisation; project-prefixed FQN; `COUNTIF(... IS NULL)` builtin instead of `FILTER` / `SUM-CASE`; `TABLESAMPLE SYSTEM (1 PERCENT)`.
+
+  Engine-bound methods (`list_materialized_views`, `get_table_stats`, `get_incoming_foreign_keys`, `get_*_comment`) will get SQLAlchemy-mocked tests in a follow-up PR.
+
 ### Changed
 - **Per-profile Chroma collections** (`amx/search/index.py`): each DB profile is now mapped to its own Chroma collection (`amx_search_<sha256-prefix>`) instead of sharing a single `amx_search` collection filtered by a `db_profile` metadata field. Cross-profile pollution is now physically impossible regardless of caller discipline. The empty profile name still maps to the legacy `amx_search` collection so callers and tests that have not adopted the per-profile API keep working. The `query()` method no longer needs a `where` clause since the collection is already profile-scoped.
   - **Migration:** existing users should run `/rebuild` (inside `/search`) to populate the new per-profile collections — old data sitting in the shared `amx_search` collection is no longer queried for non-empty profiles.
