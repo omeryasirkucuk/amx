@@ -156,6 +156,84 @@ class CoreArchitectureTests(unittest.TestCase):
         self.assertIsNotNone(mapped)
         self.assertIn("CREATE EXTENSION", mapped.render())
 
+    def test_error_mapper_categorises_postgres_auth_failure(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError('FATAL: password authentication failed for user "alice"'),
+            backend="postgresql",
+        )
+        self.assertIsNotNone(mapped)
+        rendered = mapped.render()
+        self.assertIn("authentication failed", rendered.lower())
+        self.assertIn("/add-db-profile", rendered)
+
+    def test_error_mapper_categorises_databricks_invalid_token(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError("401 Client Error: Unauthorized — invalid access token"),
+            backend="databricks",
+        )
+        self.assertIsNotNone(mapped)
+        rendered = mapped.render()
+        self.assertIn("authentication failed", rendered.lower())
+        self.assertIn("Databricks", rendered)
+
+    def test_error_mapper_categorises_network_unreachable(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError(
+                "could not connect to server: Connection refused — Is the server running on host db.example.com (10.1.2.3)?"
+            ),
+            backend="postgresql",
+        )
+        self.assertIsNotNone(mapped)
+        rendered = mapped.render()
+        self.assertIn("network unreachable", rendered.lower())
+        self.assertIn("VPN", rendered)
+
+    def test_error_mapper_categorises_dns_failure(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError("getaddrinfo failed: Name or service not known"),
+            backend="snowflake",
+        )
+        self.assertIsNotNone(mapped)
+        self.assertIn("network unreachable", mapped.render().lower())
+
+    def test_error_mapper_categorises_ssl_handshake_failure(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError("SSL: CERTIFICATE_VERIFY_FAILED [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+            backend="snowflake",
+        )
+        self.assertIsNotNone(mapped)
+        rendered = mapped.render()
+        self.assertIn("TLS", rendered)
+        self.assertIn("CA bundle", rendered)
+
+    def test_error_mapper_databricks_specific_tls_branch_still_wins(self) -> None:
+        """The Databricks-specific TLS message must keep firing for backwards
+        compat — it points at the per-profile tls_trusted_ca_file setting which
+        is more specific than the generic SSL hint."""
+        mapped = ErrorMapper.map(
+            RuntimeError("certificate_verify_failed self-signed certificate"),
+            backend="databricks",
+        )
+        self.assertIsNotNone(mapped)
+        self.assertIn("Databricks TLS", mapped.title)
+
+    def test_error_mapper_categorises_missing_database(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError('database "orders" does not exist'),
+            backend="postgresql",
+        )
+        self.assertIsNotNone(mapped)
+        rendered = mapped.render()
+        self.assertIn("database not found", rendered.lower())
+        self.assertIn("active profile", rendered)
+
+    def test_error_mapper_returns_none_when_unknown(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError("This is some random non-categorised internal error"),
+            backend="postgresql",
+        )
+        self.assertIsNone(mapped)
+
 
 class DocumentScannerTests(unittest.TestCase):
     def test_github_scan_artifacts_are_marked_for_cleanup(self) -> None:
