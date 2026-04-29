@@ -57,7 +57,59 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "max_results": "8",
     "interpretation_mode": "balanced",
     "clarification_on_low_confidence": "true",
+    # Per-provider distance threshold for vector-only retrieval hits.
+    # Empty value means "use the embedding provider's calibrated default";
+    # callers can override per profile by setting an explicit float.
+    "vector_score_floor": "",
 }
+
+
+# Calibrated minimum match score (3.0 - distance) for vector-only hits to be
+# kept in the candidate pool. The previous code hardcoded 2.5 for all
+# embeddings — fine for MiniLM but conservative for the OpenAI v3 family
+# (whose cosine distance for relevant matches is typically tighter, so a
+# higher floor is safe and reduces noise) and for sentence-transformers
+# models like BGE-large that also produce tighter distance distributions.
+# Override via the ``vector_score_floor`` search setting if you need to
+# tune for a specific corpus.
+_PROVIDER_SCORE_FLOOR: dict[str, float] = {
+    "minilm": 2.5,
+    "default": 2.5,
+    "minilm-l6-v2": 2.5,
+    "openai_compatible": 2.6,
+    "sentence_transformers": 2.55,
+}
+_DEFAULT_SCORE_FLOOR = 2.5
+
+
+def _vector_score_floor(settings: dict[str, str], embedding_kind: str | None = None) -> float:
+    """Return the minimum match_score a vector-only hit must reach to survive
+    candidate filtering. An explicit ``vector_score_floor`` setting wins;
+    otherwise the value is calibrated to the active embedding provider.
+    """
+    raw = (settings.get("vector_score_floor") or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    kind = (embedding_kind or "").lower().strip()
+    return _PROVIDER_SCORE_FLOOR.get(kind, _DEFAULT_SCORE_FLOOR)
+
+
+def _active_embedding_kind() -> str:
+    """Best-effort lookup of the active embedding kind without forcing the
+    config singleton to be importable from arbitrary contexts. Falls back
+    to ``"minilm"`` when the lookup fails so the default behaviour is
+    unchanged from before this calibration was added.
+    """
+    try:
+        from amx.config import AMXConfig
+
+        cfg = AMXConfig.load()
+        return (cfg.embedding.kind or "minilm").lower()
+    except Exception:
+        return "minilm"
 
 
 def _json_loads(raw: Any, default: Any) -> Any:
@@ -1676,7 +1728,12 @@ class SearchCatalog:
                     if hint in {table_name, column_name, f"{schema_name}.{table_name}"}:
                         row["match_score"] = float(row.get("match_score") or 0.0) + 2.5
         ranked = self._rank_rows(rows, settings, limit * 2)
-        ranked = [row for row in ranked if not row.get("vector_only") or float(row.get("match_score") or 0.0) >= 2.5]
+        score_floor = _vector_score_floor(settings, _active_embedding_kind())
+        ranked = [
+            row for row in ranked
+            if not row.get("vector_only")
+            or float(row.get("match_score") or 0.0) >= score_floor
+        ]
         return ranked[:limit]
 
     def search_tables(
