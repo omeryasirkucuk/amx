@@ -15,6 +15,78 @@ class ActionableError:
         return f"{self.title}: {self.detail} Action: {self.instruction}"
 
 
+_AUTH_PATTERNS: tuple[str, ...] = (
+    "password authentication failed",
+    "authentication failed",
+    "incorrect username or password",
+    "no password supplied",
+    "role does not exist",
+    "user does not exist",
+    "invalid_grant",
+    "invalid grant",
+    "401 client error",
+    "401 unauthorized",
+    "unauthorized",
+    "invalid token",
+    "invalid access token",
+    "invalid api key",
+    "ldap authentication failed",
+    "kerberos error",
+)
+
+_NETWORK_PATTERNS: tuple[str, ...] = (
+    "could not connect",
+    "connection refused",
+    "connection reset",
+    "name or service not known",
+    "name resolution",
+    "could not translate host name",
+    "could not resolve host",
+    "host not found",
+    "no route to host",
+    "network is unreachable",
+    "connection aborted",
+    "broken pipe",
+    "temporary failure in name resolution",
+    "getaddrinfo",
+)
+
+_SSL_PATTERNS: tuple[str, ...] = (
+    "certificate_verify_failed",
+    "certificate verify failed",
+    "self-signed certificate",
+    "self signed certificate",
+    "ssl handshake",
+    "sslv3 handshake",
+    "tls handshake",
+    "ssl: ",
+    "ssl error",
+    "certificate has expired",
+    "hostname mismatch",
+    "ca_md_too_weak",
+)
+
+def _matches_any(haystack: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in haystack for needle in needles)
+
+
+def _looks_like_missing_database(lower: str) -> bool:
+    """Return True for messages like 'database "orders" does not exist' or
+    'unknown database'. We deliberately exclude messages that mention
+    schema/table/column, which are handled by the generic "object not found"
+    branch and usually point at the wrong schema rather than the wrong DB."""
+    if "unknown database" in lower or "no such database" in lower:
+        return True
+    if not ("does not exist" in lower or "not found" in lower):
+        return False
+    if "database" not in lower and "catalog" not in lower:
+        return False
+    # Skip when the message is clearly about an object inside the database.
+    if any(token in lower for token in ("schema", "table", "column", "view", "function", "type")):
+        return False
+    return True
+
+
 class ErrorMapper:
     """Map low-level driver errors to operator instructions."""
 
@@ -23,6 +95,7 @@ class ErrorMapper:
         msg = str(exc)
         lower = msg.lower()
         backend_l = backend.lower()
+        backend_label = backend.capitalize() if backend else "Database"
 
         if "pg_stat_statements" in lower:
             return ActionableError(
@@ -48,6 +121,40 @@ class ErrorMapper:
                 "The SQL warehouse certificate could not be verified by the local trust store.",
                 "Configure a trusted CA bundle in the DB profile, or only as a last resort enable TLS no-verify for that profile.",
             )
+
+        # Authentication — wrong credentials, expired token, bad role
+        if _matches_any(lower, _AUTH_PATTERNS):
+            return ActionableError(
+                f"{backend_label} authentication failed",
+                "The driver rejected the credentials or token before opening a session.",
+                "Verify the username, password / API key / access token in the active profile via /add-db-profile or /llm. For Databricks, regenerate the personal access token if it is older than the warehouse rotation policy.",
+            )
+
+        # SSL / TLS — handle before generic "connection failed" so we can hint
+        # at certificate trust rather than firewall.
+        if _matches_any(lower, _SSL_PATTERNS):
+            return ActionableError(
+                f"{backend_label} TLS / SSL error",
+                "AMX could not establish a trusted TLS session with the database.",
+                "If your organisation uses an internal CA, set the trusted CA bundle in the DB profile (Databricks: tls_trusted_ca_file, others: REQUESTS_CA_BUNDLE / SSL_CERT_FILE). Avoid disabling verification in production.",
+            )
+
+        # Network — host unreachable / connection refused
+        if _matches_any(lower, _NETWORK_PATTERNS):
+            return ActionableError(
+                f"{backend_label} network unreachable",
+                "AMX could not reach the database host from this machine.",
+                "Check the host / port in the DB profile, your VPN or office network, and any firewall / IP allow-list on the database side, then retry.",
+            )
+
+        # Database / catalog missing — distinct from "object not found"
+        if _looks_like_missing_database(lower):
+            return ActionableError(
+                f"{backend_label} database not found",
+                "The driver connected to the host but cannot find the configured database / catalog.",
+                "Check the database name in the active profile (PostgreSQL: database, Snowflake: database, Databricks: catalog, BigQuery: project) and confirm the user has access to it.",
+            )
+
         if "not found" in lower or "does not exist" in lower or "not exist or not authorized" in lower:
             return ActionableError(
                 "Object not found or not visible",
