@@ -2092,6 +2092,120 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class StructuredLoggingTests(unittest.TestCase):
+    """Week-5 structured logging: file handler emits one JSON object per
+    line, stderr keeps the historical human-readable format, and a
+    contextvar threads request_id through every log record."""
+
+    def test_set_and_clear_request_id_round_trip(self) -> None:
+        from amx.utils.logging import (
+            clear_request_id,
+            get_request_id,
+            set_request_id,
+        )
+
+        clear_request_id()
+        self.assertIsNone(get_request_id())
+
+        rid = set_request_id()
+        self.assertIsNotNone(get_request_id())
+        self.assertEqual(get_request_id(), rid)
+
+        # Explicit id is preserved unchanged.
+        set_request_id("explicit-id-1234")
+        self.assertEqual(get_request_id(), "explicit-id-1234")
+
+        clear_request_id()
+        self.assertIsNone(get_request_id())
+
+    def test_json_formatter_emits_one_valid_object_per_record(self) -> None:
+        import logging as stdlib_logging
+
+        from amx.utils.logging import JsonFormatter
+
+        formatter = JsonFormatter()
+        record = stdlib_logging.LogRecord(
+            name="amx.test",
+            level=stdlib_logging.WARNING,
+            pathname=__file__,
+            lineno=1,
+            msg="hello %s",
+            args=("world",),
+            exc_info=None,
+        )
+        record.request_id = "req-test-0001"
+
+        rendered = formatter.format(record)
+        payload = json.loads(rendered)
+        self.assertEqual(payload["level"], "WARNING")
+        self.assertEqual(payload["logger"], "amx.test")
+        self.assertEqual(payload["request_id"], "req-test-0001")
+        self.assertEqual(payload["message"], "hello world")
+        self.assertIn("ts", payload)
+        self.assertNotIn("exc_info", payload)
+
+    def test_json_formatter_includes_exc_info_when_logging_exception(self) -> None:
+        import logging as stdlib_logging
+
+        from amx.utils.logging import JsonFormatter
+
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            exc_info = sys.exc_info()
+
+        record = stdlib_logging.LogRecord(
+            name="amx.test",
+            level=stdlib_logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="failure",
+            args=(),
+            exc_info=exc_info,
+        )
+        record.request_id = "-"
+
+        rendered = JsonFormatter().format(record)
+        payload = json.loads(rendered)
+        self.assertEqual(payload["level"], "ERROR")
+        self.assertIn("exc_info", payload)
+        self.assertIn("RuntimeError: boom", payload["exc_info"])
+
+    def test_request_id_filter_injects_default_when_unset(self) -> None:
+        import logging as stdlib_logging
+
+        from amx.utils.logging import _RequestIdFilter, clear_request_id
+
+        clear_request_id()
+        record = stdlib_logging.LogRecord(
+            name="amx.test", level=stdlib_logging.INFO,
+            pathname=__file__, lineno=1, msg="m", args=(), exc_info=None,
+        )
+        kept = _RequestIdFilter().filter(record)
+        self.assertTrue(kept)
+        self.assertEqual(record.request_id, "-")
+
+    def test_request_id_filter_picks_up_active_id(self) -> None:
+        import logging as stdlib_logging
+
+        from amx.utils.logging import (
+            _RequestIdFilter,
+            clear_request_id,
+            set_request_id,
+        )
+
+        try:
+            set_request_id("rid-abc-123")
+            record = stdlib_logging.LogRecord(
+                name="amx.test", level=stdlib_logging.INFO,
+                pathname=__file__, lineno=1, msg="m", args=(), exc_info=None,
+            )
+            _RequestIdFilter().filter(record)
+            self.assertEqual(record.request_id, "rid-abc-123")
+        finally:
+            clear_request_id()
+
+
 class DatabaseConnectionRetryTests(unittest.TestCase):
     """Connector-level transient retry, parallel to LLM transient retry.
 
