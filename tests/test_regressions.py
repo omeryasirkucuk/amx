@@ -2232,6 +2232,154 @@ class ConfigTransactionTests(unittest.TestCase):
             self.assertEqual(counter[0], 0)
 
 
+class LLMTransientRetryTests(unittest.TestCase):
+    """Week-3 polish: LLM provider should retry transient failures (429,
+    timeouts, 5xx, connection reset) once or twice with exponential backoff
+    before giving up, while letting non-transient errors propagate
+    immediately."""
+
+    def setUp(self) -> None:
+        from amx.config import LLMConfig
+        from amx.llm.provider import LLMProvider
+
+        self._llm_cfg = LLMConfig(
+            provider="openai",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+            api_base=None,
+            temperature=0.2,
+            max_tokens=256,
+        )
+        self._provider = LLMProvider(self._llm_cfg)
+        # Speed up the backoff so tests stay snappy.
+        self._sleep_patcher = patch("amx.llm.provider.time.sleep", return_value=None)
+        self._sleep_patcher.start()
+
+    def tearDown(self) -> None:
+        self._sleep_patcher.stop()
+
+    def _patch_litellm_with(self, completion_fn) -> object:
+        fake = SimpleNamespace(completion=completion_fn)
+        return patch("amx.llm.provider._litellm", return_value=fake)
+
+    def _ok_response(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok"),
+                    finish_reason="stop",
+                    logprobs=None,
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=5, total_tokens=15
+            ),
+        )
+
+    def test_transient_429_retried_then_succeeds(self) -> None:
+        """A RateLimitError on the first call should be retried; the second
+        call returns a valid response and the chat() call succeeds."""
+
+        class RateLimitError(Exception):
+            pass
+
+        attempts: list[int] = []
+
+        def fake_completion(**_: object) -> object:
+            attempts.append(len(attempts) + 1)
+            if len(attempts) == 1:
+                raise RateLimitError("Rate limit reached for requests")
+            return self._ok_response()
+
+        with self._patch_litellm_with(fake_completion):
+            result = self._provider.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(result.content, "ok")
+
+    def test_transient_timeout_retried_max_two_times_then_raises(self) -> None:
+        """If transient failures persist past MAX_LLM_RETRIES, the final
+        exception propagates so callers can surface it to the user."""
+
+        class APITimeoutError(Exception):
+            pass
+
+        calls = {"count": 0}
+
+        def fake_completion(**_: object) -> object:
+            calls["count"] += 1
+            raise APITimeoutError("Request timed out")
+
+        with self._patch_litellm_with(fake_completion):
+            with self.assertRaises(APITimeoutError):
+                self._provider.chat([{"role": "user", "content": "hi"}])
+
+        # MAX_LLM_RETRIES=2 → 3 total attempts (initial + 2 retries).
+        self.assertEqual(calls["count"], 3)
+
+    def test_non_transient_error_does_not_retry(self) -> None:
+        """Authentication / bad-request style errors must propagate
+        immediately so the user sees the categorised error fast — retrying
+        a 401 would just delay an actionable message."""
+
+        class AuthenticationError(Exception):
+            pass
+
+        calls = {"count": 0}
+
+        def fake_completion(**_: object) -> object:
+            calls["count"] += 1
+            raise AuthenticationError("Incorrect API key")
+
+        with self._patch_litellm_with(fake_completion):
+            with self.assertRaises(AuthenticationError):
+                self._provider.chat([{"role": "user", "content": "hi"}])
+
+        # No retry — should be exactly one attempt.
+        self.assertEqual(calls["count"], 1)
+
+    def test_message_token_pattern_classifies_transient(self) -> None:
+        """Even when the exception class is generic (RuntimeError), the
+        retry layer should fall back to substring matching on common
+        transient phrases."""
+
+        attempts: list[int] = []
+
+        def fake_completion(**_: object) -> object:
+            attempts.append(len(attempts) + 1)
+            if len(attempts) == 1:
+                raise RuntimeError("503 Service Unavailable: upstream busy")
+            return self._ok_response()
+
+        with self._patch_litellm_with(fake_completion):
+            result = self._provider.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(result.content, "ok")
+
+    def test_is_transient_llm_error_classifications(self) -> None:
+        from amx.llm.provider import _is_transient_llm_error
+
+        # Class-name based.
+        class RateLimitError(Exception):
+            pass
+
+        class APIConnectionError(Exception):
+            pass
+
+        self.assertTrue(_is_transient_llm_error(RateLimitError("...")))
+        self.assertTrue(_is_transient_llm_error(APIConnectionError("...")))
+        # Built-in stdlib transients.
+        self.assertTrue(_is_transient_llm_error(TimeoutError()))
+        self.assertTrue(_is_transient_llm_error(ConnectionError()))
+        # Substring-based.
+        self.assertTrue(_is_transient_llm_error(RuntimeError("Read timed out")))
+        self.assertTrue(_is_transient_llm_error(RuntimeError("502 Bad Gateway")))
+        # Non-transients.
+        self.assertFalse(_is_transient_llm_error(ValueError("bad input")))
+        self.assertFalse(_is_transient_llm_error(RuntimeError("invalid api key")))
+
+
 class EmbeddingsSlashCommandTests(unittest.TestCase):
     """The /embeddings slash command lets users switch provider without
     hand-editing ~/.amx/config.yml. Each branch reinstalls the runtime
