@@ -28,7 +28,7 @@ dict; it returns ``None`` for the MiniLM default so callers can pass
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
@@ -36,6 +36,47 @@ from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 SUPPORTED_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
 DEFAULT_KIND = "minilm"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+
+# ── Default-provider singleton ────────────────────────────────────────
+#
+# ``SearchIndex`` is constructed deep in the codebase (e.g. inside
+# ``SearchCatalog.from_history_store()``) where the live ``AMXConfig``
+# is not in scope. To avoid plumbing ``cfg`` through every caller we
+# expose a process-wide factory that the CLI installs at startup based
+# on ``cfg.embedding``. ``SearchIndex.__init__`` falls back to this
+# factory when no explicit ``embedding_function`` is passed, preserving
+# the previous default-MiniLM behaviour for direct constructors that
+# do not provide one (notably the test suite).
+
+_default_factory: Callable[[], EmbeddingFunction | None] | None = None
+
+
+def set_default_embedding_function(
+    factory: Callable[[], EmbeddingFunction | None] | None,
+) -> None:
+    """Install (or clear) the process-wide default embedding factory.
+
+    The CLI calls this once at startup with a closure that builds the
+    provider configured in ``cfg.embedding``. Tests can install a stub
+    factory and reset to ``None`` in tearDown.
+    """
+    global _default_factory
+    _default_factory = factory
+
+
+def get_default_embedding_function() -> EmbeddingFunction | None:
+    """Return the configured default provider, or ``None`` for MiniLM."""
+    factory = _default_factory
+    if factory is None:
+        return None
+    try:
+        return factory()
+    except Exception:
+        # Swallow factory failures (bad model id, missing dep, network
+        # unreachable for OpenAI etc.) — the caller will see Chroma's
+        # bundled MiniLM and a separate themed error from the CLI hook.
+        return None
 
 
 def _openai_client_factory(

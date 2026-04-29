@@ -27,6 +27,12 @@ class SearchIndex:
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
+        if embedding_function is None:
+            # No explicit override — fall back to the process-wide default
+            # the CLI installed at startup based on ``cfg.embedding``.
+            from amx.search.embeddings import get_default_embedding_function
+
+            embedding_function = get_default_embedding_function()
         kwargs: dict[str, Any] = {
             "name": "amx_search",
             "metadata": {"hnsw:space": "cosine"},
