@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
 
 ## [Unreleased]
+### Added
+- **DB connection transient retry** (`amx/db/connector.py`): `test_connection_result()` now retries once with backoff on transient failures (DNS glitches, connection reset, connection refused, timeouts, 502/503/504, broken pipe). Auth, permission, missing-database, and SSL-trust errors are classified as **non-transient** and propagate immediately so the categorised actionable message from `ErrorMapper` reaches the user without an artificial delay. Mirrors the LLM transient-retry pattern shipped in PR #9.
+- **`_is_transient_db_connection_error()` helper**: pattern matches against both the exception class (`TimeoutError`, `ConnectionError`) and the message text. The non-transient pattern list includes `password authentication failed`, `permission denied`, `401 unauthorized`, `403 forbidden`, `invalid token`, `does not exist`, `unknown database`, `certificate_verify_failed`, `self-signed certificate` — anything an admin needs to fix before retrying.
+- **6 new `DatabaseConnectionRetryTests`** covering: transient-then-success, persistent DNS failure exhausts retries with categorised message, auth-failure does not retry, permission-denied does not retry, certificate-verify-failed does not retry, and the `_is_transient_db_connection_error` truth table.
+
 ### Fixed
 - **`/embeddings` from the root tab now auto-shifts into `/search`**, matching the UX every other namespace-scoped command already had (e.g. `/add-db-profile` → "Assumed /db namespace for this command."). Previously typing `/embeddings` from `[ ROOT ]` printed `✗ /embeddings belongs in /search.` and forced the user to manually `/search` first; now it just works.
 - **`/embedding` (singular) is accepted as an alias for `/embeddings`** so the typo `/embedding` no longer hits "Unknown command."
