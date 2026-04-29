@@ -2092,6 +2092,95 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class RequestIdWiringTests(unittest.TestCase):
+    """Verify that the long-running CLI commands (`/search ask`,
+    `/analyze run`) set a fresh request_id on entry and clear it on
+    exit, so each invocation's log lines are filterable by id."""
+
+    def test_search_ask_sets_request_id_during_execution_and_clears_after(
+        self,
+    ) -> None:
+        from amx.cli_support.commands.search import _run_search_ask
+        from amx.utils.logging import (
+            clear_request_id,
+            get_request_id,
+            set_request_id,
+        )
+
+        clear_request_id()
+        seen_during_call: dict[str, str | None] = {"id": None}
+
+        class FakeService:
+            settings = {
+                "show_provenance": "false",
+                "show_confidence": "false",
+            }
+
+            def ask(self, question_text: str):
+                # The whole point: at this exact moment, the request
+                # id must be set, so any log line emitted from inside
+                # SearchAgent / SearchCatalog / LLMProvider carries it.
+                seen_during_call["id"] = get_request_id()
+                return SimpleNamespace(
+                    summary="ok",
+                    provenance=[],
+                    confidence="high",
+                    intent="explain",
+                    question=question_text,
+                    rows=[],
+                    details={},
+                )
+
+        cfg = AMXConfig()
+        # Patch history_store to None so the run-persistence branch is
+        # skipped — we only care about the request_id wrapping.
+        with patch(
+            "amx.cli_support.commands.search.history_store",
+            return_value=None,
+        ):
+            _run_search_ask(
+                cfg,
+                FakeService(),  # type: ignore[arg-type]
+                "what is the orders table?",
+                log_event=lambda **_: None,
+                take_actions=False,
+            )
+
+        self.assertIsNotNone(seen_during_call["id"])
+        # Cleared on exit, regardless of success or exception.
+        self.assertIsNone(get_request_id())
+
+    def test_search_ask_clears_request_id_on_exception(self) -> None:
+        from amx.cli_support.commands.search import _run_search_ask
+        from amx.utils.logging import clear_request_id, get_request_id
+
+        clear_request_id()
+
+        class FailingService:
+            settings: dict[str, str] = {}
+
+            def ask(self, _q: str):
+                raise RuntimeError("svc boom")
+
+        cfg = AMXConfig()
+        with patch(
+            "amx.cli_support.commands.search.history_store",
+            return_value=None,
+        ):
+            with self.assertRaises(RuntimeError):
+                _run_search_ask(
+                    cfg,
+                    FailingService(),  # type: ignore[arg-type]
+                    "x?",
+                    log_event=lambda **_: None,
+                    take_actions=False,
+                )
+
+        # The finally block must have cleared the id even though
+        # the inner body raised.
+        self.assertIsNone(get_request_id())
+
+
 class StructuredLoggingTests(unittest.TestCase):
     """Week-5 structured logging: file handler emits one JSON object per
     line, stderr keeps the historical human-readable format, and a
