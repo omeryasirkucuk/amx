@@ -1765,6 +1765,176 @@ class LLMProviderTests(unittest.TestCase):
                 logger.disabled = disabled
 
 
+class SecretKeychainTests(unittest.TestCase):
+    """Regression tests for Week-2 keyring-backed secret storage."""
+
+    def setUp(self) -> None:
+        from amx.storage.secrets import InMemorySecretStore, set_default_store
+
+        self._store = InMemorySecretStore()
+        set_default_store(self._store)
+
+    def tearDown(self) -> None:
+        from amx.storage.secrets import set_default_store
+
+        set_default_store(None)
+
+    def test_save_externalises_db_password_to_keyring(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.db_profiles = {
+                "prod": DBConfig(
+                    backend="postgresql",
+                    host="db.prod.example.com",
+                    user="alice",
+                    password="super-secret",
+                    database="orders",
+                )
+            }
+            cfg.active_db_profile = "prod"
+            cfg.db = cfg.db_profiles["prod"]
+            cfg.save(str(cfg_path))
+
+            # Plaintext must NOT be in the YAML — only the reference.
+            yaml_text = cfg_path.read_text()
+            self.assertNotIn("super-secret", yaml_text)
+            self.assertIn("keyring:db_profiles/prod/password", yaml_text)
+            # The actual secret lives in the (in-memory) keyring.
+            self.assertEqual(
+                self._store.get("db_profiles/prod/password"), "super-secret"
+            )
+
+    def test_load_resolves_keyring_reference_back_to_plaintext(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.db_profiles = {
+                "prod": DBConfig(
+                    backend="postgresql",
+                    host="db.prod.example.com",
+                    user="alice",
+                    password="super-secret",
+                    database="orders",
+                )
+            }
+            cfg.active_db_profile = "prod"
+            cfg.db = cfg.db_profiles["prod"]
+            cfg.save(str(cfg_path))
+
+            reloaded = AMXConfig.load(str(cfg_path))
+            self.assertEqual(reloaded.db_profiles["prod"].password, "super-secret")
+            self.assertEqual(reloaded.db.password, "super-secret")
+
+    def test_legacy_plaintext_password_still_loads(self) -> None:
+        """Existing user configs with plaintext passwords must keep working
+        without manual migration. The next save promotes them to the keyring."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg_path.write_text(
+                "active_db_profile: legacy\n"
+                "db:\n"
+                "  backend: postgresql\n"
+                "  host: db.example.com\n"
+                "  user: alice\n"
+                "  password: legacy-plain\n"
+                "  database: orders\n"
+                "  port: 5432\n"
+                "db_profiles:\n"
+                "  legacy:\n"
+                "    backend: postgresql\n"
+                "    host: db.example.com\n"
+                "    user: alice\n"
+                "    password: legacy-plain\n"
+                "    database: orders\n"
+                "    port: 5432\n"
+            )
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertEqual(cfg.db_profiles["legacy"].password, "legacy-plain")
+
+            # Saving migrates the secret into the keyring.
+            cfg.save(str(cfg_path))
+            self.assertEqual(
+                self._store.get("db_profiles/legacy/password"), "legacy-plain"
+            )
+            yaml_text = cfg_path.read_text()
+            self.assertNotIn("legacy-plain", yaml_text)
+
+    def test_missing_keyring_entry_resolves_to_empty_string(self) -> None:
+        """A reference whose key has been deleted from the keyring should not
+        crash the loader; the field becomes empty so the user can be prompted
+        to re-enter the secret."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg_path.write_text(
+                "active_db_profile: ghost\n"
+                "db_profiles:\n"
+                "  ghost:\n"
+                "    backend: postgresql\n"
+                "    host: h\n"
+                "    user: u\n"
+                "    database: d\n"
+                "    port: 5432\n"
+                "    password: keyring:db_profiles/ghost/password\n"
+            )
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertEqual(cfg.db_profiles["ghost"].password, "")
+
+    def test_llm_api_key_externalised_separately_from_db(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            from amx.config import LLMConfig
+
+            cfg.llm_profiles = {
+                "main": LLMConfig(
+                    provider="openai",
+                    model="gpt-4o-mini",
+                    api_key="sk-test-1234",
+                )
+            }
+            cfg.active_llm_profile = "main"
+            from dataclasses import replace as dc_replace
+
+            cfg.llm = dc_replace(cfg.llm_profiles["main"])
+            cfg.save(str(cfg_path))
+
+            self.assertNotIn("sk-test-1234", cfg_path.read_text())
+            self.assertEqual(
+                self._store.get("llm_profiles/main/api_key"), "sk-test-1234"
+            )
+
+    def test_null_store_keeps_plaintext_when_keyring_unavailable(self) -> None:
+        """If the OS has no keyring backend, secrets stay in plaintext rather
+        than silently disappearing."""
+        from amx.storage.secrets import NullSecretStore, set_default_store
+
+        set_default_store(NullSecretStore())
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                cfg_path = Path(td) / "config.yml"
+                cfg = AMXConfig()
+                cfg.db_profiles = {
+                    "prod": DBConfig(
+                        backend="postgresql",
+                        host="db.prod.example.com",
+                        user="alice",
+                        password="still-plaintext",
+                        database="orders",
+                    )
+                }
+                cfg.active_db_profile = "prod"
+                cfg.db = cfg.db_profiles["prod"]
+                cfg.save(str(cfg_path))
+
+                yaml_text = cfg_path.read_text()
+                self.assertIn("still-plaintext", yaml_text)
+                self.assertNotIn("keyring:", yaml_text)
+        finally:
+            # Restore the in-memory store the conftest fixture set up.
+            set_default_store(self._store)
+
+
 class FirstRunConfigTests(unittest.TestCase):
     """Regression tests for the Week-2 first-run UX hardening."""
 
