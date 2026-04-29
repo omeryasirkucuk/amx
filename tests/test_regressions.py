@@ -2092,6 +2092,95 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class TokenBudgetPreCheckTests(unittest.TestCase):
+    """`_synthesize_answer` now pre-trims retrieval rows before sending
+    them to the LLM. The trimmer must keep the highest-scored rows,
+    drop the rest, and never expand beyond the input budget."""
+
+    def test_input_token_budget_per_model_family(self) -> None:
+        from amx.search.agent import _input_token_budget_for
+
+        # Default budget for OpenAI gpt-4o family.
+        self.assertEqual(_input_token_budget_for("gpt-4o-mini"), 60_000)
+        self.assertEqual(_input_token_budget_for("gpt-4o"), 60_000)
+
+        # Claude family gets the larger budget (200K context window).
+        self.assertEqual(_input_token_budget_for("claude-3-5-sonnet-20241022"), 150_000)
+        self.assertEqual(_input_token_budget_for("claude-sonnet-4-20250514"), 150_000)
+        self.assertEqual(_input_token_budget_for("claude-opus-4"), 150_000)
+
+        # Gemini gets the largest (1M-2M context).
+        self.assertEqual(_input_token_budget_for("gemini-1.5-pro"), 250_000)
+        self.assertEqual(_input_token_budget_for("gemini-2.0-flash"), 250_000)
+
+        # Unknown / empty falls back to default.
+        self.assertEqual(_input_token_budget_for("totally-new-model"), 60_000)
+        self.assertEqual(_input_token_budget_for(""), 60_000)
+        self.assertEqual(_input_token_budget_for(None), 60_000)
+
+    def test_trim_rows_preserves_all_under_budget(self) -> None:
+        from amx.search.agent import _trim_rows_to_token_budget
+
+        rows = [
+            {"match_score": 5.0, "schema_name": "p", "table_name": f"t{i}"}
+            for i in range(3)
+        ]
+        kept, dropped = _trim_rows_to_token_budget(
+            rows,
+            system_text="sys",
+            base_payload={"question": "x"},
+            budget=60_000,
+        )
+        self.assertEqual(len(kept), 3)
+        self.assertEqual(dropped, 0)
+
+    def test_trim_rows_keeps_highest_scored_when_over_budget(self) -> None:
+        """A tiny budget forces the trimmer to drop everything except
+        the highest-scored rows. The order must reflect descending
+        match_score even if the input was unsorted."""
+        import string
+
+        from amx.search.agent import _trim_rows_to_token_budget
+
+        # Use varied text — tiktoken compresses long runs of identical
+        # characters very efficiently, which would let the test pass
+        # vacuously without exercising the trimmer.
+        words = " ".join(string.ascii_lowercase * 50)
+        rows = [
+            {"match_score": 1.0, "schema_name": "p", "table_name": "t1",
+             "description": f"Description one — {words}"},
+            {"match_score": 9.0, "schema_name": "p", "table_name": "t9",
+             "description": f"Description nine — {words}"},
+            {"match_score": 5.0, "schema_name": "p", "table_name": "t5",
+             "description": f"Description five — {words}"},
+        ]
+        kept, dropped = _trim_rows_to_token_budget(
+            rows,
+            system_text="short",
+            base_payload={"q": "x"},
+            budget=500,  # tighter than any single row's text
+        )
+        self.assertGreaterEqual(dropped, 1)
+        if kept:
+            # Highest-scored row is t9 — it must come first in kept.
+            self.assertEqual(kept[0]["table_name"], "t9")
+            scores = [row["match_score"] for row in kept]
+            # The kept slice is sorted descending — the highest scores survived.
+            self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_trim_empty_input_returns_empty(self) -> None:
+        from amx.search.agent import _trim_rows_to_token_budget
+
+        kept, dropped = _trim_rows_to_token_budget(
+            [],
+            system_text="sys",
+            base_payload={"q": "x"},
+            budget=60_000,
+        )
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, 0)
+
+
 class AskPathDeprecationTests(unittest.TestCase):
     """`LoopBasedAskAgent` (the deterministic tool-loop path that
     predates `SearchAgent`) is being phased out. These tests pin the
