@@ -2232,6 +2232,88 @@ class ConfigTransactionTests(unittest.TestCase):
             self.assertEqual(counter[0], 0)
 
 
+class EmbeddingDefaultFactoryTests(unittest.TestCase):
+    """The singleton in amx.search.embeddings lets the CLI install the
+    user's chosen provider once at startup so all later SearchIndex
+    constructors pick it up without plumbing cfg through every caller."""
+
+    def setUp(self) -> None:
+        from amx.search import embeddings as embeddings_module
+
+        self.embeddings_module = embeddings_module
+        # Reset between tests so previous installs don't bleed across cases.
+        embeddings_module.set_default_embedding_function(None)
+
+    def tearDown(self) -> None:
+        self.embeddings_module.set_default_embedding_function(None)
+
+    def test_default_factory_returns_none_when_unset(self) -> None:
+        self.assertIsNone(self.embeddings_module.get_default_embedding_function())
+
+    def test_set_and_get_default_factory_round_trip(self) -> None:
+        sentinel = object()
+        self.embeddings_module.set_default_embedding_function(lambda: sentinel)
+        self.assertIs(self.embeddings_module.get_default_embedding_function(), sentinel)
+
+    def test_default_factory_failure_swallowed_returns_none(self) -> None:
+        def boom() -> object:
+            raise RuntimeError("no model")
+
+        self.embeddings_module.set_default_embedding_function(boom)
+        self.assertIsNone(self.embeddings_module.get_default_embedding_function())
+
+    def test_search_index_falls_back_to_default_factory(self) -> None:
+        from amx.search import index as index_module
+
+        captured: dict[str, object] = {}
+        sentinel = object()
+
+        class FakeCollection:
+            def __init__(self, **_: object) -> None:
+                pass
+
+        class FakeClient:
+            def __init__(self, *, path: str) -> None:  # noqa: ARG002
+                pass
+
+            def get_or_create_collection(self, **kwargs: object) -> FakeCollection:
+                captured.update(kwargs)
+                return FakeCollection()
+
+        self.embeddings_module.set_default_embedding_function(lambda: sentinel)
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+                index_module.SearchIndex(persist_dir=td)
+
+        # Default factory's sentinel was wired into the Chroma collection.
+        self.assertIs(captured.get("embedding_function"), sentinel)
+
+    def test_search_index_explicit_arg_bypasses_default_factory(self) -> None:
+        from amx.search import index as index_module
+
+        captured: dict[str, object] = {}
+        explicit = object()
+
+        class FakeClient:
+            def __init__(self, *, path: str) -> None:  # noqa: ARG002
+                pass
+
+            def get_or_create_collection(self, **kwargs: object) -> object:
+                captured.update(kwargs)
+                return object()
+
+        # A different sentinel is registered as the default; the explicit arg
+        # must win over it so callers retain control.
+        self.embeddings_module.set_default_embedding_function(lambda: object())
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+                index_module.SearchIndex(
+                    persist_dir=td, embedding_function=explicit  # type: ignore[arg-type]
+                )
+
+        self.assertIs(captured.get("embedding_function"), explicit)
+
+
 class EmbeddingConfigPersistenceTests(unittest.TestCase):
     """The Week-3 EmbeddingConfig integrates with AMXConfig load/save and the
     OS-keyring secret externalisation. These tests pin the round-trip and
