@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from amx.agents.base import Confidence, MetadataSuggestion
 from amx.config import AMXConfig
+from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent
 from amx.db.connector import AssetKind, ColumnProfile, TableProfile
 from amx.search.agent import SearchPolicy
 from amx.search.catalog import SearchCatalog
@@ -872,6 +873,55 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["value"], 3)
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.details["retrieval"]["schema_name"], "sap")
+
+    def test_column_count_inventory_uses_schema_explorer(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"how many columns per table","search_mode":"count_tables","question_class":"inventory","target_entity":"aggregate","entity_hints":[],"search_queries":["how many columns in which table"],"needs_typo_recovery":false,"answer_language":"english","reason":"aggregate metadata question"}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("How many columns in which table?")
+
+        self.assertEqual(answer.details["plan"]["search_mode"], "schema_inventory")
+        self.assertEqual(answer.details["retrieval"]["tool"], "SchemaExplorer")
+        self.assertIn("| Schema | Table | Columns | Rows | Cluster |", answer.summary)
+        self.assertIn("| sap | vbak | 3 | 10 |", answer.summary)
+        self.assertIn("| sap | kna1 | 1 | 5 |", answer.summary)
+        self.assertNotIn("Best grounded match", answer.summary)
+        self.assertTrue(any(step["step"] == "schema_explorer" for step in answer.details["thought_trace"]))
+
+    def test_headless_ask_inventory_uses_schema_explorer_strategy(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        response = LoopBasedAskAgent(AskToolbox(cfg, self.catalog)).answer("How many columns per table?")
+
+        self.assertEqual(response.strategy, "inventory")
+        self.assertEqual(response.tool_results[0].tool, "SchemaExplorer")
+        self.assertIn("| sap | vbak | 3 | 10 |", response.answer)
+        self.assertNotIn("Best grounded match", response.answer)
 
     def test_table_concept_question_reroutes_from_inventory_to_semantic_table_search(self) -> None:
         self.catalog.sync_table_profile(

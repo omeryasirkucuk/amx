@@ -8,6 +8,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
+from amx.agents.tools import SchemaExplorer
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.llm.provider import LLMProvider
@@ -261,12 +262,12 @@ class SearchAgent:
             "Return JSON only. Do not answer the question.\n"
             "You are choosing the smallest correct routing decision, not writing prose.\n"
             "Allowed search_mode values: semantic_concept, name_lookup, join_candidates, joinable_tables, "
-            "table_explain, list_databases, list_schemas, count_tables, compare_entities, unsupported.\n"
+            "table_explain, list_databases, list_schemas, count_tables, schema_inventory, compare_entities, unsupported.\n"
             "Allowed question_class values: inventory, entity_lookup, semantic_discovery, join_discovery, "
             "table_understanding, comparative_reasoning, unsupported.\n"
             "Allowed target_entity values: column, table, schema, database, aggregate, join_path, unknown.\n"
             "Allowed intent values: find_columns, join_candidates, explain_table, list_databases, list_schemas, "
-            "count_tables, compare_entities, unsupported.\n"
+            "count_tables, schema_inventory, compare_entities, unsupported.\n"
             "Allowed request_type values: metadata_discovery, coverage_audit, inventory, join, table_understanding, comparative_reasoning, unsupported.\n"
             "Core rules:\n"
             "- Set out_of_domain=true STRICTLY ONLY for greetings (e.g. hello, hi), small talk, or requests entirely unrelated to any kind of database or data context (e.g. write me Python code, tell me a joke).\n"
@@ -284,6 +285,7 @@ class SearchAgent:
             "- 'Which tables can join with X' -> joinable_tables, join_discovery, target_entity=table.\n"
             "- 'What does this table do' or 'what is ADRC table' -> table_explain, table_understanding, target_entity=table.\n"
             "- 'Which databases/schemas are known' or 'how many tables' -> inventory routes.\n"
+            "- 'How many columns per table', 'column counts by table', or broad structural table inventories -> search_mode=schema_inventory, question_class=inventory, target_entity=table.\n"
             "- Broad missing-comment requests such as 'veri tabanlarımızda comment kısmı eksik olanlar var mı' are coverage_audit.\n"
             "- For coverage_audit use intent=check_coverage and search_mode=check_coverage.\n"
             "- Conceptual search for tables containing a business concept such as address details, pricing, customer identifiers, or dates -> semantic_concept, semantic_discovery, target_entity=table.\n"
@@ -375,7 +377,7 @@ class SearchAgent:
             return draft, usage_1
 
     def _class_from_mode(self, search_mode: str) -> str:
-        if search_mode in {"list_databases", "list_schemas", "count_tables"}:
+        if search_mode in {"list_databases", "list_schemas", "count_tables", "schema_inventory"}:
             return "inventory"
         if search_mode == "name_lookup":
             return "entity_lookup"
@@ -420,9 +422,31 @@ class SearchAgent:
         asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
         asks_column_word = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
         asks_listing = any(token in sample for token in ("hangi", "tüm", "tum", "list", "show", "söyle", "soyle", "tell", "getir", "listele", "bul"))
+        asks_per_table = any(token in sample for token in ("per table", "by table", "which table", "hangi tabl", "tablo baz", "her tablo"))
+        asks_comment_coverage = any(token in sample for token in ("comment", "comments", "açıklama", "aciklama", "yorum"))
+        asks_relationship = any(token in sample for token in ("join", "link", "relationship", "relate", "connect", "bağ", "bag"))
         asks_semantic_table_concept = any(
             token in sample for token in ("içinde", "icinde", "alak", "related", "detail", "detay", "contain", "containing", "with", "olan")
         )
+        if asks_column_word and asks_table_word and (asks_count or asks_per_table) and not asks_comment_coverage and not asks_relationship:
+            return SearchPlan(
+                intent="schema_inventory",
+                out_of_domain=plan.out_of_domain,
+                normalized_question=plan.normalized_question or question,
+                search_mode="schema_inventory",
+                question_class="inventory",
+                target_entity="table",
+                entity_hints=list(plan.entity_hints),
+                search_queries=list(plan.search_queries) or [question],
+                needs_typo_recovery=plan.needs_typo_recovery,
+                answer_language=plan.answer_language,
+                ambiguity_flags=list(plan.ambiguity_flags),
+                reason=(plan.reason + "; routed to SchemaExplorer structural inventory").strip("; "),
+                decision_confidence=plan.decision_confidence,
+                needs_clarification=False,
+                clarification_question="",
+                review_notes=plan.review_notes,
+            )
         if asks_column_word and asks_listing and plan.search_mode == "table_explain" and not self._explicit_table_paths_for_question(question):
             return SearchPlan(
                 intent="find_columns",
@@ -1340,6 +1364,36 @@ class SearchAgent:
                     "verified_live": True,
                 }
             ], details
+        if plan.search_mode == "schema_inventory":
+            schema_name = self.cfg.current_schema or ""
+            database_name = self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or ""
+            try:
+                schema_lookup = {str(item).lower(): str(item) for item in self._inventory_db().list_schemas()}
+            except Exception:
+                schema_lookup = {}
+            for hint in plan.entity_hints:
+                normalized = str(hint or "").strip().lower()
+                if normalized in schema_lookup:
+                    schema_name = schema_lookup[normalized]
+                    break
+            explorer = SchemaExplorer(self.cfg, self.catalog, db_factory=self._inventory_db_factory)
+            inventory = explorer.explore(
+                schema_name=schema_name or None,
+                database_name=database_name or None,
+                limit=max(limit * 20, 500),
+            )
+            rows = [dict(row) for row in inventory.get("rows", [])]
+            summary = dict(inventory.get("summary") or {})
+            scope = dict(inventory.get("scope") or {})
+            details["display_rows"] = True
+            details["result_kind"] = "schema_inventory"
+            details["tool"] = "SchemaExplorer"
+            details["schema_explorer_summary"] = summary
+            details["schema_name"] = str(scope.get("schema_name") or schema_name or "")
+            details["database_name"] = str(scope.get("database_name") or database_name or "")
+            details["evidence_sources"] = ["schema_explorer", str(inventory.get("source") or "effective_metadata")]
+            details["gap_fill_operations"] = int(summary.get("gap_fill_operations") or 0)
+            return rows, details
         if plan.search_mode == "compare_entities":
             rows = self.catalog.search_columns(
                 self.db_profile,
@@ -1528,7 +1582,11 @@ class SearchAgent:
             reason = "semantic_match"
             tier = "strong"
             role = "supporting"
-            if bool(row.get("verified_live")) or row.get("row_type") == "live_probe":
+            if row.get("row_type") == "schema_explorer_table":
+                tier = "strong"
+                reason = "schema_explorer_inventory"
+                role = "primary" if idx == 0 else "supporting"
+            elif bool(row.get("verified_live")) or row.get("row_type") == "live_probe":
                 tier = "verified"
                 reason = "live_verified"
                 role = "primary" if idx == 0 or row.get("row_type") == "live_probe" else "supporting"
@@ -1561,6 +1619,9 @@ class SearchAgent:
         visible: list[dict[str, Any]] = []
         suppressed = 0
         for idx, row in enumerate(rows):
+            if plan.search_mode == "schema_inventory":
+                visible.append(row)
+                continue
             if plan.question_class == "join_discovery":
                 visible.append(row)
                 continue
@@ -1714,6 +1775,48 @@ class SearchAgent:
         retrieval_details: dict[str, Any],
     ) -> str | None:
         lang = (plan.answer_language or "english").lower()
+        if plan.search_mode == "schema_inventory":
+            summary = dict(retrieval_details.get("schema_explorer_summary") or {})
+            table_count = int(summary.get("table_count") or len(rows))
+            total_columns = int(summary.get("total_columns") or sum(int(row.get("column_count") or 0) for row in rows))
+            schema_name = str(retrieval_details.get("schema_name") or "").strip()
+            database_name = str(retrieval_details.get("database_name") or "").strip()
+            scope_label = f"`{schema_name}` schema" if schema_name else f"`{database_name}` database" if database_name else "the active namespace"
+            cluster_counts: dict[str, int] = {}
+            for row in rows:
+                cluster = str(row.get("semantic_cluster") or "Unclustered")
+                cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
+            cluster_summary = ", ".join(
+                f"{cluster}: {count}" for cluster, count in sorted(cluster_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+            )
+            header = (
+                f"{scope_label} icin **{table_count}** tablo ve toplam **{total_columns}** kolon bulundu."
+                if lang == "turkish"
+                else f"SchemaExplorer found **{table_count}** tables and **{total_columns}** total columns for {scope_label}."
+            )
+            if cluster_summary:
+                header += (
+                    f" Semantik kumeler: {cluster_summary}."
+                    if lang == "turkish"
+                    else f" Semantic clusters: {cluster_summary}."
+                )
+            table_lines = [
+                "| Schema | Table | Columns | Rows | Cluster |",
+                "|---|---:|---:|---:|---|",
+            ]
+            for row in rows[:50]:
+                table_lines.append(
+                    "| {schema} | {table} | {columns} | {rows_count} | {cluster} |".format(
+                        schema=str(row.get("schema_name") or ""),
+                        table=str(row.get("table_name") or ""),
+                        columns=int(row.get("column_count") or 0),
+                        rows_count=int(row.get("row_count") or 0),
+                        cluster=str(row.get("semantic_cluster") or "Unclustered"),
+                    )
+                )
+            if len(rows) > 50:
+                table_lines.append(f"| ... | {len(rows) - 50} more tables |  |  |  |")
+            return header + "\n\n" + "\n".join(table_lines)
         if plan.search_mode == "count_tables" and rows:
             value = int(rows[0].get("value") or 0)
             schema_name = str(retrieval_details.get("schema_name") or rows[0].get("schema_name") or "")
@@ -1920,6 +2023,8 @@ class SearchAgent:
             labels.append("configured database profiles")
         if plan.question_class == "inventory":
             labels.append("live structural truth")
+        if any((row.get("row_type") or "") == "schema_explorer_table" for row in rows):
+            labels.append("schema explorer structural inventory")
         if plan.question_class == "join_discovery":
             labels.append("structural relationships")
             if any(str(row.get("confidence_band") or "") in {"high_likelihood", "possible", "weak_hypothesis"} for row in rows):
@@ -2188,10 +2293,24 @@ class SearchAgent:
         t0 = time.monotonic()
         with step_spinner("Search Agent: retrieving grounded evidence"):
             rows, retrieval_details = self._retrieve(clean_question, plan, policy)
+        if retrieval_details.get("tool") == "SchemaExplorer":
+            trace_step = "schema_explorer"
+            summary = retrieval_details.get("schema_explorer_summary") or {}
+            trace_observation = (
+                f"SchemaExplorer returned {summary.get('table_count', len(rows))} table(s), "
+                f"{summary.get('total_columns', 0)} column(s), and "
+                f"{retrieval_details.get('gap_fill_operations', 0)} gap-fill operation(s)."
+            )
+        else:
+            trace_step = "metadata_query"
+            trace_observation = (
+                f"Retrieved {len(rows)} candidate row(s) from "
+                f"{', '.join(retrieval_details.get('evidence_sources') or []) or 'metadata sources'}."
+            )
         thought_trace.append(
             {
-                "step": "metadata_query",
-                "observation": f"Retrieved {len(rows)} candidate row(s) from {', '.join(retrieval_details.get('evidence_sources') or []) or 'metadata sources'}.",
+                "step": trace_step,
+                "observation": trace_observation,
             }
         )
         stage_metrics.append({"stage": "retrieval", "duration_sec": round(time.monotonic() - t0, 4)})

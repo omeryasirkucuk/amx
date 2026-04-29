@@ -25,9 +25,9 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.1`: Added the SchemaExplorer macro-vision tool, inventory/definition/relationship/deep-dive ask strategies, set-based Markdown synthesis for column-count/table-inventory questions, and thought-trace visibility for schema inventory tool use.
 - `v0.2.0`: Added the headless `AMXApplication`/`amx.init()` API, UMI-normalized profile entities, rule-purged semantic join scoring, description-only weighted logprob confidence, visible `/search ask` thought traces, tool-loop ask aliases, actionable error mapping, RAG reranking, SQLite audit columns, and write-through state persistence.
 - `v0.1.129`: `/search` now enforces an LLM-native `request_type` contract for routing, including explicit `coverage_audit` handling for broad missing-comment questions so those requests reliably route to coverage workflow instead of semantic table matches.
-- `v0.1.128`: `/search` interpretation moved to an LLM-native multilingual flow with balanced classifier/reviewer decisioning, confidence-aware clarification questions for ambiguous scope, and configurable interpretation settings (`interpretation_mode`, `clarification_on_low_confidence`).
 See `CHANGELOG.md` for older release history.
 
 ## Architecture
@@ -390,6 +390,7 @@ Answering behavior:
 - `/search` is chat-first: inside the `/search` tab, plain text is treated as a metadata question
 - each question now runs through a dedicated **Search Agent** pipeline: interpretation, retrieval planning, grounded retrieval, live verification for high-risk structural claims, answer synthesis, and optional follow-up action suggestions
 - `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
+- broad structural questions such as "how many columns per table?" use SchemaExplorer and return set-based Markdown tables with table names, column counts, row counts, and semantic clusters instead of a single best match
 - `/search ask` now distinguishes table-level semantic discovery from inventory questions, so prompts like "which tables contain address details" route to ranked table matches instead of accidental table-count answers
 - `/search ask` uses an LLM-native interpretation pipeline with deterministic safeguards only as resilience fallbacks; semantic results are grounded by lexical, structural, statistical, and documentation evidence instead of vendor-specific naming rules
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
@@ -405,7 +406,7 @@ Answering behavior:
 - follow-up questions reuse narrower session memory so users can keep discussing the same table or field naturally without broad semantic result sets contaminating later table-scoped questions
 - `/search ask` shows live progress while AMX interprets the question, retrieves evidence, and synthesizes the answer
 - `/search ask` records retrieval policy, evidence sources, ambiguity flags, per-stage timings, suggested actions, executed read-only actions, answer strategy, and suppressed-row counts into history/event payloads so answers remain diagnosable
-- `/search ask` now also records a concise thought trace of observable planning/tool stages (`interpret_question`, `metadata_query`, `data_peek`, `verify_evidence`) for debugging without exposing hidden model chain-of-thought
+- `/search ask` now also records a concise thought trace of observable planning/tool stages (`interpret_question`, `metadata_query` or `schema_explorer`, `data_peek`, `verify_evidence`) for debugging without exposing hidden model chain-of-thought
 - `/search ask --actions` turns selected suggestions into a human-approved execution loop: AMX asks before running catalog sync, cached code-evidence refresh, or single-table metadata analysis actions, then records the action outcome
 - `/search /context-detail` controls how much neighborhood, code, and history context is exposed to the search synthesizer for cost/latency tuning
 - `/search` answer language is forced to the detected language of the user's question, even if the interpreter LLM suggests a different `answer_language`
@@ -464,7 +465,8 @@ amx/
 │   ├── orchestrator.py # Multi-agent coordination + human-in-the-loop
 │   ├── profile_agent.py # Database profiling agent
 │   ├── rag_agent.py    # Document RAG agent
-│   └── code_agent.py   # Codebase analysis agent
+│   ├── code_agent.py   # Codebase analysis agent
+│   └── tools/          # Reusable agent tools such as SchemaExplorer
 ├── db/
 │   ├── connector.py    # Database introspection and metadata I/O
 │   └── adapters/       # Backend-specific SQL and connections (PG, Snowflake, …)

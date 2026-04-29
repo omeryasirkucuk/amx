@@ -1372,6 +1372,52 @@ class SearchCatalog:
             row = conn.execute(query, tuple(params)).fetchone()
         return int((row["cnt"] if row else 0) or 0)
 
+    def schema_inventory(
+        self,
+        db_profile: str,
+        *,
+        schema_name: str | None = None,
+        database_name: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Return table-level structural inventory with column counts."""
+        params: list[Any] = [db_profile]
+        where = ["t.db_profile = ?", "t.entity_kind = 'table'"]
+        if schema_name:
+            where.append("LOWER(t.schema_name) = LOWER(?)")
+            params.append(schema_name)
+        if database_name:
+            where.append("LOWER(t.database_name) = LOWER(?)")
+            params.append(database_name)
+        query = f"""
+            SELECT
+                t.id,
+                t.database_name,
+                t.schema_name,
+                t.table_name,
+                t.asset_kind,
+                t.row_count,
+                td.description_text AS effective_description,
+                COUNT(c.id) AS column_count,
+                GROUP_CONCAT(cd.description_text, ' ') AS column_descriptions
+            FROM catalog_entities t
+            LEFT JOIN catalog_descriptions td ON td.id = t.effective_description_id
+            LEFT JOIN catalog_entities c
+              ON c.db_profile = t.db_profile
+             AND c.schema_name = t.schema_name
+             AND c.table_name = t.table_name
+             AND c.entity_kind = 'column'
+            LEFT JOIN catalog_descriptions cd ON cd.id = c.effective_description_id
+            WHERE {' AND '.join(where)}
+            GROUP BY t.id
+            ORDER BY t.schema_name, t.table_name
+            LIMIT ?
+        """
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
     def joinable_tables(self, db_profile: str, table_path: str, limit: int = 8) -> list[dict[str, Any]]:
         if "." not in (table_path or ""):
             return []

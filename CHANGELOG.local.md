@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.1] — 2026-04-29
+### Analytical Reasoning & SchemaExplorer
+- **amx/agents/tools/schema_explorer.py**: Added SchemaExplorer as a macro-vision tool for namespace inventory, table counts, column counts, row counts, UMI paths, and evidence-derived semantic clusters.
+- **amx/search/catalog.py**: Added `schema_inventory()` to query set-level table structure from the SQLite catalog without relying on naming conventions.
+- **amx/search/agent.py**: Added `schema_inventory` strategy routing for broad column/table aggregate questions, deterministic Markdown table synthesis, and thought-trace visibility for SchemaExplorer calls.
+- **amx/core/ask_agent.py**: Added inventory/definition/relationship/deep-dive strategy selection and headless SchemaExplorer use for broad inventory questions.
+- **tests/test_search_catalog.py / README.md / CHANGELOG.md / pyproject.toml**: Added regression coverage, documentation updates, and version bump to `0.2.1`.
+
 ## [0.2.0] — 2026-04-29
 ### Semantic Intelligence & Resilience Cycle
 - **amx/core/application.py / amx/__init__.py**: Added `AMXApplication` and lazy public exports so scripts can use `import amx` without booting the CLI shell.

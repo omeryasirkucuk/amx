@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from amx.agents.tools import SchemaExplorer
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search.catalog import SearchCatalog
@@ -31,11 +32,13 @@ class ToolAskResponse:
     answer: str
     trace: list[ReasoningTraceStep]
     tool_results: list[ToolResult]
+    strategy: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "question": self.question,
             "answer": self.answer,
+            "strategy": self.strategy,
             "trace": [asdict(item) for item in self.trace],
             "tool_results": [asdict(item) for item in self.tool_results],
         }
@@ -119,6 +122,22 @@ class AskToolbox:
     def table_sample_query(self, schema: str, table: str, *, sample_size: int = 3) -> ToolResult:
         return self.sample_data_query(schema, table, sample_size=sample_size)
 
+    def schema_explorer(self, *, schema_name: str | None = None, limit: int = 500) -> ToolResult:
+        try:
+            result = SchemaExplorer(self.cfg, self.catalog, db_factory=self._db_factory).explore(
+                schema_name=schema_name,
+                limit=limit,
+            )
+            summary = dict(result.get("summary") or {})
+            rows = [dict(row) for row in result.get("rows", [])]
+            return ToolResult(
+                "SchemaExplorer",
+                str(result.get("scope") or {}),
+                rows=[{"row_type": "schema_explorer_summary", **summary}, *rows],
+            )
+        except Exception as exc:
+            return ToolResult("SchemaExplorer", schema_name or "", error=str(exc))
+
 
 class LoopBasedAskAgent:
     """Small deterministic tool loop that can be used without the CLI."""
@@ -129,6 +148,35 @@ class LoopBasedAskAgent:
     def answer(self, question: str) -> ToolAskResponse:
         trace: list[ReasoningTraceStep] = []
         tool_results: list[ToolResult] = []
+        strategy = self._strategy(question)
+
+        if strategy == "inventory":
+            inventory = self.toolbox.schema_explorer()
+            tool_results.append(inventory)
+            table_rows = [row for row in inventory.rows if row.get("row_type") == "schema_explorer_table"]
+            summary = next((row for row in inventory.rows if row.get("row_type") == "schema_explorer_summary"), {})
+            trace.append(
+                ReasoningTraceStep(
+                    1,
+                    "SchemaExplorer",
+                    f"Inventory strategy selected; retrieved {len(table_rows)} table(s) and {int(summary.get('total_columns') or 0)} column(s).",
+                )
+            )
+            if table_rows:
+                return ToolAskResponse(
+                    question,
+                    self._inventory_answer(table_rows, summary),
+                    trace,
+                    tool_results,
+                    strategy,
+                )
+            return ToolAskResponse(
+                question,
+                "SchemaExplorer did not find table inventory for the active namespace. Sync the catalog or provide a schema scope.",
+                trace,
+                tool_results,
+                strategy,
+            )
 
         metadata = self.toolbox.metadata_query(question)
         tool_results.append(metadata)
@@ -184,11 +232,48 @@ class LoopBasedAskAgent:
             if sample_result is not None and not sample_result.error:
                 evidence.append("sample_data_query")
             answer += f" Evidence used: {', '.join(evidence[:3])}"
-            return ToolAskResponse(question, answer + ".", trace, tool_results)
+            return ToolAskResponse(question, answer + ".", trace, tool_results, strategy)
 
         return ToolAskResponse(
             question,
             "I could not find a grounded catalog match. Sync or enrich the search catalog, then retry.",
             trace,
             tool_results,
+            strategy,
         )
+
+    def _strategy(self, question: str) -> str:
+        text = (question or "").lower()
+        asks_inventory = any(token in text for token in ("how many", "count", "list", "show", "all", "kaç", "kac", "hangi", "tum", "tüm"))
+        asks_columns = any(token in text for token in ("column", "columns", "field", "fields", "kolon", "kolonlar"))
+        asks_tables = any(token in text for token in ("table", "tables", "tablo", "tablolar"))
+        if asks_inventory and (asks_tables or asks_columns):
+            return "inventory"
+        if any(token in text for token in ("join", "link", "relationship", "relate", "connect", "bağ", "bag")):
+            return "relationship"
+        if any(token in text for token in ("detail", "deep", "full", "all columns", "detay")):
+            return "deep_dive"
+        return "definition"
+
+    def _inventory_answer(self, rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
+        table_count = int(summary.get("table_count") or len(rows))
+        total_columns = int(summary.get("total_columns") or sum(int(row.get("column_count") or 0) for row in rows))
+        lines = [
+            f"SchemaExplorer found **{table_count}** tables and **{total_columns}** total columns.",
+            "",
+            "| Schema | Table | Columns | Rows | Cluster |",
+            "|---|---:|---:|---:|---|",
+        ]
+        for row in rows[:50]:
+            lines.append(
+                "| {schema} | {table} | {columns} | {rows_count} | {cluster} |".format(
+                    schema=str(row.get("schema_name") or ""),
+                    table=str(row.get("table_name") or ""),
+                    columns=int(row.get("column_count") or 0),
+                    rows_count=int(row.get("row_count") or 0),
+                    cluster=str(row.get("semantic_cluster") or "Unclustered"),
+                )
+            )
+        if len(rows) > 50:
+            lines.append(f"| ... | {len(rows) - 50} more tables |  |  |  |")
+        return "\n".join(lines)

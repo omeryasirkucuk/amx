@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] — 2026-04-29
+### Added
+- **SchemaExplorer tool**: Added a macro-level structural inventory tool that returns namespace table lists, row counts, column counts, UMI paths, and evidence-derived semantic cluster labels.
+- **Analytical inventory strategy**: `/search ask` now routes broad structural questions such as “how many columns per table?” to `schema_inventory` instead of narrowing to one best match.
+
+### Changed
+- **Set-based synthesis**: Inventory answers now render a structured Markdown table across all discovered tables and include aggregate totals, preventing point-biased summaries for broad questions.
+- **Headless ask reasoning**: `LoopBasedAskAgent` now classifies questions into inventory, definition, relationship, and deep-dive strategies, and uses SchemaExplorer for inventory in library mode.
+- **Tool-use transparency**: Thought traces now show the `schema_explorer` step, table count, total column count, and gap-fill operations for inventory answers.
+
 ## [0.2.0] — 2026-04-29
 ### Added
 - **Headless core facade**: Added `AMXApplication` plus public `import amx` exports so AMX can be embedded as a library without entering the interactive CLI.
