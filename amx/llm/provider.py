@@ -282,6 +282,57 @@ def _normalized_api_base(provider: str, api_base: str | None) -> str | None:
     return base
 
 
+MAX_LLM_RETRIES = 2
+LLM_RETRY_BACKOFF_BASE_SEC = 1.0
+_TRANSIENT_LLM_EXCEPTION_NAMES: frozenset[str] = frozenset(
+    {
+        "APITimeoutError",
+        "APIConnectionError",
+        "InternalServerError",
+        "ServiceUnavailableError",
+        "RateLimitError",
+        "Timeout",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "ConnectionError",
+        "ConnectionResetError",
+    }
+)
+_TRANSIENT_LLM_MESSAGE_TOKENS: tuple[str, ...] = (
+    "rate limit",
+    "rate_limit",
+    "429",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection aborted",
+    "broken pipe",
+    "service unavailable",
+    "502 bad gateway",
+    "503 service",
+    "504 gateway",
+    "temporary failure",
+)
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Return True for LLM errors worth retrying once with backoff.
+
+    Covers rate-limit (HTTP 429), timeouts, connection-reset, and the common
+    upstream 5xx classes. Authentication / bad-request errors are NOT
+    transient and propagate to the caller after one attempt so the user
+    sees a themed connector-categorised message instead of a 30-second
+    silent retry storm.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    cls_name = exc.__class__.__name__
+    if cls_name in _TRANSIENT_LLM_EXCEPTION_NAMES:
+        return True
+    msg = str(exc).lower()
+    return any(token in msg for token in _TRANSIENT_LLM_MESSAGE_TOKENS)
+
+
 class LLMProvider:
     """Thin wrapper around LiteLLM so every agent uses the same calling convention."""
 
@@ -417,33 +468,70 @@ class LLMProvider:
             )
 
         t0 = time.perf_counter()
-        try:
-            resp = _do_completion(call_api_base)
-        except Exception as exc:
-            # If a legacy config still uses an OpenAI-style Ollama base (/v1), retry once.
-            msg = str(exc).lower()
-            if (
-                self.cfg.provider == "ollama"
-                and "404 page not found" in msg
-                and isinstance(call_api_base, str)
-                and call_api_base.rstrip("/").lower().endswith("/v1")
-            ):
-                fallback_base = call_api_base.rstrip("/")[:-3].rstrip("/")
-                log.warning(
-                    "Ollama returned 404 with api_base=%s; retrying once with %s",
-                    call_api_base,
-                    fallback_base,
-                )
-                try:
-                    resp = _do_completion(fallback_base)
-                    self.cfg.api_base = fallback_base
-                    os.environ["OLLAMA_API_BASE"] = fallback_base
-                except Exception as retry_exc:
-                    log.error("LLM call failed: %s", retry_exc)
-                    raise
-            else:
-                log.error("LLM call failed: %s", exc)
+        resp = None
+        last_exc: BaseException | None = None
+        for attempt in range(MAX_LLM_RETRIES + 1):
+            try:
+                resp = _do_completion(call_api_base)
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+
+                # Provider-specific recovery (only on first attempt): legacy
+                # Ollama configs that still point at an OpenAI-style /v1 path
+                # see 404s. Strip /v1 and retry once before falling through to
+                # the generic transient-retry loop.
+                if attempt == 0:
+                    msg = str(exc).lower()
+                    if (
+                        self.cfg.provider == "ollama"
+                        and "404 page not found" in msg
+                        and isinstance(call_api_base, str)
+                        and call_api_base.rstrip("/").lower().endswith("/v1")
+                    ):
+                        fallback_base = call_api_base.rstrip("/")[:-3].rstrip("/")
+                        log.warning(
+                            "Ollama returned 404 with api_base=%s; retrying once with %s",
+                            call_api_base,
+                            fallback_base,
+                        )
+                        try:
+                            resp = _do_completion(fallback_base)
+                            self.cfg.api_base = fallback_base
+                            os.environ["OLLAMA_API_BASE"] = fallback_base
+                            call_api_base = fallback_base
+                            last_exc = None
+                            break
+                        except Exception as fallback_exc:
+                            last_exc = fallback_exc
+
+                # Transient retry — rate-limit, timeout, 5xx, connection reset.
+                if (
+                    attempt < MAX_LLM_RETRIES
+                    and last_exc is not None
+                    and _is_transient_llm_error(last_exc)
+                ):
+                    wait = LLM_RETRY_BACKOFF_BASE_SEC * (2 ** attempt)
+                    log.warning(
+                        "LLM transient failure (attempt %d/%d) — retrying in %.1fs: %s",
+                        attempt + 1,
+                        MAX_LLM_RETRIES + 1,
+                        wait,
+                        last_exc,
+                    )
+                    time.sleep(wait)
+                    continue
+
+                # Non-transient or out of retries → propagate.
+                log.error("LLM call failed: %s", last_exc)
                 raise
+
+        if resp is None:
+            # Defensive — the loop should either have populated resp or raised.
+            raise last_exc if last_exc is not None else RuntimeError(
+                "LLM completion failed without a recorded exception"
+            )
 
         elapsed_sec = max(0.0, time.perf_counter() - t0)
 
