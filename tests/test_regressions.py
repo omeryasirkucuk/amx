@@ -2092,6 +2092,166 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class UsageCommandTests(unittest.TestCase):
+    """Week-5 /usage command — local-only token + cost summary read from
+    ~/.amx/history.db. These tests cover the pure-functional helpers and
+    the cmd_usage dispatch without requiring a real history store."""
+
+    def test_normalize_window_default_and_known(self) -> None:
+        from amx.cli_support.commands.usage import _normalize_window
+
+        label, sec = _normalize_window("")
+        self.assertEqual(label, "7d")
+        self.assertGreater(sec, 0)
+
+        label, sec = _normalize_window("24h")
+        self.assertEqual(label, "24h")
+        self.assertEqual(int(sec), 86400)
+
+        label, sec = _normalize_window("all")
+        self.assertEqual(label, "all")
+        self.assertIsNone(sec)
+
+    def test_normalize_window_unknown_falls_back_to_default(self) -> None:
+        from amx.cli_support.commands.usage import _normalize_window
+
+        label, _sec = _normalize_window("forever")
+        self.assertEqual(label, "7d")
+
+    def test_lookup_pricing_exact_match(self) -> None:
+        from amx.cli_support.commands.usage import _lookup_pricing
+
+        pricing = _lookup_pricing("gpt-4o-mini")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(pricing[0], 0.15)
+
+    def test_lookup_pricing_strips_provider_prefix(self) -> None:
+        from amx.cli_support.commands.usage import _lookup_pricing
+
+        # OpenRouter-style namespacing
+        self.assertIsNotNone(_lookup_pricing("openai/gpt-4o"))
+        self.assertIsNotNone(_lookup_pricing("openrouter/openai/gpt-4o"))
+
+    def test_lookup_pricing_strips_dated_suffix(self) -> None:
+        from amx.cli_support.commands.usage import _lookup_pricing
+
+        # claude-sonnet-4 priced; claude-sonnet-4-20250514 should also resolve
+        self.assertIsNotNone(_lookup_pricing("claude-sonnet-4-20250514"))
+
+    def test_lookup_pricing_unknown_returns_none(self) -> None:
+        from amx.cli_support.commands.usage import _lookup_pricing
+
+        self.assertIsNone(_lookup_pricing("totally-not-a-model"))
+        self.assertIsNone(_lookup_pricing(""))
+
+    def test_aggregate_runs_groups_by_provider_model(self) -> None:
+        from amx.cli_support.commands.usage import _aggregate_runs
+
+        runs = [
+            {
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o-mini",
+                "tokens_json": json.dumps(
+                    {
+                        "records": [
+                            {"prompt_tokens": 100, "completion_tokens": 50,
+                             "total_tokens": 150},
+                            {"prompt_tokens": 200, "completion_tokens": 80,
+                             "total_tokens": 280},
+                        ]
+                    }
+                ),
+            },
+            {
+                "llm_provider": "anthropic",
+                "llm_model": "claude-sonnet-4",
+                "tokens_json": json.dumps(
+                    {"records": [{"prompt_tokens": 1000, "completion_tokens": 400,
+                                  "total_tokens": 1400}]}
+                ),
+            },
+        ]
+        per, counted = _aggregate_runs(runs)
+
+        self.assertEqual(counted, 2)
+        self.assertEqual(per[("openai", "gpt-4o-mini")]["input_tokens"], 300)
+        self.assertEqual(per[("openai", "gpt-4o-mini")]["output_tokens"], 130)
+        self.assertEqual(per[("openai", "gpt-4o-mini")]["total_tokens"], 430)
+        self.assertEqual(per[("openai", "gpt-4o-mini")]["runs"], 1)
+        self.assertEqual(per[("anthropic", "claude-sonnet-4")]["input_tokens"], 1000)
+
+    def test_aggregate_runs_skips_runs_without_token_data(self) -> None:
+        from amx.cli_support.commands.usage import _aggregate_runs
+
+        runs = [
+            {"llm_provider": "openai", "llm_model": "gpt-4o", "tokens_json": None},
+            {"llm_provider": "openai", "llm_model": "gpt-4o", "tokens_json": ""},
+            {
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o",
+                "tokens_json": json.dumps({"records": []}),
+            },
+            {
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o",
+                "tokens_json": "{not-valid-json",
+            },
+        ]
+        per, counted = _aggregate_runs(runs)
+        self.assertEqual(counted, 0)
+        self.assertEqual(per, {})
+
+    def test_format_cost_for_known_and_unknown_models(self) -> None:
+        from amx.cli_support.commands.usage import _format_cost
+
+        # gpt-4o is $2.50 input / $10.00 output per 1M tokens.
+        # 1_000_000 in / 500_000 out → $2.50 + $5.00 = $7.50
+        self.assertEqual(_format_cost("gpt-4o", 1_000_000, 500_000), "$7.50")
+        # Unknown model gets em-dash
+        self.assertEqual(_format_cost("totally-fake", 1000, 500), "—")
+        # Sub-cent rounds to "<$0.01"
+        self.assertEqual(_format_cost("gpt-4o-mini", 100, 0), "<$0.01")
+
+    def test_cmd_usage_with_no_history_store_warns(self) -> None:
+        from amx.cli_support.commands.usage import cmd_usage
+
+        cfg = AMXConfig()
+        with patch(
+            "amx.cli_support.commands.usage.history_store",
+            return_value=None,
+        ):
+            cmd_usage(cfg, [])
+
+    def test_cmd_usage_with_empty_window_prints_no_runs(self) -> None:
+        from amx.cli_support.commands.usage import cmd_usage
+
+        cfg = AMXConfig()
+
+        class FakeStore:
+            def _connect(self):  # noqa: D401 — context manager mock
+                class _Conn:
+                    def __enter__(self_inner):
+                        return self_inner
+
+                    def __exit__(self_inner, *_):
+                        return False
+
+                    def execute(self_inner, *_args, **_kwargs):
+                        class _Cursor:
+                            def fetchall(self_c):
+                                return []
+
+                        return _Cursor()
+
+                return _Conn()
+
+        with patch(
+            "amx.cli_support.commands.usage.history_store",
+            return_value=FakeStore(),
+        ):
+            cmd_usage(cfg, ["7d"])
+
+
 class DBInspectCommandTests(unittest.TestCase):
     """The /inspect slash command lives under /db and gives users a self-
     service way to diagnose connector problems (the user's stated pain

@@ -25,6 +25,7 @@ from amx.cli_support.commands.db import (
     cmd_use as _cmd_use,
 )
 from amx.cli_support.commands.embeddings import cmd_embeddings as _cmd_embeddings
+from amx.cli_support.commands.usage import cmd_usage as _cmd_usage
 from amx.cli_support.commands.profiles import (
     cmd_add_code_profile as _cmd_add_code_profile,
     cmd_add_doc_profile as _cmd_add_doc_profile,
@@ -713,6 +714,11 @@ def _handle_session_builtin(
     if head == "save":
         path = cfg.save()
         success(f"Saved configuration to {path}")
+        return True
+    if head == "usage":
+        # Top-level: /usage summarises LLM cost from local history without
+        # requiring the user to enter any namespace first. No network call.
+        _cmd_usage(cfg, parts[1:])
         return True
     if head == "embeddings":
         # Lives under /search since switching the embedding provider only
