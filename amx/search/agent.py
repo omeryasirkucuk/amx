@@ -14,8 +14,95 @@ from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.llm.provider import LLMProvider
 from amx.search.catalog import SearchAnswer, SearchCatalog
 from amx.utils.console import step_spinner
+from amx.utils.logging import get_logger
+from amx.utils.token_tracker import estimate_tokens
+
+log = get_logger("search.agent")
 
 _SESSION_MEMORY: dict[str, list[dict[str, Any]]] = {}
+
+
+# Conservative input-token budget per LLM family. The /synthesize_answer
+# step builds a JSON payload that includes potentially many retrieval
+# rows; without a budget guard, large catalogs blow the model's context
+# window with an opaque LLM error. The numbers leave headroom for the
+# system prompt, plan, policy, retrieval_details, verification, and the
+# generated answer max_tokens.
+_DEFAULT_INPUT_TOKEN_BUDGET = 60_000
+
+
+def _input_token_budget_for(model: str | None) -> int:
+    """Conservative input-token budget for the active LLM model.
+
+    Frontier models with very large context windows (Claude 3.5/4,
+    Gemini 1.5/2.0 pro) get a higher budget; everything else uses the
+    default 60K which fits OpenAI gpt-4o, gpt-4o-mini, DeepSeek, and
+    most local servers.
+    """
+    if not model:
+        return _DEFAULT_INPUT_TOKEN_BUDGET
+    name = model.lower()
+    if any(token in name for token in (
+        "claude-3-5", "claude-sonnet-4", "claude-opus-4", "claude-3-opus",
+        "claude-haiku-4",
+    )):
+        return 150_000  # Claude family: 200K context window.
+    if any(token in name for token in (
+        "gemini-1.5-pro", "gemini-2.0-pro", "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    )):
+        return 250_000  # Gemini family: 1M-2M context.
+    return _DEFAULT_INPUT_TOKEN_BUDGET
+
+
+def _trim_rows_to_token_budget(
+    rows: list[dict[str, Any]],
+    *,
+    system_text: str,
+    base_payload: dict[str, Any],
+    budget: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Drop lowest-scored rows until the prompt fits ``budget`` tokens.
+
+    Computes the per-row cost from a single full-payload encoding plus
+    a no-rows encoding (O(n) total) rather than re-encoding inside a
+    loop, so large row sets do not pay quadratic cost.
+
+    Returns ``(kept_rows, dropped_count)``. The result is sorted by
+    descending ``match_score`` so the highest-confidence rows survive.
+    """
+    if not rows:
+        return rows, 0
+
+    sorted_rows = sorted(
+        rows, key=lambda row: float(row.get("match_score") or 0.0), reverse=True
+    )
+
+    full_payload = dict(base_payload, rows=sorted_rows, result_count=len(sorted_rows))
+    full_msgs = [
+        {"role": "system", "content": system_text},
+        {"role": "user", "content": json.dumps(full_payload, ensure_ascii=True)},
+    ]
+    full_tokens = estimate_tokens(full_msgs)
+    if full_tokens <= budget:
+        return sorted_rows, 0
+
+    empty_payload = dict(base_payload, rows=[], result_count=0)
+    empty_msgs = [
+        {"role": "system", "content": system_text},
+        {"role": "user", "content": json.dumps(empty_payload, ensure_ascii=True)},
+    ]
+    base_tokens = estimate_tokens(empty_msgs)
+
+    rows_token_cost = max(1, full_tokens - base_tokens)
+    avg_per_row = max(1, rows_token_cost // len(sorted_rows))
+    available_for_rows = max(0, budget - base_tokens)
+    keep_count = max(0, available_for_rows // avg_per_row)
+    keep_count = min(keep_count, len(sorted_rows))
+
+    if keep_count >= len(sorted_rows):
+        return sorted_rows, 0
+    return sorted_rows[:keep_count], len(sorted_rows) - keep_count
 
 
 @dataclass
@@ -628,23 +715,29 @@ class SearchAgent:
 
     def _live_table_count(self, schema_name: str | None) -> tuple[int, dict[str, Any]]:
         db = self._inventory_db()
-        if schema_name:
-            count = len(db.list_tables(schema_name))
-            return count, {
-                "scope_kind": "schema",
-                "schema_name": schema_name,
-                "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
-                "scope_assumption": "current_schema",
-            }
-        total = 0
         schemas = db.list_schemas()
+        schema_lookup = {str(item).lower(): str(item) for item in schemas}
+        if schema_name:
+            resolved = schema_lookup.get(str(schema_name).strip().lower())
+            if resolved:
+                count = len(db.list_tables(resolved))
+                return count, {
+                    "scope_kind": "schema",
+                    "schema_name": resolved,
+                    "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                    "scope_assumption": "current_schema",
+                }
+        total = 0
         for item in schemas:
-            total += len(db.list_tables(item))
+            try:
+                total += len(db.list_tables(item))
+            except Exception:
+                continue
         return total, {
             "scope_kind": "database",
             "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
             "schema_count": len(schemas),
-            "scope_assumption": "active_database",
+            "scope_assumption": "active_database" if not schema_name else "invalid_current_schema_fallback",
         }
 
     def _live_joinable_tables(self, table_path: str, limit: int) -> list[dict[str, Any]]:
@@ -1345,7 +1438,9 @@ class SearchAgent:
                         schema_name = table_paths[0].split(".", 1)[0]
                         explicit_scope = True
             if not schema_name and self.cfg.current_schema:
-                schema_name = self.cfg.current_schema
+                normalized_current = str(self.cfg.current_schema).strip().lower()
+                if normalized_current in schema_lookup:
+                    schema_name = schema_lookup[normalized_current]
             count, scope_meta = self._live_table_count(schema_name or None)
             if explicit_scope:
                 scope_meta["scope_assumption"] = ""
@@ -1371,6 +1466,11 @@ class SearchAgent:
                 schema_lookup = {str(item).lower(): str(item) for item in self._inventory_db().list_schemas()}
             except Exception:
                 schema_lookup = {}
+            normalized_current = str(schema_name).strip().lower()
+            if normalized_current and normalized_current in schema_lookup:
+                schema_name = schema_lookup[normalized_current]
+            elif normalized_current:
+                schema_name = ""
             for hint in plan.entity_hints:
                 normalized = str(hint or "").strip().lower()
                 if normalized in schema_lookup:
@@ -1743,18 +1843,42 @@ class SearchAgent:
             "If action suggestions exist, mention only the most relevant one briefly.\n"
             f"Write the final answer naturally in {target_language}."
         )
+        # Pre-trim retrieval rows to fit the LLM's input token budget.
+        # Without this guard, large result sets exceeded the context
+        # window and surfaced as an opaque LLM error to the user; now
+        # we drop the lowest-scored rows until the prompt fits and log
+        # how many were trimmed so the user can correlate with the
+        # `evidence_sources` count in the answer.
+        prompt_rows = self._rows_for_prompt(rows, policy)
+        base_payload = {
+            "question": question,
+            "plan": asdict(plan),
+            "policy": asdict(policy),
+            "session_memory": (
+                self._memory_summary()
+                if self._context_detail() in {"rich", "deep"}
+                else self._memory_summary()[-2:]
+            ),
+            "retrieval_details": retrieval_details,
+            "verification": verification,
+            "actions": [asdict(item) for item in actions],
+        }
+        budget = _input_token_budget_for(self.cfg.llm.model)
+        trimmed_rows, dropped = _trim_rows_to_token_budget(
+            prompt_rows,
+            system_text=system,
+            base_payload=base_payload,
+            budget=budget,
+        )
+        if dropped:
+            log.warning(
+                "synthesize_answer: dropped %d lowest-scored row(s) to fit %d-token budget for model=%s",
+                dropped,
+                budget,
+                self.cfg.llm.model,
+            )
         user = json.dumps(
-            {
-                "question": question,
-                "plan": asdict(plan),
-                "policy": asdict(policy),
-                "session_memory": self._memory_summary() if self._context_detail() in {"rich", "deep"} else self._memory_summary()[-2:],
-                "retrieval_details": retrieval_details,
-                "verification": verification,
-                "result_count": len(rows),
-                "rows": self._rows_for_prompt(rows, policy),
-                "actions": [asdict(item) for item in actions],
-            },
+            dict(base_payload, rows=trimmed_rows, result_count=len(trimmed_rows)),
             ensure_ascii=True,
         )
         result = llm.chat(

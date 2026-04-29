@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
 
 ## [Unreleased]
+### Added
+- **Token-budget pre-check before LLM synthesis** (`amx/search/agent.py`): `_synthesize_answer` now estimates the prompt token count with `tiktoken` and, if it exceeds the LLM's input budget, drops the lowest-scored retrieval rows until it fits. Without this guard, large catalogs blew the model context window with an opaque LLM error; now the user sees a one-line warning in `~/.amx/logs/amx.log` describing how many rows were trimmed. Per-family budgets: 60K for OpenAI gpt-4o / DeepSeek / local; 150K for Claude (200K context); 250K for Gemini (1M-2M context). Unknown models fall back to 60K.
+- **`_input_token_budget_for(model)` and `_trim_rows_to_token_budget(...)`** helpers, both pure-functional and reusable. The trimmer is O(n) — it estimates per-row cost from one full encoding plus one no-rows encoding, rather than re-encoding inside a loop.
+- **4 new `TokenBudgetPreCheckTests`** covering: per-model-family budget mapping, all-rows-fit no-trim path, tight-budget keeps highest-scored rows in descending order, empty-input round-trip.
+
 ### Deprecated
 - **`amx.core.ask_agent.LoopBasedAskAgent` and `AMXApplication.ask_with_tools()`** are deprecated as of 0.3.0 and will be removed in 0.4.0. The canonical `/search ask` path is `SearchService` → `SearchAgent`, which performs full multi-stage interpretation, retrieval, live probes, verification, and synthesis. Constructing `LoopBasedAskAgent` now emits a once-per-process `DeprecationWarning` pointing to `AMXApplication.ask()`. Library users should migrate before the 0.4.0 release. The `amx/search/service.py` module docstring and the `LoopBasedAskAgent` class docstring document the routing decision.
 - **2 new `AskPathDeprecationTests`** covering: deprecation warning is emitted with the right message and version, and the canonical `SearchService` is still wired to `SearchAgent`.
