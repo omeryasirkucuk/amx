@@ -2092,6 +2092,60 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class VectorScoreFloorTests(unittest.TestCase):
+    """Per-provider distance-threshold calibration replacing the old
+    hardcoded `2.5` cutoff. The threshold is the minimum match_score
+    (= 3.0 - distance) a vector-only hit must reach to survive candidate
+    filtering."""
+
+    def test_minilm_uses_legacy_default(self) -> None:
+        from amx.search.catalog import _vector_score_floor
+
+        self.assertEqual(_vector_score_floor({}, "minilm"), 2.5)
+        self.assertEqual(_vector_score_floor({}, "default"), 2.5)
+        self.assertEqual(_vector_score_floor({}, ""), 2.5)
+
+    def test_openai_compatible_has_tighter_floor(self) -> None:
+        """OpenAI v3 embeddings produce tighter cosine distance for
+        relevant matches; a slightly higher floor reduces noise."""
+        from amx.search.catalog import _vector_score_floor
+
+        floor = _vector_score_floor({}, "openai_compatible")
+        self.assertGreater(floor, 2.5)
+        self.assertLess(floor, 3.0)
+
+    def test_sentence_transformers_has_tighter_floor(self) -> None:
+        from amx.search.catalog import _vector_score_floor
+
+        floor = _vector_score_floor({}, "sentence_transformers")
+        self.assertGreater(floor, 2.5)
+        self.assertLess(floor, 3.0)
+
+    def test_explicit_setting_overrides_provider_default(self) -> None:
+        from amx.search.catalog import _vector_score_floor
+
+        # Operator override via /search /config.
+        self.assertEqual(_vector_score_floor({"vector_score_floor": "1.7"}, "minilm"), 1.7)
+        self.assertEqual(
+            _vector_score_floor({"vector_score_floor": "2.9"}, "openai_compatible"),
+            2.9,
+        )
+
+    def test_invalid_setting_falls_back_to_provider_default(self) -> None:
+        from amx.search.catalog import _vector_score_floor
+
+        # Garbage value must not crash the retrieval path.
+        self.assertEqual(
+            _vector_score_floor({"vector_score_floor": "not-a-number"}, "minilm"),
+            2.5,
+        )
+
+    def test_unknown_embedding_kind_uses_default(self) -> None:
+        from amx.search.catalog import _vector_score_floor
+
+        self.assertEqual(_vector_score_floor({}, "totally-new-provider"), 2.5)
+
+
 class RequestIdWiringTests(unittest.TestCase):
     """Verify that the long-running CLI commands (`/search ask`,
     `/analyze run`) set a fresh request_id on entry and clear it on
