@@ -6,6 +6,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 ### Added
+- **LLM transient-retry** (`amx/llm/provider.py`): rate-limit (HTTP 429), timeouts, connection-reset, and 5xx upstream errors are now retried up to twice with exponential backoff (1s, 2s) before propagating. Authentication / bad-request errors still propagate immediately so the categorised `ErrorMapper` hint reaches the user fast. The existing Ollama legacy `/v1` 404 fallback is preserved as a first-attempt special case.
+- **`_is_transient_llm_error()` helper**: classifies LLM exceptions by class name (`RateLimitError`, `APITimeoutError`, `APIConnectionError`, `InternalServerError`, `ServiceUnavailableError`, plus stdlib `TimeoutError` / `ConnectionError`) and by substring matching of common transient phrases (`429`, `rate limit`, `timed out`, `connection reset`, `503 service`, `502 bad gateway`, etc.). Available for unit testing and re-use.
+- **5 new `LLMTransientRetryTests`** covering: 429-retried-then-succeeds, persistent timeout exhausts retries (3 total attempts), authentication errors do NOT retry (single attempt), substring-pattern classification for generic `RuntimeError`, and the `_is_transient_llm_error` truth table.
 - **`/embeddings` slash command** (`amx/cli_support/commands/embeddings.py`): users can switch the search-index embedding provider without hand-editing `~/.amx/config.yml`. Forms:
   - `/embeddings` — show the current provider + interactive picker.
   - `/embeddings minilm` — switch to Chroma's bundled default (no setup).
