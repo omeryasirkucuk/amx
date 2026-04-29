@@ -2092,6 +2092,148 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class DBInspectCommandTests(unittest.TestCase):
+    """The /inspect slash command lives under /db and gives users a self-
+    service way to diagnose connector problems (the user's stated pain
+    point #5). These tests pin the dispatch contract; live-DB behaviour
+    is exercised by integration tests outside this file."""
+
+    def _build_cfg(self, *, with_active: bool = True) -> AMXConfig:
+        cfg = AMXConfig()
+        if with_active:
+            cfg.db_profiles = {
+                "prod": DBConfig(
+                    backend="postgresql",
+                    host="db.example.com",
+                    port=5432,
+                    user="alice",
+                    database="orders",
+                    password="secret",
+                )
+            }
+            cfg.active_db_profile = "prod"
+            cfg.db = cfg.db_profiles["prod"]
+        return cfg
+
+    def _patch_connector(self, fake_connector_class: type) -> "patch":
+        return patch(
+            "amx.db.connector.DatabaseConnector",
+            fake_connector_class,
+        )
+
+    def test_inspect_with_no_active_profile_errors_cleanly(self) -> None:
+        from amx.cli_support.commands.db import cmd_inspect
+
+        cfg = self._build_cfg(with_active=False)
+        # No raise; the command prints an error and returns.
+        cmd_inspect(cfg, [])
+
+    def test_inspect_unknown_profile_errors(self) -> None:
+        from amx.cli_support.commands.db import cmd_inspect
+
+        cfg = self._build_cfg()
+        cmd_inspect(cfg, ["does-not-exist"])
+        # Active profile must be unchanged.
+        self.assertEqual(cfg.active_db_profile, "prod")
+
+    def test_inspect_connection_failure_surfaces_categorised_message(self) -> None:
+        from amx.cli_support.commands.db import cmd_inspect
+        from amx.db.connector import ConnectionTestResult
+
+        cfg = self._build_cfg()
+        calls: list[str] = []
+
+        class FakeConnector:
+            def __init__(self, profile):
+                calls.append("init")
+
+            capabilities = SimpleNamespace(
+                column_comments=True, relationships=True,
+                row_count_stats=True, materialized_views=False,
+            )
+
+            def test_connection_result(self) -> ConnectionTestResult:
+                calls.append("test_connection_result")
+                return ConnectionTestResult(
+                    ok=False,
+                    message="PostgreSQL authentication failed: …",
+                    exception=RuntimeError("…"),
+                )
+
+            def list_schemas(self) -> list[str]:  # pragma: no cover
+                raise AssertionError("must not be called when connection fails")
+
+        with self._patch_connector(FakeConnector):
+            cmd_inspect(cfg, [])
+        self.assertEqual(calls, ["init", "test_connection_result"])
+
+    def test_inspect_lists_schemas_and_table_counts_on_success(self) -> None:
+        from amx.cli_support.commands.db import cmd_inspect
+        from amx.db.connector import ConnectionTestResult
+
+        cfg = self._build_cfg()
+
+        class FakeConnector:
+            capabilities = SimpleNamespace(
+                column_comments=True, relationships=True,
+                row_count_stats=True, materialized_views=False,
+            )
+
+            def __init__(self, profile):
+                pass
+
+            def test_connection_result(self) -> ConnectionTestResult:
+                return ConnectionTestResult(ok=True, message=None, exception=None)
+
+            def list_schemas(self) -> list[str]:
+                return ["public", "analytics", "audit"]
+
+            def list_tables(self, schema: str) -> list[str]:
+                return {
+                    "public": ["users", "orders"],
+                    "analytics": ["events", "sessions", "rollups"],
+                    "audit": ["log_entries"],
+                }[schema]
+
+        with self._patch_connector(FakeConnector):
+            cmd_inspect(cfg, [])
+
+    def test_inspect_partial_schema_failures_do_not_abort(self) -> None:
+        """If listing tables fails for one schema, /inspect must still
+        complete and report the others — the read-only diagnostic
+        command should not crash mid-output."""
+        from amx.cli_support.commands.db import cmd_inspect
+        from amx.db.connector import ConnectionTestResult
+
+        cfg = self._build_cfg()
+        finished = {"yes": False}
+
+        class FakeConnector:
+            capabilities = SimpleNamespace(
+                column_comments=True, relationships=True,
+                row_count_stats=True, materialized_views=False,
+            )
+
+            def __init__(self, profile):
+                pass
+
+            def test_connection_result(self) -> ConnectionTestResult:
+                return ConnectionTestResult(ok=True, message=None, exception=None)
+
+            def list_schemas(self) -> list[str]:
+                return ["public", "restricted"]
+
+            def list_tables(self, schema: str) -> list[str]:
+                if schema == "restricted":
+                    raise PermissionError("permission denied for schema restricted")
+                return ["users"]
+
+        with self._patch_connector(FakeConnector):
+            cmd_inspect(cfg, [])
+            finished["yes"] = True
+        self.assertTrue(finished["yes"])
+
+
 class PostgreSQLAdapterUnitTests(unittest.TestCase):
     """Pure-functional unit tests for the PostgreSQL adapter.
 
