@@ -110,6 +110,45 @@ def _normalize_click_argv(args: list[str], cfg: AMXConfig) -> list[str]:
     return args
 
 
+def _install_embedding_provider(cfg: AMXConfig) -> None:
+    """Configure the search-index embedding provider for this process.
+
+    Reads ``cfg.embedding`` and registers a factory with
+    :func:`amx.search.embeddings.set_default_embedding_function` so any
+    later ``SearchIndex`` constructor picks it up. Failures are surfaced
+    as a themed warning and we fall back to the bundled MiniLM default.
+    """
+    from amx.search.embeddings import (
+        DEFAULT_KIND,
+        make_embedding_function,
+        set_default_embedding_function,
+    )
+
+    kind = (cfg.embedding.kind or DEFAULT_KIND).lower().strip()
+    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
+        # Default behaviour (Chroma's bundled MiniLM); nothing to install.
+        set_default_embedding_function(None)
+        return
+
+    if not cfg.embedding.is_configured():
+        warn(
+            f"Embedding provider '{cfg.embedding.kind}' is not fully configured "
+            "(missing model). Falling back to MiniLM. Run /embeddings to fix."
+        )
+        set_default_embedding_function(None)
+        return
+
+    def _factory():
+        return make_embedding_function(
+            cfg.embedding.kind,
+            model=cfg.embedding.model,
+            api_key=cfg.embedding.api_key,
+            base_url=cfg.embedding.base_url,
+        )
+
+    set_default_embedding_function(_factory)
+
+
 def _rewrite_sys_argv_for_codebase(argv: list[str]) -> None:
     """In-place fix for `amx code scan …` when launched from a real shell."""
     for i in range(len(argv) - 2):
@@ -189,6 +228,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
     ctx.ensure_object(dict)
     ctx.obj = AMXConfig.load(cfg_path)
     init_history_store(ctx.obj.CONFIG_DIR)
+    _install_embedding_provider(ctx.obj)
     is_session_child = os.getenv("AMX_SESSION_CHILD") == "1"
     if not is_session_child:
         show_banner()
