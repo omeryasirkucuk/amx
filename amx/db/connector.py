@@ -5,6 +5,7 @@ Supports multiple backends via the adapter layer in ``amx.db.adapters``.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -93,6 +94,60 @@ class ConnectionTestResult:
     exception: Exception | None = None
 
 
+MAX_CONNECTION_RETRIES = 1
+CONNECTION_RETRY_BACKOFF_SEC = 1.5
+_TRANSIENT_DB_PATTERNS: tuple[str, ...] = (
+    "could not connect",
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "name or service not known",
+    "could not translate host name",
+    "could not resolve host",
+    "no route to host",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "broken pipe",
+    "getaddrinfo",
+    "timed out",
+    "timeout",
+    "503 service",
+    "502 bad gateway",
+    "504 gateway",
+)
+_NON_TRANSIENT_DB_PATTERNS: tuple[str, ...] = (
+    "password authentication failed",
+    "authentication failed",
+    "permission denied",
+    "insufficient privilege",
+    "401 unauthorized",
+    "403 forbidden",
+    "invalid token",
+    "invalid api key",
+    "does not exist",
+    "not exist or not authorized",
+    "unknown database",
+    "no such database",
+    "certificate_verify_failed",
+    "self-signed certificate",
+)
+
+
+def _is_transient_db_connection_error(exc: BaseException) -> bool:
+    """Return True for connection errors worth retrying once.
+
+    Auth, permission, missing-database, and SSL-trust errors are
+    explicitly NOT transient — retrying them just delays the
+    categorised actionable message the user actually wants to see.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    msg = str(exc).lower()
+    if any(token in msg for token in _NON_TRANSIENT_DB_PATTERNS):
+        return False
+    return any(token in msg for token in _TRANSIENT_DB_PATTERNS)
+
+
 class DatabaseConnector:
     """Unified database connector that delegates backend-specific work to adapters."""
 
@@ -120,13 +175,45 @@ class DatabaseConnector:
         return getattr(self._adapter, "capabilities", BackendCapabilities())
 
     def test_connection_result(self) -> ConnectionTestResult:
-        try:
-            self._adapter.test_connection(self._engine)
-            return ConnectionTestResult(ok=True)
-        except Exception as exc:
-            actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
-            log.error("Connection failed: %s", actionable)
-            return ConnectionTestResult(ok=False, message=actionable, exception=exc)
+        """Test the active connection, retrying once on transient failures.
+
+        Mirrors :func:`amx.llm.provider._is_transient_llm_error` — DNS
+        glitches, connection resets, and timeouts are retried once with
+        a short backoff; auth / permission / missing-DB / SSL-trust
+        errors propagate immediately so the user sees the categorised
+        actionable message from :class:`amx.core.errors.ErrorMapper`
+        without an artificial delay.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(MAX_CONNECTION_RETRIES + 1):
+            try:
+                self._adapter.test_connection(self._engine)
+                return ConnectionTestResult(ok=True)
+            except Exception as exc:
+                last_exc = exc
+                if (
+                    attempt < MAX_CONNECTION_RETRIES
+                    and _is_transient_db_connection_error(exc)
+                ):
+                    wait = CONNECTION_RETRY_BACKOFF_SEC * (2 ** attempt)
+                    log.warning(
+                        "DB connection failed (attempt %d/%d) — retrying in %.1fs: %s",
+                        attempt + 1,
+                        MAX_CONNECTION_RETRIES + 1,
+                        wait,
+                        exc,
+                    )
+                    time.sleep(wait)
+                    continue
+                break
+
+        assert last_exc is not None  # the loop must have raised at least once
+        actionable = (
+            self._adapter.actionable_profile_error(last_exc)
+            or actionable_error_message(last_exc, backend=self.backend)
+        )
+        log.error("Connection failed: %s", actionable)
+        return ConnectionTestResult(ok=False, message=actionable, exception=last_exc)
 
     def test_connection(self) -> bool:
         return self.test_connection_result().ok
