@@ -25,7 +25,13 @@ from amx.cli_support.session import _format_session_click_error, _handle_manual_
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.core import AMXApplication, UniversalMetadataAdapter
 from amx.core.errors import ErrorMapper
-from amx.cli_support.commands.db import cmd_profiling, cmd_tls, databricks_connect_with_recovery, interactive_db_block
+from amx.cli_support.commands.db import (
+    cmd_add_profile,
+    cmd_profiling,
+    cmd_tls,
+    databricks_connect_with_recovery,
+    interactive_db_block,
+)
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.adapters.databricks import DatabricksAdapter
@@ -870,6 +876,51 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(cfg.db_profiles["default"].profiling_mode, "sampled")
         self.assertEqual(cfg.db_profiles["default"].profiling_max_rows, 500_000)
         self.assertEqual(cfg.db_profiles["default"].profiling_sample_size, 3)
+
+    def test_upsert_active_db_profile_replaces_active_db_object(self) -> None:
+        cfg = AMXConfig()
+        original = DBConfig(backend="postgresql", host="localhost", database="SAP")
+        updated = DBConfig(
+            backend="databricks",
+            host="adb-4217046554757008.8.azuredatabricks.net",
+            http_path="/sql/1.0/warehouses/2a2df99633118da9",
+            access_token="token",
+            catalog="dap_eu_60_prod",
+            database="dev",
+            tls_no_verify=True,
+        )
+        cfg.db = original
+        cfg.db_profiles = {"pg-dbr": original}
+        cfg.active_db_profile = "pg-dbr"
+
+        cfg.upsert_db_profile("pg-dbr", updated)
+
+        self.assertIs(cfg.db, updated)
+        self.assertEqual(cfg.db.backend, "databricks")
+        self.assertEqual(cfg.db_profiles["pg-dbr"].backend, "databricks")
+
+    def test_cmd_add_profile_overwrites_active_profile_atomically(self) -> None:
+        cfg = AMXConfig()
+        original = DBConfig(backend="postgresql", host="localhost", database="SAP")
+        updated = DBConfig(
+            backend="databricks",
+            host="adb-4217046554757008.8.azuredatabricks.net",
+            http_path="/sql/1.0/warehouses/2a2df99633118da9",
+            access_token="token",
+            catalog="dap_eu_60_prod",
+            database="dev",
+            tls_no_verify=True,
+        )
+        cfg.db = original
+        cfg.db_profiles = {"pg-dbr": original}
+        cfg.active_db_profile = "pg-dbr"
+
+        with patch("amx.cli_support.commands.db.interactive_db_block", return_value=updated):
+            cmd_add_profile(cfg, ["pg-dbr"])
+
+        self.assertIs(cfg.db, updated)
+        self.assertEqual(cfg.db.backend, "databricks")
+        self.assertEqual(cfg.db_profiles["pg-dbr"].backend, "databricks")
 
     def test_databricks_connect_recovery_persists_env_ca_bundle(self) -> None:
         cfg = AMXConfig()

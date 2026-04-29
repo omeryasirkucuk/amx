@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.8] — 2026-04-29
+### Active DB Profile Save Fix
+- **amx/cli_support/commands/db.py / amx/config.py**: Fixed the active-profile overwrite path so updating an existing active DB profile via `/add-db-profile` is applied atomically and no longer gets reverted to the previously active backend during autosave.
+- **tests/test_regressions.py**: Added coverage for replacing an active PostgreSQL profile with a Databricks profile and keeping the new backend/settings attached to both `cfg.db` and `cfg.db_profiles[name]`.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the fix and bumped the release to `0.2.8`.
+
 ## [0.2.7] — 2026-04-29
 ### LLM Run Guardrails and Quiet Failure Surfacing
 - **amx/llm/provider.py**: Added `LLMTestResult`, silenced LiteLLM-owned terminal loggers by default, and kept health-check details structured so AMX can show actionable messages without third-party warning spill.

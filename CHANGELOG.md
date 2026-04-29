@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.8] — 2026-04-29
+### Fixed
+- **Active DB profile overwrite bug**: Re-saving an existing active DB profile through `/add-db-profile` no longer reverts the new backend/settings back to the previously active connection during autosave. Switching an active profile from PostgreSQL to Databricks now persists the Databricks backend, warehouse path, token, and TLS settings correctly.
+
+### Added
+- **Regression coverage**: Added tests for active-profile DB upserts and atomic `/add-db-profile` replacement of an existing active profile.
+
 ## [0.2.7] — 2026-04-29
 ### Changed
 - **Analyze LLM preflight**: `/analyze /run` now performs an LLM health-check before profiling begins and stops immediately with an actionable AMX error when the active model/profile is unreachable or deactivated.

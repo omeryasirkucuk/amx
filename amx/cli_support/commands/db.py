@@ -360,8 +360,9 @@ def cmd_add_profile(
     info(f"Creating/updating profile: {name}")
     existing = cfg.db_profiles.get(name)
     db = interactive_db_block(existing or cfg.db)
-    cfg.upsert_db_profile(name, db)
-    cfg.set_active_db_profile(name)
+    cfg.db_profiles[name] = db
+    cfg.active_db_profile = name
+    cfg.db = db
     cfg.save()
     success(f"Profile saved and activated: {name} [{db.backend}]")
     if log_event is not None:

@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.8`: Fixed `/add-db-profile` overwriting the active profile with its old backend during autosave; replacing an active PostgreSQL profile with Databricks now persists the Databricks connection settings correctly.
 - `v0.2.7`: `/analyze /run` now performs an LLM health-check before profiling starts, Profile Agent failures are surfaced as explicit AMX warnings, and LiteLLM warning/debug spill is suppressed unless AMX chooses to show a message.
 - `v0.2.6`: Reworked `/add-db-profile` editing so profile updates are deterministic: `Enter` keeps the current value, `-` clears optional fields, and Databricks TLS choices no longer depend on ambiguous prompt behavior.
 - `v0.2.5`: Added a deterministic `db tls` command so Databricks TLS settings can be set and verified from the app without relying on interactive yes/no prompts.

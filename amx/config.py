@@ -690,6 +690,8 @@ class AMXConfig:
 
     def upsert_db_profile(self, name: str, db: DBConfig) -> None:
         self.db_profiles[name] = db
+        if self.active_db_profile == name:
+            self.db = db
         self._autosave()
 
     def remove_db_profile(self, name: str) -> None:
