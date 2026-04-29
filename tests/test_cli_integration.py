@@ -172,8 +172,39 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 1)
+        self.assertIn("Testing LLM connection...", result.output)
         self.assertIn("Cannot connect to the active LLM", result.output)
         self.assertIn("model endpoint rejected the request", result.output)
+
+    def test_analyze_run_without_llm_profile_uses_slash_command_guidance(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = ""
+        cfg.llm.model = ""
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def test_connection(self) -> bool:
+                return True
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "analyze", "run"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("No active LLM profile is configured.", result.output)
+        self.assertIn("/llm", result.output)
+        self.assertIn("/add-llm-profile", result.output)
+        self.assertIn("/setup", result.output)
 
 
 class RootCommandIntegrationTests(unittest.TestCase):

@@ -66,7 +66,7 @@ def register_root_commands(
         if llm_result.ok:
             success("LLM connection successful!")
         else:
-            warn("LLM test failed — you can reconfigure later with `amx setup`.")
+            warn("LLM test failed — reconfigure under `/llm` or rerun `/setup`.")
             if llm_result.message:
                 info(f"Cause: {llm_result.message}")
 

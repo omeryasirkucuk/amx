@@ -275,7 +275,10 @@ def execute_analyze_run(
         token_tracker.reset()
 
         if not cfg.llm.provider or not cfg.llm.model:
-            error("LLM not configured. Run `amx setup` first.")
+            error(
+                "No active LLM profile is configured. "
+                "Use `/llm` then `/add-llm-profile`, or run `/setup`."
+            )
             sys.exit(1)
 
         llm = LLMProvider(cfg.llm)
@@ -287,7 +290,14 @@ def execute_analyze_run(
             )
 
         db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
-        _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
+        with command_display(
+            schema=schema or cfg.current_schema or "",
+            table=(table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")),
+            mode="llm-connect",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
+            _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
         tables_arg = list(tables_pos) + list(table)

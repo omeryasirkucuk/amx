@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.9] — 2026-04-29
+### Changed
+- **Interactive LLM preflight in `/run`**: The analyze-run LLM health-check now uses the same live progress display style as the database connection test, with visible activity timing before profiling starts.
+- **Slash-command LLM guidance**: User-facing “LLM not configured” and setup-retry messages now point to `/llm`, `/add-llm-profile`, and `/setup` instead of shell-style `amx setup` wording.
+
+### Added
+- **Regression coverage**: Added CLI tests for the interactive LLM preflight output and the new slash-command guidance when no active LLM profile exists.
+
 ## [0.2.8] — 2026-04-29
 ### Fixed
 - **Active DB profile overwrite bug**: Re-saving an existing active DB profile through `/add-db-profile` no longer reverts the new backend/settings back to the previously active connection during autosave. Switching an active profile from PostgreSQL to Databricks now persists the Databricks backend, warehouse path, token, and TLS settings correctly.

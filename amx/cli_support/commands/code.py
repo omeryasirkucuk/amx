@@ -492,7 +492,10 @@ def register_code_commands(
         from amx.llm.provider import LLMProvider
 
         if not cfg.llm.provider or not cfg.llm.model:
-            error("LLM not configured. Run `amx setup` first.")
+            error(
+                "No active LLM profile is configured. "
+                "Use `/llm` then `/add-llm-profile`, or run `/setup`."
+            )
             sys.exit(1)
 
         try:

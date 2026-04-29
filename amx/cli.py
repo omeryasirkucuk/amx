@@ -53,7 +53,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
     llm_line = (
         f"{cfg.llm.provider or '(unset)'}/{cfg.llm.model or '(unset)'} [{cfg.llm.language or 'english'}]"
         if cfg.llm.model or cfg.llm.provider
-        else "(not configured — run /setup)"
+        else "(not configured — use /llm or /setup)"
     )
     info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line} (metadata language)")
     if cfg.current_schema or cfg.current_table:

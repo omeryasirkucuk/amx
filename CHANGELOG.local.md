@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.9] — 2026-04-29
+### Slash-First LLM UX
+- **amx/cli_support/commands/analyze_flow.py**: Moved the `/run` LLM preflight under the live command display so it renders like the database connect check, and replaced shell-style “amx setup” guidance with slash-command guidance.
+- **amx/cli_support/commands/code.py / amx/cli_support/commands/docs.py / amx/cli_support/root_commands.py / amx/cli.py**: Normalized LLM setup/retry messages to mention `/llm`, `/add-llm-profile`, and `/setup` instead of assuming setup only happens through one path.
+- **tests/test_cli_integration.py**: Added coverage for visible `/run` LLM preflight output and slash-command guidance when no active LLM profile exists.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the UX adjustment and bumped the release to `0.2.9`.
+
 ## [0.2.8] — 2026-04-29
 ### Active DB Profile Save Fix
 - **amx/cli_support/commands/db.py / amx/config.py**: Fixed the active-profile overwrite path so updating an existing active DB profile via `/add-db-profile` is applied atomically and no longer gets reverted to the previously active backend during autosave.
