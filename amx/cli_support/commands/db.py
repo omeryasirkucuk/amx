@@ -245,7 +245,19 @@ def cmd_use(
 
 
 def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
-    """Interactive prompts to build a DBConfig for any supported backend."""
+    """Interactive prompts to build a DBConfig for any supported backend.
+
+    When ``defaults`` is ``None``, every prompt starts blank — used for
+    new profiles so we never leak fields from an already-configured
+    active profile.
+
+    When ``defaults`` is supplied (editing an existing profile) the
+    user can press Enter to keep each current value. If they switch
+    the backend mid-flow, we reset to a fresh ``DBConfig`` so values
+    from the previous backend (e.g. a Databricks workspace URL) do
+    NOT silently fill into a freshly chosen PostgreSQL profile.
+    """
+    new_profile = defaults is None
     if defaults is None:
         defaults = DBConfig()
     backend = ask_choice(
@@ -260,15 +272,78 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         },
     )
 
+    # Truly-blank defaults for a brand-new profile or after a cross-
+    # backend reset. ``DBConfig()`` carries the dataclass-level
+    # placeholders (``host="localhost"``, ``user="amx"``, etc.), which
+    # would still appear as Enter-to-keep defaults and feel like the
+    # active profile is leaking — so we wipe every connection field.
+    def _blank(active_backend: str) -> DBConfig:
+        return DBConfig(
+            backend=active_backend,
+            host="",
+            port=0,
+            user="",
+            password="",
+            database="",
+            account="",
+            warehouse="",
+            role="",
+            http_path="",
+            access_token="",
+            catalog="",
+            tls_no_verify=False,
+            tls_trusted_ca_file="",
+            project="",
+            dataset="",
+            credentials_path="",
+        )
+
+    # If the user picked a backend different from what ``defaults``
+    # was built for, drop those defaults — they belong to a different
+    # backend and would otherwise leak into the wrong fields.
+    if defaults.backend and backend != defaults.backend:
+        defaults = _blank(backend)
+
+    if new_profile:
+        defaults = _blank(backend)
+
     if backend == "postgresql":
-        host = _ask_update_text("Database host", defaults.host or "localhost", required=True, allow_clear=False)
-        port_raw = _ask_update_text("Port", str(defaults.port or 5432), required=True, allow_clear=False)
+        # New-profile prompts start fully empty so users never silently
+        # inherit a value from a different profile by pressing Enter.
+        # Existing-profile edits keep their current value as the default.
+        host = _ask_update_text(
+            "Database host (e.g. db.example.com)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        port_raw = _ask_update_text(
+            "Port (e.g. 5432)",
+            str(defaults.port) if defaults.port else "",
+            required=True,
+            allow_clear=False,
+        )
         while not port_raw.isdigit():
             warn("Port must be a number.")
-            port_raw = _ask_update_text("Port", str(defaults.port or 5432), required=True, allow_clear=False)
-        user = _ask_update_text("Username", defaults.user or "amx", required=True, allow_clear=False)
+            port_raw = _ask_update_text(
+                "Port (e.g. 5432)",
+                str(defaults.port) if defaults.port else "",
+                required=True,
+                allow_clear=False,
+            )
+        user = _ask_update_text(
+            "Username (e.g. amx)",
+            defaults.user or "",
+            required=True,
+            allow_clear=False,
+        )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
-        database = _ask_update_text("Database name", defaults.database or "postgres", required=True, allow_clear=False)
+        database = _ask_update_text(
+            "Database name (e.g. postgres)",
+            defaults.database or "",
+            required=True,
+            allow_clear=False,
+        )
         return replace(
             defaults,
             backend="postgresql",
@@ -280,12 +355,22 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
 
     if backend == "snowflake":
-        account = _ask_update_text("Snowflake account identifier (e.g. xy12345.us-east-1)", defaults.account, required=True, allow_clear=False)
-        user = _ask_update_text("Username", defaults.user, required=True, allow_clear=False)
+        account = _ask_update_text(
+            "Snowflake account identifier (e.g. xy12345.us-east-1)",
+            defaults.account,
+            required=True,
+            allow_clear=False,
+        )
+        user = _ask_update_text("Username (e.g. ANALYST)", defaults.user, required=True, allow_clear=False)
         password = _ask_update_secret("Password", defaults.password or "", required=True)
-        database = _ask_update_text("Database name", defaults.database, required=True, allow_clear=False)
-        warehouse = _ask_update_text("Warehouse (optional)", defaults.warehouse or "")
-        role = _ask_update_text("Role (optional)", defaults.role or "")
+        database = _ask_update_text(
+            "Database name (e.g. ANALYTICS)",
+            defaults.database,
+            required=True,
+            allow_clear=False,
+        )
+        warehouse = _ask_update_text("Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or "")
+        role = _ask_update_text("Role (optional, e.g. ANALYST)", defaults.role or "")
         return replace(
             defaults,
             backend="snowflake",
@@ -299,13 +384,13 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
 
     if backend == "databricks":
         host = _ask_update_text(
-            "Databricks host (e.g. adb-xxx.azuredatabricks.net)",
+            "Databricks host (e.g. adb-xxxxxxxxxxxxxxxx.0.azuredatabricks.net)",
             defaults.host,
             required=True,
             allow_clear=False,
         )
         http_path = _ask_update_text(
-            "SQL warehouse HTTP path",
+            "SQL warehouse HTTP path (e.g. /sql/1.0/warehouses/abc1234567890)",
             defaults.http_path,
             required=True,
             allow_clear=False,
@@ -334,9 +419,20 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
 
     if backend == "bigquery":
-        project = _ask_update_text("GCP project ID", defaults.project, required=True, allow_clear=False)
-        dataset = _ask_update_text("Default dataset (optional)", defaults.dataset or "")
-        creds = _ask_update_text("Service account JSON path (optional, uses ADC if empty)", defaults.credentials_path or "")
+        project = _ask_update_text(
+            "GCP project ID (e.g. my-company-prod)",
+            defaults.project,
+            required=True,
+            allow_clear=False,
+        )
+        dataset = _ask_update_text(
+            "Default dataset (optional, e.g. analytics)",
+            defaults.dataset or "",
+        )
+        creds = _ask_update_text(
+            "Service account JSON path (optional, e.g. /etc/gcp/sa.json — uses ADC if empty)",
+            defaults.credentials_path or "",
+        )
         return replace(
             defaults,
             backend="bigquery",
@@ -358,9 +454,19 @@ def cmd_add_profile(
         name = rest[0]
     else:
         name = ask("Profile name", default="local")
-    info(f"Creating/updating profile: {name}")
     existing = cfg.db_profiles.get(name)
-    db = interactive_db_block(existing or cfg.db)
+    if existing is not None:
+        info(f"Editing profile: {name}")
+        # Editing an existing profile — keep its current values as
+        # defaults so the user can press Enter to skip unchanged fields.
+        db = interactive_db_block(existing)
+    else:
+        info(f"Creating new profile: {name}")
+        # New profile — every prompt starts blank. We deliberately do
+        # NOT use ``cfg.db`` (the active profile) as defaults here, or a
+        # /add-db-profile would silently pre-fill with the active
+        # profile's host / token / etc.
+        db = interactive_db_block(None)
     cfg.db_profiles[name] = db
     cfg.active_db_profile = name
     cfg.db = db

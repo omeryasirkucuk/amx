@@ -2092,6 +2092,200 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class ProfileCreationLeakageTests(unittest.TestCase):
+    """Adding a new DB or LLM profile must NOT pre-fill the form with
+    values from the currently active profile. Before this fix, typing
+    `/add-db-profile new-postgres` while a Databricks profile was
+    active would silently use the Databricks host / http_path / token
+    as Enter-to-keep defaults — a real-world value would land in the
+    new postgres profile if the user pressed Enter.
+    """
+
+    def test_db_add_profile_new_name_does_not_inherit_active_profile(self) -> None:
+        """The active Databricks profile must NOT leak into a freshly
+        created profile of any backend."""
+        from amx.cli_support.commands.db import cmd_add_profile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            # Use the proper public API so write-through saves do not
+            # overwrite our seeded profile with the initial cfg.db.
+            cfg.upsert_db_profile(
+                "pg-dbr",
+                DBConfig(
+                    backend="databricks",
+                    host="adb-4217046554757008.8.azuredatabricks.net",
+                    http_path="/sql/1.0/warehouses/abc1234",
+                    access_token="dapi-real-token-do-not-leak",
+                    catalog="dap_eu_60_prod",
+                    database="default",
+                ),
+            )
+            cfg.set_active_db_profile("pg-dbr")
+
+            captured: dict[str, object] = {"defaults": "MISSING"}
+
+            def spy(defaults):
+                captured["defaults"] = defaults
+                return DBConfig(
+                    backend="postgresql",
+                    host="db.new.example.com",
+                    user="alice",
+                    password="secret",
+                    database="new_db",
+                )
+
+            with patch(
+                "amx.cli_support.commands.db.interactive_db_block",
+                side_effect=spy,
+            ):
+                cmd_add_profile(cfg, ["brand-new-postgres"])
+
+            self.assertIsNone(captured["defaults"])
+            new_profile = cfg.db_profiles["brand-new-postgres"]
+            self.assertEqual(new_profile.backend, "postgresql")
+            self.assertEqual(new_profile.host, "db.new.example.com")
+            self.assertNotIn("databricks", new_profile.host)
+            self.assertEqual(new_profile.access_token, "")
+            self.assertEqual(new_profile.http_path, "")
+            self.assertEqual(new_profile.catalog, "")
+
+    def test_db_add_profile_existing_name_passes_existing_as_defaults(self) -> None:
+        """Editing an existing profile keeps its values as defaults so
+        the user can press Enter to skip unchanged fields."""
+        from amx.cli_support.commands.db import cmd_add_profile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            new_db = DBConfig(
+                backend="postgresql",
+                host="db.example.com",
+                user="alice",
+                database="orders",
+                password="secret",
+            )
+            # Wrap setup in a transaction so the autosave in
+            # set_active_db_profile doesn't fire mid-mutation and
+            # overwrite our just-seeded profile with the still-default
+            # cfg.db. (See PR #4 for transactional writes.)
+            with cfg.transaction():
+                cfg.upsert_db_profile("edit-me", new_db)
+                cfg.db = new_db
+                cfg.set_active_db_profile("edit-me")
+
+            captured: dict[str, object] = {}
+
+            def spy(defaults):
+                captured["defaults"] = defaults
+                return cfg.db_profiles["edit-me"]
+
+            with patch(
+                "amx.cli_support.commands.db.interactive_db_block",
+                side_effect=spy,
+            ):
+                cmd_add_profile(cfg, ["edit-me"])
+
+            self.assertIsNotNone(captured["defaults"])
+            self.assertEqual(captured["defaults"].host, "db.example.com")
+
+    def test_interactive_db_block_resets_cross_backend_defaults(self) -> None:
+        """If the caller passes a Databricks profile but the user picks
+        PostgreSQL in the picker, the postgres prompts must NOT inherit
+        the Databricks host / token / catalog."""
+        from amx.cli_support.commands.db import interactive_db_block
+
+        databricks_defaults = DBConfig(
+            backend="databricks",
+            host="adb-4217046554757008.8.azuredatabricks.net",
+            http_path="/sql/1.0/warehouses/abc",
+            access_token="dapi-leaks",
+            catalog="dap_eu_60_prod",
+        )
+
+        # Mock all the prompts: pick PostgreSQL, capture what default
+        # the host prompt was given.
+        host_default_seen = {"value": "MISSING"}
+
+        def fake_ask_choice(*_args, **_kwargs):
+            return "postgresql"
+
+        def fake_update_text(label, current="", **_kwargs):
+            if "Database host" in label:
+                host_default_seen["value"] = current
+            # Port prompt has an .isdigit() validation loop, so it must
+            # get a numeric reply or the loop never exits.
+            if "Port" in label:
+                return "5432"
+            return "user-typed-value"
+
+        def fake_update_secret(*_args, **_kwargs):
+            return "user-typed-secret"
+
+        with (
+            patch("amx.cli_support.commands.db.ask_choice", fake_ask_choice),
+            patch("amx.cli_support.commands.db._ask_update_text", fake_update_text),
+            patch("amx.cli_support.commands.db._ask_update_secret", fake_update_secret),
+            patch("amx.cli_support.commands.db._ask_update_bool", lambda *_a, **_k: False),
+        ):
+            result = interactive_db_block(databricks_defaults)
+
+        # The Databricks host must NOT have been offered as the postgres
+        # default — the cross-backend reset means defaults.host was "".
+        self.assertEqual(host_default_seen["value"], "")
+        self.assertEqual(result.backend, "postgresql")
+
+    def test_llm_add_profile_new_name_does_not_inherit_active_profile(self) -> None:
+        """The active LLM profile's API key, model, and base URL must
+        NOT leak into a freshly created LLM profile."""
+        from amx.cli_support.commands.profiles import cmd_add_llm_profile
+        from amx.config import LLMConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            cfg.upsert_llm_profile(
+                "work",
+                LLMConfig(
+                    provider="openai",
+                    model="gpt-4o-mini",
+                    api_key="sk-real-key-do-not-leak-xxxxxxxxxx",
+                    api_base="https://api.openai.com/v1",
+                    language="english",
+                ),
+            )
+            cfg.set_active_llm_profile("work")
+
+            captured: dict[str, object] = {"defaults": "MISSING"}
+
+            def spy(defaults):
+                captured["defaults"] = defaults
+                return LLMConfig(
+                    provider="anthropic",
+                    model="claude-sonnet-4",
+                    api_key="new-anthropic-key",
+                    language="english",
+                )
+
+            with (
+                patch(
+                    "amx.cli_support.commands.profiles.interactive_llm_block",
+                    side_effect=spy,
+                ),
+                patch(
+                    "amx.cli_support.commands.profiles.confirm",
+                    return_value=False,
+                ),
+            ):
+                cmd_add_llm_profile(cfg, ["brand-new-llm"])
+
+            self.assertIsNone(captured["defaults"])
+            new = cfg.llm_profiles["brand-new-llm"]
+            self.assertEqual(new.provider, "anthropic")
+            self.assertNotIn("sk-real-key", new.api_key)
+
+
 class CrashReportSanitizationTests(unittest.TestCase):
     """`write_crash_report` and `redact_secrets` keep DB passwords, API
     keys, and Databricks PATs from leaking into a file the user is
