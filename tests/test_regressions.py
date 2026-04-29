@@ -2460,6 +2460,59 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
 
         self.assertEqual(cfg.embedding.kind, original_kind)
 
+    def test_picker_default_is_current_provider_label(self) -> None:
+        """The interactive picker (no args) must default to the current
+        provider's labelled choice rather than a separate ambiguous "keep"
+        option, and selecting that default must be a no-op."""
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        original_kind = cfg.embedding.kind  # "minilm" out of the box
+        # Simulate the user pressing Enter (returns the default).
+        with patch(
+            "amx.cli_support.commands.embeddings.ask_choice",
+            side_effect=lambda *_args, **kwargs: kwargs.get("default", ""),
+        ):
+            cmd_embeddings(cfg, [])
+        self.assertEqual(cfg.embedding.kind, original_kind)
+
+    def test_picker_explicit_cancel_does_not_mutate(self) -> None:
+        from amx.cli_support.commands.embeddings import cmd_embeddings, _LABEL_CANCEL
+
+        cfg = AMXConfig()
+        original_kind = cfg.embedding.kind
+        with patch(
+            "amx.cli_support.commands.embeddings.ask_choice",
+            return_value=_LABEL_CANCEL,
+        ):
+            cmd_embeddings(cfg, [])
+        self.assertEqual(cfg.embedding.kind, original_kind)
+
+    def test_picker_minilm_choice_routes_to_minilm_branch(self) -> None:
+        """Selecting the verbose 'MiniLM' label from the picker must route
+        through the same code path as `/embeddings minilm`."""
+        from amx.cli_support.commands.embeddings import cmd_embeddings, _LABEL_MINILM, _LABEL_OPENAI
+        from amx.config import EmbeddingConfig
+
+        cfg = AMXConfig()
+        cfg.embedding = EmbeddingConfig(
+            kind="openai_compatible",
+            model="text-embedding-3-small",
+            api_key="sk-old",
+            base_url="https://api.openai.com/v1",
+        )
+
+        # User picks the MiniLM option from the verbose-label picker.
+        with patch(
+            "amx.cli_support.commands.embeddings.ask_choice",
+            return_value=_LABEL_MINILM,
+        ):
+            cmd_embeddings(cfg, [])
+
+        self.assertEqual(cfg.embedding.kind, "minilm")
+        self.assertEqual(cfg.embedding.model, "")
+        self.assertEqual(cfg.embedding.api_key, "")
+
 
 class EmbeddingDefaultFactoryTests(unittest.TestCase):
     """The singleton in amx.search.embeddings lets the CLI install the
