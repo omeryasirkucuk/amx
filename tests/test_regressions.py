@@ -2092,6 +2092,147 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class PerProfileCollectionTests(unittest.TestCase):
+    """The Week-3 SearchIndex now uses one Chroma collection per db_profile
+    so cross-profile pollution is impossible — these tests pin the naming
+    and isolation guarantees."""
+
+    def test_collection_name_for_empty_profile_is_legacy(self) -> None:
+        from amx.search.index import _collection_name_for
+
+        self.assertEqual(_collection_name_for(""), "amx_search")
+
+    def test_collection_name_is_deterministic_and_chroma_valid(self) -> None:
+        """Same profile in → same collection name out, and the name only
+        contains characters Chroma accepts (alnum, dot, dash, underscore)."""
+        import re
+
+        from amx.search.index import _collection_name_for
+
+        a = _collection_name_for("prod")
+        b = _collection_name_for("prod")
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, "amx_search")  # different from the legacy name
+        self.assertTrue(re.match(r"^[a-zA-Z0-9._-]{3,63}$", a))
+
+    def test_two_profiles_get_distinct_collection_names(self) -> None:
+        from amx.search.index import _collection_name_for
+
+        self.assertNotEqual(
+            _collection_name_for("prod"), _collection_name_for("dev")
+        )
+
+    def test_profile_name_with_unicode_and_spaces_hashes_safely(self) -> None:
+        """Profile names can contain anything users type; the name fed to
+        Chroma must still be a valid identifier."""
+        import re
+
+        from amx.search.index import _collection_name_for
+
+        name = _collection_name_for("müşteri / prod tablosu 🚀")
+        self.assertTrue(re.match(r"^[a-zA-Z0-9._-]{3,63}$", name))
+
+    def test_search_index_routes_upsert_per_profile(self) -> None:
+        """Two profiles' rows must land in two different collections, even
+        within a single ``upsert_entities`` call."""
+        from amx.search import index as index_module
+
+        captured: dict[str, list[dict]] = {}
+
+        class FakeCollection:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def upsert(self, *, ids, documents, metadatas):
+                captured.setdefault(self.name, []).extend(metadatas)
+
+            def delete(self, *_, **__):
+                pass
+
+            def get(self, *_, **__):
+                return {"ids": []}
+
+            def query(self, *_, **__):
+                return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+        class FakeClient:
+            def __init__(self, *, path: str) -> None:  # noqa: ARG002
+                self._collections: dict[str, FakeCollection] = {}
+
+            def get_or_create_collection(self, *, name, **_):
+                col = self._collections.get(name) or FakeCollection(name)
+                self._collections[name] = col
+                return col
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+                idx = index_module.SearchIndex(persist_dir=td)
+                idx.upsert_entities(
+                    [
+                        {"id": 1, "search_text": "row in prod",
+                         "db_profile": "prod", "schema_name": "s",
+                         "table_name": "t", "column_name": "c",
+                         "entity_kind": "column"},
+                        {"id": 2, "search_text": "row in dev",
+                         "db_profile": "dev", "schema_name": "s",
+                         "table_name": "t", "column_name": "c",
+                         "entity_kind": "column"},
+                    ]
+                )
+
+        prod_name = index_module._collection_name_for("prod")
+        dev_name = index_module._collection_name_for("dev")
+        self.assertIn(prod_name, captured)
+        self.assertIn(dev_name, captured)
+        self.assertEqual(len(captured[prod_name]), 1)
+        self.assertEqual(len(captured[dev_name]), 1)
+        self.assertEqual(captured[prod_name][0]["db_profile"], "prod")
+        self.assertEqual(captured[dev_name][0]["db_profile"], "dev")
+
+    def test_query_does_not_filter_on_db_profile_metadata(self) -> None:
+        """Now that each profile has its own collection, the query layer
+        must NOT pass a ``where`` clause — that was the previous
+        cross-pollution-prone design."""
+        from amx.search import index as index_module
+
+        captured: dict[str, object] = {"explicit_kwargs": {}}
+
+        class FakeCollection:
+            def query(self, *, query_texts, n_results, **kwargs):
+                # We capture the *explicit* kwargs so we can assert that
+                # `where` was not passed. Chroma's API does not require
+                # it to be present at all when each collection is
+                # already profile-scoped.
+                captured["explicit_kwargs"] = dict(kwargs)
+                captured["n_results"] = n_results
+                captured["query_texts"] = query_texts
+                return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+            def upsert(self, *_, **__):
+                pass
+
+            def delete(self, *_, **__):
+                pass
+
+            def get(self, *_, **__):
+                return {"ids": []}
+
+        class FakeClient:
+            def __init__(self, *, path: str) -> None:  # noqa: ARG002
+                pass
+
+            def get_or_create_collection(self, **_):
+                return FakeCollection()
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
+                idx = index_module.SearchIndex(persist_dir=td)
+                idx.query("what is X?", db_profile="prod", n_results=5)
+
+        self.assertNotIn("where", captured["explicit_kwargs"])
+        self.assertEqual(captured.get("n_results"), 5)
+
+
 class SearchIndexEmbeddingTests(unittest.TestCase):
     """Verify SearchIndex wires the embedding_function param through to Chroma."""
 

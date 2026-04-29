@@ -6,6 +6,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 ### Changed
+- **Per-profile Chroma collections** (`amx/search/index.py`): each DB profile is now mapped to its own Chroma collection (`amx_search_<sha256-prefix>`) instead of sharing a single `amx_search` collection filtered by a `db_profile` metadata field. Cross-profile pollution is now physically impossible regardless of caller discipline. The empty profile name still maps to the legacy `amx_search` collection so callers and tests that have not adopted the per-profile API keep working. The `query()` method no longer needs a `where` clause since the collection is already profile-scoped.
+  - **Migration:** existing users should run `/rebuild` (inside `/search`) to populate the new per-profile collections — old data sitting in the shared `amx_search` collection is no longer queried for non-empty profiles.
+- **`_collection_name_for(db_profile)`** helper: hashes profile names so they always land within Chroma's allowed character set (alnum, dot, dash, underscore; 3–63 chars) regardless of what the user typed (spaces, unicode, slashes).
+- **6 new `PerProfileCollectionTests`** covering: empty-profile maps to the legacy name, deterministic and Chroma-valid hashing, two profiles get distinct names, unicode/special-char profile names hash safely, `upsert_entities` routes rows to the right collection per `db_profile`, and `query()` no longer passes a `where` clause.
+
 - **`/embeddings` now lives under `/search` namespace** so users discover it inside the related tab — matching the pattern used by `/llm-profiles` (only valid inside `/llm`). The command also appears in the `/search` namespace help text.
 - **Improved `/embeddings` picker UX**: the previous "keep" option (which looked ambiguous) is replaced with the current provider's labelled choice (e.g. `MiniLM (--default, current)` or `OpenAI-compatible (current)`); pressing Enter on the default is a no-op. Adds an explicit `Cancel` option for clarity.
 - **Verbose provider labels** in the picker (`MiniLM`, `OpenAI-compatible`, `Local sentence-transformers`) replacing the terse `minilm`/`openai`/`local` aliases. The aliases still work as command arguments.
