@@ -2232,6 +2232,87 @@ class ConfigTransactionTests(unittest.TestCase):
             self.assertEqual(counter[0], 0)
 
 
+class EmbeddingsSlashCommandTests(unittest.TestCase):
+    """The /embeddings slash command lets users switch provider without
+    hand-editing ~/.amx/config.yml. Each branch reinstalls the runtime
+    factory so subsequent /search queries pick up the new provider."""
+
+    def setUp(self) -> None:
+        from amx.search import embeddings as embeddings_module
+
+        self.embeddings_module = embeddings_module
+        embeddings_module.set_default_embedding_function(None)
+
+    def tearDown(self) -> None:
+        self.embeddings_module.set_default_embedding_function(None)
+
+    def test_minilm_branch_resets_provider(self) -> None:
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        # Pretend a non-default factory is currently installed.
+        sentinel_factory = lambda: object()
+        self.embeddings_module.set_default_embedding_function(sentinel_factory)
+        self.assertIsNotNone(self.embeddings_module._default_factory)
+
+        cmd_embeddings(cfg, ["minilm"])
+
+        self.assertEqual(cfg.embedding.kind, "minilm")
+        self.assertEqual(cfg.embedding.model, "")
+        # MiniLM means: clear the factory so Chroma uses its bundled default.
+        self.assertIsNone(self.embeddings_module._default_factory)
+
+    def test_openai_branch_with_model_arg_installs_factory(self) -> None:
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        with (
+            patch("amx.cli_support.commands.embeddings.ask", return_value="https://api.openai.com/v1"),
+            patch("amx.cli_support.commands.embeddings.ask_password", return_value="sk-test"),
+        ):
+            cmd_embeddings(cfg, ["openai", "text-embedding-3-small"])
+
+        self.assertEqual(cfg.embedding.kind, "openai_compatible")
+        self.assertEqual(cfg.embedding.model, "text-embedding-3-small")
+        self.assertEqual(cfg.embedding.api_key, "sk-test")
+        self.assertEqual(cfg.embedding.base_url, "https://api.openai.com/v1")
+        # Factory installed and points at OpenAI-compatible.
+        self.assertIsNotNone(self.embeddings_module._default_factory)
+
+    def test_local_branch_with_model_arg(self) -> None:
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        cmd_embeddings(cfg, ["local", "BAAI/bge-large-en-v1.5"])
+
+        self.assertEqual(cfg.embedding.kind, "sentence_transformers")
+        self.assertEqual(cfg.embedding.model, "BAAI/bge-large-en-v1.5")
+        self.assertEqual(cfg.embedding.api_key, "")
+
+    def test_unknown_kind_emits_error_without_mutating_config(self) -> None:
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        original_kind = cfg.embedding.kind
+
+        # Should not raise — the error is printed via console.error().
+        cmd_embeddings(cfg, ["totally-not-a-kind"])
+
+        self.assertEqual(cfg.embedding.kind, original_kind)
+
+    def test_openai_branch_rejects_empty_model(self) -> None:
+        from amx.cli_support.commands.embeddings import cmd_embeddings
+
+        cfg = AMXConfig()
+        original_kind = cfg.embedding.kind
+        # `ask` returns "" → command must error rather than silently install
+        # an unusable provider.
+        with patch("amx.cli_support.commands.embeddings.ask", return_value=""):
+            cmd_embeddings(cfg, ["openai"])
+
+        self.assertEqual(cfg.embedding.kind, original_kind)
+
+
 class EmbeddingDefaultFactoryTests(unittest.TestCase):
     """The singleton in amx.search.embeddings lets the CLI install the
     user's chosen provider once at startup so all later SearchIndex
