@@ -6,19 +6,35 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
+from chromadb.api.types import EmbeddingFunction
 
 
 class SearchIndex:
-    """Thin wrapper around a Chroma collection for effective catalog rows."""
+    """Thin wrapper around a Chroma collection for effective catalog rows.
 
-    def __init__(self, persist_dir: str | None = None):
+    The ``embedding_function`` argument lets callers swap in a different
+    embedding provider (see :mod:`amx.search.embeddings`); ``None``
+    keeps Chroma's bundled default (``all-MiniLM-L6-v2``, 384-dim) for
+    backwards compatibility.
+    """
+
+    def __init__(
+        self,
+        persist_dir: str | None = None,
+        *,
+        embedding_function: EmbeddingFunction | None = None,
+    ) -> None:
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
-        self.collection = self.client.get_or_create_collection(
-            name="amx_search",
-            metadata={"hnsw:space": "cosine"},
-        )
+        kwargs: dict[str, Any] = {
+            "name": "amx_search",
+            "metadata": {"hnsw:space": "cosine"},
+        }
+        if embedding_function is not None:
+            kwargs["embedding_function"] = embedding_function
+        self.collection = self.client.get_or_create_collection(**kwargs)
+        self.embedding_function = embedding_function
 
     def upsert_entities(self, entities: list[dict[str, Any]]) -> int:
         docs: list[str] = []
