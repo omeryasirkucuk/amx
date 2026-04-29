@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
 
 ## [Unreleased]
+### Changed
+- **`/embeddings` now lives under `/search` namespace** so users discover it inside the related tab — matching the pattern used by `/llm-profiles` (only valid inside `/llm`). The command also appears in the `/search` namespace help text.
+- **Improved `/embeddings` picker UX**: the previous "keep" option (which looked ambiguous) is replaced with the current provider's labelled choice (e.g. `MiniLM (--default, current)` or `OpenAI-compatible (current)`); pressing Enter on the default is a no-op. Adds an explicit `Cancel` option for clarity.
+- **Verbose provider labels** in the picker (`MiniLM`, `OpenAI-compatible`, `Local sentence-transformers`) replacing the terse `minilm`/`openai`/`local` aliases. The aliases still work as command arguments.
+- **`/embeddings openai` prompt now lists endpoint examples** for OpenAI, OpenRouter, Together, Mistral, DeepInfra, Azure OpenAI, and local servers (vLLM / LM Studio / llama.cpp). The OpenAI-compatible mode already covers all of these — they only differ in `base_url` and the API key.
+- **`/embeddings local` prompt now lists recommended HuggingFace models** (`BAAI/bge-large-en-v1.5`, `BAAI/bge-m3`, `intfloat/e5-large-v2`, `intfloat/multilingual-e5-large`) so users do not have to hunt for a starting point.
+- **3 new picker tests** covering: default-Enter is a no-op, `Cancel` does not mutate, and the verbose `MiniLM` label routes to the same branch as `/embeddings minilm`.
+
 ### Added
 - **LLM transient-retry** (`amx/llm/provider.py`): rate-limit (HTTP 429), timeouts, connection-reset, and 5xx upstream errors are now retried up to twice with exponential backoff (1s, 2s) before propagating. Authentication / bad-request errors still propagate immediately so the categorised `ErrorMapper` hint reaches the user fast. The existing Ollama legacy `/v1` 404 fallback is preserved as a first-attempt special case.
 - **`_is_transient_llm_error()` helper**: classifies LLM exceptions by class name (`RateLimitError`, `APITimeoutError`, `APIConnectionError`, `InternalServerError`, `ServiceUnavailableError`, plus stdlib `TimeoutError` / `ConnectionError`) and by substring matching of common transient phrases (`429`, `rate limit`, `timed out`, `connection reset`, `503 service`, `502 bad gateway`, etc.). Available for unit testing and re-use.

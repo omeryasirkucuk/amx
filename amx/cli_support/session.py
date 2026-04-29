@@ -332,6 +332,9 @@ Commands:
   6) /config [key] [value]                     Show or update search settings
   7) /sync [--schema …] [--table …]            Sync DB structure/comments + cached code evidence
   8) /rebuild                                  Rebuild effective search state and vector index
+  9) /embeddings [kind] [model]                Show or change the search-index embedding provider
+                                               (MiniLM default, OpenAI-compatible, or local sentence-transformers).
+                                               Run /rebuild after switching to re-embed the catalog.
 """
         )
         return
@@ -700,8 +703,12 @@ def _handle_session_builtin(
         success(f"Saved configuration to {path}")
         return True
     if head == "embeddings":
-        # Available from any namespace — embedding provider config is a quick
-        # one-shot mutation that doesn't require entering /search first.
+        # Lives under /search since switching the embedding provider only
+        # affects the search index. The user must enter /search first; this
+        # matches the pattern used by /llm-profiles (only valid inside /llm)
+        # and keeps the namespace boundaries consistent.
+        if not _require_namespace(head, namespace, "search", "embeddings"):
+            return True
         _cmd_embeddings(cfg, parts[1:])
         return True
     if head == "schema":
