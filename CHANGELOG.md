@@ -6,6 +6,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 ### Added
+- **Engine-bound DB adapter tests** (`tests/test_regressions.py`): follow-up to PR #12, which covered the SQL builders. This batch covers the methods that actually drive a SQLAlchemy connection. Adds a small `_FakeRow` + `_fake_engine` helper so tests can mock the `with engine.connect() as conn: conn.execute(...).fetchall()` shape without standing up a real database.
+  - **PostgreSQL** (4 tests): `list_materialized_views` returns `relname` strings and binds `:schema`; `get_incoming_foreign_keys` normalises rows into dicts; `get_database_comment` and `get_schema_comment` return string or `None`.
+  - **Snowflake** (1 test): `list_materialized_views` reads the second column / `name` mapping from a `SHOW MATERIALIZED VIEWS` row.
+  - **Databricks** (2 tests): `get_table_stats` parses `numRows` from `DESCRIBE DETAIL`; failures absorbed and zero stats returned so the profile run keeps going.
+  - **BigQuery** (2 tests): `get_table_stats` reads `INFORMATION_SCHEMA.TABLES.row_count`; missing row → zeroes.
 - **Token-budget pre-check before LLM synthesis** (`amx/search/agent.py`): `_synthesize_answer` now estimates the prompt token count with `tiktoken` and, if it exceeds the LLM's input budget, drops the lowest-scored retrieval rows until it fits. Without this guard, large catalogs blew the model context window with an opaque LLM error; now the user sees a one-line warning in `~/.amx/logs/amx.log` describing how many rows were trimmed. Per-family budgets: 60K for OpenAI gpt-4o / DeepSeek / local; 150K for Claude (200K context); 250K for Gemini (1M-2M context). Unknown models fall back to 60K.
 - **`_input_token_budget_for(model)` and `_trim_rows_to_token_budget(...)`** helpers, both pure-functional and reusable. The trimmer is O(n) — it estimates per-row cost from one full encoding plus one no-rows encoding, rather than re-encoding inside a loop.
 - **4 new `TokenBudgetPreCheckTests`** covering: per-model-family budget mapping, all-rows-fit no-trim path, tight-budget keeps highest-scored rows in descending order, empty-input round-trip.

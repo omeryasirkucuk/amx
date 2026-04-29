@@ -2948,6 +2948,220 @@ class DBInspectCommandTests(unittest.TestCase):
         self.assertTrue(finished["yes"])
 
 
+class _FakeRow:
+    """Tuple-and-mapping-like row for SQLAlchemy mock results."""
+
+    def __init__(self, values, mapping=None):
+        self._values = list(values)
+        self._mapping_dict = dict(mapping) if mapping else {}
+
+    def __getitem__(self, idx):
+        if isinstance(idx, str):
+            return self._mapping_dict[idx]
+        return self._values[idx]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    @property
+    def _mapping(self):
+        return self._mapping_dict or dict(enumerate(self._values))
+
+
+def _fake_engine(*, fetchall=None, fetchone=None):
+    """Build a minimal SQLAlchemy-engine stand-in.
+
+    The ``with engine.connect() as conn: conn.execute(...).fetchall()``
+    pattern is what every adapter uses, so we mock that exact shape and
+    let each test pass the rows it wants returned.
+    """
+    from unittest.mock import MagicMock
+
+    result = MagicMock()
+    result.fetchall = MagicMock(return_value=list(fetchall or []))
+    result.fetchone = MagicMock(return_value=fetchone)
+
+    conn = MagicMock()
+    conn.execute = MagicMock(return_value=result)
+
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=conn)
+    cm.__exit__ = MagicMock(return_value=False)
+
+    engine = MagicMock()
+    engine.connect = MagicMock(return_value=cm)
+    return engine, conn
+
+
+class PostgreSQLEngineBoundTests(unittest.TestCase):
+    """Engine-bound adapter coverage. PR #12 covered the SQL builders;
+    this batch covers the methods that actually drive a SQLAlchemy
+    connection (`list_materialized_views`, `get_incoming_foreign_keys`,
+    `get_schema_comment`, `get_database_comment`)."""
+
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="postgresql",
+            host="db.example.com",
+            port=5432,
+            user="alice",
+            database="orders",
+            password="secret",
+        )
+        self.adapter = PostgreSQLAdapter(self.cfg)
+
+    def test_list_materialized_views_returns_relname_strings(self) -> None:
+        engine, conn = _fake_engine(
+            fetchall=[
+                _FakeRow(["mv_daily_sales"]),
+                _FakeRow(["mv_monthly_kpis"]),
+            ]
+        )
+        names = self.adapter.list_materialized_views(engine, "rep")
+        self.assertEqual(names, ["mv_daily_sales", "mv_monthly_kpis"])
+        # Verify the schema parameter was bound through.
+        called_args = conn.execute.call_args
+        self.assertEqual(called_args.args[1], {"schema": "rep"})
+
+    def test_get_incoming_foreign_keys_normalises_to_dicts(self) -> None:
+        engine, _ = _fake_engine(
+            fetchall=[
+                _FakeRow(["public", "orders", "user_id", "id"]),
+                _FakeRow(["billing", "invoices", "customer_id", "id"]),
+            ]
+        )
+        fks = self.adapter.get_incoming_foreign_keys(engine, "public", "users")
+        self.assertEqual(len(fks), 2)
+        self.assertEqual(
+            fks[0],
+            {
+                "source_schema": "public",
+                "source_table": "orders",
+                "source_column": "user_id",
+                "target_column": "id",
+            },
+        )
+
+    def test_get_database_comment_returns_string_or_none(self) -> None:
+        engine, _ = _fake_engine(fetchone=_FakeRow(["The orders OLTP database."]))
+        self.assertEqual(
+            self.adapter.get_database_comment(engine),
+            "The orders OLTP database.",
+        )
+
+        engine, _ = _fake_engine(fetchone=None)
+        self.assertIsNone(self.adapter.get_database_comment(engine))
+
+    def test_get_schema_comment_returns_string_or_none(self) -> None:
+        engine, _ = _fake_engine(fetchone=_FakeRow(["Reporting layer schema."]))
+        self.assertEqual(
+            self.adapter.get_schema_comment(engine, "rep"),
+            "Reporting layer schema.",
+        )
+
+        engine, _ = _fake_engine(fetchone=None)
+        self.assertIsNone(self.adapter.get_schema_comment(engine, "missing"))
+
+
+class SnowflakeEngineBoundTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="snowflake",
+            account="acct.region",
+            user="alice",
+            password="secret",
+            database="ANALYTICS",
+            warehouse="COMPUTE_WH",
+            role="ANALYST",
+        )
+        self.adapter = SnowflakeAdapter(self.cfg)
+
+    def test_list_materialized_views_uses_show_clause(self) -> None:
+        # SHOW MATERIALIZED VIEWS returns rows where the second column is
+        # the name; the adapter accepts either the `name` mapping or
+        # positional `[1]`.
+        engine, conn = _fake_engine(
+            fetchall=[
+                _FakeRow(
+                    ["2026-04-30", "mv_kpis", "ANALYTICS"],
+                    mapping={"name": "mv_kpis"},
+                )
+            ]
+        )
+        names = self.adapter.list_materialized_views(engine, "rep")
+        self.assertEqual(names, ["mv_kpis"])
+
+
+class DatabricksEngineBoundTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="databricks",
+            host="dbc-xyz.cloud.databricks.com",
+            access_token="dapi-test",
+            http_path="/sql/1.0/warehouses/abc123",
+            catalog="main",
+            database="default",
+        )
+        self.adapter = DatabricksAdapter(self.cfg)
+
+    def test_get_table_stats_parses_describe_detail_row(self) -> None:
+        # DESCRIBE DETAIL returns a row with numRows under either
+        # numRows or rowCount, depending on the Unity Catalog version.
+        engine, _ = _fake_engine(
+            fetchall=[
+                _FakeRow(
+                    ["main.retail.orders", 1234567, ...],
+                    mapping={"numRows": 1234567},
+                )
+            ]
+        )
+        stats = self.adapter.get_table_stats(engine, "retail", "orders")
+        self.assertEqual(stats["n_live_tup"], 1234567)
+        self.assertEqual(stats["seq_scan"], 0)
+        self.assertEqual(stats["idx_scan"], 0)
+
+    def test_get_table_stats_returns_zeroes_when_describe_fails(self) -> None:
+        """DESCRIBE DETAIL is not authorised on every Hive table; the
+        adapter must absorb the failure and return zero stats so the
+        rest of the profile run can continue."""
+        from unittest.mock import MagicMock
+
+        engine = MagicMock()
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=MagicMock(
+            execute=MagicMock(side_effect=RuntimeError("not authorized"))
+        ))
+        cm.__exit__ = MagicMock(return_value=False)
+        engine.connect = MagicMock(return_value=cm)
+
+        stats = self.adapter.get_table_stats(engine, "retail", "orders")
+        self.assertEqual(stats, {"seq_scan": 0, "idx_scan": 0, "n_live_tup": 0})
+
+
+class BigQueryEngineBoundTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg = DBConfig(
+            backend="bigquery",
+            project="my-project",
+            dataset="analytics",
+            credentials_path="/tmp/sa.json",
+        )
+        self.adapter = BigQueryAdapter(self.cfg)
+
+    def test_get_table_stats_reads_information_schema(self) -> None:
+        engine, _ = _fake_engine(fetchone=_FakeRow([987_654_321]))
+        stats = self.adapter.get_table_stats(engine, "retail", "orders")
+        self.assertEqual(stats["n_live_tup"], 987_654_321)
+
+    def test_get_table_stats_zero_when_row_missing(self) -> None:
+        engine, _ = _fake_engine(fetchone=None)
+        stats = self.adapter.get_table_stats(engine, "retail", "orders")
+        self.assertEqual(stats["n_live_tup"], 0)
+
+
 class PostgreSQLAdapterUnitTests(unittest.TestCase):
     """Pure-functional unit tests for the PostgreSQL adapter.
 
