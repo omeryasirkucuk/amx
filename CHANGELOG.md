@@ -6,6 +6,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 ### Added
+- **`EmbeddingConfig` dataclass on `AMXConfig`**: `cfg.embedding` persists the user's chosen embedding provider (`kind` ∈ `minilm` / `openai_compatible` / `sentence_transformers`), `model`, `base_url`, and `api_key`. Round-trips through `~/.amx/config.yml`. The `api_key` is externalised to the OS keyring under `embedding/api_key` (same path as DB / LLM secrets) so it never lands on disk in plaintext. Legacy plaintext configs migrate on the next save.
+- **`EmbeddingConfig.is_configured()`**: returns `True` for the MiniLM default (which needs no setup) and requires a non-empty `model` for the other two kinds. The CLI uses this to route users to a future `/embeddings` setup command without failing silently.
+- **5 new `EmbeddingConfigPersistenceTests`** covering the default-MiniLM state, `openai_compatible` model-required validation, full save/load round-trip, keyring externalisation of the api_key, and legacy-plaintext migration.
 - **Pluggable search embeddings** (`amx/search/embeddings.py`): the AMX search index now accepts a swap-in `EmbeddingFunction` so users can pick how their catalog is vectorised:
   - `MiniLMEmbedding` (default) — explicit wrapper around Chroma's bundled `all-MiniLM-L6-v2`. Behaviour unchanged for existing users; the choice is now visible in the codebase rather than implicit.
   - `OpenAICompatibleEmbedding` — points at any OpenAI-compatible `/embeddings` endpoint via `base_url + api_key + model`. Plugs in OpenAI proper, Azure OpenAI, OpenRouter, Together, Mistral, or local servers like LM Studio / vLLM / llama.cpp.

@@ -2232,6 +2232,97 @@ class ConfigTransactionTests(unittest.TestCase):
             self.assertEqual(counter[0], 0)
 
 
+class EmbeddingConfigPersistenceTests(unittest.TestCase):
+    """The Week-3 EmbeddingConfig integrates with AMXConfig load/save and the
+    OS-keyring secret externalisation. These tests pin the round-trip and
+    confirm the api_key never lands in plaintext on disk."""
+
+    def setUp(self) -> None:
+        from amx.storage.secrets import InMemorySecretStore, set_default_store
+
+        self._store = InMemorySecretStore()
+        set_default_store(self._store)
+
+    def tearDown(self) -> None:
+        from amx.storage.secrets import set_default_store
+
+        set_default_store(None)
+
+    def test_default_embedding_is_minilm(self) -> None:
+        cfg = AMXConfig()
+        self.assertEqual(cfg.embedding.kind, "minilm")
+        self.assertEqual(cfg.embedding.model, "")
+        self.assertEqual(cfg.embedding.api_key, "")
+        self.assertTrue(cfg.embedding.is_configured())
+
+    def test_openai_compatible_requires_model_to_be_configured(self) -> None:
+        from amx.config import EmbeddingConfig
+
+        self.assertFalse(EmbeddingConfig(kind="openai_compatible", model="").is_configured())
+        self.assertTrue(
+            EmbeddingConfig(kind="openai_compatible", model="text-embedding-3-small").is_configured()
+        )
+
+    def test_save_and_load_round_trip_preserves_embedding_settings(self) -> None:
+        from amx.config import EmbeddingConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.embedding = EmbeddingConfig(
+                kind="openai_compatible",
+                model="text-embedding-3-large",
+                api_key="sk-embed-1234",
+                base_url="https://api.openai.com/v1",
+            )
+            cfg.save(str(cfg_path))
+
+            reloaded = AMXConfig.load(str(cfg_path))
+            self.assertEqual(reloaded.embedding.kind, "openai_compatible")
+            self.assertEqual(reloaded.embedding.model, "text-embedding-3-large")
+            self.assertEqual(reloaded.embedding.api_key, "sk-embed-1234")
+            self.assertEqual(reloaded.embedding.base_url, "https://api.openai.com/v1")
+
+    def test_embedding_api_key_externalised_to_keyring(self) -> None:
+        from amx.config import EmbeddingConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.embedding = EmbeddingConfig(
+                kind="openai_compatible",
+                model="text-embedding-3-small",
+                api_key="sk-must-not-leak",
+                base_url="https://api.openai.com/v1",
+            )
+            cfg.save(str(cfg_path))
+
+            yaml_text = cfg_path.read_text()
+            self.assertNotIn("sk-must-not-leak", yaml_text)
+            self.assertIn("keyring:embedding/api_key", yaml_text)
+            self.assertEqual(self._store.get("embedding/api_key"), "sk-must-not-leak")
+
+    def test_embedding_legacy_plaintext_loads_without_keyring(self) -> None:
+        """A YAML written before keyring integration (or by a user with
+        keyring unavailable) keeps working: api_key flows straight into the
+        in-memory dataclass, and the next save migrates it."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg_path.write_text(
+                "embedding:\n"
+                "  kind: openai_compatible\n"
+                "  model: text-embedding-3-small\n"
+                "  api_key: sk-plaintext-legacy\n"
+                "  base_url: https://api.openai.com/v1\n"
+            )
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertEqual(cfg.embedding.api_key, "sk-plaintext-legacy")
+
+            cfg.save(str(cfg_path))
+            self.assertEqual(self._store.get("embedding/api_key"), "sk-plaintext-legacy")
+            self.assertNotIn("sk-plaintext-legacy", cfg_path.read_text())
+
+
 class FirstRunConfigTests(unittest.TestCase):
     """Regression tests for the Week-2 first-run UX hardening."""
 
