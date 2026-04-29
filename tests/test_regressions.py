@@ -22,6 +22,7 @@ from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.core import AMXApplication, UniversalMetadataAdapter
+from amx.core.errors import ErrorMapper
 from amx.cli_support.commands.db import cmd_profiling
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
@@ -33,7 +34,7 @@ from amx.db.connector import ColumnProfile, TableProfile
 from amx.docs.rag import RAGStore
 from amx.docs.scanner import _resolve_github, _resolve_s3, cleanup_scan_artifacts
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
-from amx.llm.provider import LLMProvider
+from amx.llm.provider import LLMProvider, logprob_confidence_score
 from amx.services.analyze_scope import filter_non_business_assets
 from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
 from amx.storage.sqlite_store import SQLiteHistoryStore
@@ -125,6 +126,28 @@ class CoreArchitectureTests(unittest.TestCase):
     def test_import_amx_exposes_headless_application(self) -> None:
         self.assertTrue(hasattr(AMXApplication, "load"))
 
+    def test_import_amx_init_run_analysis_is_headless_safe(self) -> None:
+        import amx
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.save(str(cfg_path))
+
+            result = amx.init(str(cfg_path)).run_analysis()
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "no_scope")
+
+    def test_error_mapper_returns_actionable_postgres_extension_guidance(self) -> None:
+        mapped = ErrorMapper.map(
+            RuntimeError("pg_stat_statements must be loaded via shared_preload_libraries"),
+            backend="postgresql",
+        )
+
+        self.assertIsNotNone(mapped)
+        self.assertIn("CREATE EXTENSION", mapped.render())
+
 
 class DocumentScannerTests(unittest.TestCase):
     def test_github_scan_artifacts_are_marked_for_cleanup(self) -> None:
@@ -150,6 +173,21 @@ class DocumentScannerTests(unittest.TestCase):
         cleanup_scan_artifacts(docs)
 
         self.assertFalse(Path(cloned[0]).exists())
+
+    def test_rag_reranker_prioritizes_explanatory_chunks(self) -> None:
+        store = RAGStore.__new__(RAGStore)
+        hits = [
+            {"text": "CUSTOMER_ID\nCUSTOMER_ID\nCUSTOMER_ID", "distance": 0.1, "metadata": {}},
+            {
+                "text": "Customer identifier is used to join orders to account records because it maps customer ownership.",
+                "distance": 0.4,
+                "metadata": {},
+            },
+        ]
+
+        reranked = store.rerank("customer identifier join", hits)
+
+        self.assertIn("because", reranked[0]["text"])
 
     def test_s3_download_preserves_key_prefixes_for_duplicate_basenames(self) -> None:
         class FakePaginator:
@@ -1269,6 +1307,24 @@ class ConfidenceCalibrationTests(unittest.TestCase):
         self.assertEqual(calibrated[0].confidence, Confidence.HIGH)
         self.assertEqual(calibrated[1].confidence, Confidence.LOW)
         self.assertGreater(calibrated[0].logprob_score or 0, calibrated[1].logprob_score or 0)
+
+    def test_whole_response_logprob_ignores_json_structure(self) -> None:
+        response = '{"description":"Risky generated description","confidence":"HIGH"}'
+        logprobs = []
+        pos = 0
+        desc = "Risky generated description"
+        while pos < len(response):
+            if response.startswith(desc, pos):
+                logprobs.append({"token": desc, "logprob": -2.0})
+                pos += len(desc)
+            else:
+                logprobs.append({"token": response[pos], "logprob": -0.001})
+                pos += 1
+
+        score = logprob_confidence_score(logprobs)
+
+        self.assertIsNotNone(score)
+        self.assertLess(score or 1.0, 0.2)
 
 
 class BatchLogprobTests(unittest.TestCase):

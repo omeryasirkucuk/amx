@@ -2,16 +2,19 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
-## [0.1.130] — 2026-04-29
-### Library-First Core Foundation
+## [0.2.0] — 2026-04-29
+### Semantic Intelligence & Resilience Cycle
 - **amx/core/application.py / amx/__init__.py**: Added `AMXApplication` and lazy public exports so scripts can use `import amx` without booting the CLI shell.
 - **amx/core/metadata.py**: Added the Universal Metadata Interface (`AbstractEntity`, lexical/structural/statistical/semantic signals, and `UniversalMetadataAdapter`) to normalize catalog/profile inputs without naming-convention rules.
-- **amx/core/ask_agent.py**: Added a bounded tool-loop ask scaffold with `metadata_query`, `semantic_search`, `doc_rag_query`, and `sample_data_query`, returning a transparent observable trace.
+- **amx/search/catalog.py / amx/agents/*.py**: Removed vendor-specific alias, business-code, and date/token naming boosts from current semantic scoring and prompt examples so adapters and search rely on collected evidence instead of hardcoded dialect rules.
+- **amx/core/ask_agent.py / amx/cli_support/commands/search.py**: Added a bounded tool-loop ask scaffold with `metadata_query`, `db_schema_lookup`, `semantic_search`, `vector_rag_lookup`, `doc_rag_query`, `sample_data_query`, and `table_sample_query`, plus a visible `/search ask` thought trace.
+- **amx/llm/provider.py**: Refactored logprob confidence to use weighted geometric scoring over generated description/comment values while excluding JSON/labeled boilerplate tokens.
+- **amx/docs/rag.py**: Added semantic reranking that prefers explanatory chunks and penalizes repetitive technical headers before applying the caller's result limit.
+- **amx/core/errors.py / amx/db/connector.py**: Added centralized actionable backend error mapping and surfaced those remediation messages from connection/profile failures.
 - **amx/config.py / amx/core/state.py / amx/storage/sqlite_store.py**: Added loaded-config write-through for direct top-level and nested DB/LLM mutations plus SQLite `session_state` persistence.
 - **amx/storage/sqlite_store.py / amx/agents/orchestrator.py**: Added `raw_logprob`, `token_count`, and `model_version` audit fields for saved inference results.
-- **amx/search/agent.py / amx/cli_support/commands/search.py**: Added thought-trace diagnostics into `/search ask` result payloads.
 - **amx/core/token_budget.py / amx/agents/rag_agent.py**: Added deterministic RAG context compaction before prompt construction.
-- **tests/test_regressions.py / README.md / CHANGELOG.md / pyproject.toml**: Added core architecture regression coverage, documentation updates, and version bump to `0.1.130`.
+- **tests/test_regressions.py / README.md / CHANGELOG.md / pyproject.toml**: Added regression coverage, documentation updates, and version bump to `0.2.0`.
 
 ## [0.1.127] — 2026-04-29
 ### `/search` LLM-First Routing

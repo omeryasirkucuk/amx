@@ -50,3 +50,37 @@ class AMXApplication:
 
     def explain(self, question: str) -> dict[str, Any]:
         return SearchService(self.config, self.catalog).explain(question)
+
+    def run_analysis(
+        self,
+        scope: dict[str, list[str]] | None = None,
+        *,
+        apply: bool = False,
+    ) -> dict[str, Any]:
+        """Headless-safe analysis entrypoint.
+
+        When no explicit scope or saved selection exists, this method returns a
+        structured skipped result instead of opening interactive prompts.
+        """
+        selected_scope = scope or self._selected_scope()
+        if not selected_scope:
+            return {
+                "status": "skipped",
+                "reason": "no_scope",
+                "message": "Provide scope={'schema': ['table']} or save selected_schemas/selected_tables before running headless analysis.",
+            }
+        return {
+            "status": "planned",
+            "apply": bool(apply),
+            "scope": selected_scope,
+            "message": "Headless planning succeeded. Use CLI /run for interactive review or wire this scope into orchestrator execution.",
+        }
+
+    def _selected_scope(self) -> dict[str, list[str]]:
+        if self.config.current_schema and self.config.current_table:
+            return {self.config.current_schema: [self.config.current_table]}
+        if self.config.selected_schemas and self.config.selected_tables:
+            return {schema: list(self.config.selected_tables) for schema in self.config.selected_schemas}
+        if self.config.selected_schemas:
+            return {schema: [] for schema in self.config.selected_schemas}
+        return {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from types import ModuleType
@@ -122,13 +123,46 @@ def _is_value_token(token_text: str) -> bool:
     return True
 
 
-def logprob_confidence_score(logprobs_content: list | None) -> float | None:
-    """Weighted geometric-mean confidence from value-bearing completion tokens."""
+def _description_value_spans(text: str) -> list[tuple[int, int]]:
+    """Return spans for generated description/comment values only."""
+    if not text:
+        return []
+    spans: list[tuple[int, int]] = []
+    json_pattern = re.compile(
+        r'"(?:description|comment|best_description|table_description)(?:_\d+)?"\s*:\s*"((?:\\.|[^"\\])*)"',
+        re.IGNORECASE,
+    )
+    for match in json_pattern.finditer(text):
+        spans.append((match.start(1), match.end(1)))
+    label_pattern = re.compile(
+        r"(?im)^(?:DESCRIPTION(?:_\d+)?|TABLE_DESCRIPTION(?:_\d+)?|BEST_DESCRIPTION|COMMENT)\s*:\s*(.+)$"
+    )
+    for match in label_pattern.finditer(text):
+        value = match.group(1).strip()
+        if not value:
+            continue
+        offset = match.group(1).find(value)
+        start = match.start(1) + max(0, offset)
+        spans.append((start, start + len(value)))
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _weighted_score_for_spans(logprobs_content: list | None, spans: list[tuple[int, int]] | None = None) -> float | None:
     if not logprobs_content:
         return None
     weighted_logprob_sum = 0.0
     total_weight = 0.0
-    for token_obj in logprobs_content:
+    token_spans = _logprob_token_spans(logprobs_content)
+    for tok_start, tok_end, token_obj in token_spans:
+        if spans and not any(tok_end > span_start and tok_start < span_end for span_start, span_end in spans):
+            continue
         token_text = _lp_token_text(token_obj)
         if not _is_value_token(token_text):
             continue
@@ -142,6 +176,15 @@ def logprob_confidence_score(logprobs_content: list | None) -> float | None:
         return None
     avg_lp = weighted_logprob_sum / total_weight
     return math.exp(avg_lp)
+
+
+def logprob_confidence_score(logprobs_content: list | None) -> float | None:
+    """Weighted geometric-mean confidence from generated description/comment text."""
+    if not logprobs_content:
+        return None
+    generated_text = "".join(_lp_token_text(token_obj) for token_obj in logprobs_content)
+    spans = _description_value_spans(generated_text)
+    return _weighted_score_for_spans(logprobs_content, spans or None)
 
 
 def _logprob_token_spans(logprobs_content: list | None) -> list[tuple[int, int, object]]:
@@ -178,23 +221,7 @@ def logprob_confidence_score_for_text(
         return None
     end = start + len(target_text)
 
-    weighted_logprob_sum = 0.0
-    total_weight = 0.0
-    for tok_start, tok_end, token_obj in _logprob_token_spans(logprobs_content):
-        if tok_end <= start or tok_start >= end:
-            continue
-        token_text = _lp_token_text(token_obj)
-        if not _is_value_token(token_text):
-            continue
-        lp = _lp_token_logprob(token_obj)
-        if lp is None:
-            continue
-        weight = max(1.0, float(len(token_text.strip())))
-        weighted_logprob_sum += lp * weight
-        total_weight += weight
-    if total_weight <= 0:
-        return None
-    return math.exp(weighted_logprob_sum / total_weight)
+    return _weighted_score_for_spans(logprobs_content, [(start, end)])
 
 
 def confidence_from_logprobs(

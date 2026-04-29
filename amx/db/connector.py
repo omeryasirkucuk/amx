@@ -13,6 +13,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection, Engine
 
 from amx.config import DBConfig
+from amx.core.errors import actionable_error_message
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.utils.logging import get_logger
 
@@ -117,8 +118,8 @@ class DatabaseConnector:
                 conn.execute(text(self._adapter.test_connection_sql()))
             return True
         except Exception as exc:
-            actionable = self._adapter.actionable_profile_error(exc)
-            log.error("Connection failed: %s", actionable or exc)
+            actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+            log.error("Connection failed: %s", actionable)
             return False
 
     # ── Schema / asset listing ────────────────────────────────────────────
@@ -269,12 +270,8 @@ class DatabaseConnector:
             profile.stats_idx_scan = stats.get("idx_scan", 0)
             profile.stats_n_live_tup = stats.get("n_live_tup", 0)
         except Exception as exc:
-            actionable = adapter.actionable_profile_error(exc)
-            msg = (
-                f"Profiling failed for {schema}.{table}: {actionable}"
-                if actionable
-                else f"Profiling failed for {schema}.{table}: {exc}"
-            )
+            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+            msg = f"Profiling failed for {schema}.{table}: {actionable}"
             raise ProfilingError(schema, table, msg) from exc
         estimated_rows = int(profile.stats_n_live_tup or 0)
         full_scan_blocked = bool(max_rows and estimated_rows > max_rows)
@@ -340,12 +337,8 @@ class DatabaseConnector:
         try:
             raw_cols = insp.get_columns(table, schema=schema)
         except Exception as exc:
-            actionable = adapter.actionable_profile_error(exc)
-            msg = (
-                f"Profiling failed for {schema}.{table}: {actionable}"
-                if actionable
-                else f"Profiling failed for {schema}.{table}: {exc}"
-            )
+            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+            msg = f"Profiling failed for {schema}.{table}: {actionable}"
             raise ProfilingError(schema, table, msg) from exc
 
         for col_info in raw_cols:
@@ -382,7 +375,7 @@ class DatabaseConnector:
                             ).fetchall()
                             cp.samples = [r[0] for r in samples_row]
                 except Exception as exc:
-                    actionable = adapter.actionable_profile_error(exc)
+                    actionable = adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
                     if actionable:
                         log.warning(
                             "Skipping profile stats for %s.%s.%s: %s",
@@ -405,6 +398,20 @@ class DatabaseConnector:
 
         return profile
 
+    def profile_entities(
+        self,
+        schema: str,
+        table: str,
+        sample_size: int | None = None,
+        asset_kind: AssetKind | None = None,
+    ):
+        """Return profiled metadata normalized to Universal Metadata Interface objects."""
+        from amx.core.metadata import UniversalMetadataAdapter
+
+        return UniversalMetadataAdapter.from_table_profile(
+            self.profile_table(schema, table, sample_size=sample_size, asset_kind=asset_kind)
+        )
+
     # ── Relationships ─────────────────────────────────────────────────────
 
     def get_incoming_foreign_keys(self, schema: str, table: str) -> list[dict[str, Any]]:
@@ -413,7 +420,7 @@ class DatabaseConnector:
         try:
             return self._adapter.get_incoming_foreign_keys(self.engine, schema, table)
         except Exception as exc:
-            actionable = self._adapter.actionable_profile_error(exc)
+            actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
             log.warning(
                 "Incoming foreign key introspection failed for %s.%s via %s: %s",
                 schema,

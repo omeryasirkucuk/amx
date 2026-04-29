@@ -1,13 +1,21 @@
 """AMX — Agentic Metadata Extractor."""
 
-__version__ = "0.1.130"
+__version__ = "0.2.0"
 
 __all__ = [
     "AMXApplication",
     "AbstractEntity",
     "UniversalMetadataAdapter",
     "__version__",
+    "init",
 ]
+
+
+def init(config_path: str | None = None):
+    """Initialize AMX as a headless library application."""
+    from amx.core.application import AMXApplication
+
+    return AMXApplication.load(config_path)
 
 
 def __getattr__(name: str):

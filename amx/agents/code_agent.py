@@ -47,10 +47,10 @@ CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <what code patterns support this>
 
 Example style:
-COLUMN: BUKRS
-DESCRIPTION_1: Company code identifier used to scope accounting records.
+COLUMN: tenant_key
+DESCRIPTION_1: Tenant identifier used to scope records.
 CONFIDENCE: HIGH
-REASONING: The code joins, filters, and groups records by this field in accounting-related queries and request payloads.
+REASONING: The code joins, filters, and groups records by this field across related queries and request payloads.
 """
 
 

@@ -67,6 +67,9 @@ class AskToolbox:
         except Exception as exc:
             return ToolResult("metadata_query", query, error=str(exc))
 
+    def db_schema_lookup(self, query: str, *, limit: int = 8) -> ToolResult:
+        return self.metadata_query(query, limit=limit)
+
     def semantic_search(self, query: str, *, limit: int = 8) -> ToolResult:
         try:
             rows = []
@@ -81,6 +84,9 @@ class AskToolbox:
             return ToolResult("semantic_search", query, rows=rows)
         except Exception as exc:
             return ToolResult("semantic_search", query, error=str(exc))
+
+    def vector_rag_lookup(self, query: str, *, limit: int = 8) -> ToolResult:
+        return self.semantic_search(query, limit=limit)
 
     def doc_rag_query(self, query: str, *, limit: int = 5) -> ToolResult:
         if self._doc_query is None:
@@ -109,6 +115,9 @@ class AskToolbox:
             return ToolResult("sample_data_query", f"{schema}.{table}", error=str(exc))
         except Exception as exc:
             return ToolResult("sample_data_query", f"{schema}.{table}", error=str(exc))
+
+    def table_sample_query(self, schema: str, table: str, *, sample_size: int = 3) -> ToolResult:
+        return self.sample_data_query(schema, table, sample_size=sample_size)
 
 
 class LoopBasedAskAgent:
@@ -169,6 +178,12 @@ class LoopBasedAskAgent:
             answer = f"Best grounded match: `{path}`"
             if desc:
                 answer += f" - {desc}"
+            evidence = ["metadata_query"]
+            if semantic.rows:
+                evidence.append("semantic_search")
+            if sample_result is not None and not sample_result.error:
+                evidence.append("sample_data_query")
+            answer += f" Evidence used: {', '.join(evidence[:3])}"
             return ToolAskResponse(question, answer + ".", trace, tool_results)
 
         return ToolAskResponse(

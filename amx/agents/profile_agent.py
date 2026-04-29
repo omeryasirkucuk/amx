@@ -25,7 +25,7 @@ in English exactly as shown.
 Write descriptions assertively and directly (e.g. "Telephone extension number" or "Indicates the fax number").
 Do NOT start descriptions with "This column likely represents" or "This column likely is". Be concise.
 Ground every claim in the provided profile, keys, comments, samples, stats, or usage hints.
-If evidence is weak, stay generic but still useful; do not invent business jargon, SAP module names, legal meanings, or workflow claims that are not supported.
+If evidence is weak, stay generic but still useful; do not invent business jargon, vendor-specific module names, legal meanings, or workflow claims that are not supported.
 Confidence rules:
 - HIGH: multiple strong clues agree (name + dtype + keys/comments/usage/samples).
 - MEDIUM: some plausible evidence exists but business meaning is not fully proven.
@@ -55,10 +55,10 @@ TABLE_DESCRIPTION_1: <most likely table description>
 TABLE_CONFIDENCE: <HIGH|MEDIUM|LOW>
 
 Example style:
-COLUMN: KUNNR
-DESCRIPTION_1: Customer account identifier.
+COLUMN: account_ref
+DESCRIPTION_1: Account reference identifier.
 CONFIDENCE: HIGH
-REASONING: Column name matches a common business-key pattern, appears in key relationships, and neighboring columns indicate customer master data.
+REASONING: The column participates in key relationships, has identifier-like samples, and neighboring columns provide account context.
 """
 
 

@@ -279,7 +279,7 @@ class SearchAgent:
             "- normalized_question should be the best retrieval phrase, usually English when it improves recall.\n"
             "Routing rules:\n"
             "- request_type MUST be set first, then intent/search_mode/question_class/target_entity must align with it.\n"
-            "- Field/code lookup such as MANDT, VBELN, mangdt, bukrs -> search_mode=name_lookup, question_class=entity_lookup, target_entity=column.\n"
+            "- Field/code lookup where the user provides a technical identifier -> search_mode=name_lookup, question_class=entity_lookup, target_entity=column.\n"
             "- 'How do these two tables join' -> join_candidates, join_discovery, target_entity=join_path.\n"
             "- 'Which tables can join with X' -> joinable_tables, join_discovery, target_entity=table.\n"
             "- 'What does this table do' or 'what is ADRC table' -> table_explain, table_understanding, target_entity=table.\n"

@@ -1143,7 +1143,6 @@ class SearchCatalog:
             "the",
             "and",
             "for",
-            "sap",
         }
         return {token for token in self._tokens(text) if token not in stop}
 
@@ -1180,43 +1179,11 @@ class SearchCatalog:
         right_desc = self._description_tokens(str(right.get("effective_description") or ""))
         overlap = left_desc.intersection(right_desc)
         if overlap:
-            score += min(3.0, 0.9 * len(overlap))
+            score += min(4.0, 1.5 * len(overlap))
             reasons.append("description overlap: " + ", ".join(sorted(list(overlap))[:4]))
-        business_terms = {
-            "customer",
-            "client",
-            "vendor",
-            "material",
-            "document",
-            "company",
-            "address",
-            "person",
-            "partner",
-        }
-        if overlap.intersection(business_terms):
-            score += 1.5
-            reasons.append("shared business-key concept")
-        sap_aliases = {
-            "kunnr": "customer",
-            "lifnr": "vendor",
-            "matnr": "material",
-            "bukrs": "company",
-            "vbeln": "document",
-            "pernr": "person",
-            "adrnr": "address",
-            "werks": "plant",
-        }
-        for name, other_name, other_desc in (
-            (left_name.lower(), right_name.lower(), " ".join(sorted(right_desc))),
-            (right_name.lower(), left_name.lower(), " ".join(sorted(left_desc))),
-        ):
-            alias = sap_aliases.get(name)
-            if not alias:
-                continue
-            if alias in other_name or alias in other_desc:
-                score += 1.75
-                reasons.append(f"SAP alias expansion ({name}≈{alias})")
-                break
+            if left_family == right_family:
+                score += 1.0
+                reasons.append("description overlap with compatible dtype")
         return score, {"reasons": reasons, "name_similarity": round(similarity, 4), "shared_tokens": sorted(list(overlap))[:8]}
 
     def _band_for_semantic_score(self, score: float) -> str:
@@ -1224,13 +1191,12 @@ class SearchCatalog:
             return "verified"
         if score >= 7.5:
             return "high_likelihood"
-        if score >= 5.5:
+        if score >= 4.0:
             return "possible"
         return "weak_hypothesis"
 
     def _exact_candidates(self, db_profile: str, question: str, limit: int = 20) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
-        temporal_tokens = {"date", "dates", "time", "timestamp", "tarih", "tarihler", "zaman"}
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1244,20 +1210,16 @@ class SearchCatalog:
         hits: list[dict[str, Any]] = []
         for row in rows:
             search_text = str(row["search_text"] or "").lower()
-            dtype = str(row["dtype"] or "").lower()
             column_name = str(row["column_name"] or "").lower()
             score = 0.0
             for token in tokens:
                 if token in search_text:
                     score += 1.0
+                if token and token in column_name:
+                    score += 1.5
                 if token == column_name:
                     score += 2.0
                 if token == str(row["table_name"] or "").lower():
-                    score += 1.5
-            if temporal_tokens.intersection(tokens):
-                if any(part in dtype for part in ("date", "time", "timestamp")):
-                    score += 2.0
-                if any(part in column_name for part in ("date", "time", "valid", "recordstamp")):
                     score += 1.5
             if score <= 0:
                 continue

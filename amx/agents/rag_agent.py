@@ -49,10 +49,10 @@ CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <what doc evidence supports this>
 
 Example style:
-COLUMN: WAERS
+COLUMN: currency_code
 DESCRIPTION_1: Transaction currency code.
 CONFIDENCE: HIGH
-REASONING: The retrieved excerpts describe the table's monetary amounts and refer to a companion currency field with the same naming pattern.
+REASONING: The retrieved excerpts describe monetary amounts and refer to a companion currency field in the same table context.
 """
 
 

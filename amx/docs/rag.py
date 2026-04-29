@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import chromadb
 from langchain_community.document_loaders import (
@@ -21,6 +22,30 @@ from amx.docs.scanner import DocInfo
 from amx.utils.logging import get_logger
 
 log = get_logger("docs.rag")
+
+EXPLANATORY_TERMS = frozenset(
+    {
+        "because",
+        "therefore",
+        "used",
+        "means",
+        "represents",
+        "identifies",
+        "calculated",
+        "derived",
+        "when",
+        "where",
+        "join",
+        "maps",
+        "foreign",
+        "primary",
+        "constraint",
+        "business",
+        "process",
+        "why",
+        "how",
+    }
+)
 
 LOADER_MAP = {
     ".pdf": PyPDFLoader,
@@ -126,7 +151,8 @@ class RAGStore:
         return total_chunks
 
     def query(self, question: str, n_results: int = 5) -> list[dict]:
-        results = self.collection.query(query_texts=[question], n_results=n_results)
+        raw_n = max(int(n_results), min(int(n_results) * 4, 40))
+        results = self.collection.query(query_texts=[question], n_results=raw_n)
         hits: list[dict] = []
         for i in range(len(results["documents"][0])):
             meta = results["metadatas"][0][i]
@@ -139,7 +165,28 @@ class RAGStore:
                     "distance": results["distances"][0][i] if results.get("distances") else None,
                 }
             )
-        return hits
+        return self.rerank(question, hits)[:n_results]
+
+    def rerank(self, question: str, hits: list[dict]) -> list[dict]:
+        """Prioritize explanatory chunks over repetitive technical headers."""
+        q_tokens = {token for token in re.findall(r"\w+", (question or "").lower()) if len(token) > 2}
+
+        def _score(hit: dict) -> float:
+            text = str(hit.get("text") or "")
+            lower = text.lower()
+            tokens = {token for token in re.findall(r"\w+", lower) if len(token) > 2}
+            overlap = len(q_tokens.intersection(tokens))
+            explanatory = sum(1 for term in EXPLANATORY_TERMS if term in tokens)
+            header_penalty = 0.0
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if lines:
+                short_lines = sum(1 for line in lines if len(line) <= 40)
+                header_penalty = min(2.0, short_lines / max(1, len(lines)))
+            distance = hit.get("distance")
+            distance_score = max(0.0, 2.0 - float(distance)) if distance is not None else 0.0
+            return distance_score + overlap * 0.4 + explanatory * 0.35 - header_penalty
+
+        return sorted(hits, key=_score, reverse=True)
 
     @property
     def doc_count(self) -> int:

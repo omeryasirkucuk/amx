@@ -4,17 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.130] — 2026-04-29
+## [0.2.0] — 2026-04-29
 ### Added
 - **Headless core facade**: Added `AMXApplication` plus public `import amx` exports so AMX can be embedded as a library without entering the interactive CLI.
 - **Universal Metadata Interface**: Added canonical `AbstractEntity` metadata objects and a `UniversalMetadataAdapter` for table profiles and catalog rows, separating downstream reasoning from backend-specific names.
 - **Tool-loop ask foundation**: Added `AskToolbox` and `LoopBasedAskAgent` primitives with `metadata_query`, `semantic_search`, `doc_rag_query`, and `sample_data_query` tool surfaces.
 - **State and audit persistence**: Added SQLite `session_state` plus `raw_logprob`, `token_count`, and `model_version` audit columns on saved inference results.
+- **Actionable error mapping**: Added a central `ErrorMapper` for translating common backend failures into operator instructions.
 
 ### Changed
 - **Write-through config persistence**: Loaded top-level and nested DB/LLM config mutations now trigger atomic config saves immediately.
 - **Search diagnostics**: `/search ask` now records a concise observable thought trace for interpretation, retrieval, live probe, and verification stages.
-- **RAG token guard**: RAG prompts now compact oversized document chunks deterministically before inference to reduce truncation risk.
+- **RAG token guard and reranking**: RAG prompts now compact oversized document chunks and document retrieval reranks explanatory chunks over repetitive technical headers.
+- **Rule-purged semantic scoring**: Removed vendor-specific alias/date naming boosts from semantic join and exact-candidate scoring; retrieval now relies on lexical, structural, statistical, and semantic evidence without hardcoded business-code aliases.
+- **Description-only logprob scoring**: Whole-response confidence now scores only generated description/comment values when structured output is present, excluding JSON/labeled boilerplate.
 
 ## [0.1.129] — 2026-04-29
 ### Changed

@@ -335,6 +335,15 @@ def _run_search_ask(
         info("Provenance: " + "; ".join(answer.provenance))
     if svc.settings.get("show_confidence", "true").lower() == "true":
         info(f"Confidence: {answer.confidence}")
+    trace = answer.details.get("thought_trace", []) or []
+    if trace:
+        info("Thought Trace:")
+        for idx, step in enumerate(trace, start=1):
+            if not isinstance(step, dict):
+                continue
+            label = str(step.get("step") or f"step_{idx}")
+            observation = str(step.get("observation") or "")
+            info(f"  {idx}. {label}: {observation}")
     for action in answer.details.get("actions", []) or []:
         action_name = str((action or {}).get("action") or "").strip()
         action_reason = str((action or {}).get("reason") or "").strip()

@@ -4,7 +4,7 @@ AI-powered CLI application that automatically infers, reviews, and applies metad
 
 ## Problem
 
-Enterprise databases accumulate thousands of tables and columns without proper documentation. Column names like `BUKRS`, `MANDT`, or `WAERS` are cryptic, and understanding what they represent requires institutional knowledge, scattered documentation, or deep code archaeology. AMX automates this discovery process.
+Enterprise databases accumulate thousands of tables and columns without proper documentation. Technical identifiers in any language or vendor dialect can be cryptic, and understanding what they represent requires institutional knowledge, scattered documentation, or deep code archaeology. AMX automates this discovery process.
 
 ## How It Works
 
@@ -25,16 +25,10 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
-- `v0.1.130`: Added a headless `AMXApplication` core facade, Universal Metadata Interface objects, write-through session/config state persistence, tool-loop `/ask` primitives, thought-trace diagnostics, SQLite audit columns, and RAG token-budget compaction.
+- `v0.2.0`: Added the headless `AMXApplication`/`amx.init()` API, UMI-normalized profile entities, rule-purged semantic join scoring, description-only weighted logprob confidence, visible `/search ask` thought traces, tool-loop ask aliases, actionable error mapping, RAG reranking, SQLite audit columns, and write-through state persistence.
 - `v0.1.129`: `/search` now enforces an LLM-native `request_type` contract for routing, including explicit `coverage_audit` handling for broad missing-comment questions so those requests reliably route to coverage workflow instead of semantic table matches.
 - `v0.1.128`: `/search` interpretation moved to an LLM-native multilingual flow with balanced classifier/reviewer decisioning, confidence-aware clarification questions for ambiguous scope, and configurable interpretation settings (`interpretation_mode`, `clarification_on_low_confidence`).
-- `v0.1.127`: `/search` question interpretation is now LLM-first (rule-based routing is fallback-only on LLM failure), which improves scope/intent understanding for ambiguous or conversational metadata questions while preserving deterministic resilience.
-- `v0.1.126`: Long-running CLI flows now reuse the `/run` live activity display more consistently, including `/search sync`, `/search rebuild`, `/db` inspection commands, `/docs scan`/`/docs ingest`/`/docs analyze`, `/code scan`/`/code analyze`/`/code refresh`, manual edit scope pickers, and batch polling heartbeats.
-- `v0.1.125`: `/search` and `/analyze` prompt stacks were hardened with stronger grounding rules, clearer confidence discipline, conservative merge precedence, and more robust fenced-output parsing.
-- `v0.1.124`: `/search` now uses rule-first routing, deterministic read-only live probes for table-scoped factual metadata questions, shorter template-first answers, tighter session-memory scope, and stronger suppression of weak vector-only tail matches.
-- `v0.1.123`: Databricks column comment write-back now groups same-table column updates into a single `ALTER TABLE ... ALTER COLUMN ...` statement when supported, and apply-mode progress now stays on one rolling write-back line instead of printing one line per column.
-- `v0.1.122`: Apply-mode write-back now shows live elapsed time and per-asset progress in the terminal, and failed writes persist a `failed` DB-apply status for the corresponding saved result row.
-- `v0.1.121`: Apply-mode database write-back now reuses one transaction per batch, and Databricks profiles with `tls_no_verify` no longer print one insecure-request warning per write-back request.
+See `CHANGELOG.md` for older release history.
 
 ## Architecture
 
@@ -397,7 +391,7 @@ Answering behavior:
 - each question now runs through a dedicated **Search Agent** pipeline: interpretation, retrieval planning, grounded retrieval, live verification for high-risk structural claims, answer synthesis, and optional follow-up action suggestions
 - `/search ask` can answer both semantic questions and catalog-overview questions such as "which databases are known", "which schemas exist", or "how many tables are in this schema"
 - `/search ask` now distinguishes table-level semantic discovery from inventory questions, so prompts like "which tables contain address details" route to ranked table matches instead of accidental table-count answers
-- `/search ask` now applies rule-first routing for high-confidence intents such as exact field lookups, explicit table explanations, join questions, and inventory questions before falling back to the interpreter LLM
+- `/search ask` uses an LLM-native interpretation pipeline with deterministic safeguards only as resilience fallbacks; semantic results are grounded by lexical, structural, statistical, and documentation evidence instead of vendor-specific naming rules
 - inventory/count questions such as schema lists or table counts use live DB introspection so they remain correct even if only part of the catalog has generated descriptions
 - semantic questions use effective metadata first, with exact/fuzzy name matching, multilingual query variants, and vector support as an independent fallback when lexical terms do not match
 - synthesized answers still receive the visible grounded result set, but `/search` now suppresses low-confidence tail rows before answering so weak vector-only matches do not dominate the user-facing summary
