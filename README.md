@@ -25,9 +25,9 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.2`: Hardened Databricks corporate TLS setup by expanding trusted CA paths, honoring CA bundle environment variables, and reporting missing CA bundle files with a direct remediation message.
 - `v0.2.1`: Added the SchemaExplorer macro-vision tool, inventory/definition/relationship/deep-dive ask strategies, set-based Markdown synthesis for column-count/table-inventory questions, and thought-trace visibility for schema inventory tool use.
 - `v0.2.0`: Added the headless `AMXApplication`/`amx.init()` API, UMI-normalized profile entities, rule-purged semantic join scoring, description-only weighted logprob confidence, visible `/search ask` thought traces, tool-loop ask aliases, actionable error mapping, RAG reranking, SQLite audit columns, and write-through state persistence.
-- `v0.1.129`: `/search` now enforces an LLM-native `request_type` contract for routing, including explicit `coverage_audit` handling for broad missing-comment questions so those requests reliably route to coverage workflow instead of semantic table matches.
 See `CHANGELOG.md` for older release history.
 
 ## Architecture
@@ -334,7 +334,23 @@ Backend profiling failures are normalized into actionable messages where possibl
 If your Databricks workspace is reached through a company proxy or private CA, the default TLS trust chain may fail with `CERTIFICATE_VERIFY_FAILED`.
 
 - Set a **Trusted CA bundle path** in the Databricks DB profile to point at your corporate/root CA PEM bundle.
+- The path may use `~` or environment variables such as `$HOME/certs/company-ca.pem`; AMX expands it before opening the Databricks connection.
+- If the profile field is empty, AMX checks `AMX_DATABRICKS_TRUSTED_CA_FILE`, `DATABRICKS_TRUSTED_CA_FILE`, `REQUESTS_CA_BUNDLE`, then `SSL_CERT_FILE` and passes the first configured bundle to the Databricks connector.
 - If you do not have the CA bundle yet, you can temporarily enable **Disable TLS certificate verification** in that DB profile. This is insecure and should only be a last resort for internal troubleshooting.
+
+Example profile fields in `~/.amx/config.yml`:
+
+```yaml
+db_profiles:
+  company-databricks:
+    backend: databricks
+    host: adb-4217046554757008.8.azuredatabricks.net
+    http_path: /sql/1.0/warehouses/cdda8fcb11f4c83b
+    catalog: dap_eu_60_prod
+    database: dev
+    tls_trusted_ca_file: ~/certs/company-root-ca.pem
+    tls_no_verify: false
+```
 
 ## Configuration
 

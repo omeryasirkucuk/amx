@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 import urllib3
@@ -25,6 +27,29 @@ class DatabricksAdapter(DatabaseAdapter):
         full_scan_when_row_count_unknown=False,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
     )
+    trusted_ca_env_vars = (
+        "AMX_DATABRICKS_TRUSTED_CA_FILE",
+        "DATABRICKS_TRUSTED_CA_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+    )
+
+    def _trusted_ca_file(self) -> str:
+        raw = str(getattr(self.cfg, "tls_trusted_ca_file", "") or "").strip()
+        if not raw:
+            for env_name in self.trusted_ca_env_vars:
+                raw = os.environ.get(env_name, "").strip()
+                if raw:
+                    break
+        if not raw:
+            return ""
+
+        resolved = Path(os.path.expandvars(os.path.expanduser(raw)))
+        if not resolved.is_file():
+            raise FileNotFoundError(
+                f"Databricks trusted CA bundle file was not found: {resolved}"
+            )
+        return str(resolved)
 
     def create_engine(self) -> Engine:
         try:
@@ -47,7 +72,7 @@ class DatabricksAdapter(DatabaseAdapter):
         if getattr(self.cfg, "tls_no_verify", False):
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             connect_args["_tls_no_verify"] = True
-        trusted_ca = str(getattr(self.cfg, "tls_trusted_ca_file", "") or "").strip()
+        trusted_ca = self._trusted_ca_file()
         if trusted_ca:
             connect_args["_tls_trusted_ca_file"] = trusted_ca
         return create_engine(
@@ -70,6 +95,12 @@ class DatabricksAdapter(DatabaseAdapter):
         msg = str(exc).lower()
         if "permission denied" in msg or "not authorized" in msg or "privilege" in msg:
             return "Insufficient Databricks privileges. Grant USE CATALOG/SCHEMA and SELECT on the object."
+        if "trusted ca bundle file was not found" in msg:
+            return (
+                "Databricks trusted CA bundle file was not found. Check the profile's "
+                "tls_trusted_ca_file path or the AMX_DATABRICKS_TRUSTED_CA_FILE, "
+                "DATABRICKS_TRUSTED_CA_FILE, REQUESTS_CA_BUNDLE, or SSL_CERT_FILE environment variable."
+            )
         if "not found" in msg or "does not exist" in msg or "table_or_view_not_found" in msg:
             return "Databricks object is missing or not visible in the active catalog/schema."
         if "certificate_verify_failed" in msg or "self-signed certificate" in msg:

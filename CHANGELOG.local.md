@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.2] — 2026-04-29
+### Databricks Corporate TLS
+- **amx/db/adapters/databricks.py**: Expanded `tls_trusted_ca_file` with `~` and environment variables, added CA bundle fallback from `AMX_DATABRICKS_TRUSTED_CA_FILE`, `DATABRICKS_TRUSTED_CA_FILE`, `REQUESTS_CA_BUNDLE`, and `SSL_CERT_FILE`, and validates missing CA files before connection.
+- **tests/test_regressions.py**: Added Databricks coverage for profile CA path validation, environment fallback, and actionable missing-file classification.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the corporate TLS workflow and bumped the release to `0.2.2`.
+
 ## [0.2.1] — 2026-04-29
 ### Analytical Reasoning & SchemaExplorer
 - **amx/agents/tools/schema_explorer.py**: Added SchemaExplorer as a macro-vision tool for namespace inventory, table counts, column counts, row counts, UMI paths, and evidence-derived semantic clusters.

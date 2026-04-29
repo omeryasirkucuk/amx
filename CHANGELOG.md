@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.2] — 2026-04-29
+### Changed
+- **Databricks corporate TLS setup**: Trusted CA bundle paths now expand `~` and environment variables, and Databricks profiles can inherit a CA bundle from `AMX_DATABRICKS_TRUSTED_CA_FILE`, `DATABRICKS_TRUSTED_CA_FILE`, `REQUESTS_CA_BUNDLE`, or `SSL_CERT_FILE`.
+- **Actionable CA path validation**: Missing Databricks CA bundle files now fail before opening the warehouse connection and report a direct remediation message instead of being misclassified as a missing database object.
+
+### Added
+- **Regression coverage**: Added Databricks TLS tests for path validation and environment-variable CA bundle fallback.
+
 ## [0.2.1] — 2026-04-29
 ### Added
 - **SchemaExplorer tool**: Added a macro-level structural inventory tool that returns namespace table lists, row counts, column counts, UMI paths, and evidence-derived semantic cluster labels.

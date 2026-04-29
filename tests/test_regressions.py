@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -558,35 +559,89 @@ class BackendCapabilityTests(unittest.TestCase):
         )
 
     def test_databricks_engine_passes_tls_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "corp-ca.pem"
+            ca_file.write_text("certificate", encoding="utf-8")
+            adapter = DatabricksAdapter(
+                DBConfig(
+                    backend="databricks",
+                    host="workspace.cloud.databricks.com",
+                    http_path="/sql/1.0/warehouses/abc",
+                    access_token="token",
+                    tls_no_verify=True,
+                    tls_trusted_ca_file=f"$AMX_TEST_CA_DIR/{ca_file.name}",
+                )
+            )
+            calls: list[tuple[str, dict[str, object]]] = []
+
+            def fake_create_engine(url: str, **kwargs):
+                calls.append((url, kwargs))
+                return object()
+
+            with (
+                patch.dict(os.environ, {"AMX_TEST_CA_DIR": tmp}),
+                patch("sqlalchemy.create_engine", side_effect=fake_create_engine),
+            ):
+                adapter.create_engine()
+
+            self.assertEqual(
+                calls[0][1]["connect_args"],
+                {
+                    "user_agent_entry": "amx",
+                    "_socket_timeout": adapter.connect_timeout_seconds,
+                    "_retry_stop_after_attempts_count": adapter.connect_retry_attempts,
+                    "_retry_stop_after_attempts_duration": adapter.connect_retry_duration_seconds,
+                    "_tls_no_verify": True,
+                    "_tls_trusted_ca_file": str(ca_file),
+                },
+            )
+
+    def test_databricks_engine_uses_trusted_ca_env_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "corp-ca.pem"
+            ca_file.write_text("certificate", encoding="utf-8")
+            adapter = DatabricksAdapter(
+                DBConfig(
+                    backend="databricks",
+                    host="workspace.cloud.databricks.com",
+                    http_path="/sql/1.0/warehouses/abc",
+                    access_token="token",
+                )
+            )
+            calls: list[tuple[str, dict[str, object]]] = []
+
+            def fake_create_engine(url: str, **kwargs):
+                calls.append((url, kwargs))
+                return object()
+
+            with (
+                patch.dict(os.environ, {"AMX_DATABRICKS_TRUSTED_CA_FILE": str(ca_file)}),
+                patch("sqlalchemy.create_engine", side_effect=fake_create_engine),
+            ):
+                adapter.create_engine()
+
+            self.assertEqual(
+                calls[0][1]["connect_args"]["_tls_trusted_ca_file"],
+                str(ca_file),
+            )
+
+    def test_databricks_missing_trusted_ca_file_is_actionable(self) -> None:
         adapter = DatabricksAdapter(
             DBConfig(
                 backend="databricks",
                 host="workspace.cloud.databricks.com",
                 http_path="/sql/1.0/warehouses/abc",
                 access_token="token",
-                tls_no_verify=True,
-                tls_trusted_ca_file="/tmp/corp-ca.pem",
+                tls_trusted_ca_file="/tmp/does-not-exist-amx-ca.pem",
             )
         )
-        calls: list[tuple[str, dict[str, object]]] = []
 
-        def fake_create_engine(url: str, **kwargs):
-            calls.append((url, kwargs))
-            return object()
-
-        with patch("sqlalchemy.create_engine", side_effect=fake_create_engine):
+        with self.assertRaises(FileNotFoundError) as ctx:
             adapter.create_engine()
 
-        self.assertEqual(
-            calls[0][1]["connect_args"],
-            {
-                "user_agent_entry": "amx",
-                "_socket_timeout": adapter.connect_timeout_seconds,
-                "_retry_stop_after_attempts_count": adapter.connect_retry_attempts,
-                "_retry_stop_after_attempts_duration": adapter.connect_retry_duration_seconds,
-                "_tls_no_verify": True,
-                "_tls_trusted_ca_file": "/tmp/corp-ca.pem",
-            },
+        self.assertIn(
+            "trusted CA bundle",
+            adapter.actionable_profile_error(ctx.exception) or "",
         )
 
     def test_databricks_engine_disables_insecure_request_warning_only_for_no_verify(self) -> None:
