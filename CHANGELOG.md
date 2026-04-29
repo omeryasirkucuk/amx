@@ -2,7 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
-The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
+
+## [Unreleased]
+### Added
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): ruff lint + format check, mypy (advisory), `pytest` on Python 3.10/3.11/3.12, and a build/`twine check` job that uploads the sdist + wheel as artifacts on every PR and push to `main`.
+- **GitHub Actions release pipeline** (`.github/workflows/release.yml`): tag-driven (`v*.*.*`) build → PyPI publish via OIDC Trusted Publisher (no API token in repo) → GitHub Release with auto-generated notes. Verifies `pyproject.toml` version matches the tag before publishing.
+- **`python-semantic-release` configuration** in `pyproject.toml`: future versions and changelog entries are derived from Conventional Commit subjects (`feat:` → minor, `fix:`/`perf:` → patch, `BREAKING CHANGE:` → major). Repo PyPI/GitHub-release upload steps are owned by `release.yml` so semantic-release only computes the version + writes the changelog.
+- **Pre-commit configuration** (`.pre-commit-config.yaml`): ruff + ruff-format, standard hygiene hooks, large-file guard, `detect-private-key`, and `gitleaks` for secret scanning before commit.
+- **PyPI metadata**: `keywords`, 13 trove `classifiers`, and `[project.urls]` for Homepage / Repository / Issues / Changelog now ship in the wheel for proper PyPI listing.
+- **Contributor docs**: new `CONTRIBUTING.md` (dev setup, branching, Conventional Commits table, lint/test/release commands), `SECURITY.md` (private disclosure path, supported versions, secret-storage statement), `LICENSE` (MIT — was missing despite `pyproject.toml` declaring it), and a `.github/pull_request_template.md` with Summary / Test plan / Risk sections.
+- **Dev extras**: `pip install -e ".[dev]"` now provides `pytest`, `pytest-cov`, `ruff`, `mypy`, `pre-commit`, `build`, and `twine`.
+
+### Changed
+- **Lint/format/type/test configuration** centralised in `pyproject.toml`: `[tool.ruff]` (line-length 100, E/F/I/UP/B/SIM/C4 rule sets), `[tool.ruff.format]`, `[tool.mypy]` (`ignore_missing_imports`, gradual-typing baseline), `[tool.pytest.ini_options]` (custom markers `slow`/`integration`/`live`, `--strict-markers`, deprecation filters for litellm/pydantic).
+
+### Notes
+- This release does not change runtime behaviour; it is a release-engineering and contributor-experience baseline. The next runtime change tagged via `git tag v…` will trigger an automated PyPI release for the first time.
+- `CHANGELOG.local.md` is being kept temporarily for archival reference but will be retired in a future release.
 
 ## [0.2.9] — 2026-04-29
 ### Changed

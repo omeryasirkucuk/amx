@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `Unreleased`: Release engineering baseline — GitHub Actions CI (ruff + mypy + pytest on 3.10/3.11/3.12), tag-driven release workflow that publishes to PyPI via OIDC Trusted Publisher, `python-semantic-release` for Conventional-Commit-driven versioning, pre-commit hooks (ruff, gitleaks), expanded PyPI metadata, plus new `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, and PR template. Run `pip install -e ".[dev]"` to pick up the dev tooling.
 - `v0.2.9`: `/run` now shows the LLM health-check with the same live progress/timing style as DB connect, and missing-LLM guidance now points to `/llm`, `/add-llm-profile`, and `/setup`.
 - `v0.2.8`: Fixed `/add-db-profile` overwriting the active profile with its old backend during autosave; replacing an active PostgreSQL profile with Databricks now persists the Databricks connection settings correctly.
 - `v0.2.7`: `/analyze /run` now performs an LLM health-check before profiling starts, Profile Agent failures are surfaced as explicit AMX warnings, and LiteLLM warning/debug spill is suppressed unless AMX chooses to show a message.
