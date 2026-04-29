@@ -1765,5 +1765,71 @@ class LLMProviderTests(unittest.TestCase):
                 logger.disabled = disabled
 
 
+class FirstRunConfigTests(unittest.TestCase):
+    """Regression tests for the Week-2 first-run UX hardening."""
+
+    def test_load_from_missing_path_does_not_create_default_profile(self) -> None:
+        """A truly fresh install must not silently auto-create a placeholder profile.
+
+        The pre-Week-2 behavior wrote a 'default' DB profile pointing at
+        localhost / user 'amx' / password 'amx_pass' / database 'SAP', which
+        masquerades as configured even when the user has done nothing.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertTrue(cfg.is_first_run)
+            self.assertEqual(dict(cfg.db_profiles), {})
+            self.assertEqual(cfg.active_db_profile, "")
+            self.assertEqual(dict(cfg.llm_profiles), {})
+            self.assertEqual(cfg.active_llm_profile, "")
+
+    def test_load_from_existing_file_without_profiles_falls_back_to_default(self) -> None:
+        """Legacy configs that predate ``db_profiles`` must keep working: when
+        the file exists but has no profiles section we still synthesize
+        ``default`` so saved settings remain reachable."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg_path.write_text("write_through_config: true\n")
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertFalse(cfg.is_first_run)
+            self.assertIn("default", cfg.db_profiles)
+            self.assertEqual(cfg.active_db_profile, "default")
+
+    def test_save_writes_config_with_owner_only_permissions(self) -> None:
+        """Config holds DB passwords / API keys; the file must be 0o600 on POSIX."""
+        if os.name != "posix":
+            self.skipTest("chmod 0o600 is meaningful only on POSIX filesystems")
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig()
+            cfg.save(str(cfg_path))
+            mode = cfg_path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    def test_db_is_configured_handles_empty_and_filled_profiles(self) -> None:
+        self.assertFalse(DBConfig(host="", user="", database="").is_configured())
+        self.assertTrue(
+            DBConfig(host="db.example.com", user="alice", database="orders").is_configured()
+        )
+        self.assertFalse(
+            DBConfig(backend="snowflake", account="", user="", database="").is_configured()
+        )
+        self.assertFalse(
+            DBConfig(backend="databricks", host="", access_token="", password="").is_configured()
+        )
+        self.assertTrue(
+            DBConfig(backend="bigquery", project="my-project").is_configured()
+        )
+
+    def test_llm_is_configured_requires_provider_and_model(self) -> None:
+        from amx.config import LLMConfig
+
+        self.assertFalse(LLMConfig().is_configured())
+        self.assertFalse(LLMConfig(provider="openai").is_configured())
+        self.assertFalse(LLMConfig(model="gpt-4o").is_configured())
+        self.assertTrue(LLMConfig(provider="openai", model="gpt-4o").is_configured())
+
+
 if __name__ == "__main__":
     unittest.main()

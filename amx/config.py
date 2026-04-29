@@ -317,6 +317,23 @@ class DBConfig(_ObservableConfig):
             return f"{self.project}{ds}"
         return f"{self.database} @ {self.host}:{self.port} (user {self.user})"
 
+    def is_configured(self) -> bool:
+        """True when the profile has the minimum fields needed to actually connect.
+
+        Used to distinguish "user has not set up a DB yet" from "user has a profile
+        with broken defaults" so the UI can route them to ``/setup`` instead of
+        showing a phantom ``localhost`` connection.
+        """
+        if self.backend == "postgresql":
+            return bool(self.host and self.user and self.database)
+        if self.backend == "snowflake":
+            return bool(self.account and self.user and self.database)
+        if self.backend == "databricks":
+            return bool(self.host and (self.access_token or self.password))
+        if self.backend == "bigquery":
+            return bool(self.project)
+        return False
+
 
 # ── Serialization helpers ─────────────────────────────────────────────────
 
@@ -409,6 +426,10 @@ class LLMConfig(_ObservableConfig):
         """Return the resolved PromptDetail dataclass for this config's level."""
         return prompt_detail_for(self.prompt_detail)
 
+    def is_configured(self) -> bool:
+        """True when the LLM profile has the minimum fields to dispatch a call."""
+        return bool(self.provider and self.model)
+
 
 def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     n_alt = int(m.get("n_alternatives", 3))
@@ -479,6 +500,7 @@ class AMXConfig:
     _config_path: str = field(default="", init=False, repr=False)
     _autosave_ready: bool = field(default=False, init=False, repr=False)
     _autosave_suspended: int = field(default=0, init=False, repr=False)
+    _fresh_install: bool = field(default=False, init=False, repr=False)
 
     _PERSISTED_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -523,6 +545,8 @@ class AMXConfig:
         p = Path(path) if path else Path(cfg.CONFIG_DIR) / "config.yml"
         object.__setattr__(cfg, "_config_path", str(p))
         object.__setattr__(cfg, "_autosave_suspended", 1)
+        fresh_install = not p.exists()
+        object.__setattr__(cfg, "_fresh_install", fresh_install)
         if p.exists():
             data: dict[str, Any] = yaml.safe_load(p.read_text()) or {}
             if "db" in data:
@@ -577,8 +601,15 @@ class AMXConfig:
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
         if not cfg.db_profiles:
-            cfg.db_profiles["default"] = cfg.db
-            cfg.active_db_profile = "default"
+            if fresh_install:
+                # First-run: do not fabricate a "default" DB profile from
+                # hardcoded postgres/localhost/amx_pass values. Leave the dict
+                # empty so the CLI shows "not configured — run /setup" instead
+                # of a phantom broken connection.
+                cfg.active_db_profile = ""
+            else:
+                cfg.db_profiles["default"] = cfg.db
+                cfg.active_db_profile = "default"
         else:
             if "default" not in cfg.db_profiles:
                 cfg.db_profiles["default"] = cfg.db
@@ -589,8 +620,11 @@ class AMXConfig:
                 cfg.db = cfg.db_profiles[cfg.active_db_profile]
 
         if not cfg.llm_profiles:
-            cfg.llm_profiles["default"] = replace(cfg.llm)
-            cfg.active_llm_profile = "default"
+            if fresh_install:
+                cfg.active_llm_profile = ""
+            else:
+                cfg.llm_profiles["default"] = replace(cfg.llm)
+                cfg.active_llm_profile = "default"
         else:
             if "default" not in cfg.llm_profiles:
                 cfg.llm_profiles["default"] = replace(cfg.llm)
@@ -666,12 +700,27 @@ class AMXConfig:
                 tmp.write(payload)
                 tmp_path = Path(tmp.name)
             os.replace(tmp_path, p)
+            # Restrict the config file to the current user — passwords and API
+            # keys live here. Best-effort: chmod is a no-op on Windows.
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
             object.__setattr__(self, "_config_path", str(p))
             self._attach_children()
             object.__setattr__(self, "_autosave_ready", True)
         finally:
             object.__setattr__(self, "_autosave_suspended", max(0, self._autosave_suspended - 1))
         return p
+
+    @property
+    def is_first_run(self) -> bool:
+        """True when ``load()`` did not find an existing config file on disk.
+
+        Callers should use this to decide whether to launch the setup wizard
+        or to skip auto-creating placeholder profiles.
+        """
+        return bool(getattr(self, "_fresh_install", False))
 
     def apply_active_db_profile(self) -> None:
         name = self.active_db_profile or "default"
