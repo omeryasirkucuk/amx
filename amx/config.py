@@ -12,10 +12,141 @@ from urllib.parse import quote_plus
 
 import yaml
 
+from amx.storage.secrets import (
+    SecretStore,
+    get_default_store,
+    is_secret_reference,
+    make_reference,
+    parse_reference,
+)
+
 
 SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 DISABLED_PROFILE = "__none__"
 PROFILING_MODES = ("full", "sampled", "metadata")
+
+# Secret-bearing fields per scope. These are externalised to the OS keyring
+# on save and resolved back to plaintext on load via amx.storage.secrets.
+_DB_SECRET_FIELDS = ("password", "access_token")
+_LLM_SECRET_FIELDS = ("api_key",)
+
+
+def _externalise_secret(
+    mapping: dict[str, Any],
+    field_name: str,
+    keyring_key: str,
+    store: SecretStore,
+) -> None:
+    """Move plaintext ``mapping[field_name]`` to the keyring; store a reference instead.
+
+    Idempotent: if the value is already a reference (or empty), nothing happens.
+    """
+    value = mapping.get(field_name, "")
+    if not isinstance(value, str) or not value:
+        return
+    if is_secret_reference(value):
+        return
+    if not store.is_available():
+        # Keyring unavailable: leave plaintext in YAML — the user will see a
+        # warning at load time and can choose how to proceed.
+        return
+    store.set(keyring_key, value)
+    mapping[field_name] = make_reference(keyring_key)
+
+
+def _externalise_secrets_in_data(
+    data: dict[str, Any],
+    *,
+    active_db_profile: str,
+    active_llm_profile: str,
+    store: SecretStore,
+) -> dict[str, Any]:
+    """Replace plaintext secret fields in ``data`` with keyring references.
+
+    ``data`` is mutated in place. The top-level ``db`` / ``llm`` mappings
+    mirror the active profile, so they reuse the active profile's keyring
+    key (no duplicate keychain entries).
+    """
+    db_profiles = data.get("db_profiles") or {}
+    if isinstance(db_profiles, dict):
+        for name, mapping in db_profiles.items():
+            if not isinstance(mapping, dict):
+                continue
+            for fld in _DB_SECRET_FIELDS:
+                _externalise_secret(
+                    mapping, fld, f"db_profiles/{name}/{fld}", store
+                )
+
+    llm_profiles = data.get("llm_profiles") or {}
+    if isinstance(llm_profiles, dict):
+        for name, mapping in llm_profiles.items():
+            if not isinstance(mapping, dict):
+                continue
+            for fld in _LLM_SECRET_FIELDS:
+                _externalise_secret(
+                    mapping, fld, f"llm_profiles/{name}/{fld}", store
+                )
+
+    db_top = data.get("db")
+    if isinstance(db_top, dict) and active_db_profile:
+        for fld in _DB_SECRET_FIELDS:
+            _externalise_secret(
+                db_top, fld, f"db_profiles/{active_db_profile}/{fld}", store
+            )
+
+    llm_top = data.get("llm")
+    if isinstance(llm_top, dict) and active_llm_profile:
+        for fld in _LLM_SECRET_FIELDS:
+            _externalise_secret(
+                llm_top, fld, f"llm_profiles/{active_llm_profile}/{fld}", store
+            )
+    return data
+
+
+def _resolve_secret_field(
+    mapping: dict[str, Any], field_name: str, store: SecretStore
+) -> None:
+    value = mapping.get(field_name, "")
+    if not is_secret_reference(value):
+        return
+    try:
+        keyring_key = parse_reference(value)
+        resolved = store.get(keyring_key)
+    except Exception:
+        resolved = None
+    mapping[field_name] = resolved or ""
+
+
+def _resolve_secrets_in_data(data: dict[str, Any], store: SecretStore) -> dict[str, Any]:
+    """Replace ``keyring:...`` references in ``data`` with plaintext values from the store.
+
+    Mutates ``data`` in place. References that cannot be resolved (keyring
+    unavailable, or key removed) are replaced with empty strings.
+    """
+    db_profiles = data.get("db_profiles") or {}
+    if isinstance(db_profiles, dict):
+        for mapping in db_profiles.values():
+            if isinstance(mapping, dict):
+                for fld in _DB_SECRET_FIELDS:
+                    _resolve_secret_field(mapping, fld, store)
+
+    llm_profiles = data.get("llm_profiles") or {}
+    if isinstance(llm_profiles, dict):
+        for mapping in llm_profiles.values():
+            if isinstance(mapping, dict):
+                for fld in _LLM_SECRET_FIELDS:
+                    _resolve_secret_field(mapping, fld, store)
+
+    db_top = data.get("db")
+    if isinstance(db_top, dict):
+        for fld in _DB_SECRET_FIELDS:
+            _resolve_secret_field(db_top, fld, store)
+
+    llm_top = data.get("llm")
+    if isinstance(llm_top, dict):
+        for fld in _LLM_SECRET_FIELDS:
+            _resolve_secret_field(llm_top, fld, store)
+    return data
 
 _OPENROUTER_MODEL_NAMESPACES = (
     "openai",
@@ -549,6 +680,10 @@ class AMXConfig:
         object.__setattr__(cfg, "_fresh_install", fresh_install)
         if p.exists():
             data: dict[str, Any] = yaml.safe_load(p.read_text()) or {}
+            # Resolve any keyring references back to plaintext before populating
+            # the in-memory dataclasses. Backwards-compatible: plaintext values
+            # left untouched so legacy configs keep working.
+            _resolve_secrets_in_data(data, get_default_store())
             if "db" in data:
                 for k, v in data["db"].items():
                     if hasattr(cfg.db, k):
@@ -687,6 +822,14 @@ class AMXConfig:
                 "selected_tables": self.selected_tables,
                 "write_through_config": self.write_through_config,
             }
+            # Move plaintext secrets to the OS keyring; the YAML now stores only
+            # opaque "keyring:..." references. No-op when keyring is unavailable.
+            _externalise_secrets_in_data(
+                data,
+                active_db_profile=self.active_db_profile,
+                active_llm_profile=self.active_llm_profile,
+                store=get_default_store(),
+            )
             payload = yaml.dump(data, default_flow_style=False, sort_keys=False)
             # Atomic write to reduce config corruption/state loss on interruptions.
             with tempfile.NamedTemporaryFile(
