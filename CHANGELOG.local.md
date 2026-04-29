@@ -2,6 +2,14 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.7] — 2026-04-29
+### LLM Run Guardrails and Quiet Failure Surfacing
+- **amx/llm/provider.py**: Added `LLMTestResult`, silenced LiteLLM-owned terminal loggers by default, and kept health-check details structured so AMX can show actionable messages without third-party warning spill.
+- **amx/cli_support/commands/analyze_flow.py / amx/cli_support/root_commands.py**: Added a fail-fast LLM connection test at analyze startup, reused structured test results in setup, and surface connection causes directly in AMX output.
+- **amx/agents/profile_agent.py / amx/agents/orchestrator.py**: Captured Profile Agent batch/empty/parse diagnostics and promoted them to explicit AMX warnings after agent execution.
+- **tests/test_cli_integration.py / tests/test_regressions.py**: Added coverage for analyze-time LLM preflight, LiteLLM logger suppression, and visible Profile Agent diagnostics.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the new run behavior and bumped the release to `0.2.7`.
+
 ## [0.2.6] — 2026-04-29
 ### Stable Profile Editing
 - **amx/cli_support/commands/db.py**: Reworked interactive DB profile prompts so editing existing profiles is deterministic: Enter keeps current values, `-` clears optional values, secrets follow the same keep/clear semantics, and Databricks TLS uses explicit yes/no selection.

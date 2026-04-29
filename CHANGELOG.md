@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.7] — 2026-04-29
+### Changed
+- **Analyze LLM preflight**: `/analyze /run` now performs an LLM health-check before profiling begins and stops immediately with an actionable AMX error when the active model/profile is unreachable or deactivated.
+- **Quiet third-party LLM output**: LiteLLM warning/debug logger spill is now suppressed by default so SSL/cost-map and debug chatter do not leak into the interactive terminal unless AMX chooses to surface a message.
+- **Visible Profile Agent failures**: Profile Agent batch/parse/empty-response failures are now promoted to explicit AMX warnings instead of staying buried in log files or transient live-display rows.
+
+### Added
+- **Regression coverage**: Added CLI and regression tests for analyze-time LLM preflight, LiteLLM logger suppression, and explicit Profile Agent failure surfacing.
+
 ## [0.2.6] — 2026-04-29
 ### Changed
 - **Deterministic `/add-db-profile` editing**: Interactive DB profile edits now use explicit update semantics instead of implicit default reuse. Pressing Enter keeps the current value, `-` clears optional fields, and Databricks TLS selection now uses an explicit yes/no choice list.

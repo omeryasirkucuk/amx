@@ -95,6 +95,16 @@ class ProfileAgent(BaseAgent):
 
     def __init__(self, llm: LLMProvider):
         self.llm = llm
+        self._diagnostics: list[str] = []
+
+    def consume_diagnostics(self) -> list[str]:
+        diagnostics = list(self._diagnostics)
+        self._diagnostics.clear()
+        return diagnostics
+
+    def _record_diagnostic(self, message: str) -> None:
+        if message:
+            self._diagnostics.append(message)
 
     @property
     def batch_size(self) -> int:
@@ -116,6 +126,7 @@ class ProfileAgent(BaseAgent):
         return min(5, n_batches)
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+        self._diagnostics.clear()
         profile = ctx.db_profile
         if not profile:
             return []
@@ -153,6 +164,7 @@ class ProfileAgent(BaseAgent):
                     if res:
                         all_suggestions.extend(res)
                 except Exception as exc:
+                    self._record_diagnostic(f"Profile Agent batch {idx}/{len(batches)} failed: {exc}")
                     log.error("Profile agent batch %d failed: %s", idx, exc)
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -179,9 +191,13 @@ class ProfileAgent(BaseAgent):
                             all_suggestions.extend(res)
                     except Exception as exc:
                         idx = fut_to_batch[fut]
+                        self._record_diagnostic(f"Profile Agent batch {idx}/{len(batches)} failed: {exc}")
                         log.error("Profile agent batch %d failed: %s", idx, exc)
 
         if not all_suggestions:
+            self._record_diagnostic(
+                f"Profile Agent produced zero suggestions for {ctx.schema}.{ctx.table}."
+            )
             log.warning(
                 "Profile agent produced zero suggestions across %d batches for %s.%s.",
                 len(batches), ctx.schema, ctx.table,
@@ -305,6 +321,7 @@ class ProfileAgent(BaseAgent):
             with step_spinner(label, token_estimate=est):
                 result = self.llm.chat(messages, max_tokens=mt)
         except Exception as exc:
+            self._record_diagnostic(f"{label} failed: {exc}")
             log.error("LLM call failed in profile agent: %s", exc)
             return []
 
@@ -313,6 +330,9 @@ class ProfileAgent(BaseAgent):
         _logprobs = result.logprobs
 
         if not response or not response.strip():
+            self._record_diagnostic(
+                f"{label} returned an empty response for {ctx.schema}.{ctx.table}."
+            )
             log.warning(
                 "LLM returned an EMPTY response for %s.%s (%d columns). "
                 "Check model name, API key, and billing on the provider dashboard.",
@@ -331,6 +351,10 @@ class ProfileAgent(BaseAgent):
 
         if not suggestions:
             self._save_failed_response_for_debug(response, ctx)
+            self._record_diagnostic(
+                f"{label} returned text that AMX could not parse for {ctx.schema}.{ctx.table}. "
+                f"Raw reply saved to {LAST_PROFILE_RESPONSE_FILE}."
+            )
             log.warning(
                 "Profile agent produced zero suggestions for batch. "
                 "Raw reply saved to %s",

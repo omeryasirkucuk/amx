@@ -31,6 +31,18 @@ ResolveCodebaseForRun = Callable[[AMXConfig, object, dict[str, list[str]], str |
 LogEvent = Callable[..., None]
 
 
+def _require_llm_connection(llm: object, *, profile_label: str | None = None) -> None:
+    label = f" using profile '{profile_label}'" if profile_label else ""
+    with step_spinner("Testing LLM connection..."):
+        result = llm.test_result()
+    if result.ok:
+        return
+    error(f"Cannot connect to the active LLM{label}.")
+    if result.message:
+        warn(result.message)
+    sys.exit(1)
+
+
 def _maybe_modify_profiles_before_run(cfg: AMXConfig, db: object, llm: object) -> tuple[object, object]:
     from amx.config import DISABLED_PROFILE
     from amx.db.connector import DatabaseConnector
@@ -275,6 +287,7 @@ def execute_analyze_run(
             )
 
         db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
+        _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
         tables_arg = list(tables_pos) + list(table)

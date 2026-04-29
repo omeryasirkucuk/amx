@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.7`: `/analyze /run` now performs an LLM health-check before profiling starts, Profile Agent failures are surfaced as explicit AMX warnings, and LiteLLM warning/debug spill is suppressed unless AMX chooses to show a message.
 - `v0.2.6`: Reworked `/add-db-profile` editing so profile updates are deterministic: `Enter` keeps the current value, `-` clears optional fields, and Databricks TLS choices no longer depend on ambiguous prompt behavior.
 - `v0.2.5`: Added a deterministic `db tls` command so Databricks TLS settings can be set and verified from the app without relying on interactive yes/no prompts.
 - `v0.2.4`: Databricks `db connect` now uses the native `databricks-sql-connector` test path directly, so TLS and invalid-token failures are classified more accurately before SQLAlchemy-based introspection starts.
@@ -185,6 +186,8 @@ Notes:
 - OpenAI Batch mode requests and stores returned logprobs; Anthropic Batch mode does not provide token logprobs, so those batch results keep model-declared confidence labels until merged by a logprob-capable chat call.
 - `write_through_config` defaults to `true` to save profile switches and config mutations immediately.
 - Direct changes to loaded top-level and nested DB/LLM config fields are write-through as well; AMX saves the active `config.yml` atomically after each mutation.
+- `/analyze /run` now tests the active LLM before profiling any asset and stops immediately if the model/profile is unreachable or deactivated.
+- Third-party LiteLLM warnings/debug lines stay out of the terminal by default; AMX surfaces only its own actionable warnings.
 | `/code` + `/code-profiles` | List codebase profiles |
 | `/code` + `/use-code <name>` | Switch active codebase profile |
 | `/code` + `/add-code-profile [name]` | Add/update a codebase path (interactive) |

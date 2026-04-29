@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -25,6 +26,13 @@ def _litellm() -> ModuleType:
     global _litellm_module
     if _litellm_module is None:
         import litellm as lm
+
+        for logger_name in ("LiteLLM", "litellm"):
+            ext_logger = logging.getLogger(logger_name)
+            ext_logger.handlers.clear()
+            ext_logger.addHandler(logging.NullHandler())
+            ext_logger.propagate = False
+            ext_logger.setLevel(logging.CRITICAL + 1)
 
         _litellm_module = lm
     return _litellm_module
@@ -65,6 +73,12 @@ class ChatResult:
 
     def __str__(self) -> str:  # noqa: D105
         return self.content
+
+
+@dataclass
+class LLMTestResult:
+    ok: bool
+    message: str = ""
 
 
 _BOILERPLATE_TOKENS: frozenset[str] = frozenset(
@@ -517,10 +531,21 @@ class LLMProvider:
             confidence_score=confidence_score,
         )
 
-    def test(self) -> bool:
+    def test_result(self) -> LLMTestResult:
         try:
             result = self.chat([{"role": "user", "content": "Reply with OK"}])
-            return "ok" in result.content.lower()
+            if "ok" in result.content.lower():
+                return LLMTestResult(ok=True)
+            return LLMTestResult(
+                ok=False,
+                message=(
+                    "LLM responded, but the health-check reply was unexpected. "
+                    "Verify that the active model accepts standard chat completions."
+                ),
+            )
         except Exception as exc:
             log.error("LLM test failed: %s", exc)
-            return False
+            return LLMTestResult(ok=False, message=str(exc))
+
+    def test(self) -> bool:
+        return self.test_result().ok

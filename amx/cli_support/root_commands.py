@@ -62,11 +62,13 @@ def register_root_commands(
         llm = LLMProvider(cfg.llm)
         with command_display(mode="setup-llm", provider=cfg.llm.provider, model=cfg.llm.model):
             with step_spinner("Testing LLM connection..."):
-                llm_ready = llm.test()
-        if llm_ready:
+                llm_result = llm.test_result()
+        if llm_result.ok:
             success("LLM connection successful!")
         else:
             warn("LLM test failed — you can reconfigure later with `amx setup`.")
+            if llm_result.message:
+                info(f"Cause: {llm_result.message}")
 
         info("Step 3/3 — Optional Data Sources (named profiles)")
         if confirm("Add a document profile for RAG?", default=False):

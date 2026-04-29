@@ -356,6 +356,9 @@ class Orchestrator:
         all_suggestions = self._run_enabled_agents(ctx)
         t1_agents = time.monotonic()
         info(f"Agent processing took {t1_agents - t0_agents:.1f}s")
+        profile_diagnostics = self.profile_agent.consume_diagnostics()
+        for message in dict.fromkeys(profile_diagnostics):
+            warn(message)
 
         merged = self._merge_suggestions(all_suggestions, ctx)
         if not merged:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -1626,6 +1627,91 @@ class OrchestratorFallbackTests(unittest.TestCase):
         self.assertIn(None, by_column)
         self.assertIn("amount", by_column)
         self.assertEqual(by_column["amount"].confidence, Confidence.LOW)
+
+    def test_process_table_surfaces_profile_agent_diagnostics(self) -> None:
+        class NullStep:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class DummyDB:
+            cfg = SimpleNamespace(database="main", catalog="", project="")
+            backend = "postgresql"
+            stats_label = "stats"
+
+            def profile_table(self, schema, table, asset_kind=None):
+                return TableProfile(
+                    schema=schema,
+                    name=table,
+                    columns=[ColumnProfile(name="id", dtype="INTEGER", nullable=False)],
+                )
+
+        class DummyLLM:
+            cfg = SimpleNamespace(
+                language="english",
+                logprob_high=0.85,
+                logprob_medium=0.50,
+                column_batch_size=10,
+                n_alternatives=3,
+                prompt_detail_cfg=None,
+            )
+
+        orch = Orchestrator(DummyDB(), DummyLLM())
+        orch.profile_agent.run = lambda ctx: []
+        orch.profile_agent.consume_diagnostics = lambda: ["Profile Agent failed: upstream model is unavailable"]
+
+        warnings: list[str] = []
+        with (
+            patch("amx.agents.orchestrator.step_spinner", return_value=NullStep()),
+            patch("amx.agents.orchestrator.heading"),
+            patch("amx.agents.orchestrator.info"),
+            patch("amx.agents.orchestrator.warn", side_effect=warnings.append),
+        ):
+            results = orch.process_table("public", "orders", interactive_review=False)
+
+        self.assertEqual(results, [])
+        self.assertIn("Profile Agent failed: upstream model is unavailable", warnings)
+
+
+class LLMProviderTests(unittest.TestCase):
+    def test_litellm_loggers_are_silenced_by_default(self) -> None:
+        saved = {}
+        for name in ("LiteLLM", "litellm"):
+            logger = logging.getLogger(name)
+            saved[name] = (list(logger.handlers), logger.propagate, logger.level, logger.disabled)
+            logger.handlers.clear()
+            logger.propagate = True
+            logger.setLevel(logging.NOTSET)
+            logger.disabled = False
+
+        try:
+            import amx.llm.provider as provider_module
+
+            provider_module._litellm_module = None
+            fake_litellm = SimpleNamespace()
+            with patch.dict(sys.modules, {"litellm": fake_litellm}):
+                loaded = provider_module._litellm()
+
+            self.assertIs(loaded, fake_litellm)
+            for name in ("LiteLLM", "litellm"):
+                logger = logging.getLogger(name)
+                self.assertFalse(logger.propagate)
+                self.assertGreater(logger.level, logging.CRITICAL)
+                self.assertTrue(any(isinstance(h, logging.NullHandler) for h in logger.handlers))
+        finally:
+            import amx.llm.provider as provider_module
+
+            provider_module._litellm_module = None
+            for name, (handlers, propagate, level, disabled) in saved.items():
+                logger = logging.getLogger(name)
+                logger.handlers.clear()
+                for handler in handlers:
+                    logger.addHandler(handler)
+                logger.propagate = propagate
+                logger.setLevel(level)
+                logger.disabled = disabled
 
 
 if __name__ == "__main__":

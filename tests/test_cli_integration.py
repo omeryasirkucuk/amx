@@ -137,6 +137,44 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         self.assertEqual(execute_run.call_args.kwargs["schema"], "sap")
         self.assertEqual(execute_run.call_args.kwargs["tables_pos"], ("vbak",))
 
+    def test_analyze_run_fails_fast_when_llm_health_check_fails(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = "local"
+        cfg.llm.model = "llama3"
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def test_connection(self) -> bool:
+                return True
+
+        class FakeLLMProvider:
+            def __init__(self, cfg):
+                self.cfg = cfg
+                self.supports_batch = False
+
+            def test_result(self):
+                return SimpleNamespace(ok=False, message="model endpoint rejected the request")
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+            patch("amx.llm.provider.LLMProvider", FakeLLMProvider),
+            patch("amx.cli_support.commands.analyze_flow.confirm", return_value=False),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "analyze", "run"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Cannot connect to the active LLM", result.output)
+        self.assertIn("model endpoint rejected the request", result.output)
+
 
 class RootCommandIntegrationTests(unittest.TestCase):
     def test_db_tls_command_updates_active_profile(self) -> None:
