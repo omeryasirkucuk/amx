@@ -2092,6 +2092,134 @@ class EmbeddingProviderTests(unittest.TestCase):
         self.assertIn("local-embeddings", str(ctx.exception))
 
 
+class CrashReportSanitizationTests(unittest.TestCase):
+    """`write_crash_report` and `redact_secrets` keep DB passwords, API
+    keys, and Databricks PATs from leaking into a file the user is
+    likely to paste into a GitHub issue."""
+
+    def test_redacts_openai_api_key(self) -> None:
+        from amx.utils.crash import redact_secrets
+
+        msg = "AuthenticationError: Invalid key sk-ABCD1234efgh5678ijklMNOPqrst9012"
+        result = redact_secrets(msg)
+        self.assertNotIn("ABCD1234", result)
+        self.assertIn("sk-<redacted>", result)
+
+    def test_redacts_anthropic_and_openrouter_keys_with_label(self) -> None:
+        from amx.utils.crash import redact_secrets
+
+        ant = redact_secrets("key=sk-ant-api03-AbC1234567890abcdefghijKLMnopQrSTuvwxyz")
+        self.assertIn("sk-ant-<redacted>", ant)
+        self.assertNotIn("api03-AbC", ant)
+
+        orr = redact_secrets("Bearer sk-or-1234567890abcdefghijKLMNOpQRStuvwxyzABCDEF")
+        self.assertIn("sk-or-<redacted>", orr)
+
+    def test_redacts_databricks_personal_access_token(self) -> None:
+        from amx.utils.crash import redact_secrets
+
+        msg = "Connection failed: dapi1234567890abcdef invalid"
+        result = redact_secrets(msg)
+        self.assertIn("dapi<redacted>", result)
+        self.assertNotIn("1234567890abcdef", result)
+
+    def test_redacts_password_kv_pairs(self) -> None:
+        from amx.utils.crash import redact_secrets
+
+        cases = [
+            'password="hunter2"',
+            "password=hunter2",
+            "  password : hunter2",
+            "PASSWORD = 'hunter2'",
+        ]
+        for case in cases:
+            result = redact_secrets(case)
+            self.assertNotIn("hunter2", result, f"failed for: {case!r}")
+
+    def test_redacts_api_key_kv_pairs(self) -> None:
+        from amx.utils.crash import redact_secrets
+
+        for label in ("api_key", "api-key", "apiKey", "API_KEY"):
+            result = redact_secrets(f'{label}="my-secret-token-1234"')
+            self.assertNotIn("my-secret-token-1234", result)
+
+    def test_redacts_bearer_token(self) -> None:
+        from amx.utils.crash import redact_secrets
+
+        result = redact_secrets("Authorization: Bearer abc.def.ghi.SUPER_SECRET")
+        self.assertNotIn("SUPER_SECRET", result)
+        self.assertIn("Bearer <redacted>", result)
+
+    def test_write_crash_report_path_format_and_content(self) -> None:
+        import tempfile
+
+        from amx.utils import crash as crash_module
+        from amx.utils.crash import write_crash_report
+
+        with tempfile.TemporaryDirectory() as td:
+            # Redirect crash dir so the test does not pollute the user's
+            # ~/.amx/logs/crashes/ directory.
+            patched = Path(td)
+            with patch.object(crash_module, "CRASH_DIR", patched):
+                try:
+                    raise RuntimeError("boom: password=hunter2")
+                except RuntimeError as exc:
+                    path = write_crash_report(exc, request_id="test-req-id")
+
+            self.assertTrue(path.exists())
+            content = path.read_text()
+            self.assertIn("test-req-id", content)
+            self.assertIn("RuntimeError", content)
+            # Secret in the message must have been redacted before write.
+            self.assertNotIn("hunter2", content)
+
+    def test_write_crash_report_chmods_file_to_0o600_on_posix(self) -> None:
+        if os.name != "posix":
+            self.skipTest("chmod 0o600 is only meaningful on POSIX")
+        import tempfile
+
+        from amx.utils import crash as crash_module
+        from amx.utils.crash import write_crash_report
+
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(crash_module, "CRASH_DIR", Path(td)):
+                try:
+                    raise RuntimeError("boom")
+                except RuntimeError as exc:
+                    path = write_crash_report(exc)
+
+            mode = path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    def test_write_crash_report_includes_amx_env_vars_only(self) -> None:
+        """The env-var section must scope down to AMX_-prefixed names so
+        we do not accidentally dump arbitrary tokens (e.g. CI provider
+        secrets) from the surrounding shell."""
+        import tempfile
+
+        from amx.utils import crash as crash_module
+        from amx.utils.crash import write_crash_report
+
+        original_env = dict(os.environ)
+        os.environ["AMX_TEST_FOO"] = "amx-only-marker"
+        os.environ["MY_SUPER_SECRET_TOKEN_ZZZ"] = "should-not-leak"
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                with patch.object(crash_module, "CRASH_DIR", Path(td)):
+                    try:
+                        raise RuntimeError("boom")
+                    except RuntimeError as exc:
+                        path = write_crash_report(exc)
+
+                content = path.read_text()
+                self.assertIn("AMX_TEST_FOO", content)
+                self.assertNotIn("MY_SUPER_SECRET_TOKEN_ZZZ", content)
+                self.assertNotIn("should-not-leak", content)
+        finally:
+            os.environ.clear()
+            os.environ.update(original_env)
+
+
 class TokenBudgetPreCheckTests(unittest.TestCase):
     """`_synthesize_answer` now pre-trims retrieval rows before sending
     them to the LLM. The trimmer must keep the highest-scored rows,

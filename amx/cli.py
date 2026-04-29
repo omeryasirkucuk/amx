@@ -152,6 +152,19 @@ def run_cli() -> None:
         if os.getenv("AMX_DEBUG", "").lower() in {"1", "true", "yes"}:
             raise
         error(f"AMX crashed: {exc.__class__.__name__}: {exc}")
+        # Persist a redacted crash report so the user can attach it to
+        # an issue without leaking their DB password or API key. The
+        # request id (if one is active) ties the crash report back to
+        # the structured log lines for the same run.
+        try:
+            from amx.utils.crash import write_crash_report
+            from amx.utils.logging import get_request_id
+
+            crash_path = write_crash_report(exc, request_id=get_request_id())
+            info(f"Sanitized crash report saved to {crash_path}")
+        except Exception:
+            # Crash-report writing must not itself crash the handler.
+            pass
         info(
             "Run with --debug (or set AMX_DEBUG=1) to see the full traceback. "
             "Detailed logs: ~/.amx/logs/amx.log"
