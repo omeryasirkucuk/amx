@@ -24,7 +24,7 @@ from amx.cli_support.session import _format_session_click_error, _handle_manual_
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.core import AMXApplication, UniversalMetadataAdapter
 from amx.core.errors import ErrorMapper
-from amx.cli_support.commands.db import cmd_profiling
+from amx.cli_support.commands.db import cmd_profiling, databricks_connect_with_recovery
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.adapters.databricks import DatabricksAdapter
@@ -802,6 +802,56 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(cfg.db_profiles["default"].profiling_mode, "sampled")
         self.assertEqual(cfg.db_profiles["default"].profiling_max_rows, 500_000)
         self.assertEqual(cfg.db_profiles["default"].profiling_sample_size, 3)
+
+    def test_databricks_connect_recovery_persists_env_ca_bundle(self) -> None:
+        cfg = AMXConfig()
+        cfg.db = DBConfig(backend="databricks", host="workspace", http_path="/sql", access_token="token")
+        cfg.db_profiles = {"corp": cfg.db}
+        cfg.active_db_profile = "corp"
+        cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
+
+        calls: list[DBConfig] = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = Path(tmp) / "corp.pem"
+            ca_file.write_text("certificate", encoding="utf-8")
+
+            def fake_connect(db_cfg: DBConfig) -> tuple[bool, str]:
+                calls.append(db_cfg)
+                if db_cfg.tls_trusted_ca_file == str(ca_file):
+                    return True, ""
+                return False, "TLS certificate validation failed."
+
+            with patch.dict(os.environ, {"AMX_DATABRICKS_TRUSTED_CA_FILE": str(ca_file)}):
+                ok, attempts = databricks_connect_with_recovery(cfg, fake_connect)
+
+        self.assertTrue(ok)
+        self.assertEqual([attempt.label for attempt in attempts], ["saved profile", "env CA bundle (AMX_DATABRICKS_TRUSTED_CA_FILE)"])
+        self.assertEqual(cfg.db.tls_trusted_ca_file, str(ca_file))
+        self.assertFalse(cfg.db.tls_no_verify)
+        self.assertEqual(calls[-1].tls_trusted_ca_file, str(ca_file))
+
+    def test_databricks_connect_recovery_persists_tls_no_verify_last(self) -> None:
+        cfg = AMXConfig()
+        cfg.db = DBConfig(backend="databricks", host="workspace", http_path="/sql", access_token="token")
+        cfg.db_profiles = {"corp": cfg.db}
+        cfg.active_db_profile = "corp"
+        cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
+
+        calls: list[DBConfig] = []
+
+        def fake_connect(db_cfg: DBConfig) -> tuple[bool, str]:
+            calls.append(db_cfg)
+            if db_cfg.tls_no_verify:
+                return True, ""
+            return False, "TLS certificate validation failed."
+
+        ok, attempts = databricks_connect_with_recovery(cfg, fake_connect)
+
+        self.assertTrue(ok)
+        self.assertEqual([attempt.label for attempt in attempts], ["saved profile", "TLS no-verify fallback"])
+        self.assertTrue(cfg.db.tls_no_verify)
+        self.assertTrue(calls[-1].tls_no_verify)
 
     def test_metadata_mode_does_not_open_data_connection(self) -> None:
         class FakeEngine:

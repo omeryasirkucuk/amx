@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 from click.testing import CliRunner
 
 from amx.cli import main
-from amx.config import AMXConfig
+from amx.config import AMXConfig, DBConfig
 from amx.db.connector import AssetKind
 from amx.search.catalog import SearchAnswer
 
@@ -138,6 +139,163 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
 
 
 class RootCommandIntegrationTests(unittest.TestCase):
+    def test_db_connect_databricks_persists_env_ca_recovery(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+        cfg.active_db_profile = "corp"
+        cfg.db = cfg.db_profiles["corp"] = DBConfig(
+            backend="databricks",
+            host="workspace.cloud.databricks.com",
+            http_path="/sql/1.0/warehouses/abc",
+            access_token="token",
+            catalog="main",
+            database="dev",
+            tls_trusted_ca_file="",
+            tls_no_verify=False,
+        )
+        cfg.save = Mock(return_value="/tmp/amx-test-config.yml")
+
+        class FakeDatabaseConnector:
+            def __init__(self, db_cfg):
+                self.cfg = db_cfg
+
+            def test_connection_result(self):
+                if getattr(self.cfg, "tls_trusted_ca_file", ""):
+                    return SimpleNamespace(ok=True, message="")
+                return SimpleNamespace(ok=False, message="TLS certificate validation failed.")
+
+        class FakeDisplay:
+            is_active = False
+
+            def start(self, **kwargs) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+            def set_context(self, **kwargs) -> None:
+                return None
+
+            def add_activity(self, label: str, token_estimate: int = 0) -> int:
+                return 0
+
+            def begin_activity(self, idx: int) -> None:
+                return None
+
+            def set_thinking(self, label: str = "Thinking") -> None:
+                return None
+
+            def stop_thinking(self) -> None:
+                return None
+
+            def complete_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def fail_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ca_file = f"{tmp}/corp.pem"
+            with open(ca_file, "w", encoding="utf-8") as handle:
+                handle.write("certificate")
+            with (
+                patch("amx.config.AMXConfig.load", return_value=cfg),
+                patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+                patch("amx.utils.live_display.get_display", return_value=FakeDisplay()),
+                patch("amx.utils.live_commands.get_display", return_value=FakeDisplay()),
+            ):
+                result = runner.invoke(
+                    main,
+                    ["--config", "test-config.yml", "db", "connect"],
+                    env={"AMX_SESSION_CHILD": "1", "AMX_DATABRICKS_TRUSTED_CA_FILE": ca_file},
+                    catch_exceptions=False,
+                )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Connect stage failed: saved profile", result.output)
+        self.assertIn("Connect stage passed: env CA bundle (AMX_DATABRICKS_TRUSTED_CA_FILE)", result.output)
+        self.assertIn("Active Databricks trusted CA bundle", result.output)
+        self.assertEqual(cfg.db.tls_trusted_ca_file, ca_file)
+        cfg.save.assert_called()
+
+    def test_db_connect_databricks_persists_tls_no_verify_fallback(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.llm.provider = "openai"
+        cfg.llm.model = "gpt-4o-mini"
+        cfg.active_db_profile = "corp"
+        cfg.db = cfg.db_profiles["corp"] = DBConfig(
+            backend="databricks",
+            host="workspace.cloud.databricks.com",
+            http_path="/sql/1.0/warehouses/abc",
+            access_token="token",
+            catalog="main",
+            database="dev",
+            tls_trusted_ca_file="",
+            tls_no_verify=False,
+        )
+        cfg.save = Mock(return_value="/tmp/amx-test-config.yml")
+
+        class FakeDatabaseConnector:
+            def __init__(self, db_cfg):
+                self.cfg = db_cfg
+
+            def test_connection_result(self):
+                if getattr(self.cfg, "tls_no_verify", False):
+                    return SimpleNamespace(ok=True, message="")
+                return SimpleNamespace(ok=False, message="TLS certificate validation failed.")
+
+        class FakeDisplay:
+            is_active = False
+
+            def start(self, **kwargs) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+            def set_context(self, **kwargs) -> None:
+                return None
+
+            def add_activity(self, label: str, token_estimate: int = 0) -> int:
+                return 0
+
+            def begin_activity(self, idx: int) -> None:
+                return None
+
+            def set_thinking(self, label: str = "Thinking") -> None:
+                return None
+
+            def stop_thinking(self) -> None:
+                return None
+
+            def complete_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+            def fail_activity(self, idx: int, detail: str = "") -> None:
+                return None
+
+        with (
+            patch("amx.config.AMXConfig.load", return_value=cfg),
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+            patch("amx.utils.live_display.get_display", return_value=FakeDisplay()),
+            patch("amx.utils.live_commands.get_display", return_value=FakeDisplay()),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "db", "connect"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("Connect stage passed: TLS no-verify fallback", result.output)
+        self.assertIn("TLS no-verify", result.output)
+        self.assertTrue(cfg.db.tls_no_verify)
+        cfg.save.assert_called()
+
     def test_db_schemas_starts_live_display(self) -> None:
         runner = CliRunner()
         cfg = AMXConfig()

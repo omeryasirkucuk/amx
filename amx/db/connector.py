@@ -86,6 +86,13 @@ class TableProfile:
     related_comments: list[dict[str, str]] = field(default_factory=list)
 
 
+@dataclass
+class ConnectionTestResult:
+    ok: bool
+    message: str = ""
+    exception: Exception | None = None
+
+
 class DatabaseConnector:
     """Unified database connector that delegates backend-specific work to adapters."""
 
@@ -112,15 +119,18 @@ class DatabaseConnector:
     def capabilities(self) -> BackendCapabilities:
         return getattr(self._adapter, "capabilities", BackendCapabilities())
 
-    def test_connection(self) -> bool:
+    def test_connection_result(self) -> ConnectionTestResult:
         try:
             with self.engine.connect() as conn:
                 conn.execute(text(self._adapter.test_connection_sql()))
-            return True
+            return ConnectionTestResult(ok=True)
         except Exception as exc:
             actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
             log.error("Connection failed: %s", actionable)
-            return False
+            return ConnectionTestResult(ok=False, message=actionable, exception=exc)
+
+    def test_connection(self) -> bool:
+        return self.test_connection_result().ok
 
     # ── Schema / asset listing ────────────────────────────────────────────
 

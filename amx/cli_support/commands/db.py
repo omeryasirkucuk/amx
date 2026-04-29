@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass, replace
 from collections.abc import Callable
-from dataclasses import replace
+from pathlib import Path
 
 from amx.config import AMXConfig, DBConfig, PROFILING_MODES, SUPPORTED_BACKENDS
 from amx.utils.console import (
@@ -19,6 +21,83 @@ from amx.utils.console import (
 )
 
 LogEvent = Callable[..., None]
+
+
+@dataclass
+class DBConnectAttempt:
+    label: str
+    ok: bool
+    detail: str = ""
+
+
+def _save_active_db_profile(cfg: AMXConfig, db: DBConfig) -> None:
+    cfg.db = db
+    if cfg.active_db_profile and cfg.active_db_profile in cfg.db_profiles:
+        cfg.db_profiles[cfg.active_db_profile] = db
+    cfg.save()
+
+
+def _is_databricks_tls_failure(message: str) -> bool:
+    msg = (message or "").lower()
+    return any(
+        token in msg
+        for token in (
+            "tls",
+            "certificate",
+            "ssl",
+            "trusted ca bundle",
+            "self-signed",
+        )
+    )
+
+
+def _env_trusted_ca_candidate() -> tuple[str, str] | None:
+    for env_name in (
+        "AMX_DATABRICKS_TRUSTED_CA_FILE",
+        "DATABRICKS_TRUSTED_CA_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_FILE",
+    ):
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        resolved = Path(os.path.expandvars(os.path.expanduser(raw)))
+        if resolved.is_file():
+            return env_name, str(resolved)
+    return None
+
+
+def databricks_connect_with_recovery(
+    cfg: AMXConfig,
+    connect_fn: Callable[[DBConfig], tuple[bool, str]],
+) -> tuple[bool, list[DBConnectAttempt]]:
+    attempts: list[DBConnectAttempt] = []
+    current = cfg.db
+
+    ok, detail = connect_fn(current)
+    attempts.append(DBConnectAttempt("saved profile", ok, detail))
+    if ok or not _is_databricks_tls_failure(detail):
+        return ok, attempts
+
+    candidate = _env_trusted_ca_candidate()
+    if candidate and not str(current.tls_trusted_ca_file or "").strip():
+        env_name, ca_path = candidate
+        updated = replace(current, tls_trusted_ca_file=ca_path, tls_no_verify=False)
+        ok, detail = connect_fn(updated)
+        attempts.append(DBConnectAttempt(f"env CA bundle ({env_name})", ok, detail))
+        if ok:
+            _save_active_db_profile(cfg, updated)
+            return True, attempts
+
+    if not bool(current.tls_no_verify):
+        updated = replace(current, tls_no_verify=True)
+        ok, detail = connect_fn(updated)
+        attempts.append(DBConnectAttempt("TLS no-verify fallback", ok, detail))
+        if ok:
+            _save_active_db_profile(cfg, updated)
+            return True, attempts
+
+    return False, attempts
 
 
 def print_db_namespace_hint() -> None:

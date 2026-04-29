@@ -126,9 +126,37 @@ def register_root_commands(
     def db_connect(cfg: AMXConfig) -> None:
         """Test database connectivity."""
         from amx.db.connector import DatabaseConnector
+        from amx.cli_support.commands.db import databricks_connect_with_recovery
+
+        info(f"Testing [{cfg.db.backend}] connection to {cfg.db.display_summary} ...")
+        if cfg.db.backend == "databricks":
+            def _attempt(db_cfg):
+                db_conn = DatabaseConnector(db_cfg)
+                result = db_conn.test_connection_result()
+                return result.ok, result.message
+
+            with command_display(mode="db-connect", provider=cfg.llm.provider, model=cfg.llm.model):
+                with step_spinner("Testing database connection..."):
+                    connected, attempts = databricks_connect_with_recovery(cfg, _attempt)
+            for attempt in attempts:
+                if attempt.ok:
+                    success(f"Connect stage passed: {attempt.label}")
+                else:
+                    warn(f"Connect stage failed: {attempt.label}")
+                    if attempt.detail:
+                        info(f"Cause: {attempt.detail}")
+            if connected:
+                active_ca = str(getattr(cfg.db, "tls_trusted_ca_file", "") or "").strip()
+                if active_ca:
+                    info(f"Active Databricks trusted CA bundle: {active_ca}")
+                if getattr(cfg.db, "tls_no_verify", False):
+                    warn("Active Databricks profile now uses TLS no-verify. Replace this with a trusted CA bundle when possible.")
+                success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
+                return
+            error("Connection failed.")
+            sys.exit(1)
 
         db_conn = DatabaseConnector(cfg.db)
-        info(f"Testing [{cfg.db.backend}] connection to {cfg.db.display_summary} ...")
         with command_display(mode="db-connect", provider=cfg.llm.provider, model=cfg.llm.model):
             with step_spinner("Testing database connection..."):
                 connected = db_conn.test_connection()

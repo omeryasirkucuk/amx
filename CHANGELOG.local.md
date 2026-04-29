@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.3] — 2026-04-29
+### Databricks Connect Recovery
+- **amx/db/connector.py**: Added structured connection-test results so caller flows can inspect actionable failure details instead of only a boolean.
+- **amx/cli_support/commands/db.py / amx/cli_support/root_commands.py**: Added staged Databricks connect recovery that retries with env CA bundle discovery and `tls_no_verify`, prints pass/fail stage output, and persists the first successful fallback into the active DB profile.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added coverage for env-CA recovery and no-verify fallback in both helper and CLI layers.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the new connect behavior and bumped the release to `0.2.3`.
+
 ## [0.2.2] — 2026-04-29
 ### Databricks Corporate TLS
 - **amx/db/adapters/databricks.py**: Expanded `tls_trusted_ca_file` with `~` and environment variables, added CA bundle fallback from `AMX_DATABRICKS_TRUSTED_CA_FILE`, `DATABRICKS_TRUSTED_CA_FILE`, `REQUESTS_CA_BUNDLE`, and `SSL_CERT_FILE`, and validates missing CA files before connection.

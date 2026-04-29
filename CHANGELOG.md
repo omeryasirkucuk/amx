@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.3] — 2026-04-29
+### Added
+- **Staged Databricks connect recovery**: `/db connect` now retries Databricks TLS failures in ordered stages, reports which recovery step passed, and persists the first successful CA bundle or last-resort `tls_no_verify` setting into the active DB profile.
+- **Regression coverage**: Added unit and CLI integration tests for Databricks staged connect recovery via environment CA bundle and `tls_no_verify` fallback.
+
+### Changed
+- **Connection diagnostics**: Database connection checks now expose structured result details so CLI flows can react to actionable backend failures instead of treating every failed connect as a bare boolean.
+
 ## [0.2.2] — 2026-04-29
 ### Changed
 - **Databricks corporate TLS setup**: Trusted CA bundle paths now expand `~` and environment variables, and Databricks profiles can inherit a CA bundle from `AMX_DATABRICKS_TRUSTED_CA_FILE`, `DATABRICKS_TRUSTED_CA_FILE`, `REQUESTS_CA_BUNDLE`, or `SSL_CERT_FILE`.
