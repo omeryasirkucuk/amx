@@ -5,6 +5,8 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
 
 ## [Unreleased]
+
+## [0.3.0] — 2026-04-29
 ### Added
 - **Crash reports with secret redaction** (`amx/utils/crash.py`): when the top-level CLI handler catches an unhandled exception (and `AMX_DEBUG` is not set), AMX now writes a sanitized crash report to `~/.amx/logs/crashes/<timestamp>-<request_id>.txt` and prints the path so the user can attach it to a GitHub issue without leaking their DB password or API key. The report contains the timestamp, request id, exception class + message, full traceback, AMX-prefixed env vars, and any caller-supplied extra context — every component runs through `redact_secrets` before being written. Files are `chmod 0o600` on POSIX. The crash-report writer is itself wrapped in a try/except so a redaction failure cannot crash the crash handler.
 - **`redact_secrets(text)` helper** matches and replaces: provider-prefixed API keys (`sk-`, `sk-or-`, `sk-ant-`), Databricks PATs (`dapi…`), AWS access keys (`AKIA…`), GitHub PATs (`ghp_…`, `github_pat_…`), `Authorization: Bearer …` headers, and `password=` / `api_key=` / `access_token=` / `token=` / `secret=` k/v pairs. Best-effort by design — the helper is documented as not exhaustive and users are advised to skim the report before sharing.
