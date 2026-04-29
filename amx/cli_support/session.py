@@ -720,12 +720,14 @@ def _handle_session_builtin(
         # requiring the user to enter any namespace first. No network call.
         _cmd_usage(cfg, parts[1:])
         return True
-    if head == "embeddings":
+    if head in {"embeddings", "embedding"}:
         # Lives under /search since switching the embedding provider only
-        # affects the search index. The user must enter /search first; this
-        # matches the pattern used by /llm-profiles (only valid inside /llm)
-        # and keeps the namespace boundaries consistent.
-        if not _require_namespace(head, namespace, "search", "embeddings"):
+        # affects the search index. ``embedding`` (singular) is accepted as
+        # a typo-friendly alias. When typed at the root tab, the auto-
+        # namespace logic (search_cmd_heads) shifts the user into /search
+        # and prints "Assumed /search namespace for this command." — the
+        # same UX as /add-db-profile.
+        if not _require_namespace(head, namespace, "search", head):
             return True
         _cmd_embeddings(cfg, parts[1:])
         return True
@@ -907,7 +909,9 @@ def run_interactive_session(
         }
     )
     analyze_cmd_heads = frozenset({"run", "run-apply", "apply"})
-    search_cmd_heads = frozenset({"ask", "status", "sources", "config", "sync", "rebuild"})
+    search_cmd_heads = frozenset(
+        {"ask", "status", "sources", "config", "sync", "rebuild", "embeddings", "embedding"}
+    )
     history_cmd_heads = frozenset({"list", "show", "stats", "events", "results", "review"})
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)

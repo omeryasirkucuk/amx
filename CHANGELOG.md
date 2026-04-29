@@ -5,6 +5,10 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). From the next release onward, version numbers and entries below `[Unreleased]` are derived from [Conventional Commits](https://www.conventionalcommits.org/) by [`python-semantic-release`](https://python-semantic-release.readthedocs.io/) — manual edits to released sections are no longer expected.
 
 ## [Unreleased]
+### Fixed
+- **`/embeddings` from the root tab now auto-shifts into `/search`**, matching the UX every other namespace-scoped command already had (e.g. `/add-db-profile` → "Assumed /db namespace for this command."). Previously typing `/embeddings` from `[ ROOT ]` printed `✗ /embeddings belongs in /search.` and forced the user to manually `/search` first; now it just works.
+- **`/embedding` (singular) is accepted as an alias for `/embeddings`** so the typo `/embedding` no longer hits "Unknown command."
+
 ### Added
 - **`/usage [window]` slash command** (`amx/cli_support/commands/usage.py`): top-level read-only summary of LLM token usage and approximate cost over a time window (`24h` / `7d` / `30d` / `all`, default `7d`). Reads from `~/.amx/history.db` — local-only, no network calls. Aggregates runs by `(provider, model)`, prints input / output / total tokens and an approximate USD cost using a built-in price table covering OpenAI (gpt-4o family, o1, o3-mini, embeddings), Anthropic (Claude 4 Opus / Sonnet / Haiku, 3.5 Sonnet / Haiku, 3 Opus), Gemini (2.0 / 1.5), and DeepSeek. Models without pricing show an em-dash. Provider-prefixed model ids (`openai/gpt-4o`, `openrouter/openai/gpt-4o-mini`) and dated suffixes (`-20250514`, `-v2`) are matched against the table by stripping the prefix / suffix.
 - **11 new `UsageCommandTests`** covering: window normalisation (default + known + unknown fallback), pricing lookup (exact match, provider-prefix stripping, dated-suffix stripping, unknown returns `None`), aggregation grouping, malformed-`tokens_json` skip, cost formatting (known model dollar, unknown em-dash, sub-cent), empty-history warning, and the no-store-initialised path.
