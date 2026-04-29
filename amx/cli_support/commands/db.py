@@ -364,3 +364,51 @@ def cmd_profiling(cfg: AMXConfig, rest: list[str]) -> None:
         f"Profiling guardrails saved: mode={mode}, "
         f"max_full_scan_rows={max_label}, sample_size={sample_size}."
     )
+
+
+def cmd_tls(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or update active Databricks TLS settings."""
+    if cfg.db.backend != "databricks":
+        error("The active DB profile is not Databricks. Switch to a Databricks profile first.")
+        return
+
+    if not rest:
+        ca_path = str(getattr(cfg.db, "tls_trusted_ca_file", "") or "").strip() or "(none)"
+        info(
+            "Current Databricks TLS settings: "
+            f"tls_no_verify=[cyan]{bool(getattr(cfg.db, 'tls_no_verify', False))}[/cyan], "
+            f"trusted_ca=[cyan]{ca_path}[/cyan]. "
+            "Use /tls <on|off> [ca_path|clear]."
+        )
+        return
+
+    raw = rest[0].lower().strip()
+    truthy = {"on", "true", "yes", "y", "1"}
+    falsy = {"off", "false", "no", "n", "0"}
+    if raw in truthy:
+        no_verify = True
+    elif raw in falsy:
+        no_verify = False
+    else:
+        error(f"Unknown TLS mode {rest[0]!r}. Use on/off.")
+        return
+
+    ca_path = str(getattr(cfg.db, "tls_trusted_ca_file", "") or "").strip()
+    if len(rest) >= 2:
+        ca_arg = rest[1].strip()
+        if ca_arg.lower() in {"clear", "none", "off", "-"}:
+            ca_path = ""
+        else:
+            ca_path = ca_arg
+
+    cfg.db.tls_no_verify = no_verify
+    cfg.db.tls_trusted_ca_file = ca_path
+    if cfg.active_db_profile and cfg.active_db_profile in cfg.db_profiles:
+        cfg.db_profiles[cfg.active_db_profile].tls_no_verify = no_verify
+        cfg.db_profiles[cfg.active_db_profile].tls_trusted_ca_file = ca_path
+    cfg.save()
+
+    shown_path = ca_path or "(none)"
+    success(
+        f"Databricks TLS settings saved: tls_no_verify={no_verify}, trusted_ca={shown_path}."
+    )

@@ -166,6 +166,17 @@ def register_root_commands(
             error("Connection failed.")
             sys.exit(1)
 
+    @db.command("tls")
+    @click.argument("mode", required=False)
+    @click.argument("ca_path", required=False)
+    @click.pass_obj
+    def db_tls(cfg: AMXConfig, mode: str | None, ca_path: str | None) -> None:
+        """Show or update Databricks TLS settings for the active profile."""
+        from amx.cli_support.commands.db import cmd_tls
+
+        rest = [value for value in (mode, ca_path) if value is not None]
+        cmd_tls(cfg, rest)
+
     @db.command("schemas")
     @click.pass_obj
     def db_schemas(cfg: AMXConfig) -> None:

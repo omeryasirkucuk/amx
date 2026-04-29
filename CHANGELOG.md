@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.5] — 2026-04-29
+### Added
+- **Deterministic Databricks TLS command**: `/db tls [on|off] [ca_path|clear]` now updates the active Databricks profile directly and prints the saved value, so operators do not have to rely on interactive yes/no prompts.
+
+### Added
+- **Regression coverage**: Added helper and CLI tests for direct Databricks TLS setting changes on the active profile.
+
 ## [0.2.4] — 2026-04-29
 ### Changed
 - **Native Databricks connect test**: Databricks connection checks now use `databricks-sql-connector` directly for the health-check query instead of validating through the SQLAlchemy engine path first.

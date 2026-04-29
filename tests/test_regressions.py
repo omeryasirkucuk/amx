@@ -24,7 +24,7 @@ from amx.cli_support.session import _format_session_click_error, _handle_manual_
 from amx.config import AMXConfig, DBConfig, normalize_llm_model
 from amx.core import AMXApplication, UniversalMetadataAdapter
 from amx.core.errors import ErrorMapper
-from amx.cli_support.commands.db import cmd_profiling, databricks_connect_with_recovery
+from amx.cli_support.commands.db import cmd_profiling, cmd_tls, databricks_connect_with_recovery
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.adapters.databricks import DatabricksAdapter
@@ -919,6 +919,23 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual([attempt.label for attempt in attempts], ["saved profile", "TLS no-verify fallback"])
         self.assertTrue(cfg.db.tls_no_verify)
         self.assertTrue(calls[-1].tls_no_verify)
+
+    def test_cli_tls_updates_active_databricks_profile(self) -> None:
+        cfg = AMXConfig()
+        cfg.db = DBConfig(backend="databricks", tls_no_verify=False, tls_trusted_ca_file="")
+        cfg.db_profiles = {"default": cfg.db}
+        cfg.active_db_profile = "default"
+        cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
+
+        cmd_tls(cfg, ["on"])
+
+        self.assertTrue(cfg.db.tls_no_verify)
+        self.assertTrue(cfg.db_profiles["default"].tls_no_verify)
+
+        cmd_tls(cfg, ["off", "clear"])
+
+        self.assertFalse(cfg.db.tls_no_verify)
+        self.assertEqual(cfg.db.tls_trusted_ca_file, "")
 
     def test_metadata_mode_does_not_open_data_connection(self) -> None:
         class FakeEngine:

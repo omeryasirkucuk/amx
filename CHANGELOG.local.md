@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.5] — 2026-04-29
+### Deterministic Databricks TLS Control
+- **amx/cli_support/commands/db.py / amx/cli_support/root_commands.py / amx/cli_support/session.py**: Added `db tls` / `/tls` so Databricks TLS settings can be set explicitly from the app and confirmed immediately after save.
+- **tests/test_regressions.py / tests/test_cli_integration.py**: Added direct-setting coverage for active-profile TLS updates.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the command and bumped the release to `0.2.5`.
+
 ## [0.2.4] — 2026-04-29
 ### Native Databricks Connect Check
 - **amx/db/adapters/base.py / amx/db/adapters/databricks.py / amx/db/connector.py**: Moved Databricks health-check execution to the native `databricks.sql.connect(...)` path while keeping SQLAlchemy for normal metadata and query flows, and added explicit invalid-token classification.

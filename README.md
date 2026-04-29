@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.5`: Added a deterministic `db tls` command so Databricks TLS settings can be set and verified from the app without relying on interactive yes/no prompts.
 - `v0.2.4`: Databricks `db connect` now uses the native `databricks-sql-connector` test path directly, so TLS and invalid-token failures are classified more accurately before SQLAlchemy-based introspection starts.
 - `v0.2.3`: `db connect` now runs staged Databricks recovery attempts, reports which TLS mechanism passed, and persists the successful CA bundle or last-resort no-verify setting back into the active profile.
 - `v0.2.2`: Hardened Databricks corporate TLS setup by expanding trusted CA paths, honoring CA bundle environment variables, and reporting missing CA bundle files with a direct remediation message.
@@ -146,6 +147,7 @@ amx
 | `/db` + `/add-db-profile [name]` | Add/update a profile: **choose engine first**, then connection fields for that backend |
 | `/db` + `/remove-db-profile <name>` | Remove a DB profile |
 | `/db` + `/profiling [mode] [max_rows] [sample_size]` | Show or set active DB profiling guardrails. Modes: `full`, `sampled`, `metadata`; use `off` for no max-row cutoff. |
+| `/db` + `/tls [on\|off] [ca_path\|clear]` | Show or set Databricks TLS settings directly on the active profile. |
 | `/db` + `/schema <name>` | Set default schema context (used by /tables, /analyze, …) |
 | `/db` + `/table <name>` | Set default table context (used by /profile, /analyze, …) |
 | `/db` + `/connect` | Test database connectivity |

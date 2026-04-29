@@ -139,6 +139,33 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
 
 
 class RootCommandIntegrationTests(unittest.TestCase):
+    def test_db_tls_command_updates_active_profile(self) -> None:
+        runner = CliRunner()
+        cfg = AMXConfig()
+        cfg.active_db_profile = "corp"
+        cfg.db = cfg.db_profiles["corp"] = DBConfig(
+            backend="databricks",
+            host="workspace.cloud.databricks.com",
+            http_path="/sql/1.0/warehouses/abc",
+            access_token="token",
+            tls_trusted_ca_file="",
+            tls_no_verify=False,
+        )
+        cfg.save = Mock(return_value="/tmp/amx-test-config.yml")
+
+        with patch("amx.config.AMXConfig.load", return_value=cfg):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "db", "tls", "on"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("tls_no_verify=True", result.output)
+        self.assertTrue(cfg.db.tls_no_verify)
+        cfg.save.assert_called()
+
     def test_db_connect_databricks_persists_env_ca_recovery(self) -> None:
         runner = CliRunner()
         cfg = AMXConfig()

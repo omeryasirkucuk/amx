@@ -163,13 +163,14 @@ Commands (in order):
   4) /add-db-profile [name]        Create/update profile — pick PostgreSQL, Snowflake, Databricks, or BigQuery
   5) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
   6) /profiling [mode] [max] [N]   Show/set profiling guardrails
-  7) /save                         Persist config to disk (~/.amx/config.yml)
-  8) /schema <name>                Set current schema context (used by /tables)
-  9) /table <name>                 Set current table context (used by /profile)
- 10) /connect                      Test DB connectivity
- 11) /schemas                      List schemas
- 12) /tables [schema]             List tables (defaults to current schema)
- 13) /profile [schema] [table]    Profile a table (defaults to current context)
+  7) /tls [on|off] [ca|clear]      Show/set Databricks TLS settings
+  8) /save                         Persist config to disk (~/.amx/config.yml)
+  9) /schema <name>                Set current schema context (used by /tables)
+ 10) /table <name>                 Set current table context (used by /profile)
+ 11) /connect                      Test DB connectivity
+ 12) /schemas                      List schemas
+ 13) /tables [schema]             List tables (defaults to current schema)
+ 14) /profile [schema] [table]    Profile a table (defaults to current context)
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -449,6 +450,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/add-db-profile", "Add profile — choose engine then connection details"),
         ("/remove-db-profile", "Remove DB profile (/remove-db-profile <name>)"),
         ("/profiling", "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])"),
+        ("/tls", "Show/set Databricks TLS settings (/tls [on|off] [ca_path|clear])"),
         ("/save", "Save config to disk"),
         ("/schema", "Set current schema (/schema <name>)"),
         ("/table", "Set current table (/table <name>)"),
@@ -684,6 +686,13 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "db", "profiling"):
             return True
         _cmd_profiling(cfg, parts[1:])
+        return True
+    if head == "tls":
+        if not _require_namespace(head, namespace, "db", "tls"):
+            return True
+        from amx.cli_support.commands.db import cmd_tls as _cmd_tls
+
+        _cmd_tls(cfg, parts[1:])
         return True
     if head == "save":
         path = cfg.save()
