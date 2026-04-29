@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 
@@ -53,6 +54,12 @@ class DatabaseAdapter(ABC):
     def test_connection_sql(self) -> str:
         """Simple SQL to validate connectivity."""
         return "SELECT 1"
+
+    def test_connection(self, engine: Engine | None = None) -> None:
+        """Run a minimal connectivity check for this backend."""
+        active_engine = engine or self.create_engine()
+        with active_engine.connect() as conn:
+            conn.execute(text(self.test_connection_sql()))
 
     # ── Schema filtering ──────────────────────────────────────────────────
 

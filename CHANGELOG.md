@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.4] — 2026-04-29
+### Changed
+- **Native Databricks connect test**: Databricks connection checks now use `databricks-sql-connector` directly for the health-check query instead of validating through the SQLAlchemy engine path first.
+- **Sharper Databricks auth diagnostics**: Invalid Databricks access tokens are now classified separately from TLS and warehouse-path failures.
+
+### Added
+- **Regression coverage**: Added Databricks tests proving native connector usage during connect checks and explicit invalid-token error mapping.
+
 ## [0.2.3] — 2026-04-29
 ### Added
 - **Staged Databricks connect recovery**: `/db connect` now retries Databricks TLS failures in ordered stages, reports which recovery step passed, and persists the first successful CA bundle or last-resort `tls_no_verify` setting into the active DB profile.

@@ -121,8 +121,7 @@ class DatabaseConnector:
 
     def test_connection_result(self) -> ConnectionTestResult:
         try:
-            with self.engine.connect() as conn:
-                conn.execute(text(self._adapter.test_connection_sql()))
+            self._adapter.test_connection(self._engine)
             return ConnectionTestResult(ok=True)
         except Exception as exc:
             actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)

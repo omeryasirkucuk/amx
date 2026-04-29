@@ -25,6 +25,7 @@ Results from all agents are **merged** by an orchestrator using LLM reasoning, t
 - Write approved metadata back to the database as `COMMENT ON TABLE/VIEW/COLUMN` (write-back support)
 
 Recent release notes:
+- `v0.2.4`: Databricks `db connect` now uses the native `databricks-sql-connector` test path directly, so TLS and invalid-token failures are classified more accurately before SQLAlchemy-based introspection starts.
 - `v0.2.3`: `db connect` now runs staged Databricks recovery attempts, reports which TLS mechanism passed, and persists the successful CA bundle or last-resort no-verify setting back into the active profile.
 - `v0.2.2`: Hardened Databricks corporate TLS setup by expanding trusted CA paths, honoring CA bundle environment variables, and reporting missing CA bundle files with a direct remediation message.
 - `v0.2.1`: Added the SchemaExplorer macro-vision tool, inventory/definition/relationship/deep-dive ask strategies, set-based Markdown synthesis for column-count/table-inventory questions, and thought-trace visibility for schema inventory tool use.
@@ -334,6 +335,7 @@ Backend profiling failures are normalized into actionable messages where possibl
 
 If your Databricks workspace is reached through a company proxy or private CA, the default TLS trust chain may fail with `CERTIFICATE_VERIFY_FAILED`.
 
+- AMX now uses Databricks' native Python SQL connector for the `db connect` health check itself, while continuing to use the Databricks SQLAlchemy dialect for metadata inspection and normal runtime SQLAlchemy flows.
 - `db connect` now tries Databricks connectivity in stages: saved profile first, then a CA bundle discovered from supported environment variables, then `tls_no_verify` as a last resort. The first successful recovery path is saved back into the active DB profile and printed in the terminal.
 - Set a **Trusted CA bundle path** in the Databricks DB profile to point at your corporate/root CA PEM bundle.
 - The path may use `~` or environment variables such as `$HOME/certs/company-ca.pem`; AMX expands it before opening the Databricks connection.

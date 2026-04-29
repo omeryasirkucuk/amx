@@ -707,15 +707,29 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("trusted CA bundle path", message)
 
+    def test_databricks_invalid_token_error_is_actionable(self) -> None:
+        adapter = DatabricksAdapter(DBConfig(backend="databricks"))
+
+        message = adapter.actionable_profile_error(
+            Exception("Error during request to server: : Invalid access token.")
+        )
+
+        self.assertIsNotNone(message)
+        self.assertIn("access token is invalid", message)
+
     def test_connector_logs_actionable_databricks_tls_error(self) -> None:
         db = DatabaseConnector(DBConfig(backend="databricks"))
 
-        class FakeEngine:
-            def connect(self):
+        class FakeAdapter:
+            name = "databricks"
+
+            def test_connection(self, engine=None):
                 raise Exception("SSLCertVerificationError: self-signed certificate in certificate chain")
 
-        db._engine = FakeEngine()
-        db._adapter = DatabricksAdapter(DBConfig(backend="databricks"))
+            def actionable_profile_error(self, exc):
+                return DatabricksAdapter(DBConfig(backend="databricks")).actionable_profile_error(exc)
+
+        db._adapter = FakeAdapter()
 
         with patch("amx.db.connector.log.error") as log_error:
             ok = db.test_connection()
@@ -723,6 +737,59 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
         self.assertFalse(ok)
         log_error.assert_called_once()
         self.assertIn("trusted CA bundle path", log_error.call_args.args[1])
+
+    def test_databricks_test_connection_uses_native_connector(self) -> None:
+        adapter = DatabricksAdapter(
+            DBConfig(
+                backend="databricks",
+                host="workspace.cloud.databricks.com",
+                http_path="/sql/1.0/warehouses/abc",
+                access_token="token",
+            )
+        )
+        calls: list[dict[str, object]] = []
+
+        class FakeCursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def execute(self, stmt: str) -> None:
+                calls.append({"stmt": stmt})
+
+            def fetchall(self):
+                return [(1,)]
+
+        class FakeConnection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def cursor(self):
+                return FakeCursor()
+
+        def fake_connect(*, server_hostname, http_path, access_token=None, **kwargs):
+            calls.append(
+                {
+                    "server_hostname": server_hostname,
+                    "http_path": http_path,
+                    "access_token": access_token,
+                    "kwargs": kwargs,
+                }
+            )
+            return FakeConnection()
+
+        with patch("databricks.sql.connect", side_effect=fake_connect):
+            adapter.test_connection()
+
+        self.assertEqual(calls[0]["server_hostname"], "workspace.cloud.databricks.com")
+        self.assertEqual(calls[0]["http_path"], "/sql/1.0/warehouses/abc")
+        self.assertEqual(calls[0]["access_token"], "token")
+        self.assertEqual(calls[1]["stmt"], "SELECT 1")
 
     def test_databricks_rejects_materialized_view_comments(self) -> None:
         adapter = DatabricksAdapter(DBConfig(backend="databricks", catalog="main"))

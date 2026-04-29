@@ -2,6 +2,12 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.2.4] — 2026-04-29
+### Native Databricks Connect Check
+- **amx/db/adapters/base.py / amx/db/adapters/databricks.py / amx/db/connector.py**: Moved Databricks health-check execution to the native `databricks.sql.connect(...)` path while keeping SQLAlchemy for normal metadata and query flows, and added explicit invalid-token classification.
+- **tests/test_regressions.py**: Added coverage for native connector usage during Databricks connect checks and actionable invalid-token errors.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the native connector behavior and bumped the release to `0.2.4`.
+
 ## [0.2.3] — 2026-04-29
 ### Databricks Connect Recovery
 - **amx/db/connector.py**: Added structured connection-test results so caller flows can inspect actionable failure details instead of only a boolean.

@@ -81,6 +81,38 @@ class DatabricksAdapter(DatabaseAdapter):
             connect_args=connect_args,
         )
 
+    def test_connection(self, engine: Engine | None = None) -> None:
+        try:
+            from databricks import sql
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "databricks-sql-connector is required for the Databricks backend. "
+                "Reinstall AMX: pip install -U amx"
+            ) from exc
+
+        connect_args: dict[str, object] = {
+            "_socket_timeout": self.connect_timeout_seconds,
+            "_retry_stop_after_attempts_count": self.connect_retry_attempts,
+            "_retry_stop_after_attempts_duration": self.connect_retry_duration_seconds,
+            "user_agent_entry": "amx",
+        }
+        if getattr(self.cfg, "tls_no_verify", False):
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            connect_args["_tls_no_verify"] = True
+        trusted_ca = self._trusted_ca_file()
+        if trusted_ca:
+            connect_args["_tls_trusted_ca_file"] = trusted_ca
+
+        with sql.connect(
+            server_hostname=self.cfg.host,
+            http_path=self.cfg.http_path,
+            access_token=self.cfg.access_token or self.cfg.password,
+            **connect_args,
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchall()
+
     def comment_sql_with_params(
         self,
         stmt_template: str,
@@ -108,6 +140,11 @@ class DatabricksAdapter(DatabaseAdapter):
                 "TLS certificate validation failed. If your company uses a proxy or private CA, "
                 "set a Databricks trusted CA bundle path in the DB profile or, as a last resort, "
                 "disable TLS verification for that profile."
+            )
+        if "invalid access token" in msg or "access token" in msg and "invalid" in msg:
+            return (
+                "Databricks access token is invalid. Check that the active profile uses a valid "
+                "Databricks PAT or supported auth token for this workspace and SQL warehouse."
             )
         if "http_path" in msg or "warehouse" in msg:
             return "Databricks SQL warehouse connection is unavailable. Check host, HTTP path, and token."
