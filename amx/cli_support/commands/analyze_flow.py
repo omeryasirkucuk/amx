@@ -268,7 +268,7 @@ def execute_analyze_run(
     from amx.config import DISABLED_PROFILE
     from amx.db.connector import DatabaseConnector, ProfilingError
     from amx.docs.rag import RAGStore
-    from amx.llm.provider import LLMProvider
+    from amx.llm.provider import FatalLLMError, LLMProvider
     from amx.utils.logging import clear_request_id, set_request_id
 
     # Tag every log line emitted during this analyze run with a stable
@@ -606,6 +606,34 @@ def execute_analyze_run(
                     log.debug("Could not bump applied counter: %s", exc)
 
         final_status = "success"
+    except FatalLLMError as fatal:
+        # Auth / quota / payment / model-not-found errors are NOT recoverable
+        # — every queued batch fails the same way. Show the user one big,
+        # specific message with what to do, then exit. Don't iterate the
+        # remaining tables; don't pretend partial progress is review-ready.
+        final_status = "failed"
+        final_error_text = fatal.user_message
+        warn("")
+        error("LLM run aborted: " + fatal.user_message)
+        if fatal.original_message and fatal.original_message != fatal.user_message:
+            log.debug("Original LLM error: %s", fatal.original_message)
+        info(
+            "Some tables may have been partially processed before the abort. "
+            "Fix the LLM problem above (top up credits / rotate the key / pick a "
+            "different model under /llm), then re-run. AMX's missing-only filter "
+            "skips the tables already finished so you don't pay twice."
+        )
+        log_event(
+            event_type="analyze_run",
+            status="failed",
+            command="analyze.run",
+            details={
+                "mode": ("batch" if use_batch else "chat"),
+                "error": "FatalLLMError",
+                "error_message": fatal.user_message,
+            },
+        )
+        return
     except KeyboardInterrupt:
         approved = [r for r in all_results if getattr(r, "applied", False)]
         skipped = [r for r in all_results if not getattr(r, "applied", False)]

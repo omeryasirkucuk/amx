@@ -199,6 +199,41 @@ def _log_app_event(
         log.debug("Could not persist app event: %s", exc)
 
 
+def _raise_open_file_limit(target: int = 4096) -> None:
+    """Lift the per-process NOFILE soft limit on macOS / Linux.
+
+    AMX opens many file descriptors under heavy use: SQLAlchemy connection
+    pools (one per ``DatabaseConnector`` instance — up to a few hundred
+    columns × N tables), a SQLite history store, a Chroma vector index, the
+    LiteLLM HTTP client pool, and prompt_toolkit's asyncio event loop.
+    macOS' default soft limit is 256, which a long ``/ask`` REPL session can
+    exhaust — at which point ``prompt_toolkit.prompt`` crashes inside
+    ``asyncio.new_event_loop`` with ``OSError: [Errno 24] Too many open
+    files``. Open-source users shouldn't have to set ``ulimit -n`` manually,
+    so we lift the limit programmatically at startup. We never reduce the
+    limit, never exceed the hard limit, and silently no-op on platforms
+    that don't expose ``resource`` (e.g. native Windows).
+    """
+    try:
+        import resource  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError):
+        return
+    desired = max(soft, target)
+    if hard != resource.RLIM_INFINITY:
+        desired = min(desired, hard)
+    if desired <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (desired, hard))
+    except (ValueError, OSError):
+        # Some sandboxed environments forbid raising the limit; not fatal.
+        return
+
+
 @click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="amx")
 @click.option("--config", "cfg_path", default=None, help="Path to config YAML file.")
@@ -217,6 +252,8 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
     """
     if debug:
         os.environ["AMX_DEBUG"] = "1"
+    # Lift NOFILE before doing anything that might open a file descriptor.
+    _raise_open_file_limit()
     ctx.ensure_object(dict)
     ctx.obj = AMXConfig.load(cfg_path)
     init_history_store(ctx.obj.CONFIG_DIR)
