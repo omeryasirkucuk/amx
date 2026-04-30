@@ -52,8 +52,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "conversation_memory_turns": "4",
     "max_retrieved_entities": "8",
     "answer_style": "concise",
-    "show_provenance": "true",
-    "show_confidence": "true",
+    # Default off — these are diagnostic, not conversational. The CLI now
+    # treats `--debug` as the canonical opt-in and falls back to these flags
+    # only when the user explicitly enables them via `/search config`.
+    "show_provenance": "false",
+    "show_confidence": "false",
     "max_results": "8",
     "interpretation_mode": "balanced",
     "clarification_on_low_confidence": "true",
@@ -1364,6 +1367,38 @@ class SearchCatalog:
             ranked.append(item)
         ranked.sort(key=lambda item: float(item.get("rank_score") or 0.0), reverse=True)
         return ranked[:limit]
+
+    def find_tables_by_exact_name(
+        self,
+        db_profile: str,
+        name: str,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return every catalog table whose ``table_name`` matches ``name`` exactly.
+
+        Used by ``/ask`` to disambiguate a bare token like ``vbrk`` across
+        schemas: if the same name lives in multiple schemas we want to surface
+        all of them rather than silently picking one.
+        """
+        needle = (name or "").strip().lower()
+        if not needle:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ce.*, cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ?
+                  AND ce.entity_kind = 'table'
+                  AND LOWER(ce.table_name) = ?
+                ORDER BY ce.schema_name, ce.table_name
+                LIMIT ?
+                """,
+                (db_profile, needle, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
         with self._connect() as conn:

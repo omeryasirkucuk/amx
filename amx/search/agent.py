@@ -703,6 +703,55 @@ class SearchAgent:
 
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
         sample = (question or "").strip().lower()
+        # Guard: if the user clearly named a table-like subject ("what's the
+        # vbrk", "describe customers", "vbrk nedir") and the LLM happened to
+        # route this somewhere that won't run target resolution, force
+        # ``table_explain`` so we either find the table or surface a clear
+        # "not found / ambiguous" message instead of drifting to unrelated
+        # rows.
+        explicit_subjects = self._explicit_table_mentions_for_question(question)
+        if explicit_subjects and plan.search_mode not in {
+            "table_explain",
+            "join_candidates",
+            "joinable_tables",
+            "schema_inventory",
+            "list_databases",
+            "list_schemas",
+            "count_tables",
+            "check_coverage",
+        }:
+            asks_join_word = any(
+                token in sample
+                for token in ("join", "link", "relate", "relationship", "bağ", "bag", "ilişk", "iliski")
+            )
+            if not asks_join_word:
+                hints_with_subjects: list[str] = list(plan.entity_hints)
+                for mention in explicit_subjects:
+                    requested = str(mention.get("requested") or "").strip()
+                    if requested and requested not in hints_with_subjects:
+                        hints_with_subjects.append(requested)
+                plan = SearchPlan(
+                    intent="explain_table",
+                    out_of_domain=plan.out_of_domain,
+                    normalized_question=plan.normalized_question or question,
+                    search_mode="table_explain",
+                    question_class="table_understanding",
+                    target_entity="table",
+                    entity_hints=hints_with_subjects,
+                    search_queries=list(plan.search_queries) or [question],
+                    needs_typo_recovery=plan.needs_typo_recovery,
+                    answer_language=plan.answer_language,
+                    ambiguity_flags=list(plan.ambiguity_flags),
+                    reason=(plan.reason + "; rerouted to table_explain because the question names a subject").strip("; "),
+                    decision_confidence=plan.decision_confidence,
+                    needs_clarification=False,
+                    clarification_question="",
+                    review_notes=plan.review_notes,
+                    aggregation_op=plan.aggregation_op,
+                    aggregation_field=plan.aggregation_field,
+                    aggregation_limit=plan.aggregation_limit,
+                    answer_shape=plan.answer_shape or "table_summary",
+                )
         asks_count = any(token in sample for token in ("kaç", "kac", "how many", "count"))
         asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
         asks_column_word = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
@@ -1064,6 +1113,32 @@ class SearchAgent:
                 flags=re.IGNORECASE,
             )
         )
+        # Subject-form questions where the user names the table without using
+        # the word "table": "what's the vbrk", "describe customers", "explain
+        # adrc", "tell me about orders", "vbrk nedir", "vbrk hakkında". Without
+        # this branch the question's identifier-shaped subject (vbrk) is lost
+        # and the pipeline drifts to whatever the LLM/catalog guesses.
+        subject_patterns = (
+            # English: what's/what is/describe/explain/tell me about/show me X
+            r"\b(?:what'?s|what is|what are|whats|describe|explain|define|tell\s+me\s+about|"
+            r"show\s+me|info\s+(?:on|about)|details?\s+(?:on|about)|definition\s+of|"
+            r"meaning\s+of|purpose\s+of)\s+(?:the\s+|a\s+|an\s+)?"
+            r"`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
+            # English: what does X do/store/contain/mean
+            r"\b(?:what\s+does|what\s+do)\s+`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\s+"
+            r"(?:do|mean|store|contain|hold|represent)\b",
+            # Turkish: <X> nedir / hakkında / hakkinda / ne işe yarar / ne demek
+            r"\b`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\s+(?:nedir|ne\s+demek|"
+            r"hakk[ıi]nda|ne\s+i[şs]e\s+yarar|ne\s+i[şs]\s+yapar)\b",
+            # Turkish: bana <X> hakkında bilgi ver / <X>'i anlat / <X>'i açıkla
+            r"\b(?:bana\s+)?(?:bahset|anlat|a[çc][ıi]kla|tan[ıi]t)\s+"
+            r"(?:bana\s+)?`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
+        )
+        for pattern in subject_patterns:
+            explicit_table_tokens.extend(
+                item
+                for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
+            )
         table_token_stopwords = {
             "nedir",
             "ne",
@@ -1129,6 +1204,62 @@ class SearchAgent:
             "show",
             "named",
             "called",
+            # The new subject-form regex captures the noun that follows
+            # "what's the / describe / explain". Filter generic meta-words
+            # so e.g. "describe table" does not extract "table" as a name.
+            "table",
+            "tables",
+            "tablo",
+            "tablolar",
+            # All inflected Turkish forms of "tablo" we already accept in the
+            # other regex branch — they must also drop out of subject capture.
+            "tablosu",
+            "tablosunda",
+            "tablosuna",
+            "tablosundan",
+            "tablosunu",
+            "tabloları",
+            "tablolarını",
+            "tablolardan",
+            "column",
+            "columns",
+            "kolon",
+            "kolonlar",
+            "field",
+            "fields",
+            "alan",
+            "alanlar",
+            "data",
+            "info",
+            "information",
+            "metadata",
+            "veri",
+            "bilgi",
+            "schema",
+            "schemas",
+            "sema",
+            "şema",
+            "şemalar",
+            "semalar",
+            "database",
+            "databases",
+            "veritaban",
+            "veritabani",
+            "veritabanı",
+            # Generic adjectives that might land after "what's the".
+            "most",
+            "least",
+            "popular",
+            "common",
+            "single",
+            "multiple",
+            "total",
+            "average",
+            "newest",
+            "oldest",
+            "recent",
+            "older",
+            "newer",
         }
         explicit_table_tokens = [token for token in explicit_table_tokens if token.lower() not in table_token_stopwords]
         if self.cfg.current_schema:
@@ -1198,6 +1329,59 @@ class SearchAgent:
             path = str(mention.get("path") or "")
             requested = str(mention.get("requested") or path)
             if "." not in path:
+                # Unqualified mention (e.g. user typed "what's the vbrk"
+                # without a current_schema). Look up the bare token in the
+                # catalog: if it lives in exactly one schema, resolve to it;
+                # if it lives in several, surface them as ambiguity
+                # candidates instead of silently picking one; if it lives
+                # in none, mark as "explicit_table_not_found_live" so the
+                # deterministic answer template explains that to the user.
+                bare = requested.strip()
+                if not bare:
+                    continue
+                exact_rows = self.catalog.find_tables_by_exact_name(self.db_profile, bare, limit=20)
+                exact_paths = [
+                    f"{str(row.get('schema_name') or '')}.{str(row.get('table_name') or '')}".strip(".")
+                    for row in exact_rows
+                    if str(row.get("schema_name") or "") and str(row.get("table_name") or "")
+                ]
+                if len(exact_paths) == 1:
+                    schema_name, table_name = exact_paths[0].split(".", 1)
+                    exists = self._live_table_exists(schema_name, table_name)
+                    target = ResolvedTarget(
+                        requested=requested,
+                        resolved_path=exact_paths[0],
+                        source=str(mention.get("source") or "explicit_unqualified_table"),
+                        is_exact=True,
+                        confidence="high" if exists is True else "medium",
+                        warnings=[] if exists is True else ["live_table_existence_unknown"],
+                        candidates=[],
+                    )
+                elif len(exact_paths) >= 2:
+                    target = ResolvedTarget(
+                        requested=requested,
+                        resolved_path="",
+                        source=str(mention.get("source") or "explicit_unqualified_table"),
+                        is_exact=False,
+                        confidence="medium",
+                        warnings=["ambiguous_unqualified_table"],
+                        candidates=exact_paths[:5],
+                    )
+                else:
+                    fuzzy = self._table_candidate_paths(bare, limit=3)
+                    target = ResolvedTarget(
+                        requested=requested,
+                        resolved_path="",
+                        source=str(mention.get("source") or "explicit_unqualified_table"),
+                        is_exact=False,
+                        confidence="low",
+                        warnings=["explicit_table_not_found_live"],
+                        candidates=fuzzy,
+                    )
+                key = (target.resolved_path or target.requested).lower()
+                if key not in seen:
+                    seen.add(key)
+                    targets.append(target)
                 continue
             schema_name, table_name = path.split(".", 1)
             exists = self._live_table_exists(schema_name, table_name)
@@ -1252,11 +1436,21 @@ class SearchAgent:
     def _target_resolution_details(self, targets: list[ResolvedTarget]) -> dict[str, Any]:
         has_resolved = any(bool(target.resolved_path) for target in targets)
         has_unresolved_explicit = any(
-            not target.resolved_path and "explicit_table_not_found_live" in target.warnings for target in targets
+            not target.resolved_path
+            and (
+                "explicit_table_not_found_live" in target.warnings
+                or "ambiguous_unqualified_table" in target.warnings
+            )
+            for target in targets
+        )
+        has_ambiguous = any(
+            not target.resolved_path and "ambiguous_unqualified_table" in target.warnings
+            for target in targets
         )
         return {
             "targets": [asdict(target) for target in targets],
             "unresolved_explicit": has_unresolved_explicit and not has_resolved,
+            "ambiguous_unqualified": has_ambiguous and not has_resolved,
         }
 
     def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
@@ -2537,14 +2731,45 @@ class SearchAgent:
         target = targets[0] if targets else {}
         requested = str(target.get("requested") or "").strip() or "requested table"
         candidates = [str(item) for item in (target.get("candidates") or []) if str(item)]
-        if (plan.answer_language or "english").lower() == "turkish":
-            answer = f"`{requested}` tablosunu canli DB metadata'sinda exact olarak dogrulayamadim; bu yuzden benzer bir tabloyu hedef yerine kullanmiyorum."
+        warnings = [str(w) for w in (target.get("warnings") or [])]
+        is_ambiguous = "ambiguous_unqualified_table" in warnings
+        is_turkish = (plan.answer_language or "english").lower() == "turkish"
+        if is_ambiguous:
+            if is_turkish:
+                if candidates:
+                    return (
+                        f"`{requested}` adında bir tablo birden fazla şemada mevcut. "
+                        "Hangisini kastettiğinizi netleştirir misiniz? Adaylar: "
+                        + ", ".join(f"`{item}`" for item in candidates[:5])
+                        + "."
+                    )
+                return f"`{requested}` adı birden fazla şemada geçiyor; lütfen tam yolu belirtin (schema.table)."
             if candidates:
-                answer += " Katalogdaki benzer adaylar sadece oneridir: " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+                return (
+                    f"`{requested}` exists as a table in more than one schema. "
+                    "Could you clarify which one you mean? Candidates: "
+                    + ", ".join(f"`{item}`" for item in candidates[:5])
+                    + "."
+                )
+            return (
+                f"`{requested}` is the name of more than one table; please qualify it as `schema.table`."
+            )
+        if is_turkish:
+            answer = (
+                f"`{requested}` adında bir tablo bu DB profili için katalog veya canlı metadata'da bulunamadı."
+            )
+            if candidates:
+                answer += " Benzer adlar (kesin değil, öneri): " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+            else:
+                answer += " Önce `/search sync` çalıştırarak katalogu güncellemeyi deneyebilirsiniz."
             return answer
-        answer = f"I could not verify `{requested}` as an exact table in live DB metadata, so I am not substituting a similar table as the target."
+        answer = (
+            f"I could not find a table named `{requested}` in this DB profile's catalog or live metadata."
+        )
         if candidates:
-            answer += " Similar catalog candidates are suggestions only: " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+            answer += " Similar names (suggestions, not confirmed): " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+        else:
+            answer += " You may want to run `/search sync` to refresh the catalog first."
         return answer
 
     def _provenance(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]) -> list[str]:
