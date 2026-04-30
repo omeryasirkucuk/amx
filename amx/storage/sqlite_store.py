@@ -66,20 +66,40 @@ class SQLiteHistoryStore:
                 """
             )
             # Migration: existing installs get the new columns added with
-            # safe defaults. SQLite ALTER TABLE ADD COLUMN is idempotent only
-            # when wrapped — skip if already present.
-            for col_def in (
+            # safe defaults. We probe the live schema first via PRAGMA so
+            # we can log clearly when a column is added (or skipped because
+            # it already exists), instead of swallowing every exception.
+            existing_cols: set[str] = set()
+            try:
+                rows = conn.execute("PRAGMA table_info(analysis_runs)").fetchall()
+                existing_cols = {str(r[1]) for r in rows}
+            except Exception as exc:
+                log.warning("Could not introspect analysis_runs schema: %s", exc)
+            for col_name, col_type in (
                 ("selected_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("planned_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("processed_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("applied_count", "INTEGER NOT NULL DEFAULT 0"),
                 ("review_strategy", "TEXT"),
             ):
-                col_name, col_type = col_def
+                if col_name in existing_cols:
+                    continue
                 try:
-                    conn.execute(f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}")
-                except Exception:
-                    pass  # column already exists
+                    conn.execute(
+                        f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}"
+                    )
+                    log.info(
+                        "Migrated analysis_runs: added column %s %s",
+                        col_name,
+                        col_type,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "Could not add analysis_runs.%s: %s — partial-progress "
+                        "reporting in /history will show '—'.",
+                        col_name,
+                        exc,
+                    )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_runs_started_at "
                 "ON analysis_runs(started_at DESC)"
