@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-04-30
+### Fixed
+- **`OSError: [Errno 24] Too many open files` after several `/ask` turns** (`amx/search/agent_tools.py`, `amx/search/tool_agent.py`): each tool-agent question instantiated a fresh `ToolBox` → fresh `DatabaseConnector` → fresh SQLAlchemy engine + connection pool, but never disposed it. After enough turns the file-descriptor count crossed the macOS / Linux ulimit and the next `prompt_toolkit.prompt` failed inside `asyncio.new_event_loop()` because no FDs were left for selectors. `ToolBox` now exposes `close()` and acts as a context manager; `run_tool_agent` wraps the loop in `with ToolBox(...) as toolbox:` so the connector is disposed at the end of every question. The session memory between turns continues to live in `ChatSessionStore`, not on the `ToolBox`, so dropping the connector mid-session is safe.
+
+### Changed
+- **`analysis_runs` migration probes the live schema before adding columns** (`amx/storage/sqlite_store.py`): the previous `try: ALTER except: pass` swallowed every error including unrelated ones. Now we read `PRAGMA table_info(analysis_runs)` first to get the actual column set, skip already-present columns idempotently, log every successful column add at INFO, and log only true failures at WARNING. Helps diagnose why `/history` shows `—` for `Processed` when the migration didn't apply.
+
 ## [0.5.3] - 2026-04-30
 ### Fixed
 - **OpenRouter models with non-OpenAI vendor namespaces no longer fail with `LLM Provider NOT provided`** (`amx/llm/provider.py`): the user reported `provider=openrouter, model=qwen/qwen3.5-flash-02-23` failing because LiteLLM saw the `qwen/` head and didn't recognise it as a routable provider. Root cause: `LLMProvider.model_name` had an early-return `if "/" in raw: return raw` that bypassed the `openrouter/` prefix for any model id containing a slash, and `PROVIDER_MODEL_PREFIX["openrouter"]` was set to an empty string. OpenAI-prefixed models (`openai/gpt-4o-mini`) happened to work via LiteLLM's OpenAI client + api_base override, but vendor namespaces (qwen/, mistralai/, meta-llama/, google/, x-ai/, ...) had no fallback. Fix: `PROVIDER_MODEL_PREFIX["openrouter"] = "openrouter/"` is now always applied; `model_name` skips the prefix only when `raw` already begins with it. Net effect: every OpenRouter model id reaches LiteLLM as `openrouter/<vendor>/<model>`, the canonical form OpenRouter expects.
