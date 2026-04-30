@@ -546,6 +546,48 @@ class CodeIntegrationTests(unittest.TestCase):
 
 
 class SearchIntegrationTests(unittest.TestCase):
+    def test_render_search_rows_filters_zero_score_rows(self) -> None:
+        # Default ranked_list dispatch must drop rows whose score is 0.00 so
+        # inventory leakage and other diagnostics never surface as "Search matches".
+        from amx.cli_support.commands.search import _render_search_rows
+
+        rows = [
+            {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr", "rank_score": 7.5,
+             "effective_description": "Net value"},
+            {"schema_name": "sap", "table_name": "kna1", "column_name": "kunnr", "score": 0.0,
+             "effective_description": "Customer"},
+            {"schema_name": "sap", "table_name": "z", "column_name": "x", "rank_score": 0.0,
+             "effective_description": "noise"},
+        ]
+        with patch("amx.cli_support.commands.search.console") as console_mock:
+            _render_search_rows(rows, answer_shape="ranked_list")
+        console_mock.print.assert_called_once()
+        printed_table = console_mock.print.call_args[0][0]
+        # Rich Table exposes its data via `.columns`; the score column is index 5.
+        score_cells = list(printed_table.columns[5].cells)
+        self.assertEqual(score_cells, ["7.50"])
+
+    def test_render_search_rows_dispatches_inventory_for_schema_explorer_rows(self) -> None:
+        from amx.cli_support.commands.search import _render_search_rows
+
+        rows = [
+            {
+                "row_type": "schema_explorer_table",
+                "schema_name": "sap_s6p",
+                "table_name": "dd03l",
+                "column_count": 102,
+                "row_count": 10772134,
+                "semantic_cluster": "Dd03L",
+            },
+        ]
+        with patch("amx.cli_support.commands.search.console") as console_mock:
+            _render_search_rows(rows)
+        console_mock.print.assert_called_once()
+        printed_table = console_mock.print.call_args[0][0]
+        self.assertEqual(printed_table.title, "Inventory")
+        # Column order: Schema, Table, Columns, Rows, Cluster.
+        self.assertEqual(list(printed_table.columns[3].cells), ["10772134"])
+
     def test_search_ask_requires_llm_profile(self) -> None:
         runner = CliRunner()
         cfg = AMXConfig()

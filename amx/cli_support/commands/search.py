@@ -36,7 +36,11 @@ def _service(cfg: AMXConfig) -> SearchService | None:
     return SearchService(cfg, catalog)
 
 
-def _render_search_rows(rows: list[dict[str, Any]]) -> None:
+def _render_search_rows(
+    rows: list[dict[str, Any]],
+    *,
+    answer_shape: str = "",
+) -> None:
     if not rows:
         info("No results.")
         return
@@ -78,6 +82,53 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
             ],
         )
         return
+    if first.get("row_type") == "schema_explorer_table":
+        # Inventory rows have no useful score; render as a focused inventory table
+        # rather than the generic Search matches grid.
+        inventory = Table(title="Inventory", show_lines=True, box=box.SIMPLE_HEAVY)
+        inventory.add_column("Schema", style="cyan", no_wrap=True)
+        inventory.add_column("Table", style="cyan", no_wrap=True)
+        inventory.add_column("Columns", style="cyan", no_wrap=True, justify="right")
+        inventory.add_column("Rows", style="cyan", no_wrap=True, justify="right")
+        inventory.add_column("Cluster", style="white", overflow="fold", max_width=40)
+        for row in rows:
+            inventory.add_row(
+                str(row.get("schema_name", "") or ""),
+                str(row.get("table_name", "") or ""),
+                str(int(row.get("column_count") or 0)),
+                str(int(row.get("row_count") or 0)),
+                str(row.get("semantic_cluster") or "Unclustered"),
+            )
+        console.print(inventory)
+        return
+    if answer_shape == "table_summary":
+        # Focused key-columns view for "what is table X" answers.
+        summary_table = Table(title="Key columns", show_lines=True, box=box.SIMPLE_HEAVY)
+        summary_table.add_column("Schema", style="cyan", no_wrap=True)
+        summary_table.add_column("Table", style="cyan", no_wrap=True)
+        summary_table.add_column("Column", style="cyan", no_wrap=True)
+        summary_table.add_column("Type", style="cyan", no_wrap=True)
+        summary_table.add_column("Description", style="white", overflow="fold", max_width=72)
+        for row in rows[:8]:
+            summary_table.add_row(
+                str(row.get("schema_name", "") or ""),
+                str(row.get("table_name", "") or ""),
+                str(row.get("column_name", "") or "-"),
+                str(row.get("data_type", "") or ""),
+                Text(str(row.get("effective_description", "") or "")),
+            )
+        console.print(summary_table)
+        return
+    # Default: ranked Search matches. Drop rows whose score is exactly 0.00 —
+    # those are inventory/diagnostic rows that leaked into the result set and
+    # only add noise (every line saying "0.00" with no description).
+    visible: list[dict[str, Any]] = []
+    for row in rows:
+        score = float(row.get("rank_score") or row.get("score") or 0)
+        if score > 0.0:
+            visible.append(row)
+    if not visible:
+        return
     table = Table(title="Search matches", show_lines=True, box=box.SIMPLE_HEAVY)
     table.add_column("Schema", style="cyan", no_wrap=True)
     table.add_column("Table", style="cyan", no_wrap=True)
@@ -86,7 +137,7 @@ def _render_search_rows(rows: list[dict[str, Any]]) -> None:
     table.add_column("Conf", style="cyan", no_wrap=True)
     table.add_column("Score", style="cyan", no_wrap=True, justify="right")
     table.add_column("Description", style="white", overflow="fold", max_width=72)
-    for row in rows:
+    for row in visible:
         desc = str(row.get("effective_description", "") or "")
         table.add_row(
             str(row.get("schema_name", "") or ""),
@@ -384,7 +435,7 @@ def _run_search_ask_body(
         if action_results:
             answer.details["action_results"] = action_results
     if answer.rows and bool(answer.details.get("display_rows", True)):
-        _render_search_rows(answer.rows)
+        _render_search_rows(answer.rows, answer_shape=str(answer.details.get("answer_shape") or ""))
     payload = _search_results_payload(answer)
     status = "success"
     error_text = ""
