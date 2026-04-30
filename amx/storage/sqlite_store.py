@@ -43,10 +43,43 @@ class SQLiteHistoryStore:
                     metrics_json TEXT,
                     tokens_json TEXT,
                     results_json TEXT,
-                    error_text TEXT
+                    error_text TEXT,
+                    -- Reporting columns added in 0.5.2 to make /history honest
+                    -- about partial / interrupted runs:
+                    -- ``selected_count``: assets the user originally selected
+                    -- (pre missing-only filter).
+                    -- ``planned_count``: assets remaining after the missing-
+                    --   only filter — what we actually intended to process.
+                    -- ``processed_count``: assets that have started processing
+                    --   (incremented per-table; survives Ctrl+C).
+                    -- ``applied_count``: results successfully written to live
+                    --   DB via apply_review_results_to_db.
+                    -- ``review_strategy``: individual / deferred / auto-apply,
+                    --   used by the status logic so auto-apply runs never
+                    --   land in 'ready_for_review'.
+                    selected_count INTEGER NOT NULL DEFAULT 0,
+                    planned_count INTEGER NOT NULL DEFAULT 0,
+                    processed_count INTEGER NOT NULL DEFAULT 0,
+                    applied_count INTEGER NOT NULL DEFAULT 0,
+                    review_strategy TEXT
                 )
                 """
             )
+            # Migration: existing installs get the new columns added with
+            # safe defaults. SQLite ALTER TABLE ADD COLUMN is idempotent only
+            # when wrapped — skip if already present.
+            for col_def in (
+                ("selected_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("planned_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("processed_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("applied_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("review_strategy", "TEXT"),
+            ):
+                col_name, col_type = col_def
+                try:
+                    conn.execute(f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}")
+                except Exception:
+                    pass  # column already exists
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_runs_started_at "
                 "ON analysis_runs(started_at DESC)"
@@ -353,8 +386,20 @@ class SQLiteHistoryStore:
         llm_provider: str,
         llm_model: str,
         scope: dict[str, list[str]],
+        selected_count: int = 0,
+        planned_count: int = 0,
+        review_strategy: str | None = None,
     ) -> int:
         started = time.time()
+        # Sensible defaults if caller didn't pass counts explicitly: derive
+        # from the scope dict (unique asset count across all schemas).
+        if selected_count <= 0:
+            try:
+                selected_count = sum(len(v or []) for v in (scope or {}).values())
+            except Exception:
+                selected_count = 0
+        if planned_count <= 0:
+            planned_count = selected_count
         with self._lock, self._connect() as conn:
             # Recover stale rows left as 'running' after an unclean shutdown/crash.
             conn.execute(
@@ -380,8 +425,10 @@ class SQLiteHistoryStore:
                 """
                 INSERT INTO analysis_runs (
                     started_at, status, command, mode,
-                    db_backend, db_profile, llm_provider, llm_model, scope_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    db_backend, db_profile, llm_provider, llm_model, scope_json,
+                    selected_count, planned_count, processed_count, applied_count,
+                    review_strategy
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
                 """,
                 (
                     started,
@@ -393,9 +440,36 @@ class SQLiteHistoryStore:
                     llm_provider,
                     llm_model,
                     json.dumps(scope, ensure_ascii=True),
+                    int(selected_count),
+                    int(planned_count),
+                    str(review_strategy or ""),
                 ),
             )
             return int(cur.lastrowid)
+
+    def update_run_planned_count(self, run_id: int, planned_count: int) -> None:
+        """Set planned_count after the missing-only filter has dropped already-commented assets."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET planned_count = ? WHERE id = ?",
+                (int(planned_count), int(run_id)),
+            )
+
+    def increment_run_processed(self, run_id: int, by: int = 1) -> None:
+        """Bump processed_count for one (or more) tables that started processing."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET processed_count = COALESCE(processed_count, 0) + ? WHERE id = ?",
+                (int(by), int(run_id)),
+            )
+
+    def increment_run_applied(self, run_id: int, by: int = 1) -> None:
+        """Bump applied_count for results successfully written to the live DB."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET applied_count = COALESCE(applied_count, 0) + ? WHERE id = ?",
+                (int(by), int(run_id)),
+            )
 
     def finish_run(
         self,
