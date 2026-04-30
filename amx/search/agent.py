@@ -416,6 +416,12 @@ class SearchAgent:
     def _memory_summary(self) -> list[dict[str, Any]]:
         summary: list[dict[str, Any]] = []
         for turn in self._memory():
+            # 200 chars used to be enough for the JSON planner payload, but
+            # the tool agent feeds these straight into a chat history — long
+            # answers (e.g. "12 tables have boolean columns: ...") were being
+            # cut off and the LLM failed to resolve "Only those?" follow-ups.
+            # 1000 chars is comfortably under the 24K-input budget even with
+            # 6+ pairs in scope.
             summary.append(
                 {
                     "question": turn.get("question", ""),
@@ -423,7 +429,7 @@ class SearchAgent:
                     "topic": turn.get("topic", ""),
                     "tables": turn.get("tables", []),
                     "columns": turn.get("columns", []),
-                    "answer_summary": str(turn.get("answer_summary") or "")[:200],
+                    "answer_summary": str(turn.get("answer_summary") or "")[:1000],
                 }
             )
         return summary
@@ -745,6 +751,7 @@ class SearchAgent:
                 "your database schemas, tables, and columns rather than chat. "
                 "Try: `what is the vbrk table?`, `which tables relate to pricing?`."
             )
+        self._record_short_circuit_assistant(summary=summary, intent="chitchat")
         return SearchAnswer(
             intent="chitchat",
             question=question,
@@ -759,6 +766,31 @@ class SearchAgent:
                 "stage_metrics": [],
             },
         )
+
+    def _record_short_circuit_assistant(self, *, summary: str, intent: str) -> None:
+        """Persist a synthetic assistant turn for chitchat / meta / reaffirm.
+
+        Without this, ``ask()`` writes the user-side row at the top of the
+        call but no matching assistant row gets written for the deterministic
+        short-circuits — leaving the session memory unbalanced and confusing
+        the next planner pass. We record a small assistant turn carrying just
+        the answer text + the short-circuit kind so memory stays paired.
+        """
+        store = self._ensure_session_store()
+        sid = self.cfg.active_chat_session_id
+        if store is None or not sid:
+            return
+        try:
+            store.append_assistant_turn(
+                int(sid),
+                run_id=None,
+                answer_summary=str(summary or "")[:480],
+                intent=intent,
+                plan={"agent": "short_circuit", "kind": intent},
+                confidence="high",
+            )
+        except Exception as exc:
+            log.warning("Failed to record %s assistant turn: %s", intent, exc)
 
     def _handle_meta_query(self, question: str, question_language: str) -> SearchAnswer | None:
         """Answer questions ABOUT the conversation itself (no LLM call).
@@ -807,6 +839,7 @@ class SearchAgent:
                 if is_turkish
                 else f"Your previous question was: \"{prior_question}\""
             )
+        self._record_short_circuit_assistant(summary=summary, intent="meta_query")
         return SearchAnswer(
             intent="meta_query",
             question=question,
@@ -880,6 +913,7 @@ class SearchAgent:
                 "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
                 + prior_assistant
             )
+        self._record_short_circuit_assistant(summary=summary, intent="reaffirmation")
         return SearchAnswer(
             intent="reaffirmation",
             question=question,
@@ -920,8 +954,23 @@ class SearchAgent:
         # the tool agent expects for context. ``_memory_summary`` returns
         # the most recent turns in chronological order; we keep both user
         # questions and assistant answer summaries so follow-ups resolve.
+        # IMPORTANT: ``ask()`` already wrote the *current* user question to
+        # the session store at the top of the call, so the latest entry in
+        # ``_memory_summary()`` IS the question we're about to ask the LLM.
+        # If we forward it here, ``run_tool_agent`` would then append it a
+        # second time as the live user message — duplication confuses the
+        # model ("Only those?" became unrecognisable). Drop the trailing
+        # entry whose ``question`` matches the current one and which has no
+        # paired assistant answer yet.
+        memory_turns = list(self._memory_summary())
+        if memory_turns:
+            tail = memory_turns[-1]
+            tail_q = str(tail.get("question") or "").strip()
+            tail_ans = str(tail.get("answer_summary") or "").strip()
+            if tail_q == clean_question and not tail_ans:
+                memory_turns = memory_turns[:-1]
         prior_turns: list[dict[str, str]] = []
-        for turn in self._memory_summary():
+        for turn in memory_turns:
             user_q = str(turn.get("question") or "").strip()
             if user_q:
                 prior_turns.append({"role": "user", "content": user_q})

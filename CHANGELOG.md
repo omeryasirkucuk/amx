@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-30
+### Added
+- **`find_columns_by_dtype` tool** (`amx/search/agent_tools.py`): returns columns whose dtype matches a SQL type token (`boolean`, `int`, `date`, `timestamp`, `text`, ...). Supports dtype FAMILIES — `boolean` covers BOOL/BOOLEAN, `int` covers BIGINT/INTEGER/SMALLINT, `date` covers DATE/TIMESTAMP/TIMESTAMPTZ. Rolled up to a per-table view so the LLM sees `"sap_s6p.cskt has 1 boolean column: is_deleted"`. Fixes the user-reported case where `"which tables have boolean columns?"` only surfaced 2 tables via fuzzy semantic search instead of all dtype-BOOLEAN columns.
+- **`find_joinable_tables` tool** (`amx/search/agent_tools.py`): given ONE table, returns the tables it can be joined with (verified FKs first, then semantic candidates). Different from the existing `get_join_candidates` which requires both sides upfront. Resolves bare table names through `find_tables_by_exact_name` first, surfacing ambiguity when the name lives in multiple schemas. Fixes `"which tables can I join with adr6?"` previously bottoming out at `public.adr6` (which doesn't exist).
+- **Cross-DB profile awareness in the system prompt** (`amx/search/tool_agent.py:_agent_system_prompt`): the prompt now lists every connected DB profile with backend + database name + an "(active)" marker, plus an explicit note that tools target the active profile only and the user must `/use-db <name>` to switch. This is what was missing for "we have multiple DBs" questions.
+
+### Changed
+- **Memory pairing fix for short-circuits** (`amx/search/agent.py`): chitchat / meta-query / reaffirmation handlers now write a synthetic assistant row to `ChatSessionStore` before returning. Previously `ask()` wrote the user-side row at the top of the call but the short-circuits skipped writing an assistant row, leaving orphan user entries that confused the next `_memory_summary` pass.
+- **Tool agent skips the duplicated current-question user turn** (`amx/search/agent.py:_answer_via_tool_agent`): `ask()` writes the current user question to the session store before short-circuits run, so by the time we read `_memory_summary()` the latest entry IS the question we're about to ask the LLM. Forwarding it as both prior context AND the live user message duplicated the question and broke follow-up resolution (`"Only those?"` came back as "your question is incomplete or unclear"). We now drop the trailing entry whose `question` matches the current one and has no paired assistant answer yet.
+- **Memory summary bumps assistant truncation to 1000 chars** (`amx/search/agent.py:_memory_summary`): the previous 200-char cap was tuned for the JSON planner payload and cut off long answers (e.g. the boolean-column response). The tool agent feeds these straight into a chat history; 1000 chars stays comfortably under the 24K input budget while keeping enough context for follow-ups to resolve.
+- **System prompt routing guidance covers dtype + joinable-tables tools and emphasises follow-ups** (`amx/search/tool_agent.py`): added explicit hints for `find_columns_by_dtype`, `find_joinable_tables`, plus stronger language reminding the model to read prior turns BEFORE calling a new tool when the question is a short follow-up (`"Only those?"`, `"sadece bunlar mı?"`, `"gerçekten?"`).
+
+### Fixed
+- **`"Only those?"` no longer returns "your question is incomplete or unclear"** — duplicated user-message bug + over-aggressive truncation of the prior answer summary kept the agent from resolving the follow-up. With the dedup fix and the 1000-char summary budget, the model now sees the prior boolean-column answer in context and can answer in one round.
+- **`"which tables have boolean columns?"` now reaches every dtype-BOOLEAN column** instead of only the two whose names happened to score on fuzzy lexical search. The new `find_columns_by_dtype` tool queries `catalog_entities` directly with a dtype-family LIKE filter.
+- **`"which tables can I join with adr6?"` no longer falls back to `public.adr6` (a non-existent table)** — the new `find_joinable_tables` tool resolves bare names via `find_tables_by_exact_name` and surfaces multi-schema ambiguity instead of silently picking the wrong one.
+
+### Tests
+- `test_tool_agent_drops_duplicated_current_user_turn_from_memory` — asserts a follow-up is resolvable against prior context.
+- `test_short_circuits_persist_assistant_turn` — asserts chitchat writes a paired assistant turn so memory roles read as `[user, assistant]`, not `[user]`.
+
 ## [0.4.0] - 2026-04-30
 ### Added — Tool-calling `/ask` agent (architectural change)
 - **New `amx/search/tool_agent.py`** runs `/ask` as a tool-calling loop instead of the regex-routed Pass1/alignment/retrieval cascade. The LLM receives a fixed set of metadata tools (`list_schemas`, `list_tables_in_schema`, `find_table_by_name`, `describe_table`, `search_tables_by_concept`, `search_columns_by_concept`, `get_join_candidates`, `list_databases`) and decides itself which to call. Bounded at 6 iterations per question; final-answer compose forced when the budget runs out.

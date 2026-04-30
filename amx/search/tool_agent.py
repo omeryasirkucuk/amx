@@ -84,6 +84,22 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
     current_table = cfg.current_table or "(none — user has not pinned a table)"
     metadata_lang = cfg.llm.language or "english"
 
+    # Build a one-line summary of every connected DB profile so the model
+    # can mention "this lives in your SAP profile; you also have WAREHOUSE
+    # connected" when the user asks cross-DB questions.
+    profile_lines: list[str] = []
+    active_name = cfg.active_db_profile or "default"
+    for profile_name, db_cfg in sorted(cfg.db_profiles.items()):
+        marker = " (active)" if profile_name == active_name else ""
+        db_target = db_cfg.database or db_cfg.catalog or db_cfg.project or "?"
+        backend = db_cfg.backend or "?"
+        profile_lines.append(f"  - {profile_name}{marker}: {backend} → {db_target}")
+    profiles_block = (
+        "\n".join(profile_lines)
+        if profile_lines
+        else "  (none configured — only the active connection is reachable)"
+    )
+
     return (
         "You are AMX's metadata-search assistant. Answer the user's question by calling the "
         "tools available to you. NEVER guess; ALWAYS ground every claim in a tool result.\n\n"
@@ -91,20 +107,31 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         f"Schemas in this DB: {schema_line}\n"
         f"User's pinned schema: {current_schema}\n"
         f"User's pinned table: {current_table}\n"
-        f"User's language preference: {metadata_lang}\n\n"
+        f"User's language preference: {metadata_lang}\n"
+        "Connected DB profiles:\n"
+        f"{profiles_block}\n"
+        "Tools currently target the ACTIVE profile only — if the user asks about another "
+        "profile, mention which profiles you can see and ask them to switch with `/use-db <name>`.\n\n"
         "Routing guidance — choose the smallest correct path:\n"
         "* User names an exact identifier ('vbrk', 'adrc') → call find_table_by_name first; if it\n"
-        "  returns one match, call describe_table on it. If multiple, ask the user to disambiguate.\n"
+        "  returns one match, call describe_table on it. If multiple, surface ALL matches and ask.\n"
         "* User asks 'tables in <schema>' / 'tables under <schema>' / 'list tables of <schema>' → \n"
         "  call list_tables_in_schema with that exact schema. The user said 'tables', not\n"
         "  'a table named X'.\n"
         "* User asks 'which schemas / what schemas / how many schemas' → call list_schemas.\n"
-        "* User asks 'which databases' → call list_databases.\n"
+        "* User asks 'which databases / hangi veritabanları' → call list_databases.\n"
+        "* User asks 'tables with boolean columns' / 'date columns' / 'all int columns' → \n"
+        "  call find_columns_by_dtype with the type token. NEVER fall back to\n"
+        "  search_columns_by_concept for dtype questions; concept search matches NAMES, not types.\n"
+        "* User asks 'which tables can I join with X' / 'X ile birleşebilecek tablolar' → \n"
+        "  call find_joinable_tables with the single table.\n"
+        "* User asks how X and Y join (both named) → call get_join_candidates.\n"
         "* User asks about a concept ('pricing tables', 'address columns', 'müşteri bilgisi') → \n"
         "  call search_tables_by_concept or search_columns_by_concept.\n"
-        "* User asks how X and Y join → call get_join_candidates.\n"
-        "* When the question is a follow-up (pronoun like 'it', 'this table', 'o tablo', 'bu'),\n"
-        "  resolve it from the prior assistant turn(s) before calling a tool.\n\n"
+        "* When the question is a follow-up (pronoun like 'it', 'this table', 'o tablo', 'bu',\n"
+        "  short replies like 'only those?', 'sadece bunlar mı?', 'gerçekten?'), resolve it\n"
+        "  from the prior assistant turn(s) BEFORE calling a tool. Read the conversation\n"
+        "  history above; previous answers stay relevant.\n\n"
         "When you have enough information, STOP calling tools and return a short, direct answer.\n"
         "Style:\n"
         "  - One natural-language paragraph.\n"
@@ -112,6 +139,8 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         f"  - Match the user's language; default to {metadata_lang}.\n"
         "  - If a tool reports 'found: false' or empty matches, say so plainly. NEVER invent a\n"
         "    table name. NEVER substitute a similar-sounding one without flagging it.\n"
+        "  - For follow-up questions, you MAY answer from prior context without a new tool call\n"
+        "    if the prior tool result already contains the answer.\n"
         "  - If a tool is unavailable, explain what's missing and suggest the user run\n"
         "    `/search sync` (catalog refresh) or check their DB connection."
     )

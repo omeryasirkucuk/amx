@@ -1390,6 +1390,62 @@ class SearchCatalogTests(unittest.TestCase):
 
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
 
+    def test_tool_agent_drops_duplicated_current_user_turn_from_memory(self) -> None:
+        """The current user question must NOT be forwarded to the tool agent
+        as both prior_turns context AND the live ``messages.append('user')``.
+
+        Regression for the user-reported case where 'Only those?' came back
+        as 'your question is incomplete or unclear' — the duplicated message
+        confused the model into thinking we'd lost context.
+        """
+        cfg = self._search_cfg()
+        self.catalog.set_setting("default", "use_tool_agent", "true")
+
+        class FakeDB:
+            def list_schemas(self) -> list[str]:
+                return ["public"]
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # First a regular Q that the tool agent answers directly with
+            # text. After this turn, the chat session has ONE user + ONE
+            # assistant entry. Then a follow-up the agent should resolve
+            # against the prior assistant turn — without seeing the
+            # follow-up question twice.
+            _FakeLLMProvider.queue_tool_calls(
+                "Two tables have boolean columns: cskt and t001w.",
+                "Yes, only those two.",
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                service.ask("which tables have boolean columns")
+                answer = service.ask("Only those?")
+
+        self.assertEqual(answer.intent, "tool_agent")
+        # The follow-up must have been resolvable from context — i.e. the
+        # final answer references the prior content, not a clarification.
+        self.assertIn("only", answer.summary.lower())
+
+    def test_short_circuits_persist_assistant_turn(self) -> None:
+        """chitchat / meta / reaffirmation must write a paired assistant turn
+        so subsequent ``_memory_summary`` calls return matched (user, assistant)
+        pairs rather than orphaned user-only entries."""
+        cfg = self._search_cfg()
+        self.catalog.set_setting("default", "use_tool_agent", "false")
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue()  # No LLM responses queued — short-circuit only.
+            service = SearchService(cfg, self.catalog)
+            service.ask("hi")  # chitchat short-circuit path
+
+        sid = cfg.active_chat_session_id
+        self.assertIsNotNone(sid)
+        from amx.search.session_store import ChatSessionStore
+        store = ChatSessionStore(self.store)
+        turns = store.recent_turns(int(sid), include_summary=False)
+        roles = [str(t.get("role") or "") for t in turns]
+        # We expect a paired (user, assistant) trail — not an orphan user.
+        self.assertEqual(roles, ["user", "assistant"])
+
     def test_tool_agent_routes_tables_under_schema_to_list_tables(self) -> None:
         """End-to-end: 'tables under sap_test' must hit list_tables_in_schema.
 
