@@ -6,6 +6,12 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-04-30
+### Fixed
+- **auto-apply now writes each table's comments to the live DB IMMEDIATELY after that table finishes** (`amx/agents/orchestrator.py`): the previous flow marked results `applied=True` per-table but the actual `COMMENT ON ...` SQL ran in one batch at the END of the run. A user that completed bkpf and then Ctrl+C'd during bseg saw bkpf in catalog as 'applied' but its comment never reached the live DB. Now `process_table` calls `apply_review_results_to_db` for the table's results before returning, so partial completion = partial DB state (and the missing-only filter on the retry skips what's already there).
+- **`Processed` column in `/history list` was stuck at `—` even when the run made progress** (`amx/cli_support/commands/analyze_flow.py`): the `update_run_planned_count` formula computed `max(0, total_assets - len(skipped_assets) - 1)` but `skipped_assets` only grows on `ProfilingError`, NOT on missing-only filter skips. So six filter skips in a row all set planned_count to the same value (77 instead of stepping 78 → 77 → 76 → ... → 72). Now we maintain a separate `filter_skipped_count` and recompute `planned_count = total_assets - filter_skipped_count` per filter-skip event.
+- **Extracted `_record_applied_state` helper on Orchestrator** (`amx/agents/orchestrator.py`): the per-table auto-apply path and the end-of-run batch apply path now share the same history+catalog "applied" bookkeeping, so a partial auto-apply run shows up correctly in both `analysis_runs` and the search catalog.
+
 ## [0.5.7] - 2026-04-30
 ### Added
 - **`FatalLLMError` class** (`amx/llm/provider.py`): non-recoverable LLM errors (auth / quota / payment / model-not-found) now raise this dedicated exception with a short, user-facing message. Caught at `analyze_flow.execute_analyze_run` so the entire run aborts cleanly with one actionable message instead of producing 200+ identical warnings while iterating through tables.

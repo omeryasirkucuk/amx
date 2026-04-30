@@ -467,6 +467,34 @@ class Orchestrator:
                     logprob_score=s.logprob_score,
                 ))
             self.results.extend(results)
+            # Persist this table's accepted descriptions to the live DB
+            # NOW — not at the end of the run. Without this, a Ctrl+C
+            # mid-loop leaves the catalog "applied" but live DB empty for
+            # every table that finished before the interrupt (the user-
+            # reported case where bkpf finished but its COMMENT ON SQL
+            # never reached the live DB because they cancelled during the
+            # next table's profiling).
+            try:
+                with step_spinner(f"Writing {schema}.{table} comments to the database"):
+                    written = apply_review_results_to_db(
+                        self.db,
+                        results,
+                        on_applied=lambda r: self._record_applied_state(r),
+                    )
+                if written:
+                    success(
+                        f"Auto-applied {written} comment(s) to {schema}.{table} (live DB)."
+                    )
+            except Exception as exc:
+                # Soft-fail: catalog already marks them as accepted. The
+                # user can re-run /run-apply later if needed.
+                error(
+                    f"Failed to auto-apply {schema}.{table} comments to the live DB: {exc}"
+                )
+                log.error(
+                    "auto-apply DB write failed for %s.%s: %s",
+                    schema, table, exc,
+                )
             return results
 
         if not interactive_review:
@@ -1477,25 +1505,37 @@ class Orchestrator:
 
     # ── Apply ────────────────────────────────────────────────────────────────
 
+    def _record_applied_state(self, r: ReviewResult) -> None:
+        """Persist 'applied' state to history + catalog for a single result.
+
+        Extracted so both ``apply_results`` (end-of-run batch) and
+        ``process_table``'s auto-apply per-table call can share the same
+        bookkeeping. Without sharing, auto-apply tables that landed in the
+        live DB mid-run wouldn't show up as applied in /history or the
+        search catalog.
+        """
+        hs = history_store()
+        if hs is not None and r.result_id is not None:
+            try:
+                hs.record_applied(r.result_id)
+            except Exception as exc:
+                log.debug("Could not record applied timestamp for result_id=%s: %s", r.result_id, exc)
+        if r.result_id is not None:
+            try:
+                from amx.search.catalog import SearchCatalog
+
+                catalog = SearchCatalog.from_history_store()
+                if catalog is not None:
+                    catalog.mark_applied(r.result_id)
+            except Exception as exc:
+                log.debug("Could not mark applied search catalog state for result_id=%s: %s", r.result_id, exc)
+
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
         hs = history_store()
 
         def _on_applied(r: ReviewResult) -> None:
-            if hs is not None and r.result_id is not None:
-                try:
-                    hs.record_applied(r.result_id)
-                except Exception as exc:
-                    log.debug("Could not record applied timestamp for result_id=%s: %s", r.result_id, exc)
-            if r.result_id is not None:
-                try:
-                    from amx.search.catalog import SearchCatalog
-
-                    catalog = SearchCatalog.from_history_store()
-                    if catalog is not None:
-                        catalog.mark_applied(r.result_id)
-                except Exception as exc:
-                    log.debug("Could not mark applied search catalog state for result_id=%s: %s", r.result_id, exc)
+            self._record_applied_state(r)
 
         def _on_failed(r: ReviewResult, exc: Exception) -> None:
             if hs is not None and r.result_id is not None:
