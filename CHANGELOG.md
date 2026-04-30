@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-04-30
+### Added
+- **Programmatic NOFILE limit raise at AMX startup** (`amx/cli.py:_raise_open_file_limit`): lifts the per-process soft NOFILE limit to 4096 (capped at the hard limit) via `resource.setrlimit`. Open-source users no longer need to set `ulimit -n` manually before running `amx` on macOS (default soft limit 256). Cross-platform safe — no-op on Windows where the `resource` module isn't available, no-op when the user's hard cap is already lower, never reduces the limit.
+
+### Fixed
+- **`SearchService` was leaking a SQLAlchemy engine + connection pool per `_inventory_db()` call** (`amx/search/service.py`): the old code returned `DatabaseConnector(self.cfg.db)` on every call, and the legacy planner calls it many times per question. Cache one connector per `SearchService` instance and dispose it via the new `close()` method. `SearchService` is now a context manager; every `/search ask` callsite wraps its `svc` in `with svc:` so the engine is disposed when the question finishes — preventing the FD-exhaustion crash users saw after several REPL turns.
+- **Same fix applied to find-columns / join-candidates / explain / explain-table hidden commands** so every entry path through `_service(cfg)` releases its connector.
+
+### Changed
+- The combination of these two fixes (programmatic ulimit raise + per-question connector disposal) means the `OSError: [Errno 24] Too many open files` from 0.5.3 should not surface on any open-source user's machine, even with default-256-FD systems and long REPL sessions.
+
 ## [0.5.4] - 2026-04-30
 ### Fixed
 - **`OSError: [Errno 24] Too many open files` after several `/ask` turns** (`amx/search/agent_tools.py`, `amx/search/tool_agent.py`): each tool-agent question instantiated a fresh `ToolBox` → fresh `DatabaseConnector` → fresh SQLAlchemy engine + connection pool, but never disposed it. After enough turns the file-descriptor count crossed the macOS / Linux ulimit and the next `prompt_toolkit.prompt` failed inside `asyncio.new_event_loop()` because no FDs were left for selectors. `ToolBox` now exposes `close()` and acts as a context manager; `run_tool_agent` wraps the loop in `with ToolBox(...) as toolbox:` so the connector is disposed at the end of every question. The session memory between turns continues to live in `ChatSessionStore`, not on the `ToolBox`, so dropping the connector mid-session is safe.

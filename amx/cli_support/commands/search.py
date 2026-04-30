@@ -661,10 +661,14 @@ def register_search_commands(
         if not question_text:
             error("Usage: /search ask <question>")
             return
-        _run_search_ask(
-            cfg, svc, question_text,
-            log_event=log_event, take_actions=take_actions, debug=debug,
-        )
+        # Use the context manager so the cached live DB connector
+        # (SQLAlchemy engine + connection pool) is disposed when the
+        # question finishes, preventing FD leaks across REPL turns.
+        with svc:
+            _run_search_ask(
+                cfg, svc, question_text,
+                log_event=log_event, take_actions=take_actions, debug=debug,
+            )
 
     @search.command("status")
     @pass_config
@@ -916,7 +920,8 @@ def register_search_commands(
         svc = _service(cfg)
         if svc is None:
             return
-        _run_search_ask(cfg, svc, " ".join(question).strip(), log_event=log_event)
+        with svc:
+            _run_search_ask(cfg, svc, " ".join(question).strip(), log_event=log_event)
 
     @search.command("join-candidates", hidden=True)
     @click.argument("left_path")
@@ -926,7 +931,8 @@ def register_search_commands(
         svc = _service(cfg)
         if svc is None:
             return
-        _run_search_ask(cfg, svc, f"Which columns should I join between {left_path} and {right_path}?", log_event=log_event)
+        with svc:
+            _run_search_ask(cfg, svc, f"Which columns should I join between {left_path} and {right_path}?", log_event=log_event)
 
     @search.command("explain", hidden=True)
     @click.argument("question", nargs=-1, required=True)
@@ -935,7 +941,8 @@ def register_search_commands(
         svc = _service(cfg)
         if svc is None:
             return
-        _run_search_ask(cfg, svc, " ".join(question).strip(), log_event=log_event)
+        with svc:
+            _run_search_ask(cfg, svc, " ".join(question).strip(), log_event=log_event)
 
     @search.command("explain-table", hidden=True)
     @click.argument("table_path")
@@ -944,4 +951,5 @@ def register_search_commands(
         svc = _service(cfg)
         if svc is None:
             return
-        _run_search_ask(cfg, svc, f"What does table {table_path} do?", log_event=log_event)
+        with svc:
+            _run_search_ask(cfg, svc, f"What does table {table_path} do?", log_event=log_event)
