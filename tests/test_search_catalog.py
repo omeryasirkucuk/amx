@@ -45,6 +45,11 @@ class _FakeLLMProvider:
     responses: list[str] = []
     usages: list[dict] = []
     calls: list[list[dict[str, str]]] = []
+    # Each entry is either:
+    #   * a plain string  → returned as ``ChatResult(content=...)``
+    #   * a dict          → returned as ``ChatResult(content=..., tool_calls=[...])``
+    # See ``queue_tool_calls`` for the dict form (used by tool-agent tests).
+    tool_responses: list[Any] = []
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
@@ -54,15 +59,67 @@ class _FakeLLMProvider:
         cls.responses = list(contents)
         cls.usages = []
         cls.calls = []
+        cls.tool_responses = []
+
+    @classmethod
+    def queue_tool_calls(cls, *responses: Any) -> None:
+        """Queue tool-aware responses for the tool agent.
+
+        Each entry must be either a plain string (final answer) or a dict
+        with keys ``content`` and ``tool_calls`` where each call is
+        ``{"id": str, "name": str, "arguments": str}``.
+        """
+        cls.tool_responses = list(responses)
+        cls.responses = []
+        cls.usages = []
+        cls.calls = []
 
     def chat(self, messages, **kwargs):
         self.__class__.calls.append(messages)
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model_processing_sec": 0.1}
+        self.__class__.usages.append(usage)
+        # Tool-agent path takes precedence when the caller passed ``tools=``
+        # in kwargs, but we let plain ``responses`` queue serve the legacy
+        # planner tests that don't pass a ``tools`` argument.
+        if self.__class__.tool_responses:
+            entry = self.__class__.tool_responses.pop(0)
+            if isinstance(entry, dict):
+                tool_calls = []
+                for tc in entry.get("tool_calls") or []:
+                    tool_calls.append(
+                        type(
+                            "ToolCall",
+                            (),
+                            {
+                                "id": str(tc.get("id") or ""),
+                                "name": str(tc.get("name") or ""),
+                                "arguments": str(tc.get("arguments") or "{}"),
+                            },
+                        )()
+                    )
+                return type(
+                    "ChatResult",
+                    (),
+                    {
+                        "content": str(entry.get("content") or ""),
+                        "usage": usage,
+                        "tool_calls": tool_calls or None,
+                        "finish_reason": "tool_calls" if tool_calls else "stop",
+                    },
+                )()
+            return type(
+                "ChatResult",
+                (),
+                {"content": str(entry), "usage": usage, "tool_calls": None, "finish_reason": "stop"},
+            )()
         if not self.__class__.responses:
             raise AssertionError("no fake LLM response queued")
         content = self.__class__.responses.pop(0)
-        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model_processing_sec": 0.1}
-        self.__class__.usages.append(usage)
-        return type("ChatResult", (), {"content": content, "usage": usage})()
+        return type(
+            "ChatResult",
+            (),
+            {"content": content, "usage": usage, "tool_calls": None, "finish_reason": "stop"},
+        )()
 
 
 class SearchCatalogTests(unittest.TestCase):
@@ -74,6 +131,13 @@ class SearchCatalogTests(unittest.TestCase):
         self.index_patcher = patch("amx.search.catalog.SearchIndex", _FakeIndex)
         self.index_patcher.start()
         self.catalog = SearchCatalog(self.db_path)
+        # All legacy tests in this class drive the regex-routed Pass1
+        # pipeline through the queued ``_FakeLLMProvider`` JSON plans.
+        # The tool-calling agent (default ON in production) would consume
+        # those queued strings as final answers, which breaks the planner
+        # contract. Tests that exercise the tool agent OPT IN explicitly
+        # by re-enabling this setting in their own setup.
+        self.catalog.set_setting("default", "use_tool_agent", "false")
         _FakeIndex.query_hits = []
         _SESSION_MEMORY.clear()
 
@@ -1325,6 +1389,78 @@ class SearchCatalogTests(unittest.TestCase):
                 answer = service.ask("describe adrc")
 
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
+
+    def test_tool_agent_routes_tables_under_schema_to_list_tables(self) -> None:
+        """End-to-end: 'tables under sap_test' must hit list_tables_in_schema.
+
+        Regression for the user-reported regex over-match where the legacy
+        router captured 'under' as a table name. The tool agent must read
+        the question, call ``list_tables_in_schema(schema='sap_test')``,
+        and synthesize the list — without any regex routing.
+        """
+        cfg = self._search_cfg()
+        # Re-enable the tool agent for THIS test (default in production but
+        # disabled in the legacy-test setUp).
+        self.catalog.set_setting("default", "use_tool_agent", "true")
+
+        class FakeDB:
+            def list_schemas(self) -> list[str]:
+                return ["public", "sap_s6p", "sap_test"]
+
+            def list_assets(self, schema: str):
+                if schema == "sap_test":
+                    return [("bseg", "table"), ("bkpf", "table"), ("vbak_test", "view")]
+                return []
+
+            def list_tables(self, schema: str) -> list[str]:
+                return [name for name, _kind in self.list_assets(schema)]
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # Round 1: LLM responds with a tool call.
+            # Round 2: LLM composes the final answer from the tool result.
+            _FakeLLMProvider.queue_tool_calls(
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "name": "list_tables_in_schema",
+                            "arguments": '{"schema": "sap_test"}',
+                        }
+                    ],
+                },
+                "The `sap_test` schema contains 3 assets: `bseg`, `bkpf`, and `vbak_test`.",
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("What's the tables under sap_test")
+
+        self.assertEqual(answer.intent, "tool_agent")
+        self.assertIn("sap_test", answer.summary)
+        self.assertIn("bseg", answer.summary)
+        # Verify the tool call log surfaced the right invocation.
+        tool_calls = answer.details.get("tool_calls") or []
+        self.assertTrue(any(tc.get("name") == "list_tables_in_schema" for tc in tool_calls))
+
+    def test_tool_agent_falls_back_to_plain_answer_without_tool_calls(self) -> None:
+        """When the LLM answers directly without calling a tool, surface it."""
+        cfg = self._search_cfg()
+        self.catalog.set_setting("default", "use_tool_agent", "true")
+
+        class FakeDB:
+            def list_schemas(self) -> list[str]:
+                return ["public"]
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue_tool_calls("AMX inspects database metadata.")
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("describe what AMX does in one sentence")
+
+        self.assertEqual(answer.intent, "tool_agent")
+        self.assertIn("AMX", answer.summary)
+        self.assertEqual(answer.details.get("iterations"), 1)
+        self.assertEqual(answer.details.get("tool_calls"), [])
 
     def test_strong_table_mention_wins_when_catalog_is_empty(self) -> None:
         """`X table` keyword mentions override LLM mode without catalog match.
