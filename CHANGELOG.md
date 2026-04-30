@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-30
+### Added
+- **Third review strategy: `auto-apply`** (`amx/cli_support/commands/analyze_flow.py`, `amx/agents/orchestrator.py`): the review-strategy picker now offers `individual / deferred / auto-apply`. With `auto-apply`, the orchestrator accepts each entity's top LLM suggestion as the final description, marks it `applied=True`, records it as `evaluation=accepted` in the run history, and writes it through `sync_review_decision` to the catalog as a reviewed description — all without prompting the user. When combined with `/run-apply`, the comments land in the live DB at the end of the run; with plain `/run` the catalog is updated but the DB write is deferred (a warning explains this).
+- **Safety warnings** for the auto-apply path:
+  * If selected with plain `/run` (no `--apply`), AMX warns that nothing will be written to the database.
+  * If selected with `/run-apply`, AMX warns that existing comments inside the chosen scope will be replaced.
+- New `auto_apply: bool` argument on `Orchestrator.process_table` so the chat-mode caller can pin the strategy per-table without affecting the batch-mode path (the batch picker doesn't expose the review-strategy choice).
+
+### Rationale
+Some users — especially the ones running AMX on large legacy SAP DBs where every column needs a description — would rather trust the agents and inspect afterwards via `/ask` than gate on a per-asset confirmation prompt. The new option keeps the interactive flow intact for everyone else (default stays `individual`) while removing the friction for power-users who explicitly opt in.
+
 ## [0.5.0] - 2026-04-30
 ### Added — Coverage filter for `/run` and `/run-apply`
 - **Missing-only / all coverage filter** (`amx/cli_support/commands/analyze_flow.py`, `amx/agents/orchestrator.py`): after the user picks a scope (Database / Schema / Asset / Default), AMX now asks `Run for which assets / columns? — missing-only / all`, defaulting to `missing-only`. The user-reported pain was that `/run` always re-processed every asset in the chosen scope even when 90% of them already had comments — wasteful on hundreds-of-tables databases. With `missing-only`:
