@@ -58,6 +58,22 @@ def register_history_commands(
 
         table_rows = []
         for row in rows:
+            # ``Processed`` reports honest progress for runs that the
+            # missing-only filter narrowed (planned < selected) or that the
+            # user cancelled mid-loop. Format: ``processed/planned`` so the
+            # user reads at a glance "I asked for 78, AMX planned 60 after
+            # the filter, processed 3 before I hit Ctrl+C". When the new
+            # counters are zero (older rows or future-incompatible state),
+            # fall back to "—".
+            planned = int(row.get("planned_count") or 0)
+            processed = int(row.get("processed_count") or 0)
+            applied = int(row.get("applied_count") or 0)
+            if planned > 0 or processed > 0:
+                processed_label = f"{processed}/{planned}"
+                if applied and applied != processed:
+                    processed_label += f"  applied {applied}"
+            else:
+                processed_label = "—"
             table_rows.append([
                 str(row.get("id", "")),
                 f"{float(row.get('started_at') or 0):.0f}",
@@ -71,6 +87,7 @@ def register_history_commands(
                 str(row.get("mode", "")),
                 str(row.get("db_backend", "")),
                 format_run_scope(row.get("scope_json")),
+                processed_label,
                 f"{row.get('llm_provider', '')}/{row.get('llm_model', '')}",
                 f"{float(row.get('duration_sec') or 0):.2f}",
                 f"{float((row.get('metrics_json') or {}).get('model_processing_sec') or 0):.2f}",
@@ -85,6 +102,7 @@ def register_history_commands(
                 "Mode",
                 "Backend",
                 "Target Scope",
+                "Processed",
                 "Provider/Model",
                 "Duration(s)",
                 "Model(s)",
