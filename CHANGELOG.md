@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-04-30
+### Fixed
+- **Keystrokes are now visible during interactive prompts inside `/run`, `/setup`, `/search sync`, etc.** (`amx/utils/console.py`): when a `LiveDisplay` was active (header bar showing `AMX v0.4.x ... ANALYZE-SETUP 10s`), Rich's 10 Hz refresh painted over the user's keystrokes between frames. Pressing `2` then Enter still worked — the input was read correctly — but the user never saw their `2` echoed. New `_live_paused_for_input()` context manager pauses the live region while `prompt_toolkit.prompt` is reading stdin, then resumes it after. Wired into every interactive helper: `ask`, `ask_password`, `ask_choice`, `ask_multi_choice`, `confirm`. No-op when no display is active so non-interactive callers don't pay any cost.
+
 ## [0.4.3] - 2026-04-30
 ### Changed
 - **Live display no longer leaves stacked header bars** (`amx/utils/live_display.py`): the running `AMX v0.4.x  openrouter/openai/gpt-4o-mini │ SEARCH  Xs` panel is now `transient=True`, so the entire live region (header + thinking spinner + active pipeline tree) clears when `stop()` runs. Previously every height change in the renderable left a frame behind in the scroll buffer, producing 2–4 stacked "SEARCH 2s / 3s / 9s" bars per question. To preserve the pipeline tree as a useful summary, `LiveDisplay.stop()` now re-prints a quiet single-block `Pipeline` tree with check-marked steps and durations once the live region clears.
