@@ -334,6 +334,7 @@ class Orchestrator:
         table: str,
         asset_kind: AssetKind | None = None,
         interactive_review: bool = True,
+        auto_apply: bool = False,
     ) -> list[ReviewResult]:
         kind_label = f" ({asset_kind.label})" if asset_kind and asset_kind != AssetKind.TABLE else ""
         heading(f"Analyzing {schema}.{table}{kind_label}")
@@ -418,6 +419,56 @@ class Orchestrator:
         self._sync_search_catalog(profile, merged, result_id_map)
 
         ak = profile.asset_kind.value if profile.asset_kind else "table"
+        if auto_apply:
+            # Trust the agents — accept the top suggestion for every entity
+            # and mark it applied so ``apply_results`` writes COMMENT ON ...
+            # to the live DB without a human review prompt. We still go
+            # through ``sync_review_decision`` per pick so the catalog
+            # records this as a "reviewed" description (chosen by auto-apply
+            # rather than a human) — that keeps the audit trail consistent
+            # with what the manual flow produces.
+            results = []
+            for s in merged:
+                top = s.suggestions[0] if s.suggestions else ""
+                rid = result_id_map.get(s.column)
+                if rid is not None and top:
+                    try:
+                        from amx.search.catalog import SearchCatalog
+
+                        catalog = SearchCatalog.from_history_store()
+                        if catalog is not None:
+                            catalog.sync_review_decision(
+                                rid,
+                                chosen_description=top,
+                                evaluation="accepted",
+                            )
+                    except Exception as exc:
+                        log.debug("auto-apply: catalog sync_review_decision failed: %s", exc)
+                hs = history_store()
+                if hs is not None and rid is not None and top:
+                    try:
+                        hs.record_evaluation(
+                            rid,
+                            chosen_description=top,
+                            evaluation="accepted",
+                        )
+                    except Exception as exc:
+                        log.debug("auto-apply: record_evaluation failed: %s", exc)
+                results.append(ReviewResult(
+                    schema=s.schema,
+                    table=s.table,
+                    column=s.column,
+                    final_description=top,
+                    confidence=s.confidence,
+                    source=s.source,
+                    applied=True,
+                    asset_kind=ak,
+                    result_id=rid,
+                    logprob_score=s.logprob_score,
+                ))
+            self.results.extend(results)
+            return results
+
         if not interactive_review:
             # Wrap as un-applied ReviewResults for later batch review
             results = []

@@ -363,13 +363,30 @@ def execute_analyze_run(
             if not use_batch and total_assets > 1:
                 review_strategy = ask_choice(
                     "Review strategy",
-                    ["individual", "deferred"],
+                    ["individual", "deferred", "auto-apply"],
                     default="individual",
                     descriptions={
                         "individual": "Assess each asset (table) as it becomes ready",
                         "deferred": "Process everything first, then review all together at the end",
+                        "auto-apply": (
+                            "Skip human review — write the top LLM suggestion directly. "
+                            "Fastest, but no chance to edit or reject. Use only when you trust "
+                            "the agents (and ideally only with /run-apply on a non-prod DB)."
+                        ),
                     },
                 )
+            if review_strategy == "auto-apply":
+                if not apply:
+                    warn(
+                        "auto-apply selected but /run was used (without --apply). The top suggestions "
+                        "will be marked accepted in the catalog, but nothing will be written to the DB. "
+                        "Use /run-apply to actually persist the comments."
+                    )
+                else:
+                    warn(
+                        "auto-apply: every top suggestion will be written to the database without review. "
+                        "Existing comments inside the chosen scope will be replaced."
+                    )
 
             hs = history_store()
             if hs is not None:
@@ -470,6 +487,7 @@ def execute_analyze_run(
                                 asset_name,
                                 asset_kind=asset_kinds.get(asset_name),
                                 interactive_review=(review_strategy == "individual"),
+                                auto_apply=(review_strategy == "auto-apply"),
                             )
                             all_results.extend(results)
                             processed_assets.append(f"{schema_name}.{asset_name}")
