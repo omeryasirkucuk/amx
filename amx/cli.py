@@ -10,6 +10,7 @@ import click
 from amx import __version__
 from amx.config import AMXConfig
 from amx.cli_support.commands.analyze_flow import register_analyze_run_command
+from amx.cli_support.commands.chat_session import register_chat_session_commands
 from amx.cli_support.commands.code import register_code_commands
 from amx.cli_support.commands.db import (
     interactive_db_block as _interactive_db_block,
@@ -249,6 +250,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
 
 register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
+register_chat_session_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_manual_commands(main, pass_config=pass_config, log_event=_log_app_event)
 analyze = register_analyze_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_analyze_run_command(

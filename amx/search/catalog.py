@@ -1842,8 +1842,47 @@ class SearchCatalog:
             for hint in hints:
                 if hint in {table_name, schema_name, f"{schema_name}.{table_name}"}:
                     row["match_score"] = float(row.get("match_score") or 0.0) + 2.5
+        # Enrich rows with column_count via a single batched lookup. The renderer
+        # surfaces this as the `Cols` column; rank_score does not depend on it,
+        # so we run this after scoring to avoid touching the ranking math.
+        self._attach_column_counts(db_profile, rows)
         ranked = self._rank_rows(rows, settings, limit * 3)
         return ranked[:limit]
+
+    def _attach_column_counts(self, db_profile: str, rows: list[dict[str, Any]]) -> None:
+        targets: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            schema = str(row.get("schema_name") or "")
+            table = str(row.get("table_name") or "")
+            if not schema or not table:
+                continue
+            key = (schema, table)
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(key)
+        if not targets:
+            return
+        placeholders = ",".join(["(?, ?)"] * len(targets))
+        params: list[Any] = [db_profile]
+        for schema, table in targets:
+            params.append(schema)
+            params.append(table)
+        sql = (
+            "SELECT schema_name, table_name, COUNT(*) AS column_count "
+            "FROM catalog_entities "
+            f"WHERE db_profile = ? AND entity_kind = 'column' AND (schema_name, table_name) IN ({placeholders}) "
+            "GROUP BY schema_name, table_name"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        with self._connect() as conn:
+            for r in conn.execute(sql, tuple(params)).fetchall():
+                counts[(str(r["schema_name"] or ""), str(r["table_name"] or ""))] = int(r["column_count"] or 0)
+        for row in rows:
+            key = (str(row.get("schema_name") or ""), str(row.get("table_name") or ""))
+            if key in counts:
+                row["column_count"] = counts[key]
 
     def _rank_rows(self, rows: list[dict[str, Any]], settings: dict[str, str], limit: int) -> list[dict[str, Any]]:
         weight_map = {

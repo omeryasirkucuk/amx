@@ -14,6 +14,7 @@ from rich.text import Text
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search.catalog import SearchCatalog
+from amx.search.confidence import band as _confidence_band, band_style as _confidence_band_style
 from amx.search.service import SearchService
 from amx.services.analyze_scope import finalize_scope as _finalize_scope
 from amx.storage.sqlite_store import history_store
@@ -40,6 +41,7 @@ def _render_search_rows(
     rows: list[dict[str, Any]],
     *,
     answer_shape: str = "",
+    debug: bool = False,
 ) -> None:
     if not rows:
         info("No results.")
@@ -130,24 +132,48 @@ def _render_search_rows(
     if not visible:
         return
     table = Table(title="Search matches", show_lines=True, box=box.SIMPLE_HEAVY)
-    table.add_column("Schema", style="cyan", no_wrap=True)
-    table.add_column("Table", style="cyan", no_wrap=True)
-    table.add_column("Column", style="cyan", no_wrap=True)
-    table.add_column("Source", style="cyan", no_wrap=True)
-    table.add_column("Conf", style="cyan", no_wrap=True)
-    table.add_column("Score", style="cyan", no_wrap=True, justify="right")
-    table.add_column("Description", style="white", overflow="fold", max_width=72)
+    table.add_column("Schema.Table", style="cyan", no_wrap=True)
+    table.add_column("Match", no_wrap=True)
+    table.add_column("Why", style="white", overflow="fold", max_width=32)
+    table.add_column("Rows", style="cyan", no_wrap=True, justify="right")
+    table.add_column("Cols", style="cyan", no_wrap=True, justify="right")
+    table.add_column("Description", style="white", overflow="fold", max_width=60)
+    if debug:
+        table.add_column("Score", style="cyan", no_wrap=True, justify="right")
+        table.add_column("Source", style="cyan", no_wrap=True)
+        table.add_column("Conf", style="cyan", no_wrap=True)
     for row in visible:
+        score = float(row.get("rank_score") or row.get("score") or 0)
+        match_label = _confidence_band(score)
+        match_text = Text(match_label, style=_confidence_band_style(match_label))
+        matched_cols = row.get("matched_columns") or []
+        if isinstance(matched_cols, list) and matched_cols:
+            why = ", ".join(str(c) for c in matched_cols if c)
+        else:
+            why = str(row.get("column_name") or "—")
+        schema_name = str(row.get("schema_name", "") or "")
+        table_name = str(row.get("table_name", "") or "")
+        st = f"{schema_name}.{table_name}".strip(".") or "—"
+        rows_value = row.get("row_count")
+        cols_value = row.get("column_count")
+        rows_str = str(int(rows_value)) if isinstance(rows_value, (int, float)) and rows_value else "—"
+        cols_str = str(int(cols_value)) if isinstance(cols_value, (int, float)) and cols_value else "—"
         desc = str(row.get("effective_description", "") or "")
-        table.add_row(
-            str(row.get("schema_name", "") or ""),
-            str(row.get("table_name", "") or ""),
-            str(row.get("column_name", "") or "-"),
-            str(row.get("effective_source_kind", "") or ""),
-            str(row.get("current_confidence", "") or ""),
-            f"{float(row.get('rank_score') or row.get('score') or 0):.2f}",
+        cells = [
+            st,
+            match_text,
+            Text(why),
+            rows_str,
+            cols_str,
             Text(desc),
-        )
+        ]
+        if debug:
+            cells.extend([
+                f"{score:.2f}",
+                str(row.get("effective_source_kind", "") or ""),
+                str(row.get("current_confidence", "") or ""),
+            ])
+        table.add_row(*cells)
     console.print(table)
 
 
@@ -352,6 +378,7 @@ def _run_search_ask(
     *,
     log_event: LogEvent,
     take_actions: bool = False,
+    debug: bool = False,
 ) -> None:
     from amx.utils.logging import clear_request_id, get_logger, set_request_id
 
@@ -368,7 +395,7 @@ def _run_search_ask(
     try:
         _run_search_ask_body(
             cfg, svc, question_text,
-            log_event=log_event, take_actions=take_actions,
+            log_event=log_event, take_actions=take_actions, debug=debug,
         )
     finally:
         clear_request_id()
@@ -381,6 +408,7 @@ def _run_search_ask_body(
     *,
     log_event: LogEvent,
     take_actions: bool,
+    debug: bool = False,
 ) -> None:
     display = get_display()
     started_display = False
@@ -416,7 +444,7 @@ def _run_search_ask_body(
     if svc.settings.get("show_confidence", "true").lower() == "true":
         info(f"Confidence: {answer.confidence}")
     trace = answer.details.get("thought_trace", []) or []
-    if trace:
+    if debug and trace:
         info("Thought Trace:")
         for idx, step in enumerate(trace, start=1):
             if not isinstance(step, dict):
@@ -435,7 +463,11 @@ def _run_search_ask_body(
         if action_results:
             answer.details["action_results"] = action_results
     if answer.rows and bool(answer.details.get("display_rows", True)):
-        _render_search_rows(answer.rows, answer_shape=str(answer.details.get("answer_shape") or ""))
+        _render_search_rows(
+            answer.rows,
+            answer_shape=str(answer.details.get("answer_shape") or ""),
+            debug=debug,
+        )
     payload = _search_results_payload(answer)
     status = "success"
     error_text = ""
@@ -593,9 +625,14 @@ def register_search_commands(
 
     @search.command("ask")
     @click.option("--actions", "take_actions", is_flag=True, help="Prompt before running approved follow-up actions.")
+    @click.option(
+        "--debug", "--verbose", "debug",
+        is_flag=True,
+        help="Show the planner's thought trace, raw match scores, and source kind for each result.",
+    )
     @click.argument("question", nargs=-1, required=True)
     @pass_config
-    def search_ask(cfg: AMXConfig, take_actions: bool, question: tuple[str, ...]) -> None:
+    def search_ask(cfg: AMXConfig, take_actions: bool, debug: bool, question: tuple[str, ...]) -> None:
         svc = _service(cfg)
         if svc is None:
             return
@@ -603,7 +640,10 @@ def register_search_commands(
         if not question_text:
             error("Usage: /search ask <question>")
             return
-        _run_search_ask(cfg, svc, question_text, log_event=log_event, take_actions=take_actions)
+        _run_search_ask(
+            cfg, svc, question_text,
+            log_event=log_event, take_actions=take_actions, debug=debug,
+        )
 
     @search.command("status")
     @pass_config
@@ -649,33 +689,105 @@ def register_search_commands(
             )
 
     @search.command("sources")
+    @click.option("--schema-limit", "schema_limit", default=20, show_default=True,
+                  help="How many schemas to list (most-tables first).")
     @pass_config
-    def search_sources(cfg: AMXConfig) -> None:
+    def search_sources(cfg: AMXConfig, schema_limit: int) -> None:
+        """Show what is included in the search index for the active DB profile.
+
+        Lists the active DB profile, the databases / schemas / tables in scope,
+        and any live or cached evidence sources backing the index. Settings
+        live under `/search config`.
+        """
+        from datetime import datetime, timezone
+
         catalog = _catalog()
         if catalog is None:
             error("Search catalog is not initialized.")
             return
-        settings = catalog.get_settings(cfg.active_db_profile or "default")
-        render_table(
-            "Search source settings",
-            ["Key", "Value"],
-            [[key, value] for key, value in sorted(settings.items())],
-        )
-        rows = catalog.sources_status(cfg.active_db_profile or "default")
-        if rows:
+        db_profile = cfg.active_db_profile or "default"
+
+        def _fmt_ts(value: Any) -> str:
+            try:
+                ts = float(value or 0)
+            except (TypeError, ValueError):
+                return "—"
+            if ts <= 0:
+                return "—"
+            return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+
+        status = catalog.sync_status(db_profile)
+        entities = status.get("entities", {}) or {}
+        total_entities = int(entities.get("total_entities") or 0)
+        effective = int(entities.get("effective_entities") or 0)
+        last_synced = entities.get("last_synced_at")
+        total_tables = catalog.count_tables(db_profile)
+
+        backend = (cfg.db.backend or "—").lower()
+        host = cfg.db.display_summary or cfg.db.host or "—"
+        scope_rows = [
+            ["DB profile", db_profile],
+            ["Backend", backend],
+            ["Connection", host],
+            ["Indexed entities", str(total_entities)],
+            ["Tables in scope", str(total_tables)],
+            ["Effective descriptions", str(effective)],
+            ["Last synced", _fmt_ts(last_synced)],
+        ]
+        render_table("Search scope", ["Field", "Value"], scope_rows)
+
+        databases = catalog.known_databases(db_profile)
+        if databases:
             render_table(
-                "Search evidence sources",
+                "Databases in scope",
+                ["Database", "Indexed entities"],
+                [[row.get("database_name", "—") or "—", row.get("entity_count", 0)] for row in databases],
+            )
+        else:
+            info("No databases recorded yet — run `/search sync` to populate the index.")
+            return
+
+        schemas = catalog.known_schemas(db_profile)
+        if schemas:
+            schemas_sorted = sorted(
+                schemas,
+                key=lambda r: int(r.get("table_count") or 0),
+                reverse=True,
+            )
+            shown = schemas_sorted[: max(1, int(schema_limit))]
+            hidden = len(schemas_sorted) - len(shown)
+            render_table(
+                f"Schemas in scope ({len(schemas_sorted)} total)",
+                ["Database", "Schema", "Tables"],
+                [
+                    [
+                        row.get("database_name", "—") or "—",
+                        row.get("schema_name", "—") or "—",
+                        row.get("table_count", 0),
+                    ]
+                    for row in shown
+                ],
+            )
+            if hidden > 0:
+                info(f"… {hidden} more schema(s) hidden. Re-run with `--schema-limit {len(schemas_sorted)}` to see all.")
+
+        evidence_rows = catalog.sources_status(db_profile)
+        if evidence_rows:
+            render_table(
+                "Evidence sources",
                 ["Source", "Evidence", "Rows", "Last seen"],
                 [
                     [
                         row.get("source_kind", ""),
                         row.get("evidence_type", ""),
                         row.get("count_rows", 0),
-                        f"{float(row.get('last_seen') or 0):.0f}",
+                        _fmt_ts(row.get("last_seen")),
                     ]
-                    for row in rows
+                    for row in evidence_rows
                 ],
             )
+        else:
+            info("No live or cached evidence yet. Run `/search sync` to ingest sample-data and code evidence.")
 
     @search.command("config")
     @click.argument("key", required=False)
