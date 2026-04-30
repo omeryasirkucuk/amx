@@ -6,6 +6,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-04-30
+### Added
+- **`FatalLLMError` class** (`amx/llm/provider.py`): non-recoverable LLM errors (auth / quota / payment / model-not-found) now raise this dedicated exception with a short, user-facing message. Caught at `analyze_flow.execute_analyze_run` so the entire run aborts cleanly with one actionable message instead of producing 200+ identical warnings while iterating through tables.
+- **`_classify_fatal_llm_error` detector**: inspects the exception's `status_code` AND the lowercased error message body. Maps HTTP 401 / 402 / 403 / 404 + provider-specific message patterns ("more credits", "insufficient_quota", "invalid api key", "model not found", "can only afford") to a friendly user message ("Your account is out of credits — top up to continue."). Tested against the user-reported OpenRouter 402 ("This request requires more credits") output.
+
+### Fixed
+- **`/run` no longer continues blasting LLM calls when the account is out of credits** (`amx/llm/provider.py`, `amx/agents/profile_agent.py`, `amx/cli_support/commands/analyze_flow.py`): user reported their OpenRouter account hit 402 mid-run; AMX kept retrying every batch on every remaining table, accumulating 1090 seconds and 111K tokens of failed attempts before manual Ctrl+C. `LLMProvider.chat` now classifies fatal errors before retry, raising `FatalLLMError` immediately. `ProfileAgent.run` lets `FatalLLMError` propagate (and cancels sibling futures in the parallel-batch path so the executor drains fast). `execute_analyze_run` catches `FatalLLMError` and prints `LLM run aborted: <user_message>` plus a hint that the missing-only filter will skip already-finished tables on the retry — then exits with status `failed`.
+- **Cancelled futures in parallel batch mode** (`amx/agents/profile_agent.py`): when one batch detects a fatal error, sibling futures get `cancel()`'d so the executor doesn't keep spending tokens on the rest of the wave.
+
+### Rationale
+The previous behavior was hostile to the user: a single recoverable typo in the API key, or an out-of-credits afternoon, produced thousands of lines of warnings, drained the rest of the table queue's effort, and left an `analysis_runs` row that looked like 'AMX did 87 things'. v0.5.7 turns these into "fix the LLM, retry — your missing-only filter has your back" exits.
+
 ## [0.5.6] - 2026-04-30
 ### Fixed
 - **`amx` startup crashed with `AttributeError: function object has no attribute 'group'`** (`amx/cli.py`): the v0.5.5 patch inserted the new `_raise_open_file_limit` helper between the existing `@click.group(...) ... @click.pass_context` decorator stack and `def main(...)`, so the decorators ended up applied to the helper instead of `main`. `register_history_commands(main, ...)` then failed because `main` was a plain function, not a Click `Group`. Helper moved above the decorator stack so the decorators land on `main()` again.
