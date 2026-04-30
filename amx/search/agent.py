@@ -823,23 +823,118 @@ class SearchAgent:
             },
         )
 
+    # Short reaffirmation / doubt phrasings the user uses to push back on the
+    # PRIOR answer. Without a deterministic handler, the LLM planner reads
+    # them as fresh questions with no scope and falls into clarification.
+    _AFFIRM_FOLLOWUP_RE: tuple[str, ...] = (
+        # English
+        r"^\s*(?:are\s+you\s+sure|you\s+sure|really|seriously|sure\?+)\s*[\.\?\!]*\s*$",
+        r"^\s*(?:is\s+that\s+(?:right|correct|true)|you\s+positive|positive\?+)\s*[\.\?\!]*\s*$",
+        r"^\s*(?:why|why\??|how\s+come|how)\s*[\.\?\!]*\s*$",
+        # Turkish
+        r"^\s*(?:emin\s+misin|gercekten\s+mi|gerçekten\s+mi|kesin\s+mi|öyle\s+mi|oyle\s+mi|sahi\s+mi|hadi\s+ya)\s*[\.\?\!]*\s*$",
+        r"^\s*(?:neden|niye|niçin|nicin|nasıl|nasil)\s*[\.\?\!]*\s*$",
+    )
+
+    def _handle_followup_reaffirmation(
+        self, question: str, question_language: str
+    ) -> SearchAnswer | None:
+        """Restate the prior assistant turn when the user pushes back briefly.
+
+        The user types "Are you sure?" / "emin misin?" / "really?" — these are
+        too short for the planner to map to anything meaningful and we don't
+        want to fall through to "Could you clarify the exact scope?". Pull
+        the last assistant turn out of the session store and re-confirm it
+        verbatim.
+        """
+        sample = (question or "").strip().lower()
+        if not sample:
+            return None
+        if not any(re.match(pattern, sample) for pattern in self._AFFIRM_FOLLOWUP_RE):
+            return None
+        store = self._ensure_session_store()
+        sid = self.cfg.active_chat_session_id
+        if store is None or not sid:
+            return None
+        try:
+            turns = store.recent_turns(int(sid), include_summary=False, limit=8)
+        except Exception:
+            return None
+        # Find the most recent assistant turn (the one we want to confirm).
+        prior_assistant = ""
+        for turn in reversed(turns):
+            if str(turn.get("role") or "") == "assistant":
+                prior_assistant = str(turn.get("answer_summary") or turn.get("answer") or "").strip()
+                if prior_assistant:
+                    break
+        if not prior_assistant:
+            return None
+        is_turkish = (question_language or "").lower() == "turkish"
+        if is_turkish:
+            summary = (
+                "Eminim — önceki cevap canlı veritabanı metadata'sından geldi. Yeniden: "
+                + prior_assistant
+            )
+        else:
+            summary = (
+                "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
+                + prior_assistant
+            )
+        return SearchAnswer(
+            intent="reaffirmation",
+            question=question,
+            rows=[],
+            confidence="high",
+            summary=summary,
+            provenance=["chat_session_store", "reaffirm_short_circuit"],
+            details={
+                "reason": "followup_reaffirmation",
+                "answer_language": question_language or "english",
+                "answer_shape": "prose",
+                "prior_assistant": prior_assistant,
+                "stage_metrics": [],
+            },
+        )
+
     def _catalog_resolvable_subject(self, question: str) -> str | None:
-        """Return the first explicit subject token in ``question`` that the
-        catalog confirms is an exact table name. Used to ground-truth our
-        re-routing: we only override the LLM's mode to ``table_explain``
-        when the user named something the catalog recognises as a table —
-        never for column-shaped tokens or arbitrary identifiers.
+        """Return the first explicit subject token we can confirm is a
+        table — either because the user explicitly called it a "table"
+        ("vbrk table" / "tablo X"), or because the catalog / live DB has
+        it under that exact name.
+
+        Used to ground-truth re-routing: we override the LLM's mode to
+        ``table_explain`` when the user named a real table.
+        Column-shaped tokens like "vbrk_id" don't reach a strong-mention
+        branch and won't be confirmed by the catalog as a table, so they
+        skip the override.
         """
         for mention in self._explicit_table_mentions_for_question(question):
             requested = str(mention.get("requested") or "").strip()
             if not requested:
                 continue
+            # Strong mentions (user said "X table" / "table X" / "schema.table")
+            # don't need extra confirmation. The user explicitly called the
+            # noun a table, so we trust the route. ``_resolve_table_targets``
+            # will still surface "not found" cleanly if the catalog and
+            # live DB both come up empty.
+            if str(mention.get("strength") or "") == "strong":
+                return requested
             try:
                 rows = self.catalog.find_tables_by_exact_name(self.db_profile, requested, limit=2)
             except Exception:
                 rows = []
             if rows:
                 return requested
+            # Weak mention not in catalog — last chance is the live DB.
+            # Cheap when ``current_schema`` is set; we skip the schema
+            # iteration when it isn't (would require N HEAD queries).
+            current_schema = (self.cfg.current_schema or "").strip()
+            if current_schema:
+                try:
+                    if self._live_table_exists(current_schema, requested) is True:
+                        return requested
+                except Exception:
+                    pass
         return None
 
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
@@ -1241,6 +1336,7 @@ class SearchAgent:
     def _explicit_table_mentions_for_question(self, question: str) -> list[dict[str, str]]:
         mentions: list[dict[str, str]] = []
         seen: set[str] = set()
+        # Inline ``schema.table`` references — strongest possible signal.
         for inline in re.findall(r"\b([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", question or ""):
             parts = inline.split(".", 1)
             if len(parts) != 2:
@@ -1248,16 +1344,33 @@ class SearchAgent:
             path = f"{parts[0]}.{parts[1]}"
             if path.lower() not in seen:
                 seen.add(path.lower())
-                mentions.append({"requested": inline, "path": path, "source": "explicit_schema_table"})
-        explicit_table_tokens = [
+                mentions.append(
+                    {
+                        "requested": inline,
+                        "path": path,
+                        "source": "explicit_schema_table",
+                        # ``strength`` distinguishes catch-strength so the
+                        # alignment guard knows when the user explicitly
+                        # called the noun a "table" (high — override LLM
+                        # unconditionally) vs. just named a subject in a
+                        # "what's the X" form (medium — require catalog or
+                        # live confirmation before overriding).
+                        "strength": "strong",
+                    }
+                )
+        # Strong-signal tokens: user explicitly says "X table" / "table X" /
+        # "X tablo" / "tablo X". User CALLED IT A TABLE, so we don't need
+        # extra catalog or live confirmation to trust the routing.
+        strong_tokens: list[str] = []
+        strong_tokens.extend(
             item
             for item in re.findall(
                 r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tablo|tablolar|tablosu|tablosunda|tablosuna|tablosundan|tabloları|tablosunu)\b",
                 question or "",
                 flags=re.IGNORECASE,
             )
-        ]
-        explicit_table_tokens.extend(
+        )
+        strong_tokens.extend(
             item
             for item in re.findall(
                 r"\b(?:table|tables|tablo|tablolar|tablosu)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
@@ -1265,11 +1378,11 @@ class SearchAgent:
                 flags=re.IGNORECASE,
             )
         )
-        # Subject-form questions where the user names the table without using
-        # the word "table": "what's the vbrk", "describe customers", "explain
-        # adrc", "tell me about orders", "vbrk nedir", "vbrk hakkında". Without
-        # this branch the question's identifier-shaped subject (vbrk) is lost
-        # and the pipeline drifts to whatever the LLM/catalog guesses.
+        # Weak-signal tokens: user said "what's the X" / "describe X" /
+        # "X nedir" — the noun MIGHT be a column or a generic entity, so
+        # the alignment guard should require catalog / live confirmation
+        # before overriding the LLM's chosen mode.
+        weak_tokens: list[str] = []
         subject_patterns = (
             # English: what's/what is/describe/explain/tell me about/show me X
             r"\b(?:what'?s|what is|what are|whats|describe|explain|define|tell\s+me\s+about|"
@@ -1287,7 +1400,7 @@ class SearchAgent:
             r"(?:bana\s+)?`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
         )
         for pattern in subject_patterns:
-            explicit_table_tokens.extend(
+            weak_tokens.extend(
                 item
                 for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
             )
@@ -1413,19 +1526,34 @@ class SearchAgent:
             "older",
             "newer",
         }
-        explicit_table_tokens = [token for token in explicit_table_tokens if token.lower() not in table_token_stopwords]
-        if self.cfg.current_schema:
-            for token in explicit_table_tokens:
-                path = f"{self.cfg.current_schema}.{token}"
-                if path.lower() not in seen:
-                    seen.add(path.lower())
-                    mentions.append({"requested": token, "path": path, "source": "explicit_current_schema"})
-        else:
-            for token in explicit_table_tokens:
-                key = token.lower()
-                if key not in seen:
+        strong_tokens = [t for t in strong_tokens if t.lower() not in table_token_stopwords]
+        weak_tokens = [t for t in weak_tokens if t.lower() not in table_token_stopwords]
+        # Emit strong tokens first so they appear before weak ones — both
+        # the alignment guard and ``_resolve_table_targets`` walk this list
+        # in order and we want the high-confidence match to win when both
+        # branches captured the same noun.
+        for tokens, strength, source_qualified, source_unqualified in (
+            (strong_tokens, "strong", "explicit_current_schema", "explicit_unqualified_table"),
+            (weak_tokens, "weak", "subject_form_current_schema", "subject_form_unqualified"),
+        ):
+            for token in tokens:
+                if self.cfg.current_schema:
+                    path = f"{self.cfg.current_schema}.{token}"
+                    key = path.lower()
+                    if key in seen:
+                        continue
                     seen.add(key)
-                    mentions.append({"requested": token, "path": "", "source": "explicit_unqualified_table"})
+                    mentions.append(
+                        {"requested": token, "path": path, "source": source_qualified, "strength": strength}
+                    )
+                else:
+                    key = token.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    mentions.append(
+                        {"requested": token, "path": "", "source": source_unqualified, "strength": strength}
+                    )
         return mentions
 
     def _explicit_table_paths_for_question(self, question: str) -> list[str]:
@@ -3074,6 +3202,9 @@ class SearchAgent:
         meta_answer = self._handle_meta_query(clean_question, question_language)
         if meta_answer is not None:
             return meta_answer
+        reaffirm = self._handle_followup_reaffirmation(clean_question, question_language)
+        if reaffirm is not None:
+            return reaffirm
 
         stage_metrics: list[dict[str, Any]] = []
         thought_trace: list[dict[str, str]] = []
