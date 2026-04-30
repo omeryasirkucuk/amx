@@ -683,6 +683,10 @@ class AMXConfig:
     active_code_profile: str = ""
     write_through_config: bool = True
 
+    # Ephemeral, never persisted to YAML. Tracks which chat session the
+    # current REPL is appending to. Reset to None on every load.
+    active_chat_session_id: int | None = field(default=None)
+
     CONFIG_DIR: str = field(
         default_factory=lambda: str(Path.home() / ".amx"), init=False
     )

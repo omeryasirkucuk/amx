@@ -288,6 +288,60 @@ class SQLiteHistoryStore:
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_search_settings_profile_key ON search_settings(db_profile, key_name)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    db_profile TEXT NOT NULL,
+                    llm_profile TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    last_active_at REAL NOT NULL,
+                    ended_at REAL,
+                    title TEXT,
+                    turn_count INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    compaction_state_json TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_active "
+                "ON chat_sessions(db_profile, llm_profile, last_active_at DESC)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_turns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL,
+                    run_id INTEGER,
+                    turn_index INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    question TEXT,
+                    answer_summary TEXT,
+                    intent TEXT,
+                    topic TEXT,
+                    confidence TEXT,
+                    tables_json TEXT NOT NULL DEFAULT '[]',
+                    columns_json TEXT NOT NULL DEFAULT '[]',
+                    plan_json TEXT,
+                    tokens_json TEXT,
+                    request_id TEXT,
+                    created_at REAL NOT NULL,
+                    estimated_tokens INTEGER NOT NULL DEFAULT 0,
+                    compacted_at REAL,
+                    FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_turns_session_index "
+                "ON chat_turns(session_id, turn_index)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_turns_run "
+                "ON chat_turns(run_id)"
+            )
 
     def create_run(
         self,

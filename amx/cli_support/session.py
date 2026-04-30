@@ -448,6 +448,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/analyze", "Enter /analyze namespace"),
         ("/search", "Enter /search namespace"),
         ("/history", "Enter /history namespace"),
+        ("/session", "Manage /ask conversation sessions"),
         ("/save", "Save config to disk"),
     ]
     db_cmds = [
@@ -561,10 +562,18 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
 
 def _require_namespace(cmd: str, namespace: str, expected: str, replacement: str) -> bool:
-    if namespace == expected:
-        return True
-    error(f"/{cmd} belongs in /{expected}. Example: `/{expected}` then `/{replacement}`.")
-    return False
+    """Allow cross-namespace slash commands.
+
+    Slash commands carry their own namespace in the name (e.g. ``/llm-profiles``,
+    ``/db-profiles``). Refusing to execute them just because the user happens to
+    be in a different tab is friction without value — every handler operates on
+    ``cfg`` and doesn't care about the current namespace. We still emit a one-
+    line note when the command is dispatched cross-namespace, so the user can
+    learn the canonical home if they didn't already know it.
+    """
+    if namespace and namespace != expected:
+        info(f"Running /{cmd} from /{namespace} (canonical home: /{expected}).")
+    return True
 
 
 def _handle_session_builtin(
@@ -756,16 +765,6 @@ def _handle_session_builtin(
 
 def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
-    if head == "search" and len(parts) > 1:
-        if parts[1] in {"ask", "status", "sources", "config", "sync", "rebuild", "find-columns", "join-candidates", "explain", "explain-table"}:
-            return parts
-        return ["search", "ask"] + parts[1:]
-    if namespace == "search":
-        if head in {"ask", "status", "sources", "config", "sync", "rebuild"}:
-            return ["search"] + parts
-        if head in {"find-columns", "join-candidates", "explain", "explain-table"}:
-            return ["search"] + parts
-        return ["search", "ask"] + parts
     shortcut_map = {
         "connect": ["db", "connect"],
         "schemas": ["db", "schemas"],
@@ -796,7 +795,27 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "config": ["config"],
         "help": ["--help"],
     }
-    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history", "setup", "config"}:
+    if head == "search" and len(parts) > 1:
+        if parts[1] in {"ask", "status", "sources", "config", "sync", "rebuild", "find-columns", "join-candidates", "explain", "explain-table"}:
+            return parts
+        return ["search", "ask"] + parts[1:]
+    if namespace == "search":
+        if head in {"ask", "status", "sources", "config", "sync", "rebuild"}:
+            return ["search"] + parts
+        if head in {"find-columns", "join-candidates", "explain", "explain-table"}:
+            return ["search"] + parts
+        # Before swallowing the line as `/search ask <head>`, see if the
+        # command is a known cross-namespace shortcut (e.g. /run, /apply,
+        # /llm-profiles). If so, route it to the correct namespace instead
+        # of asking the LLM to "interpret" it as a question.
+        if head in shortcut_map:
+            return shortcut_map[head] + parts[1:]
+        if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "history"}:
+            if head == "manual":
+                return ["metadata"] + parts[1:]
+            return parts
+        return ["search", "ask"] + parts
+    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history", "session", "setup", "config"}:
         if head == "manual":
             return ["metadata"] + parts[1:]
         return parts
