@@ -90,12 +90,53 @@ def error(text: str) -> None:
     console.print(f"[error]✗  {text}[/error]")
 
 
+@contextmanager
+def _live_paused_for_input() -> Generator[None, None, None]:
+    """Pause an active ``LiveDisplay`` so prompt_toolkit can echo keystrokes.
+
+    The Rich ``Live`` region runs at 10 Hz and overwrites whatever the user
+    types between frames — so the user can press '2', press Enter, and the
+    selection works, but they never SEE their keystroke. We pause the live
+    region while waiting for input and resume it after.
+
+    No-op when there's no active display, so non-interactive callers (and
+    code paths outside ``command_display``) don't pay any cost.
+    """
+    paused = False
+    display = None
+    try:
+        # Lazy import — ``utils/console`` must not import ``utils/live_display``
+        # at module load time (would create a cycle through ``step_spinner``).
+        from amx.utils.live_display import get_display
+
+        display = get_display()
+        if display.is_active:
+            display.pause()
+            paused = True
+    except Exception:
+        display = None
+    try:
+        yield
+    finally:
+        if paused and display is not None:
+            try:
+                display.resume()
+            except Exception:
+                pass
+
+
+def _safe_pt_prompt(*args: Any, **kwargs: Any) -> str:
+    """``prompt_toolkit.prompt`` wrapper that pauses the live display first."""
+    with _live_paused_for_input():
+        return pt_prompt(*args, **kwargs)
+
+
 def ask(question: str, default: str = "") -> str:
-    return pt_prompt(f"  {question}: ", default=default).strip()
+    return _safe_pt_prompt(f"  {question}: ", default=default).strip()
 
 
 def ask_password(question: str) -> str:
-    return pt_prompt(f"  {question}: ", is_password=True).strip()
+    return _safe_pt_prompt(f"  {question}: ", is_password=True).strip()
 
 
 def ask_choice(
@@ -119,7 +160,7 @@ def ask_choice(
         console.print(f"    {i}. [bold]{c}[/bold]{desc}[dim]{mark}[/dim]")
     # Keep the prompt minimal: users can press Enter for default without extra hint text.
     # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.
-    answer = pt_prompt("  > ", completer=completer).strip()
+    answer = _safe_pt_prompt("  > ", completer=completer).strip()
     if not answer:
         return default if default in choices else ""
     if answer.isdigit() and 1 <= int(answer) <= len(choices):
@@ -137,7 +178,7 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
     )
     for i, c in enumerate(choices, 1):
         console.print(f"    {i}. {c}")
-    raw = pt_prompt("  > ").strip()
+    raw = _safe_pt_prompt("  > ").strip()
     if not raw:
         return []
     if raw.lower() == "all":
@@ -172,7 +213,7 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
 
 def confirm(question: str, default: bool = True) -> bool:
     suffix = " [Y/n]" if default else " [y/N]"
-    answer = pt_prompt(f"  {question}{suffix}: ").strip().lower()
+    answer = _safe_pt_prompt(f"  {question}{suffix}: ").strip().lower()
     if not answer:
         return default
     return answer in ("y", "yes")

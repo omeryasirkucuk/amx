@@ -599,6 +599,17 @@ def _run_ask_repl(
     info(
         "Type a question, press Enter. /exit (or Ctrl-D on an empty line) to leave."
     )
+    # Mirror the active session id into the environment BEFORE the first
+    # ``main_command.main()`` so ``AMXConfig.load`` picks it up. Without this
+    # bridge each invocation re-opens a fresh chat session and follow-ups
+    # lose prior context. We clear the variable when the user explicitly
+    # /resume's a different session — handled inside the agent on next set.
+    if sid:
+        os.environ["AMX_CHAT_SESSION_ID"] = str(int(sid))
+    else:
+        # Brand-new REPL — drop any stale id so a fresh session is created
+        # on the first question.
+        os.environ.pop("AMX_CHAT_SESSION_ID", None)
 
     inner = PromptSession(
         message=HTML("<ansicyan><b>ask&gt;</b></ansicyan> "),

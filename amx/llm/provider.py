@@ -64,12 +64,22 @@ _DEFAULT_REASONING_FLOOR = 16_384
 
 
 @dataclass
+class ToolCall:
+    """A single tool/function call requested by the LLM in a chat turn."""
+
+    id: str
+    name: str
+    arguments: str  # JSON-encoded argument blob — caller decodes.
+
+
+@dataclass
 class ChatResult:
     content: str
     usage: dict | None = None
     logprobs: list | None = None
     finish_reason: str | None = None
     confidence_score: float | None = None
+    tool_calls: list[ToolCall] | None = None
 
     def __str__(self) -> str:  # noqa: D105
         return self.content
@@ -611,12 +621,37 @@ class LLMProvider:
                     finish,
                     model,
                 )
+        # Tool/function calls — extracted when the caller passes ``tools`` in
+        # ``extra``. LiteLLM mirrors the OpenAI shape across providers, so we
+        # read ``message.tool_calls[*].function.{name,arguments}`` regardless
+        # of upstream backend (OpenAI / Anthropic / Gemini / OpenRouter / etc.).
+        parsed_tool_calls: list[ToolCall] | None = None
+        try:
+            raw_calls = getattr(choice.message, "tool_calls", None) or []
+            collected: list[ToolCall] = []
+            for tc in raw_calls:
+                fn = getattr(tc, "function", None)
+                if fn is None:
+                    continue
+                collected.append(
+                    ToolCall(
+                        id=str(getattr(tc, "id", "") or ""),
+                        name=str(getattr(fn, "name", "") or ""),
+                        arguments=str(getattr(fn, "arguments", "") or ""),
+                    )
+                )
+            if collected:
+                parsed_tool_calls = collected
+        except Exception as exc:
+            log.warning("Failed to parse tool_calls from response: %s", exc)
+
         return ChatResult(
             content=content,
             usage=usage_dict,
             logprobs=logprobs_content,
             finish_reason=finish,
             confidence_score=confidence_score,
+            tool_calls=parsed_tool_calls,
         )
 
     def test_result(self) -> LLMTestResult:

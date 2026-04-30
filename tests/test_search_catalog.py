@@ -45,6 +45,11 @@ class _FakeLLMProvider:
     responses: list[str] = []
     usages: list[dict] = []
     calls: list[list[dict[str, str]]] = []
+    # Each entry is either:
+    #   * a plain string  → returned as ``ChatResult(content=...)``
+    #   * a dict          → returned as ``ChatResult(content=..., tool_calls=[...])``
+    # See ``queue_tool_calls`` for the dict form (used by tool-agent tests).
+    tool_responses: list[Any] = []
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
@@ -54,15 +59,67 @@ class _FakeLLMProvider:
         cls.responses = list(contents)
         cls.usages = []
         cls.calls = []
+        cls.tool_responses = []
+
+    @classmethod
+    def queue_tool_calls(cls, *responses: Any) -> None:
+        """Queue tool-aware responses for the tool agent.
+
+        Each entry must be either a plain string (final answer) or a dict
+        with keys ``content`` and ``tool_calls`` where each call is
+        ``{"id": str, "name": str, "arguments": str}``.
+        """
+        cls.tool_responses = list(responses)
+        cls.responses = []
+        cls.usages = []
+        cls.calls = []
 
     def chat(self, messages, **kwargs):
         self.__class__.calls.append(messages)
+        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model_processing_sec": 0.1}
+        self.__class__.usages.append(usage)
+        # Tool-agent path takes precedence when the caller passed ``tools=``
+        # in kwargs, but we let plain ``responses`` queue serve the legacy
+        # planner tests that don't pass a ``tools`` argument.
+        if self.__class__.tool_responses:
+            entry = self.__class__.tool_responses.pop(0)
+            if isinstance(entry, dict):
+                tool_calls = []
+                for tc in entry.get("tool_calls") or []:
+                    tool_calls.append(
+                        type(
+                            "ToolCall",
+                            (),
+                            {
+                                "id": str(tc.get("id") or ""),
+                                "name": str(tc.get("name") or ""),
+                                "arguments": str(tc.get("arguments") or "{}"),
+                            },
+                        )()
+                    )
+                return type(
+                    "ChatResult",
+                    (),
+                    {
+                        "content": str(entry.get("content") or ""),
+                        "usage": usage,
+                        "tool_calls": tool_calls or None,
+                        "finish_reason": "tool_calls" if tool_calls else "stop",
+                    },
+                )()
+            return type(
+                "ChatResult",
+                (),
+                {"content": str(entry), "usage": usage, "tool_calls": None, "finish_reason": "stop"},
+            )()
         if not self.__class__.responses:
             raise AssertionError("no fake LLM response queued")
         content = self.__class__.responses.pop(0)
-        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model_processing_sec": 0.1}
-        self.__class__.usages.append(usage)
-        return type("ChatResult", (), {"content": content, "usage": usage})()
+        return type(
+            "ChatResult",
+            (),
+            {"content": content, "usage": usage, "tool_calls": None, "finish_reason": "stop"},
+        )()
 
 
 class SearchCatalogTests(unittest.TestCase):
@@ -74,6 +131,13 @@ class SearchCatalogTests(unittest.TestCase):
         self.index_patcher = patch("amx.search.catalog.SearchIndex", _FakeIndex)
         self.index_patcher.start()
         self.catalog = SearchCatalog(self.db_path)
+        # All legacy tests in this class drive the regex-routed Pass1
+        # pipeline through the queued ``_FakeLLMProvider`` JSON plans.
+        # The tool-calling agent (default ON in production) would consume
+        # those queued strings as final answers, which breaks the planner
+        # contract. Tests that exercise the tool agent OPT IN explicitly
+        # by re-enabling this setting in their own setup.
+        self.catalog.set_setting("default", "use_tool_agent", "false")
         _FakeIndex.query_hits = []
         _SESSION_MEMORY.clear()
 
@@ -1325,6 +1389,207 @@ class SearchCatalogTests(unittest.TestCase):
                 answer = service.ask("describe adrc")
 
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
+
+    def test_tool_agent_drops_duplicated_current_user_turn_from_memory(self) -> None:
+        """The current user question must NOT be forwarded to the tool agent
+        as both prior_turns context AND the live ``messages.append('user')``.
+
+        Regression for the user-reported case where 'Only those?' came back
+        as 'your question is incomplete or unclear' — the duplicated message
+        confused the model into thinking we'd lost context.
+        """
+        cfg = self._search_cfg()
+        self.catalog.set_setting("default", "use_tool_agent", "true")
+
+        class FakeDB:
+            def list_schemas(self) -> list[str]:
+                return ["public"]
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # First a regular Q that the tool agent answers directly with
+            # text. After this turn, the chat session has ONE user + ONE
+            # assistant entry. Then a follow-up the agent should resolve
+            # against the prior assistant turn — without seeing the
+            # follow-up question twice.
+            _FakeLLMProvider.queue_tool_calls(
+                "Two tables have boolean columns: cskt and t001w.",
+                "Yes, only those two.",
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                service.ask("which tables have boolean columns")
+                answer = service.ask("Only those?")
+
+        self.assertEqual(answer.intent, "tool_agent")
+        # The follow-up must have been resolvable from context — i.e. the
+        # final answer references the prior content, not a clarification.
+        self.assertIn("only", answer.summary.lower())
+
+    def test_short_circuits_persist_assistant_turn(self) -> None:
+        """chitchat / meta / reaffirmation must write a paired assistant turn
+        so subsequent ``_memory_summary`` calls return matched (user, assistant)
+        pairs rather than orphaned user-only entries."""
+        cfg = self._search_cfg()
+        self.catalog.set_setting("default", "use_tool_agent", "false")
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue()  # No LLM responses queued — short-circuit only.
+            service = SearchService(cfg, self.catalog)
+            service.ask("hi")  # chitchat short-circuit path
+
+        sid = cfg.active_chat_session_id
+        self.assertIsNotNone(sid)
+        from amx.search.session_store import ChatSessionStore
+        store = ChatSessionStore(self.store)
+        turns = store.recent_turns(int(sid), include_summary=False)
+        roles = [str(t.get("role") or "") for t in turns]
+        # We expect a paired (user, assistant) trail — not an orphan user.
+        self.assertEqual(roles, ["user", "assistant"])
+
+    def test_tool_agent_routes_tables_under_schema_to_list_tables(self) -> None:
+        """End-to-end: 'tables under sap_test' must hit list_tables_in_schema.
+
+        Regression for the user-reported regex over-match where the legacy
+        router captured 'under' as a table name. The tool agent must read
+        the question, call ``list_tables_in_schema(schema='sap_test')``,
+        and synthesize the list — without any regex routing.
+        """
+        cfg = self._search_cfg()
+        # Re-enable the tool agent for THIS test (default in production but
+        # disabled in the legacy-test setUp).
+        self.catalog.set_setting("default", "use_tool_agent", "true")
+
+        class FakeDB:
+            def list_schemas(self) -> list[str]:
+                return ["public", "sap_s6p", "sap_test"]
+
+            def list_assets(self, schema: str):
+                if schema == "sap_test":
+                    return [("bseg", "table"), ("bkpf", "table"), ("vbak_test", "view")]
+                return []
+
+            def list_tables(self, schema: str) -> list[str]:
+                return [name for name, _kind in self.list_assets(schema)]
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # Round 1: LLM responds with a tool call.
+            # Round 2: LLM composes the final answer from the tool result.
+            _FakeLLMProvider.queue_tool_calls(
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "name": "list_tables_in_schema",
+                            "arguments": '{"schema": "sap_test"}',
+                        }
+                    ],
+                },
+                "The `sap_test` schema contains 3 assets: `bseg`, `bkpf`, and `vbak_test`.",
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("What's the tables under sap_test")
+
+        self.assertEqual(answer.intent, "tool_agent")
+        self.assertIn("sap_test", answer.summary)
+        self.assertIn("bseg", answer.summary)
+        # Verify the tool call log surfaced the right invocation.
+        tool_calls = answer.details.get("tool_calls") or []
+        self.assertTrue(any(tc.get("name") == "list_tables_in_schema" for tc in tool_calls))
+
+    def test_tool_agent_falls_back_to_plain_answer_without_tool_calls(self) -> None:
+        """When the LLM answers directly without calling a tool, surface it."""
+        cfg = self._search_cfg()
+        self.catalog.set_setting("default", "use_tool_agent", "true")
+
+        class FakeDB:
+            def list_schemas(self) -> list[str]:
+                return ["public"]
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue_tool_calls("AMX inspects database metadata.")
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("describe what AMX does in one sentence")
+
+        self.assertEqual(answer.intent, "tool_agent")
+        self.assertIn("AMX", answer.summary)
+        self.assertEqual(answer.details.get("iterations"), 1)
+        self.assertEqual(answer.details.get("tool_calls"), [])
+
+    def test_strong_table_mention_wins_when_catalog_is_empty(self) -> None:
+        """`X table` keyword mentions override LLM mode without catalog match.
+
+        Regression for the user-reported case where 'which schema have vbrk
+        table' fell through to a generic semantic answer because vbrk was
+        only in live DB, not yet synced into the catalog. The strong-signal
+        path must still re-route to table_explain so target resolution runs
+        against the live DB.
+        """
+        # Empty catalog — vbrk has no entry here.
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+
+        class FakeDB:
+            def list_tables(self, schema: str) -> list[str]:
+                return ["vbrk"] if schema == "sap_s6p" else []
+
+            def table_metadata_probe_query(self, schema: str, table: str) -> str:
+                return f"metadata probe for {schema}.{table}"
+
+            def get_table_metadata_snapshot(self, schema: str, table: str) -> dict:
+                return {
+                    "schema": schema,
+                    "table": table,
+                    "table_comment": "Billing",
+                    "columns": [{"name": "vbeln", "dtype": "BIGINT", "nullable": False, "comment": "Doc"}],
+                }
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # LLM mis-routes to a generic semantic_concept mode.
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,'
+                '"normalized_question":"which schema has vbrk table",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"unknown","entity_hints":[],'
+                '"search_queries":["which schema vbrk"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"semantic"}',
+                '{"needs_live_probe":true,"reason":"want metadata","operations":'
+                '[{"operation":"table_metadata_snapshot","table_path":"sap_s6p.vbrk",'
+                '"rationale":"explain"}]}',
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("which schema have vbrk table")
+
+        # Even though catalog is empty, the alignment guard must reroute
+        # to table_explain because the user said "vbrk table" (strong).
+        self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.vbrk"])
+
+    def test_followup_reaffirmation_restates_prior_assistant_turn(self) -> None:
+        """'Are you sure?' / 'emin misin?' restate prior answer, no LLM call."""
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # Seed a prior turn (1 LLM response for interpretation,
+            # 1 for synthesis).
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,'
+                '"normalized_question":"address columns",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"column","entity_hints":[],'
+                '"search_queries":["address"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"discovery","decision_confidence":"high"}',
+                "Live DB has 12 columns on sap_s6p.adrc.",
+            )
+            service = SearchService(cfg, self.catalog)
+            service.ask("how many columns are in address")
+            # Reaffirmation question must NOT consume a new LLM response —
+            # if it did, the queue would underflow and the test would error.
+            answer = service.ask("Are you sure?")
+        self.assertEqual(answer.intent, "reaffirmation")
+        # Prior assistant text must be restated.
+        self.assertIn("12 columns", answer.summary)
 
     def test_chitchat_short_circuits_without_llm_call(self) -> None:
         """Greetings like 'nasılsın' / 'hi' must not reach the planner."""

@@ -839,6 +839,22 @@ class AMXConfig:
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
+        # Bridge the active chat session id across Click sub-invocations.
+        # The interactive REPL dispatches each ``/ask <q>`` line via
+        # ``main_command.main(args=...)`` which calls ``AMXConfig.load`` again
+        # for every question. ``active_chat_session_id`` is intentionally
+        # ephemeral (not in ``_PERSISTED_FIELDS``), so without this bridge
+        # every question opens a fresh session and follow-up memory is lost.
+        # We pick up the id from the environment variable that
+        # ``cli_support.session._run_ask_repl`` sets on entry / updates after
+        # each turn so the next ``main()`` call sees the same session.
+        bridge_sid = os.getenv("AMX_CHAT_SESSION_ID", "").strip()
+        if bridge_sid:
+            try:
+                cfg.active_chat_session_id = int(bridge_sid)
+            except ValueError:
+                pass
+
         object.__setattr__(cfg, "_autosave_suspended", 0)
         cfg._attach_children()
         object.__setattr__(cfg, "_autosave_ready", True)

@@ -60,6 +60,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "max_results": "8",
     "interpretation_mode": "balanced",
     "clarification_on_low_confidence": "true",
+    # Tool-calling agent (default ON). Set to ``false`` to fall back to the
+    # legacy regex-routed Pass1/alignment/retrieval pipeline; useful as a
+    # temporary escape hatch during the rollout. Tests that exercise the
+    # legacy planner path must opt out by writing ``use_tool_agent=false``.
+    "use_tool_agent": "true",
     # Per-provider distance threshold for vector-only retrieval hits.
     # Empty value means "use the embedding provider's calibrated default";
     # callers can override per profile by setting an explicit float.
