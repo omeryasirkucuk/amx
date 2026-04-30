@@ -673,7 +673,14 @@ class SearchCatalogTests(unittest.TestCase):
                 service = SearchService(cfg, self.catalog)
                 answer = service.ask("adrc tablosu nedir")
 
-        self.assertIn("exact olarak dogrulayamadim", answer.summary)
+        # Updated wording: deterministic answer now phrases the result as
+        # "<name> adında bir tablo bu DB profili için katalog veya canlı
+        # metadata'da bulunamadı" instead of the older
+        # "exact olarak dogrulayamadim". Either phrasing satisfies the
+        # contract — we surface a "not-found" answer and never substitute a
+        # similar-name candidate. Keep the candidate hint assertion so we
+        # still verify the fuzzy match is OFFERED (not used).
+        self.assertIn("bulunamadı", answer.summary)
         self.assertIn("`sap_s6p.adr6`", answer.summary)
         self.assertEqual(answer.rows, [])
         self.assertEqual(answer.confidence, "low")
@@ -1223,3 +1230,133 @@ class SearchCatalogTests(unittest.TestCase):
         user_payloads = [msgs[-1]["content"] for msgs in _FakeLLMProvider.calls if msgs]
         matching = [payload for payload in user_payloads if '"answer_shape": "ranked_list"' in payload]
         self.assertTrue(matching, f"expected synthesis payload to carry answer_shape; got: {user_payloads!r}")
+
+    # ------------------------------------------------------------------
+    # Subject-form question detection — "what's the vbrk", "describe X",
+    # "X nedir" — must be treated as explicit table mentions and either
+    # resolved to the live table, surfaced as ambiguous (multi-schema), or
+    # rejected as not-found, rather than silently swapping to an unrelated
+    # table the LLM happened to suggest.
+    # ------------------------------------------------------------------
+    def test_subject_form_unknown_table_returns_not_found(self) -> None:
+        """Bare "what's the vbrk" against a catalog without vbrk → not found."""
+        # Seed catalog with adrc only — vbrk does not exist anywhere.
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._adrc_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = ""  # No current schema — exercise unqualified path.
+
+        class FakeDB:
+            def list_tables(self, schema: str) -> list[str]:
+                return []
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # LLM picks a different mode; our routing guard should still force
+            # table_explain because the question has a subject-form mention.
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,'
+                '"normalized_question":"what is vbrk",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"unknown","entity_hints":["vbrk"],'
+                '"search_queries":["what is vbrk"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"unknown subject"}'
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("what's the vbrk")
+
+        # We must NOT pick adrc (or any other catalog table) just because
+        # nothing matched. We must say "not found".
+        self.assertEqual(answer.rows, [])
+        self.assertIn("vbrk", answer.summary.lower())
+        self.assertIn("could not find", answer.summary.lower())
+        # And we must NOT have probed any live table.
+        live_probe = answer.details.get("retrieval", {}).get("live_probe", {}) or {}
+        self.assertFalse(live_probe.get("operations"))
+
+    def test_subject_form_existing_table_resolves_unqualified(self) -> None:
+        """Bare "describe adrc" with a single matching schema → resolves to it."""
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._adrc_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = ""  # Force the unqualified-resolution branch.
+
+        class FakeDB:
+            def list_tables(self, schema: str) -> list[str]:
+                return ["adrc"] if schema == "sap_s6p" else []
+
+            def table_metadata_probe_query(self, schema: str, table: str) -> str:
+                return f"metadata probe for {schema}.{table}"
+
+            def get_table_metadata_snapshot(self, schema: str, table: str) -> dict:
+                return {
+                    "schema": schema,
+                    "table": table,
+                    "table_comment": "Address master",
+                    "columns": [
+                        {"name": "addrnumber", "dtype": "TEXT", "nullable": False, "comment": "Address number"},
+                    ],
+                }
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"explain_table","out_of_domain":false,'
+                '"normalized_question":"describe adrc",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"unknown","entity_hints":["adrc"],'
+                '"search_queries":["describe adrc"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"explain"}',
+                '{"needs_live_probe":true,"reason":"want columns","operations":'
+                '[{"operation":"table_metadata_snapshot","table_path":"sap_s6p.adrc",'
+                '"rationale":"explain"}]}',
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("describe adrc")
+
+        self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
+
+    def test_find_tables_by_exact_name_disambiguates_across_schemas(self) -> None:
+        """Same table name in two schemas surfaces both candidates."""
+        # Same table name in two different schemas.
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=TableProfile(
+                schema="sap_a",
+                name="orders",
+                asset_kind=AssetKind.TABLE,
+                row_count=1,
+                existing_comment="A",
+                columns=[ColumnProfile(name="id", dtype="INT", nullable=False)],
+            ),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=TableProfile(
+                schema="sap_b",
+                name="orders",
+                asset_kind=AssetKind.TABLE,
+                row_count=1,
+                existing_comment="B",
+                columns=[ColumnProfile(name="id", dtype="INT", nullable=False)],
+            ),
+            query_usage={},
+        )
+        rows = self.catalog.find_tables_by_exact_name("default", "orders")
+        schemas = sorted(str(row.get("schema_name") or "") for row in rows)
+        self.assertEqual(schemas, ["sap_a", "sap_b"])

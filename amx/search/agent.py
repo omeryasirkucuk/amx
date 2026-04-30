@@ -13,13 +13,34 @@ from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.llm.provider import LLMProvider
 from amx.search.catalog import SearchAnswer, SearchCatalog
+from amx.search.session_store import ChatSessionStore
+from amx.storage.sqlite_store import history_store
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens
 
 log = get_logger("search.agent")
 
-_SESSION_MEMORY: dict[str, list[dict[str, Any]]] = {}
+
+class _SessionMemoryShim:
+    """Backwards-compat alias for tests that called ``_SESSION_MEMORY.clear()``.
+
+    The real conversation memory now lives in SQLite ``chat_sessions`` /
+    ``chat_turns``; this shim wipes those tables so existing tests stay
+    isolated without needing to rewrite each setUp/tearDown.
+    """
+
+    def clear(self) -> None:
+        store = history_store()
+        if store is None:
+            return
+        try:
+            ChatSessionStore(store).reset_for_test()
+        except Exception:
+            pass
+
+
+_SESSION_MEMORY = _SessionMemoryShim()
 
 
 # Conservative input-token budget per LLM family. The /synthesize_answer
@@ -247,7 +268,12 @@ class SearchAgent:
         self._llm_factory = llm_factory
         self._inventory_db_factory = inventory_db_factory or (lambda: DatabaseConnector(self.cfg.db))
         self._llm: LLMProvider | None = None
-        self._memory_key = f"{self.db_profile}:{cfg.active_llm_profile or 'default'}"
+        self._llm_profile = cfg.active_llm_profile or "default"
+        self._session_store: ChatSessionStore | None = None
+        self._session_id: int | None = None
+        # Per-process fallback used when no SQLiteHistoryStore has been
+        # initialised (some unit-test paths). Keyed by db_profile:llm_profile.
+        self._fallback_memory: list[dict[str, Any]] = []
 
     def _llm_available(self) -> bool:
         if self.settings.get("llm_enabled", "true").lower() != "true":
@@ -265,16 +291,127 @@ class SearchAgent:
         except Exception:
             return 4
 
+    def _ensure_session_store(self) -> ChatSessionStore | None:
+        if self._session_store is not None:
+            return self._session_store
+        store = history_store()
+        if store is None:
+            return None
+        self._session_store = ChatSessionStore(store)
+        return self._session_store
+
+    def _ensure_session_id(self) -> int | None:
+        """Resolve the active chat session id.
+
+        Each REPL boot starts fresh: ``cfg.active_chat_session_id`` is None
+        until a `/ask` runs (or the user explicitly `/session resume`-d).
+        We lazily call ``start_session`` so users who never run `/ask` don't
+        accumulate empty session rows.
+        """
+        store = self._ensure_session_store()
+        if store is None:
+            return None
+        existing = getattr(self.cfg, "active_chat_session_id", None)
+        if existing:
+            self._session_id = int(existing)
+            return self._session_id
+        if self._session_id is not None:
+            return self._session_id
+        sid = store.start_session(
+            db_profile=self.db_profile,
+            llm_profile=self._llm_profile,
+        )
+        self._session_id = sid
+        try:
+            self.cfg.active_chat_session_id = sid
+        except Exception:
+            pass
+        return sid
+
     def _memory(self) -> list[dict[str, Any]]:
-        return list(_SESSION_MEMORY.get(self._memory_key, []))
+        store = self._ensure_session_store()
+        sid = getattr(self.cfg, "active_chat_session_id", None) or self._session_id
+        if store is None or not sid:
+            return list(self._fallback_memory)
+        turns = store.recent_turns(int(sid), limit=self._memory_turns(), include_summary=True)
+        # Project to the legacy turn-shape used by callers
+        # (_last_tables, _memory_summary, planner payloads).
+        out: list[dict[str, Any]] = []
+        for t in turns:
+            role = str(t.get("role") or "")
+            if role == "summary":
+                out.append({
+                    "question": "",
+                    "intent": "compaction",
+                    "topic": "previous_context_summary",
+                    "tables": list(t.get("tables") or []),
+                    "columns": list(t.get("columns") or []),
+                    "answer_summary": str(t.get("answer_summary") or ""),
+                })
+                continue
+            if role == "user":
+                # Pair the user turn with the next assistant turn; we'll fill
+                # answer_summary from there in a second pass below.
+                out.append({
+                    "question": str(t.get("question") or ""),
+                    "intent": "",
+                    "topic": "",
+                    "tables": [],
+                    "columns": [],
+                    "answer_summary": "",
+                })
+                continue
+            # assistant
+            plan = t.get("plan") or {}
+            payload = {
+                "question": "",
+                "intent": str(t.get("intent") or ""),
+                "topic": str(t.get("topic") or plan.get("normalized_question") or ""),
+                "tables": list(t.get("tables") or []),
+                "columns": list(t.get("columns") or []),
+                "answer_summary": str(t.get("answer_summary") or ""),
+            }
+            # Backfill question onto the most recent user-only entry if any.
+            if out and out[-1].get("question") and not out[-1].get("intent"):
+                out[-1]["intent"] = payload["intent"]
+                out[-1]["topic"] = payload["topic"]
+                out[-1]["tables"] = payload["tables"]
+                out[-1]["columns"] = payload["columns"]
+                out[-1]["answer_summary"] = payload["answer_summary"]
+            else:
+                out.append(payload)
+        return out
 
     def _remember(self, turn: dict[str, Any]) -> None:
-        turns = self._memory()
-        turns.append(turn)
-        max_turns = self._memory_turns()
-        if max_turns > 0:
-            turns = turns[-max_turns:]
-        _SESSION_MEMORY[self._memory_key] = turns
+        """Persist an assistant turn (back-compat shape).
+
+        ``turn`` carries: question, intent, topic, tables, columns, and
+        optionally answer_summary, confidence, plan, tokens, request_id,
+        run_id. The user-side row was already inserted at the top of
+        ``ask()`` via ``append_user_turn``; this writes the matching
+        assistant row.
+        """
+        store = self._ensure_session_store()
+        sid = self._ensure_session_id()
+        if store is None or not sid:
+            self._fallback_memory.append(dict(turn))
+            max_turns = self._memory_turns()
+            if max_turns > 0:
+                self._fallback_memory = self._fallback_memory[-max_turns:]
+            return
+        store.append_assistant_turn(
+            int(sid),
+            run_id=turn.get("run_id"),
+            answer_summary=str(turn.get("answer_summary") or "")[:1000],
+            intent=str(turn.get("intent") or ""),
+            topic=str(turn.get("topic") or ""),
+            confidence=str(turn.get("confidence") or ""),
+            tables=list(turn.get("tables") or []),
+            columns=list(turn.get("columns") or []),
+            plan=turn.get("plan"),
+            tokens=turn.get("tokens"),
+            request_id=turn.get("request_id"),
+        )
 
     def _memory_summary(self) -> list[dict[str, Any]]:
         summary: list[dict[str, Any]] = []
@@ -286,6 +423,7 @@ class SearchAgent:
                     "topic": turn.get("topic", ""),
                     "tables": turn.get("tables", []),
                     "columns": turn.get("columns", []),
+                    "answer_summary": str(turn.get("answer_summary") or "")[:200],
                 }
             )
         return summary
@@ -565,6 +703,55 @@ class SearchAgent:
 
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
         sample = (question or "").strip().lower()
+        # Guard: if the user clearly named a table-like subject ("what's the
+        # vbrk", "describe customers", "vbrk nedir") and the LLM happened to
+        # route this somewhere that won't run target resolution, force
+        # ``table_explain`` so we either find the table or surface a clear
+        # "not found / ambiguous" message instead of drifting to unrelated
+        # rows.
+        explicit_subjects = self._explicit_table_mentions_for_question(question)
+        if explicit_subjects and plan.search_mode not in {
+            "table_explain",
+            "join_candidates",
+            "joinable_tables",
+            "schema_inventory",
+            "list_databases",
+            "list_schemas",
+            "count_tables",
+            "check_coverage",
+        }:
+            asks_join_word = any(
+                token in sample
+                for token in ("join", "link", "relate", "relationship", "bağ", "bag", "ilişk", "iliski")
+            )
+            if not asks_join_word:
+                hints_with_subjects: list[str] = list(plan.entity_hints)
+                for mention in explicit_subjects:
+                    requested = str(mention.get("requested") or "").strip()
+                    if requested and requested not in hints_with_subjects:
+                        hints_with_subjects.append(requested)
+                plan = SearchPlan(
+                    intent="explain_table",
+                    out_of_domain=plan.out_of_domain,
+                    normalized_question=plan.normalized_question or question,
+                    search_mode="table_explain",
+                    question_class="table_understanding",
+                    target_entity="table",
+                    entity_hints=hints_with_subjects,
+                    search_queries=list(plan.search_queries) or [question],
+                    needs_typo_recovery=plan.needs_typo_recovery,
+                    answer_language=plan.answer_language,
+                    ambiguity_flags=list(plan.ambiguity_flags),
+                    reason=(plan.reason + "; rerouted to table_explain because the question names a subject").strip("; "),
+                    decision_confidence=plan.decision_confidence,
+                    needs_clarification=False,
+                    clarification_question="",
+                    review_notes=plan.review_notes,
+                    aggregation_op=plan.aggregation_op,
+                    aggregation_field=plan.aggregation_field,
+                    aggregation_limit=plan.aggregation_limit,
+                    answer_shape=plan.answer_shape or "table_summary",
+                )
         asks_count = any(token in sample for token in ("kaç", "kac", "how many", "count"))
         asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
         asks_column_word = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
@@ -926,6 +1113,32 @@ class SearchAgent:
                 flags=re.IGNORECASE,
             )
         )
+        # Subject-form questions where the user names the table without using
+        # the word "table": "what's the vbrk", "describe customers", "explain
+        # adrc", "tell me about orders", "vbrk nedir", "vbrk hakkında". Without
+        # this branch the question's identifier-shaped subject (vbrk) is lost
+        # and the pipeline drifts to whatever the LLM/catalog guesses.
+        subject_patterns = (
+            # English: what's/what is/describe/explain/tell me about/show me X
+            r"\b(?:what'?s|what is|what are|whats|describe|explain|define|tell\s+me\s+about|"
+            r"show\s+me|info\s+(?:on|about)|details?\s+(?:on|about)|definition\s+of|"
+            r"meaning\s+of|purpose\s+of)\s+(?:the\s+|a\s+|an\s+)?"
+            r"`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
+            # English: what does X do/store/contain/mean
+            r"\b(?:what\s+does|what\s+do)\s+`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\s+"
+            r"(?:do|mean|store|contain|hold|represent)\b",
+            # Turkish: <X> nedir / hakkında / hakkinda / ne işe yarar / ne demek
+            r"\b`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\s+(?:nedir|ne\s+demek|"
+            r"hakk[ıi]nda|ne\s+i[şs]e\s+yarar|ne\s+i[şs]\s+yapar)\b",
+            # Turkish: bana <X> hakkında bilgi ver / <X>'i anlat / <X>'i açıkla
+            r"\b(?:bana\s+)?(?:bahset|anlat|a[çc][ıi]kla|tan[ıi]t)\s+"
+            r"(?:bana\s+)?`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
+        )
+        for pattern in subject_patterns:
+            explicit_table_tokens.extend(
+                item
+                for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
+            )
         table_token_stopwords = {
             "nedir",
             "ne",
@@ -991,6 +1204,62 @@ class SearchAgent:
             "show",
             "named",
             "called",
+            # The new subject-form regex captures the noun that follows
+            # "what's the / describe / explain". Filter generic meta-words
+            # so e.g. "describe table" does not extract "table" as a name.
+            "table",
+            "tables",
+            "tablo",
+            "tablolar",
+            # All inflected Turkish forms of "tablo" we already accept in the
+            # other regex branch — they must also drop out of subject capture.
+            "tablosu",
+            "tablosunda",
+            "tablosuna",
+            "tablosundan",
+            "tablosunu",
+            "tabloları",
+            "tablolarını",
+            "tablolardan",
+            "column",
+            "columns",
+            "kolon",
+            "kolonlar",
+            "field",
+            "fields",
+            "alan",
+            "alanlar",
+            "data",
+            "info",
+            "information",
+            "metadata",
+            "veri",
+            "bilgi",
+            "schema",
+            "schemas",
+            "sema",
+            "şema",
+            "şemalar",
+            "semalar",
+            "database",
+            "databases",
+            "veritaban",
+            "veritabani",
+            "veritabanı",
+            # Generic adjectives that might land after "what's the".
+            "most",
+            "least",
+            "popular",
+            "common",
+            "single",
+            "multiple",
+            "total",
+            "average",
+            "newest",
+            "oldest",
+            "recent",
+            "older",
+            "newer",
         }
         explicit_table_tokens = [token for token in explicit_table_tokens if token.lower() not in table_token_stopwords]
         if self.cfg.current_schema:
@@ -1060,6 +1329,59 @@ class SearchAgent:
             path = str(mention.get("path") or "")
             requested = str(mention.get("requested") or path)
             if "." not in path:
+                # Unqualified mention (e.g. user typed "what's the vbrk"
+                # without a current_schema). Look up the bare token in the
+                # catalog: if it lives in exactly one schema, resolve to it;
+                # if it lives in several, surface them as ambiguity
+                # candidates instead of silently picking one; if it lives
+                # in none, mark as "explicit_table_not_found_live" so the
+                # deterministic answer template explains that to the user.
+                bare = requested.strip()
+                if not bare:
+                    continue
+                exact_rows = self.catalog.find_tables_by_exact_name(self.db_profile, bare, limit=20)
+                exact_paths = [
+                    f"{str(row.get('schema_name') or '')}.{str(row.get('table_name') or '')}".strip(".")
+                    for row in exact_rows
+                    if str(row.get("schema_name") or "") and str(row.get("table_name") or "")
+                ]
+                if len(exact_paths) == 1:
+                    schema_name, table_name = exact_paths[0].split(".", 1)
+                    exists = self._live_table_exists(schema_name, table_name)
+                    target = ResolvedTarget(
+                        requested=requested,
+                        resolved_path=exact_paths[0],
+                        source=str(mention.get("source") or "explicit_unqualified_table"),
+                        is_exact=True,
+                        confidence="high" if exists is True else "medium",
+                        warnings=[] if exists is True else ["live_table_existence_unknown"],
+                        candidates=[],
+                    )
+                elif len(exact_paths) >= 2:
+                    target = ResolvedTarget(
+                        requested=requested,
+                        resolved_path="",
+                        source=str(mention.get("source") or "explicit_unqualified_table"),
+                        is_exact=False,
+                        confidence="medium",
+                        warnings=["ambiguous_unqualified_table"],
+                        candidates=exact_paths[:5],
+                    )
+                else:
+                    fuzzy = self._table_candidate_paths(bare, limit=3)
+                    target = ResolvedTarget(
+                        requested=requested,
+                        resolved_path="",
+                        source=str(mention.get("source") or "explicit_unqualified_table"),
+                        is_exact=False,
+                        confidence="low",
+                        warnings=["explicit_table_not_found_live"],
+                        candidates=fuzzy,
+                    )
+                key = (target.resolved_path or target.requested).lower()
+                if key not in seen:
+                    seen.add(key)
+                    targets.append(target)
                 continue
             schema_name, table_name = path.split(".", 1)
             exists = self._live_table_exists(schema_name, table_name)
@@ -1114,11 +1436,21 @@ class SearchAgent:
     def _target_resolution_details(self, targets: list[ResolvedTarget]) -> dict[str, Any]:
         has_resolved = any(bool(target.resolved_path) for target in targets)
         has_unresolved_explicit = any(
-            not target.resolved_path and "explicit_table_not_found_live" in target.warnings for target in targets
+            not target.resolved_path
+            and (
+                "explicit_table_not_found_live" in target.warnings
+                or "ambiguous_unqualified_table" in target.warnings
+            )
+            for target in targets
+        )
+        has_ambiguous = any(
+            not target.resolved_path and "ambiguous_unqualified_table" in target.warnings
+            for target in targets
         )
         return {
             "targets": [asdict(target) for target in targets],
             "unresolved_explicit": has_unresolved_explicit and not has_resolved,
+            "ambiguous_unqualified": has_ambiguous and not has_resolved,
         }
 
     def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
@@ -1993,6 +2325,7 @@ class SearchAgent:
             "  ranked_list   -> one sentence + 3-5 bullet matches, one line each.\n"
             "  table_summary -> one sentence + key columns as a markdown table (<=8 rows).\n"
             "  prose         -> 2-4 sentence explanation, no table.\n"
+            "For ranked_list answers, the headline sentence should name the 1-3 best-matching tables and weave in WHY each matched, citing specific `matched_columns` from the rows when present (e.g., \"matched on supplier_id and vendor_name\"). Keep the rationale to one sentence; do not duplicate it in the bullets below.\n"
             "Answer only from the retrieved metadata evidence you are given.\n"
             "Treat verified/live evidence as stronger than semantic or vector-only evidence.\n"
             "If evidence is weak or empty (e.g. no direct match), do NOT just say 'I found nothing'. Instead, be constructive: present the closest semantic matches or diagnostic rows provided as related/alternative suggestions.\n"
@@ -2398,14 +2731,45 @@ class SearchAgent:
         target = targets[0] if targets else {}
         requested = str(target.get("requested") or "").strip() or "requested table"
         candidates = [str(item) for item in (target.get("candidates") or []) if str(item)]
-        if (plan.answer_language or "english").lower() == "turkish":
-            answer = f"`{requested}` tablosunu canli DB metadata'sinda exact olarak dogrulayamadim; bu yuzden benzer bir tabloyu hedef yerine kullanmiyorum."
+        warnings = [str(w) for w in (target.get("warnings") or [])]
+        is_ambiguous = "ambiguous_unqualified_table" in warnings
+        is_turkish = (plan.answer_language or "english").lower() == "turkish"
+        if is_ambiguous:
+            if is_turkish:
+                if candidates:
+                    return (
+                        f"`{requested}` adında bir tablo birden fazla şemada mevcut. "
+                        "Hangisini kastettiğinizi netleştirir misiniz? Adaylar: "
+                        + ", ".join(f"`{item}`" for item in candidates[:5])
+                        + "."
+                    )
+                return f"`{requested}` adı birden fazla şemada geçiyor; lütfen tam yolu belirtin (schema.table)."
             if candidates:
-                answer += " Katalogdaki benzer adaylar sadece oneridir: " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+                return (
+                    f"`{requested}` exists as a table in more than one schema. "
+                    "Could you clarify which one you mean? Candidates: "
+                    + ", ".join(f"`{item}`" for item in candidates[:5])
+                    + "."
+                )
+            return (
+                f"`{requested}` is the name of more than one table; please qualify it as `schema.table`."
+            )
+        if is_turkish:
+            answer = (
+                f"`{requested}` adında bir tablo bu DB profili için katalog veya canlı metadata'da bulunamadı."
+            )
+            if candidates:
+                answer += " Benzer adlar (kesin değil, öneri): " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+            else:
+                answer += " Önce `/search sync` çalıştırarak katalogu güncellemeyi deneyebilirsiniz."
             return answer
-        answer = f"I could not verify `{requested}` as an exact table in live DB metadata, so I am not substituting a similar table as the target."
+        answer = (
+            f"I could not find a table named `{requested}` in this DB profile's catalog or live metadata."
+        )
         if candidates:
-            answer += " Similar catalog candidates are suggestions only: " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+            answer += " Similar names (suggestions, not confirmed): " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+        else:
+            answer += " You may want to run `/search sync` to refresh the catalog first."
         return answer
 
     def _provenance(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]) -> list[str]:
@@ -2530,6 +2894,22 @@ class SearchAgent:
                 provenance=[],
                 details={"reason": "no_llm"},
             )
+
+        # Persist the user side of the turn early so the planner sees a fully-
+        # formed conversation history (including this question) and so the
+        # compaction call below works on a complete picture.
+        sid = self._ensure_session_id()
+        store = self._ensure_session_store()
+        if store is not None and sid:
+            try:
+                store.append_user_turn(int(sid), question=clean_question)
+                store.maybe_compact(
+                    int(sid),
+                    model=getattr(self.cfg.llm, "model", ""),
+                    llm_provider=self._llm_provider() if self._llm_available() else None,
+                )
+            except Exception as exc:
+                log.warning("Chat session bookkeeping failed: %s", exc)
 
         stage_metrics: list[dict[str, Any]] = []
         thought_trace: list[dict[str, str]] = []
@@ -2824,6 +3204,16 @@ class SearchAgent:
                 "topic": plan.normalized_question or clean_question,
                 "tables": tables if self._should_remember_table_scope(plan, retrieval_details, clean_question) else [],
                 "columns": [col for col in columns if col],
+                "answer_summary": (answer_text or "")[:1000],
+                "confidence": confidence,
+                "plan": {
+                    "intent": plan.intent,
+                    "search_mode": plan.search_mode,
+                    "question_class": plan.question_class,
+                    "target_entity": plan.target_entity,
+                    "normalized_question": plan.normalized_question,
+                },
+                "tokens": _merge_usage(interpretation_usage, live_probe_usage, answer_usage),
             }
         )
         # Suppress the bottom rich table for shapes whose answer summary already
