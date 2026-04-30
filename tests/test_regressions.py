@@ -22,7 +22,7 @@ from amx.cli_support.commands.manual import _run_edit_wizard
 from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
-from amx.config import AMXConfig, DBConfig, normalize_llm_model
+from amx.config import AMXConfig, DBConfig, LLMConfig, normalize_llm_model
 from amx.core import AMXApplication, UniversalMetadataAdapter
 from amx.core.errors import ErrorMapper
 from amx.cli_support.commands.db import (
@@ -2286,6 +2286,157 @@ class ProfileCreationLeakageTests(unittest.TestCase):
             self.assertNotIn("sk-real-key", new.api_key)
 
 
+class ProfilePersistenceRaceTests(unittest.TestCase):
+    """Newly-created DB and LLM profiles must survive an exit-restart cycle
+    with their fields populated.
+
+    Before this fix, ``set_active_db_profile`` and ``set_active_llm_profile``
+    had an autosave race: assigning ``self.active_*_profile = name`` triggered
+    an intermediate save() that mirrored the still-stale ``self.<thing>`` into
+    ``<thing>_profiles[name]``, wiping the just-added profile's data. The LLM
+    side was the most visible symptom — newly-created LLM profiles came back
+    on restart with blank ``provider``/``model``/``api_key`` fields, surfacing
+    as the user-reported "newly created profiles are gone" persistence bug.
+
+    The DB-side ``cmd_add_profile`` originally hid the same race by manually
+    writing ``cfg.db = db`` after the activation, which corrected the dict.
+    Both paths now flow through the transactional ``set_active_*_profile``
+    helpers so the activation produces exactly one save with consistent state.
+    """
+
+    def test_new_db_profile_data_survives_restart(self) -> None:
+        """Reproducer for the DB half: create a profile via the actual
+        ``cmd_add_profile`` flow, drop the cfg, reload from disk, and assert
+        the new profile's fields are populated (not blanked by stale-mirror)."""
+        from amx.cli_support.commands.db import cmd_add_profile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            new_db = DBConfig(
+                backend="postgresql",
+                host="prod.db.example.com",
+                user="alice",
+                database="orders",
+                password="secret",
+            )
+            with patch(
+                "amx.cli_support.commands.db.interactive_db_block",
+                return_value=new_db,
+            ):
+                cmd_add_profile(cfg, ["prod_pg"])
+            del cfg
+
+            cfg2 = AMXConfig.load(str(cfg_path))
+            self.assertIn("prod_pg", cfg2.db_profiles)
+            persisted = cfg2.db_profiles["prod_pg"]
+            self.assertEqual(persisted.backend, "postgresql")
+            self.assertEqual(persisted.host, "prod.db.example.com")
+            self.assertEqual(persisted.user, "alice")
+            self.assertEqual(persisted.database, "orders")
+            self.assertEqual(cfg2.active_db_profile, "prod_pg")
+            self.assertEqual(cfg2.db.host, "prod.db.example.com")
+
+    def test_new_llm_profile_data_survives_restart(self) -> None:
+        """Reproducer for the LLM half — the user-visible bug. With the
+        pre-fix ``set_active_llm_profile``, ``provider`` and ``model`` came
+        back blank after restart. With the transaction-wrapped fix they
+        round-trip correctly."""
+        from amx.cli_support.commands.profiles import cmd_add_llm_profile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            new_llm = LLMConfig(
+                provider="openai",
+                model="gpt-4o-mini",
+                api_key="sk-test-key",
+                language="english",
+            )
+            with patch(
+                "amx.cli_support.commands.profiles.interactive_llm_block",
+                return_value=new_llm,
+            ), patch(
+                "amx.cli_support.commands.profiles.confirm",
+                return_value=True,  # accept "Activate now?"
+            ):
+                cmd_add_llm_profile(cfg, ["work"])
+            del cfg
+
+            cfg2 = AMXConfig.load(str(cfg_path))
+            self.assertIn("work", cfg2.llm_profiles)
+            persisted = cfg2.llm_profiles["work"]
+            self.assertEqual(persisted.provider, "openai")
+            self.assertEqual(persisted.model, "gpt-4o-mini")
+            self.assertEqual(cfg2.active_llm_profile, "work")
+            # cfg.llm (the active mirror) must also reflect the new profile,
+            # not the empty defaults that used to leak through the race.
+            self.assertEqual(cfg2.llm.provider, "openai")
+            self.assertEqual(cfg2.llm.model, "gpt-4o-mini")
+
+    def test_create_profile_when_existing_profile_is_active_keeps_both(self) -> None:
+        """Closer to the user's reported scenario: the disk already has a
+        profile (`pg-dbr`) which becomes the active mirror at load. Creating
+        a new profile then activating it must NOT lose either profile's data
+        — the bug used to wipe whichever one the activation touched second."""
+        from amx.cli_support.commands.db import cmd_add_profile
+        from amx.cli_support.commands.profiles import cmd_add_llm_profile
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            seed = AMXConfig.load(str(cfg_path))
+            seed.upsert_db_profile(
+                "pg-dbr",
+                DBConfig(
+                    backend="databricks",
+                    host="adb-existing.azuredatabricks.net",
+                    http_path="/sql/1.0/warehouses/abc",
+                    access_token="dapi-original-token",
+                    catalog="dap",
+                    database="dev",
+                ),
+            )
+            seed.set_active_db_profile("pg-dbr")
+            del seed
+
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertEqual(cfg.active_db_profile, "pg-dbr")
+            new_db = DBConfig(
+                backend="postgresql",
+                host="prod.db",
+                user="alice",
+                database="prod_db",
+            )
+            new_llm = LLMConfig(provider="openai", model="gpt-4o-mini")
+            with patch(
+                "amx.cli_support.commands.db.interactive_db_block",
+                return_value=new_db,
+            ):
+                cmd_add_profile(cfg, ["prod_pg"])
+            with patch(
+                "amx.cli_support.commands.profiles.interactive_llm_block",
+                return_value=new_llm,
+            ), patch(
+                "amx.cli_support.commands.profiles.confirm",
+                return_value=True,
+            ):
+                cmd_add_llm_profile(cfg, ["work"])
+            del cfg
+
+            cfg2 = AMXConfig.load(str(cfg_path))
+            # Both the seeded profile AND the new one must be present.
+            self.assertIn("pg-dbr", cfg2.db_profiles)
+            self.assertIn("prod_pg", cfg2.db_profiles)
+            self.assertIn("work", cfg2.llm_profiles)
+            # New profiles must have their data, not be blank shells.
+            self.assertEqual(cfg2.db_profiles["prod_pg"].host, "prod.db")
+            self.assertEqual(cfg2.llm_profiles["work"].provider, "openai")
+            self.assertEqual(cfg2.llm_profiles["work"].model, "gpt-4o-mini")
+            # Active should be the most recently activated profile.
+            self.assertEqual(cfg2.active_db_profile, "prod_pg")
+            self.assertEqual(cfg2.active_llm_profile, "work")
+
+
 class CrashReportSanitizationTests(unittest.TestCase):
     """`write_crash_report` and `redact_secrets` keep DB passwords, API
     keys, and Databricks PATs from leaking into a file the user is
@@ -4508,17 +4659,24 @@ class FirstRunConfigTests(unittest.TestCase):
             self.assertEqual(dict(cfg.llm_profiles), {})
             self.assertEqual(cfg.active_llm_profile, "")
 
-    def test_load_from_existing_file_without_profiles_falls_back_to_default(self) -> None:
-        """Legacy configs that predate ``db_profiles`` must keep working: when
-        the file exists but has no profiles section we still synthesize
-        ``default`` so saved settings remain reachable."""
+    def test_load_from_existing_file_without_profiles_leaves_active_empty(self) -> None:
+        """An existing config file with no profiles must NOT auto-synthesize a
+        ``default`` profile from the empty mirror. Doing so leaks a phantom
+        connection (host=localhost, user=amx, password=amx_pass, database=SAP)
+        into ``cfg.db_profiles['default']`` from the dataclass fields and makes
+        ``cfg.db.is_configured()`` flip-flop based on dataclass defaults rather
+        than user intent. The CLI startup summary now treats empty profiles as
+        ``"(not configured — run /setup or /add-db-profile)"``.
+        """
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.yml"
             cfg_path.write_text("write_through_config: true\n")
             cfg = AMXConfig.load(str(cfg_path))
             self.assertFalse(cfg.is_first_run)
-            self.assertIn("default", cfg.db_profiles)
-            self.assertEqual(cfg.active_db_profile, "default")
+            self.assertEqual(dict(cfg.db_profiles), {})
+            self.assertEqual(cfg.active_db_profile, "")
+            self.assertEqual(dict(cfg.llm_profiles), {})
+            self.assertEqual(cfg.active_llm_profile, "")
 
     def test_save_writes_config_with_owner_only_permissions(self) -> None:
         """Config holds DB passwords / API keys; the file must be 0o600 on POSIX."""

@@ -467,10 +467,19 @@ def cmd_add_profile(
         # /add-db-profile would silently pre-fill with the active
         # profile's host / token / etc.
         db = interactive_db_block(None)
-    cfg.db_profiles[name] = db
-    cfg.active_db_profile = name
-    cfg.db = db
-    cfg.save()
+    # Use the safe upsert + transactional set_active path. The previous inline
+    # ``cfg.active_db_profile = name; cfg.db = db`` ordering tripped the
+    # autosave hook between the two assignments — the intermediate save() ran
+    # ``db_profiles[name] = self.db`` while ``self.db`` was still the OLD active
+    # profile's data. The final ``cfg.db = db`` corrected the dict, but the
+    # symmetric LLM path (cmd_add_llm_profile + set_active_llm_profile) had no
+    # such corrective second write and persisted the stale-mirror data —
+    # surfacing as the user-reported "newly created profile is empty after
+    # restart". upsert_db_profile + set_active_db_profile inside transaction()
+    # collapse the writes so save runs once with consistent state.
+    with cfg.transaction():
+        cfg.upsert_db_profile(name, db)
+        cfg.set_active_db_profile(name)
     success(f"Profile saved and activated: {name} [{db.backend}]")
     if log_event is not None:
         log_event(
