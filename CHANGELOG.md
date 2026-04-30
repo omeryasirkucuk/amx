@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-30
+### Fixed
+- **OpenRouter models with non-OpenAI vendor namespaces no longer fail with `LLM Provider NOT provided`** (`amx/llm/provider.py`): the user reported `provider=openrouter, model=qwen/qwen3.5-flash-02-23` failing because LiteLLM saw the `qwen/` head and didn't recognise it as a routable provider. Root cause: `LLMProvider.model_name` had an early-return `if "/" in raw: return raw` that bypassed the `openrouter/` prefix for any model id containing a slash, and `PROVIDER_MODEL_PREFIX["openrouter"]` was set to an empty string. OpenAI-prefixed models (`openai/gpt-4o-mini`) happened to work via LiteLLM's OpenAI client + api_base override, but vendor namespaces (qwen/, mistralai/, meta-llama/, google/, x-ai/, ...) had no fallback. Fix: `PROVIDER_MODEL_PREFIX["openrouter"] = "openrouter/"` is now always applied; `model_name` skips the prefix only when `raw` already begins with it. Net effect: every OpenRouter model id reaches LiteLLM as `openrouter/<vendor>/<model>`, the canonical form OpenRouter expects.
+
 ## [0.5.2] - 2026-04-30
 ### Added
 - **Progress counters on `analysis_runs`** (`amx/storage/sqlite_store.py`): four new columns recorded per run — `selected_count` (assets the user originally picked), `planned_count` (post missing-only-filter target), `processed_count` (assets that actually started processing — survives Ctrl+C), `applied_count` (results successfully written to live DB). Plus a `review_strategy` column so the status logic can distinguish auto-apply from individual / deferred. Idempotent ALTER TABLE migrations let existing DBs pick up the new columns transparently.
