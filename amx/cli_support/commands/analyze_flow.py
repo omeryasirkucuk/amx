@@ -293,6 +293,11 @@ def execute_analyze_run(
     skipped: list[object] = []
     processed_assets: list[str] = []
     skipped_assets: list[str] = []
+    # Tables the missing-only filter dropped because they were already
+    # fully commented. Tracked separately from ``skipped_assets`` (which
+    # only grows on ProfilingError) so /history can report planned_count
+    # = total_assets - <filter skips> accurately.
+    filter_skipped_count = 0
     final_status: str | None = None
     final_error_text = ""
 
@@ -508,27 +513,24 @@ def execute_analyze_run(
                                         # process_table returned suggestions —
                                         # this asset truly went through agents
                                         # (filter didn't skip it as fully-
-                                        # commented). Otherwise an empty list
-                                        # means "skipped by missing-only" and
-                                        # planned_count needs to drop too.
+                                        # commented).
                                         hs.increment_run_processed(run_id, by=1)
                                         if review_strategy == "auto-apply":
                                             applied_in_table = sum(1 for r in results if r.applied)
                                             if applied_in_table:
                                                 hs.increment_run_applied(run_id, by=applied_in_table)
                                     else:
-                                        # Filter dropped this asset — adjust
-                                        # planned_count down so the X/Y in
-                                        # /history matches reality.
+                                        # Filter dropped this asset (it was
+                                        # already fully commented). Bump the
+                                        # filter-skip tally and recompute
+                                        # planned_count = total - filter_skips
+                                        # so /history's Processed column shows
+                                        # processed/<remaining>.
+                                        filter_skipped_count += 1
                                         hs.update_run_planned_count(
                                             run_id,
-                                            max(0, total_assets - len(skipped_assets) - 1),
+                                            max(0, total_assets - filter_skipped_count),
                                         )
-                                        # NOTE: total_assets above is the
-                                        # *original* selection. We subtract
-                                        # the running skipped tally so each
-                                        # filter-skip lowers planned_count
-                                        # incrementally.
                                 except Exception as exc:
                                     log.debug(
                                         "Could not update analyze run counters for run_id=%s: %s",
