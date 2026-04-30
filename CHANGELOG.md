@@ -6,6 +6,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-04-30
+### Added
+- **Strong-vs-weak explicit-mention strength** (`amx/search/agent.py:_explicit_table_mentions_for_question`): mentions captured from `<token> table` / `table <token>` / `schema.table` patterns are tagged `strength="strong"` (the user explicitly called the noun a table); subject-form patterns (`what's the X` / `describe X` / `X nedir`) are tagged `strength="weak"` (the noun could be a column or a generic entity). The alignment guard now reads this signal to override LLM mode unconditionally for strong mentions and require catalog/live-DB confirmation for weak ones.
+- **Live-DB fallback in `_catalog_resolvable_subject`** (`amx/search/agent.py`): when the catalog has no entry but the user is in a `current_schema`, we now also probe `_live_table_exists(current_schema, token)`. This handles the user-reported case where vbrk lives in live PostgreSQL but hasn't been `/search sync`'d into the catalog yet.
+- **Follow-up reaffirmation short-circuit** (`amx/search/agent.py:_handle_followup_reaffirmation`): brief push-back questions ("Are you sure?", "really?", "is that right?", "why?", "emin misin?", "gerçekten mi?", "neden?", "öyle mi?") no longer fall into clarification — instead, the most recent assistant turn from `ChatSessionStore.recent_turns` is restated verbatim with a confirmation prefix. Bilingual reply, deterministic, zero LLM calls.
+- **Two new tests** in `tests/test_search_catalog.py`: `test_strong_table_mention_wins_when_catalog_is_empty` (asserts "which schema have vbrk table" routes to `table_explain` even with an empty catalog, as long as live DB has it under `current_schema`); `test_followup_reaffirmation_restates_prior_assistant_turn` (asserts "Are you sure?" reuses the prior assistant turn without consuming a new LLM response).
+
+### Changed
+- **`_align_plan_shape` overrides for strong mentions even when catalog is empty** (`amx/search/agent.py`): previously the override required an exact-name catalog match. Strong mentions (`X table` / `table X`) now bypass that requirement — when the user explicitly calls the noun a "table", we trust the route and let `_resolve_table_targets` surface "not found" cleanly if both catalog and live DB come up empty.
+
+### Fixed
+- **`which schema have vbrk table` no longer drifts to a generic "couldn't find" answer** (`amx/search/agent.py`): the prior version required vbrk to be in the catalog before the alignment guard would override the LLM's inventory mode. Users running against a live DB that hadn't been `/search sync`'d got the wrong answer. With strength-tagged mentions, the explicit `<token> table` form is now respected unconditionally and target resolution falls back to live-DB existence check.
+- **`Are you sure?` no longer triggers clarification** (`amx/search/agent.py`): brief reaffirmation questions used to fall into the LLM planner with no scope and end up in `should_clarify`. The new short-circuit reuses the prior assistant turn.
+
 ## [0.3.4] - 2026-04-30
 ### Added
 - **Catalog-grounded alignment guard** (`amx/search/agent.py:_catalog_resolvable_subject`): pre-check whether an extracted subject token from the question is actually an exact-name table in the catalog before forcing `table_explain`. This narrows the override to high-confidence cases — `vbrk` (real table) gets re-routed; `vbrk_id` (column-shaped, no table match) does not. Used by both `_align_plan_shape` and the clarification-skip guard.

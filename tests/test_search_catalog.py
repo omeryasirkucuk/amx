@@ -1326,6 +1326,79 @@ class SearchCatalogTests(unittest.TestCase):
 
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
 
+    def test_strong_table_mention_wins_when_catalog_is_empty(self) -> None:
+        """`X table` keyword mentions override LLM mode without catalog match.
+
+        Regression for the user-reported case where 'which schema have vbrk
+        table' fell through to a generic semantic answer because vbrk was
+        only in live DB, not yet synced into the catalog. The strong-signal
+        path must still re-route to table_explain so target resolution runs
+        against the live DB.
+        """
+        # Empty catalog — vbrk has no entry here.
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap_s6p"
+
+        class FakeDB:
+            def list_tables(self, schema: str) -> list[str]:
+                return ["vbrk"] if schema == "sap_s6p" else []
+
+            def table_metadata_probe_query(self, schema: str, table: str) -> str:
+                return f"metadata probe for {schema}.{table}"
+
+            def get_table_metadata_snapshot(self, schema: str, table: str) -> dict:
+                return {
+                    "schema": schema,
+                    "table": table,
+                    "table_comment": "Billing",
+                    "columns": [{"name": "vbeln", "dtype": "BIGINT", "nullable": False, "comment": "Doc"}],
+                }
+
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # LLM mis-routes to a generic semantic_concept mode.
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,'
+                '"normalized_question":"which schema has vbrk table",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"unknown","entity_hints":[],'
+                '"search_queries":["which schema vbrk"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"semantic"}',
+                '{"needs_live_probe":true,"reason":"want metadata","operations":'
+                '[{"operation":"table_metadata_snapshot","table_path":"sap_s6p.vbrk",'
+                '"rationale":"explain"}]}',
+            )
+            with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
+                service = SearchService(cfg, self.catalog)
+                answer = service.ask("which schema have vbrk table")
+
+        # Even though catalog is empty, the alignment guard must reroute
+        # to table_explain because the user said "vbrk table" (strong).
+        self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.vbrk"])
+
+    def test_followup_reaffirmation_restates_prior_assistant_turn(self) -> None:
+        """'Are you sure?' / 'emin misin?' restate prior answer, no LLM call."""
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # Seed a prior turn (1 LLM response for interpretation,
+            # 1 for synthesis).
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,'
+                '"normalized_question":"address columns",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"column","entity_hints":[],'
+                '"search_queries":["address"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"discovery","decision_confidence":"high"}',
+                "Live DB has 12 columns on sap_s6p.adrc.",
+            )
+            service = SearchService(cfg, self.catalog)
+            service.ask("how many columns are in address")
+            # Reaffirmation question must NOT consume a new LLM response —
+            # if it did, the queue would underflow and the test would error.
+            answer = service.ask("Are you sure?")
+        self.assertEqual(answer.intent, "reaffirmation")
+        # Prior assistant text must be restated.
+        self.assertIn("12 columns", answer.summary)
+
     def test_chitchat_short_circuits_without_llm_call(self) -> None:
         """Greetings like 'nasılsın' / 'hi' must not reach the planner."""
         cfg = self._search_cfg()
