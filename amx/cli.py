@@ -199,16 +199,6 @@ def _log_app_event(
         log.debug("Could not persist app event: %s", exc)
 
 
-@click.group(invoke_without_command=True)
-@click.version_option(__version__, prog_name="amx")
-@click.option("--config", "cfg_path", default=None, help="Path to config YAML file.")
-@click.option(
-    "--debug/--no-debug",
-    default=False,
-    envvar="AMX_DEBUG",
-    help="Show full tracebacks on errors and verbose internal logs.",
-)
-@click.pass_context
 def _raise_open_file_limit(target: int = 4096) -> None:
     """Lift the per-process NOFILE soft limit on macOS / Linux.
 
@@ -244,6 +234,16 @@ def _raise_open_file_limit(target: int = 4096) -> None:
         return
 
 
+@click.group(invoke_without_command=True)
+@click.version_option(__version__, prog_name="amx")
+@click.option("--config", "cfg_path", default=None, help="Path to config YAML file.")
+@click.option(
+    "--debug/--no-debug",
+    default=False,
+    envvar="AMX_DEBUG",
+    help="Show full tracebacks on errors and verbose internal logs.",
+)
+@click.pass_context
 def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
     """AMX — Agentic Metadata Extractor.
 
