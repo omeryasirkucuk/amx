@@ -576,6 +576,77 @@ def _require_namespace(cmd: str, namespace: str, expected: str, replacement: str
     return True
 
 
+def _run_ask_repl(
+    cfg: AMXConfig,
+    *,
+    main_command: click.Group,
+    log_event: LogEvent,
+) -> None:
+    """Drop into a sticky ``ask>`` REPL when ``/ask`` is typed alone.
+
+    Each non-empty line is dispatched as a ``/search ask <line>`` invocation,
+    re-using the same conversational session pointer (``cfg.active_chat_session_id``)
+    so follow-up turns ("any others?", "what about its columns?") are linked.
+
+    Exits on ``/exit``, ``/quit``, ``/back``, an empty line + Ctrl-D, or Ctrl-C.
+    Any other line that begins with ``/`` is rejected with a hint — REPL mode is
+    deliberately question-only so users don't accidentally run unrelated CLI
+    commands while mid-conversation.
+    """
+    sid = cfg.active_chat_session_id
+    sid_label = f"#{sid}" if sid else "new"
+    heading(f"Ask mode (session {sid_label})")
+    info(
+        "Type a question, press Enter. /exit (or Ctrl-D on an empty line) to leave."
+    )
+
+    inner = PromptSession(
+        message=HTML("<ansicyan><b>ask&gt;</b></ansicyan> "),
+        mouse_support=False,
+    )
+    while True:
+        try:
+            line = inner.prompt().strip()
+        except EOFError:
+            console.print()
+            success("Left ask mode.")
+            return
+        except KeyboardInterrupt:
+            console.print()
+            success("Left ask mode.")
+            return
+
+        if not line:
+            continue
+        # Allow the user to escape the REPL with familiar slash verbs without
+        # needing to remember "press Ctrl-D on an empty line".
+        if line in {"/exit", "/quit", "/q", "/back", "exit", "quit", "q", "back"}:
+            success("Left ask mode.")
+            return
+        if line.startswith("/"):
+            warn(
+                "Inside /ask only questions are accepted. /exit to leave, "
+                "then run any slash command from the main prompt."
+            )
+            continue
+
+        previous = os.environ.get("AMX_SESSION_CHILD")
+        os.environ["AMX_SESSION_CHILD"] = "1"
+        try:
+            main_command.main(args=["search", "ask", line], prog_name="amx", standalone_mode=False)
+        except click.ClickException as exc:
+            error(_format_session_click_error(f"ask {line}", exc))
+        except SystemExit:
+            pass
+        except Exception as exc:  # pragma: no cover
+            error(f"Ask failed: {exc}")
+        finally:
+            if previous is None:
+                os.environ.pop("AMX_SESSION_CHILD", None)
+            else:
+                os.environ["AMX_SESSION_CHILD"] = previous
+
+
 def _handle_session_builtin(
     cfg: AMXConfig,
     namespace: str,
@@ -1111,6 +1182,14 @@ def run_interactive_session(
                     warn_no_doc_paths_for_scan_or_ingest(cfg, cmd=parts[0])
                     continue
             if _handle_manual_usage_shortcuts(namespace, parts):
+                continue
+
+            # Special-case: bare "/ask" (no question) drops the user into a
+            # sticky ask>-prompt REPL. We want this BEFORE the builtin/click
+            # routing because Click would error out with
+            # "Usage: /search ask <question>" otherwise.
+            if parts == ["ask"]:
+                _run_ask_repl(cfg, main_command=main_command, log_event=log_event)
                 continue
 
             handled = _handle_session_builtin(cfg, namespace, parts, log_event=log_event)

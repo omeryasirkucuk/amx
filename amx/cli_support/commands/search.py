@@ -104,22 +104,36 @@ def _render_search_rows(
         console.print(inventory)
         return
     if answer_shape == "table_summary":
-        # Focused key-columns view for "what is table X" answers.
-        summary_table = Table(title="Key columns", show_lines=True, box=box.SIMPLE_HEAVY)
-        summary_table.add_column("Schema", style="cyan", no_wrap=True)
-        summary_table.add_column("Table", style="cyan", no_wrap=True)
+        # Focused key-columns view for "what is table X" answers. The retrieval
+        # path puts a single row_type="table" header at the top followed by
+        # row_type="column" entries; we drop the header row (it has no
+        # column_name and used to render as a noisy "-" line) and lift the
+        # schema/table into the panel title so columns are easier to read.
+        column_rows = [row for row in rows if str(row.get("row_type") or "") != "table"]
+        if not column_rows:
+            column_rows = rows
+        title = "Key columns"
+        for row in rows:
+            schema_name = str(row.get("schema_name") or "")
+            table_name = str(row.get("table_name") or "")
+            if schema_name and table_name:
+                title = f"Key columns — {schema_name}.{table_name}"
+                break
+        summary_table = Table(title=title, show_lines=False, box=box.SIMPLE_HEAVY)
         summary_table.add_column("Column", style="cyan", no_wrap=True)
-        summary_table.add_column("Type", style="cyan", no_wrap=True)
+        summary_table.add_column("Type", style="white", no_wrap=True)
         summary_table.add_column("Description", style="white", overflow="fold", max_width=72)
-        for row in rows[:8]:
-            summary_table.add_row(
-                str(row.get("schema_name", "") or ""),
-                str(row.get("table_name", "") or ""),
-                str(row.get("column_name", "") or "-"),
-                str(row.get("data_type", "") or ""),
-                Text(str(row.get("effective_description", "") or "")),
-            )
-        console.print(summary_table)
+        rendered = 0
+        for row in column_rows[:12]:
+            column_name = str(row.get("column_name") or "")
+            if not column_name:
+                continue
+            data_type = str(row.get("data_type") or row.get("dtype") or "")
+            description = str(row.get("effective_description") or "")
+            summary_table.add_row(column_name, data_type, Text(description))
+            rendered += 1
+        if rendered:
+            console.print(summary_table)
         return
     # Default: ranked Search matches. Drop rows whose score is exactly 0.00 —
     # those are inventory/diagnostic rows that leaked into the result set and
@@ -439,9 +453,16 @@ def _run_search_ask_body(
             scope=_search_scope_from_answer(answer),
         )
     info(answer.summary)
-    if answer.provenance and svc.settings.get("show_provenance", "true").lower() == "true":
-        info("Provenance: " + "; ".join(answer.provenance))
-    if svc.settings.get("show_confidence", "true").lower() == "true":
+    # Provenance and confidence are diagnostic, not conversational. Surface
+    # them only when --debug is set or when the user explicitly opted in via
+    # `/search config show_provenance true`. By default we keep the answer
+    # uncluttered: a one-line summary plus the focused result panel.
+    show_prov = svc.settings.get("show_provenance", "false").lower() == "true"
+    show_conf = svc.settings.get("show_confidence", "false").lower() == "true"
+    if debug or show_prov:
+        if answer.provenance:
+            info("Provenance: " + "; ".join(answer.provenance))
+    if debug or show_conf:
         info(f"Confidence: {answer.confidence}")
     trace = answer.details.get("thought_trace", []) or []
     if debug and trace:
