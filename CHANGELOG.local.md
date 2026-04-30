@@ -2,6 +2,13 @@
 
 This file is intentionally **gitignored**. Use it for granular notes while keeping `CHANGELOG.md` as the public release log.
 
+## [0.3.2] — 2026-04-30
+### Profile Transaction Hardening
+- **amx/config.py**: `_autosave()` now respects active `cfg.transaction()` suspension, preventing profile upsert helpers from writing intermediate YAML snapshots during add+activate flows.
+- **amx/cli_support/commands/profiles.py**: Wrapped LLM profile upsert + optional activation in a transaction, matching the DB profile flow.
+- **tests/test_regressions.py**: Added coverage that upsert+activate does not save until transaction exit and persists the intended active profile.
+- **README.md / CHANGELOG.md / pyproject.toml / amx/__init__.py**: Documented the hardening and bumped the release to `0.3.2`.
+
 ## [0.2.9] — 2026-04-29
 ### Slash-First LLM UX
 - **amx/cli_support/commands/analyze_flow.py**: Moved the `/run` LLM preflight under the live command display so it renders like the database connect check, and replaced shell-style “amx setup” guidance with slash-command guidance.

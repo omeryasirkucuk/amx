@@ -193,10 +193,10 @@ def cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
         # so would silently pre-fill /add-llm-profile with the active
         # profile's model name, API key, base URL, and language.
         llm = interactive_llm_block(None)
-    cfg.upsert_llm_profile(name, llm)
-    if confirm(f"Activate profile {name} now?", default=True):
-        cfg.set_active_llm_profile(name)
-    cfg.save()
+    with cfg.transaction():
+        cfg.upsert_llm_profile(name, llm)
+        if confirm(f"Activate profile {name} now?", default=True):
+            cfg.set_active_llm_profile(name)
     success(f"LLM profile saved: {name} (active: {cfg.active_llm_profile})")
 
 
