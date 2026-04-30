@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-04-30
+### Fixed
+- **`/ask` follow-ups no longer lose memory between turns** (`amx/config.py`, `amx/search/agent.py`, `amx/cli_support/session.py`): the interactive REPL dispatches each `/ask <q>` line through `main_command.main(args=...)`, which re-runs Click's `main()` and rebuilds `ctx.obj = AMXConfig.load(cfg_path)` from disk. `active_chat_session_id` is intentionally ephemeral (not in `_PERSISTED_FIELDS`), so every question opened a brand-new chat session — `_handle_meta_query` then read an empty store and answered "this is the first question in this session" even when the user had asked several. We now bridge the id through an `AMX_CHAT_SESSION_ID` environment variable: `_run_ask_repl` writes it on entry (or clears it for a fresh REPL), `SearchAgent._ensure_session_id` mirrors it whenever a session is created, and `AMXConfig.load` reads it back at the top of every load. Net result: all turns inside one `/ask` REPL session land in the same `chat_sessions` row, so memory survives across follow-ups.
+
 ## [0.4.1] - 2026-04-30
 ### Added
 - **`find_columns_by_dtype` tool** (`amx/search/agent_tools.py`): returns columns whose dtype matches a SQL type token (`boolean`, `int`, `date`, `timestamp`, `text`, ...). Supports dtype FAMILIES — `boolean` covers BOOL/BOOLEAN, `int` covers BIGINT/INTEGER/SMALLINT, `date` covers DATE/TIMESTAMP/TIMESTAMPTZ. Rolled up to a per-table view so the LLM sees `"sap_s6p.cskt has 1 boolean column: is_deleted"`. Fixes the user-reported case where `"which tables have boolean columns?"` only surfaced 2 tables via fuzzy semantic search instead of all dtype-BOOLEAN columns.

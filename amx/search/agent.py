@@ -326,6 +326,16 @@ class SearchAgent:
             self.cfg.active_chat_session_id = sid
         except Exception:
             pass
+        # Mirror to env so subsequent ``main_command.main()`` invocations from
+        # the interactive REPL re-pick the same session via ``AMXConfig.load``.
+        # Without this, each ``/ask <q>`` line creates a brand-new session and
+        # follow-up questions lose all prior context.
+        try:
+            import os as _os
+
+            _os.environ["AMX_CHAT_SESSION_ID"] = str(int(sid))
+        except Exception:
+            pass
         return sid
 
     def _memory(self) -> list[dict[str, Any]]:
