@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-04-30
+### Fixed
+- **Reasoning-style models that return empty content now abort the run with one clear message** (`amx/llm/provider.py`): user reported `openrouter/tencent/hy3-preview:free` exhausting all output tokens on internal "thinking" and returning `content=""` with `finish_reason=length` on every batch. Previous behavior raised the soft `LLMTruncationError` per batch, which the agents caught and recorded as a diagnostic, churning through the table list while the same failure repeated. Now: when `finish_reason=length` AND `content == ""`, we raise `FatalLLMError` instead — the run aborts after the first attempt with a friendly message naming non-reasoning paid alternatives (`openrouter/openai/gpt-4o-mini`, `openrouter/anthropic/claude-3-5-haiku`, `openrouter/google/gemini-1.5-flash`) and pointing at `AMX_LLM_MIN_MAX_TOKENS` / `AMX_REASONING_EFFORT=minimal` for users who insist on a reasoning model.
+
+### Why this matters for open source
+Free / preview tiers on OpenRouter often expose reasoning-style models (Tencent Hunyuan 3, DeepSeek-R1, QwQ, etc.) where every output token goes to internal chain-of-thought. AMX's structured-JSON prompts can't produce useful work in that mode regardless of how many times we retry. Aborting early with a model-recommendation message saves users hours of confused retries and burned API quota.
+
 ## [0.5.8] - 2026-04-30
 ### Fixed
 - **auto-apply now writes each table's comments to the live DB IMMEDIATELY after that table finishes** (`amx/agents/orchestrator.py`): the previous flow marked results `applied=True` per-table but the actual `COMMENT ON ...` SQL ran in one batch at the END of the run. A user that completed bkpf and then Ctrl+C'd during bseg saw bkpf in catalog as 'applied' but its comment never reached the live DB. Now `process_table` calls `apply_review_results_to_db` for the table's results before returning, so partial completion = partial DB state (and the missing-only filter on the retry skips what's already there).
