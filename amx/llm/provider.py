@@ -40,7 +40,16 @@ def _litellm() -> ModuleType:
 
 PROVIDER_MODEL_PREFIX = {
     "openai": "openai/",
-    "openrouter": "",
+    # OpenRouter prefix is now ALWAYS applied. Older code left this empty
+    # because typical OpenRouter model ids look like "openai/gpt-4o-mini" —
+    # i.e. they already contain a "/" and LiteLLM happens to route them
+    # correctly via the OpenAI client + api_base override. But for vendor
+    # namespaces LiteLLM doesn't natively recognise (qwen/, mistralai/,
+    # google/, meta-llama/, etc.) the missing "openrouter/" prefix makes
+    # LiteLLM fail with "LLM Provider NOT provided". Forcing the prefix
+    # makes every OpenRouter model identifiable. ``model_name`` strips the
+    # prefix when it's already present so we never double-prepend.
+    "openrouter": "openrouter/",
     "anthropic": "anthropic/",
     "gemini": "gemini/",
     "deepseek": "deepseek/",
@@ -421,10 +430,19 @@ class LLMProvider:
         raw = normalize_llm_model(self.cfg.provider, self.cfg.model)
         if not raw:
             return raw
-        if "/" in raw:
-            return raw
         prefix = PROVIDER_MODEL_PREFIX.get(self.cfg.provider, "")
-        return f"{prefix}{raw}" if prefix else raw
+        # Apply the prefix unless the user already typed it in their config.
+        # Previous code used a blanket ``if "/" in raw`` early-return, which
+        # bypassed the prefix for any model id that contained a vendor
+        # namespace (e.g. ``qwen/qwen3.5-...`` on OpenRouter). LiteLLM then
+        # saw an unknown provider in the head of the model id and raised
+        # "LLM Provider NOT provided". The new check skips the prefix only
+        # when ``raw`` already begins with it.
+        if not prefix:
+            return raw
+        if raw.lower().startswith(prefix.lower()):
+            return raw
+        return f"{prefix}{raw}"
 
     def chat(
         self,
