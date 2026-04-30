@@ -176,7 +176,30 @@ def run_tool_agent(
     user/assistant exchange so the model can resolve "it" / "that table" /
     "bu tablo" without re-asking the user.
     """
-    toolbox = ToolBox(cfg, catalog)
+    # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
+    # pool) is disposed at the end of every question. Without this, each
+    # ``/ask`` turn leaks a few file descriptors; after enough turns the
+    # process hits ``OSError: Too many open files`` (the user-reported case).
+    with ToolBox(cfg, catalog) as toolbox:
+        return _run_tool_loop(
+            toolbox=toolbox,
+            cfg=cfg,
+            llm=llm,
+            question=question,
+            answer_language=answer_language,
+            session_memory=session_memory,
+        )
+
+
+def _run_tool_loop(
+    *,
+    toolbox: "ToolBox",
+    cfg: AMXConfig,
+    llm: LLMProvider,
+    question: str,
+    answer_language: str,
+    session_memory: list[dict[str, Any]] | None,
+) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
     # system prompt so the LLM doesn't have to spend a tool call discovering
     # what schemas exist before answering simple "list tables in X" queries.

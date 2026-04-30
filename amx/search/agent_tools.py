@@ -64,6 +64,26 @@ class ToolBox:
             self._db = self._db_factory()
         return self._db
 
+    def close(self) -> None:
+        """Dispose the live DB connector. Each ``/ask`` question instantiates a
+        fresh ``ToolBox``; without this call the SQLAlchemy engine + connection
+        pool stay alive across REPL turns, leaking file descriptors until
+        macOS / Linux ulimit kicks in (the user-reported
+        ``OSError: [Errno 24] Too many open files`` after several turns).
+        """
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
+            self._db = None
+
+    def __enter__(self) -> "ToolBox":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
     # ------------------------------------------------------------------ schemas
     @staticmethod
     def schemas() -> list[dict[str, Any]]:
