@@ -303,6 +303,31 @@ def _normalized_api_base(provider: str, api_base: str | None) -> str | None:
 
 MAX_LLM_RETRIES = 2
 LLM_RETRY_BACKOFF_BASE_SEC = 1.0
+
+# Per-request timeout (seconds). Without this, a stalled upstream connection
+# leaves the call hanging indefinitely — the user reported a single profile
+# batch sitting at 9m58s while sibling batches finished in 1m. LiteLLM
+# forwards ``timeout=N`` to the underlying client (OpenAI / Anthropic /
+# Gemini / OpenRouter); on expiry the call raises ``Timeout`` /
+# ``APITimeoutError`` which our ``_is_transient_llm_error`` filter already
+# recognises, so retry-with-backoff kicks in automatically.
+#
+# Tunable via env: ``AMX_LLM_TIMEOUT_SEC``. Default 180s is enough for a
+# wide-batch profile call (50 cols ≈ 60–120s in practice) but caps the
+# pathological-hang case below 3 minutes — at which point the retry loop
+# starts a fresh request.
+_DEFAULT_LLM_TIMEOUT_SEC = 180.0
+
+
+def _llm_timeout_sec() -> float:
+    raw = os.getenv("AMX_LLM_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return _DEFAULT_LLM_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_LLM_TIMEOUT_SEC
+    return value if value > 0 else _DEFAULT_LLM_TIMEOUT_SEC
 _TRANSIENT_LLM_EXCEPTION_NAMES: frozenset[str] = frozenset(
     {
         "APITimeoutError",
@@ -482,6 +507,13 @@ class LLMProvider:
 
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
         call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama", "openrouter") else None
+
+        # Resolve timeout once per call. ``extra`` is the user-passed kwargs;
+        # if a caller wants to override the default for a specific call they
+        # can pass ``timeout=N``. Otherwise we fall back to the env-tunable
+        # default so no LLM call can hang indefinitely.
+        if "timeout" not in extra and "request_timeout" not in extra:
+            extra["timeout"] = _llm_timeout_sec()
 
         def _do_completion(api_base_override: str | None) -> Any:
             explicit_api_key = self.cfg.api_key if self.cfg.provider == "openrouter" else None

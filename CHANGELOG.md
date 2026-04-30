@@ -6,6 +6,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-04-30
+### Fixed
+- **`amx` startup crashed with `AttributeError: function object has no attribute 'group'`** (`amx/cli.py`): the v0.5.5 patch inserted the new `_raise_open_file_limit` helper between the existing `@click.group(...) ... @click.pass_context` decorator stack and `def main(...)`, so the decorators ended up applied to the helper instead of `main`. `register_history_commands(main, ...)` then failed because `main` was a plain function, not a Click `Group`. Helper moved above the decorator stack so the decorators land on `main()` again.
+- **LLM calls could hang indefinitely** (`amx/llm/provider.py`): user reported a single 25-column profile batch sitting at 9m58s while sibling 50-column batches finished in 1–1.5 min. No per-request timeout was being passed to LiteLLM, so a stalled upstream connection (OpenRouter/qwen mid-stream stall in this case) waited forever. Added a default `180s` per-call `timeout` (tunable via `AMX_LLM_TIMEOUT_SEC` env var). On expiry LiteLLM raises `Timeout` / `APITimeoutError`, both of which `_is_transient_llm_error` already classifies as retry-able — so the existing retry-with-backoff (`MAX_LLM_RETRIES=2`) automatically starts a fresh request instead of silently waiting.
+
 ## [0.5.5] - 2026-04-30
 ### Added
 - **Programmatic NOFILE limit raise at AMX startup** (`amx/cli.py:_raise_open_file_limit`): lifts the per-process soft NOFILE limit to 4096 (capped at the hard limit) via `resource.setrlimit`. Open-source users no longer need to set `ulimit -n` manually before running `amx` on macOS (default soft limit 256). Cross-platform safe — no-op on Windows where the `resource` module isn't available, no-op when the user's hard cap is already lower, never reduces the limit.
