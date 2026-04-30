@@ -1326,6 +1326,48 @@ class SearchCatalogTests(unittest.TestCase):
 
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
 
+    def test_chitchat_short_circuits_without_llm_call(self) -> None:
+        """Greetings like 'nasılsın' / 'hi' must not reach the planner."""
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # Queue NO LLM responses — if the planner is invoked the test fails.
+            _FakeLLMProvider.queue()
+            service = SearchService(cfg, self.catalog)
+            answer_tr = service.ask("nasılsın")
+            answer_en = service.ask("hi")
+        self.assertEqual(answer_tr.intent, "chitchat")
+        self.assertEqual(answer_en.intent, "chitchat")
+        self.assertEqual(answer_tr.confidence, "high")
+        self.assertEqual(answer_en.confidence, "high")
+        # Sanity: replies must mention what AMX actually does.
+        self.assertIn("metadata", answer_tr.summary.lower())
+        self.assertIn("metadata", answer_en.summary.lower())
+        # No LLM calls were made.
+        self.assertEqual(_FakeLLMProvider.calls, [])
+
+    def test_meta_query_returns_prior_question_from_session_store(self) -> None:
+        """'bir önceki sorum neydi' must answer from session memory."""
+        cfg = self._search_cfg()
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            # First a real question, then the meta-query.
+            _FakeLLMProvider.queue(
+                '{"intent":"find_columns","out_of_domain":false,'
+                '"normalized_question":"hello question",'
+                '"search_mode":"semantic_concept","question_class":"semantic_discovery",'
+                '"target_entity":"unknown","entity_hints":[],'
+                '"search_queries":["hello"],"needs_typo_recovery":false,'
+                '"answer_language":"english","reason":"test","decision_confidence":"high",'
+                '"out_of_domain":false}',
+                "First answer.",
+            )
+            service = SearchService(cfg, self.catalog)
+            service.ask("how many columns are in the address table")
+            # Meta-query is short-circuited — no extra LLM responses queued.
+            answer = service.ask("what was my previous question?")
+        self.assertEqual(answer.intent, "meta_query")
+        self.assertIn("how many columns", answer.summary.lower())
+        self.assertEqual(answer.details["prior_question"], "how many columns are in the address table")
+
     def test_find_tables_by_exact_name_disambiguates_across_schemas(self) -> None:
         """Same table name in two schemas surfaces both candidates."""
         # Same table name in two different schemas.
