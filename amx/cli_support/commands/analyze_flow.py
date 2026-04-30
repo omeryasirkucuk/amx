@@ -36,7 +36,16 @@ LogEvent = Callable[..., None]
 
 def _require_llm_connection(llm: object, *, profile_label: str | None = None) -> None:
     label = f" using profile '{profile_label}'" if profile_label else ""
-    with step_spinner("Testing LLM connection..."):
+    cfg = getattr(llm, "cfg", None)
+    target = ""
+    if cfg is not None:
+        provider = getattr(cfg, "provider", "") or ""
+        model = getattr(cfg, "model", "") or ""
+        if provider and model:
+            target = f" to {provider}/{model}"
+        elif provider:
+            target = f" to {provider}"
+    with step_spinner(f"Testing LLM connection{target} ..."):
         result = llm.test_result()
     if result.ok:
         return
@@ -306,14 +315,7 @@ def execute_analyze_run(
             )
 
         db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
-        with command_display(
-            schema=schema or cfg.current_schema or "",
-            table=(table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")),
-            mode="llm-connect",
-            provider=cfg.llm.provider,
-            model=cfg.llm.model,
-        ):
-            _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
+        _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
         tables_arg = list(tables_pos) + list(table)
@@ -330,17 +332,61 @@ def execute_analyze_run(
 
             total_assets = sum(len(v) for v in scope.values())
 
+            # ── Comment-coverage filter ──────────────────────────────────
+            # When the user picks Database / Schema / Asset scope on a DB
+            # that already has SOME comments, they almost never want to
+            # re-run the LLM on every column — they just want to fill the
+            # gaps. Default to "missing-only"; let them opt in to a full
+            # re-run when they explicitly want to overwrite.
+            coverage_choice = ask_choice(
+                "Run for which assets / columns?",
+                ["missing-only", "all"],
+                default="missing-only",
+                descriptions={
+                    "missing-only": (
+                        "Skip tables and columns that already have a comment. "
+                        "Fastest; safest default."
+                    ),
+                    "all": (
+                        "Re-run on every selected asset and column. Existing "
+                        "comments will be replaced after review."
+                    ),
+                },
+            )
+            missing_only = coverage_choice != "all"
+            if missing_only:
+                info("Filter: only assets / columns without an existing comment will be analyzed.")
+            else:
+                info("Filter: re-running on ALL selected assets (existing comments will be replaced).")
+
             review_strategy = "individual"
             if not use_batch and total_assets > 1:
                 review_strategy = ask_choice(
                     "Review strategy",
-                    ["individual", "deferred"],
+                    ["individual", "deferred", "auto-apply"],
                     default="individual",
                     descriptions={
                         "individual": "Assess each asset (table) as it becomes ready",
                         "deferred": "Process everything first, then review all together at the end",
+                        "auto-apply": (
+                            "Skip human review — write the top LLM suggestion directly. "
+                            "Fastest, but no chance to edit or reject. Use only when you trust "
+                            "the agents (and ideally only with /run-apply on a non-prod DB)."
+                        ),
                     },
                 )
+            if review_strategy == "auto-apply":
+                if not apply:
+                    warn(
+                        "auto-apply selected but /run was used (without --apply). The top suggestions "
+                        "will be marked accepted in the catalog, but nothing will be written to the DB. "
+                        "Use /run-apply to actually persist the comments."
+                    )
+                else:
+                    warn(
+                        "auto-apply: every top suggestion will be written to the database without review. "
+                        "Existing comments inside the chosen scope will be replaced."
+                    )
 
             hs = history_store()
             if hs is not None:
@@ -412,6 +458,7 @@ def execute_analyze_run(
                 code_report=code_report,
                 run_id=run_id,
                 search_profile=cfg.active_db_profile or "default",
+                missing_only=missing_only,
             )
 
             display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
@@ -440,6 +487,7 @@ def execute_analyze_run(
                                 asset_name,
                                 asset_kind=asset_kinds.get(asset_name),
                                 interactive_review=(review_strategy == "individual"),
+                                auto_apply=(review_strategy == "auto-apply"),
                             )
                             all_results.extend(results)
                             processed_assets.append(f"{schema_name}.{asset_name}")
@@ -614,25 +662,18 @@ def register_analyze_run_command(
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
-        from amx.utils.live_display import get_display
 
         try:
             db_init = DatabaseConnector(cfg.db)
-            display = get_display()
-            display.start(
-                schema=schema or cfg.current_schema or "",
-                table=(table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")),
-                mode="setup",
-                provider=cfg.llm.provider,
-                model=cfg.llm.model,
+            label = (
+                f"Testing {cfg.db.backend} connection to {cfg.db.display_summary} ..."
+                if cfg.db.display_summary
+                else f"Testing {cfg.db.backend} connection ..."
             )
-            try:
-                with step_spinner("Testing database connection..."):
-                    if not db_init.test_connection():
-                        error("Cannot connect to database.")
-                        sys.exit(1)
-            finally:
-                display.stop()
+            with step_spinner(label):
+                if not db_init.test_connection():
+                    error("Cannot connect to database.")
+                    sys.exit(1)
 
             execute_analyze_run(
                 cfg,

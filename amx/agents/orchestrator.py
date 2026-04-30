@@ -309,6 +309,7 @@ class Orchestrator:
         code_report: CodebaseReport | None = None,
         run_id: int | None = None,
         search_profile: str = "default",
+        missing_only: bool = False,
     ):
         self.db = db
         self.llm = llm
@@ -318,6 +319,11 @@ class Orchestrator:
         self.profile_agent = ProfileAgent(llm)
         self.rag_agent = RAGAgent(llm, rag_store) if rag_store else None
         self.code_agent = CodeAgent(llm, code_report) if code_report else None
+        # ``missing_only`` skips tables that already have a table comment AND
+        # every column already has a comment, and filters individual columns
+        # that already have a comment so the agents only work on gaps.
+        # See ``process_table`` for the per-table filter.
+        self.missing_only = bool(missing_only)
         self.results: list[ReviewResult] = []
 
     _SQL_VERB_RE = re.compile(r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE)
@@ -328,12 +334,50 @@ class Orchestrator:
         table: str,
         asset_kind: AssetKind | None = None,
         interactive_review: bool = True,
+        auto_apply: bool = False,
     ) -> list[ReviewResult]:
         kind_label = f" ({asset_kind.label})" if asset_kind and asset_kind != AssetKind.TABLE else ""
         heading(f"Analyzing {schema}.{table}{kind_label}")
 
         with step_spinner(f"Profiling {schema}.{table} structure and data"):
             profile = self.db.profile_table(schema, table, asset_kind=asset_kind)
+
+        # ── Missing-only coverage filter ─────────────────────────────────────
+        # When the user picked "missing-only" at the run-flow scope picker,
+        # short-circuit work that would just rebuild a comment that already
+        # exists. We skip the whole table when both the table and every
+        # column already have comments; otherwise we keep the table but
+        # narrow ``profile.columns`` to those with no existing comment so the
+        # Profile / RAG / Code agents only touch the gaps. This drops tens of
+        # thousands of LLM tokens on partially-curated databases.
+        if self.missing_only:
+            total_cols = len(profile.columns)
+            cols_missing = [c for c in profile.columns if not (c.existing_comment or "").strip()]
+            table_has_comment = bool((profile.existing_comment or "").strip())
+            if table_has_comment and not cols_missing:
+                info(
+                    f"Skipping {schema}.{table}: already has a table comment and all "
+                    f"{total_cols} column(s) commented (missing-only filter)."
+                )
+                return []
+            if cols_missing and len(cols_missing) < total_cols:
+                # Replace the columns list in-place. ``TableProfile.columns``
+                # is a plain list, so the slice is safe and downstream
+                # consumers (ProfileAgent / RAGAgent / CodeAgent) iterate it.
+                skipped = total_cols - len(cols_missing)
+                info(
+                    f"Filtering {schema}.{table}: {skipped}/{total_cols} columns already "
+                    f"have comments — analyzing only the {len(cols_missing)} missing one(s)."
+                )
+                profile.columns = cols_missing
+            elif not cols_missing and not table_has_comment:
+                info(
+                    f"{schema}.{table}: every column has a comment but the table comment "
+                    "is missing — analyzing the table-level description only."
+                )
+                # Keep columns empty so agents focus on the table comment.
+                profile.columns = []
+
         ctx = self._build_context(profile)
 
         num_cols = len(profile.columns)
@@ -375,6 +419,56 @@ class Orchestrator:
         self._sync_search_catalog(profile, merged, result_id_map)
 
         ak = profile.asset_kind.value if profile.asset_kind else "table"
+        if auto_apply:
+            # Trust the agents — accept the top suggestion for every entity
+            # and mark it applied so ``apply_results`` writes COMMENT ON ...
+            # to the live DB without a human review prompt. We still go
+            # through ``sync_review_decision`` per pick so the catalog
+            # records this as a "reviewed" description (chosen by auto-apply
+            # rather than a human) — that keeps the audit trail consistent
+            # with what the manual flow produces.
+            results = []
+            for s in merged:
+                top = s.suggestions[0] if s.suggestions else ""
+                rid = result_id_map.get(s.column)
+                if rid is not None and top:
+                    try:
+                        from amx.search.catalog import SearchCatalog
+
+                        catalog = SearchCatalog.from_history_store()
+                        if catalog is not None:
+                            catalog.sync_review_decision(
+                                rid,
+                                chosen_description=top,
+                                evaluation="accepted",
+                            )
+                    except Exception as exc:
+                        log.debug("auto-apply: catalog sync_review_decision failed: %s", exc)
+                hs = history_store()
+                if hs is not None and rid is not None and top:
+                    try:
+                        hs.record_evaluation(
+                            rid,
+                            chosen_description=top,
+                            evaluation="accepted",
+                        )
+                    except Exception as exc:
+                        log.debug("auto-apply: record_evaluation failed: %s", exc)
+                results.append(ReviewResult(
+                    schema=s.schema,
+                    table=s.table,
+                    column=s.column,
+                    final_description=top,
+                    confidence=s.confidence,
+                    source=s.source,
+                    applied=True,
+                    asset_kind=ak,
+                    result_id=rid,
+                    logprob_score=s.logprob_score,
+                ))
+            self.results.extend(results)
+            return results
+
         if not interactive_review:
             # Wrap as un-applied ReviewResults for later batch review
             results = []
@@ -1234,6 +1328,43 @@ class Orchestrator:
             ak = asset_kinds.get(table)
             with step_spinner(f"Profiling {schema}.{table}"):
                 profiles[table] = self.db.profile_table(schema, table, asset_kind=ak)
+
+        # Apply the missing-only filter in batch mode too. Tables fully
+        # commented are dropped from the request set; tables with partial
+        # coverage have their column list narrowed to the gaps before
+        # building agent prompts.
+        if self.missing_only:
+            kept: dict[str, "TableProfile"] = {}
+            skipped_full = 0
+            for table, prof in profiles.items():
+                total_cols = len(prof.columns)
+                cols_missing = [c for c in prof.columns if not (c.existing_comment or "").strip()]
+                table_has_comment = bool((prof.existing_comment or "").strip())
+                if table_has_comment and not cols_missing:
+                    skipped_full += 1
+                    info(f"[Batch] Skipping {schema}.{table}: fully commented (missing-only).")
+                    continue
+                if cols_missing and len(cols_missing) < total_cols:
+                    info(
+                        f"[Batch] Filtering {schema}.{table}: "
+                        f"{total_cols - len(cols_missing)}/{total_cols} columns already commented; "
+                        f"analyzing {len(cols_missing)} missing column(s)."
+                    )
+                    prof.columns = cols_missing
+                elif not cols_missing and not table_has_comment:
+                    info(
+                        f"[Batch] {schema}.{table}: every column has a comment but the table "
+                        "comment is missing — analyzing the table-level description only."
+                    )
+                    prof.columns = []
+                kept[table] = prof
+            profiles = kept
+            tables = [t for t in tables if t in profiles]
+            if not profiles:
+                info(
+                    f"[Batch] All {n_assets} asset(s) already fully commented — nothing to do."
+                )
+                return []
 
         all_requests: list[BatchRequest] = []
         ctx_map: dict[str, "AgentContext"] = {}
