@@ -701,6 +701,147 @@ class SearchAgent:
             answer_shape=plan.answer_shape,
         )
 
+    # Tokens that — alone or in a short greeting — should not be sent to the
+    # LLM-driven planner. ``_handle_chitchat`` short-circuits these with a
+    # one-line friendly redirect so the user doesn't get a confusing
+    # "Could you clarify the exact scope?" reply for "nasılsın".
+    _CHITCHAT_TOKENS: frozenset[str] = frozenset({
+        "hi", "hello", "hey", "hola", "yo", "sup", "howdy",
+        "merhaba", "selam", "slm", "naber", "nbr", "nasilsin", "nasılsın",
+        "iyimisin", "iyi", "misin", "musun", "musunuz", "miydin", "iyiydin",
+        "teşekkür", "teşekkürler", "tesekkur", "tesekkurler", "teşekkurler",
+        "thanks", "thank", "ty", "thx", "ok", "okay", "tamam",
+        "günaydın", "gunaydin", "günler", "gunler", "akşamlar", "aksamlar",
+        "good", "morning", "evening", "afternoon", "night",
+        "what's", "whats", "wassup", "up",
+    })
+
+    def _handle_chitchat(self, question: str, question_language: str) -> SearchAnswer | None:
+        """Recognise greetings / "how are you" / thanks and reply directly.
+
+        Without this short-circuit the LLM planner sometimes flags the input
+        as ``needs_clarification=True``, yielding "Could you clarify the
+        exact scope (database/schema/table)?" — a confusing reply when the
+        user just typed "nasılsın".
+        """
+        sample = (question or "").strip().lower()
+        if not sample:
+            return None
+        # Must be short and contain only chitchat tokens — punctuation aside.
+        words = [tok for tok in re.split(r"[\s\?!.,;:]+", sample) if tok]
+        if not words or len(words) > 4:
+            return None
+        if not all(word in self._CHITCHAT_TOKENS for word in words):
+            return None
+        if (question_language or "").lower() == "turkish":
+            summary = (
+                "Merhaba! Ben AMX'in metadata arama asistanıyım — sohbete eşlik etmem yerine "
+                "veritabanı şeması/kolonları/tabloları hakkında sorularınızı cevaplamak için varım. "
+                "Örnek: `vbrk tablosu nedir?`, `pricing ile ilgili tablolar hangileri?`."
+            )
+        else:
+            summary = (
+                "Hi! I'm AMX's metadata search assistant — I'm built to answer questions about "
+                "your database schemas, tables, and columns rather than chat. "
+                "Try: `what is the vbrk table?`, `which tables relate to pricing?`."
+            )
+        return SearchAnswer(
+            intent="chitchat",
+            question=question,
+            rows=[],
+            confidence="high",
+            summary=summary,
+            provenance=["client_side_short_circuit"],
+            details={
+                "reason": "chitchat_short_circuit",
+                "answer_language": question_language or "english",
+                "answer_shape": "single_fact",
+                "stage_metrics": [],
+            },
+        )
+
+    def _handle_meta_query(self, question: str, question_language: str) -> SearchAnswer | None:
+        """Answer questions ABOUT the conversation itself (no LLM call).
+
+        Patterns: "what was my previous question?", "what did I ask?",
+        "bir önceki sorum neydi", "ben ne sormuştum". Resolves against
+        ``ChatSessionStore.recent_turns`` so the user gets the literal prior
+        question text rather than a clarification prompt.
+        """
+        sample = (question or "").strip().lower()
+        if not sample:
+            return None
+        meta_patterns = (
+            r"\b(?:bir\s+)?(?:o)?(?:n|ö)nce(?:ki)?\s+sor(?:u(?:m|n)?|ulardan)\b",
+            r"\bben\s+ne\s+sor(?:du|mu[sş]tum|du[mn])\b",
+            r"\b(?:son|previous|prior|last)\s+(?:question|sor(?:u|um))\b",
+            r"\bwhat\s+(?:did|was)\s+(?:i|my)\s+(?:last\s+|previous\s+|prior\s+)?(?:question|ask)\b",
+            r"\bwhat\s+have\s+i\s+(?:asked|been\s+asking)\b",
+            r"\bne\s+sor(?:du(?:m|n)|mu[sş]tum)\b",
+        )
+        if not any(re.search(p, sample) for p in meta_patterns):
+            return None
+        prior_question = ""
+        store = self._ensure_session_store()
+        sid = self.cfg.active_chat_session_id
+        if store is not None and sid:
+            try:
+                turns = store.recent_turns(int(sid), include_summary=False, limit=8)
+            except Exception:
+                turns = []
+            user_turns = [t for t in turns if str(t.get("role") or "") == "user"]
+            # The latest user turn IS this very question (just appended);
+            # we want the one BEFORE it.
+            if len(user_turns) >= 2:
+                prior_question = str(user_turns[-2].get("question") or "").strip()
+        is_turkish = (question_language or "").lower() == "turkish"
+        if not prior_question:
+            summary = (
+                "Bu oturumdaki ilk sorunuz; daha önce hiçbir soru kaydedilmemiş."
+                if is_turkish
+                else "This is the first question in this session; no prior question is on record."
+            )
+        else:
+            summary = (
+                f"Bir önceki sorunuz: \"{prior_question}\""
+                if is_turkish
+                else f"Your previous question was: \"{prior_question}\""
+            )
+        return SearchAnswer(
+            intent="meta_query",
+            question=question,
+            rows=[],
+            confidence="high",
+            summary=summary,
+            provenance=["chat_session_store"],
+            details={
+                "reason": "meta_query_short_circuit",
+                "answer_language": question_language or "english",
+                "answer_shape": "single_fact",
+                "prior_question": prior_question,
+                "stage_metrics": [],
+            },
+        )
+
+    def _catalog_resolvable_subject(self, question: str) -> str | None:
+        """Return the first explicit subject token in ``question`` that the
+        catalog confirms is an exact table name. Used to ground-truth our
+        re-routing: we only override the LLM's mode to ``table_explain``
+        when the user named something the catalog recognises as a table —
+        never for column-shaped tokens or arbitrary identifiers.
+        """
+        for mention in self._explicit_table_mentions_for_question(question):
+            requested = str(mention.get("requested") or "").strip()
+            if not requested:
+                continue
+            try:
+                rows = self.catalog.find_tables_by_exact_name(self.db_profile, requested, limit=2)
+            except Exception:
+                rows = []
+            if rows:
+                return requested
+        return None
+
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
         sample = (question or "").strip().lower()
         # Guard: if the user clearly named a table-like subject ("what's the
@@ -708,24 +849,35 @@ class SearchAgent:
         # route this somewhere that won't run target resolution, force
         # ``table_explain`` so we either find the table or surface a clear
         # "not found / ambiguous" message instead of drifting to unrelated
-        # rows.
+        # rows. We require the token to be a CATALOG-CONFIRMED table name so
+        # column-shaped tokens like "vbrk_id" don't get incorrectly mapped to
+        # a missing table.
         explicit_subjects = self._explicit_table_mentions_for_question(question)
-        if explicit_subjects and plan.search_mode not in {
+        catalog_subject = self._catalog_resolvable_subject(question) if explicit_subjects else None
+        # Modes we never override: explicit join/coverage/counting questions.
+        # Everything else (semantic_concept, name_lookup, list_databases,
+        # list_schemas, schema_inventory, compare_entities, unsupported)
+        # gets re-routed when the user named a real catalog table — those
+        # modes won't run target resolution and would otherwise drift.
+        protected_modes = {
             "table_explain",
             "join_candidates",
             "joinable_tables",
-            "schema_inventory",
-            "list_databases",
-            "list_schemas",
             "count_tables",
             "check_coverage",
-        }:
+        }
+        if catalog_subject and plan.search_mode not in protected_modes:
             asks_join_word = any(
                 token in sample
                 for token in ("join", "link", "relate", "relationship", "bağ", "bag", "ilişk", "iliski")
             )
             if not asks_join_word:
                 hints_with_subjects: list[str] = list(plan.entity_hints)
+                # Prefer the catalog-confirmed subject as the primary hint so
+                # ``_resolve_table_targets`` finds it first, then merge any
+                # remaining tokens behind it.
+                if catalog_subject and catalog_subject not in hints_with_subjects:
+                    hints_with_subjects.insert(0, catalog_subject)
                 for mention in explicit_subjects:
                     requested = str(mention.get("requested") or "").strip()
                     if requested and requested not in hints_with_subjects:
@@ -742,8 +894,8 @@ class SearchAgent:
                     needs_typo_recovery=plan.needs_typo_recovery,
                     answer_language=plan.answer_language,
                     ambiguity_flags=list(plan.ambiguity_flags),
-                    reason=(plan.reason + "; rerouted to table_explain because the question names a subject").strip("; "),
-                    decision_confidence=plan.decision_confidence,
+                    reason=(plan.reason + "; rerouted to table_explain because the question names a catalog-confirmed subject").strip("; "),
+                    decision_confidence="high",
                     needs_clarification=False,
                     clarification_question="",
                     review_notes=plan.review_notes,
@@ -2911,6 +3063,18 @@ class SearchAgent:
             except Exception as exc:
                 log.warning("Chat session bookkeeping failed: %s", exc)
 
+        # Deterministic short-circuits for things the LLM-driven planner
+        # tends to fumble: greetings/chitchat (returns clarification by
+        # default, which is unfriendly) and meta-queries about the chat
+        # itself ("what was my previous question?", "bir önceki sorum
+        # neydi"). Both are answered locally before any LLM call.
+        chitchat = self._handle_chitchat(clean_question, question_language)
+        if chitchat is not None:
+            return chitchat
+        meta_answer = self._handle_meta_query(clean_question, question_language)
+        if meta_answer is not None:
+            return meta_answer
+
         stage_metrics: list[dict[str, Any]] = []
         thought_trace: list[dict[str, str]] = []
         interpretation_usage: dict[str, Any] = {}
@@ -2945,6 +3109,13 @@ class SearchAgent:
             str(self.settings.get("clarification_on_low_confidence", "true")).lower() == "true"
             and (plan.needs_clarification or plan.decision_confidence == "low")
         )
+        # If the question contains a token the catalog confirms is a real
+        # table, we have enough to answer — skip the clarification round
+        # rather than asking "could you clarify the exact scope?" right
+        # after the user just named a table by exact name.
+        if should_clarify and self._catalog_resolvable_subject(clean_question):
+            should_clarify = False
+            plan = self._align_plan_shape(plan, clean_question)
         if should_clarify:
             clarification = (
                 plan.clarification_question.strip()
