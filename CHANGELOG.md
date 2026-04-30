@@ -6,6 +6,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-30
+### Added — Coverage filter for `/run` and `/run-apply`
+- **Missing-only / all coverage filter** (`amx/cli_support/commands/analyze_flow.py`, `amx/agents/orchestrator.py`): after the user picks a scope (Database / Schema / Asset / Default), AMX now asks `Run for which assets / columns? — missing-only / all`, defaulting to `missing-only`. The user-reported pain was that `/run` always re-processed every asset in the chosen scope even when 90% of them already had comments — wasteful on hundreds-of-tables databases. With `missing-only`:
+  * **Tables that already have a table-level comment AND every column has a comment are skipped entirely.** A single info line tells the user which assets were skipped: `Skipping sap_s6p.adrc: already has a table comment and all 24 column(s) commented (missing-only filter).`
+  * **Tables with partial coverage have their column list narrowed to the gaps.** Profile / RAG / Code agents only see the missing columns: `Filtering sap_s6p.bseg: 350/356 columns already have comments — analyzing only the 6 missing one(s).`
+  * **Tables where every column has a comment but the TABLE comment is missing** drop the column list to `[]` so the agents focus on the table description only.
+  * Also wired through batch mode (`process_tables_batch_mode`) — fully-commented tables are dropped from the request batch entirely; partial coverage narrows the column list before agent prompt assembly.
+- The user can still pick `all` to overwrite; the prompt's `descriptions=` block makes the trade-off explicit (`existing comments will be replaced after review`).
+
+### Rationale
+This was the user-reported case where a 100-table SAP database had been partially curated — they didn't want to re-pay for LLM tokens on the already-commented 95 tables, but the previous CLI gave them all-or-nothing with no asset-level cherry-picking. The new filter applies at column granularity, which matters for the wide tables that appear after a schema migration (10 columns → 12 columns → only the 2 new ones need analysis).
+
 ## [0.4.4] - 2026-04-30
 ### Fixed
 - **Keystrokes are now visible during interactive prompts inside `/run`, `/setup`, `/search sync`, etc.** (`amx/utils/console.py`): when a `LiveDisplay` was active (header bar showing `AMX v0.4.x ... ANALYZE-SETUP 10s`), Rich's 10 Hz refresh painted over the user's keystrokes between frames. Pressing `2` then Enter still worked — the input was read correctly — but the user never saw their `2` echoed. New `_live_paused_for_input()` context manager pauses the live region while `prompt_toolkit.prompt` is reading stdin, then resumes it after. Wired into every interactive helper: `ask`, `ask_password`, `ask_choice`, `ask_multi_choice`, `confirm`. No-op when no display is active so non-interactive callers don't pay any cost.
