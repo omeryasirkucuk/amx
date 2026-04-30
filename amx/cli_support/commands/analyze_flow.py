@@ -391,6 +391,11 @@ def execute_analyze_run(
             hs = history_store()
             if hs is not None:
                 try:
+                    # ``selected_count`` records what the user originally
+                    # picked (pre missing-only filter) so /history shows the
+                    # full intent. ``planned_count`` is the same for now and
+                    # gets corrected to the post-filter number per-table when
+                    # the orchestrator skips a fully-commented asset.
                     run_id = hs.create_run(
                         command="analyze.run",
                         mode=("batch" if use_batch else "chat"),
@@ -399,6 +404,9 @@ def execute_analyze_run(
                         llm_provider=cfg.llm.provider,
                         llm_model=cfg.llm.model,
                         scope=scope,
+                        selected_count=total_assets,
+                        planned_count=total_assets,
+                        review_strategy=review_strategy,
                     )
                 except Exception as exc:
                     warn(f"History persistence disabled for this run: {exc}")
@@ -491,6 +499,42 @@ def execute_analyze_run(
                             )
                             all_results.extend(results)
                             processed_assets.append(f"{schema_name}.{asset_name}")
+                            # Counter bumps survive Ctrl+C: even if the user
+                            # interrupts mid-loop, /history reflects what was
+                            # actually processed and (for auto-apply) applied.
+                            if hs is not None and run_id is not None:
+                                try:
+                                    if results:
+                                        # process_table returned suggestions —
+                                        # this asset truly went through agents
+                                        # (filter didn't skip it as fully-
+                                        # commented). Otherwise an empty list
+                                        # means "skipped by missing-only" and
+                                        # planned_count needs to drop too.
+                                        hs.increment_run_processed(run_id, by=1)
+                                        if review_strategy == "auto-apply":
+                                            applied_in_table = sum(1 for r in results if r.applied)
+                                            if applied_in_table:
+                                                hs.increment_run_applied(run_id, by=applied_in_table)
+                                    else:
+                                        # Filter dropped this asset — adjust
+                                        # planned_count down so the X/Y in
+                                        # /history matches reality.
+                                        hs.update_run_planned_count(
+                                            run_id,
+                                            max(0, total_assets - len(skipped_assets) - 1),
+                                        )
+                                        # NOTE: total_assets above is the
+                                        # *original* selection. We subtract
+                                        # the running skipped tally so each
+                                        # filter-skip lowers planned_count
+                                        # incrementally.
+                                except Exception as exc:
+                                    log.debug(
+                                        "Could not update analyze run counters for run_id=%s: %s",
+                                        run_id,
+                                        exc,
+                                    )
                         except ProfilingError as exc:
                             skipped_assets.append(f"{schema_name}.{asset_name}")
                             warn(f"Skipping {schema_name}.{asset_name}: {exc}")
@@ -548,8 +592,18 @@ def execute_analyze_run(
         if apply and approved and confirm("Apply these metadata comments to the database?"):
             from amx.pending_review import clear_pending
 
-            orch.apply_results(approved)
+            applied_n = orch.apply_results(approved)
             clear_pending()
+            # Count distinct (schema, table) pairs as the "applied tables"
+            # tally for /history. apply_results returns total rows written
+            # (table-comments + column-comments), which we record under the
+            # applied_count counter — surfaced in /history as the "Applied"
+            # part of the X/Y display.
+            if hs is not None and run_id is not None and applied_n:
+                try:
+                    hs.increment_run_applied(run_id, by=int(applied_n))
+                except Exception as exc:
+                    log.debug("Could not bump applied counter: %s", exc)
 
         final_status = "success"
     except KeyboardInterrupt:
@@ -573,7 +627,16 @@ def execute_analyze_run(
         if not has_reviewable_results:
             has_reviewable_results = bool(token_tracker.total_tokens)
 
-        final_status = "ready_for_review" if has_reviewable_results else "cancelled"
+        # auto-apply runs explicitly skip human review; landing them in
+        # ``ready_for_review`` would tell the user to "go review what you've
+        # done" — exactly the step they opted out of. The accepted partial
+        # results are already in the catalog (and on /run-apply they're in
+        # the live DB via apply_review_results_to_db), so 'cancelled' is the
+        # correct terminal state.
+        if review_strategy == "auto-apply":
+            final_status = "cancelled"
+        else:
+            final_status = "ready_for_review" if has_reviewable_results else "cancelled"
         final_error_text = "Interrupted by user"
         log_event(
             event_type="analyze_run",
