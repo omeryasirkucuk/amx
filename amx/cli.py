@@ -47,6 +47,10 @@ pass_config = click.make_pass_decorator(AMXConfig, ensure=True)
 def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
     """Show a concise startup summary, with first-run guidance when needed."""
     info(f"Version {__version__}")
+    # Surface the on-disk config path so users can verify what is actually
+    # being read at startup. The ghost-profile bug class is hard to diagnose
+    # without knowing exactly which file the running session is talking to.
+    info(f"Config: {cfg.config_path}")
 
     if cfg.is_first_run:
         warn(
