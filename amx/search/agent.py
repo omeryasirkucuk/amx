@@ -326,6 +326,16 @@ class SearchAgent:
             self.cfg.active_chat_session_id = sid
         except Exception:
             pass
+        # Mirror to env so subsequent ``main_command.main()`` invocations from
+        # the interactive REPL re-pick the same session via ``AMXConfig.load``.
+        # Without this, each ``/ask <q>`` line creates a brand-new session and
+        # follow-up questions lose all prior context.
+        try:
+            import os as _os
+
+            _os.environ["AMX_CHAT_SESSION_ID"] = str(int(sid))
+        except Exception:
+            pass
         return sid
 
     def _memory(self) -> list[dict[str, Any]]:
@@ -416,6 +426,12 @@ class SearchAgent:
     def _memory_summary(self) -> list[dict[str, Any]]:
         summary: list[dict[str, Any]] = []
         for turn in self._memory():
+            # 200 chars used to be enough for the JSON planner payload, but
+            # the tool agent feeds these straight into a chat history — long
+            # answers (e.g. "12 tables have boolean columns: ...") were being
+            # cut off and the LLM failed to resolve "Only those?" follow-ups.
+            # 1000 chars is comfortably under the 24K-input budget even with
+            # 6+ pairs in scope.
             summary.append(
                 {
                     "question": turn.get("question", ""),
@@ -423,7 +439,7 @@ class SearchAgent:
                     "topic": turn.get("topic", ""),
                     "tables": turn.get("tables", []),
                     "columns": turn.get("columns", []),
-                    "answer_summary": str(turn.get("answer_summary") or "")[:200],
+                    "answer_summary": str(turn.get("answer_summary") or "")[:1000],
                 }
             )
         return summary
@@ -745,6 +761,7 @@ class SearchAgent:
                 "your database schemas, tables, and columns rather than chat. "
                 "Try: `what is the vbrk table?`, `which tables relate to pricing?`."
             )
+        self._record_short_circuit_assistant(summary=summary, intent="chitchat")
         return SearchAnswer(
             intent="chitchat",
             question=question,
@@ -759,6 +776,31 @@ class SearchAgent:
                 "stage_metrics": [],
             },
         )
+
+    def _record_short_circuit_assistant(self, *, summary: str, intent: str) -> None:
+        """Persist a synthetic assistant turn for chitchat / meta / reaffirm.
+
+        Without this, ``ask()`` writes the user-side row at the top of the
+        call but no matching assistant row gets written for the deterministic
+        short-circuits — leaving the session memory unbalanced and confusing
+        the next planner pass. We record a small assistant turn carrying just
+        the answer text + the short-circuit kind so memory stays paired.
+        """
+        store = self._ensure_session_store()
+        sid = self.cfg.active_chat_session_id
+        if store is None or not sid:
+            return
+        try:
+            store.append_assistant_turn(
+                int(sid),
+                run_id=None,
+                answer_summary=str(summary or "")[:480],
+                intent=intent,
+                plan={"agent": "short_circuit", "kind": intent},
+                confidence="high",
+            )
+        except Exception as exc:
+            log.warning("Failed to record %s assistant turn: %s", intent, exc)
 
     def _handle_meta_query(self, question: str, question_language: str) -> SearchAnswer | None:
         """Answer questions ABOUT the conversation itself (no LLM call).
@@ -807,6 +849,7 @@ class SearchAgent:
                 if is_turkish
                 else f"Your previous question was: \"{prior_question}\""
             )
+        self._record_short_circuit_assistant(summary=summary, intent="meta_query")
         return SearchAnswer(
             intent="meta_query",
             question=question,
@@ -823,23 +866,220 @@ class SearchAgent:
             },
         )
 
+    # Short reaffirmation / doubt phrasings the user uses to push back on the
+    # PRIOR answer. Without a deterministic handler, the LLM planner reads
+    # them as fresh questions with no scope and falls into clarification.
+    _AFFIRM_FOLLOWUP_RE: tuple[str, ...] = (
+        # English
+        r"^\s*(?:are\s+you\s+sure|you\s+sure|really|seriously|sure\?+)\s*[\.\?\!]*\s*$",
+        r"^\s*(?:is\s+that\s+(?:right|correct|true)|you\s+positive|positive\?+)\s*[\.\?\!]*\s*$",
+        r"^\s*(?:why|why\??|how\s+come|how)\s*[\.\?\!]*\s*$",
+        # Turkish
+        r"^\s*(?:emin\s+misin|gercekten\s+mi|gerçekten\s+mi|kesin\s+mi|öyle\s+mi|oyle\s+mi|sahi\s+mi|hadi\s+ya)\s*[\.\?\!]*\s*$",
+        r"^\s*(?:neden|niye|niçin|nicin|nasıl|nasil)\s*[\.\?\!]*\s*$",
+    )
+
+    def _handle_followup_reaffirmation(
+        self, question: str, question_language: str
+    ) -> SearchAnswer | None:
+        """Restate the prior assistant turn when the user pushes back briefly.
+
+        The user types "Are you sure?" / "emin misin?" / "really?" — these are
+        too short for the planner to map to anything meaningful and we don't
+        want to fall through to "Could you clarify the exact scope?". Pull
+        the last assistant turn out of the session store and re-confirm it
+        verbatim.
+        """
+        sample = (question or "").strip().lower()
+        if not sample:
+            return None
+        if not any(re.match(pattern, sample) for pattern in self._AFFIRM_FOLLOWUP_RE):
+            return None
+        store = self._ensure_session_store()
+        sid = self.cfg.active_chat_session_id
+        if store is None or not sid:
+            return None
+        try:
+            turns = store.recent_turns(int(sid), include_summary=False, limit=8)
+        except Exception:
+            return None
+        # Find the most recent assistant turn (the one we want to confirm).
+        prior_assistant = ""
+        for turn in reversed(turns):
+            if str(turn.get("role") or "") == "assistant":
+                prior_assistant = str(turn.get("answer_summary") or turn.get("answer") or "").strip()
+                if prior_assistant:
+                    break
+        if not prior_assistant:
+            return None
+        is_turkish = (question_language or "").lower() == "turkish"
+        if is_turkish:
+            summary = (
+                "Eminim — önceki cevap canlı veritabanı metadata'sından geldi. Yeniden: "
+                + prior_assistant
+            )
+        else:
+            summary = (
+                "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
+                + prior_assistant
+            )
+        self._record_short_circuit_assistant(summary=summary, intent="reaffirmation")
+        return SearchAnswer(
+            intent="reaffirmation",
+            question=question,
+            rows=[],
+            confidence="high",
+            summary=summary,
+            provenance=["chat_session_store", "reaffirm_short_circuit"],
+            details={
+                "reason": "followup_reaffirmation",
+                "answer_language": question_language or "english",
+                "answer_shape": "prose",
+                "prior_assistant": prior_assistant,
+                "stage_metrics": [],
+            },
+        )
+
+    def _answer_via_tool_agent(
+        self,
+        *,
+        question: str,
+        clean_question: str,
+        question_language: str,
+    ) -> SearchAnswer | None:
+        """Run the tool-calling loop and return a SearchAnswer.
+
+        Returns ``None`` on any unexpected failure so the caller can fall
+        back to the legacy LLM-Pass-1 path. The legacy path stays in place
+        as a deliberate safety net during this rollout.
+        """
+        try:
+            # Lazy import keeps a circular path between agent.py / tool_agent.py
+            # impossible — tool_agent imports from agent_tools and catalog only.
+            from amx.search.tool_agent import run_tool_agent
+        except Exception as exc:
+            log.warning("tool_agent unavailable, falling back to legacy router: %s", exc)
+            return None
+        # Convert the existing memory summary into the {role, content} pairs
+        # the tool agent expects for context. ``_memory_summary`` returns
+        # the most recent turns in chronological order; we keep both user
+        # questions and assistant answer summaries so follow-ups resolve.
+        # IMPORTANT: ``ask()`` already wrote the *current* user question to
+        # the session store at the top of the call, so the latest entry in
+        # ``_memory_summary()`` IS the question we're about to ask the LLM.
+        # If we forward it here, ``run_tool_agent`` would then append it a
+        # second time as the live user message — duplication confuses the
+        # model ("Only those?" became unrecognisable). Drop the trailing
+        # entry whose ``question`` matches the current one and which has no
+        # paired assistant answer yet.
+        memory_turns = list(self._memory_summary())
+        if memory_turns:
+            tail = memory_turns[-1]
+            tail_q = str(tail.get("question") or "").strip()
+            tail_ans = str(tail.get("answer_summary") or "").strip()
+            if tail_q == clean_question and not tail_ans:
+                memory_turns = memory_turns[:-1]
+        prior_turns: list[dict[str, str]] = []
+        for turn in memory_turns:
+            user_q = str(turn.get("question") or "").strip()
+            if user_q:
+                prior_turns.append({"role": "user", "content": user_q})
+            assistant_summary = str(turn.get("answer_summary") or "").strip()
+            if assistant_summary:
+                prior_turns.append({"role": "assistant", "content": assistant_summary})
+        try:
+            t0 = time.monotonic()
+            with step_spinner("Search Agent: thinking with tools"):
+                result = run_tool_agent(
+                    cfg=self.cfg,
+                    catalog=self.catalog,
+                    llm=self._llm_provider(),
+                    question=clean_question,
+                    answer_language=question_language,
+                    session_memory=prior_turns,
+                )
+            elapsed = round(time.monotonic() - t0, 4)
+        except Exception as exc:
+            log.warning("Tool agent failed (%s); falling back to legacy router.", exc)
+            return None
+
+        # Persist the assistant turn so follow-up turns can read the recap.
+        sid = self.cfg.active_chat_session_id
+        store = self._ensure_session_store()
+        if store is not None and sid:
+            try:
+                store.append_assistant_turn(
+                    int(sid),
+                    run_id=None,
+                    answer_summary=result.answer[:480],
+                    intent="tool_agent",
+                    plan={"agent": "tool_agent", "iterations": result.iterations},
+                    tokens=result.usage,
+                    confidence="high",
+                )
+            except Exception as exc:
+                log.warning("Failed to record tool-agent assistant turn: %s", exc)
+
+        return SearchAnswer(
+            intent="tool_agent",
+            question=question,
+            rows=[],
+            confidence="high",
+            summary=result.answer,
+            provenance=["tool_calling_agent"],
+            details={
+                "answer_shape": "prose",
+                "answer_language": question_language or "english",
+                "agent": "tool_calling",
+                "iterations": result.iterations,
+                "tool_calls": result.tool_calls,
+                "tokens": result.usage,
+                "stage_metrics": [{"stage": "tool_agent", "duration_sec": elapsed}],
+                "evidence_sources": [
+                    f"tool:{call.get('name','')}" for call in result.tool_calls if call.get("name")
+                ],
+            },
+        )
+
     def _catalog_resolvable_subject(self, question: str) -> str | None:
-        """Return the first explicit subject token in ``question`` that the
-        catalog confirms is an exact table name. Used to ground-truth our
-        re-routing: we only override the LLM's mode to ``table_explain``
-        when the user named something the catalog recognises as a table —
-        never for column-shaped tokens or arbitrary identifiers.
+        """Return the first explicit subject token we can confirm is a
+        table — either because the user explicitly called it a "table"
+        ("vbrk table" / "tablo X"), or because the catalog / live DB has
+        it under that exact name.
+
+        Used to ground-truth re-routing: we override the LLM's mode to
+        ``table_explain`` when the user named a real table.
+        Column-shaped tokens like "vbrk_id" don't reach a strong-mention
+        branch and won't be confirmed by the catalog as a table, so they
+        skip the override.
         """
         for mention in self._explicit_table_mentions_for_question(question):
             requested = str(mention.get("requested") or "").strip()
             if not requested:
                 continue
+            # Strong mentions (user said "X table" / "table X" / "schema.table")
+            # don't need extra confirmation. The user explicitly called the
+            # noun a table, so we trust the route. ``_resolve_table_targets``
+            # will still surface "not found" cleanly if the catalog and
+            # live DB both come up empty.
+            if str(mention.get("strength") or "") == "strong":
+                return requested
             try:
                 rows = self.catalog.find_tables_by_exact_name(self.db_profile, requested, limit=2)
             except Exception:
                 rows = []
             if rows:
                 return requested
+            # Weak mention not in catalog — last chance is the live DB.
+            # Cheap when ``current_schema`` is set; we skip the schema
+            # iteration when it isn't (would require N HEAD queries).
+            current_schema = (self.cfg.current_schema or "").strip()
+            if current_schema:
+                try:
+                    if self._live_table_exists(current_schema, requested) is True:
+                        return requested
+                except Exception:
+                    pass
         return None
 
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
@@ -1241,6 +1481,7 @@ class SearchAgent:
     def _explicit_table_mentions_for_question(self, question: str) -> list[dict[str, str]]:
         mentions: list[dict[str, str]] = []
         seen: set[str] = set()
+        # Inline ``schema.table`` references — strongest possible signal.
         for inline in re.findall(r"\b([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\b", question or ""):
             parts = inline.split(".", 1)
             if len(parts) != 2:
@@ -1248,16 +1489,33 @@ class SearchAgent:
             path = f"{parts[0]}.{parts[1]}"
             if path.lower() not in seen:
                 seen.add(path.lower())
-                mentions.append({"requested": inline, "path": path, "source": "explicit_schema_table"})
-        explicit_table_tokens = [
+                mentions.append(
+                    {
+                        "requested": inline,
+                        "path": path,
+                        "source": "explicit_schema_table",
+                        # ``strength`` distinguishes catch-strength so the
+                        # alignment guard knows when the user explicitly
+                        # called the noun a "table" (high — override LLM
+                        # unconditionally) vs. just named a subject in a
+                        # "what's the X" form (medium — require catalog or
+                        # live confirmation before overriding).
+                        "strength": "strong",
+                    }
+                )
+        # Strong-signal tokens: user explicitly says "X table" / "table X" /
+        # "X tablo" / "tablo X". User CALLED IT A TABLE, so we don't need
+        # extra catalog or live confirmation to trust the routing.
+        strong_tokens: list[str] = []
+        strong_tokens.extend(
             item
             for item in re.findall(
                 r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tablo|tablolar|tablosu|tablosunda|tablosuna|tablosundan|tabloları|tablosunu)\b",
                 question or "",
                 flags=re.IGNORECASE,
             )
-        ]
-        explicit_table_tokens.extend(
+        )
+        strong_tokens.extend(
             item
             for item in re.findall(
                 r"\b(?:table|tables|tablo|tablolar|tablosu)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
@@ -1265,11 +1523,11 @@ class SearchAgent:
                 flags=re.IGNORECASE,
             )
         )
-        # Subject-form questions where the user names the table without using
-        # the word "table": "what's the vbrk", "describe customers", "explain
-        # adrc", "tell me about orders", "vbrk nedir", "vbrk hakkında". Without
-        # this branch the question's identifier-shaped subject (vbrk) is lost
-        # and the pipeline drifts to whatever the LLM/catalog guesses.
+        # Weak-signal tokens: user said "what's the X" / "describe X" /
+        # "X nedir" — the noun MIGHT be a column or a generic entity, so
+        # the alignment guard should require catalog / live confirmation
+        # before overriding the LLM's chosen mode.
+        weak_tokens: list[str] = []
         subject_patterns = (
             # English: what's/what is/describe/explain/tell me about/show me X
             r"\b(?:what'?s|what is|what are|whats|describe|explain|define|tell\s+me\s+about|"
@@ -1287,7 +1545,7 @@ class SearchAgent:
             r"(?:bana\s+)?`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
         )
         for pattern in subject_patterns:
-            explicit_table_tokens.extend(
+            weak_tokens.extend(
                 item
                 for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
             )
@@ -1413,19 +1671,34 @@ class SearchAgent:
             "older",
             "newer",
         }
-        explicit_table_tokens = [token for token in explicit_table_tokens if token.lower() not in table_token_stopwords]
-        if self.cfg.current_schema:
-            for token in explicit_table_tokens:
-                path = f"{self.cfg.current_schema}.{token}"
-                if path.lower() not in seen:
-                    seen.add(path.lower())
-                    mentions.append({"requested": token, "path": path, "source": "explicit_current_schema"})
-        else:
-            for token in explicit_table_tokens:
-                key = token.lower()
-                if key not in seen:
+        strong_tokens = [t for t in strong_tokens if t.lower() not in table_token_stopwords]
+        weak_tokens = [t for t in weak_tokens if t.lower() not in table_token_stopwords]
+        # Emit strong tokens first so they appear before weak ones — both
+        # the alignment guard and ``_resolve_table_targets`` walk this list
+        # in order and we want the high-confidence match to win when both
+        # branches captured the same noun.
+        for tokens, strength, source_qualified, source_unqualified in (
+            (strong_tokens, "strong", "explicit_current_schema", "explicit_unqualified_table"),
+            (weak_tokens, "weak", "subject_form_current_schema", "subject_form_unqualified"),
+        ):
+            for token in tokens:
+                if self.cfg.current_schema:
+                    path = f"{self.cfg.current_schema}.{token}"
+                    key = path.lower()
+                    if key in seen:
+                        continue
                     seen.add(key)
-                    mentions.append({"requested": token, "path": "", "source": "explicit_unqualified_table"})
+                    mentions.append(
+                        {"requested": token, "path": path, "source": source_qualified, "strength": strength}
+                    )
+                else:
+                    key = token.lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    mentions.append(
+                        {"requested": token, "path": "", "source": source_unqualified, "strength": strength}
+                    )
         return mentions
 
     def _explicit_table_paths_for_question(self, question: str) -> list[str]:
@@ -3074,6 +3347,27 @@ class SearchAgent:
         meta_answer = self._handle_meta_query(clean_question, question_language)
         if meta_answer is not None:
             return meta_answer
+        reaffirm = self._handle_followup_reaffirmation(clean_question, question_language)
+        if reaffirm is not None:
+            return reaffirm
+
+        # Tool-calling agent path (default). The LLM is given real catalog /
+        # live-DB tools and decides itself how to answer. Replaces the prior
+        # regex-routed Pass1 / alignment / retrieval cascade for everything
+        # the deterministic short-circuits don't already handle. Set
+        # ``/search config use_tool_agent false`` to fall back to the legacy
+        # path during transition.
+        use_tool_agent = (
+            str(self.settings.get("use_tool_agent", "true") or "true").strip().lower() == "true"
+        )
+        if use_tool_agent:
+            tool_answer = self._answer_via_tool_agent(
+                question=question,
+                clean_question=clean_question,
+                question_language=question_language,
+            )
+            if tool_answer is not None:
+                return tool_answer
 
         stage_metrics: list[dict[str, Any]] = []
         thought_trace: list[dict[str, str]] = []
