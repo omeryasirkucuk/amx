@@ -9,7 +9,7 @@ from amx.agents.base import Confidence, MetadataSuggestion
 from amx.config import AMXConfig
 from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent
 from amx.db.connector import AssetKind, ColumnProfile, TableProfile
-from amx.search.agent import SearchPolicy
+from amx.search.agent import SearchPlan, SearchPolicy
 from amx.search.catalog import SearchCatalog
 from amx.search.service import SearchService, _SESSION_MEMORY
 from amx.storage.sqlite_store import SQLiteHistoryStore
@@ -1059,3 +1059,167 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.confidence, "high")
         self.assertTrue(answer.details["verification"]["live_verified"])
         self.assertIn("current schema", answer.summary)
+
+    def test_aggregate_inventory_returns_single_fact(self) -> None:
+        # vbak: 10 rows / 3 columns. kna1: 5 rows / 1 column.
+        # Question = "which table has the most rows" -> single_fact headline naming vbak.
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"schema_inventory","out_of_domain":false,"normalized_question":"which table has the most rows in sap",'
+                '"search_mode":"schema_inventory","question_class":"inventory","target_entity":"table",'
+                '"entity_hints":[],"search_queries":["which table has the most rows in sap"],'
+                '"needs_typo_recovery":false,"answer_language":"english","ambiguity_flags":[],'
+                '"reason":"superlative on row_count over inventory",'
+                '"aggregation_op":"max","aggregation_field":"row_count","aggregation_limit":1,'
+                '"answer_shape":"single_fact"}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("which table has the most rows in sap")
+        self.assertEqual(answer.details["plan"]["search_mode"], "schema_inventory")
+        self.assertEqual(answer.details["answer_shape"], "single_fact")
+        self.assertIn("vbak", answer.summary)
+        self.assertIn("10", answer.summary)
+        self.assertNotIn("| Schema | Table | Columns | Rows | Cluster |", answer.summary)
+        self.assertFalse(answer.details["display_rows"])
+
+    def test_aggregate_inventory_top_k_returns_short_table(self) -> None:
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"schema_inventory","out_of_domain":false,"normalized_question":"top 2 tables by rows",'
+                '"search_mode":"schema_inventory","question_class":"inventory","target_entity":"table",'
+                '"entity_hints":[],"search_queries":["top 2 tables by rows"],'
+                '"needs_typo_recovery":false,"answer_language":"english","ambiguity_flags":[],'
+                '"reason":"top-k on row_count",'
+                '"aggregation_op":"top_k","aggregation_field":"row_count","aggregation_limit":2,'
+                '"answer_shape":"short_table"}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("top 2 tables by rows in sap")
+        self.assertEqual(answer.details["answer_shape"], "short_table")
+        self.assertIn("Top **2** tables", answer.summary)
+        # Two data rows in the short table (vbak first, kna1 second).
+        data_lines = [
+            line for line in answer.summary.splitlines()
+            if line.startswith("| sap |")
+        ]
+        self.assertEqual(len(data_lines), 2)
+        self.assertIn("vbak", data_lines[0])
+        self.assertIn("kna1", data_lines[1])
+        self.assertFalse(answer.details["display_rows"])
+
+    def test_broad_inventory_dump_keeps_display_rows_false(self) -> None:
+        # No aggregation hints -> answer_shape derives to full_table -> dump path.
+        # The bottom Rich Search matches table must still be suppressed since the
+        # answer summary already embeds the markdown table inline.
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._profile(),
+            query_usage={},
+        )
+        self.catalog.sync_table_profile(
+            db_profile="default",
+            db_backend="postgresql",
+            database_name="SAP",
+            profile=self._customer_profile(),
+            query_usage={},
+        )
+        cfg = self._search_cfg()
+        cfg.current_schema = "sap"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            _FakeLLMProvider.queue(
+                '{"intent":"schema_inventory","out_of_domain":false,"normalized_question":"how many columns per table",'
+                '"search_mode":"schema_inventory","question_class":"inventory","target_entity":"table",'
+                '"entity_hints":[],"search_queries":["how many columns per table"],'
+                '"needs_typo_recovery":false,"answer_language":"english","reason":"broad inventory"}'
+            )
+            service = SearchService(cfg, self.catalog)
+            answer = service.ask("how many columns per table in sap")
+        self.assertIn("| Schema | Table | Columns | Rows | Cluster |", answer.summary)
+        self.assertEqual(answer.details["answer_shape"], "full_table")
+        self.assertFalse(answer.details["display_rows"])
+
+    def test_synthesis_payload_carries_answer_shape(self) -> None:
+        # Construct plan/policy/rows directly and call _synthesize_answer to
+        # verify the LLM user payload contains an "answer_shape" key.
+        cfg = self._search_cfg()
+        cfg.llm.language = "english"
+        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
+            service = SearchService(cfg, self.catalog)
+            plan = SearchPlan(
+                intent="find_columns",
+                out_of_domain=False,
+                normalized_question="tables about pricing",
+                search_mode="semantic_concept",
+                question_class="semantic_discovery",
+                target_entity="column",
+                entity_hints=[],
+                search_queries=["tables about pricing"],
+                needs_typo_recovery=False,
+                answer_language="english",
+                ambiguity_flags=[],
+                reason="",
+                answer_shape="ranked_list",
+            )
+            policy = SearchPolicy(
+                plan.question_class,
+                "semantic_catalog_search",
+                True,
+                False,
+                False,
+                True,
+                False,
+                "ranked_matches",
+                "suggest_sync_if_sparse",
+                answer_shape="ranked_list",
+            )
+            rows = [
+                {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr", "rank_score": 7.5}
+            ]
+            _FakeLLMProvider.queue("vbak.netwr is your strongest pricing match.")
+            service._agent._synthesize_answer(
+                "tables about pricing",
+                plan,
+                policy,
+                rows,
+                {},
+                {},
+                [],
+            )
+        # Find the synthesis call (user payload JSON contains "answer_shape").
+        user_payloads = [msgs[-1]["content"] for msgs in _FakeLLMProvider.calls if msgs]
+        matching = [payload for payload in user_payloads if '"answer_shape": "ranked_list"' in payload]
+        self.assertTrue(matching, f"expected synthesis payload to carry answer_shape; got: {user_payloads!r}")
