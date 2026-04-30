@@ -6,6 +6,24 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-04-30
+### Fixed
+- **OpenRouter models with non-OpenAI vendor namespaces no longer fail with `LLM Provider NOT provided`** (`amx/llm/provider.py`): the user reported `provider=openrouter, model=qwen/qwen3.5-flash-02-23` failing because LiteLLM saw the `qwen/` head and didn't recognise it as a routable provider. Root cause: `LLMProvider.model_name` had an early-return `if "/" in raw: return raw` that bypassed the `openrouter/` prefix for any model id containing a slash, and `PROVIDER_MODEL_PREFIX["openrouter"]` was set to an empty string. OpenAI-prefixed models (`openai/gpt-4o-mini`) happened to work via LiteLLM's OpenAI client + api_base override, but vendor namespaces (qwen/, mistralai/, meta-llama/, google/, x-ai/, ...) had no fallback. Fix: `PROVIDER_MODEL_PREFIX["openrouter"] = "openrouter/"` is now always applied; `model_name` skips the prefix only when `raw` already begins with it. Net effect: every OpenRouter model id reaches LiteLLM as `openrouter/<vendor>/<model>`, the canonical form OpenRouter expects.
+
+## [0.5.2] - 2026-04-30
+### Added
+- **Progress counters on `analysis_runs`** (`amx/storage/sqlite_store.py`): four new columns recorded per run — `selected_count` (assets the user originally picked), `planned_count` (post missing-only-filter target), `processed_count` (assets that actually started processing — survives Ctrl+C), `applied_count` (results successfully written to live DB). Plus a `review_strategy` column so the status logic can distinguish auto-apply from individual / deferred. Idempotent ALTER TABLE migrations let existing DBs pick up the new columns transparently.
+- **Counter-update helpers** (`amx/storage/sqlite_store.py`): `update_run_planned_count`, `increment_run_processed`, `increment_run_applied`. Each commits per-row so partial progress survives Ctrl+C even when `finish_run` is never reached.
+- **`Processed` column in `/history list`** (`amx/cli_support/commands/history.py`): rendered as `processed/planned`, with an `applied N` annotation when the apply count diverges from the processed count (e.g. user accepted only some during interactive review). Falls back to `—` for older rows that pre-date the new columns.
+
+### Changed
+- **`Target Scope` no longer lies about partial runs** (`amx/cli_support/commands/analyze_flow.py`, `amx/cli_support/commands/history.py`): `Target Scope` keeps the original user intent (e.g. `sap_s6p (78 tables)`); the new `Processed` column shows what actually happened (`3/60` after the missing-only filter dropped 18 already-commented tables and Ctrl+C interrupted at table 3 of the remaining 60). Solves the user-reported confusion where a one-table-completed run still displayed `78 tables` as if all of them had been touched.
+- **auto-apply runs that get Ctrl+C'd land in `cancelled`, not `ready_for_review`** (`amx/cli_support/commands/analyze_flow.py`): the user explicitly opted out of review when picking auto-apply, so directing them to "go review" contradicts that choice. Successfully-processed tables are already in the catalog (and on `/run-apply`, in the live DB), and the count is preserved on `applied_count`. The terminal status is `cancelled`, with the reporting columns telling the rest of the story.
+- **`create_run` accepts `selected_count`, `planned_count`, `review_strategy`** so the caller can record initial intent. Defaults derive `selected_count` from the scope dict if not passed (backward compatible).
+
+### Rationale
+A user starting a run on the remaining 60 tables out of a 78-table schema, then hitting Ctrl+C after 3 tables completed, used to see in `/history`: `Target Scope: 78 tables, Status: ready_for_review` — wrong on both axes (78 implies all of them, ready_for_review contradicts auto-apply). The new columns answer "what did the user ask for?" and "what did AMX actually finish?" separately, so partial state is honest.
+
 ## [0.5.1] - 2026-04-30
 ### Added
 - **Third review strategy: `auto-apply`** (`amx/cli_support/commands/analyze_flow.py`, `amx/agents/orchestrator.py`): the review-strategy picker now offers `individual / deferred / auto-apply`. With `auto-apply`, the orchestrator accepts each entity's top LLM suggestion as the final description, marks it `applied=True`, records it as `evaluation=accepted` in the run history, and writes it through `sync_review_decision` to the catalog as a reviewed description — all without prompting the user. When combined with `/run-apply`, the comments land in the live DB at the end of the run; with plain `/run` the catalog is updated but the DB write is deferred (a warning explains this).
