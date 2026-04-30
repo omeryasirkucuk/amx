@@ -24,13 +24,26 @@ from amx.search.catalog import SearchAnswer, SearchCatalog
 
 
 class SearchService:
-    """Compatibility wrapper for /search operations."""
+    """Compatibility wrapper for /search operations.
+
+    Implements the context-manager protocol so callers can write
+    ``with SearchService(cfg, catalog) as svc: ...`` to ensure the live
+    DB connector is disposed when the call finishes. Without this each
+    ``/search ask`` invocation leaks a SQLAlchemy engine + connection
+    pool — file descriptors accumulate across REPL turns until the
+    process hits the OS NOFILE limit (the user-reported
+    ``OSError: [Errno 24] Too many open files``).
+    """
 
     def __init__(self, cfg: AMXConfig, catalog: SearchCatalog):
         self.cfg = cfg
         self.catalog = catalog
         self.db_profile = cfg.active_db_profile or "default"
         self.settings = catalog.get_settings(self.db_profile)
+        # Cache exactly one live connector across the SearchService lifespan
+        # — every previous call site spawned a new one per ``_inventory_db``
+        # invocation, which the legacy planner does many times per question.
+        self._live_db: DatabaseConnector | None = None
         self._agent = SearchAgent(
             cfg,
             catalog,
@@ -39,7 +52,24 @@ class SearchService:
         )
 
     def _inventory_db(self) -> DatabaseConnector:
-        return DatabaseConnector(self.cfg.db)
+        if self._live_db is None:
+            self._live_db = DatabaseConnector(self.cfg.db)
+        return self._live_db
+
+    def close(self) -> None:
+        """Dispose the cached live DB connector, if any."""
+        if self._live_db is not None:
+            try:
+                self._live_db.close()
+            except Exception:
+                pass
+            self._live_db = None
+
+    def __enter__(self) -> "SearchService":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
     def ask(self, question: str) -> SearchAnswer:
         return self._agent.ask(question)

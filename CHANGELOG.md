@@ -6,6 +6,41 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-04-30
+### Added
+- **`FatalLLMError` class** (`amx/llm/provider.py`): non-recoverable LLM errors (auth / quota / payment / model-not-found) now raise this dedicated exception with a short, user-facing message. Caught at `analyze_flow.execute_analyze_run` so the entire run aborts cleanly with one actionable message instead of producing 200+ identical warnings while iterating through tables.
+- **`_classify_fatal_llm_error` detector**: inspects the exception's `status_code` AND the lowercased error message body. Maps HTTP 401 / 402 / 403 / 404 + provider-specific message patterns ("more credits", "insufficient_quota", "invalid api key", "model not found", "can only afford") to a friendly user message ("Your account is out of credits — top up to continue."). Tested against the user-reported OpenRouter 402 ("This request requires more credits") output.
+
+### Fixed
+- **`/run` no longer continues blasting LLM calls when the account is out of credits** (`amx/llm/provider.py`, `amx/agents/profile_agent.py`, `amx/cli_support/commands/analyze_flow.py`): user reported their OpenRouter account hit 402 mid-run; AMX kept retrying every batch on every remaining table, accumulating 1090 seconds and 111K tokens of failed attempts before manual Ctrl+C. `LLMProvider.chat` now classifies fatal errors before retry, raising `FatalLLMError` immediately. `ProfileAgent.run` lets `FatalLLMError` propagate (and cancels sibling futures in the parallel-batch path so the executor drains fast). `execute_analyze_run` catches `FatalLLMError` and prints `LLM run aborted: <user_message>` plus a hint that the missing-only filter will skip already-finished tables on the retry — then exits with status `failed`.
+- **Cancelled futures in parallel batch mode** (`amx/agents/profile_agent.py`): when one batch detects a fatal error, sibling futures get `cancel()`'d so the executor doesn't keep spending tokens on the rest of the wave.
+
+### Rationale
+The previous behavior was hostile to the user: a single recoverable typo in the API key, or an out-of-credits afternoon, produced thousands of lines of warnings, drained the rest of the table queue's effort, and left an `analysis_runs` row that looked like 'AMX did 87 things'. v0.5.7 turns these into "fix the LLM, retry — your missing-only filter has your back" exits.
+
+## [0.5.6] - 2026-04-30
+### Fixed
+- **`amx` startup crashed with `AttributeError: function object has no attribute 'group'`** (`amx/cli.py`): the v0.5.5 patch inserted the new `_raise_open_file_limit` helper between the existing `@click.group(...) ... @click.pass_context` decorator stack and `def main(...)`, so the decorators ended up applied to the helper instead of `main`. `register_history_commands(main, ...)` then failed because `main` was a plain function, not a Click `Group`. Helper moved above the decorator stack so the decorators land on `main()` again.
+- **LLM calls could hang indefinitely** (`amx/llm/provider.py`): user reported a single 25-column profile batch sitting at 9m58s while sibling 50-column batches finished in 1–1.5 min. No per-request timeout was being passed to LiteLLM, so a stalled upstream connection (OpenRouter/qwen mid-stream stall in this case) waited forever. Added a default `180s` per-call `timeout` (tunable via `AMX_LLM_TIMEOUT_SEC` env var). On expiry LiteLLM raises `Timeout` / `APITimeoutError`, both of which `_is_transient_llm_error` already classifies as retry-able — so the existing retry-with-backoff (`MAX_LLM_RETRIES=2`) automatically starts a fresh request instead of silently waiting.
+
+## [0.5.5] - 2026-04-30
+### Added
+- **Programmatic NOFILE limit raise at AMX startup** (`amx/cli.py:_raise_open_file_limit`): lifts the per-process soft NOFILE limit to 4096 (capped at the hard limit) via `resource.setrlimit`. Open-source users no longer need to set `ulimit -n` manually before running `amx` on macOS (default soft limit 256). Cross-platform safe — no-op on Windows where the `resource` module isn't available, no-op when the user's hard cap is already lower, never reduces the limit.
+
+### Fixed
+- **`SearchService` was leaking a SQLAlchemy engine + connection pool per `_inventory_db()` call** (`amx/search/service.py`): the old code returned `DatabaseConnector(self.cfg.db)` on every call, and the legacy planner calls it many times per question. Cache one connector per `SearchService` instance and dispose it via the new `close()` method. `SearchService` is now a context manager; every `/search ask` callsite wraps its `svc` in `with svc:` so the engine is disposed when the question finishes — preventing the FD-exhaustion crash users saw after several REPL turns.
+- **Same fix applied to find-columns / join-candidates / explain / explain-table hidden commands** so every entry path through `_service(cfg)` releases its connector.
+
+### Changed
+- The combination of these two fixes (programmatic ulimit raise + per-question connector disposal) means the `OSError: [Errno 24] Too many open files` from 0.5.3 should not surface on any open-source user's machine, even with default-256-FD systems and long REPL sessions.
+
+## [0.5.4] - 2026-04-30
+### Fixed
+- **`OSError: [Errno 24] Too many open files` after several `/ask` turns** (`amx/search/agent_tools.py`, `amx/search/tool_agent.py`): each tool-agent question instantiated a fresh `ToolBox` → fresh `DatabaseConnector` → fresh SQLAlchemy engine + connection pool, but never disposed it. After enough turns the file-descriptor count crossed the macOS / Linux ulimit and the next `prompt_toolkit.prompt` failed inside `asyncio.new_event_loop()` because no FDs were left for selectors. `ToolBox` now exposes `close()` and acts as a context manager; `run_tool_agent` wraps the loop in `with ToolBox(...) as toolbox:` so the connector is disposed at the end of every question. The session memory between turns continues to live in `ChatSessionStore`, not on the `ToolBox`, so dropping the connector mid-session is safe.
+
+### Changed
+- **`analysis_runs` migration probes the live schema before adding columns** (`amx/storage/sqlite_store.py`): the previous `try: ALTER except: pass` swallowed every error including unrelated ones. Now we read `PRAGMA table_info(analysis_runs)` first to get the actual column set, skip already-present columns idempotently, log every successful column add at INFO, and log only true failures at WARNING. Helps diagnose why `/history` shows `—` for `Processed` when the migration didn't apply.
+
 ## [0.5.3] - 2026-04-30
 ### Fixed
 - **OpenRouter models with non-OpenAI vendor namespaces no longer fail with `LLM Provider NOT provided`** (`amx/llm/provider.py`): the user reported `provider=openrouter, model=qwen/qwen3.5-flash-02-23` failing because LiteLLM saw the `qwen/` head and didn't recognise it as a routable provider. Root cause: `LLMProvider.model_name` had an early-return `if "/" in raw: return raw` that bypassed the `openrouter/` prefix for any model id containing a slash, and `PROVIDER_MODEL_PREFIX["openrouter"]` was set to an empty string. OpenAI-prefixed models (`openai/gpt-4o-mini`) happened to work via LiteLLM's OpenAI client + api_base override, but vendor namespaces (qwen/, mistralai/, meta-llama/, google/, x-ai/, ...) had no fallback. Fix: `PROVIDER_MODEL_PREFIX["openrouter"] = "openrouter/"` is now always applied; `model_name` skips the prefix only when `raw` already begins with it. Net effect: every OpenRouter model id reaches LiteLLM as `openrouter/<vendor>/<model>`, the canonical form OpenRouter expects.

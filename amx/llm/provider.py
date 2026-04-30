@@ -126,6 +126,109 @@ class LLMTruncationError(RuntimeError):
     """Raised when model output is truncated by max_tokens."""
 
 
+class FatalLLMError(RuntimeError):
+    """Raised for non-recoverable LLM errors that should abort the entire run.
+
+    Examples: out-of-credits (HTTP 402), invalid API key (401), permission
+    denied (403), model not found (404). Retrying these just wastes time and
+    money — every queued batch fails the same way. Catching this at the
+    orchestrator / analyze_flow level lets us show the user one clear,
+    actionable message and exit instead of generating 200+ identical
+    warnings while iterating through every table.
+
+    The ``user_message`` should be short, specific, and tell the user what
+    to do (e.g. "Your OpenRouter account is out of credits. Visit
+    https://openrouter.ai/settings/credits to top up.").
+    """
+
+    def __init__(self, user_message: str, *, original_message: str = "") -> None:
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.original_message = original_message or user_message
+
+
+# HTTP status codes / message patterns that map to FatalLLMError. We classify
+# these once at the LLMProvider boundary so every caller (Profile/RAG/Code
+# agents, search agent, etc.) sees the same fatal contract instead of having
+# to special-case 402 / 401 / 404 in their own try/except.
+_FATAL_HTTP_STATUS_CODES: frozenset[int] = frozenset({401, 402, 403, 404})
+_FATAL_MESSAGE_PATTERNS: tuple[tuple[str, str], ...] = (
+    # Pattern → user-facing summary. Provider names are intentionally stripped
+    # so the same patterns work across OpenAI, OpenRouter, Anthropic, etc.
+    ("more credits", "Your account is out of credits — top up to continue."),
+    ("insufficient_quota", "Your account has hit its quota — increase the limit or wait for the reset."),
+    ("insufficient quota", "Your account has hit its quota — increase the limit or wait for the reset."),
+    ("requires more credits", "Your account is out of credits — top up to continue."),
+    ("can only afford", "Your account is out of credits — top up to continue."),
+    ("invalid api key", "The API key configured for this LLM profile is invalid. Run /llm to fix it."),
+    ("invalid_api_key", "The API key configured for this LLM profile is invalid. Run /llm to fix it."),
+    ("incorrect api key", "The API key configured for this LLM profile is invalid. Run /llm to fix it."),
+    ("authentication", "LLM authentication failed — check the API key under /llm."),
+    ("model not found", "The configured model does not exist for this provider. Run /llm to pick another."),
+    ("model_not_found", "The configured model does not exist for this provider. Run /llm to pick another."),
+    ("does not exist", "The configured model does not exist for this provider. Run /llm to pick another."),
+)
+
+
+def _classify_fatal_llm_error(exc: BaseException) -> FatalLLMError | None:
+    """Return ``FatalLLMError`` when ``exc`` is non-retryable, else None.
+
+    Detection strategy: inspect the exception's ``status_code`` (LiteLLM /
+    httpx attach this) AND the lowercased error message. We need both
+    because some providers wrap responses with status_code=200 and put the
+    real error in the body.
+    """
+    msg = str(exc)
+    msg_lower = msg.lower()
+    status: int | None = None
+    for attr in ("status_code", "code"):
+        candidate = getattr(exc, attr, None)
+        if isinstance(candidate, int):
+            status = candidate
+            break
+        if isinstance(candidate, str) and candidate.isdigit():
+            status = int(candidate)
+            break
+    # Many LiteLLM error strings include the HTTP code inline ("APIError: 402").
+    if status is None:
+        for code in _FATAL_HTTP_STATUS_CODES:
+            if f"{code}" in msg and (
+                f' {code} ' in msg
+                or f'":{code}' in msg
+                or f'"code":{code}' in msg
+                or f'"code": {code}' in msg
+                or f"({code})" in msg
+            ):
+                status = code
+                break
+    for pattern, user_msg in _FATAL_MESSAGE_PATTERNS:
+        if pattern in msg_lower:
+            return FatalLLMError(user_msg, original_message=msg)
+    if status in _FATAL_HTTP_STATUS_CODES:
+        # Last-resort generic message when the body didn't match a pattern.
+        if status == 402:
+            return FatalLLMError(
+                "Your LLM provider returned 402 Payment Required — usually out of credits.",
+                original_message=msg,
+            )
+        if status == 401:
+            return FatalLLMError(
+                "LLM authentication failed (HTTP 401). Re-check the API key under /llm.",
+                original_message=msg,
+            )
+        if status == 403:
+            return FatalLLMError(
+                "LLM access denied (HTTP 403). Your key may lack permission for this model.",
+                original_message=msg,
+            )
+        if status == 404:
+            return FatalLLMError(
+                "LLM returned 404 — the configured model name is unknown to the provider.",
+                original_message=msg,
+            )
+    return None
+
+
 def _lp_token_text(token_obj: object) -> str:
     if isinstance(token_obj, dict):
         return str(token_obj.get("token", "") or "")
@@ -303,6 +406,31 @@ def _normalized_api_base(provider: str, api_base: str | None) -> str | None:
 
 MAX_LLM_RETRIES = 2
 LLM_RETRY_BACKOFF_BASE_SEC = 1.0
+
+# Per-request timeout (seconds). Without this, a stalled upstream connection
+# leaves the call hanging indefinitely — the user reported a single profile
+# batch sitting at 9m58s while sibling batches finished in 1m. LiteLLM
+# forwards ``timeout=N`` to the underlying client (OpenAI / Anthropic /
+# Gemini / OpenRouter); on expiry the call raises ``Timeout`` /
+# ``APITimeoutError`` which our ``_is_transient_llm_error`` filter already
+# recognises, so retry-with-backoff kicks in automatically.
+#
+# Tunable via env: ``AMX_LLM_TIMEOUT_SEC``. Default 180s is enough for a
+# wide-batch profile call (50 cols ≈ 60–120s in practice) but caps the
+# pathological-hang case below 3 minutes — at which point the retry loop
+# starts a fresh request.
+_DEFAULT_LLM_TIMEOUT_SEC = 180.0
+
+
+def _llm_timeout_sec() -> float:
+    raw = os.getenv("AMX_LLM_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return _DEFAULT_LLM_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_LLM_TIMEOUT_SEC
+    return value if value > 0 else _DEFAULT_LLM_TIMEOUT_SEC
 _TRANSIENT_LLM_EXCEPTION_NAMES: frozenset[str] = frozenset(
     {
         "APITimeoutError",
@@ -483,6 +611,13 @@ class LLMProvider:
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
         call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama", "openrouter") else None
 
+        # Resolve timeout once per call. ``extra`` is the user-passed kwargs;
+        # if a caller wants to override the default for a specific call they
+        # can pass ``timeout=N``. Otherwise we fall back to the env-tunable
+        # default so no LLM call can hang indefinitely.
+        if "timeout" not in extra and "request_timeout" not in extra:
+            extra["timeout"] = _llm_timeout_sec()
+
         def _do_completion(api_base_override: str | None) -> Any:
             explicit_api_key = self.cfg.api_key if self.cfg.provider == "openrouter" else None
             return _litellm().completion(
@@ -505,6 +640,20 @@ class LLMProvider:
                 break
             except Exception as exc:
                 last_exc = exc
+
+                # Fatal errors (auth / quota / payment / model-not-found) are
+                # not transient — every retry will fail the same way. Raise
+                # immediately so the orchestrator can abort the entire run
+                # instead of producing 200+ identical warnings while
+                # iterating through tables. Skip Ollama 404 — that one IS
+                # recoverable (handled below).
+                fatal = _classify_fatal_llm_error(exc)
+                if fatal is not None and not (
+                    self.cfg.provider == "ollama"
+                    and "404 page not found" in str(exc).lower()
+                ):
+                    log.error("Fatal LLM error (no retry): %s", fatal.user_message)
+                    raise fatal from exc
 
                 # Provider-specific recovery (only on first attempt): legacy
                 # Ollama configs that still point at an OpenAI-style /v1 path

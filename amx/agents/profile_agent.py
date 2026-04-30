@@ -7,7 +7,7 @@ from pathlib import Path
 
 from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.config import PromptDetail, prompt_detail_for
-from amx.llm.provider import LLMProvider
+from amx.llm.provider import FatalLLMError, LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
@@ -163,6 +163,13 @@ class ProfileAgent(BaseAgent):
                     )
                     if res:
                         all_suggestions.extend(res)
+                except FatalLLMError:
+                    # Fatal errors (auth / quota / payment / model-not-found)
+                    # propagate immediately; the orchestrator catches them at
+                    # ``process_table`` so the whole /run aborts with one
+                    # actionable message, instead of producing 200+ identical
+                    # warnings while iterating through tables.
+                    raise
                 except Exception as exc:
                     self._record_diagnostic(f"Profile Agent batch {idx}/{len(batches)} failed: {exc}")
                     log.error("Profile agent batch %d failed: %s", idx, exc)
@@ -184,15 +191,25 @@ class ProfileAgent(BaseAgent):
                     )
                     fut_to_batch[fut] = idx
 
+                fatal_to_raise: FatalLLMError | None = None
                 for fut in as_completed(fut_to_batch):
                     try:
                         res = fut.result()
                         if res:
                             all_suggestions.extend(res)
+                    except FatalLLMError as fatal:
+                        # Capture the first fatal so we can cancel siblings
+                        # and propagate after the executor drains.
+                        if fatal_to_raise is None:
+                            fatal_to_raise = fatal
+                        for other_fut in fut_to_batch:
+                            other_fut.cancel()
                     except Exception as exc:
                         idx = fut_to_batch[fut]
                         self._record_diagnostic(f"Profile Agent batch {idx}/{len(batches)} failed: {exc}")
                         log.error("Profile agent batch %d failed: %s", idx, exc)
+                if fatal_to_raise is not None:
+                    raise fatal_to_raise
 
         if not all_suggestions:
             self._record_diagnostic(

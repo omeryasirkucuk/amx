@@ -17,7 +17,7 @@ from amx.storage.sqlite_store import history_store
 from amx.codebase.analyzer import CodebaseReport
 from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
-from amx.llm.provider import LLMProvider
+from amx.llm.provider import FatalLLMError, LLMProvider
 from amx.utils.console import (
     ask,
     ask_choice,
