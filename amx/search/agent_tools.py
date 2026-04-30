@@ -238,6 +238,57 @@ class ToolBox:
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_columns_by_dtype",
+                    "description": (
+                        "Return columns whose dtype matches the given SQL data type "
+                        "('boolean', 'int', 'integer', 'text', 'date', 'timestamp', 'numeric', "
+                        "etc.). Use this for 'which tables have boolean columns?', "
+                        "'all date columns', 'tables with bigint primary keys'. Matches by "
+                        "dtype FAMILY when possible (e.g. 'int' covers BIGINT/INTEGER/SMALLINT)."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "dtype": {
+                                "type": "string",
+                                "description": "Data type token. Case-insensitive.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max rows (default 30).",
+                                "default": 30,
+                            },
+                        },
+                        "required": ["dtype"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_joinable_tables",
+                    "description": (
+                        "Given ONE table, return the tables it can be joined with — verified "
+                        "foreign keys first, then semantic-similarity candidates. Use this for "
+                        "'which tables can I join with adr6?', 'X ile birleşebilecek tablolar', "
+                        "'find tables related to vbrk'. Different from get_join_candidates "
+                        "which needs both sides upfront."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "table": {
+                                "type": "string",
+                                "description": "Table as schema.table or just table_name (we'll resolve via find_table_by_name first).",
+                            },
+                        },
+                        "required": ["table"],
+                    },
+                },
+            },
         ]
 
     # ------------------------------------------------------------------ invoke
@@ -445,3 +496,157 @@ class ToolBox:
                 }
             )
         return {"databases": rows, "count": len(rows)}
+
+    # ------------------------------------------------------------ dtype family
+    # Map a user-supplied dtype token to a concrete SQL-LIKE pattern set so
+    # 'boolean' covers BOOL/BOOLEAN, 'int' covers BIGINT/INTEGER/SMALLINT,
+    # 'date' covers DATE/TIMESTAMP/TIMESTAMPTZ, etc. Any unknown token is
+    # passed through verbatim and matched as a substring against the column's
+    # dtype field.
+    _DTYPE_FAMILIES: dict[str, list[str]] = {
+        "boolean": ["bool", "boolean"],
+        "bool": ["bool", "boolean"],
+        "int": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
+        "integer": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
+        "bigint": ["bigint"],
+        "smallint": ["smallint", "int2"],
+        "float": ["float", "double", "real", "numeric", "decimal"],
+        "double": ["double", "float8"],
+        "numeric": ["numeric", "decimal"],
+        "decimal": ["numeric", "decimal"],
+        "text": ["text", "varchar", "char", "string"],
+        "varchar": ["varchar", "text", "char"],
+        "string": ["text", "varchar", "char", "string"],
+        "char": ["char", "varchar"],
+        "date": ["date"],
+        "timestamp": ["timestamp", "timestamptz", "datetime"],
+        "datetime": ["timestamp", "timestamptz", "datetime"],
+        "json": ["json", "jsonb"],
+        "jsonb": ["jsonb"],
+        "uuid": ["uuid"],
+        "bytea": ["bytea", "blob", "binary"],
+    }
+
+    def _tool_find_columns_by_dtype(self, dtype: str, limit: int = 30) -> dict[str, Any]:
+        token = (dtype or "").strip().lower()
+        if not token:
+            raise _ToolError("Argument 'dtype' is required.")
+        family = self._DTYPE_FAMILIES.get(token, [token])
+        # Build a single SQL OR-set so we run one query.
+        with self.catalog._connect() as conn:  # noqa: SLF001 — internal helper
+            placeholders = ", ".join(["?"] * len(family))
+            query = f"""
+                SELECT schema_name, table_name, column_name, dtype, effective_description
+                FROM (
+                    SELECT
+                        ce.schema_name,
+                        ce.table_name,
+                        ce.column_name,
+                        ce.dtype,
+                        cd.description_text AS effective_description
+                    FROM catalog_entities ce
+                    LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                    WHERE ce.db_profile = ?
+                      AND ce.entity_kind = 'column'
+                      AND ce.dtype IS NOT NULL
+                ) WHERE LOWER(dtype) IN ({placeholders})
+                   OR {' OR '.join(['LOWER(dtype) LIKE ?'] * len(family))}
+                ORDER BY schema_name, table_name, column_name
+                LIMIT ?
+            """
+            params: list[Any] = [self.db_profile]
+            params.extend(family)
+            params.extend([f"%{f}%" for f in family])
+            params.append(int(limit))
+            rows = conn.execute(query, tuple(params)).fetchall()
+        results = [
+            {
+                "schema": str(r["schema_name"] or ""),
+                "table": str(r["table_name"] or ""),
+                "column": str(r["column_name"] or ""),
+                "dtype": str(r["dtype"] or ""),
+                "description": str(r["effective_description"] or ""),
+            }
+            for r in rows
+        ]
+        # Roll up to (schema, table) so the LLM gets a clean per-table view.
+        by_table: dict[tuple[str, str], list[dict[str, str]]] = {}
+        for entry in results:
+            key = (entry["schema"], entry["table"])
+            by_table.setdefault(key, []).append(
+                {
+                    "column": entry["column"],
+                    "dtype": entry["dtype"],
+                    "description": entry["description"],
+                }
+            )
+        tables = [
+            {
+                "schema": schema,
+                "table": table,
+                "matching_columns": cols,
+                "match_count": len(cols),
+            }
+            for (schema, table), cols in by_table.items()
+        ]
+        return {
+            "dtype": token,
+            "matched_family": family,
+            "table_count": len(tables),
+            "column_count": len(results),
+            "tables": tables,
+        }
+
+    def _tool_find_joinable_tables(self, table: str) -> dict[str, Any]:
+        target = (table or "").strip()
+        if not target:
+            raise _ToolError("Argument 'table' is required.")
+        # Resolve to schema.table when only the table name was provided.
+        if "." not in target:
+            exact = self.catalog.find_tables_by_exact_name(self.db_profile, target, limit=5)
+            if not exact:
+                return {
+                    "table": target,
+                    "found": False,
+                    "message": (
+                        f"No table named '{target}' is in the catalog. Try find_table_by_name "
+                        "first, or qualify the target as schema.table."
+                    ),
+                    "joinable_tables": [],
+                }
+            if len(exact) > 1:
+                paths = [
+                    f"{str(r.get('schema_name') or '')}.{str(r.get('table_name') or '')}"
+                    for r in exact
+                ]
+                return {
+                    "table": target,
+                    "found": False,
+                    "ambiguous": True,
+                    "candidates": paths,
+                    "message": (
+                        f"'{target}' lives in multiple schemas: {', '.join(paths)}. "
+                        "Re-call with the fully-qualified schema.table."
+                    ),
+                    "joinable_tables": [],
+                }
+            row = exact[0]
+            target = f"{row.get('schema_name') or ''}.{row.get('table_name') or ''}"
+        rows = self.catalog.joinable_tables(self.db_profile, target, limit=12)
+        joinable = [
+            {
+                "target_schema": str(r.get("target_schema_name") or ""),
+                "target_table": str(r.get("target_table_name") or ""),
+                "left_column": str(r.get("left_column") or ""),
+                "right_column": str(r.get("right_column") or ""),
+                "type": str(r.get("relationship_type") or ""),
+                "score": float(r.get("score") or 0.0),
+            }
+            for r in rows
+        ]
+        return {
+            "table": target,
+            "found": True,
+            "joinable_tables": joinable,
+            "count": len(joinable),
+        }
