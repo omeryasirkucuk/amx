@@ -2285,6 +2285,75 @@ class ProfileCreationLeakageTests(unittest.TestCase):
             self.assertEqual(new.provider, "anthropic")
             self.assertNotIn("sk-real-key", new.api_key)
 
+    def test_llm_add_profile_then_activate_preserves_entered_values(self) -> None:
+        """Reproduces the user-reported bug: typing `/add-llm-profile 4omini`
+        with provider/model/api_key/api_base, answering `y` to "activate now",
+        then running `/llm-profiles` showed the new profile with EMPTY
+        provider/model. Cause: ``set_active_llm_profile`` flipped
+        ``active_llm_profile`` first, the autosave triggered by that
+        assignment ran ``save()`` which mirrors ``cfg.llm`` back into
+        ``llm_profiles[active]`` — and at that moment ``cfg.llm`` was still
+        the OLD (or empty) profile, so the freshly-saved values got wiped.
+        """
+        from amx.cli_support.commands.profiles import cmd_add_llm_profile
+        from amx.config import LLMConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg_path.write_text(
+                "llm_profiles:\n"
+                "  default:\n"
+                "    provider: ''\n"
+                "    model: ''\n"
+                "    language: english\n"
+                "active_llm_profile: default\n"
+            )
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertEqual(cfg.active_llm_profile, "default")
+            self.assertEqual(cfg.llm.provider, "")
+
+            entered = LLMConfig(
+                provider="openrouter",
+                model="openai/gpt-4o-mini",
+                api_key="sk-or-v1-real-user-key",
+                api_base="https://openrouter.ai/api/v1",
+                language="english",
+                n_alternatives=3,
+                column_batch_size=50,
+                logprob_high=0.85,
+                logprob_medium=0.65,
+            )
+
+            with (
+                patch(
+                    "amx.cli_support.commands.profiles.interactive_llm_block",
+                    return_value=entered,
+                ),
+                patch(
+                    "amx.cli_support.commands.profiles.confirm",
+                    return_value=True,
+                ),
+            ):
+                cmd_add_llm_profile(cfg, ["4omini"])
+
+            saved = cfg.llm_profiles["4omini"]
+            self.assertEqual(cfg.active_llm_profile, "4omini")
+            self.assertEqual(saved.provider, "openrouter")
+            self.assertEqual(saved.model, "openai/gpt-4o-mini")
+            self.assertEqual(saved.api_key, "sk-or-v1-real-user-key")
+            self.assertEqual(saved.api_base, "https://openrouter.ai/api/v1")
+            self.assertEqual(saved.column_batch_size, 50)
+
+            # Re-load from disk to confirm the YAML on disk also has the
+            # right data (catches saves that succeed in-memory but get
+            # re-overwritten by a follow-up autosave).
+            reloaded = AMXConfig.load(str(cfg_path))
+            on_disk = reloaded.llm_profiles["4omini"]
+            self.assertEqual(reloaded.active_llm_profile, "4omini")
+            self.assertEqual(on_disk.provider, "openrouter")
+            self.assertEqual(on_disk.model, "openai/gpt-4o-mini")
+            self.assertEqual(on_disk.api_base, "https://openrouter.ai/api/v1")
+
 
 class ProfilePersistenceRaceTests(unittest.TestCase):
     """Newly-created DB and LLM profiles must survive an exit-restart cycle
@@ -4169,6 +4238,35 @@ class ConfigTransactionTests(unittest.TestCase):
 
             self.assertEqual(counter[0], 1)
 
+    def test_transaction_suppresses_upsert_autosave_until_exit(self) -> None:
+        """Profile upsert helpers call _autosave directly, so transactions
+        must suppress that path too. Otherwise add+activate can still write
+        an intermediate YAML snapshot before the profile mirror is coherent."""
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            counter = self._save_count_wrapper(cfg)
+
+            with cfg.transaction():
+                cfg.upsert_db_profile(
+                    "prod",
+                    DBConfig(
+                        backend="postgresql",
+                        host="prod.db.example.com",
+                        user="alice",
+                        password="secret",
+                        database="orders",
+                    ),
+                )
+                self.assertEqual(counter[0], 0)
+                cfg.set_active_db_profile("prod")
+                self.assertEqual(counter[0], 0)
+
+            self.assertEqual(counter[0], 1)
+            reloaded = AMXConfig.load(str(cfg_path))
+            self.assertEqual(reloaded.active_db_profile, "prod")
+            self.assertEqual(reloaded.db_profiles["prod"].host, "prod.db.example.com")
+
     def test_transaction_with_autosave_disabled_does_not_save(self) -> None:
         """Honour ``write_through_config = False`` even inside a transaction —
         users who opt out of write-through should not get a stealth save."""
@@ -4677,6 +4775,39 @@ class FirstRunConfigTests(unittest.TestCase):
             self.assertEqual(cfg.active_db_profile, "")
             self.assertEqual(dict(cfg.llm_profiles), {})
             self.assertEqual(cfg.active_llm_profile, "")
+
+    def test_load_does_not_inject_phantom_default_when_other_profiles_exist(self) -> None:
+        """The user reported seeing two rows in /db-profiles — `default` and
+        `pg-dbr` — both pointing at the same Databricks workspace. This was
+        the loader synthesizing `default = cfg.db` whenever the user's saved
+        profiles didn't include a name called `default`. Verify that doesn't
+        happen anymore: only profiles actually present in the YAML survive
+        the load round-trip.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg_path.write_text(
+                "db:\n"
+                "  backend: databricks\n"
+                "  host: adb-1234.azuredatabricks.net\n"
+                "  catalog: prod\n"
+                "db_profiles:\n"
+                "  pg-dbr:\n"
+                "    backend: databricks\n"
+                "    host: adb-1234.azuredatabricks.net\n"
+                "    catalog: prod\n"
+                "active_db_profile: pg-dbr\n"
+                "llm_profiles:\n"
+                "  openai-gpt4:\n"
+                "    provider: openai\n"
+                "    model: gpt-4o\n"
+                "active_llm_profile: openai-gpt4\n"
+            )
+            cfg = AMXConfig.load(str(cfg_path))
+            self.assertEqual(set(cfg.db_profiles.keys()), {"pg-dbr"})
+            self.assertEqual(cfg.active_db_profile, "pg-dbr")
+            self.assertEqual(set(cfg.llm_profiles.keys()), {"openai-gpt4"})
+            self.assertEqual(cfg.active_llm_profile, "openai-gpt4")
 
     def test_save_writes_config_with_owner_only_permissions(self) -> None:
         """Config holds DB passwords / API keys; the file must be 0o600 on POSIX."""

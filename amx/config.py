@@ -1089,6 +1089,8 @@ class AMXConfig:
     def _autosave(self) -> None:
         if not self.write_through_config:
             return
+        if getattr(self, "_autosave_suspended", 0) > 0:
+            return
         try:
             self.save()
         except Exception:
