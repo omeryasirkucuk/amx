@@ -110,11 +110,18 @@ class LiveDisplay:
         self._session_start = time.monotonic()
         self._total_tokens_in = 0
         self._total_tokens_out = 0
+        # ``transient=True`` clears the WHOLE live region (header + thinking
+        # spinner + pipeline tree) when ``stop()`` runs. Without this, every
+        # height change in the renderable left a frame behind in the scroll
+        # buffer, producing the "stacked AMX v0.4.2 SEARCH 2s / 3s / 9s"
+        # header bars users were complaining about. To preserve the pipeline
+        # tree as a useful summary, we re-print it once after stop() — see
+        # ``stop()`` below.
         self._live = Live(
             self,
             console=self._console,
             refresh_per_second=10,
-            transient=False,
+            transient=True,
         )
         self._live.start()
 
@@ -123,6 +130,38 @@ class LiveDisplay:
             self._live.update(self._render())
             self._live.stop()
             self._live = None
+        # After the transient live region clears, leave a quiet, single-line
+        # summary of the pipeline so the user can still tell what AMX did.
+        # Skip when there were no real activities (e.g. a deterministic
+        # short-circuit answered without invoking any agent step).
+        try:
+            tree = self._summary_tree_after_stop()
+            if tree is not None:
+                self._console.print(tree)
+        except Exception:
+            # Never let post-stop summary rendering break the call site.
+            pass
+
+    def _summary_tree_after_stop(self) -> Tree | None:
+        """Render a quiet pipeline summary to print AFTER ``stop()``.
+
+        Only includes activities that actually ran (excludes the live header
+        and the running spinner). Returns ``None`` when there's nothing
+        worth showing — short-circuit answers don't deserve a Pipeline
+        block underneath them.
+        """
+        if not self._activities:
+            return None
+        tree = Tree("[dim]Pipeline[/dim]", guide_style="dim")
+        for act in self._activities:
+            elapsed = (act.end_time or time.monotonic()) - (act.start_time or self._session_start)
+            mark = {
+                ActivityState.DONE: "[green]✓[/green]",
+                ActivityState.FAILED: "[red]✗[/red]",
+                ActivityState.ACTIVE: "[yellow]…[/yellow]",
+            }.get(act.state, "[dim]·[/dim]")
+            tree.add(f"{mark} [dim]{act.label}[/dim] [dim]({elapsed:.1f}s)[/dim]")
+        return tree
 
     def pause(self) -> None:
         if self._live:
@@ -134,7 +173,7 @@ class LiveDisplay:
                 self,
                 console=self._console,
                 refresh_per_second=10,
-                transient=False,
+                transient=True,
             )
             self._live.start()
 
