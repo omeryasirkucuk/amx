@@ -6,6 +6,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-04-30
+### Changed
+- **Live display no longer leaves stacked header bars** (`amx/utils/live_display.py`): the running `AMX v0.4.x  openrouter/openai/gpt-4o-mini │ SEARCH  Xs` panel is now `transient=True`, so the entire live region (header + thinking spinner + active pipeline tree) clears when `stop()` runs. Previously every height change in the renderable left a frame behind in the scroll buffer, producing 2–4 stacked "SEARCH 2s / 3s / 9s" bars per question. To preserve the pipeline tree as a useful summary, `LiveDisplay.stop()` now re-prints a quiet single-block `Pipeline` tree with check-marked steps and durations once the live region clears.
+- **Resume path also uses `transient=True`** (`amx/utils/live_display.py:resume`) for symmetry — when an outer command pauses and resumes the display (e.g. nested `command_display` blocks), the resumed live region is no less clean than the original.
+
 ## [0.4.2] - 2026-04-30
 ### Fixed
 - **`/ask` follow-ups no longer lose memory between turns** (`amx/config.py`, `amx/search/agent.py`, `amx/cli_support/session.py`): the interactive REPL dispatches each `/ask <q>` line through `main_command.main(args=...)`, which re-runs Click's `main()` and rebuilds `ctx.obj = AMXConfig.load(cfg_path)` from disk. `active_chat_session_id` is intentionally ephemeral (not in `_PERSISTED_FIELDS`), so every question opened a brand-new chat session — `_handle_meta_query` then read an empty store and answered "this is the first question in this session" even when the user had asked several. We now bridge the id through an `AMX_CHAT_SESSION_ID` environment variable: `_run_ask_repl` writes it on entry (or clears it for a fresh REPL), `SearchAgent._ensure_session_id` mirrors it whenever a session is created, and `AMXConfig.load` reads it back at the top of every load. Net result: all turns inside one `/ask` REPL session land in the same `chat_sessions` row, so memory survives across follow-ups.
