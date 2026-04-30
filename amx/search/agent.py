@@ -123,6 +123,25 @@ class SearchPlan:
     needs_clarification: bool = False
     clarification_question: str = ""
     review_notes: str = ""
+    # Answer-shape hints. Empty/zero defaults mean "no signal from interpretation"
+    # — the policy/derivation step picks a shape based on question_class.
+    aggregation_op: str = ""        # "" | "max" | "min" | "top_k" | "bottom_k" | "count"
+    aggregation_field: str = ""     # "" | "row_count" | "column_count" | "table_count"
+    aggregation_limit: int = 0      # 0 = no aggregation; 1 for superlatives; N for top-K
+    answer_shape: str = ""          # See _ANSWER_SHAPES below; "" = derive from policy.
+
+
+# Closed set of presentation shapes the agent + renderer dispatch on.
+# Kept as a module-level constant so tests and the renderer share the same vocabulary.
+_ANSWER_SHAPES = {
+    "single_fact",     # one-sentence headline, no list, no rich table
+    "short_table",     # headline + 2-5 row markdown table inline in summary
+    "full_table",      # broad inventory dump (existing behaviour)
+    "ranked_list",     # headline + rich Search matches table (filtered to non-zero scores)
+    "table_summary",   # headline + key-columns rich table for table_explain
+    "join_candidates", # existing join Rich table dispatch
+    "prose",           # 2-4 sentence explanation, no table
+}
 
 
 @dataclass
@@ -136,6 +155,7 @@ class SearchPolicy:
     allow_code: bool
     answer_format: str
     fallback_behavior: str
+    answer_shape: str = ""  # Derived from plan.answer_shape or question_class.
 
 
 @dataclass
@@ -320,6 +340,23 @@ class SearchAgent:
         if request_type == "coverage_audit":
             resolved_intent = "check_coverage"
             resolved_target = "database"
+        aggregation_op = str(payload.get("aggregation_op") or "").strip().lower()
+        if aggregation_op not in {"", "max", "min", "top_k", "bottom_k", "count"}:
+            aggregation_op = ""
+        aggregation_field = str(payload.get("aggregation_field") or "").strip().lower()
+        if aggregation_field not in {"", "row_count", "column_count", "table_count"}:
+            aggregation_field = ""
+        try:
+            aggregation_limit = int(payload.get("aggregation_limit") or 0)
+        except (TypeError, ValueError):
+            aggregation_limit = 0
+        if aggregation_limit < 0:
+            aggregation_limit = 0
+        if aggregation_op in {"max", "min"} and aggregation_limit == 0:
+            aggregation_limit = 1
+        answer_shape = str(payload.get("answer_shape") or "").strip().lower()
+        if answer_shape not in _ANSWER_SHAPES:
+            answer_shape = ""
         return SearchPlan(
             intent=resolved_intent,
             out_of_domain=bool(payload.get("out_of_domain")),
@@ -338,6 +375,10 @@ class SearchAgent:
             needs_clarification=bool(payload.get("needs_clarification")),
             clarification_question=str(payload.get("clarification_question") or "").strip(),
             review_notes=str(payload.get("review_notes") or "").strip(),
+            aggregation_op=aggregation_op,
+            aggregation_field=aggregation_field,
+            aggregation_limit=aggregation_limit,
+            answer_shape=answer_shape,
         )
 
     def _interpret_question_pass1(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
@@ -385,7 +426,19 @@ class SearchAgent:
             "- Always output request_type.\n"
             "- Output decision_confidence (high|medium|low).\n"
             "- Set needs_clarification=true only when proceeding without clarification would likely misroute retrieval.\n"
-            "- If needs_clarification=true, provide one short clarification_question."
+            "- If needs_clarification=true, provide one short clarification_question.\n"
+            "Answer shape rules (always emit these fields):\n"
+            "- aggregation_op: \"\" | \"max\" | \"min\" | \"top_k\" | \"bottom_k\" | \"count\". Detect superlatives and rankings in any language: most/least/highest/lowest/biggest/smallest/largest, top N, first/last, leading, bottom; Turkish: en fazla, en az, en buyuk, en kucuk, en yuksek, en dusuk, en cok, en az; Spanish: el mayor, el menor; etc. Use \"count\" only for pure how-many questions.\n"
+            "- aggregation_field: \"\" | \"row_count\" | \"column_count\" | \"table_count\". Pick the numeric facet the user is ranking by (rows/satir = row_count; columns/kolon = column_count; tables/tablo = table_count).\n"
+            "- aggregation_limit: integer. 1 for superlatives (the X with the most Y); N for top-N/bottom-N; 0 if no aggregation.\n"
+            "- answer_shape: pick one of single_fact, short_table, full_table, ranked_list, table_summary, prose. Or \"\" to let policy derive.\n"
+            "  * single_fact: user wants ONE answer (a name, a number, a single ranked entity). Examples: superlatives with limit 1, count_tables, exact name lookups, list_databases when likely small.\n"
+            "  * short_table: top-K (limit 2-10), small ranked comparisons, side-by-side of <=10 entities.\n"
+            "  * full_table: broad dump-everything inventories (\"list all tables in X\", \"columns per table\", \"show me everything in X\").\n"
+            "  * ranked_list: open-ended semantic_discovery (\"tables about pricing\").\n"
+            "  * table_summary: table_understanding / \"what is table X\".\n"
+            "  * prose: why/how/explanatory questions, comparative reasoning without an explicit entity list.\n"
+            "  * Leave \"\" if you genuinely cannot tell."
         )
         user = json.dumps(
             {
@@ -422,6 +475,9 @@ class SearchAgent:
             "If uncertainty remains, set needs_clarification=true with one short clarification_question.\n"
             "Always output decision_confidence (high|medium|low).\n"
             "Infer answer_language from question; keep multilingual behavior without hardcoded language lists.\n"
+            "Always re-emit aggregation_op, aggregation_field, aggregation_limit, and answer_shape.\n"
+            "Detect superlatives/rankings in any language (most/least/top-N/bottom-N; Turkish en fazla/en az/en cok). Set aggregation_limit=1 for superlatives, N for top-N, 0 if no aggregation.\n"
+            "Pick answer_shape from: single_fact (one specific answer), short_table (top-K <=10), full_table (broad inventory dump), ranked_list (semantic_discovery), table_summary (table_understanding), prose (explanation), or \"\" if uncertain.\n"
         )
         user = json.dumps(
             {
@@ -501,6 +557,10 @@ class SearchAgent:
             needs_clarification=plan.needs_clarification,
             clarification_question=plan.clarification_question,
             review_notes=plan.review_notes,
+            aggregation_op=plan.aggregation_op,
+            aggregation_field=plan.aggregation_field,
+            aggregation_limit=plan.aggregation_limit,
+            answer_shape=plan.answer_shape,
         )
 
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
@@ -533,6 +593,10 @@ class SearchAgent:
                 needs_clarification=False,
                 clarification_question="",
                 review_notes=plan.review_notes,
+                aggregation_op=plan.aggregation_op,
+                aggregation_field=plan.aggregation_field,
+                aggregation_limit=plan.aggregation_limit,
+                answer_shape=plan.answer_shape,
             )
         if asks_column_word and asks_listing and plan.search_mode == "table_explain" and not self._explicit_table_paths_for_question(question):
             return SearchPlan(
@@ -610,6 +674,10 @@ class SearchAgent:
             needs_clarification=plan.needs_clarification,
             clarification_question=clarification_question,
             review_notes=plan.review_notes,
+            aggregation_op=plan.aggregation_op,
+            aggregation_field=plan.aggregation_field,
+            aggregation_limit=plan.aggregation_limit,
+            answer_shape=plan.answer_shape,
         )
 
     def _should_remember_table_scope(self, plan: SearchPlan, retrieval_details: dict[str, Any], question: str) -> bool:
@@ -638,11 +706,11 @@ class SearchAgent:
         allow_vector = self.settings.get("allow_vector_support", "true").lower() == "true" and context_detail != "minimal"
         allow_code = self.settings.get("allow_code_evidence", "true").lower() == "true"
         if plan.question_class == "inventory":
-            return SearchPolicy(plan.question_class, "live_inventory_first", False, True, True, False, False, "aggregate", "disclose_scope")
-        if plan.question_class == "entity_lookup":
-            return SearchPolicy(plan.question_class, "lexical_name_first", True, False, True, False, False, "ranked_matches", "suggest_narrow_scope")
-        if plan.question_class == "join_discovery":
-            return SearchPolicy(
+            policy = SearchPolicy(plan.question_class, "live_inventory_first", False, True, True, False, False, "aggregate", "disclose_scope")
+        elif plan.question_class == "entity_lookup":
+            policy = SearchPolicy(plan.question_class, "lexical_name_first", True, False, True, False, False, "ranked_matches", "suggest_narrow_scope")
+        elif plan.question_class == "join_discovery":
+            policy = SearchPolicy(
                 plan.question_class,
                 "verified_fk_then_semantic_join",
                 True,
@@ -653,13 +721,45 @@ class SearchAgent:
                 "join_candidates",
                 "return_confidence_bands",
             )
+        elif plan.question_class == "table_understanding":
+            policy = SearchPolicy(plan.question_class, "table_context_plus_neighbors", True, False, True, allow_vector, allow_code, "table_summary", "suggest_sync_if_sparse")
+        elif plan.question_class == "comparative_reasoning":
+            policy = SearchPolicy(plan.question_class, "semantic_then_structural_compare", True, False, True, allow_vector, allow_code, "comparative", "ask_follow_up")
+        elif plan.question_class == "semantic_discovery" and plan.target_entity == "table":
+            policy = SearchPolicy(plan.question_class, "semantic_table_search", True, False, False, allow_vector, allow_code, "table_matches", "suggest_sync_if_sparse")
+        else:
+            policy = SearchPolicy(plan.question_class, "semantic_catalog_search", True, False, False, allow_vector, allow_code, "ranked_matches", "suggest_sync_if_sparse")
+        policy.answer_shape = self._derive_answer_shape(plan, policy)
+        return policy
+
+    def _derive_answer_shape(self, plan: SearchPlan, policy: SearchPolicy) -> str:
+        """Pick a presentation shape for the answer.
+
+        Trusts plan.answer_shape when the LLM emitted a valid one. Otherwise
+        derives from question_class / search_mode / aggregation hints. Centralised
+        so the deterministic formatters, the LLM synth prompt, and the renderer
+        all see the same value.
+        """
+        if plan.answer_shape in _ANSWER_SHAPES:
+            return plan.answer_shape
+        has_aggregation = plan.aggregation_op in {"max", "min", "top_k", "bottom_k"}
+        if plan.search_mode == "schema_inventory":
+            if has_aggregation:
+                return "single_fact" if plan.aggregation_limit <= 1 else "short_table"
+            return "full_table"
+        if plan.search_mode in {"count_tables", "list_databases", "list_schemas"}:
+            return "single_fact"
+        if plan.question_class == "entity_lookup":
+            return "single_fact"
+        if plan.question_class == "join_discovery":
+            return "join_candidates"
         if plan.question_class == "table_understanding":
-            return SearchPolicy(plan.question_class, "table_context_plus_neighbors", True, False, True, allow_vector, allow_code, "table_summary", "suggest_sync_if_sparse")
+            return "table_summary"
+        if plan.question_class == "semantic_discovery":
+            return "ranked_list"
         if plan.question_class == "comparative_reasoning":
-            return SearchPolicy(plan.question_class, "semantic_then_structural_compare", True, False, True, allow_vector, allow_code, "comparative", "ask_follow_up")
-        if plan.question_class == "semantic_discovery" and plan.target_entity == "table":
-            return SearchPolicy(plan.question_class, "semantic_table_search", True, False, False, allow_vector, allow_code, "table_matches", "suggest_sync_if_sparse")
-        return SearchPolicy(plan.question_class, "semantic_catalog_search", True, False, False, allow_vector, allow_code, "ranked_matches", "suggest_sync_if_sparse")
+            return "prose"
+        return "ranked_list"
 
     def _inventory_db(self) -> DatabaseConnector:
         return self._inventory_db_factory()
@@ -839,6 +939,58 @@ class SearchAgent:
             "mı",
             "mu",
             "mü",
+            # Question/quantifier words that precede "table" without naming one.
+            # Without these, a question like "which table has the most rows"
+            # is misread as a request for a literal table named "which".
+            "which",
+            "this",
+            "that",
+            "these",
+            "those",
+            "each",
+            "every",
+            "any",
+            "all",
+            "some",
+            "no",
+            "many",
+            "much",
+            # Superlatives often paired with "table" in aggregations.
+            "biggest",
+            "largest",
+            "smallest",
+            "best",
+            "worst",
+            "top",
+            "bottom",
+            "first",
+            "last",
+            "primary",
+            "main",
+            "the",
+            # English verbs/prepositions that commonly follow "table" without
+            # being a table name (e.g., "the table has the most rows" -> "has").
+            "has",
+            "have",
+            "had",
+            "with",
+            "in",
+            "on",
+            "of",
+            "for",
+            "by",
+            "from",
+            "to",
+            "into",
+            "and",
+            "or",
+            "but",
+            "contains",
+            "contain",
+            "shows",
+            "show",
+            "named",
+            "called",
         }
         explicit_table_tokens = [token for token in explicit_table_tokens if token.lower() not in table_token_stopwords]
         if self.cfg.current_schema:
@@ -1830,13 +1982,21 @@ class SearchAgent:
     ) -> tuple[str, dict[str, Any]]:
         llm = self._llm_provider()
         target_language = plan.answer_language or _question_language_hint(question)
+        target_shape = (policy.answer_shape or plan.answer_shape or "").strip() or "ranked_list"
         system = (
             "You are AMX /search, a grounded metadata copilot.\n"
+            "Lead with one direct sentence that answers the question. Only add supporting detail if it changes the answer or IS the answer.\n"
+            "Match the requested answer_shape:\n"
+            "  single_fact   -> one sentence, no list, no table.\n"
+            "  short_table   -> one sentence + a 2-5 row markdown table.\n"
+            "  full_table    -> one sentence + the inventory markdown table you are given.\n"
+            "  ranked_list   -> one sentence + 3-5 bullet matches, one line each.\n"
+            "  table_summary -> one sentence + key columns as a markdown table (<=8 rows).\n"
+            "  prose         -> 2-4 sentence explanation, no table.\n"
             "Answer only from the retrieved metadata evidence you are given.\n"
             "Treat verified/live evidence as stronger than semantic or vector-only evidence.\n"
             "If evidence is weak or empty (e.g. no direct match), do NOT just say 'I found nothing'. Instead, be constructive: present the closest semantic matches or diagnostic rows provided as related/alternative suggestions.\n"
             "Do not invent table names, joins, counts, or column meanings not present in the evidence.\n"
-            "Keep the answer short and direct. Use natural, conversational language without strict sentence count limits.\n"
             "Consider all provided rows. Summarize decisive evidence but also mention helpful related hints if direct answers are missing.\n"
             "When join evidence includes confidence bands, explain them.\n"
             "When scope was assumed, state that assumption.\n"
@@ -1852,6 +2012,7 @@ class SearchAgent:
         prompt_rows = self._rows_for_prompt(rows, policy)
         base_payload = {
             "question": question,
+            "answer_shape": target_shape,
             "plan": asdict(plan),
             "policy": asdict(policy),
             "session_memory": (
@@ -1892,6 +2053,113 @@ class SearchAgent:
         )
         return result.content.strip(), result.usage or {}
 
+    def _deterministic_aggregate_inventory_answer(
+        self,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        retrieval_details: dict[str, Any],
+    ) -> str | None:
+        """Headline answer for superlative/top-K questions over schema_inventory.
+
+        Returns None when the request isn't an aggregation or the field isn't
+        usable, so the caller can fall back to the broad inventory dump.
+        """
+        if plan.search_mode != "schema_inventory":
+            return None
+        op = (plan.aggregation_op or "").lower()
+        if op not in {"max", "min", "top_k", "bottom_k"}:
+            return None
+        field = (plan.aggregation_field or "").lower()
+        if field not in {"row_count", "column_count"}:
+            # table_count or "" don't index into per-table rows; let dump path handle.
+            return None
+        usable_rows = [row for row in rows if row.get(field) is not None]
+        if not usable_rows:
+            return None
+        descending = op in {"max", "top_k"}
+        ordered = sorted(
+            usable_rows,
+            key=lambda row: (int(row.get(field) or 0), str(row.get("table_name") or "")),
+            reverse=descending,
+        )
+        limit = plan.aggregation_limit if plan.aggregation_limit > 0 else 1
+        limit = min(limit, len(ordered))
+        top = ordered[:limit]
+        lang = (plan.answer_language or "english").lower()
+        schema_name = str(retrieval_details.get("schema_name") or top[0].get("schema_name") or "").strip()
+        database_name = str(retrieval_details.get("database_name") or top[0].get("database_name") or "").strip()
+        scope_label = (
+            f"`{schema_name}`" if schema_name
+            else f"`{database_name}`" if database_name
+            else ""
+        )
+        # Single-fact branch: one headline sentence, no table.
+        if limit <= 1:
+            row = top[0]
+            table_name = str(row.get("table_name") or "")
+            value = int(row.get(field) or 0)
+            column_count = int(row.get("column_count") or 0)
+            cluster = str(row.get("semantic_cluster") or "Unclustered")
+            if lang == "turkish":
+                facet = "satira" if field == "row_count" else "kolona"
+                facet_unit = "satir" if field == "row_count" else "kolon"
+                superlative = "en cok" if op == "max" else "en az"
+                scope_phrase = f"{scope_label} icinde " if scope_label else ""
+                value_fmt = f"{value:,}".replace(",", ".")
+                # For column_count answers, do not duplicate the column count in trailing context.
+                if field == "row_count":
+                    return (
+                        f"{scope_phrase}{superlative} {facet} sahip tablo `{table_name}`: "
+                        f"**{value_fmt} {facet_unit}**, {column_count} kolon (kume: `{cluster}`)."
+                    )
+                return (
+                    f"{scope_phrase}{superlative} {facet} sahip tablo `{table_name}`: "
+                    f"**{value_fmt} {facet_unit}** (kume: `{cluster}`)."
+                )
+            facet = "rows" if field == "row_count" else "columns"
+            superlative = "the most" if op == "max" else "the fewest"
+            scope_phrase = f" in {scope_label}" if scope_label else ""
+            value_fmt = f"{value:,}"
+            if field == "row_count":
+                return (
+                    f"`{table_name}` has {superlative} {facet}{scope_phrase}: "
+                    f"**{value_fmt}** rows, {column_count} columns, cluster `{cluster}`."
+                )
+            return (
+                f"`{table_name}` has {superlative} {facet}{scope_phrase}: "
+                f"**{value_fmt}** columns, cluster `{cluster}`."
+            )
+        # Short-table branch: headline + tiny markdown table of top K.
+        facet_label_en = "Rows" if field == "row_count" else "Columns"
+        facet_label_tr = "Satir" if field == "row_count" else "Kolon"
+        if lang == "turkish":
+            superlative = "en cok" if op in {"max", "top_k"} else "en az"
+            scope_phrase = f" {scope_label} icinde" if scope_label else ""
+            facet_word = "satira" if field == "row_count" else "kolona"
+            header = f"{superlative} {facet_word} sahip ilk **{limit}** tablo{scope_phrase}:"
+        else:
+            superlative = "most" if op in {"max", "top_k"} else "fewest"
+            scope_phrase = f" in {scope_label}" if scope_label else ""
+            facet_word = "rows" if field == "row_count" else "columns"
+            header = f"Top **{limit}** tables by {superlative} {facet_word}{scope_phrase}:"
+        col_label = facet_label_tr if lang == "turkish" else facet_label_en
+        table_lines = [
+            f"| Schema | Table | {col_label} | Cluster |",
+            "|---|---|---:|---|",
+        ]
+        for row in top:
+            value = int(row.get(field) or 0)
+            value_fmt = f"{value:,}".replace(",", ".") if lang == "turkish" else f"{value:,}"
+            table_lines.append(
+                "| {schema} | {table} | {value} | {cluster} |".format(
+                    schema=str(row.get("schema_name") or ""),
+                    table=str(row.get("table_name") or ""),
+                    value=value_fmt,
+                    cluster=str(row.get("semantic_cluster") or "Unclustered"),
+                )
+            )
+        return header + "\n\n" + "\n".join(table_lines)
+
     def _deterministic_inventory_answer(
         self,
         plan: SearchPlan,
@@ -1900,6 +2168,9 @@ class SearchAgent:
     ) -> str | None:
         lang = (plan.answer_language or "english").lower()
         if plan.search_mode == "schema_inventory":
+            aggregate = self._deterministic_aggregate_inventory_answer(plan, rows, retrieval_details)
+            if aggregate is not None:
+                return aggregate
             summary = dict(retrieval_details.get("schema_explorer_summary") or {})
             table_count = int(summary.get("table_count") or len(rows))
             total_columns = int(summary.get("total_columns") or sum(int(row.get("column_count") or 0) for row in rows))
@@ -2555,6 +2826,12 @@ class SearchAgent:
                 "columns": [col for col in columns if col],
             }
         )
+        # Suppress the bottom rich table for shapes whose answer summary already
+        # carries the data inline. The shapes that benefit from a separate Rich
+        # table (ranked_list, table_summary, join_candidates) keep display_rows=True.
+        retrieval_display = bool(retrieval_details.get("display_rows", True))
+        shape_wants_rich_table = policy.answer_shape in {"ranked_list", "table_summary", "join_candidates"}
+        display_rows = retrieval_display and shape_wants_rich_table
         return SearchAnswer(
             intent=plan.intent,
             question=question,
@@ -2566,9 +2843,10 @@ class SearchAgent:
                 "plan": asdict(plan),
                 "policy": asdict(policy),
                 "question_class": plan.question_class,
+                "answer_shape": policy.answer_shape,
                 "retrieval": retrieval_details,
                 "verification": verification,
-                "display_rows": bool(retrieval_details.get("display_rows", True)),
+                "display_rows": display_rows,
                 "scope": self._scope_from_tables(tables),
                 "actions": [asdict(item) for item in actions],
                 "suggested_actions": [asdict(item) for item in actions],
