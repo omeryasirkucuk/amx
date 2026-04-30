@@ -799,18 +799,11 @@ class AMXConfig:
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
         if not cfg.db_profiles:
-            if fresh_install:
-                # First-run: do not fabricate a "default" DB profile from
-                # hardcoded postgres/localhost/amx_pass values. Leave the dict
-                # empty so the CLI shows "not configured — run /setup" instead
-                # of a phantom broken connection.
-                cfg.active_db_profile = ""
-            else:
-                cfg.db_profiles["default"] = cfg.db
-                cfg.active_db_profile = "default"
+            # No saved DB profiles — leave empty and clear the active pointer
+            # so the CLI prompts setup instead of showing a phantom row built
+            # from hardcoded defaults or the active mirror.
+            cfg.active_db_profile = ""
         else:
-            if "default" not in cfg.db_profiles:
-                cfg.db_profiles["default"] = cfg.db
             try:
                 cfg.apply_active_db_profile()
             except Exception:
@@ -818,14 +811,8 @@ class AMXConfig:
                 cfg.db = cfg.db_profiles[cfg.active_db_profile]
 
         if not cfg.llm_profiles:
-            if fresh_install:
-                cfg.active_llm_profile = ""
-            else:
-                cfg.llm_profiles["default"] = replace(cfg.llm)
-                cfg.active_llm_profile = "default"
+            cfg.active_llm_profile = ""
         else:
-            if "default" not in cfg.llm_profiles:
-                cfg.llm_profiles["default"] = replace(cfg.llm)
             try:
                 cfg.apply_active_llm_profile()
             except Exception:
@@ -978,6 +965,17 @@ class AMXConfig:
         """
         return bool(getattr(self, "_fresh_install", False))
 
+    @property
+    def config_path(self) -> str:
+        """Absolute path of the YAML config file backing this instance.
+
+        Set by ``load()`` and updated by ``save()``. Useful for surfacing the
+        exact on-disk location to the user — diagnosing a "my settings are
+        not persisting" report requires knowing which file is actually being
+        read and written.
+        """
+        return self._config_path or str(Path(self.CONFIG_DIR) / "config.yml")
+
     def apply_active_db_profile(self) -> None:
         name = self.active_db_profile or "default"
         if name not in self.db_profiles and self.db_profiles:
@@ -989,9 +987,14 @@ class AMXConfig:
     def set_active_db_profile(self, name: str) -> None:
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")
-        self.active_db_profile = name
-        self.db = self.db_profiles[name]
-        self._autosave()
+        # The autosave triggered by ``active_db_profile = name`` runs save(),
+        # which mirrors cfg.db back into db_profiles[active]. If we set the
+        # active pointer before cfg.db, that mirror writes the OLD profile's
+        # data over the newly-activated entry. Defer the autosave so both
+        # fields converge before the YAML is written.
+        with self.transaction():
+            self.active_db_profile = name
+            self.db = self.db_profiles[name]
 
     def upsert_db_profile(self, name: str, db: DBConfig) -> None:
         self.db_profiles[name] = db
@@ -1022,14 +1025,26 @@ class AMXConfig:
     def set_active_llm_profile(self, name: str) -> None:
         if name not in self.llm_profiles:
             raise KeyError(f"Unknown LLM profile: {name}")
-        self.active_llm_profile = name
-        self.llm = replace(self.llm_profiles[name])
-        self.llm.api_key = self.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
-        self._autosave()
+        # See set_active_db_profile — same race. ``active_llm_profile = name``
+        # auto-saves before ``self.llm`` is refreshed, so save() mirrors the
+        # OLD cfg.llm onto the freshly-activated profile and wipes its data
+        # (the user-reported "/llm-profiles shows blank provider/model after
+        # /add-llm-profile" bug). Use a transaction so save runs once at exit
+        # with both fields consistent.
+        with self.transaction():
+            self.active_llm_profile = name
+            self.llm = replace(self.llm_profiles[name])
+            self.llm.api_key = self.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
     def upsert_llm_profile(self, name: str, llm: LLMConfig) -> None:
         normalized = replace(llm, model=normalize_llm_model(llm.provider, llm.model))
         self.llm_profiles[name] = normalized
+        # Mirror the new data into cfg.llm when upserting the active profile —
+        # otherwise the next save() rewrites llm_profiles[active] from the
+        # stale mirror. Symmetric with upsert_db_profile.
+        if self.active_llm_profile == name:
+            self.llm = replace(normalized)
+            self.llm.api_key = self.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
         self._autosave()
 
     def remove_llm_profile(self, name: str) -> None:
