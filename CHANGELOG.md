@@ -6,6 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-30
+### Added — Tool-calling `/ask` agent (architectural change)
+- **New `amx/search/tool_agent.py`** runs `/ask` as a tool-calling loop instead of the regex-routed Pass1/alignment/retrieval cascade. The LLM receives a fixed set of metadata tools (`list_schemas`, `list_tables_in_schema`, `find_table_by_name`, `describe_table`, `search_tables_by_concept`, `search_columns_by_concept`, `get_join_candidates`, `list_databases`) and decides itself which to call. Bounded at 6 iterations per question; final-answer compose forced when the budget runs out.
+- **New `amx/search/agent_tools.py`** — `ToolBox` class wraps the existing `SearchCatalog` / `DatabaseConnector` / `SchemaExplorer` with eight JSON-schema-described tools. Each tool returns structured rows + an optional `next-step hint` so the model can plan follow-up calls. Errors surface verbatim to the model (`{"error": ...}`) rather than crashing the loop.
+- **`LLMProvider.chat` now extracts `tool_calls`** from the LiteLLM response (`amx/llm/provider.py`). New `ToolCall` dataclass; `ChatResult` gains a `tool_calls: list[ToolCall] | None` field. Backward compatible — callers that don't pass `tools=` see no change.
+- **`SearchCatalog.find_tables_by_exact_name`** (already shipped in 0.3.3) is now consumed by the new `find_table_by_name` tool; live DB iteration falls back when the catalog is empty.
+- **New catalog setting `use_tool_agent`** (default `"true"`). Test setup pins it to `"false"` so the legacy Pass1 tests still drive the regex-routed pipeline through queued planner JSON.
+- **`SearchAgent._answer_via_tool_agent`** wraps the loop and persists the assistant turn to `ChatSessionStore` so follow-ups still resolve. Returns a `SearchAnswer` with `intent="tool_agent"`, `provenance=["tool_calling_agent"]`, and a `tool_calls` audit log under `details`.
+- **Two new tests** in `tests/test_search_catalog.py`: `test_tool_agent_routes_tables_under_schema_to_list_tables` (asserts "What's the tables under sap_test" hits `list_tables_in_schema(schema='sap_test')` and surfaces `bseg`/`bkpf`/`vbak_test`); `test_tool_agent_falls_back_to_plain_answer_without_tool_calls` (covers the plain-text path). `_FakeLLMProvider.queue_tool_calls()` helper added for tool-aware fixture queuing.
+
+### Changed
+- **`SearchAgent.ask` dispatches to the tool agent first** when `use_tool_agent` is true (the default). The legacy regex-routed Pass1 pipeline stays as the fallback when the tool path raises or the setting is `false`. Deterministic short-circuits (chitchat, meta-query, reaffirmation) still run before either path so they continue to cost zero LLM calls.
+- **System prompt for the agent** ships the live database name, schema list, pinned schema/table, and language preference directly. The model no longer has to guess whether `sap_test` is a schema; it can read the schema list from the prompt and route accordingly. This is what fixes the user-reported "What's the tables under sap_test" → "table named `under` not found" regression — and it's the architectural shift the rest of the routing fixes were patching around.
+
+### Rationale
+The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak mentions, alignment guards, stopword expansions). Each new phrasing required a new pattern; over-matches like "tables under sap_test" → "under" treated as a table name kept slipping through. This release moves routing back into the LLM but, unlike the original prompt-only design, gives the model real catalog/live-DB tools so it doesn't have to hallucinate. The legacy planner is retained as a fallback to de-risk the rollout — `use_tool_agent=false` reverts to the prior pipeline at any time.
+
 ## [0.3.5] - 2026-04-30
 ### Added
 - **Strong-vs-weak explicit-mention strength** (`amx/search/agent.py:_explicit_table_mentions_for_question`): mentions captured from `<token> table` / `table <token>` / `schema.table` patterns are tagged `strength="strong"` (the user explicitly called the noun a table); subject-form patterns (`what's the X` / `describe X` / `X nedir`) are tagged `strength="weak"` (the noun could be a column or a generic entity). The alignment guard now reads this signal to override LLM mode unconditionally for strong mentions and require catalog/live-DB confirmation for weak ones.

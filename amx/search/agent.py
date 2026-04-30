@@ -896,6 +896,92 @@ class SearchAgent:
             },
         )
 
+    def _answer_via_tool_agent(
+        self,
+        *,
+        question: str,
+        clean_question: str,
+        question_language: str,
+    ) -> SearchAnswer | None:
+        """Run the tool-calling loop and return a SearchAnswer.
+
+        Returns ``None`` on any unexpected failure so the caller can fall
+        back to the legacy LLM-Pass-1 path. The legacy path stays in place
+        as a deliberate safety net during this rollout.
+        """
+        try:
+            # Lazy import keeps a circular path between agent.py / tool_agent.py
+            # impossible — tool_agent imports from agent_tools and catalog only.
+            from amx.search.tool_agent import run_tool_agent
+        except Exception as exc:
+            log.warning("tool_agent unavailable, falling back to legacy router: %s", exc)
+            return None
+        # Convert the existing memory summary into the {role, content} pairs
+        # the tool agent expects for context. ``_memory_summary`` returns
+        # the most recent turns in chronological order; we keep both user
+        # questions and assistant answer summaries so follow-ups resolve.
+        prior_turns: list[dict[str, str]] = []
+        for turn in self._memory_summary():
+            user_q = str(turn.get("question") or "").strip()
+            if user_q:
+                prior_turns.append({"role": "user", "content": user_q})
+            assistant_summary = str(turn.get("answer_summary") or "").strip()
+            if assistant_summary:
+                prior_turns.append({"role": "assistant", "content": assistant_summary})
+        try:
+            t0 = time.monotonic()
+            with step_spinner("Search Agent: thinking with tools"):
+                result = run_tool_agent(
+                    cfg=self.cfg,
+                    catalog=self.catalog,
+                    llm=self._llm_provider(),
+                    question=clean_question,
+                    answer_language=question_language,
+                    session_memory=prior_turns,
+                )
+            elapsed = round(time.monotonic() - t0, 4)
+        except Exception as exc:
+            log.warning("Tool agent failed (%s); falling back to legacy router.", exc)
+            return None
+
+        # Persist the assistant turn so follow-up turns can read the recap.
+        sid = self.cfg.active_chat_session_id
+        store = self._ensure_session_store()
+        if store is not None and sid:
+            try:
+                store.append_assistant_turn(
+                    int(sid),
+                    run_id=None,
+                    answer_summary=result.answer[:480],
+                    intent="tool_agent",
+                    plan={"agent": "tool_agent", "iterations": result.iterations},
+                    tokens=result.usage,
+                    confidence="high",
+                )
+            except Exception as exc:
+                log.warning("Failed to record tool-agent assistant turn: %s", exc)
+
+        return SearchAnswer(
+            intent="tool_agent",
+            question=question,
+            rows=[],
+            confidence="high",
+            summary=result.answer,
+            provenance=["tool_calling_agent"],
+            details={
+                "answer_shape": "prose",
+                "answer_language": question_language or "english",
+                "agent": "tool_calling",
+                "iterations": result.iterations,
+                "tool_calls": result.tool_calls,
+                "tokens": result.usage,
+                "stage_metrics": [{"stage": "tool_agent", "duration_sec": elapsed}],
+                "evidence_sources": [
+                    f"tool:{call.get('name','')}" for call in result.tool_calls if call.get("name")
+                ],
+            },
+        )
+
     def _catalog_resolvable_subject(self, question: str) -> str | None:
         """Return the first explicit subject token we can confirm is a
         table — either because the user explicitly called it a "table"
@@ -3205,6 +3291,24 @@ class SearchAgent:
         reaffirm = self._handle_followup_reaffirmation(clean_question, question_language)
         if reaffirm is not None:
             return reaffirm
+
+        # Tool-calling agent path (default). The LLM is given real catalog /
+        # live-DB tools and decides itself how to answer. Replaces the prior
+        # regex-routed Pass1 / alignment / retrieval cascade for everything
+        # the deterministic short-circuits don't already handle. Set
+        # ``/search config use_tool_agent false`` to fall back to the legacy
+        # path during transition.
+        use_tool_agent = (
+            str(self.settings.get("use_tool_agent", "true") or "true").strip().lower() == "true"
+        )
+        if use_tool_agent:
+            tool_answer = self._answer_via_tool_agent(
+                question=question,
+                clean_question=clean_question,
+                question_language=question_language,
+            )
+            if tool_answer is not None:
+                return tool_answer
 
         stage_metrics: list[dict[str, Any]] = []
         thought_trace: list[dict[str, str]] = []
