@@ -52,8 +52,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "conversation_memory_turns": "4",
     "max_retrieved_entities": "8",
     "answer_style": "concise",
-    "show_provenance": "true",
-    "show_confidence": "true",
+    # Default off — these are diagnostic, not conversational. The CLI now
+    # treats `--debug` as the canonical opt-in and falls back to these flags
+    # only when the user explicitly enables them via `/search config`.
+    "show_provenance": "false",
+    "show_confidence": "false",
     "max_results": "8",
     "interpretation_mode": "balanced",
     "clarification_on_low_confidence": "true",
@@ -1365,6 +1368,38 @@ class SearchCatalog:
         ranked.sort(key=lambda item: float(item.get("rank_score") or 0.0), reverse=True)
         return ranked[:limit]
 
+    def find_tables_by_exact_name(
+        self,
+        db_profile: str,
+        name: str,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return every catalog table whose ``table_name`` matches ``name`` exactly.
+
+        Used by ``/ask`` to disambiguate a bare token like ``vbrk`` across
+        schemas: if the same name lives in multiple schemas we want to surface
+        all of them rather than silently picking one.
+        """
+        needle = (name or "").strip().lower()
+        if not needle:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ce.*, cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ?
+                  AND ce.entity_kind = 'table'
+                  AND LOWER(ce.table_name) = ?
+                ORDER BY ce.schema_name, ce.table_name
+                LIMIT ?
+                """,
+                (db_profile, needle, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1842,8 +1877,47 @@ class SearchCatalog:
             for hint in hints:
                 if hint in {table_name, schema_name, f"{schema_name}.{table_name}"}:
                     row["match_score"] = float(row.get("match_score") or 0.0) + 2.5
+        # Enrich rows with column_count via a single batched lookup. The renderer
+        # surfaces this as the `Cols` column; rank_score does not depend on it,
+        # so we run this after scoring to avoid touching the ranking math.
+        self._attach_column_counts(db_profile, rows)
         ranked = self._rank_rows(rows, settings, limit * 3)
         return ranked[:limit]
+
+    def _attach_column_counts(self, db_profile: str, rows: list[dict[str, Any]]) -> None:
+        targets: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            schema = str(row.get("schema_name") or "")
+            table = str(row.get("table_name") or "")
+            if not schema or not table:
+                continue
+            key = (schema, table)
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(key)
+        if not targets:
+            return
+        placeholders = ",".join(["(?, ?)"] * len(targets))
+        params: list[Any] = [db_profile]
+        for schema, table in targets:
+            params.append(schema)
+            params.append(table)
+        sql = (
+            "SELECT schema_name, table_name, COUNT(*) AS column_count "
+            "FROM catalog_entities "
+            f"WHERE db_profile = ? AND entity_kind = 'column' AND (schema_name, table_name) IN ({placeholders}) "
+            "GROUP BY schema_name, table_name"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        with self._connect() as conn:
+            for r in conn.execute(sql, tuple(params)).fetchall():
+                counts[(str(r["schema_name"] or ""), str(r["table_name"] or ""))] = int(r["column_count"] or 0)
+        for row in rows:
+            key = (str(row.get("schema_name") or ""), str(row.get("table_name") or ""))
+            if key in counts:
+                row["column_count"] = counts[key]
 
     def _rank_rows(self, rows: list[dict[str, Any]], settings: dict[str, str], limit: int) -> list[dict[str, Any]]:
         weight_map = {

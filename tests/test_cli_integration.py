@@ -172,7 +172,7 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("Testing LLM connection...", result.output)
+        self.assertIn("Testing LLM connection", result.output)
         self.assertIn("Cannot connect to the active LLM", result.output)
         self.assertIn("model endpoint rejected the request", result.output)
 
@@ -552,20 +552,64 @@ class SearchIntegrationTests(unittest.TestCase):
         from amx.cli_support.commands.search import _render_search_rows
 
         rows = [
-            {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr", "rank_score": 7.5,
-             "effective_description": "Net value"},
-            {"schema_name": "sap", "table_name": "kna1", "column_name": "kunnr", "score": 0.0,
-             "effective_description": "Customer"},
-            {"schema_name": "sap", "table_name": "z", "column_name": "x", "rank_score": 0.0,
-             "effective_description": "noise"},
+            {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr",
+             "rank_score": 7.5, "matched_columns": ["netwr"], "row_count": 100,
+             "column_count": 12, "effective_description": "Net value"},
+            {"schema_name": "sap", "table_name": "kna1", "column_name": "kunnr",
+             "score": 0.0, "effective_description": "Customer"},
+            {"schema_name": "sap", "table_name": "z", "column_name": "x",
+             "rank_score": 0.0, "effective_description": "noise"},
         ]
         with patch("amx.cli_support.commands.search.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list")
         console_mock.print.assert_called_once()
         printed_table = console_mock.print.call_args[0][0]
-        # Rich Table exposes its data via `.columns`; the score column is index 5.
-        score_cells = list(printed_table.columns[5].cells)
-        self.assertEqual(score_cells, ["7.50"])
+        # Default (non-debug) column order: Schema.Table, Match, Why, Rows, Cols, Description.
+        self.assertEqual(len(printed_table.columns), 6)
+        self.assertEqual(list(printed_table.columns[0].cells), ["sap.vbak"])
+        # Match column should resolve 7.5 to the Medium band (>=6, <12).
+        match_cell_text = printed_table.columns[1].cells.__iter__().__next__()
+        self.assertEqual(getattr(match_cell_text, "plain", str(match_cell_text)), "Medium")
+        # Score / Source / Conf must NOT be present in non-debug mode.
+        column_headers = [c.header for c in printed_table.columns]
+        self.assertNotIn("Score", column_headers)
+        self.assertNotIn("Source", column_headers)
+        self.assertNotIn("Conf", column_headers)
+
+    def test_render_search_rows_debug_appends_score_and_source(self) -> None:
+        from amx.cli_support.commands.search import _render_search_rows
+
+        rows = [
+            {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr",
+             "rank_score": 165.0, "matched_columns": ["netwr"],
+             "effective_source_kind": "manual", "current_confidence": "verified",
+             "effective_description": "Net value"},
+        ]
+        with patch("amx.cli_support.commands.search.console") as console_mock:
+            _render_search_rows(rows, answer_shape="ranked_list", debug=True)
+        printed_table = console_mock.print.call_args[0][0]
+        column_headers = [c.header for c in printed_table.columns]
+        # Default columns + Score/Source/Conf appended on the right.
+        self.assertEqual(column_headers[-3:], ["Score", "Source", "Conf"])
+        self.assertEqual(list(printed_table.columns[-3].cells), ["165.00"])
+        match_cell_text = printed_table.columns[1].cells.__iter__().__next__()
+        # 165 lands far above the 12.0 High threshold.
+        self.assertEqual(getattr(match_cell_text, "plain", str(match_cell_text)), "High")
+
+    def test_render_search_rows_uses_matched_columns_for_why(self) -> None:
+        from amx.cli_support.commands.search import _render_search_rows
+
+        rows = [
+            {"schema_name": "sap", "table_name": "vbak", "column_name": "x",
+             "rank_score": 12.0, "matched_columns": ["supplier_id", "vendor_name"],
+             "effective_description": "Sales header"},
+        ]
+        with patch("amx.cli_support.commands.search.console") as console_mock:
+            _render_search_rows(rows, answer_shape="ranked_list")
+        printed_table = console_mock.print.call_args[0][0]
+        why_cell = next(iter(printed_table.columns[2].cells))
+        self.assertIn("supplier_id", getattr(why_cell, "plain", str(why_cell)))
+        self.assertIn("vendor_name", getattr(why_cell, "plain", str(why_cell)))
 
     def test_render_search_rows_dispatches_inventory_for_schema_explorer_rows(self) -> None:
         from amx.cli_support.commands.search import _render_search_rows

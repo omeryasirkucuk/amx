@@ -448,6 +448,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/analyze", "Enter /analyze namespace"),
         ("/search", "Enter /search namespace"),
         ("/history", "Enter /history namespace"),
+        ("/session", "Manage /ask conversation sessions"),
         ("/save", "Save config to disk"),
     ]
     db_cmds = [
@@ -561,10 +562,89 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
 
 
 def _require_namespace(cmd: str, namespace: str, expected: str, replacement: str) -> bool:
-    if namespace == expected:
-        return True
-    error(f"/{cmd} belongs in /{expected}. Example: `/{expected}` then `/{replacement}`.")
-    return False
+    """Allow cross-namespace slash commands.
+
+    Slash commands carry their own namespace in the name (e.g. ``/llm-profiles``,
+    ``/db-profiles``). Refusing to execute them just because the user happens to
+    be in a different tab is friction without value — every handler operates on
+    ``cfg`` and doesn't care about the current namespace. We still emit a one-
+    line note when the command is dispatched cross-namespace, so the user can
+    learn the canonical home if they didn't already know it.
+    """
+    if namespace and namespace != expected:
+        info(f"Running /{cmd} from /{namespace} (canonical home: /{expected}).")
+    return True
+
+
+def _run_ask_repl(
+    cfg: AMXConfig,
+    *,
+    main_command: click.Group,
+    log_event: LogEvent,
+) -> None:
+    """Drop into a sticky ``ask>`` REPL when ``/ask`` is typed alone.
+
+    Each non-empty line is dispatched as a ``/search ask <line>`` invocation,
+    re-using the same conversational session pointer (``cfg.active_chat_session_id``)
+    so follow-up turns ("any others?", "what about its columns?") are linked.
+
+    Exits on ``/exit``, ``/quit``, ``/back``, an empty line + Ctrl-D, or Ctrl-C.
+    Any other line that begins with ``/`` is rejected with a hint — REPL mode is
+    deliberately question-only so users don't accidentally run unrelated CLI
+    commands while mid-conversation.
+    """
+    sid = cfg.active_chat_session_id
+    sid_label = f"#{sid}" if sid else "new"
+    heading(f"Ask mode (session {sid_label})")
+    info(
+        "Type a question, press Enter. /exit (or Ctrl-D on an empty line) to leave."
+    )
+
+    inner = PromptSession(
+        message=HTML("<ansicyan><b>ask&gt;</b></ansicyan> "),
+        mouse_support=False,
+    )
+    while True:
+        try:
+            line = inner.prompt().strip()
+        except EOFError:
+            console.print()
+            success("Left ask mode.")
+            return
+        except KeyboardInterrupt:
+            console.print()
+            success("Left ask mode.")
+            return
+
+        if not line:
+            continue
+        # Allow the user to escape the REPL with familiar slash verbs without
+        # needing to remember "press Ctrl-D on an empty line".
+        if line in {"/exit", "/quit", "/q", "/back", "exit", "quit", "q", "back"}:
+            success("Left ask mode.")
+            return
+        if line.startswith("/"):
+            warn(
+                "Inside /ask only questions are accepted. /exit to leave, "
+                "then run any slash command from the main prompt."
+            )
+            continue
+
+        previous = os.environ.get("AMX_SESSION_CHILD")
+        os.environ["AMX_SESSION_CHILD"] = "1"
+        try:
+            main_command.main(args=["search", "ask", line], prog_name="amx", standalone_mode=False)
+        except click.ClickException as exc:
+            error(_format_session_click_error(f"ask {line}", exc))
+        except SystemExit:
+            pass
+        except Exception as exc:  # pragma: no cover
+            error(f"Ask failed: {exc}")
+        finally:
+            if previous is None:
+                os.environ.pop("AMX_SESSION_CHILD", None)
+            else:
+                os.environ["AMX_SESSION_CHILD"] = previous
 
 
 def _handle_session_builtin(
@@ -756,16 +836,6 @@ def _handle_session_builtin(
 
 def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
-    if head == "search" and len(parts) > 1:
-        if parts[1] in {"ask", "status", "sources", "config", "sync", "rebuild", "find-columns", "join-candidates", "explain", "explain-table"}:
-            return parts
-        return ["search", "ask"] + parts[1:]
-    if namespace == "search":
-        if head in {"ask", "status", "sources", "config", "sync", "rebuild"}:
-            return ["search"] + parts
-        if head in {"find-columns", "join-candidates", "explain", "explain-table"}:
-            return ["search"] + parts
-        return ["search", "ask"] + parts
     shortcut_map = {
         "connect": ["db", "connect"],
         "schemas": ["db", "schemas"],
@@ -796,7 +866,27 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "config": ["config"],
         "help": ["--help"],
     }
-    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history", "setup", "config"}:
+    if head == "search" and len(parts) > 1:
+        if parts[1] in {"ask", "status", "sources", "config", "sync", "rebuild", "find-columns", "join-candidates", "explain", "explain-table"}:
+            return parts
+        return ["search", "ask"] + parts[1:]
+    if namespace == "search":
+        if head in {"ask", "status", "sources", "config", "sync", "rebuild"}:
+            return ["search"] + parts
+        if head in {"find-columns", "join-candidates", "explain", "explain-table"}:
+            return ["search"] + parts
+        # Before swallowing the line as `/search ask <head>`, see if the
+        # command is a known cross-namespace shortcut (e.g. /run, /apply,
+        # /llm-profiles). If so, route it to the correct namespace instead
+        # of asking the LLM to "interpret" it as a question.
+        if head in shortcut_map:
+            return shortcut_map[head] + parts[1:]
+        if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "history"}:
+            if head == "manual":
+                return ["metadata"] + parts[1:]
+            return parts
+        return ["search", "ask"] + parts
+    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history", "session", "setup", "config"}:
         if head == "manual":
             return ["metadata"] + parts[1:]
         return parts
@@ -1092,6 +1182,14 @@ def run_interactive_session(
                     warn_no_doc_paths_for_scan_or_ingest(cfg, cmd=parts[0])
                     continue
             if _handle_manual_usage_shortcuts(namespace, parts):
+                continue
+
+            # Special-case: bare "/ask" (no question) drops the user into a
+            # sticky ask>-prompt REPL. We want this BEFORE the builtin/click
+            # routing because Click would error out with
+            # "Usage: /search ask <question>" otherwise.
+            if parts == ["ask"]:
+                _run_ask_repl(cfg, main_command=main_command, log_event=log_event)
                 continue
 
             handled = _handle_session_builtin(cfg, namespace, parts, log_event=log_event)
