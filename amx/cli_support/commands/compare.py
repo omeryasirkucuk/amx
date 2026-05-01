@@ -9,9 +9,12 @@ where users naturally end up after running questions.
 
 from __future__ import annotations
 
+import csv
+import difflib
 import json
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import click
@@ -21,7 +24,7 @@ from rich.text import Text
 
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
-from amx.utils.console import console, error, info, warn
+from amx.utils.console import console, error, info, success, warn
 
 LogEvent = Callable[..., None]
 
@@ -279,6 +282,40 @@ def _aggregate_for_run(
     }
 
 
+def _word_diff(baseline: str, current: str) -> Text:
+    """Render ``current`` with word-level highlights against ``baseline``.
+
+    Insertions (words present in ``current`` but not ``baseline``) appear
+    in bold green. Deletions (words dropped from ``baseline``) appear in
+    red strikethrough. Common words render plain. Falls back to plain
+    text when the two strings tokenise identically.
+    """
+    base_words = (baseline or "").split()
+    cur_words = (current or "").split()
+    if base_words == cur_words:
+        return Text(current or "")
+    matcher = difflib.SequenceMatcher(None, base_words, cur_words)
+    chunks: list[tuple[str, str]] = []
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        if op == "equal":
+            chunks.append((" ".join(cur_words[j1:j2]), ""))
+        elif op == "insert":
+            chunks.append((" ".join(cur_words[j1:j2]), "bold green"))
+        elif op == "replace":
+            chunks.append((" ".join(base_words[i1:i2]), "strike red"))
+            chunks.append((" ".join(cur_words[j1:j2]), "bold green"))
+        elif op == "delete":
+            chunks.append((" ".join(base_words[i1:i2]), "strike red"))
+    out = Text()
+    for idx, (text, style) in enumerate(chunks):
+        if not text:
+            continue
+        if idx > 0 and out.plain:
+            out.append(" ")
+        out.append(text, style=style or "")
+    return out
+
+
 def _highlight_best(values: list[float | None], higher_is_better: bool) -> int | None:
     """Return index of the best non-None value, or None if all empty/equal."""
     indexed = [(i, v) for i, v in enumerate(values) if v is not None]
@@ -352,12 +389,12 @@ def _render_run_summary(runs: list[dict[str, Any]], by: str) -> None:
     console.print(table)
 
 
-def _render_per_column_pivot(
+def _build_asset_map(
     runs: list[dict[str, Any]],
     results_by_run: dict[int, list[dict[str, Any]]],
     column_filter: str,
-) -> None:
-    """Pivot run_results so rows are columns/tables, cells are runs."""
+) -> dict[tuple[str, str, str], dict[int, dict[str, Any]]]:
+    """Pivot run_results into ``{(schema, table, column): {run_id: row}}``."""
     asset_map: dict[tuple[str, str, str], dict[int, dict[str, Any]]] = {}
     for run in runs:
         rid = int(run["id"])
@@ -368,6 +405,23 @@ def _render_per_column_pivot(
                     continue
             key = _column_key(row)
             asset_map.setdefault(key, {})[rid] = row
+    return asset_map
+
+
+def _render_per_column_pivot(
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+    column_filter: str,
+    *,
+    diff: bool = False,
+) -> None:
+    """Pivot run_results so rows are columns/tables, cells are runs.
+
+    When ``diff`` is set, every cell after the leftmost is rendered as
+    a word-level diff against the leftmost run's text — insertions in
+    green, deletions struck through in red.
+    """
+    asset_map = _build_asset_map(runs, results_by_run, column_filter)
 
     if not asset_map:
         warn(
@@ -377,8 +431,11 @@ def _render_per_column_pivot(
         )
         return
 
+    title = "Per-column results (top alternative · band · logprob · tokens)"
+    if diff:
+        title += "  [diff mode: leftmost run = baseline]"
     table = Table(
-        title="Per-column results (top alternative · band · logprob · tokens)",
+        title=title,
         show_lines=True,
         box=box.SIMPLE_HEAVY,
     )
@@ -407,13 +464,20 @@ def _render_per_column_pivot(
             )
         winner_idx = _highlight_best(scores, higher_is_better=True)
 
+        # Capture the baseline (leftmost) description for diff mode.
+        baseline_text = ""
+        if diff and runs:
+            base_row = runs_for_asset.get(int(runs[0]["id"]))
+            baseline_text = _top_alternative(base_row) if base_row else ""
+
         cells: list[Text] = [Text(label, style="cyan")]
         for col_idx, run in enumerate(runs):
             row = runs_for_asset.get(int(run["id"]))
             if not row:
                 cells.append(Text("—", style="dim"))
                 continue
-            desc = _truncate(_top_alternative(row), max_len=58)
+            full_desc = _top_alternative(row)
+            desc_truncated = _truncate(full_desc, max_len=58)
             band = str(row.get("confidence") or "").lower() or "—"
             logprob = (
                 _fmt_float(row.get("logprob_score"), places=2)
@@ -422,7 +486,15 @@ def _render_per_column_pivot(
             )
             tokens = _fmt_int(row.get("token_count"))
             cell = Text()
-            cell.append(desc or "(empty)", style=("white" if desc else "dim"))
+            if diff and col_idx > 0 and full_desc:
+                # Diff truncated current vs truncated baseline so on-screen
+                # lengths stay bounded — full text still goes to exports.
+                cell.append_text(_word_diff(_truncate(baseline_text, 58), desc_truncated))
+            else:
+                cell.append(
+                    desc_truncated or "(empty)",
+                    style=("white" if desc_truncated else "dim"),
+                )
             cell.append("\n")
             cell.append(band, style=_confidence_style(band))
             cell.append(" · ")
@@ -542,6 +614,253 @@ def _render_aggregate_metrics(
     console.print(table)
 
 
+# ── Export helpers ──────────────────────────────────────────────────────────
+
+
+_RUN_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "run_id", "started_at", "status", "command", "db_profile", "llm_profile",
+    "llm_model", "doc_profile", "code_profile", "duration_sec",
+    "processed_count", "applied_count",
+)
+
+_PER_COLUMN_LONG_COLUMNS: tuple[str, ...] = (
+    "schema", "table", "column", "run_id", "description",
+    "confidence", "logprob_score", "token_count",
+)
+
+_AGGREGATE_COLUMNS: tuple[str, ...] = (
+    "metric", "run_id", "value",
+)
+
+_AGGREGATE_METRICS: tuple[tuple[str, str], ...] = (
+    ("wall_duration_sec", "duration_sec"),
+    ("model_processing_sec", "model_processing_sec"),
+    ("prompt_tokens", "prompt_tokens"),
+    ("completion_tokens", "completion_tokens"),
+    ("total_tokens", "total_tokens"),
+    ("avg_logprob_score", "avg_logprob"),
+    ("pct_high_confidence", "high_pct"),
+    ("pct_medium_confidence", "medium_pct"),
+    ("pct_low_confidence", "low_pct"),
+    ("approval_rate", "approval_rate"),
+    ("saved_results", "result_count"),
+)
+
+
+def _collect_run_summary_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for r in runs:
+        rows.append({
+            "run_id": r.get("id"),
+            "started_at": _fmt_dt(r.get("started_at")),
+            "status": r.get("status") or "",
+            "command": r.get("command") or "",
+            "db_profile": r.get("db_profile") or "",
+            "llm_profile": r.get("llm_profile") or "",
+            "llm_model": r.get("llm_model") or "",
+            "doc_profile": r.get("doc_profile") or "",
+            "code_profile": r.get("code_profile") or "",
+            "duration_sec": float(r.get("duration_sec") or 0.0),
+            "processed_count": int(r.get("processed_count") or 0),
+            "applied_count": int(r.get("applied_count") or 0),
+        })
+    return rows
+
+
+def _collect_per_column_long(
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+    column_filter: str = "",
+) -> list[dict[str, Any]]:
+    asset_map = _build_asset_map(runs, results_by_run, column_filter)
+    rows: list[dict[str, Any]] = []
+    for asset_key in sorted(asset_map.keys()):
+        schema_n, table_n, col_n = asset_key
+        runs_for_asset = asset_map[asset_key]
+        for run in runs:
+            row = runs_for_asset.get(int(run["id"]))
+            if not row:
+                continue
+            rows.append({
+                "schema": schema_n,
+                "table": table_n,
+                "column": col_n,
+                "run_id": int(run["id"]),
+                "description": _top_alternative(row),
+                "confidence": str(row.get("confidence") or ""),
+                "logprob_score": row.get("logprob_score"),
+                "token_count": row.get("token_count"),
+            })
+    return rows
+
+
+def _collect_aggregate_long(
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        agg = _aggregate_for_run(run, results_by_run.get(int(run["id"]), []))
+        for export_name, agg_key in _AGGREGATE_METRICS:
+            rows.append({
+                "metric": export_name,
+                "run_id": int(run["id"]),
+                "value": agg.get(agg_key),
+            })
+    return rows
+
+
+def _export_csv(
+    path: Path,
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+    *,
+    column_filter: str = "",
+) -> None:
+    """Write all three tables into a single CSV file with section markers.
+
+    A leading ``# section: <name>`` comment and a blank line precede each
+    block so pandas/Excel users can split the file by section, while the
+    rest is plain RFC-4180 CSV that readers ignore as comments or
+    blank rows.
+    """
+    sections: tuple[tuple[str, tuple[str, ...], list[dict[str, Any]]], ...] = (
+        ("run_summary", _RUN_SUMMARY_COLUMNS, _collect_run_summary_rows(runs)),
+        ("per_column", _PER_COLUMN_LONG_COLUMNS,
+         _collect_per_column_long(runs, results_by_run, column_filter)),
+        ("aggregate_metrics", _AGGREGATE_COLUMNS,
+         _collect_aggregate_long(runs, results_by_run)),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        for idx, (name, headers, rows) in enumerate(sections):
+            if idx > 0:
+                fh.write("\n")
+            fh.write(f"# section: {name}\n")
+            writer = csv.DictWriter(fh, fieldnames=list(headers))
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {h: ("" if row.get(h) is None else row.get(h)) for h in headers}
+                )
+
+
+def _md_escape(s: Any) -> str:
+    text = "" if s is None else str(s)
+    # Pipes break GFM tables; backslashes preserve them. Newlines collapse.
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _md_table(headers: list[str], rows: list[list[Any]]) -> str:
+    if not rows:
+        return f"| {' | '.join(headers)} |\n| {' | '.join(['---'] * len(headers))} |\n| {' | '.join(['—'] * len(headers))} |\n"
+    body_lines = [f"| {' | '.join(headers)} |",
+                  f"| {' | '.join(['---'] * len(headers))} |"]
+    for row in rows:
+        body_lines.append(
+            "| " + " | ".join(_md_escape(c) for c in row) + " |"
+        )
+    return "\n".join(body_lines) + "\n"
+
+
+def _export_markdown(
+    path: Path,
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+    *,
+    column_filter: str = "",
+) -> None:
+    """Write the three tables as GitHub-flavoured Markdown.
+
+    Per-column results render in wide format (columns per run) so the
+    file mirrors what the user just saw on screen and pastes cleanly
+    into Notion / GitHub PR descriptions.
+    """
+    parts: list[str] = []
+    parts.append(
+        f"# AMX run comparison\n\n"
+        f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} · "
+        f"{len(runs)} runs_\n\n"
+    )
+
+    # Section 1: run summary.
+    summary_rows = _collect_run_summary_rows(runs)
+    parts.append("## Run summary\n\n")
+    parts.append(_md_table(
+        ["Run", "Started", "Status", "Command", "DB profile", "LLM profile",
+         "Model", "Doc profile", "Code profile", "Duration (s)",
+         "Processed", "Applied"],
+        [
+            [
+                f"#{r['run_id']}", r["started_at"], r["status"], r["command"],
+                r["db_profile"], r["llm_profile"], r["llm_model"],
+                r["doc_profile"], r["code_profile"],
+                f"{r['duration_sec']:.1f}",
+                r["processed_count"], r["applied_count"],
+            ]
+            for r in summary_rows
+        ],
+    ))
+    parts.append("\n")
+
+    # Section 2: per-column wide table.
+    asset_map = _build_asset_map(runs, results_by_run, column_filter)
+    parts.append("## Per-column results\n\n")
+    parts.append(
+        "_Each cell: top alternative · confidence · `logprob_score` · token count._\n\n"
+    )
+    if not asset_map:
+        parts.append("_No overlapping per-column results across the compared runs._\n")
+    else:
+        per_col_headers = ["Schema.Table.Column"] + [f"Run #{r['id']}" for r in runs]
+        per_col_rows: list[list[Any]] = []
+        for asset_key in sorted(asset_map.keys()):
+            schema_n, table_n, col_n = asset_key
+            label = ".".join(p for p in (schema_n, table_n, col_n) if p) or "(unknown)"
+            row_cells: list[Any] = [label]
+            for run in runs:
+                row = asset_map[asset_key].get(int(run["id"]))
+                if not row:
+                    row_cells.append("—")
+                    continue
+                desc = _top_alternative(row) or "(empty)"
+                band = str(row.get("confidence") or "—")
+                logprob = (
+                    f"{float(row['logprob_score']):.2f}"
+                    if row.get("logprob_score") is not None else "—"
+                )
+                tokens = _fmt_int(row.get("token_count"))
+                row_cells.append(
+                    f"{desc} · {band} · {logprob} · {tokens} tok"
+                )
+            per_col_rows.append(row_cells)
+        parts.append(_md_table(per_col_headers, per_col_rows))
+    parts.append("\n")
+
+    # Section 3: aggregate metrics, wide.
+    aggs = [
+        _aggregate_for_run(r, results_by_run.get(int(r["id"]), [])) for r in runs
+    ]
+    parts.append("## Aggregate metrics\n\n")
+    metric_headers = ["Metric"] + [f"Run #{r['id']}" for r in runs]
+    metric_rows: list[list[Any]] = []
+    for export_name, agg_key in _AGGREGATE_METRICS:
+        cells: list[Any] = [export_name]
+        for agg in aggs:
+            v = agg.get(agg_key)
+            if v is None:
+                cells.append("—")
+            elif isinstance(v, float):
+                cells.append(f"{v:.3f}" if "logprob" in agg_key else f"{v:.1f}")
+            else:
+                cells.append(v)
+        metric_rows.append(cells)
+    parts.append(_md_table(metric_headers, metric_rows))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(parts), encoding="utf-8")
+
+
 # ── Public registration ─────────────────────────────────────────────────────
 
 
@@ -591,6 +910,27 @@ def register_compare_command(
         default="auto",
         help="Highlight which dimension differs across runs.",
     )
+    @click.option(
+        "--diff", "diff_mode",
+        is_flag=True,
+        default=False,
+        help=(
+            "Word-level diff in the per-column pivot. The leftmost run is "
+            "the baseline; insertions appear bold green, deletions strike-red."
+        ),
+    )
+    @click.option(
+        "--csv", "csv_path",
+        type=click.Path(dir_okay=False, writable=True, resolve_path=True),
+        default=None,
+        help="Also write the comparison to a CSV file (run summary + per-column long format + aggregate metrics).",
+    )
+    @click.option(
+        "--md", "md_path",
+        type=click.Path(dir_okay=False, writable=True, resolve_path=True),
+        default=None,
+        help="Also write the comparison as GitHub-flavoured Markdown (wide-format per-column table).",
+    )
     @pass_config
     def search_compare(
         cfg: AMXConfig,
@@ -601,6 +941,9 @@ def register_compare_command(
         last_n: int,
         command_filter: str,
         by: str,
+        diff_mode: bool,
+        csv_path: str | None,
+        md_path: str | None,
     ) -> None:
         """Compare runs side-by-side: descriptions, logprobs, timing, tokens."""
         runs = _resolve_runs(
@@ -632,12 +975,36 @@ def register_compare_command(
         resolved_by = _detect_by(runs) if by == "auto" else _BY_TO_RUN_KEY.get(by, by)
         info(
             f"Comparing {len(runs)} runs "
-            f"(varying dimension: {resolved_by})"
+            f"(varying dimension: {resolved_by}"
+            + (f"; diff vs Run #{runs[0]['id']}" if diff_mode else "")
+            + ")"
         )
 
         _render_run_summary(runs, by=resolved_by)
-        _render_per_column_pivot(runs, results_by_run, column_filter=column_opt)
+        _render_per_column_pivot(
+            runs, results_by_run,
+            column_filter=column_opt, diff=diff_mode,
+        )
         _render_aggregate_metrics(runs, results_by_run)
+
+        if csv_path:
+            try:
+                _export_csv(
+                    Path(csv_path), runs, results_by_run,
+                    column_filter=column_opt,
+                )
+                success(f"Wrote CSV → {csv_path}")
+            except OSError as exc:
+                error(f"CSV export failed: {exc}")
+        if md_path:
+            try:
+                _export_markdown(
+                    Path(md_path), runs, results_by_run,
+                    column_filter=column_opt,
+                )
+                success(f"Wrote Markdown → {md_path}")
+            except OSError as exc:
+                error(f"Markdown export failed: {exc}")
 
         log_event(
             event_type="search_compare",
@@ -650,6 +1017,9 @@ def register_compare_command(
                 "table": table_opt or cfg.current_table or "",
                 "column": column_opt,
                 "command_filter": command_filter,
+                "diff": diff_mode,
+                "exported_csv": bool(csv_path),
+                "exported_md": bool(md_path),
             },
         )
 
