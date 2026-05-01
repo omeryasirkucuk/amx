@@ -6,6 +6,21 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/compare` moves to `/history`, captures full settings snapshot
+
+User feedback: "current compare is not good. Don't need a /search compare; the most important thing to compare is past runs — settings, model time, tokens, etc." — comparison is fundamentally an audit operation, not a search one.
+
+- **`/compare` moved from `/search` namespace to `/history` namespace.** The slash registry's `_HISTORY_COMMANDS` lists it; `cli.py` wires `register_compare_command` to the `history` Click group; `session.shortcut_map` now routes the bare verb to `["history", "compare"]` from any namespace. The `/ask` discovery hint also points at `/history compare`.
+- **Schema migration: `analysis_runs.settings_json`** captures a full LLM/run config snapshot at run-start time — `prompt_detail`, `language`, `column_batch_size`, `batch_context_column_names`, `n_alternatives`, `completion_mode`, `description_verbosity`, `temperature`, `max_tokens`, `logprob_high`, `logprob_medium`, `force_logprobs`, `dedup_used`, `missing_only`, `review_strategy`, `use_batch`. JSON column so future settings can be added without another migration. Idempotent ALTER like the previous profile-name additions; legacy rows round-trip with `null` settings.
+- **`create_run()`** accepts a `settings: dict | None` kwarg; both `/run` (analyze_flow) and `/ask` (search) now pass the snapshot. Old call sites that didn't pass it remain valid (`null` in the column).
+- **New `Run settings` table** in `/history compare` output, between Run summary and the per-column pivot. Shows prompt detail, language, verbosity, n alternatives, batch size, context columns, completion mode, temperature, dedup, missing-only, and review strategy per run. Older runs render as `—` for fields that weren't captured.
+- **JSON export shape extended** — `_collect_run_summary_rows` now includes a `settings` dict per run, so notebook users can pivot on any captured knob (e.g. average logprob by `column_batch_size`).
+- **6 new tests**: dispatch routes `/compare` to history from root + from /search; registry lists it under history (and not under search); `create_run` round-trips settings dict; legacy rows survive without crashing; `_settings_for_run` handles missing/JSON-string/dict/garbage variants.
+
+### Future — `/ask` should answer comparison questions
+
+Out of scope for this PR but tracked: making `/ask "compare my last 3 runs on sales.orders"` work via the LLM-grounded search agent. The agent would need a tool that reaches into history (the same data `/history compare` reads) and returns it as context. Separate effort because it touches the planner / prompt / tool registry.
+
 ### Fixed — `auto-apply` is reachable for single-asset `/run`
 
 User report: "where is auto-apply, has been returning past, why did you delete it?". Auto-apply was **not** deleted — the run-wide `Review strategy` prompt that contains it was just hidden when the user picked a single asset.

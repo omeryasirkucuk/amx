@@ -235,18 +235,6 @@ _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
         "Sync DB structure/comments and code evidence. Add --db-profile NAME (multi) for cross-DB sync (/sync [--db-profile NAME …])",
     ),
     SlashCommand("/rebuild", "search", "Rebuild effective search state and vector index"),
-    SlashCommand(
-        "/compare",
-        "search",
-        "Compare runs side-by-side (descriptions, logprobs, timing, tokens)",
-        long_desc=(
-            "Pivot history rows so you can see how different LLM profiles, "
-            "doc profiles, or code profiles changed descriptions, confidence, "
-            "logprob_score, and timing for the same assets. Examples: "
-            "/compare --last 3, /compare 42 41 39, "
-            "/compare --schema sales --table orders --by doc_profile."
-        ),
-    ),
 )
 
 _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
@@ -259,6 +247,20 @@ _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
         "/review",
         "history",
         "Re-evaluate alternatives (/review <run_id> [--unevaluated-only] [--apply])",
+    ),
+    SlashCommand(
+        "/compare",
+        "history",
+        "Compare past runs side-by-side (settings, descriptions, timing, tokens)",
+        long_desc=(
+            "Pivot past runs of the same assets so you can see how different LLM "
+            "models, doc profiles, code profiles, prompt-detail levels, or batch "
+            "sizes changed the descriptions, confidence, logprob_score, model "
+            "processing time, and token usage. Lives under /history because "
+            "comparing past runs is fundamentally an audit operation, not a "
+            "search one. Examples: /compare --last 3, /compare 42 41 39, "
+            "/compare --schema sales --table orders --by doc_profile."
+        ),
     ),
 )
 

@@ -545,6 +545,19 @@ def _run_search_ask_body(
             llm_profile=cfg.active_llm_profile,
             doc_profile=cfg.active_doc_profile or None,
             code_profile=cfg.active_code_profile or None,
+            # Capture the LLM-side knobs that varied between asks so
+            # /history compare can surface them. The orchestration
+            # knobs (dedup, missing_only, batch, review_strategy)
+            # don't apply to /ask but having a uniform settings_json
+            # shape across run + ask makes the compare table simpler.
+            settings={
+                "prompt_detail": getattr(cfg.llm, "prompt_detail", ""),
+                "language": getattr(cfg.llm, "language", ""),
+                "completion_mode": getattr(cfg.llm, "completion_mode", ""),
+                "temperature": float(getattr(cfg.llm, "temperature", 0.0) or 0.0),
+                "max_tokens": int(getattr(cfg.llm, "max_tokens", 0) or 0),
+                "force_logprobs": bool(getattr(cfg.llm, "force_logprobs", True)),
+            },
         )
     info(answer.summary)
     # Provenance and confidence are diagnostic, not conversational. Surface
@@ -638,7 +651,7 @@ def _run_search_ask_body(
                 prior = []
             if len(prior) >= 3:
                 console.print(
-                    f"[dim]hint: /compare --last 3 --schema {primary_schema} "
+                    f"[dim]hint: /history compare --last 3 --schema {primary_schema} "
                     f"to see how this answer differs from prior runs.[/dim]"
                 )
 

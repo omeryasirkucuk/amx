@@ -336,9 +336,9 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
         raise click.ClickException("Use interactive mode only")
 
 
-register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
-search = register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
-register_compare_command(search, pass_config=pass_config, log_event=_log_app_event)
+history_group = register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
+register_compare_command(history_group, pass_config=pass_config, log_event=_log_app_event)
+register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_doctor_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_chat_session_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_manual_commands(main, pass_config=pass_config, log_event=_log_app_event)

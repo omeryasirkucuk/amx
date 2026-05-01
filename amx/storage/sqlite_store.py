@@ -381,6 +381,14 @@ class SQLiteHistoryStore:
             ("llm_profile", "TEXT"),
             ("doc_profile", "TEXT"),
             ("code_profile", "TEXT"),
+            # 0.11.x — full LLM/run config snapshot at run-start time
+            # (prompt_detail, language, column_batch_size, n_alternatives,
+            # completion_mode, description_verbosity, temperature,
+            # batch_context_column_names, dedup_used, missing_only).
+            # Stored as JSON so future settings can be added without
+            # another schema migration. /history compare surfaces these
+            # so users can see exactly which knobs varied between runs.
+            ("settings_json", "TEXT"),
         ):
             if col_name in existing_cols:
                 continue
@@ -415,6 +423,7 @@ class SQLiteHistoryStore:
         llm_profile: str | None = None,
         doc_profile: str | None = None,
         code_profile: str | None = None,
+        settings: dict[str, Any] | None = None,
     ) -> int:
         started = time.time()
         # Sensible defaults if caller didn't pass counts explicitly: derive
@@ -460,8 +469,9 @@ class SQLiteHistoryStore:
                     db_backend, db_profile, llm_provider, llm_model, scope_json,
                     selected_count, planned_count, processed_count, applied_count,
                     review_strategy,
-                    llm_profile, doc_profile, code_profile
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
+                    llm_profile, doc_profile, code_profile,
+                    settings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     started,
@@ -479,6 +489,7 @@ class SQLiteHistoryStore:
                     (llm_profile or None),
                     (doc_profile or None),
                     (code_profile or None),
+                    (json.dumps(settings, ensure_ascii=True) if settings else None),
                 ),
             )
             return int(cur.lastrowid)
@@ -847,7 +858,7 @@ class SQLiteHistoryStore:
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
                        db_backend, db_profile, llm_provider, llm_model,
                        llm_profile, doc_profile, code_profile,
-                       scope_json, metrics_json, tokens_json,
+                       scope_json, metrics_json, tokens_json, settings_json,
                        selected_count, planned_count, processed_count, applied_count
                 FROM analysis_runs
                 {where_sql}
@@ -859,7 +870,7 @@ class SQLiteHistoryStore:
         out: list[dict[str, Any]] = []
         for r in rows:
             d = dict(r)
-            for key in ("scope_json", "metrics_json", "tokens_json"):
+            for key in ("scope_json", "metrics_json", "tokens_json", "settings_json"):
                 raw = d.get(key)
                 if isinstance(raw, str) and raw:
                     with contextlib.suppress(Exception):
@@ -876,7 +887,7 @@ class SQLiteHistoryStore:
         if not row:
             return None
         out = dict(row)
-        for key in ("scope_json", "metrics_json", "tokens_json", "results_json"):
+        for key in ("scope_json", "metrics_json", "tokens_json", "results_json", "settings_json"):
             raw = out.get(key)
             if isinstance(raw, str) and raw:
                 with contextlib.suppress(Exception):

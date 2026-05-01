@@ -868,6 +868,12 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         # "doctor"]` — sending the literal string "doctor" to the search
         # agent as a question, which silently "looks like it worked".
         "doctor": ["doctor"],
+        # /compare lives under /history (audit operation, not search).
+        # Same dispatch story as /doctor: from /search it'd otherwise
+        # be swallowed as a question, from /db etc. it'd hit Click as
+        # an unknown subcommand. The shortcut maps it to the correct
+        # namespace from anywhere.
+        "compare": ["history", "compare"],
     }
     if head == "search" and len(parts) > 1:
         if parts[1] in {
