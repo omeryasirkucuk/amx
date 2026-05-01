@@ -31,6 +31,11 @@ from amx.search._catalog._constants import (
     _active_embedding_kind,
     _vector_score_floor,
 )
+from amx.search._catalog._db_profile_clause import (
+    DBProfileFilter,
+    build_db_profile_clause,
+    normalise_db_profile_filter,
+)
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.search")
@@ -83,17 +88,18 @@ class SearchMixin:
             "for",
         }
         return {token for token in self._tokens(text) if token not in stop}
-    def _exact_candidates(self, db_profile: str, question: str, limit: int = 20) -> list[dict[str, Any]]:
+    def _exact_candidates(self, db_profile: DBProfileFilter, question: str, limit: int = 20) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
+        clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ce.*, cd.description_text AS effective_description
                 FROM catalog_entities ce
                 LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                WHERE ce.db_profile = ? AND ce.search_text != ''
+                WHERE {clause} AND ce.search_text != ''
                 """,
-                (db_profile,),
+                binds,
             ).fetchall()
         hits: list[dict[str, Any]] = []
         for row in rows:
@@ -116,20 +122,21 @@ class SearchMixin:
             hits.append(item)
         hits.sort(key=lambda item: item["match_score"], reverse=True)
         return hits[:limit]
-    def name_search_columns(self, db_profile: str, question: str, limit: int = 8) -> list[dict[str, Any]]:
+    def name_search_columns(self, db_profile: DBProfileFilter, question: str, limit: int = 8) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
         needle = (tokens[0] if tokens else question.strip().lower())[:128]
         if not needle:
             return []
+        clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ce.*, cd.description_text AS effective_description
                 FROM catalog_entities ce
                 LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                WHERE ce.db_profile = ? AND ce.entity_kind = 'column'
+                WHERE {clause} AND ce.entity_kind = 'column'
                 """,
-                (db_profile,),
+                binds,
             ).fetchall()
         ranked: list[dict[str, Any]] = []
         for row in rows:
@@ -159,21 +166,29 @@ class SearchMixin:
             item = dict(row)
             item["match_score"] = score
             ranked.append(item)
-        ranked = self._rank_rows(ranked, self.get_settings(db_profile), limit * 2)
+        # Settings are intrinsically per-profile; when the filter spans
+        # several profiles use the first one (the scope's default) for
+        # rank weights — the typical case is "homogeneous tuning across
+        # profiles", a per-profile mismatch is rare and not worth a
+        # separate code path here.
+        scope_names = normalise_db_profile_filter(db_profile)
+        settings_profile = scope_names[0] if scope_names else ""
+        ranked = self._rank_rows(ranked, self.get_settings(settings_profile), limit * 2)
         return ranked[:limit]
-    def find_table_candidates(self, db_profile: str, hint: str, limit: int = 5) -> list[dict[str, Any]]:
+    def find_table_candidates(self, db_profile: DBProfileFilter, hint: str, limit: int = 5) -> list[dict[str, Any]]:
         needle = (hint or "").strip().lower()
         if not needle:
             return []
+        clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ce.*, cd.description_text AS effective_description
                 FROM catalog_entities ce
                 LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                WHERE ce.db_profile = ? AND ce.entity_kind = 'table'
+                WHERE {clause} AND ce.entity_kind = 'table'
                 """,
-                (db_profile,),
+                binds,
             ).fetchall()
         ranked: list[dict[str, Any]] = []
         for row in rows:
@@ -200,7 +215,7 @@ class SearchMixin:
         return ranked[:limit]
     def find_tables_by_exact_name(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         name: str,
         *,
         limit: int = 20,
@@ -209,29 +224,32 @@ class SearchMixin:
 
         Used by ``/ask`` to disambiguate a bare token like ``vbrk`` across
         schemas: if the same name lives in multiple schemas we want to surface
-        all of them rather than silently picking one.
+        all of them rather than silently picking one. 0.11.0: ``db_profile``
+        accepts a sequence of profile names so cross-DB ``/ask`` can find
+        the same table name in several configured DBs at once.
         """
         needle = (name or "").strip().lower()
         if not needle:
             return []
+        clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ce.*, cd.description_text AS effective_description
                 FROM catalog_entities ce
                 LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                WHERE ce.db_profile = ?
+                WHERE {clause}
                   AND ce.entity_kind = 'table'
                   AND LOWER(ce.table_name) = ?
-                ORDER BY ce.schema_name, ce.table_name
+                ORDER BY ce.db_profile, ce.schema_name, ce.table_name
                 LIMIT ?
                 """,
-                (db_profile, needle, int(limit)),
+                [*binds, needle, int(limit)],
             ).fetchall()
         return [dict(row) for row in rows]
     def find_columns_by_exact_name(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         name: str,
         *,
         limit: int = 200,
@@ -247,19 +265,20 @@ class SearchMixin:
         needle = (name or "").strip().lower()
         if not needle:
             return []
+        clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT ce.*, cd.description_text AS effective_description
                 FROM catalog_entities ce
                 LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                WHERE ce.db_profile = ?
+                WHERE {clause}
                   AND ce.entity_kind = 'column'
                   AND LOWER(ce.column_name) = ?
-                ORDER BY ce.schema_name, ce.table_name, ce.column_name
+                ORDER BY ce.db_profile, ce.schema_name, ce.table_name, ce.column_name
                 LIMIT ?
                 """,
-                (db_profile, needle, int(limit)),
+                [*binds, needle, int(limit)],
             ).fetchall()
         return [dict(row) for row in rows]
     def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
@@ -365,13 +384,18 @@ class SearchMixin:
         return [dict(row) for row in rows]
     def search_columns(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         question: str,
         limit: int = 8,
         entity_hints: list[str] | None = None,
         query_variants: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        settings = self.get_settings(db_profile)
+        # Settings are per-profile; for multi-profile retrieval use the
+        # first profile's settings as a tuning baseline (typical case is
+        # homogeneous tuning across the user's scope).
+        scope_names = normalise_db_profile_filter(db_profile)
+        settings_profile = scope_names[0] if scope_names else ""
+        settings = self.get_settings(settings_profile)
         variants: list[str] = []
         for value in [question] + list(query_variants or []):
             text = str(value or "").strip()
@@ -434,13 +458,15 @@ class SearchMixin:
         return ranked[:limit]
     def search_tables(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         question: str,
         limit: int = 8,
         entity_hints: list[str] | None = None,
         query_variants: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        settings = self.get_settings(db_profile)
+        scope_names = normalise_db_profile_filter(db_profile)
+        settings_profile = scope_names[0] if scope_names else ""
+        settings = self.get_settings(settings_profile)
         variants: list[str] = []
         for value in [question] + list(query_variants or []):
             text = str(value or "").strip()
@@ -469,6 +495,10 @@ class SearchMixin:
                     continue
                 if row.get("entity_kind") != "column":
                     continue
+                # The parent table lives in the SAME profile as the column hit
+                # — never the full scope. Filter by ``row['db_profile']`` so a
+                # multi-profile retrieval still maps each column to its own
+                # table without cross-pollination across profiles.
                 table = conn.execute(
                     """
                     SELECT ce.*, cd.description_text AS effective_description
@@ -477,7 +507,11 @@ class SearchMixin:
                     WHERE ce.db_profile = ? AND ce.schema_name = ? AND ce.table_name = ? AND ce.entity_kind = 'table'
                     LIMIT 1
                     """,
-                    (db_profile, str(row["schema_name"] or ""), str(row["table_name"] or "")),
+                    (
+                        str(row.get("db_profile") or settings_profile),
+                        str(row["schema_name"] or ""),
+                        str(row["table_name"] or ""),
+                    ),
                 ).fetchone()
                 if not table:
                     continue
@@ -506,6 +540,8 @@ class SearchMixin:
                         if entity["entity_kind"] == "table":
                             table = entity
                         elif entity["entity_kind"] == "column":
+                            # Same per-row scoping rule as above: the parent
+                            # table is in the column's own profile.
                             table = conn.execute(
                                 """
                                 SELECT ce.*, cd.description_text AS effective_description
@@ -514,7 +550,11 @@ class SearchMixin:
                                 WHERE ce.db_profile = ? AND ce.schema_name = ? AND ce.table_name = ? AND ce.entity_kind = 'table'
                                 LIMIT 1
                                 """,
-                                (db_profile, str(entity["schema_name"] or ""), str(entity["table_name"] or "")),
+                                (
+                                    str(entity["db_profile"] or settings_profile),
+                                    str(entity["schema_name"] or ""),
+                                    str(entity["table_name"] or ""),
+                                ),
                             ).fetchone()
                         if not table:
                             continue
@@ -544,7 +584,7 @@ class SearchMixin:
         self._attach_column_counts(db_profile, rows)
         ranked = self._rank_rows(rows, settings, limit * 3)
         return ranked[:limit]
-    def _attach_column_counts(self, db_profile: str, rows: list[dict[str, Any]]) -> None:
+    def _attach_column_counts(self, db_profile: DBProfileFilter, rows: list[dict[str, Any]]) -> None:
         targets: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for row in rows:
@@ -560,14 +600,15 @@ class SearchMixin:
         if not targets:
             return
         placeholders = ",".join(["(?, ?)"] * len(targets))
-        params: list[Any] = [db_profile]
+        clause, profile_binds = build_db_profile_clause(db_profile)
+        params: list[Any] = [*profile_binds]
         for schema, table in targets:
             params.append(schema)
             params.append(table)
         sql = (
             "SELECT schema_name, table_name, COUNT(*) AS column_count "
             "FROM catalog_entities "
-            f"WHERE db_profile = ? AND entity_kind = 'column' AND (schema_name, table_name) IN ({placeholders}) "
+            f"WHERE {clause} AND entity_kind = 'column' AND (schema_name, table_name) IN ({placeholders}) "
             "GROUP BY schema_name, table_name"
         )
         counts: dict[tuple[str, str], int] = {}
