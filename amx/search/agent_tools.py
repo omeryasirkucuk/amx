@@ -350,11 +350,17 @@ class ToolBox:
                 "function": {
                     "name": "find_joinable_tables",
                     "description": (
-                        "Given ONE table, return the tables it can be joined with — verified "
-                        "foreign keys first, then semantic-similarity candidates. Use this for "
-                        "'which tables can I join with adr6?', 'X ile birleşebilecek tablolar', "
-                        "'find tables related to vbrk'. Different from get_join_candidates "
-                        "which needs both sides upfront."
+                        "Given ONE table, return the tables it can be joined with using a "
+                        "three-tier fallback: (1) declared foreign keys, (2) name-overlap "
+                        "heuristic (rarity-weighted shared column names — works WITHOUT FK "
+                        "constraints, ideal for SAP-style schemas), (3) semantic similarity on "
+                        "column descriptions. The result includes ``inference_source`` "
+                        "(``foreign_key`` / ``name_overlap`` / ``semantic_similarity``) — when "
+                        "you compose the final answer, ALWAYS state the inference tier "
+                        "explicitly so the user knows whether the join is FK-verified or "
+                        "name-inferred. Use for 'which tables can I join with vbrk?', "
+                        "'X ile birleşebilecek tablolar', 'find tables related to vbrk'. "
+                        "Different from get_join_candidates which needs both sides upfront."
                     ),
                     "parameters": {
                         "type": "object",
@@ -832,7 +838,37 @@ class ToolBox:
                 }
             row = exact[0]
             target = f"{row.get('schema_name') or ''}.{row.get('table_name') or ''}"
+        # Three-tier fallback chain (v0.9.7):
+        # 1. Symbolic FK relationships from catalog (best — explicit
+        #    referential integrity). Empty when the DB has no FK
+        #    constraints, which is typical of SAP / legacy schemas
+        #    where joins are managed at the application layer.
+        # 2. Name-overlap heuristic — same column name on both sides,
+        #    weighted by rarity so ``mandt`` (in every table) doesn't
+        #    drown out a high-signal shared name. Works WITHOUT FK
+        #    constraints AND WITHOUT per-column descriptions.
+        # 3. Semantic similarity — vector match on column descriptions.
+        #    Requires the catalog to have been ``/run``-populated.
+        # The first non-empty tier wins; ``inference_source`` is
+        # surfaced so the LLM can be honest in the answer ("via FK"
+        # vs "via shared column name" vs "via semantic similarity").
         rows = self.catalog.joinable_tables(self.db_profile, target, limit=12)
+        inference_source = "foreign_key"
+        if not rows:
+            rows = self.catalog.name_overlap_joinable_tables(
+                self.db_profile, target, limit=12,
+            )
+            if rows:
+                inference_source = "name_overlap"
+        if not rows:
+            try:
+                rows = self.catalog.semantic_joinable_tables(
+                    self.db_profile, target, limit=12,
+                )
+            except Exception:
+                rows = []
+            if rows:
+                inference_source = "semantic_similarity"
         joinable = [
             {
                 "target_schema": str(r.get("target_schema_name") or ""),
@@ -841,6 +877,7 @@ class ToolBox:
                 "right_column": str(r.get("right_column") or ""),
                 "type": str(r.get("relationship_type") or ""),
                 "score": float(r.get("score") or 0.0),
+                "shared_column_count": int(r.get("shared_column_count") or 0),
             }
             for r in rows
         ]
@@ -849,4 +886,5 @@ class ToolBox:
             "found": True,
             "joinable_tables": joinable,
             "count": len(joinable),
+            "inference_source": inference_source,
         }

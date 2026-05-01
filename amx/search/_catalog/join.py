@@ -102,6 +102,130 @@ class JoinMixin:
         if score >= 4.0:
             return "possible"
         return "weak_hypothesis"
+
+    def name_overlap_joinable_tables(
+        self, db_profile: str, table_path: str, limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Find joinable tables by shared column NAMES (no FK / no LLM).
+
+        For schemas without declared foreign-key constraints (typical
+        SAP / legacy schemas) and without per-column descriptions yet
+        (catalog hasn't been ``/run`` yet), the cheapest signal that
+        two tables might be joinable is "they share a column name".
+
+        Common columns like ``mandt`` or ``id`` give a low-signal hit
+        and are deweighted by an inverse-log rarity score: a column
+        present in N tables contributes ``1 / log2(N+1)`` to the join
+        weight. So a column shared with only 3 other tables (rare,
+        high-signal — likely a real foreign key by convention) wins
+        over ``mandt`` (shared by every table in the schema).
+
+        Returns rows in the same shape as :meth:`joinable_tables`
+        (with ``relationship_type='name_overlap'`` and
+        ``source='name_overlap'``) so the tool-agent layer can dispatch
+        them through the existing renderer.
+        """
+        if "." not in (table_path or ""):
+            return []
+        schema_name, table_name = table_path.split(".", 1)
+        with self._connect() as conn:
+            base = conn.execute(
+                "SELECT id FROM catalog_entities WHERE db_profile=? "
+                "AND entity_kind='table' AND LOWER(schema_name)=LOWER(?) "
+                "AND LOWER(table_name)=LOWER(?) LIMIT 1",
+                (db_profile, schema_name, table_name),
+            ).fetchone()
+            if not base:
+                return []
+            base_cols_rows = conn.execute(
+                "SELECT column_name FROM catalog_entities WHERE db_profile=? "
+                "AND entity_kind='column' AND LOWER(schema_name)=LOWER(?) "
+                "AND LOWER(table_name)=LOWER(?)",
+                (db_profile, schema_name, table_name),
+            ).fetchall()
+            base_cols = [
+                str(r["column_name"]).lower()
+                for r in base_cols_rows
+                if r["column_name"]
+            ]
+            if not base_cols:
+                return []
+            placeholders = ",".join("?" for _ in base_cols)
+            # Rarity: how many distinct tables each base column name
+            # appears in (across the active db_profile).
+            rarity_rows = conn.execute(
+                f"SELECT LOWER(column_name) AS col, "
+                f"  COUNT(DISTINCT schema_name || '.' || table_name) AS n_tables "
+                f"FROM catalog_entities "
+                f"WHERE db_profile=? AND entity_kind='column' "
+                f"  AND LOWER(column_name) IN ({placeholders}) "
+                f"GROUP BY LOWER(column_name)",
+                [db_profile, *base_cols],
+            ).fetchall()
+            rarity = {
+                str(r["col"]): int(r["n_tables"])
+                for r in rarity_rows
+            }
+            # All other tables that share at least one of the base
+            # column names. We pull (target_schema, target_table, col)
+            # rows so the python side can group by candidate table and
+            # sum rarity-weighted contributions.
+            candidate_rows = conn.execute(
+                f"SELECT schema_name, table_name, LOWER(column_name) AS col "
+                f"FROM catalog_entities "
+                f"WHERE db_profile=? AND entity_kind='column' "
+                f"  AND LOWER(column_name) IN ({placeholders}) "
+                f"  AND NOT (LOWER(schema_name)=LOWER(?) "
+                f"           AND LOWER(table_name)=LOWER(?))",
+                [db_profile, *base_cols, schema_name, table_name],
+            ).fetchall()
+
+        candidates: dict[tuple[str, str], dict[str, Any]] = {}
+        for r in candidate_rows:
+            target_schema = str(r["schema_name"] or "")
+            target_table = str(r["table_name"] or "")
+            col = str(r["col"] or "")
+            if not target_schema or not target_table or not col:
+                continue
+            key = (target_schema, target_table)
+            n_tables = rarity.get(col, 1)
+            # 1 / log2(N+1) — N=1 gives 1.0, N=2 gives ~0.63, N=10
+            # gives ~0.30, N=200 gives ~0.13. So mandt-everywhere
+            # contributes very little; a column shared with only one
+            # other table contributes ~1.0.
+            weight = 1.0 / math.log2(n_tables + 1) if n_tables > 0 else 0.0
+            slot = candidates.setdefault(
+                key, {"shared_cols": [], "weight": 0.0},
+            )
+            if col not in slot["shared_cols"]:
+                slot["shared_cols"].append(col)
+                slot["weight"] += weight
+
+        results: list[dict[str, Any]] = []
+        for (target_schema, target_table), data in candidates.items():
+            cols = data["shared_cols"]
+            results.append({
+                "row_type": "joinable_table",
+                "schema_name": schema_name,
+                "table_name": table_name,
+                "target_schema_name": target_schema,
+                "target_table_name": target_table,
+                # Same column name on both sides — that's the join.
+                "left_column": ", ".join(cols[:5]),
+                "right_column": ", ".join(cols[:5]),
+                "relationship_type": "name_overlap",
+                "source": "name_overlap",
+                "score": round(float(data["weight"]), 3),
+                "shared_column_count": len(cols),
+            })
+        results.sort(
+            key=lambda r: (
+                -float(r.get("score") or 0.0),
+                -int(r.get("shared_column_count") or 0),
+            )
+        )
+        return results[:limit]
+
     def joinable_tables(self, db_profile: str, table_path: str, limit: int = 8) -> list[dict[str, Any]]:
         if "." not in (table_path or ""):
             return []

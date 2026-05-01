@@ -6,6 +6,28 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-05-01
+### Fixed
+- **`/ask "which tables can I join with vbrk"` returned 0 candidates on FK-free schemas**. Reproducer: SAP / legacy schemas with no declared `FOREIGN KEY` constraints. Pre-v0.9.7, `find_joinable_tables` only consulted `catalog_relationships` (populated from `profile.foreign_keys` / `profile.referenced_by` during `/sync`); when those were empty the tool returned `joinable_tables=[]` and the LLM honestly said "no joinable tables found", which is wrong — `vbrk` is the SAP billing header and should obviously join with `vbrp`, `kna1`, `vbpa`, etc. on shared keys like `vbeln` and `mandt`.
+
+### Added
+- **Name-overlap heuristic — `JoinMixin.name_overlap_joinable_tables`** (`amx/search/_catalog/join.py`). For schemas without FK constraints AND without per-column descriptions yet (catalog hasn't been `/run` -populated), the cheapest signal that two tables might be joinable is "they share a column NAME". Common columns like `mandt` or `id` give a low-signal hit and are deweighted by an inverse-log rarity score: a column present in N tables contributes `1 / log2(N+1)` to the join weight. So a column shared with only 3 other tables (rare, high-signal — likely a real foreign key by convention) wins over `mandt` (shared by every table in the schema). Returns rows in the same shape as `joinable_tables` so existing renderers / tool-result schemas work unchanged.
+
+### Changed
+- **`find_joinable_tables` now follows a 3-tier fallback chain** (`amx/search/agent_tools.py`):
+  1. **Symbolic** — `catalog.joinable_tables` (declared FK relationships, score=10.0, the strongest signal).
+  2. **Name-overlap** — `catalog.name_overlap_joinable_tables` (rarity-weighted shared column names, no FK / no descriptions needed).
+  3. **Semantic** — `catalog.semantic_joinable_tables` (vector similarity on column descriptions, requires a populated catalog).
+  The first non-empty tier wins; the result includes a new `inference_source` field (`foreign_key` / `name_overlap` / `semantic_similarity`) so the LLM can be honest in its answer ("via the declared `vbeln` foreign key" vs "by shared column names: `vbeln`, `posnr`" vs "by semantic similarity to `customer description`").
+- **Tool description for `find_joinable_tables`** updated to spell out the three tiers and to instruct the LLM to ALWAYS surface the `inference_source` in the final answer. Without this rule the LLM would generate the same authoritative-sounding "verified joinable" prose for an FK-backed match and a name-inferred match, which would be misleading.
+
+### Why this matters
+SAP schemas (and most enterprise systems running on PostgreSQL / Oracle) manage referential integrity at the application layer, not the database layer. The pre-v0.9.7 code path was structurally unable to surface joins for those schemas — and the user was being told "no joins found" with confidence when in reality dozens of strong candidates existed via shared `vbeln` / `mandt` / `customer_id` columns. The name-overlap tier closes that gap without requiring `/run` to have completed.
+
+### Followups
+- The name-overlap rarity score could blend in dtype compatibility (`varchar(10)` vs `int4` for the same column name is a weaker signal than two `varchar(10)`s).
+- A future tier could read the foreign-key conventions of the live DB (e.g. SAP table cross-references encoded in `DD03L`) when available.
+
 ## [0.9.6] - 2026-05-01
 ### Fixed
 - **Cascading mixin import gaps** that v0.9.5 missed: 16 more module-level names referenced from mixin method bodies but not imported into their respective files. Reproducer surfaced after v0.9.5: `/ask` failed with `name 're' is not defined`.
