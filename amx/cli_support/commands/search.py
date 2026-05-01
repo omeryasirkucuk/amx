@@ -474,6 +474,9 @@ def _run_search_ask_body(
             llm_provider=cfg.llm.provider,
             llm_model=cfg.llm.model,
             scope=_search_scope_from_answer(answer),
+            llm_profile=cfg.active_llm_profile,
+            doc_profile=cfg.active_doc_profile or None,
+            code_profile=cfg.active_code_profile or None,
         )
     info(answer.summary)
     # Provenance and confidence are diagnostic, not conversational. Surface
@@ -546,6 +549,28 @@ def _run_search_ask_body(
             "stage_metrics": answer.details.get("stage_metrics", []),
         },
     )
+
+    # Discoverability nudge for /compare. If at least two prior
+    # search.ask runs already touched this scope, hint that the user
+    # can pivot them. Quiet, single-line, and only when there's
+    # something to compare — never on the first or second ask.
+    if hs is not None and status == "success":
+        scope = _search_scope_from_answer(answer)
+        primary_schema = next(iter(scope.keys()), "") if isinstance(scope, dict) else ""
+        if primary_schema:
+            try:
+                prior = hs.find_runs_for_scope(
+                    schema=primary_schema,
+                    command_filter="search.ask",
+                    limit=4,
+                )
+            except Exception:
+                prior = []
+            if len(prior) >= 3:
+                console.print(
+                    f"[dim]hint: /compare --last 3 --schema {primary_schema} "
+                    f"to see how this answer differs from prior runs.[/dim]"
+                )
 
 
 def _sync_db_scope(
@@ -654,8 +679,13 @@ def register_search_commands(
     *,
     pass_config: Callable[[Callable[..., Any]], Callable[..., Any]],
     log_event: LogEvent,
-) -> None:
-    """Attach `/search` namespace commands to the main Click group."""
+) -> click.Group:
+    """Attach `/search` namespace commands to the main Click group.
+
+    Returns the inner ``search`` Click group so callers (``cli.py``) can
+    attach extra subcommands to the same namespace from sibling files —
+    same pattern as ``register_analyze_commands``.
+    """
 
     @main.group(invoke_without_command=True)
     @click.pass_context
@@ -1129,3 +1159,5 @@ def register_search_commands(
             return
         with svc:
             _run_search_ask(cfg, svc, f"What does table {table_path} do?", log_event=log_event)
+
+    return search

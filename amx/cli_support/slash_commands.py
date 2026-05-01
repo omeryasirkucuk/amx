@@ -177,6 +177,17 @@ _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
         "Sync DB structure/comments and code evidence. Add --db-profile NAME (multi) for cross-DB sync (/sync [--db-profile NAME …])",
     ),
     SlashCommand("/rebuild", "search", "Rebuild effective search state and vector index"),
+    SlashCommand(
+        "/compare", "search",
+        "Compare runs side-by-side (descriptions, logprobs, timing, tokens)",
+        long_desc=(
+            "Pivot history rows so you can see how different LLM profiles, "
+            "doc profiles, or code profiles changed descriptions, confidence, "
+            "logprob_score, and timing for the same assets. Examples: "
+            "/compare --last 3, /compare 42 41 39, "
+            "/compare --schema sales --table orders --by doc_profile."
+        ),
+    ),
 )
 
 _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
