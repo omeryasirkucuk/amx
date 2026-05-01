@@ -283,6 +283,38 @@ class DatabaseConnector:
         except Exception:
             return False
 
+    def list_databases(self) -> list[str]:
+        """User-visible databases on this server (2-level backends only).
+
+        Used by the runtime database picker for PostgreSQL / Snowflake
+        when the profile has ``database=""``. Returns ``[]`` for
+        backends that don't expose a multi-database server (Databricks
+        catalogs, BigQuery datasets — those use ``list_catalogs``).
+        Suppresses adapter exceptions so the picker can degrade
+        gracefully.
+        """
+        try:
+            return list(self._adapter.list_databases(self.engine))
+        except Exception as exc:
+            log.debug("list_databases failed: %s", exc)
+            return []
+
+    def reconnect(self) -> None:
+        """Dispose the active engine so the next ``self.engine`` access
+        rebuilds it from the current ``self.cfg``.
+
+        The runtime database picker mutates ``self.cfg.database``
+        in-memory; without a reconnect, ``self._engine`` would still be
+        bound to the old database and every subsequent listing query
+        would target the wrong DB.
+        """
+        if self._engine is not None:
+            try:
+                self._engine.dispose()
+            except Exception as exc:
+                log.debug("engine.dispose() raised during reconnect: %s", exc)
+        self._engine = None
+
     def list_schemas(self) -> list[str]:
         # Adapter-specific override (e.g. Databricks ``SHOW SCHEMAS IN
         # <catalog>``) takes precedence so catalog-scoped backends

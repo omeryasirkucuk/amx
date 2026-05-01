@@ -910,7 +910,13 @@ class LLMProvider:
             if raw_lp is not None:
                 logprobs_content = getattr(raw_lp, "content", None) or None
             if use_logprobs and not logprobs_content:
-                log.warning(
+                # Some providers silently return no logprobs even when the
+                # request flag was accepted (no 400). The fallback to
+                # heuristic confidence is automatic, so demote this to
+                # DEBUG — surfacing it as WARNING fires during every
+                # spinner render and confuses users into thinking
+                # something failed when nothing did.
+                log.debug(
                     "Requested logprobs but response had none (provider=%s, model=%s).",
                     self.cfg.provider,
                     model,

@@ -59,6 +59,26 @@ class PostgreSQLAdapter(DatabaseAdapter):
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"information_schema", "pg_catalog", "pg_toast"})
 
+    def list_databases(self, engine: Engine) -> list[str]:
+        """Return user-visible databases on this PostgreSQL server.
+
+        Excludes templates (``datistemplate = false``) and the system
+        ``postgres`` database itself unless the user has nothing else —
+        when a fresh server has only ``postgres``, returning an empty
+        list would be misleading. The default ordering is alphabetical
+        for stable picker UX.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname")
+            ).fetchall()
+        names = [str(r[0]) for r in rows]
+        # When the only thing on the server is the system DB itself, the
+        # picker would offer just ``postgres`` (which has no user data).
+        # Surface it anyway — the picker UI will show "(system DB)" so
+        # the user knows what they're picking.
+        return names
+
     # ── Materialized views ────────────────────────────────────────────────
 
     def list_materialized_views(self, engine: Engine, schema: str) -> list[str]:
