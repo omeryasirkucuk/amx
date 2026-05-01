@@ -928,6 +928,52 @@ class SearchCatalog:
             self._resolve_effective_description(conn, entity_id)
             self._index_entity(conn, entity_id)
 
+    def record_dedup_decision(
+        self,
+        *,
+        db_profile: str,
+        db_backend: str,
+        run_id: int,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        description: str,
+        equivalence_key: str,
+        member_count: int,
+    ) -> None:
+        """Persist an equivalence-class decision for one column member.
+
+        The dedup pass produces a single description per class and applies
+        it to every member; this method records the decision in the
+        catalog (so /ask sees the new description) and tags it with
+        ``source_kind='dedup'`` plus a ``source_agent`` string carrying
+        the equivalence key + run id, so /history reporting can later
+        count "12 classes (145 columns)".
+        """
+        with self._connect() as conn:
+            entity_id = self._upsert_entity(
+                conn,
+                db_profile=db_profile,
+                db_backend=db_backend,
+                database_name="",
+                schema_name=schema_name,
+                table_name=table_name,
+                column_name=column_name,
+                entity_kind="column",
+                asset_kind="column",
+            )
+            self._insert_description(
+                conn,
+                entity_id=entity_id,
+                description_text=description,
+                source_kind="dedup",
+                source_agent=f"equivalence:{equivalence_key}:run={run_id}:n={member_count}",
+                confidence="high",
+                chosen=True,
+            )
+            self._resolve_effective_description(conn, entity_id)
+            self._index_entity(conn, entity_id)
+
     def clear_code_evidence(self, db_profile: str, source_path: str | None = None) -> None:
         with self._connect() as conn:
             if source_path:
@@ -1399,6 +1445,40 @@ class SearchCatalog:
                   AND ce.entity_kind = 'table'
                   AND LOWER(ce.table_name) = ?
                 ORDER BY ce.schema_name, ce.table_name
+                LIMIT ?
+                """,
+                (db_profile, needle, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def find_columns_by_exact_name(
+        self,
+        db_profile: str,
+        name: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return every catalog column whose ``column_name`` matches ``name`` exactly.
+
+        Used by ``/metadata edit <bare_name>`` bulk-edit flow: surface every
+        (schema, table, column) where the column appears so the user can
+        multi-select and apply one comment to all of them. Limit defaults to
+        200 because wide tables can have hundreds of columns named e.g.
+        ``client`` or ``mandt`` in SAP-style schemas.
+        """
+        needle = (name or "").strip().lower()
+        if not needle:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ce.*, cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ?
+                  AND ce.entity_kind = 'column'
+                  AND LOWER(ce.column_name) = ?
+                ORDER BY ce.schema_name, ce.table_name, ce.column_name
                 LIMIT ?
                 """,
                 (db_profile, needle, int(limit)),

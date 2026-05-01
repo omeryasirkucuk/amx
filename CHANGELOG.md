@@ -6,6 +6,143 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-01
+### Added — Equivalence-class deduplication for `/run` & `/run-apply` (Phase 2)
+
+Wide schemas (think SAP) repeat the same column hundreds of times across
+hundreds of tables — `mandt`, `client`, `created_at`, `customer_id` —
+and the per-column LLM cost adds up. AMX now collapses these into
+**equivalence classes** before the per-table ProfileAgent loop runs.
+One LLM call per class, applied to every member, with all member
+tables listed in the prompt as context.
+
+- **`amx/agents/equivalence.py`** (new): pure data + logic for the
+  feature. `dtype_family()` normalizes raw dtypes into coarse buckets
+  (`varchar(50)` → `string`, `numeric(10,2)` → `numeric`,
+  `timestamp without time zone` → `timestamp`, `text[]` →  the family of
+  the element type). `ColumnMember` is a frozen dataclass for one
+  scope-resident column. `EquivalenceClass` groups members by
+  `(name.lower(), dtype_family)`. `compute_column_equivalence_classes()`
+  buckets a list of members into classes; `summarize_classes()` returns
+  the headline numbers (total members, total classes, multi-member
+  count, largest class name + size, llm_call_savings_pct).
+- **`amx/agents/equivalence_agent.py`** (new): the dedup LLM pass.
+  `run_equivalence_pass(classes, llm, db, apply_to_db, run_id, …)`
+  loops over multi-member classes, builds a prompt that lists every
+  member table with its existing comment if any, and asks the LLM for
+  ONE generalized description. The prompt allows the model to respond
+  with `DIVERGES` to opt out of dedup for that class — those members
+  fall back to per-table profiling. Successful classes are: written to
+  the catalog via the new `SearchCatalog.record_dedup_decision()`,
+  written to the live DB (when `apply_to_db=True`), and added to the
+  outcome's `skip_set`.
+- **`amx/cli_support/commands/analyze_flow.py`**:
+  `_build_equivalence_members()` walks the in-scope tables, applies the
+  same `missing_only` filter the orchestrator will use, and produces
+  the `ColumnMember` list. `_maybe_run_equivalence_dedup()` shows a
+  user-facing summary ("Found 145 columns → 12 classes; estimated
+  92.0% fewer column-level prompts") and asks `Use equivalence-class
+  deduplication for this run? (Y/n)`. On accept, runs the pass and
+  returns a `DedupOutcome`. The outcome's `skip_set` is then attached
+  to every `Orchestrator` instance so subsequent `process_table`
+  calls filter the dedup'd columns out of the ProfileAgent batch.
+- **`amx/agents/orchestrator.py`**: new `Orchestrator.dedup_skip_set`
+  attribute. `process_table()` now filters `profile.columns` against
+  this set right after the missing-only filter, with an info message
+  reporting how many columns were skipped and why. When every column
+  on a table is dedup'd AND the table-level comment already exists, the
+  whole table is skipped.
+- **End-of-run summary** prints the dedup recap: `Equivalence dedup: 12
+  class(es) applied → 145 column(s) (~91.7% fewer column-level LLM
+  calls).` Diverged and failed classes are reported separately so the
+  user can see exactly where dedup didn't fire.
+- **`amx/search/catalog.py`**: `record_dedup_decision()` persists each
+  class member to the catalog with `source_kind='dedup'` and a
+  `source_agent` string carrying the equivalence key + run id + member
+  count, so `/history` reporting can later distinguish dedup-applied
+  descriptions from per-column inferences.
+
+### Why this matters
+
+On a 47-table SAP scope where 145 columns share names like `mandt`,
+`bukrs`, `belnr`, dedup collapses 145 column-level LLM calls into 12
+class-level calls — roughly 92% saving on the per-column profiling
+budget. The descriptions also become consistent across the schema (the
+same column gets the same comment), which improves `/ask` answer
+quality. The user keeps full control: the dedup pass is opt-in per
+run, the LLM can DIVERGES out of any class where the meaning genuinely
+differs across members, and post-dedup edits flow through `/metadata
+edit` (including the v0.7.x bulk-edit picker) like any other comment.
+
+### Followup
+
+- `/history` rendering will gain a "Dedup classes" column in a follow-up
+  release so historical runs surface the savings without needing
+  end-of-run output.
+- The dedup prompt currently sends up to 25 member tables before
+  compressing to "+ N more"; we may need to dial that for very wide
+  schemas.
+
+## [0.7.3] - 2026-05-01
+### Fixed
+- **`NameError: name 'info' is not defined`** in the new bulk-edit wizard (`amx/cli_support/commands/manual.py`): `info` was used in the bulk-update analysis header + summary lines but never imported. Added it to the `from amx.utils.console import …` line. The first user-visible run of `/metadata edit` → `Bulk by name` after v0.7.2 crashed with this error before it even produced the match table. Regression caught immediately by the user.
+
+### Changed
+- **Bulk-edit picks the entity from the live DB instead of asking the user to type a name** (`amx/cli_support/commands/manual.py:_resolve_bulk_target_name`): user said "why am I typing the name? Let me PICK from a list, and let me drill down to column level — find similar to the asset I select." After choosing `Bulk by name`, the wizard now offers three sub-modes:
+  - `Pick a column from the catalog` — drills DB profile → schema → table → column, then uses the picked column's NAME (not its full path) so AMX bulk-fans-out to every other column with the same name in the catalog. The default option, since column-level bulk edit is the most common bulk case (`mandt`, `client`, `created_at`, `customer_id` …).
+  - `Pick a table from the catalog` — drills DB profile → schema → table, then uses the table NAME so AMX picks up the same table across every schema.
+  - `Type a name manually` — preserves the legacy text-entry path for power users who already know exactly what they want.
+- After the pick, AMX prints a confirmation line ("Using column name 'mandt' (from sap_s6p.bseg) as bulk target — AMX will find every other column that shares this name.") so the user understands which name is being fanned out.
+
+### Why this matters
+Bulk-edit only works when the entity name matches the user's intent. Forcing the user to remember and type the exact spelling is brittle (typos, case mismatches, wrong synonyms) and defeats the purpose of an interactive wizard. By letting the user pick a concrete asset and pulling its name programmatically, the wizard guarantees correct spelling AND lets the user explore the catalog naturally — they don't have to know the name in advance.
+
+## [0.7.2] - 2026-04-30
+### Changed
+- **`/metadata edit` wizard now asks bulk-vs-individual at the FIRST step** (`amx/cli_support/commands/manual.py:_run_edit_wizard`): user said "I want the bulk option BEFORE 'What do you want to edit?'". The wizard now starts with a top-level choice: `Single entity` (existing database → schema → table → column flow) or `Bulk by name` (type a column or table name once, AMX handles every match across schemas). Single mode is unchanged; bulk mode reuses `_run_bulk_edit_by_name` with the new `preselected_mode="bulk"` argument so the user isn't asked the same question twice.
+- **Bulk-update analysis header** before the match table: counts match types ("12 column(s) across 5 schema(s): sap_s6p, sap_test, …") and explicitly states "Whatever you select below will be updated TOGETHER with the same comment." So the user understands the impact of multi-select BEFORE picking rows. Per the user's request: "show me a simple analysis — these columns in these tables will all be updated."
+
+## [0.7.1] - 2026-04-30
+### Changed
+- **`/metadata edit <name>` now asks bulk-vs-individual before locking the user into bulk** (`amx/cli_support/commands/manual.py`): v0.7.0 went straight to the multi-select picker after finding matches, but a user might want to handle each entity separately when entities just happen to share a name (e.g. `code` in `country.code` vs `currency.code`). New three-way prompt: `bulk` (one comment for selected rows — original 0.7.0 behavior), `individual` (walk through each match one at a time, type a different comment per row, Enter to skip), `cancel`. Single-match cases auto-switch to single-target edit and skip the prompt entirely.
+
+### Added
+- **`_run_individual_edits` flow** (`amx/cli_support/commands/manual.py`): per-row edit loop that prints each match's full path + dtype + existing comment, accepts a NEW comment (Enter to skip, `cancel` to stop the loop), writes via `apply_comment` with the right `AssetKind`, and re-syncs each result to the catalog via `record_manual_description`. Reports `applied / skipped / failed` counts at the end.
+
+## [0.7.0] - 2026-04-30
+### Added — `/metadata edit <name>` bulk-edit by bare name
+- **`/metadata edit customer_id` (any bare token, no dots, no scope keyword)** now triggers a NEW bulk-edit flow (`amx/cli_support/commands/manual.py:_run_bulk_edit_by_name`) instead of falling into the wizard. AMX searches the catalog for every table whose name matches AND every column whose name matches across all schemas, prints a numbered table (kind / Schema.Table[.Column] / dtype / existing comment), then asks for a multi-select picker (`1,3,5 / 1-4 / all`). The user types ONE comment and AMX writes it via batched `COMMENT ON …` SQL to every selected entity, then re-syncs the catalog so `/ask` sees the new descriptions immediately.
+- **`SearchCatalog.find_columns_by_exact_name`** (`amx/search/catalog.py`): mirror of `find_tables_by_exact_name` but for column-level lookups. Used by the bulk-edit flow + future deduplication features.
+
+### Why this matters
+Wide SAP-style schemas have repeated column names (`mandt`, `client`, `created_at`, `customer_id`) in dozens or hundreds of tables. Until now the user had to type `/metadata edit <db>.<schema>.<table>.<column>` once per occurrence — typically 50+ commands for a single concept. The bulk-by-name flow turns that into one command + one comment + one multi-select. Per the user's preference, the picker is user-curated (no auto-apply to all) so semantically-different tables sharing a column name aren't accidentally given the same description.
+
+### Followup
+A separate Phase-2 task ([#57]) plans equivalence-class deduplication BEFORE the LLM call inside `/run`: when ProfileAgent encounters identical (column_name, dtype, fk-pattern) tuples across a run scope, it would send ONE prompt and apply the resulting description to every member, saving tokens. Deferred to a follow-up release; this release ships only the manual-side bulk edit.
+
+## [0.6.4] - 2026-04-30
+### Changed
+- **Tool-agent system prompt now demands relevance filtering and proper push-back handling** (`amx/search/tool_agent.py`): user reported asking "which tables have phone-number columns" and getting `addrnumber`, `consnumber`, `persnumber`, `roomnumber` (and `tel_number`/`fax_number`) — the raw `search_columns_by_concept` candidate set, not actually-phone-number columns. When pushed back ("I guess some are not correct"), the agent just thanked the user and repeated the same list. Two prompt-level fixes: (a) explicit "Result validation" rule telling the model that `search_*_by_concept` returns a candidate set with FALSE POSITIVES and that it MUST drop rows whose description doesn't fit before composing the final answer; (b) "Push-back handling" rule listing concrete actions the model should take when the user pushes back (re-call with refined query, drill into descriptions, or admit the limitation) — explicitly forbids "Thank you for your patience!" + same list.
+- **Tool descriptions for `search_columns_by_concept` and `search_tables_by_concept`** now state inline that the result is a "CANDIDATE SET" and warn about false positives, so the model doesn't have to rediscover this each time. Includes a worked example for the phone-number case.
+
+### Why this matters
+Concept search is a fuzzy ranking, not a query language. If the LLM treats every returned row as "definitely matches the user's intent", the answers look authoritative but are wrong (the failure mode that prompted this fix). Two changes — one in tool description, one in system prompt — push the model toward an explicit filter step + a productive push-back response, both improving open-source UX without changing any retrieval logic.
+
+## [0.6.3] - 2026-04-30
+### Fixed
+- **Auto-inference fallback placeholders no longer reach the live database** (`amx/agents/orchestrator.py`): user reported their DB had `Column rewrt in table bseg. Auto-inference missed a reliable description; please review manually.` written as the actual `COMMENT ON COLUMN` for several columns. The placeholder was meant as a UI hint for human review (`_ensure_complete_table_coverage` injects it when the LLM misses a column in its response), but it flowed through `apply_review_results_to_db` and got persisted as real metadata. New `is_placeholder_description` predicate + filter at the top of `apply_review_results_to_db` block these out before any SQL hits the DB. Existing rows produced by older `/run-apply` invocations stay polluted; use the new cleanup command (below) to remove them.
+- **`missing-only` filter now treats placeholder comments as "still missing"** (`amx/agents/orchestrator.py`): legacy DBs polluted with placeholder strings are organically cleaned up — re-running `/run-apply` with the missing-only filter (the default) will detect the placeholder via `is_placeholder_description` and re-analyse those columns. Real metadata replaces fallback text.
+
+### Added
+- **`/db cleanup-placeholders [schema]` slash command** (`amx/cli_support/commands/db.py`): one-shot cleanup that scans every table and column comment in the active DB profile, NULLs out anything matching the auto-inference fallback string, and reports counts. Use this once when upgrading from pre-0.6.3 to scrub legacy pollution; v0.6.3+ never writes the placeholder in the first place. Wired through all four discovery paths (`db_cmd_heads`, dispatch handler, `/db` namespace help, autocomplete catalog).
+
+### Why this matters for open source
+A user that ran `/run-apply` with auto-apply on a flaky model could end up with thousands of columns whose `COMMENT ON COLUMN` reads "Auto-inference missed a reliable description; please review manually." That's not a hint — it's pollution that misleads anyone querying the DB metadata directly (BI tools, schema explorers, future AMX runs). Two fixes plus a cleanup tool ensure the placeholder never escapes AMX's review UI.
+
+## [0.6.2] - 2026-04-30
+### Fixed
+- **`/ask "tables without description"` no longer surfaces system / extension assets** (`amx/search/agent_tools.py`): user reported `pg_stat_statements` and `pg_stat_statements_info` (PostgreSQL extension views) showing up as "tables without descriptions". These aren't user data — they're statistics views AMX never describes, and the `/run` flow has been filtering them out for releases via `services.analyze_scope.is_non_business_asset`. The `find_assets_missing_comment` agent tool now reuses the same filter so coverage queries don't surface these as gaps. New `include_system: bool` parameter (default false) lets the LLM opt back in only when the user explicitly asks about system tables (e.g. "tables including system views?"). Result payload now reports `system_assets_skipped` + count so the LLM can mention the filter in the answer.
+
 ## [0.6.1] - 2026-04-30
 ### Fixed
 - **`/description-verbosity` now appears in `/llm` namespace help, autocomplete, and Tab-toggle catalog** (`amx/cli_support/session.py`): v0.6.0 added the slash command but only registered it in the dispatch handler and the `llm_cmd_heads` routing set — it was missing from the namespace help text (so `/help` inside `/llm` didn't show it) and from `_slash_command_catalog` (so the autocomplete dropdown didn't list it). Now it's wired through all four discovery paths: dispatch (`_handle_session_builtin`), routing (`llm_cmd_heads`), help (namespace help text), and autocomplete (`llm_cmds`).
