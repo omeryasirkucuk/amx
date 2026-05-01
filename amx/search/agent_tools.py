@@ -403,6 +403,78 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "check_uniqueness",
+                    "description": (
+                        "Verify whether a column or column tuple uniquely "
+                        "identifies rows in a table. Runs ``SELECT COUNT(*), "
+                        "COUNT(DISTINCT (col1, col2, ...))`` against the live "
+                        "DB and reports ``total_rows``, ``distinct_rows``, "
+                        "``duplicate_rows``, ``uniqueness_ratio``, ``is_unique``. "
+                        "Use this for 'is X a primary key?', 'are there duplicate "
+                        "PK values?', '(id, time, op) tuple unique mi?', "
+                        "'do I need composite PK or is `id` enough?'. The "
+                        "``columns`` argument defaults to the table's declared "
+                        "primary_key when omitted."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {"type": "string", "description": "Schema name."},
+                            "table": {"type": "string", "description": "Table name."},
+                            "columns": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Column names whose tuple uniqueness will "
+                                    "be tested. Omit to use the table's "
+                                    "declared primary key."
+                                ),
+                            },
+                        },
+                        "required": ["schema", "table"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "inspect_data_quality",
+                    "description": (
+                        "Per-column data-quality probe against the live DB. "
+                        "Returns row_count, null_count, distinct_count, "
+                        "null_ratio, distinct_ratio, min_value, max_value, "
+                        "and (for varchar/text columns that look like dates) "
+                        "``detected_format`` — recognises common patterns "
+                        "(YYYYMMDD / YYYY-MM-DD / DD/MM/YYYY / DD-MM-YYYY / "
+                        "DDMMYYYY / ISO 8601). Use this for 'how many nulls "
+                        "in email column?', 'date format ddmmyyyy mı?', 'is "
+                        "the data continuous since when?' (read min_value of "
+                        "the date column), 'çoklama oranı', 'are there gaps "
+                        "in created_at?'. ``columns`` defaults to all columns "
+                        "of the table; pass a subset to limit the scan on "
+                        "very wide tables."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {"type": "string", "description": "Schema name."},
+                            "table": {"type": "string", "description": "Table name."},
+                            "columns": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Column names to probe. Omit to scan all "
+                                    "columns of the table."
+                                ),
+                            },
+                        },
+                        "required": ["schema", "table"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "find_joinable_tables",
                     "description": (
                         "Given ONE table, return the tables it can be joined with using a "
@@ -1190,3 +1262,207 @@ class ToolBox:
             "count": len(joinable),
             "inference_source": inference_source,
         }
+
+    # ── Data-quality / uniqueness probes (v0.10.2) ─────────────────────────
+
+    _DATE_FORMAT_PATTERNS: list[tuple[str, str]] = [
+        # (regex, label) — matched against samples; first match wins.
+        (r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", "ISO 8601 timestamp"),
+        (r"^\d{4}-\d{2}-\d{2}$", "YYYY-MM-DD"),
+        (r"^\d{4}/\d{2}/\d{2}$", "YYYY/MM/DD"),
+        (r"^\d{8}$", "YYYYMMDD"),
+        (r"^\d{2}-\d{2}-\d{4}$", "DD-MM-YYYY"),
+        (r"^\d{2}/\d{2}/\d{4}$", "DD/MM/YYYY"),
+        (r"^\d{2}\.\d{2}\.\d{4}$", "DD.MM.YYYY"),
+        (r"^\d{6}$", "YYMMDD or YYYYMM"),
+        (r"^\d{2}/\d{2}/\d{2}$", "DD/MM/YY or MM/DD/YY"),
+        (r"^\d{4}-\d{2}$", "YYYY-MM"),
+    ]
+
+    @staticmethod
+    def _detect_date_format(samples: list[Any]) -> str:
+        """Return the dominant date-format label across non-null samples.
+
+        Returns the empty string when no pattern matches a majority of
+        the samples. Used by ``inspect_data_quality`` for varchar/text
+        columns whose stored type doesn't reveal the temporal format.
+        """
+        import re as _re
+
+        clean = [str(s).strip() for s in samples if s is not None and str(s).strip()]
+        if not clean:
+            return ""
+        counts: dict[str, int] = {}
+        for value in clean:
+            for pattern, label in ToolBox._DATE_FORMAT_PATTERNS:
+                if _re.match(pattern, value):
+                    counts[label] = counts.get(label, 0) + 1
+                    break
+        if not counts:
+            return ""
+        # Pick the most common; require at least 60% confidence so we
+        # don't slap a date label on a column that just happens to
+        # have a few date-shaped values.
+        best_label, best_count = max(counts.items(), key=lambda kv: kv[1])
+        if best_count / len(clean) >= 0.6:
+            return best_label
+        return ""
+
+    def _tool_check_uniqueness(
+        self, schema: str, table: str, columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Verify whether (col1, col2, ...) is unique across the table.
+
+        Runs ``SELECT COUNT(*), COUNT(DISTINCT (cols))`` against the
+        live DB. When ``columns`` is omitted, falls back to the
+        table's declared primary key.
+        """
+        from sqlalchemy import text as _text
+
+        schema_name = (schema or "").strip()
+        table_name = (table or "").strip()
+        if not schema_name or not table_name:
+            raise _ToolError("Both 'schema' and 'table' are required.")
+
+        # Resolve columns: explicit > primary key.
+        target_cols = list(columns or [])
+        if not target_cols:
+            try:
+                profile = self._live_db().profile_table(
+                    schema_name, table_name, sample_size=0,
+                )
+                target_cols = list(profile.primary_key or [])
+            except Exception as exc:
+                return {
+                    "schema": schema_name,
+                    "table": table_name,
+                    "found": False,
+                    "error": f"Could not load table profile: {exc}",
+                }
+        if not target_cols:
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "columns": [],
+                "found": False,
+                "error": (
+                    "No columns specified and the table has no declared "
+                    "primary key. Pass ``columns`` explicitly."
+                ),
+            }
+
+        db = self._live_db()
+        adapter = db._adapter  # noqa: SLF001
+        fqn = adapter.fully_qualified_name(schema_name, table_name)
+        quoted_cols = [adapter.quote_identifier(c) for c in target_cols]
+        col_tuple = ", ".join(quoted_cols)
+        try:
+            with db.engine.connect() as conn:
+                # COUNT(DISTINCT (a, b, c)) is supported by all 4 backends
+                # we target; the parens make it a row-tuple comparison.
+                row = conn.execute(
+                    _text(
+                        f"SELECT COUNT(*) AS total, "
+                        f"COUNT(DISTINCT ({col_tuple})) AS distinct_count "
+                        f"FROM {fqn}"
+                    ),
+                ).fetchone()
+        except Exception as exc:
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "columns": target_cols,
+                "found": False,
+                "error": f"Uniqueness probe failed: {exc}",
+            }
+        total = int(row[0] or 0) if row else 0
+        distinct = int(row[1] or 0) if row else 0
+        duplicate_rows = max(0, total - distinct)
+        ratio = (distinct / total) if total else 0.0
+        return {
+            "schema": schema_name,
+            "table": table_name,
+            "columns": target_cols,
+            "total_rows": total,
+            "distinct_rows": distinct,
+            "duplicate_rows": duplicate_rows,
+            "uniqueness_ratio": round(ratio, 6),
+            "is_unique": (total > 0 and total == distinct),
+        }
+
+    def _tool_inspect_data_quality(
+        self, schema: str, table: str, columns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Per-column live-DB stats: nulls, distincts, min/max, date format.
+
+        Loads a single TableProfile (sampled) and returns a per-column
+        dict so the LLM has one map for "how nullable is X", "what's
+        the min/max of created_at", "is this a date column stored as
+        varchar?".
+        """
+        schema_name = (schema or "").strip()
+        table_name = (table or "").strip()
+        if not schema_name or not table_name:
+            raise _ToolError("Both 'schema' and 'table' are required.")
+        try:
+            # sample_size>0 enables the column stats collection (null
+            # count, distinct count, min/max, samples) the existing
+            # profiler already does. Use a small but informative sample
+            # so this stays fast even on huge tables.
+            profile = self._live_db().profile_table(
+                schema_name, table_name, sample_size=50,
+            )
+        except Exception as exc:
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "found": False,
+                "error": str(exc),
+            }
+
+        wanted = {c.lower() for c in (columns or [])}
+        per_col: list[dict[str, Any]] = []
+        total_rows = int(profile.row_count or 0)
+        for cp in profile.columns:
+            if wanted and cp.name.lower() not in wanted:
+                continue
+            non_null = max(0, total_rows - int(cp.null_count or 0))
+            null_ratio = (int(cp.null_count or 0) / total_rows) if total_rows else 0.0
+            distinct_ratio = (int(cp.distinct_count or 0) / total_rows) if total_rows else 0.0
+            entry: dict[str, Any] = {
+                "column": cp.name,
+                "dtype": str(cp.dtype),
+                "nullable": bool(cp.nullable),
+                "row_count": total_rows,
+                "null_count": int(cp.null_count or 0),
+                "non_null_count": non_null,
+                "null_ratio": round(null_ratio, 6),
+                "distinct_count": int(cp.distinct_count or 0),
+                "distinct_ratio": round(distinct_ratio, 6),
+                "min_value": (
+                    str(cp.min_val) if cp.min_val is not None else ""
+                ),
+                "max_value": (
+                    str(cp.max_val) if cp.max_val is not None else ""
+                ),
+            }
+            # Detected date format — only meaningful for string-family
+            # dtypes (varchar / text / char). Native date / timestamp
+            # columns advertise their format via dtype itself.
+            dtype_low = str(cp.dtype).lower()
+            if any(token in dtype_low for token in ("char", "text", "string", "varchar")):
+                fmt = self._detect_date_format(cp.samples or [])
+                if fmt:
+                    entry["detected_format"] = fmt
+                    entry["likely_kind"] = "date_or_timestamp_in_string"
+            per_col.append(entry)
+
+        return {
+            "schema": schema_name,
+            "table": table_name,
+            "found": True,
+            "row_count": total_rows,
+            "column_count": len(profile.columns),
+            "columns": per_col,
+        }
+
