@@ -361,6 +361,12 @@ class Orchestrator:
         # See ``process_table`` for the per-table filter.
         self.missing_only = bool(missing_only)
         self.results: list[ReviewResult] = []
+        # Equivalence-class dedup skip set. Columns in this set were
+        # already handled by the upfront ``run_equivalence_pass`` (their
+        # description is already written to catalog and, in apply mode,
+        # to the live DB), so process_table filters them out of the
+        # ProfileAgent batch. The orchestrator does NOT re-write them.
+        self.dedup_skip_set: set[tuple[str, str, str]] = set()
 
     _SQL_VERB_RE = re.compile(r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE)
 
@@ -426,6 +432,38 @@ class Orchestrator:
                 )
                 # Keep columns empty so agents focus on the table comment.
                 profile.columns = []
+
+        # ── Equivalence-class dedup skip ─────────────────────────────────────
+        # Columns whose equivalence class was already handled by the
+        # upfront dedup pass (run by analyze_flow before any
+        # process_table calls) are filtered out here. The dedup pass
+        # already wrote the description to the catalog and, when in
+        # apply mode, to the live DB — so this orchestrator must NOT
+        # spend tokens re-profiling them. Singletons and DIVERGES
+        # classes are not in the skip set and flow through normally.
+        if self.dedup_skip_set:
+            before = len(profile.columns)
+            profile.columns = [
+                col for col in profile.columns
+                if (schema, table, col.name) not in self.dedup_skip_set
+            ]
+            removed = before - len(profile.columns)
+            if removed:
+                info(
+                    f"Equivalence skip: {removed}/{before} column(s) on "
+                    f"{schema}.{table} were already handled by the dedup pass."
+                )
+            if not profile.columns and not (
+                profile.existing_comment is None
+                or not profile.existing_comment.strip()
+            ):
+                # Every column was dedup'd AND the table already had a
+                # table-level comment — nothing left to do here.
+                info(
+                    f"{schema}.{table}: all columns covered by dedup pass and "
+                    "table comment already present; skipping."
+                )
+                return []
 
         ctx = self._build_context(profile)
 

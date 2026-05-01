@@ -6,6 +6,83 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-01
+### Added — Equivalence-class deduplication for `/run` & `/run-apply` (Phase 2)
+
+Wide schemas (think SAP) repeat the same column hundreds of times across
+hundreds of tables — `mandt`, `client`, `created_at`, `customer_id` —
+and the per-column LLM cost adds up. AMX now collapses these into
+**equivalence classes** before the per-table ProfileAgent loop runs.
+One LLM call per class, applied to every member, with all member
+tables listed in the prompt as context.
+
+- **`amx/agents/equivalence.py`** (new): pure data + logic for the
+  feature. `dtype_family()` normalizes raw dtypes into coarse buckets
+  (`varchar(50)` → `string`, `numeric(10,2)` → `numeric`,
+  `timestamp without time zone` → `timestamp`, `text[]` →  the family of
+  the element type). `ColumnMember` is a frozen dataclass for one
+  scope-resident column. `EquivalenceClass` groups members by
+  `(name.lower(), dtype_family)`. `compute_column_equivalence_classes()`
+  buckets a list of members into classes; `summarize_classes()` returns
+  the headline numbers (total members, total classes, multi-member
+  count, largest class name + size, llm_call_savings_pct).
+- **`amx/agents/equivalence_agent.py`** (new): the dedup LLM pass.
+  `run_equivalence_pass(classes, llm, db, apply_to_db, run_id, …)`
+  loops over multi-member classes, builds a prompt that lists every
+  member table with its existing comment if any, and asks the LLM for
+  ONE generalized description. The prompt allows the model to respond
+  with `DIVERGES` to opt out of dedup for that class — those members
+  fall back to per-table profiling. Successful classes are: written to
+  the catalog via the new `SearchCatalog.record_dedup_decision()`,
+  written to the live DB (when `apply_to_db=True`), and added to the
+  outcome's `skip_set`.
+- **`amx/cli_support/commands/analyze_flow.py`**:
+  `_build_equivalence_members()` walks the in-scope tables, applies the
+  same `missing_only` filter the orchestrator will use, and produces
+  the `ColumnMember` list. `_maybe_run_equivalence_dedup()` shows a
+  user-facing summary ("Found 145 columns → 12 classes; estimated
+  92.0% fewer column-level prompts") and asks `Use equivalence-class
+  deduplication for this run? (Y/n)`. On accept, runs the pass and
+  returns a `DedupOutcome`. The outcome's `skip_set` is then attached
+  to every `Orchestrator` instance so subsequent `process_table`
+  calls filter the dedup'd columns out of the ProfileAgent batch.
+- **`amx/agents/orchestrator.py`**: new `Orchestrator.dedup_skip_set`
+  attribute. `process_table()` now filters `profile.columns` against
+  this set right after the missing-only filter, with an info message
+  reporting how many columns were skipped and why. When every column
+  on a table is dedup'd AND the table-level comment already exists, the
+  whole table is skipped.
+- **End-of-run summary** prints the dedup recap: `Equivalence dedup: 12
+  class(es) applied → 145 column(s) (~91.7% fewer column-level LLM
+  calls).` Diverged and failed classes are reported separately so the
+  user can see exactly where dedup didn't fire.
+- **`amx/search/catalog.py`**: `record_dedup_decision()` persists each
+  class member to the catalog with `source_kind='dedup'` and a
+  `source_agent` string carrying the equivalence key + run id + member
+  count, so `/history` reporting can later distinguish dedup-applied
+  descriptions from per-column inferences.
+
+### Why this matters
+
+On a 47-table SAP scope where 145 columns share names like `mandt`,
+`bukrs`, `belnr`, dedup collapses 145 column-level LLM calls into 12
+class-level calls — roughly 92% saving on the per-column profiling
+budget. The descriptions also become consistent across the schema (the
+same column gets the same comment), which improves `/ask` answer
+quality. The user keeps full control: the dedup pass is opt-in per
+run, the LLM can DIVERGES out of any class where the meaning genuinely
+differs across members, and post-dedup edits flow through `/metadata
+edit` (including the v0.7.x bulk-edit picker) like any other comment.
+
+### Followup
+
+- `/history` rendering will gain a "Dedup classes" column in a follow-up
+  release so historical runs surface the savings without needing
+  end-of-run output.
+- The dedup prompt currently sends up to 25 member tables before
+  compressing to "+ N more"; we may need to dial that for very wide
+  schemas.
+
 ## [0.7.3] - 2026-05-01
 ### Fixed
 - **`NameError: name 'info' is not defined`** in the new bulk-edit wizard (`amx/cli_support/commands/manual.py`): `info` was used in the bulk-update analysis header + summary lines but never imported. Added it to the `from amx.utils.console import …` line. The first user-visible run of `/metadata edit` → `Bulk by name` after v0.7.2 crashed with this error before it even produced the match table. Regression caught immediately by the user.
