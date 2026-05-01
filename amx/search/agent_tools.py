@@ -316,21 +316,30 @@ class ToolBox:
                     "name": "find_columns_by_dtype",
                     "description": (
                         "Return columns whose dtype matches the given SQL data type "
-                        "('boolean', 'int', 'integer', 'text', 'date', 'timestamp', 'numeric', "
-                        "etc.). Use this for 'which tables have boolean columns?', "
-                        "'all date columns', 'tables with bigint primary keys'. Matches by "
-                        "dtype FAMILY when possible (e.g. 'int' covers BIGINT/INTEGER/SMALLINT). "
-                        "For 'boolean' the family includes BOTH native bool/boolean dtypes AND "
-                        "single-character fixed-width strings (char(1)/varchar(1)) which SAP and "
-                        "many legacy schemas use as boolean flags ('X'/'' or 'Y'/'N'). Each "
-                        "result row carries a 'kind' field — 'native_boolean' (real bool dtype) "
-                        "or 'flag_candidate' (single-char that MAY be used as a flag). When you "
-                        "compose the final answer, ALWAYS state which kind you found: do NOT "
-                        "say 'no boolean columns' when flag_candidate rows are present — say "
-                        "'no native boolean columns, but the table has these likely flag "
-                        "columns:' and list the flag_candidate rows. The user usually means "
-                        "'columns with boolean SEMANTICS', not 'columns whose stored type is "
-                        "literally bool'."
+                        "('boolean', 'int', 'integer', 'text', 'date', 'timestamp', 'time', "
+                        "'temporal', 'numeric', etc.). Each result row carries a 'kind' field "
+                        "so the LLM can be honest about how the match was found.\n"
+                        "SEMANTIC BUCKETS — when token is 'boolean' / 'date' / 'timestamp' / "
+                        "'time' / 'temporal', the tool ALSO surfaces columns where the "
+                        "SEMANTICS match even if the dtype doesn't:\n"
+                        "  • 'boolean' → native bool/boolean dtype (kind=native_boolean) AND "
+                        "single-char fixed-width strings char(1)/varchar(1) which SAP / "
+                        "legacy schemas use as 'X'/'' or 'Y'/'N' flags (kind=flag_candidate).\n"
+                        "  • 'date' / 'timestamp' / 'time' / 'temporal' → all native temporal "
+                        "dtypes (kind=native_temporal) AND varchar/text columns whose NAME "
+                        "looks like a date (suffix _date/_dt/_at/_time, prefix dat_/date_, "
+                        "names like erdat/audat/created_at/valid_from/valid_to/begda/endda; "
+                        "kind=name_inferred_temporal).\n"
+                        "OTHER DTYPES — 'int' covers BIGINT/INTEGER/SMALLINT etc., "
+                        "kind=exact_dtype_match.\n"
+                        "ANSWERING RULE — when the user asks 'which tables have date / "
+                        "boolean / timestamp columns', surface BOTH native AND name_inferred / "
+                        "flag_candidate rows. NEVER say 'no date columns' when "
+                        "name_inferred_temporal rows are present — say 'no native date dtype, "
+                        "but the schema stores dates as varchar with names like X, Y, Z; "
+                        "their format would need inspect_data_quality to confirm'. The user "
+                        "usually means 'columns with date SEMANTICS', not 'columns whose "
+                        "stored type is literally DATE'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -1066,6 +1075,28 @@ class ToolBox:
             "char(1)", "varchar(1)", "character(1)", "character varying(1)",
         ],
         "int": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
+        # ``date`` is a SEMANTIC bucket — it covers every temporal
+        # native type (``date``, ``timestamp``, ``timestamptz``,
+        # ``datetime``, ``time``) so /ask "which tables have date
+        # related columns" returns one set instead of forcing the LLM
+        # to call once per dtype. Name-inferred date matches
+        # (varchar columns whose NAME suggests date semantics —
+        # ``erdat``, ``audat``, ``*_date``, ``created_at``, etc.) are
+        # added in ``_tool_find_columns_by_dtype`` via a separate
+        # name-pattern query, NOT as additional dtype tokens here.
+        "date": [
+            "date", "timestamp", "timestamptz", "datetime", "datetime2",
+            "smalldatetime", "time", "timetz", "timestamp_ntz", "timestamp_ltz",
+        ],
+        "timestamp": [
+            "timestamp", "timestamptz", "datetime", "datetime2",
+            "smalldatetime", "timestamp_ntz", "timestamp_ltz",
+        ],
+        "time": ["time", "timetz"],
+        "temporal": [
+            "date", "timestamp", "timestamptz", "datetime", "datetime2",
+            "smalldatetime", "time", "timetz", "timestamp_ntz", "timestamp_ltz",
+        ],
         "integer": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
         "bigint": ["bigint"],
         "smallint": ["smallint", "int2"],
@@ -1124,7 +1155,8 @@ class ToolBox:
         # schemas). For non-boolean queries this is always
         # ``exact_dtype_match``.
         is_boolean_query = token in {"bool", "boolean"}
-        results = []
+        is_temporal_query = token in {"date", "timestamp", "time", "temporal"}
+        results: list[dict[str, Any]] = []
         for r in rows:
             dtype_raw = str(r["dtype"] or "")
             dtype_lower = dtype_raw.lower()
@@ -1138,6 +1170,9 @@ class ToolBox:
                     kind = "flag_candidate"
                 else:
                     kind = "exact_dtype_match"
+            elif is_temporal_query:
+                # Native temporal dtype hits.
+                kind = "native_temporal"
             else:
                 kind = "exact_dtype_match"
             results.append({
@@ -1148,6 +1183,69 @@ class ToolBox:
                 "description": str(r["effective_description"] or ""),
                 "kind": kind,
             })
+
+        # ── Name-pattern inference for semantic buckets ──
+        # When the user asks about "date" (semantic) and the catalog
+        # has SAP-style dates stored as varchar(8) / text, the
+        # native-dtype query above misses them. Run a second query
+        # against the same catalog that matches column names against
+        # well-known temporal naming conventions, restricted to
+        # string-family dtypes so we don't tag a numeric column as
+        # date just because its name happens to contain "date".
+        if is_temporal_query:
+            seen_keys = {(r["schema"], r["table"], r["column"]) for r in results}
+            name_patterns = [
+                "%_date", "%_dt", "%_at", "%_time", "%_ts",
+                "dat_%", "date_%", "time_%",
+                "erdat", "audat", "ernam_dat", "letzd", "valid_from", "valid_to",
+                "created%", "updated%", "modified%", "deleted%",
+                "begda", "endda", "rldat", "psotg", "tzonso",
+            ]
+            string_dtypes_like = ["%char%", "%text%", "%string%", "%varchar%"]
+            with self.catalog._connect() as conn:  # noqa: SLF001
+                # OR-of name LIKE patterns AND OR-of string dtype LIKE patterns
+                name_like_clause = " OR ".join(
+                    "LOWER(column_name) LIKE ?" for _ in name_patterns
+                )
+                dtype_like_clause = " OR ".join(
+                    "LOWER(dtype) LIKE ?" for _ in string_dtypes_like
+                )
+                q = f"""
+                    SELECT ce.schema_name, ce.table_name, ce.column_name,
+                           ce.dtype,
+                           cd.description_text AS effective_description
+                    FROM catalog_entities ce
+                    LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                    WHERE ce.db_profile = ?
+                      AND ce.entity_kind = 'column'
+                      AND ce.dtype IS NOT NULL
+                      AND ({name_like_clause})
+                      AND ({dtype_like_clause})
+                    ORDER BY ce.schema_name, ce.table_name, ce.column_name
+                    LIMIT ?
+                """
+                params2: list[Any] = [self.db_profile]
+                params2.extend(name_patterns)
+                params2.extend(string_dtypes_like)
+                params2.append(int(limit))
+                try:
+                    name_rows = conn.execute(q, tuple(params2)).fetchall()
+                except Exception:
+                    name_rows = []
+            for r in name_rows:
+                schema_n = str(r["schema_name"] or "")
+                table_n = str(r["table_name"] or "")
+                column_n = str(r["column_name"] or "")
+                if (schema_n, table_n, column_n) in seen_keys:
+                    continue
+                results.append({
+                    "schema": schema_n,
+                    "table": table_n,
+                    "column": column_n,
+                    "dtype": str(r["dtype"] or ""),
+                    "description": str(r["effective_description"] or ""),
+                    "kind": "name_inferred_temporal",
+                })
         # Roll up to (schema, table) so the LLM gets a clean per-table view.
         by_table: dict[tuple[str, str], list[dict[str, str]]] = {}
         for entry in results:

@@ -6,6 +6,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-05-01
+### Fixed
+- **`/ask "which tables have date related columns"` returned "no date columns"** on schemas where dates are stored as varchar (SAP-style `erdat`, `audat`, `*_date`, etc.). Pre-v0.10.4 `_DTYPE_FAMILIES["date"]` was just `["date"]` — `timestamp`/`timestamptz`/`datetime` were misses, and varchar-with-date-name columns were never considered.
+
+### Changed
+- **`_DTYPE_FAMILIES` semantic-bucket expansion** (`amx/search/agent_tools.py`):
+  - `date`, `timestamp`, `time`, `temporal` are now full temporal families covering `date`, `timestamp`, `timestamptz`, `datetime`, `datetime2`, `smalldatetime`, `time`, `timetz`, `timestamp_ntz`, `timestamp_ltz`. The user can ask any of those tokens and get the same broad coverage.
+- **Name-pattern inference for temporal columns** — when token is one of `{date, timestamp, time, temporal}`, after the dtype query runs, a second catalog query matches column names against well-known temporal patterns:
+  - Suffix patterns: `*_date`, `*_dt`, `*_at`, `*_time`, `*_ts`
+  - Prefix patterns: `dat_*`, `date_*`, `time_*`
+  - SAP-specific names: `erdat`, `audat`, `ernam_dat`, `letzd`, `valid_from`, `valid_to`, `begda`, `endda`, `rldat`, `psotg`, `tzonso`
+  - Generic timestamp patterns: `created*`, `updated*`, `modified*`, `deleted*`
+  
+  Restricted to string-family dtypes (`char`, `varchar`, `text`, `string`) so a numeric column with `_date` in its name doesn't get tagged.
+- **`kind` field on every result row** — `native_temporal` (real date/timestamp dtype) or `name_inferred_temporal` (varchar with date-like name). Same shape as the v0.9.8 boolean `flag_candidate` tagging.
+- **Tool description rewritten** to make the semantic-bucket contract explicit: when LLM queries `boolean` / `date` / `timestamp` / `time`, it ALSO gets columns whose semantics match even though the dtype doesn't. Explicit rule: "NEVER say 'no date columns' when name_inferred_temporal rows are present — say 'no native date dtype, but the schema stores dates as varchar with names like X, Y, Z'".
+
+### Why this matters
+Same false-negative pattern as v0.9.7 (joins) / v0.9.8 (boolean flags) / v0.9.10 (dtype overview) / v0.9.11 (table-name fuzzy) / v0.10.3 (duplication / update-soon). The recurring problem: AMX answered the literal question ("what columns have native dtype X") instead of the semantic question ("what columns CARRY semantics X"). Each release closes a category. v0.10.4 covers temporal columns and reuses the v0.9.8 `kind`-tagging precedent so the LLM stays honest about how the match was found.
+
+### Followups
+- Apply the same name-pattern inference to other semantic categories: `email` / `phone` / `currency` / `id` (the user's original v0.6.4 push-back use case). Each gets its own pattern set + a `kind=name_inferred_<category>` tag.
+- A reverse query: `find_columns_by_pattern(name_pattern)` — instead of mapping pattern → semantic, take an explicit pattern and return matches. Useful for advanced users who know exactly which suffix they want.
+
 ## [0.10.3] - 2026-05-01
 ### Fixed — interpretive answering for "duplication" + "update soon"
 Two more cases where the agent fell back to literal "I don't know" / "give me columns" instead of using the data it actually had access to. Both followed v0.9.11's interpretive-answering principle: surface what's available, be explicit about limits.
