@@ -6,6 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-05-01
+### Added
+- **`sample_column_values(schema, table, column, limit=5)`** — lightweight tool that returns distinct non-null example values via a direct `SELECT DISTINCT col FROM schema.table WHERE col IS NOT NULL LIMIT N`. Bypasses `profile_table` (which scans every column + foreign keys + stats) so a "give me an example" question doesn't pay full-table-profile cost. Result also includes `distinct_count` (single-column `COUNT(DISTINCT)`, soft-fails on un-indexed huge columns).
+
+### Fixed
+- **"give me a sample value from X column" was incorrectly routing to `/search sync` advice** when the agent picked the wrong schema. Reproducer: user asked "format of `aedat` in `bkpf`" — agent picked `public.bkpf` (PG default schema) instead of `sap_s6p.bkpf`, `profile_table` failed because the table doesn't exist in `public`, and the agent told the user to run `/search sync` (misleading — the catalog isn't the issue; the agent just chose the wrong schema). 
+
+  Two-part fix:
+  1. The new `sample_column_values` tool is the right fit for "give me an example" — direct SELECT, no profile overhead. It returns a structured `error` + `hint` when the schema is wrong, instead of the cryptic profile-table failure.
+  2. System prompt rule: "user asks for a sample/example value AND didn't qualify the schema → call `find_table_by_name` FIRST so you don't blindly pick the wrong schema. Only fall through to `/search sync` hints when find_table_by_name returns NO exact AND no fuzzy matches."
+
+### Why this matters
+The previous flow taxed the user twice: once for asking the wrong agent path (full-table profile when they wanted one example), and once for the misleading recovery hint (`/search sync` when the catalog wasn't even relevant). User feedback: "I'll run sync, but is sync expensive every time? My question is just for an example — shouldn't AMX query the database directly?". Right. With v0.10.5 the agent has a cheap direct path AND knows to resolve the schema first instead of guessing.
+
+### Followups
+- The `find_table_by_name` → `sample_column_values` chain could be inlined as a one-shot helper for the common case ("just give me an example value of X.Y, figure out the schema yourself") — but the tool-level chain is more flexible and matches the existing routing pattern.
+
 ## [0.10.4] - 2026-05-01
 ### Fixed
 - **`/ask "which tables have date related columns"` returned "no date columns"** on schemas where dates are stored as varchar (SAP-style `erdat`, `audat`, `*_date`, etc.). Pre-v0.10.4 `_DTYPE_FAMILIES["date"]` was just `["date"]` — `timestamp`/`timestamptz`/`datetime` were misses, and varchar-with-date-name columns were never considered.
