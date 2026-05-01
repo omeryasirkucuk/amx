@@ -25,17 +25,22 @@ from amx.search._catalog._db_profile_clause import (
     build_db_profile_clause,
     normalise_db_profile_filter,
 )
-from amx.storage.sqlite_store import SQLiteHistoryStore, init_history_store
+from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
 def _setup_store() -> tuple[SQLiteHistoryStore, Path]:
     """Initialise a fresh history store in a temp dir.
 
-    Returns (store, dir) so the test can clean up the directory.
-    The history-store init creates all the catalog tables we need.
+    Each test gets its own tmpdir + ``SQLiteHistoryStore`` instance — we
+    deliberately bypass ``init_history_store`` because that helper caches
+    the first instance in a module global, and consecutive tests would
+    insert overlapping rows into the same DB and fail
+    ``idx_catalog_entities_identity`` UNIQUE.
     """
     tmpdir = Path(tempfile.mkdtemp(prefix=f"amx-multi-profile-{uuid.uuid4().hex[:8]}-"))
-    store = init_history_store(str(tmpdir))
+    db_path = tmpdir / "history.db"
+    store = SQLiteHistoryStore(db_path)
+    store.init()
     return store, tmpdir
 
 
