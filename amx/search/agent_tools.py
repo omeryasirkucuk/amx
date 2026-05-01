@@ -447,6 +447,52 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "detect_dimensional_role",
+                    "description": (
+                        "Classify a SINGLE table's role in a dimensional model "
+                        "(fact / dimension / bridge / lookup / staging / "
+                        "transactional / unknown), or — when ``table`` is "
+                        "omitted — rank EVERY table in the schema by role and "
+                        "say whether the layout looks like a STAR or "
+                        "SNOWFLAKE schema. Detection blends naming patterns "
+                        "(``fact_*`` / ``dim_*`` / ``stg_*`` / ``bridge_*`` / "
+                        "``_facts`` / ``_dim`` / etc.) with structural "
+                        "signals (row count percentile, count of outgoing "
+                        "vs. incoming foreign keys, partition/clustering "
+                        "presence, temporal columns). Each result row carries "
+                        "``role_hypothesis``, ``confidence``, ``evidence`` "
+                        "(human-readable bullets — ALWAYS quote in answer), "
+                        "and ``indicators`` (the structured signals that "
+                        "fired). Schema-level result also includes "
+                        "``pattern_hypothesis`` (``star_schema`` / "
+                        "``snowflake_schema`` / ``flat`` / ``unknown``) "
+                        "derived from whether dimensions reference other "
+                        "dimensions (snowflake) or only the fact (star). Use "
+                        "this for 'what's the main/fact table here?', "
+                        "'which tables look like dimensions?', 'is this a "
+                        "star schema?', 'this schema'ın ana tablosu nedir?', "
+                        "'fact ve dimension tabloları?'."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {"type": "string", "description": "Schema name."},
+                            "table": {
+                                "type": "string",
+                                "description": (
+                                    "Table to classify. Omit to rank every "
+                                    "table in the schema and infer the "
+                                    "overall star-vs-snowflake pattern."
+                                ),
+                            },
+                        },
+                        "required": ["schema"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "detect_scd_pattern",
                     "description": (
                         "Infer the table's slowly-changing-dimension (SCD) "
@@ -2075,5 +2121,356 @@ class ToolBox:
             "indicators": indicators,
             "alternative_hypotheses": alternatives,
             "recommendation": recommendation,
+        }
+
+    # ── Dimensional-role detection (v0.10.7) ───────────────────────────────
+
+    _DIM_ROLE_NAMING: dict[str, tuple[str, ...]] = {
+        # Each role lists name patterns; matched as substring on the
+        # lowered table name. Order doesn't matter — every role
+        # contributes to a separate naming-signal bucket.
+        "fact": (
+            "fact_", "_fact", "_facts", "fact", "f_",
+            "_evt", "_event", "_events",
+            "transactions", "_trans", "_txn", "_orders",
+            "_sales", "_invoice", "_invoices",
+        ),
+        "dimension": (
+            "dim_", "_dim", "_dimension", "dimension_",
+            "_lookup", "lookup_",
+        ),
+        "staging": (
+            "stg_", "staging_", "_staging", "_landing",
+            "raw_", "_raw", "src_", "_src",
+        ),
+        "bridge": (
+            "bridge_", "_bridge", "xref_", "_xref",
+            "link_", "_link", "rel_", "_rel",
+        ),
+        "audit": (
+            "_audit", "audit_", "_log", "log_",
+            "_history", "history_", "_archive", "archive_",
+        ),
+    }
+
+    def _name_role_signal(self, table_name: str) -> str:
+        low = table_name.lower()
+        for role, patterns in self._DIM_ROLE_NAMING.items():
+            for pat in patterns:
+                if pat in low:
+                    return role
+        return ""
+
+    def _classify_table_role(
+        self,
+        profile: Any,
+        peer_row_counts: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """Classify ONE table's dimensional role from its profile.
+
+        Combines naming signals with structural signals. ``peer_row_counts``
+        is the row-count distribution of sibling tables in the same
+        schema — used to compute the row-count percentile (high
+        percentile → likely fact). When omitted (single-table call
+        without schema context), the structural heuristic falls back
+        to absolute thresholds.
+        """
+        from statistics import median
+
+        evidence: list[str] = []
+        indicators: dict[str, Any] = {}
+
+        table_name = str(profile.name)
+        row_count = int(profile.row_count or 0)
+        fk_out = len(profile.foreign_keys or [])
+        fk_in = len(profile.referenced_by or [])
+        col_count = len(profile.columns or [])
+        is_partitioned = bool(getattr(profile.analytics, "partition_keys", []) or [])
+        has_clustering = bool(getattr(profile.analytics, "clustering_keys", []) or [])
+
+        indicators["row_count"] = row_count
+        indicators["fk_outgoing"] = fk_out
+        indicators["fk_incoming"] = fk_in
+        indicators["column_count"] = col_count
+        indicators["is_partitioned"] = is_partitioned
+        indicators["has_clustering"] = has_clustering
+
+        # Has temporal column? (any column with date/timestamp dtype family)
+        has_temporal = any(
+            any(token in str(c.dtype).lower()
+                for token in ("date", "timestamp", "datetime"))
+            for c in profile.columns
+        )
+        indicators["has_temporal_column"] = has_temporal
+
+        # Naming signal
+        naming = self._name_role_signal(table_name)
+        if naming:
+            indicators["naming_signal"] = naming
+            evidence.append(f"Naming pattern matches `{naming}` role.")
+
+        # Row-count percentile vs peers (if peers provided)
+        rc_percentile: float | None = None
+        if peer_row_counts and len(peer_row_counts) >= 3:
+            sorted_peers = sorted(peer_row_counts)
+            rank = sum(1 for n in sorted_peers if n <= row_count)
+            rc_percentile = rank / len(sorted_peers)
+            indicators["row_count_percentile"] = round(rc_percentile, 3)
+            med = median(sorted_peers)
+            indicators["peer_row_count_median"] = int(med)
+            if row_count > med * 5 and row_count > 1000:
+                evidence.append(
+                    f"Row count {row_count:,} is >5× the schema median "
+                    f"({int(med):,}) — likely fact / transactional."
+                )
+            elif row_count <= 1000 and col_count <= 10:
+                evidence.append(
+                    f"Small table ({row_count} rows, {col_count} cols) — "
+                    "likely lookup / reference."
+                )
+
+        # FK fan-out / fan-in
+        if fk_out >= 3:
+            evidence.append(
+                f"{fk_out} outgoing FK(s) — likely fact (joins out to "
+                "many dimensions)."
+            )
+        if fk_in >= 3:
+            evidence.append(
+                f"{fk_in} incoming FK(s) — likely dimension (referenced "
+                "by many tables)."
+            )
+
+        # Bridge: roughly equal in/out, both ≥ 2
+        is_bridge = fk_out >= 2 and fk_in >= 2 and abs(fk_out - fk_in) <= 1
+
+        # Decide the hypothesis. Naming wins for staging / audit / bridge
+        # (strong intent); structural wins for fact / dimension / lookup.
+        hypothesis = "unknown"
+        confidence = "low"
+
+        if naming == "staging":
+            hypothesis = "staging"
+            confidence = "high"
+        elif naming == "audit":
+            hypothesis = "audit"
+            confidence = "high"
+        elif naming == "bridge" or is_bridge:
+            hypothesis = "bridge"
+            confidence = "medium" if naming == "bridge" else "low"
+            if is_bridge and naming != "bridge":
+                evidence.append(
+                    f"Roughly equal FK fan-out ({fk_out}) and fan-in "
+                    f"({fk_in}) — bridge / link table shape."
+                )
+        elif naming == "fact":
+            hypothesis = "fact"
+            confidence = (
+                "high" if (fk_out >= 2 or rc_percentile is not None and rc_percentile >= 0.75)
+                else "medium"
+            )
+        elif naming == "dimension":
+            hypothesis = "dimension"
+            confidence = "high" if fk_in >= 1 else "medium"
+        else:
+            # Pure structural inference.
+            if (
+                fk_out >= 3
+                and (rc_percentile is None or rc_percentile >= 0.6)
+                and (is_partitioned or has_temporal)
+            ):
+                hypothesis = "fact"
+                confidence = "medium"
+                evidence.append(
+                    "No naming signal; classified by structure (high FK "
+                    "fan-out + temporal/partitioned)."
+                )
+            elif fk_in >= 3 and fk_out <= 1:
+                hypothesis = "dimension"
+                confidence = "medium"
+                evidence.append(
+                    "No naming signal; classified by structure (high FK "
+                    "fan-in, low fan-out)."
+                )
+            elif row_count <= 1000 and col_count <= 12 and fk_in >= 1:
+                hypothesis = "lookup"
+                confidence = "medium"
+                evidence.append(
+                    "Small + referenced — likely lookup / reference table."
+                )
+            elif has_temporal and not (is_partitioned or fk_out):
+                hypothesis = "transactional"
+                confidence = "low"
+                evidence.append(
+                    "Temporal column present but no partitioning / FKs out "
+                    "— likely raw transactional / event log."
+                )
+
+        if not evidence:
+            evidence.append(
+                "No strong signals — naming, FK structure, and row count "
+                "are all ambiguous. Try providing the schema context "
+                "(rank-all-tables mode) or run the SCD detector if "
+                "history shape matters."
+            )
+
+        return {
+            "schema": str(profile.schema),
+            "table": table_name,
+            "role_hypothesis": hypothesis,
+            "confidence": confidence,
+            "evidence": evidence,
+            "indicators": indicators,
+        }
+
+    def _tool_detect_dimensional_role(
+        self, schema: str, table: str | None = None,
+    ) -> dict[str, Any]:
+        """Single-table or schema-wide dimensional-role classifier.
+
+        See the tool description for the full contract; this body just
+        dispatches between per-table and schema-level classification.
+        """
+        schema_name = (schema or "").strip()
+        if not schema_name:
+            raise _ToolError("Argument 'schema' is required.")
+
+        # ── Single-table mode ──
+        if table:
+            try:
+                profile = self._live_db().profile_table(
+                    schema_name, table.strip(), sample_size=0,
+                )
+            except Exception as exc:
+                return {
+                    "schema": schema_name,
+                    "table": table,
+                    "found": False,
+                    "error": str(exc),
+                }
+            return {**self._classify_table_role(profile), "found": True}
+
+        # ── Schema-level mode ──
+        # Walk every asset in the schema, profile cheaply (no samples,
+        # no large stats), classify, then derive the schema-level
+        # pattern (star vs snowflake) from FK relationships among the
+        # classified dimensions.
+        db = self._live_db()
+        try:
+            if hasattr(db, "list_assets"):
+                assets = [(str(n), str(k)) for n, k in db.list_assets(schema_name)]
+            else:
+                assets = [(str(n), "table") for n in db.list_tables(schema_name)]
+        except Exception as exc:
+            return {
+                "schema": schema_name,
+                "found": False,
+                "error": f"Could not list tables in schema: {exc}",
+            }
+        if not assets:
+            return {
+                "schema": schema_name,
+                "found": False,
+                "table_count": 0,
+                "tables_by_role": {},
+                "pattern_hypothesis": "unknown",
+                "evidence": [
+                    "Schema has no tables to classify.",
+                ],
+            }
+
+        # First pass: profile all tables to collect row counts (for
+        # percentile) + FK info. Profiles WITHOUT samples are cheap.
+        per_table: list[Any] = []
+        peer_row_counts: list[int] = []
+        for name, _kind in assets:
+            try:
+                p = db.profile_table(schema_name, name, sample_size=0)
+                per_table.append(p)
+                peer_row_counts.append(int(p.row_count or 0))
+            except Exception:
+                continue
+
+        # Second pass: classify each with peer-row-count context.
+        classifications: list[dict[str, Any]] = []
+        # Build a (schema, table) → role lookup so we can later check
+        # whether a dimension references another dimension (snowflake).
+        for p in per_table:
+            classifications.append(self._classify_table_role(p, peer_row_counts))
+
+        role_to_paths: dict[str, list[str]] = {}
+        for c in classifications:
+            role = c["role_hypothesis"]
+            role_to_paths.setdefault(role, []).append(
+                f"{c['schema']}.{c['table']}"
+            )
+
+        # Star vs snowflake — only meaningful if BOTH facts and
+        # dimensions exist. Snowflake = at least one dimension references
+        # another dimension. Star = dimensions are flat (only referenced
+        # by facts, no FKs to other dimensions).
+        pattern = "unknown"
+        pattern_evidence: list[str] = []
+        fact_paths = set(role_to_paths.get("fact", []))
+        dim_paths = set(role_to_paths.get("dimension", []))
+        if fact_paths and dim_paths:
+            dim_to_dim_links = 0
+            dim_to_dim_examples: list[str] = []
+            for p in per_table:
+                if f"{p.schema}.{p.name}" not in dim_paths:
+                    continue
+                for fk in (p.foreign_keys or []):
+                    target = (
+                        f"{fk.get('referred_schema') or p.schema}."
+                        f"{fk.get('referred_table') or ''}"
+                    )
+                    if target in dim_paths and target != f"{p.schema}.{p.name}":
+                        dim_to_dim_links += 1
+                        if len(dim_to_dim_examples) < 3:
+                            dim_to_dim_examples.append(
+                                f"{p.schema}.{p.name} → {target}"
+                            )
+            if dim_to_dim_links:
+                pattern = "snowflake_schema"
+                pattern_evidence.append(
+                    f"{dim_to_dim_links} dimension-to-dimension FK link(s) "
+                    "found (snowflake): " + ", ".join(dim_to_dim_examples)
+                )
+            else:
+                pattern = "star_schema"
+                pattern_evidence.append(
+                    f"{len(fact_paths)} fact table(s) and "
+                    f"{len(dim_paths)} dimension table(s); no "
+                    "dimension-to-dimension FKs (star layout)."
+                )
+        elif not fact_paths and dim_paths:
+            pattern = "flat"
+            pattern_evidence.append(
+                "No fact-shaped tables; the schema looks like a "
+                "denormalised dim-only or reference layout."
+            )
+        elif fact_paths and not dim_paths:
+            pattern = "fact_only"
+            pattern_evidence.append(
+                "Fact tables present but no dimension-shaped tables "
+                "found — possibly an OBT (one-big-table) layout."
+            )
+
+        return {
+            "schema": schema_name,
+            "found": True,
+            "table_count": len(per_table),
+            "pattern_hypothesis": pattern,
+            "pattern_evidence": pattern_evidence,
+            "tables_by_role": role_to_paths,
+            "fact_tables": role_to_paths.get("fact", []),
+            "dimension_tables": role_to_paths.get("dimension", []),
+            "bridge_tables": role_to_paths.get("bridge", []),
+            "lookup_tables": role_to_paths.get("lookup", []),
+            "staging_tables": role_to_paths.get("staging", []),
+            "audit_tables": role_to_paths.get("audit", []),
+            "transactional_tables": role_to_paths.get("transactional", []),
+            "unknown_tables": role_to_paths.get("unknown", []),
+            "classifications": classifications,
         }
 
