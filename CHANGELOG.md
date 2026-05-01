@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-01
+### Fixed
+- **Suppressed false-positive `LLM returned EMPTY content` warning during tool-calling rounds** (`amx/llm/provider.py`). When the LLM returns `finish_reason=tool_calls` (or the legacy `function_call`), an empty content body is the expected OpenAI-protocol shape — the actual call lives in `message.tool_calls`. The pre-v0.10.1 code emitted a noisy `WARNING — LLM returned EMPTY content … Check model name, API key, and provider dashboard.` on every tool-call round, which surfaced in mid-stream of `/ask` answers and looked alarming despite being normal flow.
+
+  Reproducer: any `/ask` question that triggers a tool-calling loop (i.e. anything more complex than chitchat) on `gpt-4o-mini` / Claude / Gemini through `litellm`. The warning fired once per tool-call round and bled through the live display panel.
+
+  Fix: gate the warning on `finish_reason NOT IN {tool_calls, function_call}`. The genuine "model returned nothing" cases — `finish_reason` in `{stop, content_filter, length, end_turn, ""}` with no accompanying tool_calls — still warn loudly because those ARE the symptoms of a misconfigured key / wrong model / quota issue. Tool-call rounds drop to DEBUG level so users running with `AMX_LOG_LEVEL=debug` can still trace them when needed.
+
+### Why this matters
+The warning appeared on every multi-step `/ask` answer (search agent always uses tools), so users were seeing a confidence-eroding "EMPTY content / check your API key" message during what was actually a clean run. With this fix the log stays quiet during normal tool-calling and reserves the warning for the cases where it actually points at a problem.
+
 ## [0.10.0] - 2026-05-01
 ### Added — Analytics-DB metadata extension
 
