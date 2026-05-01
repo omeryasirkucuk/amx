@@ -37,12 +37,19 @@ def register_history_commands(
     *,
     pass_config: Callable[[Callable[..., Any]], Callable[..., Any]],
     log_event: LogEvent,
-) -> None:
-    """Attach `/history` namespace commands to the main Click group."""
+) -> click.Group:
+    """Attach `/history` namespace commands to the main Click group.
+
+    Returns the inner ``history`` Click group so callers (``cli.py``) can
+    attach extra subcommands to the same namespace from sibling files —
+    same pattern as ``register_analyze_commands`` / ``register_search_commands``.
+    Used by ``register_compare_command`` to attach ``/compare`` here, where
+    a "compare past runs" verb belongs (audit, not search).
+    """
 
     @main.group()
     def history() -> None:
-        """Inspect local SQLite history (runs, tokens, results, events)."""
+        """Inspect local SQLite history (runs, tokens, results, events, comparisons)."""
 
     @history.command("list")
     @click.option("-n", "--limit", default=20, help="Number of runs to show.")
@@ -551,3 +558,5 @@ def register_history_commands(
             )
 
         _mark_run_success()
+
+    return history

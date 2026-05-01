@@ -7,7 +7,7 @@ Covers three slices:
   already has rows from before the upgrade.
 * ``find_runs_for_scope`` returns the right rows when filtering by
   schema, table, and command.
-* The end-to-end ``/search compare`` Click command renders without
+* The end-to-end ``/history compare`` Click command renders without
   crashing on a seeded store and surfaces per-run aggregate metrics.
 """
 
@@ -253,7 +253,7 @@ class CompareHelpersTests(unittest.TestCase):
 
 
 class CompareCommandTests(unittest.TestCase):
-    """End-to-end click invocation of /search compare with a seeded store."""
+    """End-to-end click invocation of /history compare with a seeded store."""
 
     def _seed_two_runs(self, s: SQLiteHistoryStore) -> tuple[int, int]:
         common_suggestions = [
@@ -310,7 +310,7 @@ class CompareCommandTests(unittest.TestCase):
             ):
                 result = runner.invoke(
                     main,
-                    ["--config", "test-config.yml", "search", "compare", str(rid1), str(rid2)],
+                    ["--config", "test-config.yml", "history", "compare", str(rid1), str(rid2)],
                     env={"AMX_SESSION_CHILD": "1"},
                     catch_exceptions=False,
                 )
@@ -351,7 +351,7 @@ class CompareCommandTests(unittest.TestCase):
             ):
                 result = runner.invoke(
                     main,
-                    ["--config", "test-config.yml", "search", "compare", str(rid)],
+                    ["--config", "test-config.yml", "history", "compare", str(rid)],
                     env={"AMX_SESSION_CHILD": "1"},
                     catch_exceptions=False,
                 )
@@ -626,6 +626,133 @@ class ExportJSONTests(unittest.TestCase):
             self.assertIn("avg_logprob_score", metrics_seen)
             self.assertIn("approval_rate", metrics_seen)
             self.assertIn("total_tokens", metrics_seen)
+
+
+class CompareDispatchUnderHistoryNamespaceTests(unittest.TestCase):
+    """User feedback 2026-05-02: ``/compare`` belongs under ``/history``,
+    not ``/search`` — comparing past runs is fundamentally an audit
+    operation. The slash registry now lists it under
+    ``_HISTORY_COMMANDS`` and the session shortcut_map routes the bare
+    verb to ``["history", "compare"]`` from any namespace.
+    """
+
+    def test_compare_dispatches_to_history_from_root(self) -> None:
+        from amx.cli_support.session import session_to_click_args
+
+        self.assertEqual(
+            session_to_click_args("", ["compare"]),
+            ["history", "compare"],
+        )
+
+    def test_compare_dispatches_to_history_from_search_namespace(self) -> None:
+        """Pre-fix the verb was registered under search and a bare
+        ``/compare`` from /search would fall through to ``["search",
+        "ask", "compare"]``. After moving it to /history the same
+        bare invocation must resolve to ``["history", "compare"]``."""
+        from amx.cli_support.session import session_to_click_args
+
+        self.assertEqual(
+            session_to_click_args("search", ["compare"]),
+            ["history", "compare"],
+        )
+
+    def test_compare_listed_under_history_namespace_in_registry(self) -> None:
+        from amx.cli_support.slash_commands import (
+            cmd_heads_for_namespace,
+            find_command,
+        )
+
+        compare = find_command("/compare")
+        self.assertIsNotNone(compare)
+        self.assertEqual(compare.namespace, "history")
+        self.assertIn("compare", cmd_heads_for_namespace("history"))
+        # And NOT under /search anymore
+        self.assertNotIn("compare", cmd_heads_for_namespace("search"))
+
+
+class RunSettingsSnapshotTests(unittest.TestCase):
+    """The user-reported gap: ``/compare`` showed profiles + tokens but
+    not the actual knobs (prompt_detail, language, batch_size, …) that
+    they varied between runs. Now ``analysis_runs.settings_json``
+    captures every LLM/run config field at run-start time, and
+    ``Run settings`` renders them.
+    """
+
+    def test_create_run_persists_settings_dict_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            settings = {
+                "prompt_detail": "detailed",
+                "language": "english",
+                "column_batch_size": 8,
+                "n_alternatives": 5,
+                "completion_mode": "chat_completions",
+                "description_verbosity": "brief",
+                "temperature": 0.3,
+                "force_logprobs": True,
+                "dedup_used": True,
+                "missing_only": False,
+                "review_strategy": "auto-apply",
+                "use_batch": False,
+            }
+            rid = store.create_run(
+                command="analyze.run",
+                mode="chat",
+                db_backend="postgresql",
+                db_profile="pg",
+                llm_provider="openai",
+                llm_model="gpt-4o",
+                scope={"sales": ["orders"]},
+                llm_profile="default",
+                settings=settings,
+            )
+            row = store.get_run(rid)
+            assert row is not None
+            self.assertEqual(row["settings_json"], settings)
+
+            # Also exposed through the scope-filter query path used by
+            # /history compare's --last resolution.
+            scope_runs = store.find_runs_for_scope(schema="sales", limit=5)
+            self.assertEqual(len(scope_runs), 1)
+            self.assertEqual(scope_runs[0]["settings_json"], settings)
+
+    def test_legacy_runs_with_no_settings_json_round_trip_as_none(self) -> None:
+        """Pre-migration runs (settings_json column added in this PR)
+        must continue to round-trip without crashing — the table
+        renders ``—`` for them, but the run is otherwise valid history.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid = store.create_run(
+                command="analyze.run",
+                mode="chat",
+                db_backend="postgresql",
+                db_profile="pg",
+                llm_provider="openai",
+                llm_model="gpt-4o",
+                scope={"sales": ["orders"]},
+                # No settings= passed
+            )
+            row = store.get_run(rid)
+            self.assertIsNone(row.get("settings_json"))
+
+    def test_settings_for_run_returns_empty_dict_for_legacy_or_missing(self) -> None:
+        from amx.cli_support.commands.compare import _settings_for_run
+
+        # Missing key
+        self.assertEqual(_settings_for_run({"id": 1}), {})
+        # JSON string (storage layer hasn't deserialised — defensive)
+        self.assertEqual(
+            _settings_for_run({"settings_json": '{"prompt_detail": "minimal"}'}),
+            {"prompt_detail": "minimal"},
+        )
+        # Already a dict (the typical post-deserialisation shape)
+        d = {"prompt_detail": "detailed", "n_alternatives": 5}
+        self.assertEqual(_settings_for_run({"settings_json": d}), d)
+        # Garbage JSON degrades gracefully
+        self.assertEqual(_settings_for_run({"settings_json": "{not json"}), {})
 
 
 if __name__ == "__main__":
