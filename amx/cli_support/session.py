@@ -225,22 +225,26 @@ comments. Document profiles and document search are under /docs.
 Commands:
   1) /back                         Return to root namespace
   2) /inspect [schema] [table]     Show current database/schema/table/column comments
-  3) /edit                         Start the interactive edit wizard
+  3) /edit                         Interactive edit wizard. FIRST asks
+                                   "Single entity" or "Bulk by name". If bulk,
+                                   prompts for the entity name and walks the
+                                   bulk-update flow (analysis → multi-select →
+                                   one comment to all). If single, walks
+                                   database → schema → table → column step by step.
   4) /edit <db>                    Edit a database/profile comment
   5) /edit <db>.<schema>           Edit a schema comment
   6) /edit <db>.<schema>.<table>   Edit a table/view comment
   7) /edit <db>.<schema>.<table>.<column>
                                   Edit a column comment
-  8) /edit <name>                  Bare-name bulk-or-individual: AMX searches
-                                   every table AND column matching <name> across
-                                   all schemas, then asks how to handle them:
+  8) /edit <name>                  Bare-name shortcut: AMX searches every table
+                                   AND column matching <name> across all schemas,
+                                   prints a bulk-update analysis (counts + match
+                                   table), then offers bulk-vs-individual mode.
                                      * bulk       — pick rows (1,3,5 or 1-4 or all),
                                                    ONE comment written to every
-                                                   selected entity (e.g. customer_id
-                                                   in 50 tables).
+                                                   selected entity.
                                      * individual — walk through each match one at
-                                                   a time, type a different comment
-                                                   per row (or Enter to skip).
+                                                   a time, different comment per row.
                                      * cancel     — abort.
   9) /monitor [schema]             Show table/view and column comment coverage
 
