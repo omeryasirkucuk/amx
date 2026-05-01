@@ -11,7 +11,9 @@ from amx.config import AMXConfig, DBConfig, PROFILING_MODES, SUPPORTED_BACKENDS
 from amx.utils.console import (
     ask,
     ask_choice,
+    ask_multi_choice,
     ask_password,
+    confirm,
     error,
     heading,
     info,
@@ -221,37 +223,102 @@ def cmd_use(
     *,
     log_event: LogEvent | None = None,
 ) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        names = sorted(cfg.db_profiles.keys())
-        if not names:
-            error("No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery).")
+    """Switch the active DB scope.
+
+    0.11.0 multi-pick:
+        /use-db prod_pg                 → single-profile (legacy behaviour)
+        /use-db prod_pg analytics_bq    → persisted multi-profile scope used
+                                          by /ask, /run, /sync.
+
+    Interactive form (no args): prompts whether the user wants single
+    or multi-pick, then runs the appropriate selector.
+    """
+    available = sorted(cfg.db_profiles.keys())
+    if not available:
+        error("No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery).")
+        return
+
+    # Inline-arg form: /use-db NAME [NAME ...]
+    if rest:
+        chosen: list[str] = []
+        unknown: list[str] = []
+        for raw in rest:
+            n = (raw or "").strip()
+            if not n:
+                continue
+            if n in cfg.db_profiles and n not in chosen:
+                chosen.append(n)
+            else:
+                unknown.append(n)
+        if unknown:
+            error(
+                f"Unknown profile(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(available) or '(none)'}."
+            )
             return
+        if not chosen:
+            error("No profile selected.")
+            return
+    else:
+        # Interactive: ask single vs multi, then route to the right picker.
         descriptions = {
             n: f"[{p.backend}] {p.display_summary}"
             for n, p in cfg.db_profiles.items()
         }
-        name = ask_choice(
-            "Select DB profile (by name or number)",
-            names,
-            default=cfg.active_db_profile or names[0],
-            descriptions=descriptions,
-        )
-        if not name:
-            error("No profile selected.")
-            return
+        if len(available) >= 2 and confirm(
+            "Pick multiple profiles for the active scope (used by /ask /run /sync)?",
+            default=False,
+        ):
+            display = [
+                f"{n}  -  [{cfg.db_profiles[n].backend}] {cfg.db_profiles[n].display_summary}"
+                for n in available
+            ]
+            picked = ask_multi_choice("Select DB profiles (comma-separated)", display)
+            chosen = [s.split("  -  ", 1)[0].strip() for s in picked]
+            chosen = [n for n in chosen if n in cfg.db_profiles]
+            if not chosen:
+                error("No profile selected.")
+                return
+        else:
+            single = ask_choice(
+                "Select DB profile (by name or number)",
+                available,
+                default=cfg.active_db_profile or available[0],
+                descriptions=descriptions,
+            )
+            if not single:
+                error("No profile selected.")
+                return
+            chosen = [single]
+
     try:
-        cfg.set_active_db_profile(name)
+        if len(chosen) == 1:
+            cfg.set_active_db_profile(chosen[0])
+        else:
+            cfg.set_active_db_profiles(chosen)
         cfg.save()
         p = cfg.db
-        success(f"Switched active DB profile to: {name} [{p.backend}] - {p.display_summary}")
+        if len(chosen) == 1:
+            success(
+                f"Switched active DB profile to: {chosen[0]} "
+                f"[{p.backend}] - {p.display_summary}"
+            )
+        else:
+            success(
+                f"Active DB scope: {', '.join(chosen)} "
+                f"(default = {chosen[0]} [{p.backend}])"
+            )
         if log_event is not None:
             log_event(
                 event_type="db_profile_switch",
                 status="success",
                 command="use-db",
-                details={"profile": name, "backend": p.backend},
+                details={
+                    "profile": chosen[0],
+                    "profiles": chosen,
+                    "backend": p.backend,
+                    "multi": len(chosen) > 1,
+                },
             )
     except Exception as exc:
         if log_event is not None:
@@ -259,7 +326,7 @@ def cmd_use(
                 event_type="db_profile_switch",
                 status="failed",
                 command="use-db",
-                details={"profile": name, "error": str(exc)},
+                details={"profiles": chosen, "error": str(exc)},
             )
         error(str(exc))
 
