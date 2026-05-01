@@ -94,7 +94,10 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
 
 _DB_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/db-profiles", "db", "List DB profiles"),
-    SlashCommand("/use-db", "db", "Switch DB profile (lists PostgreSQL, BigQuery, … per profile)"),
+    SlashCommand(
+        "/use-db", "db",
+        "Switch DB scope. Single: /use-db prod_pg. Multi (0.11+): /use-db prod_pg analytics_bq → persisted multi-profile scope for /ask /run /sync.",
+    ),
     SlashCommand("/add-db-profile", "db", "Add profile — choose engine then connection details"),
     SlashCommand("/remove-db-profile", "db", "Remove DB profile (/remove-db-profile <name>)"),
     SlashCommand("/profiling", "db", "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])"),

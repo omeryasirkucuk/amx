@@ -760,7 +760,22 @@ class AMXConfig:
     selected_schemas: list[str] = field(default_factory=list)
     selected_tables: list[str] = field(default_factory=list)
     db_profiles: dict[str, DBConfig] = field(default_factory=dict)
+    # Single-active mirror — kept for back-compat with the 99 call sites
+    # that read ``cfg.active_db_profile`` directly. In 0.11.0 the source
+    # of truth becomes ``active_db_profiles`` (the multi-pick scope set
+    # by ``/use-db prod_pg analytics_bq``); this scalar mirrors the
+    # **first** entry of that list. ``set_active_db_profile`` updates
+    # both, ``set_active_db_profiles`` collapses the list to a single
+    # entry when called with one name. Reads that need the full scope
+    # use ``active_db_profiles`` (or ``ProfileScope.from_config(cfg)``).
     active_db_profile: str = "default"
+    # 0.11.0 multi-DB execution scope. When non-empty this is the set of
+    # profiles that ``/ask``, ``/run`` and ``/sync`` operate on by default.
+    # Loaded with one-element fallback from the legacy ``active_db_profile``
+    # when the YAML pre-dates this release. Saved on every write alongside
+    # the legacy scalar so a 0.10.x reader can still round-trip without
+    # losing the user's active profile.
+    active_db_profiles: list[str] = field(default_factory=list)
     current_schema: str = ""
     current_table: str = ""
     llm_profiles: dict[str, LLMConfig] = field(default_factory=dict)
@@ -794,6 +809,7 @@ class AMXConfig:
             "selected_tables",
             "db_profiles",
             "active_db_profile",
+            "active_db_profiles",
             "current_schema",
             "current_table",
             "llm_profiles",
@@ -854,6 +870,29 @@ class AMXConfig:
                         cfg.db_profiles[str(name)] = _db_from_mapping(m)
 
             cfg.active_db_profile = str(data.get("active_db_profile") or "default")
+            # 0.11.0: multi-pick scope. When the YAML predates this
+            # release we synthesise a one-element list from the legacy
+            # scalar so the rest of the code can treat it uniformly.
+            raw_scope = data.get("active_db_profiles")
+            if isinstance(raw_scope, list) and raw_scope:
+                # Dedupe while preserving user-specified order, drop empties.
+                seen: set[str] = set()
+                ordered: list[str] = []
+                for item in raw_scope:
+                    name = str(item or "").strip()
+                    if not name or name in seen:
+                        continue
+                    seen.add(name)
+                    ordered.append(name)
+                cfg.active_db_profiles = ordered
+                # Mirror first entry into the legacy scalar so old readers
+                # still see a valid active profile.
+                if ordered:
+                    cfg.active_db_profile = ordered[0]
+            else:
+                cfg.active_db_profiles = (
+                    [cfg.active_db_profile] if cfg.active_db_profile else []
+                )
             cfg.current_schema = str(data.get("current_schema") or "")
             cfg.current_table = str(data.get("current_table") or "")
 
@@ -895,12 +934,24 @@ class AMXConfig:
             # so the CLI prompts setup instead of showing a phantom row built
             # from hardcoded defaults or the active mirror.
             cfg.active_db_profile = ""
+            cfg.active_db_profiles = []
         else:
+            # Drop scope entries that point at deleted profiles. Without this,
+            # an outdated YAML carrying ``active_db_profiles: [foo]`` after
+            # ``foo`` was removed would resurface as a ghost selection.
+            cfg.active_db_profiles = [
+                name for name in cfg.active_db_profiles if name in cfg.db_profiles
+            ]
             try:
                 cfg.apply_active_db_profile()
             except Exception:
                 cfg.active_db_profile = next(iter(cfg.db_profiles.keys()))
                 cfg.db = cfg.db_profiles[cfg.active_db_profile]
+            # Re-anchor the multi-pick scope. apply_active_db_profile may
+            # have changed active_db_profile (or kept it the same); keep
+            # the list in sync as the canonical scope.
+            if not cfg.active_db_profiles and cfg.active_db_profile:
+                cfg.active_db_profiles = [cfg.active_db_profile]
 
         if not cfg.llm_profiles:
             cfg.active_llm_profile = ""
@@ -961,10 +1012,19 @@ class AMXConfig:
             doc_paths_yaml = self._doc_paths_for_yaml()
             code_paths_yaml = self._code_paths_for_yaml()
 
+            # Always write both ``active_db_profile`` (legacy scalar) and
+            # ``active_db_profiles`` (0.11.0 multi-pick). Round-trip
+            # compatibility: a 0.10.x reader keeps working from the
+            # scalar; 0.11+ readers prefer the list. The scalar is
+            # always the first list entry so the two views never diverge.
+            scope_list = list(self.active_db_profiles) if self.active_db_profiles else (
+                [self.active_db_profile] if self.active_db_profile else []
+            )
             data = {
                 "db": _db_to_mapping(self.db),
                 "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
                 "active_db_profile": self.active_db_profile,
+                "active_db_profiles": scope_list,
                 "current_schema": self.current_schema,
                 "current_table": self.current_table,
                 "llm": _llm_to_mapping(self.llm),
@@ -1093,6 +1153,13 @@ class AMXConfig:
             self.db = self.db_profiles[name]
 
     def set_active_db_profile(self, name: str) -> None:
+        """Set a single active DB profile (collapses the multi-pick scope).
+
+        Equivalent to ``set_active_db_profiles([name])`` — kept as a
+        thin shim because every existing call site (``cmd_use``,
+        ``_maybe_modify_profiles_before_run``, etc.) speaks the
+        single-name idiom and would be churn-y to migrate.
+        """
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")
         # The autosave triggered by ``active_db_profile = name`` runs save(),
@@ -1102,7 +1169,56 @@ class AMXConfig:
         # fields converge before the YAML is written.
         with self.transaction():
             self.active_db_profile = name
+            # Single-pick collapses the scope. Symmetric: any caller that
+            # explicitly switches the active profile is opting back to a
+            # single-DB workflow.
+            self.active_db_profiles = [name]
             self.db = self.db_profiles[name]
+
+    def set_active_db_profiles(self, names: list[str]) -> None:
+        """0.11.0 multi-pick: set the persisted scope of active DB profiles.
+
+        Validates every name, dedupes preserving order, and mirrors the
+        first entry into the legacy scalar (``active_db_profile``) and
+        the ``cfg.db`` shortcut so single-profile call sites still see
+        the user's primary choice.
+
+        An empty list is rejected — pass ``set_active_db_profile(name)``
+        with a single profile if the user wants to narrow back down.
+        """
+        if not names:
+            raise ValueError("At least one profile name is required")
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for raw in names:
+            n = str(raw or "").strip()
+            if not n or n in seen:
+                continue
+            if n not in self.db_profiles:
+                raise KeyError(f"Unknown DB profile: {n}")
+            seen.add(n)
+            ordered.append(n)
+        if not ordered:
+            raise ValueError("At least one valid profile name is required")
+        with self.transaction():
+            self.active_db_profiles = ordered
+            self.active_db_profile = ordered[0]
+            self.db = self.db_profiles[ordered[0]]
+
+    def effective_db_profiles(self) -> list[str]:
+        """Resolved scope for the current process.
+
+        Returns the persisted ``active_db_profiles`` list when populated,
+        otherwise falls back to the legacy single-active scalar. Always
+        returns a list — empty when no profile is configured. Use this
+        instead of reading ``active_db_profiles`` directly so legacy
+        configs (and tests) without a list field still work.
+        """
+        if self.active_db_profiles:
+            return [n for n in self.active_db_profiles if n in self.db_profiles]
+        if self.active_db_profile and self.active_db_profile in self.db_profiles:
+            return [self.active_db_profile]
+        return []
 
     def upsert_db_profile(self, name: str, db: DBConfig) -> None:
         self.db_profiles[name] = db
@@ -1116,9 +1232,17 @@ class AMXConfig:
         if name == self.active_db_profile and len(self.db_profiles) == 1:
             raise ValueError("Cannot remove the last DB profile")
         del self.db_profiles[name]
+        # 0.11.0: also evict from the multi-pick scope to prevent ghost
+        # selections after a profile is removed.
+        if name in self.active_db_profiles:
+            self.active_db_profiles = [
+                n for n in self.active_db_profiles if n != name
+            ]
         if self.active_db_profile == name:
             self.active_db_profile = next(iter(self.db_profiles.keys()))
             self.db = self.db_profiles[self.active_db_profile]
+            if not self.active_db_profiles:
+                self.active_db_profiles = [self.active_db_profile]
         self._autosave()
 
     def apply_active_llm_profile(self) -> None:

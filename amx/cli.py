@@ -71,6 +71,18 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
             f"Database: profile '{cfg.active_db_profile}' → "
             f"[{cfg.db.backend}] {cfg.db.display_summary}"
         )
+        # 0.11.0 multi-pick scope: when the user has opted in via
+        # ``/use-db a b c`` show the full scope so they don't lose
+        # track of which DBs /ask, /run, /sync will run against.
+        scope = cfg.effective_db_profiles()
+        if len(scope) > 1:
+            others = [n for n in scope if n != cfg.active_db_profile]
+            info(
+                f"  Active scope ({len(scope)} profiles): "
+                f"{', '.join(scope)}. Default = '{cfg.active_db_profile}'. "
+                f"Multi-DB execution is on for /ask, /run, /sync."
+            )
+            del others  # noqa: F841 — informational only
         # 0.11.0: database is optional per profile. When the active profile
         # has no DB pinned, give the user a one-line nudge so they know
         # they'll be prompted at command time (catalog picker, etc.).
