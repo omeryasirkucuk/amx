@@ -6,6 +6,25 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-05-01
+### Fixed
+- **`/ask "I only remember 'trog' from the table name"` returned "no table similar to trog"**. Reproducer: any partial / approximate / fragment table-name query. Pre-v0.9.11 `find_table_by_name` did exact-match only (`asset_name.lower() == target.lower()`), so a non-exact fragment returned 0 and the LLM honestly said "nothing found".
+
+### Changed — interpretive answering, not another patch
+- **`find_table_by_name` adds substring + fuzzy fallback** (`amx/search/agent_tools.py`). Result now carries:
+  - `matches` — exact-name hits (catalog + live DB), unchanged.
+  - `fuzzy_matches` — list of `{path, match_kind}` where `match_kind` is `prefix` / `suffix` / `contains` / `fuzzy`. Populated from BOTH the live DB walk and the catalog scan, ranked by tier (prefix > suffix > contains > fuzzy) and by table-name length within each tier (shorter names win as closer hits). Capped at 25 entries to keep prompts tight on huge schemas.
+  - `match_kind=fuzzy` uses `SequenceMatcher` ratio ≥ 0.7 with length difference ≤ 3 — calibrated for short SAP-style names (4-8 chars) so single-character typos / dropped letters surface.
+- **System prompt — new "Interpretive answering" section** (`amx/search/tool_agent.py`). The rule, in plain English: NEVER reply with a flat "no" — look for adjacent fields in the tool response before declaring nothing found. Concrete examples in the prompt cover the four cases AMX has surfaced this week (fuzzy_matches, columns_truncated → columns_by_dtype, find_joinable_tables inference_source, dtype_summary). General rule: "if you're going to say 'no X', double-check that no related field (fuzzy_matches, dtype_summary, columns_by_dtype, inference_source, kind) carries the answer in another shape."
+
+### Why this matters
+
+The user's broader complaint — accumulating individually-patched question shapes ("we can't enumerate every dtype-question one by one", "this is whack-a-mole") — keeps surfacing because the system was treating tool results as primary facts and the LLM was treating empty primary lists as authoritative answers. v0.9.10 fixed that for dtype questions; v0.9.11 generalises it: every tool now ships a "wider net" field (fuzzy_matches / dtype_summary / inference_source / kind) and the system prompt teaches the LLM to read those fields before saying "no". The next time a user types a partial name, asks about a rare dtype, or queries an FK-free schema, the answer should be useful instead of confidently empty.
+
+### Followups
+- Apply the same `fuzzy_matches` pattern to `find_table_by_name`'s sibling tools (`find_columns_by_concept`, `search_columns_by_concept`) so concept queries that miss exact tokens fall through to substring/fuzzy + cite the partial-match tier.
+- The 0.7 SequenceMatcher threshold is calibrated for short identifiers; longer table names (e.g. snake_case `customer_address_history`) may need a separate threshold or a token-overlap match.
+
 ## [0.9.10] - 2026-05-01
 ### Fixed
 - **`/ask "which columns are int or double in vbak"` returned "no" with confidence**. Reproducer: any wide-table dtype question. The user pointed out the meta-pattern after v0.9.7 (joins) / v0.9.8 (boolean flags) / v0.9.9 (truncation) all required hand-tuning a separate question shape: "we can't enumerate every dtype-question pattern one by one". Right — the underlying problem was that AMX wasn't giving the LLM a complete dtype picture, so each question class needed a separate fix.
