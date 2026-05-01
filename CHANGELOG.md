@@ -6,6 +6,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/doctor` now works from every namespace, not just `/search`
+
+`/doctor` was registered with `cross_namespace=True` in the slash registry (so it appeared in autocomplete from every tab), but its dispatch was incomplete. Inside `/search` the verb fell through to `["search", "ask", "doctor"]` — sending the literal string "doctor" to the search agent as a question, which silently "looked like it worked." From any other namespace (`/db`, `/llm`, `/code`, …) the verb hit Click as `[namespace, "doctor"]`, an unknown subcommand.
+
+- **Root cause**: `session.session_to_click_args` had no entry for `doctor` in its `shortcut_map`, so the function couldn't translate `/doctor` to the top-level Click subcommand. The slash registry's `cross_namespace=True` only controls help/autocomplete visibility — runtime dispatch is a separate code path.
+- **Fix**: one-line addition (`"doctor": ["doctor"]`) to `shortcut_map`. Now `/doctor [--skip-network]` dispatches to the top-level Click subcommand from any namespace, exactly the same way `amx doctor` from a shell does.
+- **4 new regression tests** (`tests/test_doctor_and_schema.py::DoctorCrossNamespaceDispatchTests`) cover the dispatch from root, `/search`, every other namespace, and the `--skip-network` flag passthrough. Each fails on `main` without the fix.
+
 ### Added — Public Python API contract (`docs/PUBLIC_API.md`)
 
 The structural change with the longest tail of consequences: pinning what's stable before `1.0` ships. Every name documented in the new contract follows SemVer from 1.0 onward; everything else is internal and can move freely.

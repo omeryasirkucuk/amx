@@ -860,6 +860,14 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "setup": ["setup"],
         "config": ["config"],
         "help": ["--help"],
+        # /doctor is cross-namespace: registered as a top-level Click
+        # subcommand and listed in _ROOT_BUILTINS with cross_namespace=True.
+        # Without this entry, typing `/doctor` from /llm, /db, etc. would
+        # fall through to `[namespace, "doctor"]` which Click rejects, and
+        # from /search it would fall through to `["search", "ask",
+        # "doctor"]` — sending the literal string "doctor" to the search
+        # agent as a question, which silently "looks like it worked".
+        "doctor": ["doctor"],
     }
     if head == "search" and len(parts) > 1:
         if parts[1] in {
