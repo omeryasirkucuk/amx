@@ -23,7 +23,7 @@ Write descriptions and reasoning in {target_language}. Keep the response labels
 in English exactly as shown.
 
 Write descriptions assertively and directly (e.g. "Telephone extension number" or "Indicates the fax number").
-Do NOT start descriptions with "This column likely represents" or "This column likely is". Be concise.
+Do NOT start descriptions with "This column likely represents" or "This column likely is".
 Ground every claim in the provided profile, keys, comments, samples, stats, or usage hints.
 If evidence is weak, stay generic but still useful; do not invent business jargon, vendor-specific module names, legal meanings, or workflow claims that are not supported.
 Confidence rules:
@@ -35,7 +35,7 @@ Do not copy existing comments verbatim unless they are already the clearest avai
 If a column cannot be resolved precisely, prefer a broader neutral description over hallucinating a specific one.
 
 For EACH column provide:
-1. A concise description (1-2 sentences).
+1. {description_length_rule}
 {alt_instruction}
 {extra_items}
 A confidence level: HIGH / MEDIUM / LOW.
@@ -62,8 +62,19 @@ REASONING: The column participates in key relationships, has identifier-like sam
 """
 
 
-def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
-    """Build the system prompt dynamically for the requested number of alternatives."""
+def _build_system_prompt(
+    n_alternatives: int,
+    target_language: str,
+    description_verbosity: str = "brief",
+) -> str:
+    """Build the system prompt dynamically for the requested number of alternatives.
+
+    ``description_verbosity`` controls the LENGTH of generated descriptions:
+    * ``brief`` (default): 1 short sentence (current behavior).
+    * ``detailed``: 2–4 sentences covering purpose, typical values, and
+      relationships when supported by the provided evidence. Detailed
+      descriptions roughly double per-column output token cost.
+    """
     n = max(1, min(5, n_alternatives))
     if n == 1:
         alt_instruction = ""
@@ -81,8 +92,20 @@ def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
             f"TABLE_DESCRIPTION_{i}: <alternative table description>"
             for i in range(2, n + 1)
         )
+    if (description_verbosity or "brief").lower() == "detailed":
+        description_length_rule = (
+            "A DETAILED description (2-4 sentences). Cover the column's purpose, "
+            "the typical kind of values it stores, and any relationships to other "
+            "tables/keys/business processes that the evidence supports. Write "
+            "concrete, specific sentences — do not pad with filler. If evidence "
+            "for a 4-sentence answer is missing, write fewer sentences rather "
+            "than invent context."
+        )
+    else:
+        description_length_rule = "A concise description (1-2 sentences)."
     return _BASE_SYSTEM_PROMPT.format(
         target_language=target_language,
+        description_length_rule=description_length_rule,
         alt_instruction=alt_instruction,
         extra_items=extra_items,
         desc_lines=desc_lines,
@@ -314,7 +337,11 @@ class ProfileAgent(BaseAgent):
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
         """Build the messages list for a single profile batch — shared by run() and collect_messages()."""
         user_msg = self._build_prompt(ctx)
-        system = _build_system_prompt(self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english")
+        system = _build_system_prompt(
+            self._n_alternatives,
+            getattr(self.llm.cfg, "language", "english") or "english",
+            description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
+        )
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

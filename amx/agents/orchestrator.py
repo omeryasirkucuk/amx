@@ -530,8 +530,19 @@ class Orchestrator:
         self.results.extend(reviewed)
         return reviewed
 
-    def process_schema_meta(self, schema: str, table_results: list[ReviewResult]) -> list[ReviewResult]:
-        """Infer description for the schema itself based on its tables."""
+    def process_schema_meta(
+        self,
+        schema: str,
+        table_results: list[ReviewResult],
+        *,
+        auto_apply: bool = False,
+    ) -> list[ReviewResult]:
+        """Infer description for the schema itself based on its tables.
+
+        With ``auto_apply=True`` the produced ``ReviewResult`` is marked
+        ``applied=True`` so the caller doesn't drag it through the
+        human-review picker — same contract as ``process_table``.
+        """
         heading(f"Analyzing Schema: {schema}")
         
         # Gather top-level table descriptions
@@ -570,7 +581,9 @@ class Orchestrator:
             final_description=desc,
             confidence=conf,
             source="combined",
-            applied=False,  # keep reviewable in both immediate and deferred flows
+            # auto-apply marks the meta result applied immediately so the
+            # caller's batch_review skip + final apply step covers it.
+            applied=bool(auto_apply),
             asset_kind=AssetKind.SCHEMA.value,
         )
         calibrated = apply_logprob_confidence(
@@ -596,8 +609,18 @@ class Orchestrator:
         self.results.append(result)
         return [result]
 
-    def process_database_meta(self, schema_results: list[ReviewResult]) -> list[ReviewResult]:
-        """Infer description for the database itself based on its schemas."""
+    def process_database_meta(
+        self,
+        schema_results: list[ReviewResult],
+        *,
+        auto_apply: bool = False,
+    ) -> list[ReviewResult]:
+        """Infer description for the database itself based on its schemas.
+
+        With ``auto_apply=True`` the produced ``ReviewResult`` is marked
+        ``applied=True`` so the caller doesn't drag it through the
+        human-review picker.
+        """
         heading("Analyzing Database")
         
         schema_summaries = []
@@ -634,7 +657,7 @@ class Orchestrator:
             final_description=desc,
             confidence=conf,
             source="combined",
-            applied=False,  # keep reviewable in both immediate and deferred flows
+            applied=bool(auto_apply),
             asset_kind=AssetKind.DATABASE.value,
         )
         calibrated = apply_logprob_confidence(

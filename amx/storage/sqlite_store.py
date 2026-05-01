@@ -65,41 +65,13 @@ class SQLiteHistoryStore:
                 )
                 """
             )
-            # Migration: existing installs get the new columns added with
-            # safe defaults. We probe the live schema first via PRAGMA so
-            # we can log clearly when a column is added (or skipped because
-            # it already exists), instead of swallowing every exception.
-            existing_cols: set[str] = set()
-            try:
-                rows = conn.execute("PRAGMA table_info(analysis_runs)").fetchall()
-                existing_cols = {str(r[1]) for r in rows}
-            except Exception as exc:
-                log.warning("Could not introspect analysis_runs schema: %s", exc)
-            for col_name, col_type in (
-                ("selected_count", "INTEGER NOT NULL DEFAULT 0"),
-                ("planned_count", "INTEGER NOT NULL DEFAULT 0"),
-                ("processed_count", "INTEGER NOT NULL DEFAULT 0"),
-                ("applied_count", "INTEGER NOT NULL DEFAULT 0"),
-                ("review_strategy", "TEXT"),
-            ):
-                if col_name in existing_cols:
-                    continue
-                try:
-                    conn.execute(
-                        f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}"
-                    )
-                    log.info(
-                        "Migrated analysis_runs: added column %s %s",
-                        col_name,
-                        col_type,
-                    )
-                except Exception as exc:
-                    log.warning(
-                        "Could not add analysis_runs.%s: %s — partial-progress "
-                        "reporting in /history will show '—'.",
-                        col_name,
-                        exc,
-                    )
+            # Migration runs on every init() AND defensively at the top
+            # of create_run (see ``_ensure_run_columns``). This catches the
+            # case where users upgraded AMX while ``_store`` was already
+            # initialised in a long-running process, or where init() ran
+            # before the upgraded code was loaded (pipx editable mode
+            # quirks).
+            self._ensure_run_columns(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_analysis_runs_started_at "
                 "ON analysis_runs(started_at DESC)"
@@ -396,6 +368,47 @@ class SQLiteHistoryStore:
                 "ON chat_turns(run_id)"
             )
 
+    def _ensure_run_columns(self, conn: Any) -> None:
+        """Idempotently add the v0.5.2 reporting columns to analysis_runs.
+
+        Called from both ``init()`` (the normal path) and the top of
+        ``create_run`` (safety net for users who upgraded AMX without a
+        clean restart, or whose init() ran on stale code under a pipx
+        editable install). Each ALTER is wrapped so per-column failures
+        are isolated and visible in the logs.
+        """
+        try:
+            rows = conn.execute("PRAGMA table_info(analysis_runs)").fetchall()
+            existing_cols = {str(r[1]) for r in rows}
+        except Exception as exc:
+            log.warning("Could not introspect analysis_runs schema: %s", exc)
+            existing_cols = set()
+        for col_name, col_type in (
+            ("selected_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("planned_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("processed_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("applied_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("review_strategy", "TEXT"),
+        ):
+            if col_name in existing_cols:
+                continue
+            try:
+                conn.execute(
+                    f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}"
+                )
+                log.info(
+                    "Migrated analysis_runs: added column %s %s",
+                    col_name,
+                    col_type,
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not add analysis_runs.%s: %s — partial-progress "
+                    "reporting in /history will show '—'.",
+                    col_name,
+                    exc,
+                )
+
     def create_run(
         self,
         *,
@@ -421,6 +434,12 @@ class SQLiteHistoryStore:
         if planned_count <= 0:
             planned_count = selected_count
         with self._lock, self._connect() as conn:
+            # Belt-and-suspenders: ensure the v0.5.2 reporting columns
+            # exist before we try to INSERT into them. Without this, a user
+            # whose ``init()`` somehow ran on stale code (pipx editable mode
+            # quirks, in-process upgrade) would silently fail the INSERT
+            # and end up with /history showing 'Processed: —' forever.
+            self._ensure_run_columns(conn)
             # Recover stale rows left as 'running' after an unclean shutdown/crash.
             conn.execute(
                 """

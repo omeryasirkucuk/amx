@@ -38,6 +38,7 @@ from amx.cli_support.commands.profiles import (
     cmd_llm_profiles as _cmd_llm_profiles,
     cmd_logprob_thresholds as _cmd_logprob_thresholds,
     cmd_n_alternatives as _cmd_n_alternatives,
+    cmd_description_verbosity as _cmd_description_verbosity,
     cmd_prompt_detail as _cmd_prompt_detail,
     cmd_remove_code_profile as _cmd_remove_code_profile,
     cmd_remove_doc_profile as _cmd_remove_doc_profile,
@@ -696,6 +697,11 @@ def _handle_session_builtin(
             return True
         _cmd_prompt_detail(cfg, parts[1:])
         return True
+    if head == "description-verbosity":
+        if not _require_namespace(head, namespace, "llm", "description-verbosity"):
+            return True
+        _cmd_description_verbosity(cfg, parts[1:])
+        return True
     if head == "language":
         if not _require_namespace(head, namespace, "llm", "language"):
             return True
@@ -990,6 +996,7 @@ def run_interactive_session(
             "remove-llm-profile",
             "language",
             "prompt-detail",
+            "description-verbosity",
             "n-alternatives",
             "llm-batch-size",
             "batch-context-columns",

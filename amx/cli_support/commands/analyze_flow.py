@@ -543,16 +543,28 @@ def execute_analyze_run(
                             continue
 
                     if len(assets) > 1 or total_schemas > 1:
-                        schema_meta = orch.process_schema_meta(schema_name, all_results)
+                        schema_meta = orch.process_schema_meta(
+                            schema_name,
+                            all_results,
+                            auto_apply=(review_strategy == "auto-apply"),
+                        )
                         all_results.extend(schema_meta)
             finally:
                 display.stop()
 
         if total_schemas > 1:
-            db_meta = orch.process_database_meta(all_results)
+            db_meta = orch.process_database_meta(
+                all_results,
+                auto_apply=(review_strategy == "auto-apply"),
+            )
             all_results.extend(db_meta)
 
-        all_results = orch.batch_review(all_results)
+        # auto-apply: skip the human-review step entirely. Per-table writes
+        # already happened inside process_table; schema/database meta were
+        # marked applied above. Calling batch_review would just bring the
+        # interactive picker back, which contradicts the user's choice.
+        if review_strategy != "auto-apply":
+            all_results = orch.batch_review(all_results)
 
         if rag_store is None:
             token_tracker.drop_steps({"rag_agent", "rag_agent(batch)"})
@@ -591,7 +603,28 @@ def execute_analyze_run(
                     "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
                 )
 
-        if apply and approved and confirm("Apply these metadata comments to the database?"):
+        # auto-apply: per-table writes already happened in process_table;
+        # there is no batch left to apply, so skip the confirm AND the
+        # batch apply altogether. For other strategies, prompt as before.
+        if review_strategy == "auto-apply":
+            # Schema / database meta produced by the *_meta steps need a
+            # final write since per-table apply didn't reach them.
+            meta_to_apply = [
+                r for r in approved
+                if (r.column is None and r.table == "")
+                or r.asset_kind in ("schema", "database")
+            ]
+            if apply and meta_to_apply:
+                from amx.pending_review import clear_pending
+
+                applied_n = orch.apply_results(meta_to_apply)
+                clear_pending()
+                if hs is not None and run_id is not None and applied_n:
+                    try:
+                        hs.increment_run_applied(run_id, by=int(applied_n))
+                    except Exception as exc:
+                        log.debug("Could not bump applied counter: %s", exc)
+        elif apply and approved and confirm("Apply these metadata comments to the database?"):
             from amx.pending_review import clear_pending
 
             applied_n = orch.apply_results(approved)
