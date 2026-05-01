@@ -27,7 +27,7 @@ class AMXApplication:
     store: SQLiteHistoryStore | None = None
 
     @classmethod
-    def load(cls, config_path: str | None = None) -> "AMXApplication":
+    def load(cls, config_path: str | None = None) -> AMXApplication:
         cfg = AMXConfig.load(config_path)
         init_history_store(cfg.CONFIG_DIR)
         store = history_store()
@@ -39,7 +39,9 @@ class AMXApplication:
 
     @property
     def state(self) -> StateManager:
-        return StateManager(self.config, self.store, namespace=self.config.active_db_profile or "default")
+        return StateManager(
+            self.config, self.store, namespace=self.config.active_db_profile or "default"
+        )
 
     def ask(self, question: str) -> SearchAnswer:
         return SearchService(self.config, self.catalog).ask(question)
@@ -80,7 +82,9 @@ class AMXApplication:
         if self.config.current_schema and self.config.current_table:
             return {self.config.current_schema: [self.config.current_table]}
         if self.config.selected_schemas and self.config.selected_tables:
-            return {schema: list(self.config.selected_tables) for schema in self.config.selected_schemas}
+            return {
+                schema: list(self.config.selected_tables) for schema in self.config.selected_schemas
+            }
         if self.config.selected_schemas:
             return {schema: [] for schema in self.config.selected_schemas}
         return {}

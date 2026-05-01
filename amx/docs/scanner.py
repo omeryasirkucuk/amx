@@ -9,9 +9,10 @@ import shutil
 import subprocess
 import tempfile
 import urllib.parse
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import requests
 
@@ -20,8 +21,22 @@ from amx.utils.logging import get_logger
 log = get_logger("docs.scanner")
 
 SUPPORTED_EXTENSIONS = {
-    ".pdf", ".docx", ".doc", ".txt", ".md", ".csv", ".xlsx", ".xls",
-    ".html", ".htm", ".json", ".yaml", ".yml", ".rst", ".rtf", ".pptx",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".txt",
+    ".md",
+    ".csv",
+    ".xlsx",
+    ".xls",
+    ".html",
+    ".htm",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".rst",
+    ".rtf",
+    ".pptx",
 }
 
 
@@ -258,12 +273,14 @@ def _google_drive_credentials():
     sa_path = os.environ.get("AMX_GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if sa_path and Path(sa_path).is_file():
         return service_account.Credentials.from_service_account_file(
-            sa_path, scopes=["https://www.googleapis.com/auth/drive.readonly"],
+            sa_path,
+            scopes=["https://www.googleapis.com/auth/drive.readonly"],
         )
     token_path = os.environ.get("AMX_GOOGLE_OAUTH_TOKEN_JSON", "").strip()
     if token_path and Path(token_path).is_file():
         return Credentials.from_authorized_user_file(
-            token_path, scopes=["https://www.googleapis.com/auth/drive.readonly"],
+            token_path,
+            scopes=["https://www.googleapis.com/auth/drive.readonly"],
         )
     raise RuntimeError("No Drive API credentials configured.")
 
@@ -273,15 +290,16 @@ def _google_drive_build_service():
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
     except ImportError as exc:
-        raise RuntimeError(
-            "Google Drive API requires google-api-python-client."
-        ) from exc
+        raise RuntimeError("Google Drive API requires google-api-python-client.") from exc
     creds = _google_drive_credentials()
     return build("drive", "v3", credentials=creds, cache_discovery=False), HttpError
 
 
 def _download_google_drive_file_api(
-    service: Any, HttpError: type, file_id: str, dest_dir: Path,
+    service: Any,
+    HttpError: type,
+    file_id: str,
+    dest_dir: Path,
 ) -> Iterator[DocInfo]:
     try:
         meta = service.files().get(fileId=file_id, fields="id,name,mimeType,size").execute()
@@ -320,15 +338,25 @@ def _download_google_drive_file_api(
 
 
 def _list_google_drive_folder_api(
-    service: Any, HttpError: type, folder_id: str, dest_dir: Path,
+    service: Any,
+    HttpError: type,
+    folder_id: str,
+    dest_dir: Path,
 ) -> Iterator[DocInfo]:
     page_token: str | None = None
     q = f"'{folder_id}' in parents and trashed = false"
     while True:
-        resp = service.files().list(
-            q=q, spaces="drive", fields="nextPageToken, files(id, name, mimeType)",
-            pageToken=page_token, pageSize=100,
-        ).execute()
+        resp = (
+            service.files()
+            .list(
+                q=q,
+                spaces="drive",
+                fields="nextPageToken, files(id, name, mimeType)",
+                pageToken=page_token,
+                pageSize=100,
+            )
+            .execute()
+        )
         for f in resp.get("files", []):
             yield from _download_google_drive_file_api(service, HttpError, f["id"], dest_dir)
         page_token = resp.get("nextPageToken")
@@ -377,9 +405,7 @@ def _resolve_google_drive(url: str, target_dir: str | None = None) -> Iterator[D
         "  AMX_GOOGLE_OAUTH_TOKEN_JSON     — path to an OAuth user token JSON"
     )
     if folder_id:
-        raise RuntimeError(
-            "Google Drive folders require API credentials to list contents. " + hint
-        )
+        raise RuntimeError("Google Drive folders require API credentials to list contents. " + hint)
     raise RuntimeError(hint)
 
 
@@ -394,7 +420,7 @@ def _onedrive_try_public_download(url: str, dest_dir: Path) -> DocInfo | None:
         return None
 
     cd = r.headers.get("Content-Disposition", "")
-    ct = r.headers.get("Content-Type", "")
+    r.headers.get("Content-Type", "")
     fname_match = re.search(r'filename="?([^";]+)"?', cd)
 
     if not fname_match:
@@ -447,9 +473,7 @@ def _graph_app_token() -> str:
     try:
         import msal
     except ImportError as exc:
-        raise RuntimeError(
-            "SharePoint / OneDrive API requires msal."
-        ) from exc
+        raise RuntimeError("SharePoint / OneDrive API requires msal.") from exc
 
     app = msal.ConfidentialClientApplication(
         client_id,
@@ -476,10 +500,15 @@ def _graph_get(url: str, token: str) -> dict[str, Any]:
 
 
 def _download_graph_drive_item(
-    token: str, drive_id: str, item_id: str, name_hint: str, dest_dir: Path,
+    token: str,
+    drive_id: str,
+    item_id: str,
+    name_hint: str,
+    dest_dir: Path,
 ) -> Iterator[DocInfo]:
     meta = _graph_get(
-        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}", token,
+        f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}",
+        token,
     )
     name = str(meta.get("name") or name_hint)
     ext = Path(name).suffix.lower()
@@ -495,7 +524,10 @@ def _download_graph_drive_item(
 
 
 def _list_graph_folder(
-    token: str, drive_id: str, folder_id: str, dest_dir: Path,
+    token: str,
+    drive_id: str,
+    folder_id: str,
+    dest_dir: Path,
 ) -> Iterator[DocInfo]:
     url: str | None = (
         f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{folder_id}/children?$top=200"
@@ -649,7 +681,11 @@ def test_source_reachable(path: str) -> None:
 
 def scan_source(path: str) -> list[DocInfo]:
     def _tag(docs: list[DocInfo]) -> list[DocInfo]:
-        root = str(Path(path).expanduser().resolve()) if not path.startswith(("http://", "https://", "s3://", "git@")) else path
+        root = (
+            str(Path(path).expanduser().resolve())
+            if not path.startswith(("http://", "https://", "s3://", "git@"))
+            else path
+        )
         for doc in docs:
             if not doc.source_root:
                 doc.source_root = root

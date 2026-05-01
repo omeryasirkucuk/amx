@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from amx.agents.tools import SchemaExplorer
 from amx.config import AMXConfig
@@ -185,8 +186,13 @@ class LoopBasedAskAgent:
         if strategy == "inventory":
             inventory = self.toolbox.schema_explorer()
             tool_results.append(inventory)
-            table_rows = [row for row in inventory.rows if row.get("row_type") == "schema_explorer_table"]
-            summary = next((row for row in inventory.rows if row.get("row_type") == "schema_explorer_summary"), {})
+            table_rows = [
+                row for row in inventory.rows if row.get("row_type") == "schema_explorer_table"
+            ]
+            summary = next(
+                (row for row in inventory.rows if row.get("row_type") == "schema_explorer_summary"),
+                {},
+            )
             trace.append(
                 ReasoningTraceStep(
                     1,
@@ -276,12 +282,31 @@ class LoopBasedAskAgent:
 
     def _strategy(self, question: str) -> str:
         text = (question or "").lower()
-        asks_inventory = any(token in text for token in ("how many", "count", "list", "show", "all", "kaç", "kac", "hangi", "tum", "tüm"))
-        asks_columns = any(token in text for token in ("column", "columns", "field", "fields", "kolon", "kolonlar"))
+        asks_inventory = any(
+            token in text
+            for token in (
+                "how many",
+                "count",
+                "list",
+                "show",
+                "all",
+                "kaç",
+                "kac",
+                "hangi",
+                "tum",
+                "tüm",
+            )
+        )
+        asks_columns = any(
+            token in text for token in ("column", "columns", "field", "fields", "kolon", "kolonlar")
+        )
         asks_tables = any(token in text for token in ("table", "tables", "tablo", "tablolar"))
         if asks_inventory and (asks_tables or asks_columns):
             return "inventory"
-        if any(token in text for token in ("join", "link", "relationship", "relate", "connect", "bağ", "bag")):
+        if any(
+            token in text
+            for token in ("join", "link", "relationship", "relate", "connect", "bağ", "bag")
+        ):
             return "relationship"
         if any(token in text for token in ("detail", "deep", "full", "all columns", "detay")):
             return "deep_dive"
@@ -289,7 +314,9 @@ class LoopBasedAskAgent:
 
     def _inventory_answer(self, rows: list[dict[str, Any]], summary: dict[str, Any]) -> str:
         table_count = int(summary.get("table_count") or len(rows))
-        total_columns = int(summary.get("total_columns") or sum(int(row.get("column_count") or 0) for row in rows))
+        total_columns = int(
+            summary.get("total_columns") or sum(int(row.get("column_count") or 0) for row in rows)
+        )
         lines = [
             f"SchemaExplorer found **{table_count}** tables and **{total_columns}** total columns.",
             "",

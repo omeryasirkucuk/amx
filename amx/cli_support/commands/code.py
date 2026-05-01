@@ -33,8 +33,15 @@ def _build_scan_progress() -> tuple[dict[str, object | None], callable]:
     progress_state: dict[str, object | None] = {"obj": None, "task": None}
 
     def _scan_cb(action: str, value: object) -> None:
+        from rich.progress import (
+            BarColumn,
+            MofNCompleteColumn,
+            Progress,
+            TextColumn,
+            TimeElapsedColumn,
+        )
+
         from amx.utils.live_display import get_display
-        from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
         display = get_display()
         if display.is_active:
@@ -155,7 +162,9 @@ def register_code_commands(
             sys.exit(1)
 
         try:
-            resolved = cfg.resolve_code_path((code_profile or "").strip() or None, (path or "").strip() or None)
+            resolved = cfg.resolve_code_path(
+                (code_profile or "").strip() or None, (path or "").strip() or None
+            )
         except KeyError as exc:
             error(str(exc))
             sys.exit(1)
@@ -171,9 +180,13 @@ def register_code_commands(
             else:
                 info(f"Using active codebase profile path: {resolved}")
 
-        profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
+        profile_nm = (
+            (code_profile or "").strip() or cfg.active_code_profile or "default"
+        ).strip() or "default"
 
-        with command_display(schema=schema_name, mode="code-scan", provider=cfg.llm.provider, model=cfg.llm.model):
+        with command_display(
+            schema=schema_name, mode="code-scan", provider=cfg.llm.provider, model=cfg.llm.model
+        ):
             db = DatabaseConnector(cfg.db)
             with step_spinner(f"Listing assets in {schema_name}"):
                 all_assets = db.list_assets(schema_name)
@@ -231,7 +244,9 @@ def register_code_commands(
                     progress_state["obj"].stop()
 
         try:
-            with command_display(schema=schema_name, mode="code-scan", provider=cfg.llm.provider, model=cfg.llm.model):
+            with command_display(
+                schema=schema_name, mode="code-scan", provider=cfg.llm.provider, model=cfg.llm.model
+            ):
                 with step_spinner("Saving code scan cache"):
                     save_cached_report(
                         profile_name=profile_nm,
@@ -249,7 +264,12 @@ def register_code_commands(
 
             catalog_store = SearchCatalog.from_history_store()
             if catalog_store is not None:
-                with command_display(schema=schema_name, mode="code-sync", provider=cfg.llm.provider, model=cfg.llm.model):
+                with command_display(
+                    schema=schema_name,
+                    mode="code-sync",
+                    provider=cfg.llm.provider,
+                    model=cfg.llm.model,
+                ):
                     with step_spinner("Refreshing /search code evidence"):
                         catalog_store.sync_code_report(
                             db_profile=cfg.active_db_profile or "default",
@@ -285,7 +305,9 @@ def register_code_commands(
         if not code_path:
             error("No codebase path configured.")
             sys.exit(1)
-        profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
+        profile_nm = (
+            (code_profile or "").strip() or cfg.active_code_profile or "default"
+        ).strip() or "default"
         with command_display(mode="code-refresh", provider=cfg.llm.provider, model=cfg.llm.model):
             with step_spinner("Clearing cached code scan"):
                 invalidate_cache(profile_nm, code_path)
@@ -321,7 +343,9 @@ def register_code_commands(
         if not code_path:
             error("No codebase path configured.")
             return
-        profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
+        profile_nm = (
+            (code_profile or "").strip() or cfg.active_code_profile or "default"
+        ).strip() or "default"
 
         manifest, report = load_latest_cached_report(profile_nm, code_path)
         if report is None or manifest is None:
@@ -375,7 +399,9 @@ def register_code_commands(
         help="Export results for this profile (default: active profile).",
     )
     @click.pass_obj
-    def code_export_report_cmd(cfg: AMXConfig, output_file: str | None, code_profile: str | None) -> None:
+    def code_export_report_cmd(
+        cfg: AMXConfig, output_file: str | None, code_profile: str | None
+    ) -> None:
         """Export the cached code-scan results to a markdown file."""
         from amx.codebase.cache import load_latest_cached_report
 
@@ -387,7 +413,9 @@ def register_code_commands(
         if not code_path:
             error("No codebase path configured.")
             return
-        profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
+        profile_nm = (
+            (code_profile or "").strip() or cfg.active_code_profile or "default"
+        ).strip() or "default"
 
         manifest, report = load_latest_cached_report(profile_nm, code_path)
         if report is None or manifest is None:
@@ -506,7 +534,9 @@ def register_code_commands(
         if not code_path:
             error("No codebase path configured. Run `/code` then `/add-code-profile` first.")
             return
-        profile_nm = ((code_profile or "").strip() or cfg.active_code_profile or "default").strip() or "default"
+        profile_nm = (
+            (code_profile or "").strip() or cfg.active_code_profile or "default"
+        ).strip() or "default"
 
         _, code_report = load_latest_cached_report(profile_nm, code_path)
         if code_report is None:
@@ -517,7 +547,12 @@ def register_code_commands(
 
         llm = LLMProvider(cfg.llm)
         db = DatabaseConnector(cfg.db)
-        with command_display(schema=schema or cfg.current_schema or "", mode="code-analyze", provider=cfg.llm.provider, model=cfg.llm.model):
+        with command_display(
+            schema=schema or cfg.current_schema or "",
+            mode="code-analyze",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
             with step_spinner("Testing database connection..."):
                 connected = db.test_connection()
             if not connected:
@@ -556,7 +591,11 @@ def register_code_commands(
             return
 
         rows = [
-            [s.column or s.table, s.suggestions[0][:60] if s.suggestions else "", s.confidence.value]
+            [
+                s.column or s.table,
+                s.suggestions[0][:60] if s.suggestions else "",
+                s.confidence.value,
+            ]
             for s in all_suggestions
         ]
         render_table("Code Agent suggestions", ["Asset", "Suggestion", "Confidence"], rows[:40])

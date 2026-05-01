@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import re
 import sqlite3
-import time
-from difflib import SequenceMatcher
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any
 
-from amx.agents.base import MetadataSuggestion
-from amx.codebase.analyzer import CodebaseReport, CodeReference
-from amx.db.connector import AssetKind, TableProfile
 from amx.search._catalog import (
     EntityCrudMixin,
     JoinMixin,
@@ -35,11 +27,11 @@ log = get_logger("search.catalog")
 # dependency back through ``catalog.py``. Re-exported here so any
 # pre-v0.9.5 caller that referenced ``amx.search.catalog.SOURCE_PRIORITY``
 # / ``DEFAULT_SETTINGS`` keeps working unchanged.
-from amx.search._catalog._constants import (
+from amx.search._catalog._constants import (  # noqa: E402, F401
+    _DEFAULT_SCORE_FLOOR,
+    _PROVIDER_SCORE_FLOOR,
     DEFAULT_SETTINGS,
     SOURCE_PRIORITY,
-    _PROVIDER_SCORE_FLOOR,
-    _DEFAULT_SCORE_FLOOR,
     _active_embedding_kind,
     _database_name,
     _json_loads,
@@ -88,7 +80,7 @@ class SearchCatalog(
         self.index = SearchIndex()
 
     @classmethod
-    def from_history_store(cls) -> "SearchCatalog | None":
+    def from_history_store(cls) -> SearchCatalog | None:
         hs = history_store()
         if hs is None:
             return None
@@ -100,4 +92,3 @@ class SearchCatalog(
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
-

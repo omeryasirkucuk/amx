@@ -10,6 +10,7 @@ from accidentally drifting their definition.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from amx.llm.provider import LLMProvider
@@ -27,15 +28,18 @@ class SessionMemoryMixin:
         if self.settings.get("llm_enabled", "true").lower() != "true":
             return False
         return bool(getattr(self.cfg.llm, "provider", "") and getattr(self.cfg.llm, "model", ""))
+
     def _llm_provider(self) -> LLMProvider:
         if self._llm is None:
             self._llm = self._llm_factory(self.cfg.llm)
         return self._llm
+
     def _memory_turns(self) -> int:
         try:
             return max(0, int(self.settings.get("conversation_memory_turns", "4")))
         except Exception:
             return 4
+
     def _ensure_session_store(self) -> ChatSessionStore | None:
         if self._session_store is not None:
             return self._session_store
@@ -44,6 +48,7 @@ class SessionMemoryMixin:
             return None
         self._session_store = ChatSessionStore(store)
         return self._session_store
+
     def _ensure_session_id(self) -> int | None:
         """Resolve the active chat session id.
 
@@ -66,10 +71,8 @@ class SessionMemoryMixin:
             llm_profile=self._llm_profile,
         )
         self._session_id = sid
-        try:
+        with contextlib.suppress(Exception):
             self.cfg.active_chat_session_id = sid
-        except Exception:
-            pass
         # Mirror to env so subsequent ``main_command.main()`` invocations from
         # the interactive REPL re-pick the same session via ``AMXConfig.load``.
         # Without this, each ``/ask <q>`` line creates a brand-new session and
@@ -81,6 +84,7 @@ class SessionMemoryMixin:
         except Exception:
             pass
         return sid
+
     def _memory(self) -> list[dict[str, Any]]:
         store = self._ensure_session_store()
         sid = getattr(self.cfg, "active_chat_session_id", None) or self._session_id
@@ -93,26 +97,30 @@ class SessionMemoryMixin:
         for t in turns:
             role = str(t.get("role") or "")
             if role == "summary":
-                out.append({
-                    "question": "",
-                    "intent": "compaction",
-                    "topic": "previous_context_summary",
-                    "tables": list(t.get("tables") or []),
-                    "columns": list(t.get("columns") or []),
-                    "answer_summary": str(t.get("answer_summary") or ""),
-                })
+                out.append(
+                    {
+                        "question": "",
+                        "intent": "compaction",
+                        "topic": "previous_context_summary",
+                        "tables": list(t.get("tables") or []),
+                        "columns": list(t.get("columns") or []),
+                        "answer_summary": str(t.get("answer_summary") or ""),
+                    }
+                )
                 continue
             if role == "user":
                 # Pair the user turn with the next assistant turn; we'll fill
                 # answer_summary from there in a second pass below.
-                out.append({
-                    "question": str(t.get("question") or ""),
-                    "intent": "",
-                    "topic": "",
-                    "tables": [],
-                    "columns": [],
-                    "answer_summary": "",
-                })
+                out.append(
+                    {
+                        "question": str(t.get("question") or ""),
+                        "intent": "",
+                        "topic": "",
+                        "tables": [],
+                        "columns": [],
+                        "answer_summary": "",
+                    }
+                )
                 continue
             # assistant
             plan = t.get("plan") or {}
@@ -134,6 +142,7 @@ class SessionMemoryMixin:
             else:
                 out.append(payload)
         return out
+
     def _remember(self, turn: dict[str, Any]) -> None:
         """Persist an assistant turn (back-compat shape).
 
@@ -164,6 +173,7 @@ class SessionMemoryMixin:
             tokens=turn.get("tokens"),
             request_id=turn.get("request_id"),
         )
+
     def _memory_summary(self) -> list[dict[str, Any]]:
         summary: list[dict[str, Any]] = []
         for turn in self._memory():
@@ -184,6 +194,7 @@ class SessionMemoryMixin:
                 }
             )
         return summary
+
     def _last_tables(self) -> list[str]:
         tables: list[str] = []
         for turn in reversed(self._memory()):
@@ -193,6 +204,7 @@ class SessionMemoryMixin:
             if tables:
                 break
         return tables
+
     def _catalog_ready(self) -> tuple[bool, dict[str, Any]]:
         status = self.catalog.sync_status(self.db_profile)
         total = int((status.get("entities") or {}).get("total_entities") or 0)

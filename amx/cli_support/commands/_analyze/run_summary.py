@@ -170,9 +170,9 @@ def _run_apply_branch(
         # Schema / database meta produced by the *_meta steps need a
         # final write since per-table apply didn't reach them.
         meta_to_apply = [
-            r for r in approved
-            if (r.column is None and r.table == "")
-            or r.asset_kind in ("schema", "database")
+            r
+            for r in approved
+            if (r.column is None and r.table == "") or r.asset_kind in ("schema", "database")
         ]
         if apply and meta_to_apply:
             from amx.pending_review import clear_pending

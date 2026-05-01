@@ -19,7 +19,6 @@ Reads from ``self._connect()``; depends on
 
 from __future__ import annotations
 
-import json
 import math
 from typing import Any
 
@@ -55,7 +54,10 @@ class JoinMixin:
         for (left, right), lines in pairs.items():
             out.append((left, right, float(len(lines)), lines[:3]))
         return out
-    def _semantic_column_pair_score(self, left: dict[str, Any], right: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+
+    def _semantic_column_pair_score(
+        self, left: dict[str, Any], right: dict[str, Any]
+    ) -> tuple[float, dict[str, Any]]:
         score = 0.0
         reasons: list[str] = []
         left_name = str(left.get("column_name") or "")
@@ -77,7 +79,10 @@ class JoinMixin:
         if left_family == right_family:
             score += 2.0
             reasons.append(f"compatible dtype family ({left_family})")
-        if str(left.get("dtype") or "").lower() == str(right.get("dtype") or "").lower() and str(left.get("dtype") or "").strip():
+        if (
+            str(left.get("dtype") or "").lower() == str(right.get("dtype") or "").lower()
+            and str(left.get("dtype") or "").strip()
+        ):
             score += 0.75
         if int(left.get("nullable") or 0) == int(right.get("nullable") or 1):
             score += 0.25
@@ -89,11 +94,16 @@ class JoinMixin:
         overlap = left_desc.intersection(right_desc)
         if overlap:
             score += min(4.0, 1.5 * len(overlap))
-            reasons.append("description overlap: " + ", ".join(sorted(list(overlap))[:4]))
+            reasons.append("description overlap: " + ", ".join(sorted(overlap)[:4]))
             if left_family == right_family:
                 score += 1.0
                 reasons.append("description overlap with compatible dtype")
-        return score, {"reasons": reasons, "name_similarity": round(similarity, 4), "shared_tokens": sorted(list(overlap))[:8]}
+        return score, {
+            "reasons": reasons,
+            "name_similarity": round(similarity, 4),
+            "shared_tokens": sorted(overlap)[:8],
+        }
+
     def _band_for_semantic_score(self, score: float) -> str:
         if score >= 10.0:
             return "verified"
@@ -104,7 +114,10 @@ class JoinMixin:
         return "weak_hypothesis"
 
     def name_overlap_joinable_tables(
-        self, db_profile: str, table_path: str, limit: int = 12,
+        self,
+        db_profile: str,
+        table_path: str,
+        limit: int = 12,
     ) -> list[dict[str, Any]]:
         """Find joinable tables by shared column NAMES (no FK / no LLM).
 
@@ -143,11 +156,7 @@ class JoinMixin:
                 "AND LOWER(table_name)=LOWER(?)",
                 (db_profile, schema_name, table_name),
             ).fetchall()
-            base_cols = [
-                str(r["column_name"]).lower()
-                for r in base_cols_rows
-                if r["column_name"]
-            ]
+            base_cols = [str(r["column_name"]).lower() for r in base_cols_rows if r["column_name"]]
             if not base_cols:
                 return []
             placeholders = ",".join("?" for _ in base_cols)
@@ -162,10 +171,7 @@ class JoinMixin:
                 f"GROUP BY LOWER(column_name)",
                 [db_profile, *base_cols],
             ).fetchall()
-            rarity = {
-                str(r["col"]): int(r["n_tables"])
-                for r in rarity_rows
-            }
+            rarity = {str(r["col"]): int(r["n_tables"]) for r in rarity_rows}
             # All other tables that share at least one of the base
             # column names. We pull (target_schema, target_table, col)
             # rows so the python side can group by candidate table and
@@ -195,7 +201,8 @@ class JoinMixin:
             # other table contributes ~1.0.
             weight = 1.0 / math.log2(n_tables + 1) if n_tables > 0 else 0.0
             slot = candidates.setdefault(
-                key, {"shared_cols": [], "weight": 0.0},
+                key,
+                {"shared_cols": [], "weight": 0.0},
             )
             if col not in slot["shared_cols"]:
                 slot["shared_cols"].append(col)
@@ -204,20 +211,22 @@ class JoinMixin:
         results: list[dict[str, Any]] = []
         for (target_schema, target_table), data in candidates.items():
             cols = data["shared_cols"]
-            results.append({
-                "row_type": "joinable_table",
-                "schema_name": schema_name,
-                "table_name": table_name,
-                "target_schema_name": target_schema,
-                "target_table_name": target_table,
-                # Same column name on both sides — that's the join.
-                "left_column": ", ".join(cols[:5]),
-                "right_column": ", ".join(cols[:5]),
-                "relationship_type": "name_overlap",
-                "source": "name_overlap",
-                "score": round(float(data["weight"]), 3),
-                "shared_column_count": len(cols),
-            })
+            results.append(
+                {
+                    "row_type": "joinable_table",
+                    "schema_name": schema_name,
+                    "table_name": table_name,
+                    "target_schema_name": target_schema,
+                    "target_table_name": target_table,
+                    # Same column name on both sides — that's the join.
+                    "left_column": ", ".join(cols[:5]),
+                    "right_column": ", ".join(cols[:5]),
+                    "relationship_type": "name_overlap",
+                    "source": "name_overlap",
+                    "score": round(float(data["weight"]), 3),
+                    "shared_column_count": len(cols),
+                }
+            )
         results.sort(
             key=lambda r: (
                 -float(r.get("score") or 0.0),
@@ -226,7 +235,9 @@ class JoinMixin:
         )
         return results[:limit]
 
-    def joinable_tables(self, db_profile: str, table_path: str, limit: int = 8) -> list[dict[str, Any]]:
+    def joinable_tables(
+        self, db_profile: str, table_path: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
         if "." not in (table_path or ""):
             return []
         schema_name, table_name = table_path.split(".", 1)
@@ -272,16 +283,27 @@ class JoinMixin:
             if src_path.lower() == base_path.lower():
                 target_schema = str(rel["dst_schema_name"] or "")
                 target_table = str(rel["dst_table_name"] or "")
-                left_cols = list(details.get("constrained_columns") or details.get("referred_columns") or [])
-                right_cols = list(details.get("referred_columns") or details.get("constrained_columns") or [])
+                left_cols = list(
+                    details.get("constrained_columns") or details.get("referred_columns") or []
+                )
+                right_cols = list(
+                    details.get("referred_columns") or details.get("constrained_columns") or []
+                )
             else:
                 target_schema = str(rel["src_schema_name"] or "")
                 target_table = str(rel["src_table_name"] or "")
-                left_cols = list(details.get("referred_columns") or details.get("constrained_columns") or [])
-                right_cols = list(details.get("constrained_columns") or details.get("referred_columns") or [])
+                left_cols = list(
+                    details.get("referred_columns") or details.get("constrained_columns") or []
+                )
+                right_cols = list(
+                    details.get("constrained_columns") or details.get("referred_columns") or []
+                )
             if not target_schema or not target_table:
                 continue
-            if target_schema.lower() == schema_name.lower() and target_table.lower() == table_name.lower():
+            if (
+                target_schema.lower() == schema_name.lower()
+                and target_table.lower() == table_name.lower()
+            ):
                 continue
             join_left = ", ".join(str(item) for item in left_cols if str(item))
             join_right = ", ".join(str(item) for item in right_cols if str(item))
@@ -316,7 +338,10 @@ class JoinMixin:
             )
         )
         return results[:limit]
-    def semantic_join_candidates(self, db_profile: str, left_path: str, right_path: str, limit: int = 8) -> list[dict[str, Any]]:
+
+    def semantic_join_candidates(
+        self, db_profile: str, left_path: str, right_path: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
         left_parts = left_path.split(".")
         right_parts = right_path.split(".")
         if len(left_parts) != 2 or len(right_parts) != 2:
@@ -366,9 +391,18 @@ class JoinMixin:
                         "details": details,
                     }
                 )
-        results.sort(key=lambda item: (-float(item.get("score") or 0.0), item.get("left_column", ""), item.get("right_column", "")))
+        results.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                item.get("left_column", ""),
+                item.get("right_column", ""),
+            )
+        )
         return results[:limit]
-    def semantic_joinable_tables(self, db_profile: str, table_path: str, limit: int = 8) -> list[dict[str, Any]]:
+
+    def semantic_joinable_tables(
+        self, db_profile: str, table_path: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
         if "." not in (table_path or ""):
             return []
         schema_name, table_name = table_path.split(".", 1)
@@ -414,12 +448,17 @@ class JoinMixin:
             ranked.append(best)
         ranked.sort(
             key=lambda item: (
-                {"verified": 0, "high_likelihood": 1, "possible": 2, "weak_hypothesis": 3}.get(str(item.get("confidence_band") or ""), 4),
+                {"verified": 0, "high_likelihood": 1, "possible": 2, "weak_hypothesis": 3}.get(
+                    str(item.get("confidence_band") or ""), 4
+                ),
                 -float(item.get("score") or 0.0),
             )
         )
         return ranked[:limit]
-    def join_candidates(self, db_profile: str, left_path: str, right_path: str, limit: int = 8) -> list[dict[str, Any]]:
+
+    def join_candidates(
+        self, db_profile: str, left_path: str, right_path: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
         left_parts = left_path.split(".")
         right_parts = right_path.split(".")
         if len(left_parts) != 2 or len(right_parts) != 2:
@@ -465,7 +504,7 @@ class JoinMixin:
             constrained = details.get("constrained_columns") or details.get("source_columns") or []
             referred = details.get("referred_columns") or details.get("target_columns") or []
             if constrained and referred:
-                for lcol, rcol in zip(constrained, referred):
+                for lcol, rcol in zip(constrained, referred, strict=False):
                     key = (str(lcol), str(rcol))
                     if key in seen:
                         continue

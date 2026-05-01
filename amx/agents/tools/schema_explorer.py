@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from amx.config import AMXConfig
 from amx.core.metadata import UniversalMetadataAdapter
@@ -63,7 +64,13 @@ class SchemaExplorer:
     ) -> dict[str, Any]:
         """Return table names, row counts, and column counts for a namespace."""
         schema_name = schema_name or self.cfg.current_schema or None
-        database_name = database_name or self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or None
+        database_name = (
+            database_name
+            or self.cfg.db.database
+            or self.cfg.db.catalog
+            or self.cfg.db.project
+            or None
+        )
         rows = self.catalog.schema_inventory(
             self.db_profile,
             schema_name=schema_name,
@@ -73,7 +80,9 @@ class SchemaExplorer:
         source = "search_catalog"
         gap_fills = 0
         if not rows:
-            rows, gap_fills = self._live_inventory(schema_name=schema_name, database_name=database_name, limit=limit)
+            rows, gap_fills = self._live_inventory(
+                schema_name=schema_name, database_name=database_name, limit=limit
+            )
             source = "live_db"
         rows = self._with_semantic_clusters(rows)
         table_count = len(rows)
@@ -164,7 +173,7 @@ class SchemaExplorer:
             row_tokens.append(tokens)
             token_counts.update(set(tokens))
         out: list[dict[str, Any]] = []
-        for row, tokens in zip(rows, row_tokens):
+        for row, tokens in zip(rows, row_tokens, strict=False):
             ranked = sorted(set(tokens), key=lambda token: (-token_counts[token], token))
             cluster = ranked[0].title() if ranked else "Unclustered"
             item = dict(row)
@@ -178,7 +187,12 @@ class SchemaExplorer:
             except Exception:
                 item["umi_kind"] = "table"
                 item["umi_path"] = ".".join(
-                    part for part in (str(item.get("schema_name") or ""), str(item.get("table_name") or "")) if part
+                    part
+                    for part in (
+                        str(item.get("schema_name") or ""),
+                        str(item.get("table_name") or ""),
+                    )
+                    if part
                 )
             out.append(item)
         return out

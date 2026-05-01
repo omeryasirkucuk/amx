@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from amx.config import DBConfig, has_legacy_database_default
 
-
 # ── is_connection_configured / is_database_pinned ────────────────────────
 
 

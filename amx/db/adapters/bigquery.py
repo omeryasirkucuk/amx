@@ -80,9 +80,7 @@ class BigQueryAdapter(DatabaseAdapter):
 
     # ── Table stats ───────────────────────────────────────────────────────
 
-    def get_table_stats(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, int]:
+    def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
         project = getattr(self.cfg, "project", "") or ""
         dataset = schema
         info_schema = (
@@ -93,10 +91,7 @@ class BigQueryAdapter(DatabaseAdapter):
         try:
             with engine.connect() as conn:
                 row = conn.execute(
-                    text(
-                        f"SELECT row_count FROM {info_schema} "
-                        "WHERE table_name = :table"
-                    ),
+                    text(f"SELECT row_count FROM {info_schema} WHERE table_name = :table"),
                     {"table": table},
                 ).fetchone()
             n = int(row[0] or 0) if row else 0
@@ -178,9 +173,7 @@ class BigQueryAdapter(DatabaseAdapter):
 
     # ── Analytics metadata ────────────────────────────────────────────────
 
-    def get_analytics_metadata(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, Any]:
+    def get_analytics_metadata(self, engine: Engine, schema: str, table: str) -> dict[str, Any]:
         """BigQuery analytics metadata.
 
         Pulls partition / cluster / size / freshness / type from
@@ -240,7 +233,11 @@ class BigQueryAdapter(DatabaseAdapter):
                         end = min((e for e in end_candidates if e > 0), default=len(ddl))
                         partition_expr = ddl[start:end].strip().rstrip(",")
                         out["partition_keys"] = [partition_expr]
-                        if "_PARTITIONDATE" in partition_expr.upper() or "DATE(" in partition_expr.upper() or "_PARTITIONTIME" in partition_expr.upper():
+                        if (
+                            "_PARTITIONDATE" in partition_expr.upper()
+                            or "DATE(" in partition_expr.upper()
+                            or "_PARTITIONTIME" in partition_expr.upper()
+                        ):
                             out["partition_strategy"] = "time"
                         elif "RANGE_BUCKET" in partition_expr.upper():
                             out["partition_strategy"] = "range"
@@ -256,7 +253,9 @@ class BigQueryAdapter(DatabaseAdapter):
                         ]
                         end = min((e for e in end_candidates if e > 0), default=len(ddl))
                         cluster_expr = ddl[start:end].strip().rstrip(",")
-                        out["clustering_keys"] = [c.strip() for c in cluster_expr.split(",") if c.strip()]
+                        out["clustering_keys"] = [
+                            c.strip() for c in cluster_expr.split(",") if c.strip()
+                        ]
                     if row[2]:
                         out["last_modified"] = str(row[2])
             except Exception as exc:
@@ -295,17 +294,13 @@ class BigQueryAdapter(DatabaseAdapter):
 
     # ── Comment writing ───────────────────────────────────────────────────
 
-    def set_table_comment_sql(
-        self, schema: str, table: str, asset_keyword: str
-    ) -> str:
+    def set_table_comment_sql(self, schema: str, table: str, asset_keyword: str) -> str:
         if asset_keyword not in self.capabilities.comment_asset_keywords:
             raise self.unsupported(f"Comment write-back for {asset_keyword.lower()} assets")
         fqn = self.fully_qualified_name(schema, table)
         return f"ALTER {asset_keyword} {fqn} SET OPTIONS(description = :cmt)"
 
-    def set_column_comment_sql(
-        self, schema: str, table: str, column: str
-    ) -> str:
+    def set_column_comment_sql(self, schema: str, table: str, column: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
         col = self.quote_identifier(column)
         return f"ALTER TABLE {fqn} ALTER COLUMN {col} SET OPTIONS(description = :cmt)"

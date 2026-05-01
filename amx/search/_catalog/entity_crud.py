@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from typing import Any
 
 from amx.search._catalog._constants import SOURCE_PRIORITY, _json_loads
 from amx.utils.logging import get_logger
@@ -49,6 +48,7 @@ class EntityCrudMixin:
             """,
             (entity_id,),
         ).fetchone()
+
     def _upsert_entity(
         self,
         conn: sqlite3.Connection,
@@ -126,6 +126,7 @@ class EntityCrudMixin:
             ),
         )
         return int(cur.lastrowid)
+
     def _insert_description(
         self,
         conn: sqlite3.Connection,
@@ -165,6 +166,7 @@ class EntityCrudMixin:
             ),
         )
         return int(cur.lastrowid)
+
     def _update_search_text(self, conn: sqlite3.Connection, entity_id: int) -> None:
         entity = conn.execute(
             """
@@ -219,9 +221,7 @@ class EntityCrudMixin:
             f"effective_description={entity['effective_description'] or ''}",
         ]
         for row in history:
-            parts.append(
-                f"{row['source_kind']}:{row['confidence']}:{row['description_text']}"
-            )
+            parts.append(f"{row['source_kind']}:{row['confidence']}:{row['description_text']}")
         for row in rels:
             details = _json_loads(row["details_json"], {})
             parts.append(
@@ -240,7 +240,10 @@ class EntityCrudMixin:
             """,
             ("\n".join(parts), time.time(), entity_id),
         )
-    def _resolve_effective_description(self, conn: sqlite3.Connection, entity_id: int) -> int | None:
+
+    def _resolve_effective_description(
+        self, conn: sqlite3.Connection, entity_id: int
+    ) -> int | None:
         rows = conn.execute(
             """
             SELECT id, source_kind, confidence, created_at, description_text
@@ -299,6 +302,7 @@ class EntityCrudMixin:
         )
         self._update_search_text(conn, entity_id)
         return int(winner["id"])
+
     def _index_entity(self, conn: sqlite3.Connection, entity_id: int) -> None:
         row = conn.execute("SELECT * FROM catalog_entities WHERE id = ?", (entity_id,)).fetchone()
         if not row:

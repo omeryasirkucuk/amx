@@ -40,16 +40,25 @@ log = get_logger("search.catalog.sync")
 class SyncMixin:
     """Catalog sync orchestration for ``SearchCatalog``."""
 
-    def start_sync_job(self, db_profile: str, job_type: str, scope: dict[str, Any] | None = None) -> int:
+    def start_sync_job(
+        self, db_profile: str, job_type: str, scope: dict[str, Any] | None = None
+    ) -> int:
         with self._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO catalog_sync_jobs (db_profile, job_type, scope_json, started_at, status)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (db_profile, job_type, json.dumps(scope or {}, ensure_ascii=True), time.time(), "running"),
+                (
+                    db_profile,
+                    job_type,
+                    json.dumps(scope or {}, ensure_ascii=True),
+                    time.time(),
+                    "running",
+                ),
             )
             return int(cur.lastrowid)
+
     def finish_sync_job(
         self,
         job_id: int,
@@ -70,8 +79,16 @@ class SyncMixin:
                     error_text = ?
                 WHERE id = ?
                 """,
-                (time.time(), status, inserted_count, updated_count, error_text[:4000], int(job_id)),
+                (
+                    time.time(),
+                    status,
+                    inserted_count,
+                    updated_count,
+                    error_text[:4000],
+                    int(job_id),
+                ),
             )
+
     def sync_table_profile(
         self,
         *,
@@ -90,6 +107,7 @@ class SyncMixin:
                 profile=profile,
                 query_usage=query_usage,
             )
+
     def _sync_table_profile_conn(
         self,
         conn: sqlite3.Connection,
@@ -130,7 +148,12 @@ class SyncMixin:
                 dtype=column.dtype,
                 nullable=1 if column.nullable else 0,
                 pk_flag=1 if column.name in profile.primary_key else 0,
-                fk_flag=1 if any(column.name in (fk.get("constrained_columns") or []) for fk in profile.foreign_keys) else 0,
+                fk_flag=1
+                if any(
+                    column.name in (fk.get("constrained_columns") or [])
+                    for fk in profile.foreign_keys
+                )
+                else 0,
                 row_count=profile.row_count,
             )
             if column.existing_comment:
@@ -153,7 +176,9 @@ class SyncMixin:
                 confidence="medium",
             )
         self._resolve_effective_description(conn, table_entity_id)
-        conn.execute("DELETE FROM catalog_relationships WHERE from_entity_id = ?", (table_entity_id,))
+        conn.execute(
+            "DELETE FROM catalog_relationships WHERE from_entity_id = ?", (table_entity_id,)
+        )
         for fk in profile.foreign_keys:
             target_id = self._upsert_entity(
                 conn,
@@ -211,7 +236,14 @@ class SyncMixin:
                 ),
             )
         if query_usage:
-            self._store_query_usage(conn, table_entity_id, profile, query_usage, db_profile=db_profile, schema_name=profile.schema)
+            self._store_query_usage(
+                conn,
+                table_entity_id,
+                profile,
+                query_usage,
+                db_profile=db_profile,
+                schema_name=profile.schema,
+            )
         self._update_search_text(conn, table_entity_id)
         self._index_entity(conn, table_entity_id)
         for row in conn.execute(
@@ -221,6 +253,7 @@ class SyncMixin:
             self._update_search_text(conn, int(row["id"]))
             self._index_entity(conn, int(row["id"]))
         return table_entity_id
+
     def sync_generated_suggestions(
         self,
         *,
@@ -278,7 +311,10 @@ class SyncMixin:
                         catalog_status="generated",
                         effective_source_kind="generated" if winner else "",
                     )
-    def sync_review_decision(self, result_id: int, *, chosen_description: str, evaluation: str) -> None:
+
+    def sync_review_decision(
+        self, result_id: int, *, chosen_description: str, evaluation: str
+    ) -> None:
         source_kind = "reviewed" if evaluation in {"accepted", "custom"} else "rejected"
         with self._connect() as conn:
             row = conn.execute(
@@ -332,6 +368,7 @@ class SyncMixin:
                 effective_source_kind=source_kind if winner else "",
                 rejection_reason="" if source_kind != "rejected" else "skipped during review",
             )
+
     def clear_code_evidence(self, db_profile: str, source_path: str | None = None) -> None:
         with self._connect() as conn:
             if source_path:
@@ -344,6 +381,7 @@ class SyncMixin:
                     "DELETE FROM catalog_usage_evidence WHERE db_profile = ? AND source_kind = 'code'",
                     (db_profile,),
                 )
+
     def sync_code_report(
         self,
         *,
@@ -392,7 +430,9 @@ class SyncMixin:
                         matches = [row] if row else []
                 for match in matches:
                     snippets = [ref.line_text[:240] for ref in refs[:3]]
-                    evidence_type = "table_usage" if match["entity_kind"] == "table" else "column_usage"
+                    evidence_type = (
+                        "table_usage" if match["entity_kind"] == "table" else "column_usage"
+                    )
                     conn.execute(
                         """
                         INSERT INTO catalog_usage_evidence (
@@ -448,6 +488,7 @@ class SyncMixin:
                 )
                 inserted += 1
         return inserted, updated
+
     def rebuild_profile(
         self,
         db_profile: str,
@@ -472,11 +513,20 @@ class SyncMixin:
                     updated += 1
                     if on_progress is not None:
                         on_progress(index, total)
-                self.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
+                self.finish_sync_job(
+                    job_id, status="success", inserted_count=inserted, updated_count=updated
+                )
             return inserted, updated
         except Exception as exc:
-            self.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
+            self.finish_sync_job(
+                job_id,
+                status="failed",
+                inserted_count=inserted,
+                updated_count=updated,
+                error_text=str(exc),
+            )
             raise
+
     def sync_status(self, db_profile: str) -> dict[str, Any]:
         settings = self.get_settings(db_profile)
         with self._connect() as conn:
@@ -521,6 +571,7 @@ class SyncMixin:
             "jobs": [dict(row) for row in jobs],
             "settings": settings,
         }
+
     def sources_status(self, db_profile: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

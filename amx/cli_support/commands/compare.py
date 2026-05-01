@@ -206,9 +206,7 @@ def _fmt_float(n: Any, places: int = 2) -> str:
         return "—"
 
 
-def _aggregate_for_run(
-    run: dict[str, Any], results: list[dict[str, Any]]
-) -> dict[str, Any]:
+def _aggregate_for_run(run: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute per-run aggregates for Table 3."""
     tokens = run.get("tokens_json")
     if isinstance(tokens, str):
@@ -248,13 +246,9 @@ def _aggregate_for_run(
             total_tokens = 0
 
     logprob_scores = [
-        float(r["logprob_score"])
-        for r in results
-        if r.get("logprob_score") is not None
+        float(r["logprob_score"]) for r in results if r.get("logprob_score") is not None
     ]
-    avg_logprob = (
-        sum(logprob_scores) / len(logprob_scores) if logprob_scores else None
-    )
+    avg_logprob = sum(logprob_scores) / len(logprob_scores) if logprob_scores else None
 
     bands = {"high": 0, "medium": 0, "low": 0}
     for r in results:
@@ -511,9 +505,7 @@ def _render_aggregate_metrics(
     runs: list[dict[str, Any]],
     results_by_run: dict[int, list[dict[str, Any]]],
 ) -> None:
-    aggs = [
-        _aggregate_for_run(r, results_by_run.get(int(r["id"]), [])) for r in runs
-    ]
+    aggs = [_aggregate_for_run(r, results_by_run.get(int(r["id"]), [])) for r in runs]
 
     table = Table(
         title="Aggregate metrics",
@@ -571,9 +563,7 @@ def _render_aggregate_metrics(
     _row(
         "Avg logprob_score",
         [
-            _fmt_float(a["avg_logprob"], places=3)
-            if a["avg_logprob"] is not None
-            else "—"
+            _fmt_float(a["avg_logprob"], places=3) if a["avg_logprob"] is not None else "—"
             for a in aggs
         ],
         _highlight_best(logprob_vals, higher_is_better=True),
@@ -601,9 +591,7 @@ def _render_aggregate_metrics(
     _row(
         "Approval rate",
         [
-            f"{a['approval_rate'] * 100:.0f}%"
-            if a["approval_rate"] is not None
-            else "—"
+            f"{a['approval_rate'] * 100:.0f}%" if a["approval_rate"] is not None else "—"
             for a in aggs
         ],
         _highlight_best(approval_vals, higher_is_better=True),
@@ -618,18 +606,35 @@ def _render_aggregate_metrics(
 
 
 _RUN_SUMMARY_COLUMNS: tuple[str, ...] = (
-    "run_id", "started_at", "status", "command", "db_profile", "llm_profile",
-    "llm_model", "doc_profile", "code_profile", "duration_sec",
-    "processed_count", "applied_count",
+    "run_id",
+    "started_at",
+    "status",
+    "command",
+    "db_profile",
+    "llm_profile",
+    "llm_model",
+    "doc_profile",
+    "code_profile",
+    "duration_sec",
+    "processed_count",
+    "applied_count",
 )
 
 _PER_COLUMN_LONG_COLUMNS: tuple[str, ...] = (
-    "schema", "table", "column", "run_id", "description",
-    "confidence", "logprob_score", "token_count",
+    "schema",
+    "table",
+    "column",
+    "run_id",
+    "description",
+    "confidence",
+    "logprob_score",
+    "token_count",
 )
 
 _AGGREGATE_COLUMNS: tuple[str, ...] = (
-    "metric", "run_id", "value",
+    "metric",
+    "run_id",
+    "value",
 )
 
 _AGGREGATE_METRICS: tuple[tuple[str, str], ...] = (
@@ -650,20 +655,22 @@ _AGGREGATE_METRICS: tuple[tuple[str, str], ...] = (
 def _collect_run_summary_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for r in runs:
-        rows.append({
-            "run_id": r.get("id"),
-            "started_at": _fmt_dt(r.get("started_at")),
-            "status": r.get("status") or "",
-            "command": r.get("command") or "",
-            "db_profile": r.get("db_profile") or "",
-            "llm_profile": r.get("llm_profile") or "",
-            "llm_model": r.get("llm_model") or "",
-            "doc_profile": r.get("doc_profile") or "",
-            "code_profile": r.get("code_profile") or "",
-            "duration_sec": float(r.get("duration_sec") or 0.0),
-            "processed_count": int(r.get("processed_count") or 0),
-            "applied_count": int(r.get("applied_count") or 0),
-        })
+        rows.append(
+            {
+                "run_id": r.get("id"),
+                "started_at": _fmt_dt(r.get("started_at")),
+                "status": r.get("status") or "",
+                "command": r.get("command") or "",
+                "db_profile": r.get("db_profile") or "",
+                "llm_profile": r.get("llm_profile") or "",
+                "llm_model": r.get("llm_model") or "",
+                "doc_profile": r.get("doc_profile") or "",
+                "code_profile": r.get("code_profile") or "",
+                "duration_sec": float(r.get("duration_sec") or 0.0),
+                "processed_count": int(r.get("processed_count") or 0),
+                "applied_count": int(r.get("applied_count") or 0),
+            }
+        )
     return rows
 
 
@@ -681,16 +688,18 @@ def _collect_per_column_long(
             row = runs_for_asset.get(int(run["id"]))
             if not row:
                 continue
-            rows.append({
-                "schema": schema_n,
-                "table": table_n,
-                "column": col_n,
-                "run_id": int(run["id"]),
-                "description": _top_alternative(row),
-                "confidence": str(row.get("confidence") or ""),
-                "logprob_score": row.get("logprob_score"),
-                "token_count": row.get("token_count"),
-            })
+            rows.append(
+                {
+                    "schema": schema_n,
+                    "table": table_n,
+                    "column": col_n,
+                    "run_id": int(run["id"]),
+                    "description": _top_alternative(row),
+                    "confidence": str(row.get("confidence") or ""),
+                    "logprob_score": row.get("logprob_score"),
+                    "token_count": row.get("token_count"),
+                }
+            )
     return rows
 
 
@@ -702,11 +711,13 @@ def _collect_aggregate_long(
     for run in runs:
         agg = _aggregate_for_run(run, results_by_run.get(int(run["id"]), []))
         for export_name, agg_key in _AGGREGATE_METRICS:
-            rows.append({
-                "metric": export_name,
-                "run_id": int(run["id"]),
-                "value": agg.get(agg_key),
-            })
+            rows.append(
+                {
+                    "metric": export_name,
+                    "run_id": int(run["id"]),
+                    "value": agg.get(agg_key),
+                }
+            )
     return rows
 
 
@@ -726,10 +737,12 @@ def _export_csv(
     """
     sections: tuple[tuple[str, tuple[str, ...], list[dict[str, Any]]], ...] = (
         ("run_summary", _RUN_SUMMARY_COLUMNS, _collect_run_summary_rows(runs)),
-        ("per_column", _PER_COLUMN_LONG_COLUMNS,
-         _collect_per_column_long(runs, results_by_run, column_filter)),
-        ("aggregate_metrics", _AGGREGATE_COLUMNS,
-         _collect_aggregate_long(runs, results_by_run)),
+        (
+            "per_column",
+            _PER_COLUMN_LONG_COLUMNS,
+            _collect_per_column_long(runs, results_by_run, column_filter),
+        ),
+        ("aggregate_metrics", _AGGREGATE_COLUMNS, _collect_aggregate_long(runs, results_by_run)),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
@@ -740,9 +753,7 @@ def _export_csv(
             writer = csv.DictWriter(fh, fieldnames=list(headers))
             writer.writeheader()
             for row in rows:
-                writer.writerow(
-                    {h: ("" if row.get(h) is None else row.get(h)) for h in headers}
-                )
+                writer.writerow({h: ("" if row.get(h) is None else row.get(h)) for h in headers})
 
 
 def _md_escape(s: Any) -> str:
@@ -754,12 +765,9 @@ def _md_escape(s: Any) -> str:
 def _md_table(headers: list[str], rows: list[list[Any]]) -> str:
     if not rows:
         return f"| {' | '.join(headers)} |\n| {' | '.join(['---'] * len(headers))} |\n| {' | '.join(['—'] * len(headers))} |\n"
-    body_lines = [f"| {' | '.join(headers)} |",
-                  f"| {' | '.join(['---'] * len(headers))} |"]
+    body_lines = [f"| {' | '.join(headers)} |", f"| {' | '.join(['---'] * len(headers))} |"]
     for row in rows:
-        body_lines.append(
-            "| " + " | ".join(_md_escape(c) for c in row) + " |"
-        )
+        body_lines.append("| " + " | ".join(_md_escape(c) for c in row) + " |")
     return "\n".join(body_lines) + "\n"
 
 
@@ -786,29 +794,47 @@ def _export_markdown(
     # Section 1: run summary.
     summary_rows = _collect_run_summary_rows(runs)
     parts.append("## Run summary\n\n")
-    parts.append(_md_table(
-        ["Run", "Started", "Status", "Command", "DB profile", "LLM profile",
-         "Model", "Doc profile", "Code profile", "Duration (s)",
-         "Processed", "Applied"],
-        [
+    parts.append(
+        _md_table(
             [
-                f"#{r['run_id']}", r["started_at"], r["status"], r["command"],
-                r["db_profile"], r["llm_profile"], r["llm_model"],
-                r["doc_profile"], r["code_profile"],
-                f"{r['duration_sec']:.1f}",
-                r["processed_count"], r["applied_count"],
-            ]
-            for r in summary_rows
-        ],
-    ))
+                "Run",
+                "Started",
+                "Status",
+                "Command",
+                "DB profile",
+                "LLM profile",
+                "Model",
+                "Doc profile",
+                "Code profile",
+                "Duration (s)",
+                "Processed",
+                "Applied",
+            ],
+            [
+                [
+                    f"#{r['run_id']}",
+                    r["started_at"],
+                    r["status"],
+                    r["command"],
+                    r["db_profile"],
+                    r["llm_profile"],
+                    r["llm_model"],
+                    r["doc_profile"],
+                    r["code_profile"],
+                    f"{r['duration_sec']:.1f}",
+                    r["processed_count"],
+                    r["applied_count"],
+                ]
+                for r in summary_rows
+            ],
+        )
+    )
     parts.append("\n")
 
     # Section 2: per-column wide table.
     asset_map = _build_asset_map(runs, results_by_run, column_filter)
     parts.append("## Per-column results\n\n")
-    parts.append(
-        "_Each cell: top alternative · confidence · `logprob_score` · token count._\n\n"
-    )
+    parts.append("_Each cell: top alternative · confidence · `logprob_score` · token count._\n\n")
     if not asset_map:
         parts.append("_No overlapping per-column results across the compared runs._\n")
     else:
@@ -827,20 +853,17 @@ def _export_markdown(
                 band = str(row.get("confidence") or "—")
                 logprob = (
                     f"{float(row['logprob_score']):.2f}"
-                    if row.get("logprob_score") is not None else "—"
+                    if row.get("logprob_score") is not None
+                    else "—"
                 )
                 tokens = _fmt_int(row.get("token_count"))
-                row_cells.append(
-                    f"{desc} · {band} · {logprob} · {tokens} tok"
-                )
+                row_cells.append(f"{desc} · {band} · {logprob} · {tokens} tok")
             per_col_rows.append(row_cells)
         parts.append(_md_table(per_col_headers, per_col_rows))
     parts.append("\n")
 
     # Section 3: aggregate metrics, wide.
-    aggs = [
-        _aggregate_for_run(r, results_by_run.get(int(r["id"]), [])) for r in runs
-    ]
+    aggs = [_aggregate_for_run(r, results_by_run.get(int(r["id"]), [])) for r in runs]
     parts.append("## Aggregate metrics\n\n")
     metric_headers = ["Metric"] + [f"Run #{r['id']}" for r in runs]
     metric_rows: list[list[Any]] = []
@@ -875,28 +898,33 @@ def register_compare_command(
     @search_group.command("compare")
     @click.argument("run_ids", nargs=-1)
     @click.option(
-        "--schema", "schema_opt",
+        "--schema",
+        "schema_opt",
         default="",
         help="Limit comparison to runs that touched this schema (default: current schema).",
     )
     @click.option(
-        "--table", "table_opt",
+        "--table",
+        "table_opt",
         default="",
         help="Limit to runs that touched this table (default: current table).",
     )
     @click.option(
-        "--column", "column_opt",
+        "--column",
+        "column_opt",
         default="",
         help="Pivot only one column in the per-column table.",
     )
     @click.option(
-        "--last", "last_n",
+        "--last",
+        "last_n",
         type=int,
         default=5,
         help="When run IDs are not given, take the last N matching runs (default 5).",
     )
     @click.option(
-        "--command", "command_filter",
+        "--command",
+        "command_filter",
         type=click.Choice(["analyze.run", "search.ask", "all"]),
         default="all",
         help="Restrict to /run results, /ask results, or both (default).",
@@ -904,14 +932,23 @@ def register_compare_command(
     @click.option(
         "--by",
         type=click.Choice(
-            ["auto", "model", "llm_model", "llm_profile",
-             "doc_profile", "code_profile", "db_profile", "run"]
+            [
+                "auto",
+                "model",
+                "llm_model",
+                "llm_profile",
+                "doc_profile",
+                "code_profile",
+                "db_profile",
+                "run",
+            ]
         ),
         default="auto",
         help="Highlight which dimension differs across runs.",
     )
     @click.option(
-        "--diff", "diff_mode",
+        "--diff",
+        "diff_mode",
         is_flag=True,
         default=False,
         help=(
@@ -920,13 +957,15 @@ def register_compare_command(
         ),
     )
     @click.option(
-        "--csv", "csv_path",
+        "--csv",
+        "csv_path",
         type=click.Path(dir_okay=False, writable=True, resolve_path=True),
         default=None,
         help="Also write the comparison to a CSV file (run summary + per-column long format + aggregate metrics).",
     )
     @click.option(
-        "--md", "md_path",
+        "--md",
+        "md_path",
         type=click.Path(dir_okay=False, writable=True, resolve_path=True),
         default=None,
         help="Also write the comparison as GitHub-flavoured Markdown (wide-format per-column table).",
@@ -982,15 +1021,19 @@ def register_compare_command(
 
         _render_run_summary(runs, by=resolved_by)
         _render_per_column_pivot(
-            runs, results_by_run,
-            column_filter=column_opt, diff=diff_mode,
+            runs,
+            results_by_run,
+            column_filter=column_opt,
+            diff=diff_mode,
         )
         _render_aggregate_metrics(runs, results_by_run)
 
         if csv_path:
             try:
                 _export_csv(
-                    Path(csv_path), runs, results_by_run,
+                    Path(csv_path),
+                    runs,
+                    results_by_run,
                     column_filter=column_opt,
                 )
                 success(f"Wrote CSV → {csv_path}")
@@ -999,7 +1042,9 @@ def register_compare_command(
         if md_path:
             try:
                 _export_markdown(
-                    Path(md_path), runs, results_by_run,
+                    Path(md_path),
+                    runs,
+                    results_by_run,
                     column_filter=column_opt,
                 )
                 success(f"Wrote Markdown → {md_path}")

@@ -63,8 +63,16 @@ def _insert_entity(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                db_profile, "postgresql", "demo", schema, table,
-                column, entity_kind, "table", search_text, time.time(),
+                db_profile,
+                "postgresql",
+                "demo",
+                schema,
+                table,
+                column,
+                entity_kind,
+                "table",
+                search_text,
+                time.time(),
             ),
         )
         return int(cur.lastrowid)
@@ -119,17 +127,29 @@ def test_find_columns_by_exact_name_supports_multi_profile():
     try:
         # Two profiles, both with a 'customer_id' column.
         _insert_entity(
-            store, db_profile="prod_pg", schema="public", table="orders",
-            column="customer_id", entity_kind="column",
+            store,
+            db_profile="prod_pg",
+            schema="public",
+            table="orders",
+            column="customer_id",
+            entity_kind="column",
         )
         _insert_entity(
-            store, db_profile="analytics_bq", schema="dwh", table="fact_sales",
-            column="customer_id", entity_kind="column",
+            store,
+            db_profile="analytics_bq",
+            schema="dwh",
+            table="fact_sales",
+            column="customer_id",
+            entity_kind="column",
         )
         # Plus a column in 'prod_pg' that should NOT match the needle.
         _insert_entity(
-            store, db_profile="prod_pg", schema="public", table="orders",
-            column="order_id", entity_kind="column",
+            store,
+            db_profile="prod_pg",
+            schema="public",
+            table="orders",
+            column="order_id",
+            entity_kind="column",
         )
 
         catalog = SearchCatalog(store.db_path)
@@ -140,9 +160,7 @@ def test_find_columns_by_exact_name_supports_multi_profile():
         assert single[0]["db_profile"] == "prod_pg"
 
         # Multi-profile: both rows, ordered by db_profile then schema/table.
-        multi = catalog.find_columns_by_exact_name(
-            ["prod_pg", "analytics_bq"], "customer_id"
-        )
+        multi = catalog.find_columns_by_exact_name(["prod_pg", "analytics_bq"], "customer_id")
         profiles = sorted(row["db_profile"] for row in multi)
         assert profiles == ["analytics_bq", "prod_pg"]
 
@@ -165,24 +183,34 @@ def test_find_tables_by_exact_name_supports_multi_profile():
     store, tmpdir = _setup_store()
     try:
         _insert_entity(
-            store, db_profile="prod_pg", schema="public", table="orders",
-            entity_kind="table", search_text="orders public",
+            store,
+            db_profile="prod_pg",
+            schema="public",
+            table="orders",
+            entity_kind="table",
+            search_text="orders public",
         )
         _insert_entity(
-            store, db_profile="analytics_bq", schema="dwh", table="orders",
-            entity_kind="table", search_text="orders dwh",
+            store,
+            db_profile="analytics_bq",
+            schema="dwh",
+            table="orders",
+            entity_kind="table",
+            search_text="orders dwh",
         )
         _insert_entity(
-            store, db_profile="prod_pg", schema="public", table="customers",
-            entity_kind="table", search_text="customers public",
+            store,
+            db_profile="prod_pg",
+            schema="public",
+            table="customers",
+            entity_kind="table",
+            search_text="customers public",
         )
 
         catalog = SearchCatalog(store.db_path)
         single = catalog.find_tables_by_exact_name("prod_pg", "orders")
         assert len(single) == 1
-        multi = catalog.find_tables_by_exact_name(
-            ["prod_pg", "analytics_bq"], "orders"
-        )
+        multi = catalog.find_tables_by_exact_name(["prod_pg", "analytics_bq"], "orders")
         assert len(multi) == 2
     finally:
         for f in tmpdir.glob("*"):
@@ -199,20 +227,26 @@ def test_find_table_candidates_supports_multi_profile():
     store, tmpdir = _setup_store()
     try:
         _insert_entity(
-            store, db_profile="prod_pg", schema="public", table="orders",
-            entity_kind="table", search_text="orders sales transactions",
+            store,
+            db_profile="prod_pg",
+            schema="public",
+            table="orders",
+            entity_kind="table",
+            search_text="orders sales transactions",
         )
         _insert_entity(
-            store, db_profile="analytics_bq", schema="dwh", table="orders_fact",
-            entity_kind="table", search_text="orders fact analytics warehouse",
+            store,
+            db_profile="analytics_bq",
+            schema="dwh",
+            table="orders_fact",
+            entity_kind="table",
+            search_text="orders fact analytics warehouse",
         )
 
         catalog = SearchCatalog(store.db_path)
         single = catalog.find_table_candidates("prod_pg", "orders")
         assert len(single) == 1
-        multi = catalog.find_table_candidates(
-            ["prod_pg", "analytics_bq"], "orders"
-        )
+        multi = catalog.find_table_candidates(["prod_pg", "analytics_bq"], "orders")
         # Both tables match the prefix 'orders' across profiles.
         profiles = {row["db_profile"] for row in multi}
         assert profiles == {"prod_pg", "analytics_bq"}
@@ -231,13 +265,21 @@ def test_name_search_columns_supports_multi_profile():
     store, tmpdir = _setup_store()
     try:
         _insert_entity(
-            store, db_profile="prod_pg", schema="public", table="orders",
-            column="customer_id", entity_kind="column",
+            store,
+            db_profile="prod_pg",
+            schema="public",
+            table="orders",
+            column="customer_id",
+            entity_kind="column",
             search_text="customer id orders",
         )
         _insert_entity(
-            store, db_profile="analytics_bq", schema="dwh", table="fact_sales",
-            column="customer_key", entity_kind="column",
+            store,
+            db_profile="analytics_bq",
+            schema="dwh",
+            table="fact_sales",
+            column="customer_key",
+            entity_kind="column",
             search_text="customer key fact analytics",
         )
 
@@ -246,9 +288,7 @@ def test_name_search_columns_supports_multi_profile():
         assert len(single) >= 1
         assert all(row["db_profile"] == "prod_pg" for row in single)
 
-        multi = catalog.name_search_columns(
-            ["prod_pg", "analytics_bq"], "customer"
-        )
+        multi = catalog.name_search_columns(["prod_pg", "analytics_bq"], "customer")
         profiles = {row["db_profile"] for row in multi}
         assert profiles == {"prod_pg", "analytics_bq"}
     finally:
