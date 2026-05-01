@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `amx doctor` + config schema versioning
+
+Two changes that together kill the **version-skew bug class** that hit on 2026-05-01: two `amx` binaries on `PATH` writing to the same `~/.amx/config.yml` made profiles silently disappear when the older binary stripped keys it didn't recognise.
+
+- **`amx doctor`** — new top-level command (also available as `/doctor` inside the session). Detects: multiple `amx` binaries on `PATH` (the hero check; lists every binary it finds), Python runtime, config directory permissions, config file readability + schema version, optional backend deps (BigQuery, Snowflake, Databricks, keyring), active DB profile connectivity, active LLM profile reachability. `--skip-network` drops the last two for an offline quick run. Returns non-zero on any failure so CI / scripts can chain on it. Bypasses the "interactive only" guard so it works from a broken state — that's its whole point.
+- **Config schema versioning** — every saved `~/.amx/config.yml` now carries a `schema_version: 1` stamp. On load, AMX refuses configs whose version is **higher** than the running binary understands (with `ConfigSchemaTooNewError` and a CLI-level actionable message: "Upgrade AMX, or pin an older AMX and re-run"). Configs without the key (pre-versioning, including the existing user base) load happily as legacy. **Net effect**: when an older binary tries to read a config a newer binary wrote, it refuses cleanly instead of silently mangling the file.
+
 ### Fixed — CI is green again
 
 Lint + tests had been merging red on `main` since before the public-launch roadmap kicked off. This pass cleans up the rollup so PRs land green and the eventual PyPI badge is honest.
