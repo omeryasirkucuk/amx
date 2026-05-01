@@ -6,6 +6,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-05-01
+### Fixed
+- **`NameError: name 'info' is not defined`** in the new bulk-edit wizard (`amx/cli_support/commands/manual.py`): `info` was used in the bulk-update analysis header + summary lines but never imported. Added it to the `from amx.utils.console import …` line. The first user-visible run of `/metadata edit` → `Bulk by name` after v0.7.2 crashed with this error before it even produced the match table. Regression caught immediately by the user.
+
+### Changed
+- **Bulk-edit picks the entity from the live DB instead of asking the user to type a name** (`amx/cli_support/commands/manual.py:_resolve_bulk_target_name`): user said "why am I typing the name? Let me PICK from a list, and let me drill down to column level — find similar to the asset I select." After choosing `Bulk by name`, the wizard now offers three sub-modes:
+  - `Pick a column from the catalog` — drills DB profile → schema → table → column, then uses the picked column's NAME (not its full path) so AMX bulk-fans-out to every other column with the same name in the catalog. The default option, since column-level bulk edit is the most common bulk case (`mandt`, `client`, `created_at`, `customer_id` …).
+  - `Pick a table from the catalog` — drills DB profile → schema → table, then uses the table NAME so AMX picks up the same table across every schema.
+  - `Type a name manually` — preserves the legacy text-entry path for power users who already know exactly what they want.
+- After the pick, AMX prints a confirmation line ("Using column name 'mandt' (from sap_s6p.bseg) as bulk target — AMX will find every other column that shares this name.") so the user understands which name is being fanned out.
+
+### Why this matters
+Bulk-edit only works when the entity name matches the user's intent. Forcing the user to remember and type the exact spelling is brittle (typos, case mismatches, wrong synonyms) and defeats the purpose of an interactive wizard. By letting the user pick a concrete asset and pulling its name programmatically, the wizard guarantees correct spelling AND lets the user explore the catalog naturally — they don't have to know the name in advance.
+
 ## [0.7.2] - 2026-04-30
 ### Changed
 - **`/metadata edit` wizard now asks bulk-vs-individual at the FIRST step** (`amx/cli_support/commands/manual.py:_run_edit_wizard`): user said "I want the bulk option BEFORE 'What do you want to edit?'". The wizard now starts with a top-level choice: `Single entity` (existing database → schema → table → column flow) or `Bulk by name` (type a column or table name once, AMX handles every match across schemas). Single mode is unchanged; bulk mode reuses `_run_bulk_edit_by_name` with the new `preselected_mode="bulk"` argument so the user isn't asked the same question twice.
