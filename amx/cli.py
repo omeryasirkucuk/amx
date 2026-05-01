@@ -20,6 +20,7 @@ from amx.cli_support.commands.db import (
     print_db_namespace_hint as _print_db_namespace_hint,
 )
 from amx.cli_support.commands.docs import register_docs_commands
+from amx.cli_support.commands.doctor import register_doctor_command
 from amx.cli_support.commands.history import register_history_commands
 from amx.cli_support.commands.manual import register_manual_commands
 from amx.cli_support.commands.profiles import (
@@ -35,7 +36,7 @@ from amx.cli_support.commands.run import (
 )
 from amx.cli_support.commands.search import register_search_commands
 from amx.cli_support.root_commands import register_root_commands
-from amx.config import AMXConfig
+from amx.config import AMXConfig, ConfigSchemaTooNewError
 from amx.storage.sqlite_store import history_store, init_history_store
 from amx.utils.console import (
     error,
@@ -288,7 +289,21 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
     # Lift NOFILE before doing anything that might open a file descriptor.
     _raise_open_file_limit()
     ctx.ensure_object(dict)
-    ctx.obj = AMXConfig.load(cfg_path)
+    try:
+        ctx.obj = AMXConfig.load(cfg_path)
+    except ConfigSchemaTooNewError as exc:
+        # Render an actionable message instead of a stack trace. This is
+        # the first line of defence against the version-skew bug class
+        # where a newer AMX wrote keys an older AMX would otherwise
+        # silently drop on the next save (ghost-profile incident).
+        error(str(exc))
+        info(
+            "Run `pip install --upgrade amx` (or your install path's equivalent), "
+            "then re-run. If you must stay on this AMX, restore the previous "
+            "config from `~/.amx/config.yml.bak-*` if one exists, or back up "
+            "and delete `~/.amx/config.yml` to start fresh."
+        )
+        sys.exit(2)
     init_history_store(ctx.obj.CONFIG_DIR)
     _install_embedding_provider(ctx.obj)
     is_session_child = os.getenv("AMX_SESSION_CHILD") == "1"
@@ -310,7 +325,10 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
 
     # Enforce interactive-only command execution from the terminal.
     # Subcommands are still allowed when dispatched internally from the session.
-    if not is_session_child:
+    # Diagnostic subcommands (currently just `doctor`) bypass the guard so
+    # users can run them from a broken state without entering the REPL.
+    direct_allowed: frozenset[str] = frozenset({"doctor"})
+    if not is_session_child and ctx.invoked_subcommand not in direct_allowed:
         error(
             "Direct subcommands are disabled. Start with `amx`, then run slash commands "
             "inside the session (for example: /db, /connect, /run, /run-apply)."
@@ -321,6 +339,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
 register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
 search = register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_compare_command(search, pass_config=pass_config, log_event=_log_app_event)
+register_doctor_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_chat_session_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_manual_commands(main, pass_config=pass_config, log_event=_log_app_event)
 analyze = register_analyze_commands(main, pass_config=pass_config, log_event=_log_app_event)

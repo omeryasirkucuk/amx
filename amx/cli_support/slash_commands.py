@@ -71,6 +71,17 @@ _ROOT_BUILTINS: tuple[SlashCommand, ...] = (
     SlashCommand("/clear", "", "Clear terminal output", cross_namespace=True),
     SlashCommand("/back", "", "Return to root namespace", cross_namespace=True),
     SlashCommand("/save", "", "Save config to disk", cross_namespace=True),
+    SlashCommand(
+        "/doctor",
+        "",
+        "Diagnose install / config / connectivity",
+        long_desc=(
+            "Run the AMX doctor: PATH conflict detection (the ghost-profile "
+            "bug class), config schema version, optional-dep imports, active "
+            "DB + LLM connectivity. Use --skip-network for an offline quick check."
+        ),
+        cross_namespace=True,
+    ),
 )
 
 _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (

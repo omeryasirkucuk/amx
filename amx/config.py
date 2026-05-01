@@ -771,6 +771,39 @@ def _embedding_to_mapping(emb: EmbeddingConfig) -> dict[str, Any]:
     }
 
 
+# Schema version stamped into every saved config.yml. Bump it whenever
+# the on-disk shape changes in a way an OLDER AMX cannot understand
+# (renamed key, removed key, semantic change). Additive changes (new
+# optional key, new field with safe default) do NOT need a bump — old
+# AMX silently ignores them via the dict.get(...) pattern.
+#
+# When ``load()`` finds ``schema_version`` higher than this constant it
+# refuses with ``ConfigSchemaTooNewError`` so the user gets a clear
+# upgrade message instead of having profiles silently mangled (the
+# exact bug class that hit the 0.3.1 / 0.11.0 PATH skew on 2026-05-01).
+CONFIG_SCHEMA_VERSION: int = 1
+
+
+class ConfigSchemaTooNewError(RuntimeError):
+    """Raised when ``config.yml`` was written by a newer AMX than the running one.
+
+    The CLI top-level catches this and renders an actionable message
+    (upgrade AMX or downgrade your config) instead of letting the user
+    see a stack trace or — worse — a silent-overwrite-and-lose-profiles.
+    """
+
+    def __init__(self, *, file_version: int, supported_version: int, path: str) -> None:
+        self.file_version = file_version
+        self.supported_version = supported_version
+        self.path = path
+        super().__init__(
+            f"Config at {path} was written by a newer AMX "
+            f"(schema_version={file_version}). This AMX understands up to "
+            f"schema_version={supported_version}. Upgrade AMX, or pin an older "
+            f"AMX and re-run."
+        )
+
+
 @dataclass
 class AMXConfig:
     db: DBConfig = field(default_factory=DBConfig)
@@ -864,6 +897,17 @@ class AMXConfig:
         object.__setattr__(cfg, "_fresh_install", fresh_install)
         if p.exists():
             data: dict[str, Any] = yaml.safe_load(p.read_text()) or {}
+            # Refuse forward — a config written by a newer AMX may have
+            # keys/semantics this binary cannot interpret. Silent reads
+            # would strip those keys on the next save() and lose the
+            # user's data (the 0.3.1 vs 0.11.0 ghost-profile incident).
+            file_version = int(data.get("schema_version") or 0)
+            if file_version > CONFIG_SCHEMA_VERSION:
+                raise ConfigSchemaTooNewError(
+                    file_version=file_version,
+                    supported_version=CONFIG_SCHEMA_VERSION,
+                    path=str(p),
+                )
             # Resolve any keyring references back to plaintext before populating
             # the in-memory dataclasses. Backwards-compatible: plaintext values
             # left untouched so legacy configs keep working.
@@ -1038,6 +1082,7 @@ class AMXConfig:
                 else ([self.active_db_profile] if self.active_db_profile else [])
             )
             data = {
+                "schema_version": CONFIG_SCHEMA_VERSION,
                 "db": _db_to_mapping(self.db),
                 "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
                 "active_db_profile": self.active_db_profile,
