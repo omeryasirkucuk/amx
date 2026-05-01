@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.9] - 2026-05-01
+### Fixed
+- **`[WARNING] amx.db.connector — Exact row count failed for X.Y: ...`** was bleeding through the live-display panel during `/ask` answers. Same UX noise pattern as the v0.10.1 `tool_calls` warning: the message is purely informational (the code already falls back to the estimated row count and continues), but it surfaced as a WARNING level alarm in the panel mid-stream. Demoted to DEBUG in `amx/db/connector.py:profile_table`. Operators who want to investigate slow / blocked counts can still get the line via `AMX_LOG_LEVEL=debug`.
+
+### Why this matters
+Continuing the v0.10.1 cleanup pass: any log line that fires during a clean recovery path doesn't belong at WARNING. The user sees a `[WARNING]` and assumes something is broken — but in this case the answer they got was correct (the duplication probe worked, returned proper numbers). Reserving WARNING for actual problems keeps that signal trustworthy.
+
+### Followups
+- Audit the rest of `amx.db.*` for similar fall-back-but-warn patterns. The next likely candidates are connection-retry messages and adapter-specific permission softfails.
+
 ## [0.10.8] - 2026-05-01
 ### Fixed
 - **`detect_dimensional_role` returned "unknown"** for FK-free schemas with opaque table names. Reproducer: SAP `vbrk` (billing-document header, archetypal fact table) had no `fact_*` naming, no declared FK constraints, no partitioning, and `erdat` is stored as `varchar(8)` rather than the native `date` type — so neither the naming nor the structural FK signals fired. Pre-v0.10.8 the agent surfaced "unknown / low confidence" with the truthful but unhelpful note "no signals fired".
