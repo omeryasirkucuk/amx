@@ -6,6 +6,15 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Fresh-install YAML is clean + actionable PostgreSQL no-DB error
+
+User report: 1) the saved `~/.amx/config.yml` carried phantom `db:` and `llm:` blocks on a fresh install with no profiles, including hardcoded credential defaults (`user: amx`, `password: amx_pass`) that masqueraded as configured connection details. 2) When connecting to a PostgreSQL profile with no `database` pinned, the failure surfaced as the misleading "Referenced relation is missing or inaccessible in the current schema search path."
+
+- **`DBConfig` credential defaults are now empty** (`user: ""`, `password: ""`). The pre-fix demo defaults were a 2018-era debugging convenience that survived into production. Existing user configs are unaffected — defaults only apply when constructing a fresh `DBConfig()`.
+- **`AMXConfig.save()` skips top-level `db:` / `llm:` blocks when no profiles exist.** The mirror is for backwards-compat with pre-profile configs; on a fresh install with empty `db_profiles` and `llm_profiles`, the YAML now contains only `*_profiles: {}` and `active_*: ''`. No phantom rows in `/db-profiles`, no leaked credentials.
+- **PostgreSQL adapter detects "database does not exist" specifically.** When libpq falls back to a database named after the user (because the profile has no `database` pinned), AMX now emits an actionable message: "PostgreSQL connection requires a database name. Open the profile with /edit and fill in the `database` field…" instead of the generic relation-missing wording. Note that PostgreSQL is a 2-level backend (database → schema → table), so unlike Databricks/BigQuery, the connection itself can't proceed without a target database — surfaced explicitly in the error.
+- **3 new regression tests** covering the YAML-write side of fresh install, the empty credential defaults, and the new postgres error mapping. The previous `FirstRunConfigTests` only checked in-memory state; now the on-disk YAML shape is locked too.
+
 ### Fixed — `/doctor` now works from every namespace, not just `/search`
 
 `/doctor` was registered with `cross_namespace=True` in the slash registry (so it appeared in autocomplete from every tab), but its dispatch was incomplete. Inside `/search` the verb fell through to `["search", "ask", "doctor"]` — sending the literal string "doctor" to the search agent as a question, which silently "looked like it worked." From any other namespace (`/db`, `/llm`, `/code`, …) the verb hit Click as `[namespace, "doctor"]`, an unknown subcommand.
