@@ -928,6 +928,52 @@ class SearchCatalog:
             self._resolve_effective_description(conn, entity_id)
             self._index_entity(conn, entity_id)
 
+    def record_dedup_decision(
+        self,
+        *,
+        db_profile: str,
+        db_backend: str,
+        run_id: int,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        description: str,
+        equivalence_key: str,
+        member_count: int,
+    ) -> None:
+        """Persist an equivalence-class decision for one column member.
+
+        The dedup pass produces a single description per class and applies
+        it to every member; this method records the decision in the
+        catalog (so /ask sees the new description) and tags it with
+        ``source_kind='dedup'`` plus a ``source_agent`` string carrying
+        the equivalence key + run id, so /history reporting can later
+        count "12 classes (145 columns)".
+        """
+        with self._connect() as conn:
+            entity_id = self._upsert_entity(
+                conn,
+                db_profile=db_profile,
+                db_backend=db_backend,
+                database_name="",
+                schema_name=schema_name,
+                table_name=table_name,
+                column_name=column_name,
+                entity_kind="column",
+                asset_kind="column",
+            )
+            self._insert_description(
+                conn,
+                entity_id=entity_id,
+                description_text=description,
+                source_kind="dedup",
+                source_agent=f"equivalence:{equivalence_key}:run={run_id}:n={member_count}",
+                confidence="high",
+                chosen=True,
+            )
+            self._resolve_effective_description(conn, entity_id)
+            self._index_entity(conn, entity_id)
+
     def clear_code_evidence(self, db_profile: str, source_path: str | None = None) -> None:
         with self._connect() as conn:
             if source_path:
