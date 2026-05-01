@@ -24,9 +24,14 @@ from click.testing import CliRunner
 from amx.cli import main
 from amx.cli_support.commands.compare import (
     _aggregate_for_run,
+    _collect_per_column_long,
+    _collect_run_summary_rows,
     _detect_by,
+    _export_csv,
+    _export_markdown,
     _resolve_runs,
     _top_alternative,
+    _word_diff,
 )
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import SQLiteHistoryStore
@@ -371,6 +376,151 @@ class CompareResolveTests(unittest.TestCase):
                     command_filter="all",
                 )
             self.assertEqual(runs, [])
+
+
+class WordDiffTests(unittest.TestCase):
+    def test_identical_strings_return_plain_text_no_styling(self) -> None:
+        out = _word_diff("the quick brown fox", "the quick brown fox")
+        self.assertEqual(out.plain, "the quick brown fox")
+        self.assertEqual(out.spans, [])
+
+    def test_replacement_strikes_baseline_and_greens_replacement(self) -> None:
+        out = _word_diff("the quick brown fox", "the slow brown fox")
+        # The composed text contains both baseline ("quick") and current ("slow")
+        # with different styles so reviewers can see what changed at a glance.
+        self.assertIn("quick", out.plain)
+        self.assertIn("slow", out.plain)
+        styles = {span.style for span in out.spans}
+        self.assertIn("strike red", styles)
+        self.assertIn("bold green", styles)
+
+    def test_pure_insertion_only_emits_green(self) -> None:
+        out = _word_diff("the brown fox", "the brown fox jumps")
+        self.assertIn("jumps", out.plain)
+        self.assertTrue(any(span.style == "bold green" for span in out.spans))
+        self.assertFalse(any(span.style == "strike red" for span in out.spans))
+
+    def test_pure_deletion_only_emits_strike_red(self) -> None:
+        out = _word_diff("the brown lazy fox", "the brown fox")
+        self.assertIn("lazy", out.plain)
+        self.assertTrue(any(span.style == "strike red" for span in out.spans))
+        self.assertFalse(any(span.style == "bold green" for span in out.spans))
+
+    def test_empty_strings_do_not_crash(self) -> None:
+        self.assertEqual(_word_diff("", "").plain, "")
+        out_insert = _word_diff("", "new")
+        self.assertEqual(out_insert.plain, "new")
+        out_delete = _word_diff("old", "")
+        self.assertEqual(out_delete.plain, "old")
+
+
+def _seed_two_runs_for_export(s: SQLiteHistoryStore) -> tuple[int, int]:
+    base_suggestion = {
+        "schema": "sales", "table": "orders", "column": "id",
+        "asset_kind": "table", "source": "code", "confidence": "high",
+        "logprob_score": 0.91, "raw_logprob": 0.91, "token_count": 28,
+        "model_version": "gpt-4o", "reasoning": "primary key",
+        "alternatives": ["Primary key for orders"],
+    }
+    rid1 = _seed_run(
+        s, llm_profile="gpt4o", llm_model="gpt-4o",
+        suggestions=[base_suggestion],
+    )
+    rid2 = _seed_run(
+        s, llm_profile="claude", llm_model="claude-sonnet-4-6",
+        suggestions=[{**base_suggestion, "logprob_score": 0.71,
+                      "confidence": "medium",
+                      "alternatives": ["Order identifier"]}],
+    )
+    return rid1, rid2
+
+
+class ExportCSVTests(unittest.TestCase):
+    def test_csv_round_trip_contains_all_three_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid1, rid2 = _seed_two_runs_for_export(store)
+            runs = [store.get_run(rid2), store.get_run(rid1)]
+            results_by_run = {
+                rid1: store.get_run_results(rid1),
+                rid2: store.get_run_results(rid2),
+            }
+            out_path = Path(tmp) / "compare.csv"
+            _export_csv(out_path, runs, results_by_run)
+            self.assertTrue(out_path.exists())
+            text = out_path.read_text()
+            # Section markers
+            self.assertIn("# section: run_summary", text)
+            self.assertIn("# section: per_column", text)
+            self.assertIn("# section: aggregate_metrics", text)
+            # Data presence
+            self.assertIn("gpt4o", text)
+            self.assertIn("claude", text)
+            self.assertIn("Primary key for orders", text)
+            self.assertIn("Order identifier", text)
+            # Aggregate row labels
+            self.assertIn("avg_logprob_score", text)
+            self.assertIn("approval_rate", text)
+
+
+class ExportMarkdownTests(unittest.TestCase):
+    def test_markdown_renders_three_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid1, rid2 = _seed_two_runs_for_export(store)
+            runs = [store.get_run(rid2), store.get_run(rid1)]
+            results_by_run = {
+                rid1: store.get_run_results(rid1),
+                rid2: store.get_run_results(rid2),
+            }
+            out_path = Path(tmp) / "compare.md"
+            _export_markdown(out_path, runs, results_by_run)
+            self.assertTrue(out_path.exists())
+            text = out_path.read_text()
+            self.assertIn("# AMX run comparison", text)
+            self.assertIn("## Run summary", text)
+            self.assertIn("## Per-column results", text)
+            self.assertIn("## Aggregate metrics", text)
+            # Wide-format header includes per-run columns
+            self.assertIn(f"Run #{rid1}", text)
+            self.assertIn(f"Run #{rid2}", text)
+            # Profile names survive
+            self.assertIn("gpt4o", text)
+            self.assertIn("claude", text)
+            # Description survives
+            self.assertIn("Primary key for orders", text)
+
+
+class CollectorTests(unittest.TestCase):
+    """Direct exercise of the long-form collectors so export shapes stay stable."""
+
+    def test_run_summary_collector_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid = _seed_run(store, llm_profile="x", doc_profile="d", code_profile="c")
+            rows = _collect_run_summary_rows([store.get_run(rid)])
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["llm_profile"], "x")
+            self.assertEqual(rows[0]["doc_profile"], "d")
+            self.assertEqual(rows[0]["code_profile"], "c")
+
+    def test_per_column_long_emits_one_row_per_run_per_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid1, rid2 = _seed_two_runs_for_export(store)
+            runs = [store.get_run(rid1), store.get_run(rid2)]
+            results_by_run = {
+                rid1: store.get_run_results(rid1),
+                rid2: store.get_run_results(rid2),
+            }
+            rows = _collect_per_column_long(runs, results_by_run)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({r["run_id"] for r in rows}, {rid1, rid2})
+            self.assertEqual({r["column"] for r in rows}, {"id"})
 
 
 if __name__ == "__main__":
