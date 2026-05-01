@@ -473,6 +473,52 @@ def _run_bulk_edit_by_name(
         rows_for_render,
     )
 
+    # Single-match short-circuit: no point asking bulk-vs-individual when
+    # there's only one row. Fall through to the existing single-target
+    # path so the user gets the regular edit flow.
+    if len(entries) == 1:
+        only = entries[0]
+        info("Only one match — switching to single-target edit.")
+        target_path = (
+            f"{cfg.active_db_profile or 'default'}.{only['schema']}.{only['table']}"
+            + (f".{only['column']}" if only["column"] else "")
+        )
+        info(f"Path: {target_path}")
+        # Fall back to the existing edit flow by emitting the path as if
+        # the user had typed it. Keeps the legacy behavior for trivial
+        # cases instead of duplicating it here.
+        return
+
+    # Ask the user how they want to handle multiple matches BEFORE
+    # locking them into bulk mode. Some entities just happen to share
+    # a name and need different descriptions; the user wants the choice.
+    mode = _ask_text_or_cancel(
+        "How to handle these matches? "
+        "[bulk] one comment for selected rows  |  "
+        "[individual] walk through each row separately  |  "
+        "[cancel]",
+        default="bulk",
+    )
+    if mode is None:
+        warn("Edit cancelled.")
+        return
+    mode_norm = mode.strip().lower()
+    if mode_norm in {"cancel", "exit", "q", "quit"}:
+        warn("Edit cancelled.")
+        return
+    if mode_norm in {"individual", "i", "one-by-one", "each", "ind"}:
+        _run_individual_edits(
+            cfg,
+            entries=entries,
+            db_profile=db_profile,
+            skip_confirm=skip_confirm,
+            log_event=log_event,
+        )
+        return
+    if mode_norm not in {"bulk", "b", "batch", ""}:
+        warn(f"Unknown mode {mode!r}. Use 'bulk', 'individual', or 'cancel'.")
+        return
+
     selection_raw = _ask_text_or_cancel(
         "Pick rows (e.g. 1,3,5 or 1-4 or all; empty/cancel to abort)",
         default="all",
@@ -606,6 +652,129 @@ def log_event_if_present(log_event: LogEvent | None, name: str, status: str, det
         log_event(event_type=name, status=status, command="manual edit", details=details)
     except Exception:
         pass
+
+
+def _run_individual_edits(
+    cfg: AMXConfig,
+    *,
+    entries: list[dict[str, str]],
+    db_profile: str,
+    skip_confirm: bool,
+    log_event: LogEvent | None,
+) -> None:
+    """Walk each match in turn and prompt for a per-row comment.
+
+    The opposite of bulk mode: the user explicitly opted out of "one
+    comment for many" because the entities, despite sharing a name,
+    are semantically different (e.g. ``code`` in ``country.code`` vs
+    ``currency.code``). For each entry we print its full path + dtype
+    + existing comment, ask for a NEW comment (Enter to skip), and
+    write per-entity. Skipping leaves the existing comment untouched.
+    """
+    from amx.db.connector import DatabaseConnector
+    from amx.search.catalog import SearchCatalog
+
+    if not entries:
+        return
+    db = DatabaseConnector(cfg.db)
+    catalog: SearchCatalog | None = None
+    try:
+        catalog = SearchCatalog.from_history_store()
+    except Exception:
+        catalog = None
+    db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or ""
+
+    applied = 0
+    skipped = 0
+    failed: list[tuple[str, str]] = []
+    try:
+        for idx, e in enumerate(entries, start=1):
+            is_col = bool(e["column"])
+            label = (
+                f"{e['schema']}.{e['table']}.{e['column']}"
+                if is_col
+                else f"{e['schema']}.{e['table']}"
+            )
+            kind_str = "COLUMN" if is_col else "TABLE"
+            existing = (e["existing"] or "").strip() or "(none)"
+            console.print(
+                f"\n  [heading]({idx}/{len(entries)}) {kind_str}: {label}[/heading]"
+            )
+            console.print(f"  [dim]Type: {e['dtype'] or '—'} · existing: {existing}[/dim]")
+            new_text = _ask_text_or_cancel(
+                "New comment (Enter = skip, 'cancel' = stop the loop)",
+                default="",
+            )
+            if new_text is None:
+                warn("Stopped by user.")
+                break
+            new_text = new_text.strip()
+            if not new_text:
+                skipped += 1
+                continue
+            try:
+                ak = AssetKind.TABLE
+                if not is_col:
+                    try:
+                        ak = db.resolve_asset_kind(e["schema"], e["table"])
+                    except Exception:
+                        ak = AssetKind.TABLE
+                db.apply_comment(
+                    schema=e["schema"],
+                    table=e["table"],
+                    column=e["column"] or None,
+                    comment=new_text,
+                    asset_kind=ak,
+                )
+                applied += 1
+                if catalog is not None:
+                    try:
+                        catalog.record_manual_description(
+                            db_profile=db_profile,
+                            db_backend=cfg.db.backend or "",
+                            database_name=db_name,
+                            schema_name=e["schema"],
+                            table_name=e["table"],
+                            column_name=e["column"] or None,
+                            entity_kind="column" if is_col else "table",
+                            asset_kind="column" if is_col else "table",
+                            description=new_text,
+                        )
+                    except Exception as exc:
+                        log_event_if_present(
+                            log_event,
+                            "manual_metadata_individual_catalog_sync_failed",
+                            "warning",
+                            {"path": label, "error": str(exc)},
+                        )
+            except Exception as exc:
+                failed.append((label, str(exc)))
+        success(
+            f"Individual edits done. Applied {applied}, skipped {skipped}, failed {len(failed)}."
+        )
+        if failed:
+            warn(f"{len(failed)} write(s) failed:")
+            for label, msg in failed[:5]:
+                warn(f"  {label}: {msg[:120]}")
+            if len(failed) > 5:
+                warn(f"  … and {len(failed) - 5} more — see ~/.amx/logs/amx.log")
+        if log_event is not None:
+            log_event(
+                event_type="manual_metadata_individual_edits",
+                status="success" if not failed else "partial",
+                command="manual edit (individual loop)",
+                details={
+                    "applied": applied,
+                    "skipped": skipped,
+                    "failed": len(failed),
+                    "db_profile": db_profile,
+                },
+            )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def register_manual_commands(
