@@ -6,6 +6,28 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-05-01
+### Added — Data-quality + uniqueness probes
+
+User shared a wishlist of questions their analyst friends would actually ask AMX. Several mapped cleanly to two new tools that the search agent now ships, both calling the live DB:
+
+- **`check_uniqueness(schema, table, columns?)`** — runs `SELECT COUNT(*), COUNT(DISTINCT (col1, col2, ...))` and reports `total_rows`, `distinct_rows`, `duplicate_rows`, `uniqueness_ratio`, `is_unique`. When `columns` is omitted it falls back to the table's declared primary key. Answers questions like "is `id` a unique key or do I need `(id, time, op)`?", "are the PKs duplicated?", "do composite PKs collapse if I drop one column?".
+
+- **`inspect_data_quality(schema, table, columns?)`** — per-column live-DB stats: `null_count`, `null_ratio`, `distinct_count`, `distinct_ratio`, `min_value`, `max_value`, plus `detected_format` for varchar/text columns whose samples look like dates. Format detection covers ISO 8601, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYYMMDD`, `DD-MM-YYYY`, `DD/MM/YYYY`, `DD.MM.YYYY`, and a few short forms — first-match-wins with a 60% confidence threshold so a table that just happens to have a few date-shaped strings doesn't get mislabelled. Answers "how many nulls in `email`?", "date format `ddmmyyyy` mi?", "ne zamandır tutuluyor?" (read `min_value`/`max_value` of the date column), "çoklama oranı?".
+
+### Changed
+- **System prompt** routes the new questions to the right tool. Concrete examples in the prompt: "is X a primary key" / "(id, time) unique mi" / "composite PK gerekli mi yoksa id yeter mi" → `check_uniqueness`; "date format nedir" / "ne zamandır tutuluyor" / "çoklama oranı" / "how nullable is X" → `inspect_data_quality`.
+
+### Why this matters
+
+The user's analyst friends asked questions like "PK duplicate oluyor mu?", "date'in formatı ddmmyyyy mı yoksa dd-mm-yy mi?", "ne zamandır tutuluyor?", "çoklama durumları var mı?". Pre-v0.10.2 the agent had no tool that answered these directly — `describe_table` knew the structure but never queried actual values, and the catalog rarely carries this information. With these two tools the agent can give grounded data-aware answers without falling back to "you'd need to check that yourself".
+
+### Followups
+
+- **Datamart / aggregate-table detection** ("Bu tablo için belirli bir tarih ya da segment için oluşturulmuş datamart var mı") — naming-pattern heuristic (`_summary` / `_dm` / `_mart` / `_history` / `_snapshot` / `_agg_` / `_daily_` / `_monthly_`) over the catalog. Planned for v0.10.3.
+- **ETL / refresh-frequency inference** ("update edilme nasıl işliyor") — needs query-history tap (same prerequisite as lineage; v0.11).
+- **Best-join cardinality estimate** ("en uygun joinleme mantığı") — extend `find_joinable_tables` rows with sample-based join-cardinality (1:1 / 1:N / N:M) when the user has SELECT permission on both sides. Planned for v0.10.3.
+
 ## [0.10.1] - 2026-05-01
 ### Fixed
 - **Suppressed false-positive `LLM returned EMPTY content` warning during tool-calling rounds** (`amx/llm/provider.py`). When the LLM returns `finish_reason=tool_calls` (or the legacy `function_call`), an empty content body is the expected OpenAI-protocol shape — the actual call lives in `message.tool_calls`. The pre-v0.10.1 code emitted a noisy `WARNING — LLM returned EMPTY content … Check model name, API key, and provider dashboard.` on every tool-call round, which surfaced in mid-stream of `/ask` answers and looked alarming despite being normal flow.
