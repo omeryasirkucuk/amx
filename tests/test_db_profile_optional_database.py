@@ -96,7 +96,15 @@ def test_bigquery_missing_project_breaks_connection():
 # ── url / display_summary ────────────────────────────────────────────────
 
 
-def test_postgresql_url_omits_trailing_slash_when_unpinned():
+def test_postgresql_url_falls_back_to_postgres_system_db_when_unpinned():
+    """When the user leaves ``database`` blank, the URL targets the
+    ``postgres`` system database that every PostgreSQL install ships
+    with. Pre-fix the URL had no database segment at all and libpq
+    fell back to the username, which almost never works — see the
+    sibling test
+    ``test_postgres_url_falls_back_to_postgres_system_db_when_empty``
+    for the user-flow context.
+    """
     db = DBConfig(
         backend="postgresql",
         host="db.example.com",
@@ -105,9 +113,11 @@ def test_postgresql_url_omits_trailing_slash_when_unpinned():
         password="x",
     )
     url = db.url
-    assert url == "postgresql://alice:x@db.example.com:5432"
-    # Crucially, no trailing slash that would parse as an empty database.
+    assert url == "postgresql://alice:x@db.example.com:5432/postgres"
+    # No empty trailing segment that libpq would treat as "use the
+    # username as the database":
     assert not url.endswith("/")
+    assert not url.endswith(":5432")
 
 
 def test_postgresql_url_includes_database_when_pinned():
@@ -198,3 +208,44 @@ def test_dbconfig_default_database_is_empty_not_sap():
     db = DBConfig()
     assert db.database == ""
     assert db.is_database_pinned() is False
+
+
+def test_postgres_url_falls_back_to_postgres_system_db_when_empty():
+    """The /add-db-profile wizard promises ``database`` is optional —
+    "leave blank to pick at command time". For that promise to hold,
+    the URL builder must produce a URL libpq can actually connect to.
+
+    Pre-fix the URL had no database segment (``postgresql://u:p@h:5432``)
+    and libpq silently fell back to the username as the database name,
+    which almost never exists. The user then saw
+    ``FATAL: database "amx" does not exist`` and concluded the wizard
+    had lied. Now we explicitly fall back to the ``postgres`` system
+    database that every PostgreSQL install ships with.
+    """
+    db = DBConfig(
+        backend="postgresql",
+        host="localhost",
+        port=5432,
+        user="alice",
+        password="secret",
+        database="",
+    )
+    assert db.url == "postgresql://alice:secret@localhost:5432/postgres", (
+        "Empty database must fall back to /postgres so libpq can connect; "
+        "see DBConfig.url postgres branch."
+    )
+
+
+def test_postgres_url_uses_explicit_database_when_set():
+    """Counterpart to the no-DB fallback: when the user explicitly pins
+    a database, that name lands in the URL untouched (URL-encoded).
+    """
+    db = DBConfig(
+        backend="postgresql",
+        host="db.example.com",
+        port=5432,
+        user="alice",
+        password="secret",
+        database="analytics",
+    )
+    assert db.url == "postgresql://alice:secret@db.example.com:5432/analytics"
