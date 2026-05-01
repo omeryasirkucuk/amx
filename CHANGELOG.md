@@ -6,6 +6,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-05-01
+### Changed
+- **Dedup question is now the FIRST runtime question** (`amx/cli_support/commands/analyze_flow.py`): user feedback "ask in the same order as /edit". v0.8.1 still placed dedup AFTER coverage and review_strategy; the user wanted it as the very first question after the scope picker, mirroring `/metadata edit`'s rule that the binary mode-selector (Single vs Bulk) always comes first. Order is now: scope → dedup (dedup / per-column) → coverage (missing-only / all) → review_strategy (individual / deferred / auto-apply).
+- **Equivalence analysis panel** mirrors `/metadata edit`'s "Bulk-update analysis for 'X'" header. After the user picks `dedup` and AMX walks the scope, the panel shows: a heading, the headline numbers (total members, total classes, multi-member count, singletons), the largest class by member count, the estimated LLM-call saving, AND a small table of the top 10 classes that will dedup (column, dtype family, member count, sample tables). So the user can sanity-check what's about to happen before any LLM call.
+
+### Why this matters
+The dedup choice is the highest-impact decision in a run (can change LLM cost by 90%+). It's now asked at the same level as the other run-mode pickers but with the same primacy as `/metadata edit`'s Single-vs-Bulk prompt — first runtime question, no analysis-before-decision. The new analysis panel gives the user a concrete preview of what will be deduplicated; that's especially important on schemas where they're about to spend hundreds of LLM calls.
+
 ## [0.8.1] - 2026-05-01
 ### Changed
 - **Equivalence dedup question is asked UPFRONT** (`amx/cli_support/commands/analyze_flow.py`): user said "ask this first, like the /metadata edit pattern". Previously v0.8.0 walked the scope, computed classes, showed a summary, AND THEN asked Y/N — too much work happened before the user had a chance to opt out. Now the dedup choice is a regular `ask_choice("Equivalence-class deduplication?", ["dedup", "per-column"])` asked alongside coverage (missing-only / all) and review strategy (individual / deferred / auto-apply), BEFORE any scope walking. When the user picks `dedup`, AMX walks the scope and runs the pass; the post-walk summary still prints (so the user sees what was analyzed) but no longer asks for re-confirmation. When the user picks `per-column`, AMX skips the pre-walk entirely and goes straight to the legacy per-table flow.
