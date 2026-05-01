@@ -918,47 +918,151 @@ def register_search_commands(
     @search.command("sync")
     @click.option("--schema", "schema_name", default=None, help="Limit sync to one schema.")
     @click.option("--table", "table_name", default=None, help="Limit sync to one table in the selected schema.")
+    @click.option(
+        "--db-profile", "db_profile_override",
+        multiple=True,
+        help=(
+            "Override the DB profile scope for this sync. Pass multiple "
+            "times to sync several profiles in one command, e.g. "
+            "--db-profile prod_pg --db-profile analytics_bq."
+        ),
+    )
     @pass_config
-    def search_sync(cfg: AMXConfig, schema_name: str | None, table_name: str | None) -> None:
+    def search_sync(
+        cfg: AMXConfig,
+        schema_name: str | None,
+        table_name: str | None,
+        db_profile_override: tuple[str, ...],
+    ) -> None:
         catalog = _catalog()
         if catalog is None:
             error("Search catalog is not initialized.")
             return
-        with command_display(
-            schema=schema_name or cfg.current_schema or "",
-            table=table_name or cfg.current_table or "",
-            mode="search-sync",
-            provider=cfg.llm.provider,
-            model=cfg.llm.model,
-        ):
-            # Catalog picker for 3-level backends — fires before
-            # _interactive_sync_scope so the schema picker that runs
-            # there is already catalog-aware.
-            try:
-                from amx.cli_support.catalog_picker import ensure_catalog_selected
-                from amx.db.connector import DatabaseConnector
 
-                _db_for_pick = DatabaseConnector(cfg.db)
-                ensure_catalog_selected(_db_for_pick)
-            except Exception:
-                pass
-            cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
-            if not scope:
+        # 0.11.0: resolve scope (CLI > persisted > legacy single).
+        if db_profile_override:
+            unknown = [n for n in db_profile_override if n not in cfg.db_profiles]
+            if unknown:
+                error(
+                    f"Unknown DB profile(s): {', '.join(unknown)}. "
+                    f"Available: {', '.join(sorted(cfg.db_profiles)) or '(none)'}."
+                )
                 return
-            db_profile = cfg.active_db_profile or "default"
-            job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope})
-            inserted = 0
-            updated = 0
-            try:
-                inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
-                _sync_cached_code_evidence(cfg, catalog, scope=scope)
-                catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
-                success(f"Search sync complete. inserted={inserted}, updated={updated}")
-                log_event(event_type="search_sync", status="success", command="search.sync", details={"scope": scope, "updated": updated})
-            except Exception as exc:
-                catalog.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
-                log_event(event_type="search_sync", status="failed", command="search.sync", details={"error": str(exc)})
-                raise
+            seen: set[str] = set()
+            scope_names: list[str] = []
+            for name in db_profile_override:
+                if name not in seen:
+                    seen.add(name)
+                    scope_names.append(name)
+        else:
+            scope_names = list(cfg.effective_db_profiles())
+        if not scope_names:
+            scope_names = [cfg.active_db_profile or "default"]
+
+        is_multi = len(scope_names) > 1
+        if is_multi:
+            info(
+                f"Syncing across {len(scope_names)} DB profiles: "
+                f"{', '.join(scope_names)}"
+            )
+
+        original_active = cfg.active_db_profile
+        try:
+            for idx, profile_name in enumerate(scope_names, start=1):
+                if is_multi:
+                    info(f"--- Profile {idx}/{len(scope_names)}: {profile_name} ---")
+                if profile_name in cfg.db_profiles:
+                    object.__setattr__(cfg, "active_db_profile", profile_name)
+                    cfg.db = cfg.db_profiles[profile_name]
+
+                with command_display(
+                    schema=schema_name or cfg.current_schema or "",
+                    table=table_name or cfg.current_table or "",
+                    mode="search-sync",
+                    provider=cfg.llm.provider,
+                    model=cfg.llm.model,
+                ):
+                    # Catalog picker for 3-level backends — fires before
+                    # _interactive_sync_scope so the schema picker that
+                    # runs there is already catalog-aware.
+                    # 0.11.0 Phase 8: also warn for 2-level backends
+                    # without a pinned database so the user knows up
+                    # front the listings may be empty.
+                    try:
+                        from amx.cli_support.catalog_picker import (
+                            ensure_catalog_selected,
+                            warn_when_database_unpinned,
+                        )
+                        from amx.db.connector import DatabaseConnector
+
+                        _db_for_pick = DatabaseConnector(cfg.db)
+                        ensure_catalog_selected(_db_for_pick)
+                        warn_when_database_unpinned(_db_for_pick)
+                    except Exception:
+                        pass
+                    cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
+                    if not scope:
+                        if is_multi:
+                            warn(
+                                f"No scope selected for profile '{profile_name}', "
+                                "skipping."
+                            )
+                            continue
+                        return
+                    db_profile = cfg.active_db_profile or profile_name
+                    job_id = catalog.start_sync_job(
+                        db_profile, "sync", {"scope": scope}
+                    )
+                    inserted = 0
+                    updated = 0
+                    try:
+                        inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
+                        _sync_cached_code_evidence(cfg, catalog, scope=scope)
+                        catalog.finish_sync_job(
+                            job_id,
+                            status="success",
+                            inserted_count=inserted,
+                            updated_count=updated,
+                        )
+                        success(
+                            f"Search sync complete for '{profile_name}': "
+                            f"inserted={inserted}, updated={updated}"
+                        )
+                        log_event(
+                            event_type="search_sync",
+                            status="success",
+                            command="search.sync",
+                            details={
+                                "scope": scope,
+                                "updated": updated,
+                                "db_profile": profile_name,
+                            },
+                        )
+                    except Exception as exc:
+                        catalog.finish_sync_job(
+                            job_id,
+                            status="failed",
+                            inserted_count=inserted,
+                            updated_count=updated,
+                            error_text=str(exc),
+                        )
+                        log_event(
+                            event_type="search_sync",
+                            status="failed",
+                            command="search.sync",
+                            details={"error": str(exc), "db_profile": profile_name},
+                        )
+                        if is_multi:
+                            warn(
+                                f"Sync failed for '{profile_name}': {exc}. "
+                                "Continuing with remaining profiles."
+                            )
+                            continue
+                        raise
+        finally:
+            if original_active and original_active in cfg.db_profiles:
+                object.__setattr__(cfg, "active_db_profile", original_active)
+                cfg.db = cfg.db_profiles[original_active]
 
     @search.command("rebuild")
     @pass_config

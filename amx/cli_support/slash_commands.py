@@ -156,7 +156,10 @@ _CODE_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
-    SlashCommand("/run", "analyze", "Run all agents — scope: database / schema / asset / column (/run [ASSET …] [--schema …] [--apply])"),
+    SlashCommand(
+        "/run", "analyze",
+        "Run all agents — scope: database / schema / asset / column. Add --db-profile NAME (multi) for cross-DB execution (/run [ASSET …] [--schema …] [--apply] [--db-profile NAME …])",
+    ),
     SlashCommand("/run-apply", "analyze", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
     SlashCommand("/apply", "analyze", "Write pending comments to the database"),
 )
@@ -169,7 +172,10 @@ _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/status", "search", "Show catalog/index status"),
     SlashCommand("/sources", "search", "Show evidence sources and settings"),
     SlashCommand("/config", "search", "Show/set search config (/config [key] [value])"),
-    SlashCommand("/sync", "search", "Sync DB structure/comments and code evidence"),
+    SlashCommand(
+        "/sync", "search",
+        "Sync DB structure/comments and code evidence. Add --db-profile NAME (multi) for cross-DB sync (/sync [--db-profile NAME …])",
+    ),
     SlashCommand("/rebuild", "search", "Rebuild effective search state and vector index"),
 )
 

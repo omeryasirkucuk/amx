@@ -6,6 +6,86 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-01
+### Added — Multi-DB execution + optional `database` per connector
+
+This release introduces two related changes that together unlock cross-database `/ask`:
+
+1. **`database` field is now OPTIONAL on every DB connector profile.** Previously every profile baked in a single database (PostgreSQL/Snowflake) or catalog/dataset (Databricks/BigQuery), and the legacy demo default `database: "SAP"` surfaced as a phantom "SAP @ localhost:5432" row for users who never finished setup. The default is now empty; profiles with no DB pinned will prompt the user to pick at command time (3-level backends) or warn that listings may be empty (2-level backends).
+
+2. **`/ask`, `/run`, and `/sync` accept multiple DB profiles per call.** A new persisted multi-pick scope (`/use-db prod_pg analytics_bq`) lets the user define a default cross-DB workflow; per-call `--db-profile NAME` (multi) overrides it. `/ask` retrieval unions catalog rows across profiles in a single fused query — the killer feature for cross-DB join discovery and "where does customer_id live across all my DBs" type questions. `/run` and `/sync` iterate per profile (with shared LLM/token tracker) so write-back semantics stay correct.
+
+#### Profile / config layer
+
+- `DBConfig.database = ""` (was `"SAP"`). Backend-aware split: `is_connection_configured()` is the new "can we open an engine" predicate (no DB required); `is_database_pinned()` reports whether the user committed to a specific database/catalog/dataset; `is_configured()` is preserved as a back-compat alias to `is_connection_configured()` so all 99 existing call sites stay valid.
+- `DBConfig.url` now builds a server-only URL when the database is unpinned (PostgreSQL/Snowflake) instead of trailing `/`. `display_summary` shows `(no DB pinned)` per backend.
+- `/add-db-profile` no longer requires the database field for PG/SF (makes it optional, in line with Databricks/BigQuery which were already optional via catalog/dataset).
+- `/db-profiles` surfaces unpinned profiles with a `?` next to the backend column and emits a one-time hint when any profile still carries the legacy demo default `database='SAP'` — suggest, don't mutate.
+- `has_legacy_database_default()` helper for detection, never auto-edits YAML.
+
+#### Persisted multi-pick scope
+
+- `AMXConfig.active_db_profiles: list[str]` is the new source of truth for the multi-DB execution scope. The legacy `active_db_profile: str` is kept as the first list entry so all 99 existing call sites that read it directly stay working unchanged.
+- New `cfg.set_active_db_profiles(names)` / `cfg.effective_db_profiles()` APIs. `cfg.set_active_db_profile(name)` collapses the scope to a single profile (symmetric).
+- Save/load round-trip both keys: a 0.10.x reader keeps working from the scalar; 0.11+ readers prefer the list. `remove_db_profile` evicts from the scope.
+
+#### `ProfileScope` service object
+
+- New `amx/services/profile_scope.py`. Frozen, ordered, deduped tuple of profile names + a `default` pointer for write-back operations. `ProfileScope.from_config(cfg)` reads the persisted scope; `from_names([...])` wraps an explicit CLI-derived list. `connectors(cfg)` lazy-yields one connector at a time and disposes each before yielding the next, so the FD budget mirrors the existing single-profile path.
+
+#### `/use-db` is multi-pick
+
+- `/use-db prod_pg` — single (legacy behaviour).
+- `/use-db prod_pg analytics_bq` — persisted multi-profile scope used by `/ask`, `/run`, `/sync`.
+- Interactive form asks single-vs-multi when ≥2 profiles exist, then routes to `ask_choice` or `ask_multi_choice`.
+- Startup banner prints the full active scope when multi-profile so the user always knows which DBs are in play.
+
+#### Catalog read methods accept `Sequence[str]`
+
+- New helper `amx/search/_catalog/_db_profile_clause.py` builds parameterised `WHERE db_profile IN (?, ?, …)` filters.
+- `name_search_columns`, `find_table_candidates`, `find_tables_by_exact_name`, `find_columns_by_exact_name`, `_exact_candidates`, `search_columns`, `search_tables`, and `_attach_column_counts` all accept `str | Sequence[str]`. Single-string callers emit identical SQL to before.
+- `SearchIndex.query()` accepts `str | Sequence[str]` — multi-profile vector queries hit each Chroma collection separately and union results sorted by distance ascending. Per-profile collection partitioning is unchanged (no schema migration).
+- `search_tables` per-row table-lookup queries scope the parent-table lookup to the row's OWN `db_profile` (not the caller's full scope) so column→table linkage stays correct in multi-profile retrieval.
+
+#### `SearchAgent` multi-DB scope
+
+- `SearchAgent.__init__` accepts `db_profiles=[...]` override (falls back to `cfg.effective_db_profiles()`). New `is_multi_profile` and `db_profile_filter` properties; the legacy `self.db_profile` scalar still points at the first profile for write-back / settings anchoring.
+- All retrieval/resolution call sites that hit catalog read methods now pass `db_profile_filter`.
+- Planner prompt now includes `active_db_profiles` so the LLM can mention all configured profiles in cross-DB answers.
+- Join methods (`join_candidates`, `joinable_tables`, `semantic_join_candidates`, `semantic_joinable_tables`) stay single-profile this release — anchor profile only. Cross-DB join inference will surface via `name_search_columns(scope)` results in a follow-up.
+- `session_memory` + `sync_status` keep single-profile semantics (sessions / job rows are per-anchor by design).
+
+#### CLI commands
+
+- `/ask` (and `/search ask`) gains `--db-profile NAME` (multi). Unknown profiles emit a clear error with the available list. `_render_search_rows` auto-shows a `Profile` column when results span multiple profiles.
+- `/run` and `/run-apply` gain `--db-profile NAME` (multi). Outer per-profile loop with shared LLM/token tracker; `analysis_runs`/`run_results` rows are persisted per profile.
+- `/sync` gains `--db-profile NAME` (multi). Per-profile sync loop with shared progress UI; failed profiles are skipped (multi-profile mode) instead of aborting the whole batch.
+- New `warn_when_database_unpinned()` helper in `catalog_picker.py` flags 2-level backends without a pinned database so users know listings may be empty before they hit a confusing error.
+
+#### Tests
+
+- `tests/test_db_profile_optional_database.py` — 16 cases for the new `is_database_pinned` / `is_connection_configured` / `display_summary` / `url` / `has_legacy_database_default` contracts.
+- `tests/test_profile_scope.py` — 18 cases for the persisted scope semantics + the `ProfileScope` helper.
+- `tests/test_search_catalog_multi_profile.py` — 6 unit tests for `_db_profile_clause` + 4 E2E tests against an isolated `SQLiteHistoryStore` confirming multi-profile filtering returns the union.
+
+#### Docs
+
+- `docs/design/multi-db-plan.md` captures the architecture survey, locked-in decisions (multi-pick `/use-db`, `/ask` defaults to active scope, suggest-don't-mutate for legacy SAP), risks, test surface, and the 9-phase implementation roadmap.
+
+### Breaking — None
+
+The release is fully backward-compatible. All 99 existing `cfg.active_db_profile` call sites and 27+ `DatabaseConnector(cfg.db)` call sites work unchanged. Single-profile retrieval emits identical SQL. Old YAML configs with `database: "SAP"` continue loading; users get a one-time hint to clear the value.
+
+### Why this matters
+
+The user reported that defining a single database per profile blocks cross-DB analysis (`/ask` answers across multiple connected systems are the highest-value use case). 0.11.0 makes the database field truly optional and lets `/ask`, `/run`, `/sync` operate on any subset of configured profiles in one call.
+
+### Followups
+
+- Cross-DB join inference: pair same-name columns across profiles via `name_search_columns(scope)` results and surface a join-candidate row that explicitly spans `db_profile_left`/`db_profile_right`. Out of 0.11.0 scope; queued for 0.11.1.
+- Live database picker for 2-level backends (PG/SF): currently `warn_when_database_unpinned` only emits a hint. Implementing `list_databases()` on PG (`\l`) and Snowflake (`SHOW DATABASES`) would let the picker prompt at command time the same way the catalog picker does for Databricks/BigQuery.
+- `/run-apply` write-back collision detection in multi-profile mode: per-profile loop sidesteps the issue today (each comment is written to its own DB), but a future refinement could pre-flight check for asset-name collisions and warn the user.
+
 ## [0.10.15] - 2026-05-01
 ### Added
 - **Corporate-network friendly SSL configuration** (`amx/llm/provider.py:_configure_ssl_environment`). Two new env vars unblock users behind TLS-inspecting proxies (Zscaler, Netskope, internal CA, ZIA, etc.) where every LLM call previously died with `[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain`:
