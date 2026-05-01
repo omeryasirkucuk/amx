@@ -6,6 +6,59 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-05-01
+### Added — `detect_scd_pattern` tool
+
+User: "AMX should answer SCD-type questions ('how does this table hold history?', 'is this Type 2?', 'değişiklik aynı satırda mı yeni satır mı?', 'eski değerler ayrı kolonda mı?') WITHOUT relying on comments. Lots of variations could come."
+
+Right — this is a single-tool design problem, not whack-a-mole. New `detect_scd_pattern(schema, table, business_key?)` infers the pattern from data signals only:
+
+**Type 2 (history-as-rows) signals:**
+- Temporal validity pair: `valid_from` + `valid_to`, `effective_from` + `effective_to`, `start_date` + `end_date`, SAP `BEGDA` + `ENDDA`, `row_start` + `row_end`, etc.
+- Current/active flag: `is_current`, `is_active`, `current_flag`, `current_record`, `is_latest` (filtered to `bool` / `char(1)` / `varchar(1)` dtypes so a regular int isn't tagged).
+- Version / revision / sequence: `version`, `revision`, `rev_no`, `seq_no`, `row_version`, `scd_version`, `history_seq`.
+
+**Type 3 (history-as-columns) signals:**
+- Paired columns where one has a "previous" prefix and the canonical sibling exists: `prev_status` ↔ `status`, `old_address` ↔ `new_address`, `previous_price` ↔ `current_price`, `before_X` ↔ `after_X`, `last_X` ↔ `X`. Matched against `prev_*` / `previous_*` / `old_*` / `former_*` / `before_*` / `last_*` against canonical / `new_*` / `current_*` / `now_*` / `after_*` siblings.
+
+**Type 4 (separate history table) signals:**
+- Companion table named `<table>_history`, `<table>_hist`, `<table>_audit`, `<table>_log`, `<table>_archive`, `<table>_versions`, `<table>_changes`, `<table>_snapshot` in the same schema (live-DB lookup, not catalog).
+
+**Type 1 vs Type 2 row-cardinality probe (optional):**
+- When the caller passes `business_key` (one or more columns), the tool runs `SELECT COUNT(*), COUNT(DISTINCT (cols))` against the live DB. Avg rows-per-key ≤ 1.05 → Type 1 (current-only). Avg > 1.5 → Type 2 (history rows). In between is reported as ambiguous so the LLM doesn't over-claim.
+
+**Result shape:**
+
+```json
+{
+  "scd_type_hypothesis": "type_2",            // type_1 / type_2 / type_3 / type_4 / unknown
+  "confidence": "high",                         // high / medium / low
+  "evidence": [                                 // ← always quote these in the answer
+    "Type 2 temporal pair: `valid_from` + `valid_to`.",
+    "Type 2 current-flag column: `is_current` (dtype=bool).",
+    "Avg rows-per-business-key = 3.42 → multiple rows per key (likely Type 2)."
+  ],
+  "indicators": {
+    "type2_temporal_pair": ["valid_from", "valid_to"],
+    "type2_current_flag": "is_current",
+    "type2_version_col": "version",
+    "rows_per_key_avg": 3.42
+  },
+  "alternative_hypotheses": ["type_6 (Type 2 in main + Type 4 sibling = hybrid)"],
+  "recommendation": ""
+}
+```
+
+**System prompt rule:** "User asks 'how does X hold history' / 'is this SCD2' / 'değişiklik tek satırda mı yeni satır mı' / 'eski değerler nasıl tutuluyor' → call `detect_scd_pattern`. The result includes `scd_type_hypothesis`, `confidence`, `evidence` (ALWAYS quote in the answer; the hypothesis alone is misleading), and `alternative_hypotheses` for hybrid cases. When evidence is empty, suggest the user provide a candidate `business_key` so the rows-per-key probe can disambiguate Type 1 vs Type 2."
+
+### Why this matters
+SCD detection is the kind of pattern recognition that could spawn a dozen ad-hoc patches over time ("did you check is_current?", "did you check valid_from?", "is there a history table?"). One purpose-built tool with a structured return + multiple signal sources covers the whole question class, lets the LLM be honest about confidence, and surfaces hybrid (Type 6) cases instead of forcing a single label. Same `kind` / `inference_source` / `evidence` design pattern as v0.9.7-v0.10.4.
+
+### Followups
+- Per-row temporal-pair validation: when Type 2 is inferred, verify that `valid_from <= valid_to` for every row and surface violations as data-quality findings.
+- CDC stream detection: when Type 1 + an `updated_at` column, hint that change-data-capture would be needed for actual history.
+- v0.11 lineage will give the third leg — even when in-table signals are absent, the upstream load job's design tells whether history is preserved.
+
 ## [0.10.5] - 2026-05-01
 ### Added
 - **`sample_column_values(schema, table, column, limit=5)`** — lightweight tool that returns distinct non-null example values via a direct `SELECT DISTINCT col FROM schema.table WHERE col IS NOT NULL LIMIT N`. Bypasses `profile_table` (which scans every column + foreign keys + stats) so a "give me an example" question doesn't pay full-table-profile cost. Result also includes `distinct_count` (single-column `COUNT(DISTINCT)`, soft-fails on un-indexed huge columns).

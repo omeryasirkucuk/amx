@@ -447,6 +447,58 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "detect_scd_pattern",
+                    "description": (
+                        "Infer the table's slowly-changing-dimension (SCD) "
+                        "history pattern from DATA SIGNALS — NOT from "
+                        "comments. Returns ``scd_type_hypothesis`` "
+                        "(``type_1`` / ``type_2`` / ``type_3`` / ``type_4`` / "
+                        "``append_only`` / ``unknown``), ``confidence`` "
+                        "(``high`` / ``medium`` / ``low``), ``evidence`` (a "
+                        "human-readable bullet list of why), and "
+                        "``indicators`` (the structured signals that fired):\n"
+                        "  • Type 2 (history-as-rows) signals: valid_from/"
+                        "valid_to column pair, is_current/active/current_flag "
+                        "boolean column, version/revision/seq_no column.\n"
+                        "  • Type 3 (history-as-columns) signals: paired "
+                        "columns like (status, prev_status) / "
+                        "(address, old_address) / (price, previous_price).\n"
+                        "  • Type 4 (separate history table) signals: a "
+                        "companion table ``X_history`` / ``X_hist`` / "
+                        "``X_audit`` / ``X_log`` exists in the same schema.\n"
+                        "  • Type 1 vs 2 row-count probe: when "
+                        "``business_key`` is provided, counts rows per key — "
+                        "1.0 means current-only (Type 1); >1 average means "
+                        "history rows are kept (Type 2).\n"
+                        "Use this for 'how does X hold history?', 'is this "
+                        "SCD2 mi?', 'eski değerler nasıl tutuluyor?', "
+                        "'değişiklik aynı satırda mı yeni satır mı?'. "
+                        "ALWAYS surface the evidence list to the user — the "
+                        "hypothesis alone (without evidence) is misleading."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {"type": "string", "description": "Schema name."},
+                            "table": {"type": "string", "description": "Table name."},
+                            "business_key": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Business-key column(s) for the Type 1 vs "
+                                    "Type 2 row-per-key probe. Optional — when "
+                                    "omitted, the tool relies on column-name "
+                                    "and sibling-table signals only."
+                                ),
+                            },
+                        },
+                        "required": ["schema", "table"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "sample_column_values",
                     "description": (
                         "Return a few non-null example values from a single column "
@@ -1709,5 +1761,319 @@ class ToolBox:
             "samples": samples,
             "sample_count": len(samples),
             "distinct_count": distinct_count,
+        }
+
+    # SCD-pattern naming heuristics. Lowered + matched as substring on
+    # the column name so suffixes like ``my_valid_from_dt`` still
+    # register. Order matters per signal: more-specific names first
+    # so a column called ``effective_from_date`` matches the type-2
+    # temporal pair before the generic ``_from`` filter.
+    _SCD_VALID_FROM_NAMES: tuple[str, ...] = (
+        "valid_from", "valid_start", "effective_from", "effective_start",
+        "start_date", "start_dt", "begin_date", "begda", "from_date",
+        "active_from", "row_start",
+    )
+    _SCD_VALID_TO_NAMES: tuple[str, ...] = (
+        "valid_to", "valid_end", "effective_to", "effective_end",
+        "end_date", "end_dt", "endda", "to_date", "active_to", "row_end",
+    )
+    _SCD_CURRENT_FLAG_NAMES: tuple[str, ...] = (
+        "is_current", "is_active", "current_flag", "active_flag",
+        "is_latest", "current_record", "is_current_version",
+    )
+    _SCD_VERSION_NAMES: tuple[str, ...] = (
+        "version", "revision", "rev_no", "seq_no", "row_version",
+        "scd_version", "history_seq",
+    )
+    _SCD_PREV_PREFIXES: tuple[str, ...] = (
+        "prev_", "previous_", "old_", "former_", "before_", "last_",
+    )
+    _SCD_NEW_PREFIXES: tuple[str, ...] = (
+        "new_", "current_", "now_", "after_",
+    )
+    _SCD_HISTORY_SUFFIXES: tuple[str, ...] = (
+        "_history", "_hist", "_audit", "_log", "_archive", "_versions",
+        "_changes", "_snapshot",
+    )
+
+    def _tool_detect_scd_pattern(
+        self,
+        schema: str,
+        table: str,
+        business_key: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Infer SCD type from column-name patterns + sibling tables + key cardinality.
+
+        The heuristic stack:
+
+        1. Column-name patterns ⇒ Type 2 / Type 3 hints.
+        2. Sibling-table lookup (``X_history`` / ``X_hist`` / ``X_audit``
+           / ``X_log``) ⇒ Type 4 hint.
+        3. When ``business_key`` is provided: row-per-key avg count ⇒
+           Type 1 vs Type 2 (current-only vs history-rows).
+
+        The hypothesis is the strongest signal that fired; ``evidence``
+        captures every detected signal so the LLM can quote them
+        verbatim instead of asserting the type without justification.
+        """
+        from sqlalchemy import text as _text
+
+        schema_name = (schema or "").strip()
+        table_name = (table or "").strip()
+        if not schema_name or not table_name:
+            raise _ToolError("Both 'schema' and 'table' are required.")
+
+        # Profile the table once to get column names + dtypes + PK.
+        try:
+            profile = self._live_db().profile_table(
+                schema_name, table_name, sample_size=0,
+            )
+        except Exception as exc:
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "found": False,
+                "error": str(exc),
+                "hint": (
+                    "If schema/table didn't resolve, call "
+                    "find_table_by_name first."
+                ),
+            }
+
+        col_names_lower = [str(c.name).lower() for c in profile.columns]
+        col_lookup = {n: profile.columns[i] for i, n in enumerate(col_names_lower)}
+
+        evidence: list[str] = []
+        indicators: dict[str, Any] = {}
+
+        # ── Type 2 — temporal row-validity pair ──
+        valid_from_hits = [n for n in col_names_lower if any(p in n for p in self._SCD_VALID_FROM_NAMES)]
+        valid_to_hits = [n for n in col_names_lower if any(p in n for p in self._SCD_VALID_TO_NAMES)]
+        if valid_from_hits and valid_to_hits:
+            indicators["type2_temporal_pair"] = [valid_from_hits[0], valid_to_hits[0]]
+            evidence.append(
+                f"Type 2 temporal pair: `{valid_from_hits[0]}` + `{valid_to_hits[0]}`."
+            )
+        elif valid_from_hits:
+            indicators["type2_open_ended_temporal"] = valid_from_hits[0]
+            evidence.append(
+                f"Type 2 partial signal: `{valid_from_hits[0]}` exists "
+                "but no matching end-of-validity column."
+            )
+
+        # ── Type 2 — current/active flag ──
+        flag_hits = [
+            n for n in col_names_lower
+            if any(p == n or n.endswith("_" + p) or n == p for p in self._SCD_CURRENT_FLAG_NAMES)
+            or n in self._SCD_CURRENT_FLAG_NAMES
+        ]
+        # Restrict to boolean-shape dtypes so a regular int isn't tagged.
+        flag_hits = [
+            n for n in flag_hits
+            if any(token in str(col_lookup[n].dtype).lower()
+                   for token in ("bool", "char(1)", "varchar(1)"))
+        ]
+        if flag_hits:
+            indicators["type2_current_flag"] = flag_hits[0]
+            evidence.append(
+                f"Type 2 current-flag column: `{flag_hits[0]}` "
+                f"(dtype={col_lookup[flag_hits[0]].dtype})."
+            )
+
+        # ── Type 2 — version / revision column ──
+        version_hits = [n for n in col_names_lower if n in self._SCD_VERSION_NAMES]
+        if version_hits:
+            indicators["type2_version_col"] = version_hits[0]
+            evidence.append(
+                f"Type 2 version column: `{version_hits[0]}`."
+            )
+
+        # ── Type 3 — paired (current_X, prev_X) columns ──
+        prev_pairs: list[tuple[str, str]] = []
+        for col in col_names_lower:
+            for prev_p in self._SCD_PREV_PREFIXES:
+                if col.startswith(prev_p):
+                    base = col[len(prev_p):]
+                    # Look for the canonical sibling in the same table.
+                    if base in col_names_lower:
+                        prev_pairs.append((base, col))
+                        break
+                    # Or a new_/current_ prefix sibling.
+                    for new_p in self._SCD_NEW_PREFIXES:
+                        if (new_p + base) in col_names_lower:
+                            prev_pairs.append((new_p + base, col))
+                            break
+                    break
+        if prev_pairs:
+            indicators["type3_prev_pairs"] = [
+                {"current": cur, "previous": prev} for cur, prev in prev_pairs[:5]
+            ]
+            evidence.append(
+                f"Type 3 column pair(s): " + ", ".join(
+                    f"`{prev}`↔`{cur}`" for cur, prev in prev_pairs[:3]
+                ) + "."
+            )
+
+        # ── Type 4 — sibling history table in same schema ──
+        sibling_path = ""
+        try:
+            db = self._live_db()
+            assets = db.list_assets(schema_name) if hasattr(db, "list_assets") else (
+                (n, "table") for n in db.list_tables(schema_name)
+            )
+            for name, _kind in assets:
+                low = str(name).lower()
+                for suffix in self._SCD_HISTORY_SUFFIXES:
+                    if low == table_name.lower() + suffix:
+                        sibling_path = f"{schema_name}.{name}"
+                        break
+                if sibling_path:
+                    break
+        except Exception:
+            pass
+        if sibling_path:
+            indicators["type4_history_sibling"] = sibling_path
+            evidence.append(
+                f"Type 4 sibling history table: `{sibling_path}` exists "
+                "next to the base table."
+            )
+
+        # ── Type 1 vs 2 — row-per-key probe (only if business_key given) ──
+        rows_per_key: float | None = None
+        if business_key:
+            try:
+                db = self._live_db()
+                adapter = db._adapter  # noqa: SLF001
+                fqn = adapter.fully_qualified_name(schema_name, table_name)
+                q_cols = ", ".join(adapter.quote_identifier(c) for c in business_key)
+                with db.engine.connect() as conn:
+                    row = conn.execute(
+                        _text(
+                            f"SELECT COUNT(*) AS total, "
+                            f"COUNT(DISTINCT ({q_cols})) AS distinct_keys "
+                            f"FROM {fqn}"
+                        ),
+                    ).fetchone()
+                if row and row[1]:
+                    total = int(row[0] or 0)
+                    distinct_keys = int(row[1])
+                    rows_per_key = total / distinct_keys if distinct_keys else 0.0
+                    indicators["business_key"] = list(business_key)
+                    indicators["rows_per_key_avg"] = round(rows_per_key, 3)
+                    indicators["total_rows"] = total
+                    indicators["distinct_business_keys"] = distinct_keys
+                    if rows_per_key <= 1.05:
+                        evidence.append(
+                            f"Avg rows-per-business-key = {rows_per_key:.2f} "
+                            "→ current-only (Type 1)."
+                        )
+                    elif rows_per_key > 1.5:
+                        evidence.append(
+                            f"Avg rows-per-business-key = {rows_per_key:.2f} "
+                            "→ multiple rows per key (likely Type 2)."
+                        )
+                    else:
+                        evidence.append(
+                            f"Avg rows-per-business-key = {rows_per_key:.2f} "
+                            "→ ambiguous; could be Type 1 with rare history."
+                        )
+            except Exception as exc:
+                evidence.append(
+                    f"Could not run rows-per-key probe: {exc}"
+                )
+
+        # ── Decide hypothesis ──
+        # Strongest signals win; sibling history table is the most
+        # specific but we still surface other signals because real
+        # systems often combine types (Type 6 = 1+2+3).
+        type2_hits = (
+            ("type2_temporal_pair" in indicators)
+            + ("type2_current_flag" in indicators)
+            + ("type2_version_col" in indicators)
+            + (1 if rows_per_key is not None and rows_per_key > 1.5 else 0)
+        )
+        type3_hits = 1 if "type3_prev_pairs" in indicators else 0
+        type4_hits = 1 if sibling_path else 0
+        type1_signal = (
+            rows_per_key is not None
+            and rows_per_key <= 1.05
+            and type2_hits == 0
+            and type3_hits == 0
+        )
+
+        if type2_hits >= 2 or (
+            type2_hits >= 1 and rows_per_key is not None and rows_per_key > 1.5
+        ):
+            hypothesis = "type_2"
+            confidence = "high" if type2_hits >= 2 else "medium"
+        elif type3_hits and type2_hits == 0:
+            hypothesis = "type_3"
+            confidence = "medium"
+        elif type4_hits and type2_hits == 0 and type3_hits == 0:
+            hypothesis = "type_4"
+            confidence = "medium"
+        elif type1_signal:
+            hypothesis = "type_1"
+            confidence = "medium"
+        elif type2_hits >= 1:
+            hypothesis = "type_2"
+            confidence = "low"
+        else:
+            hypothesis = "unknown"
+            confidence = "low"
+            if not evidence:
+                evidence.append(
+                    "No SCD-style signals found in column names or sibling "
+                    "tables. The table may be append-only, fully overwritten "
+                    "(Type 1), or use a custom convention."
+                )
+
+        # Alternative hypotheses — surface co-existing signals so the
+        # LLM can mention "primarily Type 2 but a sibling history "
+        # table also exists (so this is closer to Type 6)".
+        alternatives: list[str] = []
+        if hypothesis == "type_2" and type4_hits:
+            alternatives.append(
+                "type_6 (Type 2 in main + Type 4 sibling = hybrid)"
+            )
+        if hypothesis == "type_4" and type2_hits:
+            alternatives.append(
+                "type_6 (history sibling + in-table type 2 signals = hybrid)"
+            )
+        if hypothesis == "type_2" and type3_hits:
+            alternatives.append(
+                "type_6 (in-table previous-value columns alongside row-history)"
+            )
+
+        recommendation = ""
+        if hypothesis == "type_2" and "type2_temporal_pair" not in indicators:
+            recommendation = (
+                "Type 2 inferred without an explicit valid_from/valid_to "
+                "pair. To replay history at a point in time you'll need "
+                "the version / current_flag column; consider asking for "
+                "the load logic from your data team."
+            )
+        elif hypothesis == "type_1":
+            recommendation = (
+                "Type 1 inferred — only current values are kept. To get "
+                "history you'd need a separate audit log or CDC stream."
+            )
+        elif hypothesis == "unknown" and not business_key:
+            recommendation = (
+                "No SCD signals from names/siblings. Re-call this tool "
+                "with a candidate ``business_key`` so the rows-per-key "
+                "probe can disambiguate Type 1 vs Type 2."
+            )
+
+        return {
+            "schema": schema_name,
+            "table": table_name,
+            "found": True,
+            "scd_type_hypothesis": hypothesis,
+            "confidence": confidence,
+            "evidence": evidence,
+            "indicators": indicators,
+            "alternative_hypotheses": alternatives,
+            "recommendation": recommendation,
         }
 
