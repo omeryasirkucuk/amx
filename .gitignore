@@ -1,3 +1,4 @@
+# Python build artefacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,23 +8,41 @@ dist/
 build/
 .eggs/
 *.egg
+
+# Virtualenvs and secrets
 .env
 .venv/
 venv/
 env/
+
+# Local databases / vector stores
 *.db
 *.sqlite3
 chroma_db/
 .chroma/
+
+# Logs and OS noise
 *.log
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 *~
+
+# Editor / IDE
 .idea/
 .vscode/
 *.iml
+
+# Local-only data
 dataset/
-CHANGELOG.md
+sample_vbrk_amx_test.sql
+
+# Local-only changelog (CHANGELOG.md is the public release log and IS tracked)
 CHANGELOG.local.md
+
+# Internal AI-agent rules (not for the public repo)
+.agents/
+
+# Per-user Claude Code permissions (settings.json is shared and IS tracked)
+.claude/settings.local.json
