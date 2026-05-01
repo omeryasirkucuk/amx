@@ -18,6 +18,7 @@ The ``ToolBox`` class holds the catalog/DB references and exposes ``schemas``
 from __future__ import annotations
 
 import json
+from difflib import SequenceMatcher
 from typing import Any, Callable
 
 from amx.config import AMXConfig
@@ -130,11 +131,19 @@ class ToolBox:
                 "function": {
                     "name": "find_table_by_name",
                     "description": (
-                        "Return every (schema, table) pair where the given table name exists "
-                        "exactly. Use this to find which schema contains a table the user "
-                        "named ('which schema have vbrk table?', 'where is adrc?'). When the "
-                        "name lives in multiple schemas, the result lets you ask the user to "
-                        "disambiguate."
+                        "Locate tables by name with progressive fallback:\n"
+                        "  • ``matches`` — exact-name hits (case-insensitive) across catalog "
+                        "+ live DB. Authoritative when populated.\n"
+                        "  • ``fuzzy_matches`` — list of ``{path, match_kind}`` where "
+                        "match_kind is ``prefix`` / ``suffix`` / ``contains`` / ``fuzzy``. "
+                        "Populated when the user gives a PARTIAL or APPROXIMATE name (e.g. "
+                        "'I don't remember the whole name, just trog'). NEVER empty unless "
+                        "the catalog and live DB truly have no related table.\n"
+                        "RULE: when ``matches`` is empty, ALWAYS surface ``fuzzy_matches`` to "
+                        "the user — never say 'no table found'. Order them by match_kind "
+                        "(prefix > suffix > contains > fuzzy) and let the user pick. "
+                        "Examples: 'where is adrc?', 'I think it was called trog…', "
+                        "'tablo adı vbap mı vbpa mı?'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -478,7 +487,7 @@ class ToolBox:
         target = (name or "").strip()
         if not target:
             raise _ToolError("Argument 'name' is required.")
-        # Check both catalog (cheap) and live DB (broader).
+        # ── Stage 1 — exact match in both catalog + live DB ──
         catalog_rows = self.catalog.find_tables_by_exact_name(self.db_profile, target, limit=20)
         catalog_paths: list[str] = []
         for row in catalog_rows:
@@ -487,6 +496,10 @@ class ToolBox:
             if schema_name and table_name:
                 catalog_paths.append(f"{schema_name}.{table_name}")
         live_paths: list[str] = []
+        # Walk live DB once and remember every table name we see; the
+        # exact-match check happens here, fuzzy fallback (Stage 2)
+        # reuses the same list so we don't pay for two passes.
+        all_live_tables: list[str] = []
         try:
             db = self._live_db()
             for schema in db.list_schemas():
@@ -496,18 +509,120 @@ class ToolBox:
                 else:
                     asset_iter = ((str(n), "table") for n in db.list_tables(schema))
                 for asset_name, _kind in asset_iter:
+                    full_path = f"{schema}.{asset_name}"
+                    all_live_tables.append(full_path)
                     if asset_name.lower() == target.lower():
-                        live_paths.append(f"{schema}.{asset_name}")
+                        live_paths.append(full_path)
         except Exception:
             # Live discovery is best-effort. Fall back to whatever the catalog had.
             pass
         merged = list(dict.fromkeys(catalog_paths + live_paths))
+
+        # ── Stage 2 — substring + fuzzy fallback ──
+        # When the user only remembers PART of the table name ("trog"
+        # for "trogr_v"), exact match returns nothing and the LLM
+        # honestly says "no such table". Give it a wider net: any
+        # table where the target is a substring, prefix, suffix, OR
+        # within edit distance ≤ 2. The LLM gets each match tagged
+        # with ``match_kind`` so it can rank / present them
+        # transparently. Same design fix as v0.9.10's columns_by_dtype:
+        # complete coverage, no whack-a-mole per question phrasing.
+        target_lower = target.lower()
+        fuzzy_matches: list[dict[str, str]] = []
+        seen = {p.lower() for p in merged}
+        for path in all_live_tables:
+            if path.lower() in seen:
+                continue
+            asset_name = path.split(".", 1)[1] if "." in path else path
+            asset_lower = asset_name.lower()
+            kind: str | None = None
+            if target_lower == asset_lower:
+                continue  # already in merged via Stage 1
+            if target_lower in asset_lower:
+                kind = "contains"
+            elif asset_lower.startswith(target_lower):
+                kind = "prefix"
+            elif asset_lower.endswith(target_lower):
+                kind = "suffix"
+            else:
+                # Edit-distance fallback. Use SequenceMatcher's ratio
+                # as a cheap proxy: 0.7+ ≈ 1-2 edits on short SAP-style
+                # names (4-8 chars).
+                ratio = SequenceMatcher(
+                    None, target_lower, asset_lower,
+                ).ratio()
+                if ratio >= 0.7 and abs(len(target_lower) - len(asset_lower)) <= 3:
+                    kind = "fuzzy"
+            if kind is not None:
+                fuzzy_matches.append({"path": path, "match_kind": kind})
+                seen.add(path.lower())
+
+        # Catalog-side fuzzy: also scan catalog entities so we catch
+        # tables that exist in the catalog but aren't in the live DB
+        # listing yet (or live discovery failed).
+        try:
+            with self.catalog._connect() as conn:  # noqa: SLF001
+                catalog_all = conn.execute(
+                    "SELECT schema_name, table_name FROM catalog_entities "
+                    "WHERE db_profile = ? AND entity_kind = 'table'",
+                    (self.db_profile,),
+                ).fetchall()
+            for r in catalog_all:
+                schema_name = str(r["schema_name"] or "")
+                table_name = str(r["table_name"] or "")
+                if not schema_name or not table_name:
+                    continue
+                path = f"{schema_name}.{table_name}"
+                if path.lower() in seen:
+                    continue
+                asset_lower = table_name.lower()
+                if target_lower == asset_lower:
+                    continue
+                kind: str | None = None
+                if target_lower in asset_lower:
+                    kind = "contains"
+                elif asset_lower.startswith(target_lower):
+                    kind = "prefix"
+                elif asset_lower.endswith(target_lower):
+                    kind = "suffix"
+                else:
+                    ratio = SequenceMatcher(
+                        None, target_lower, asset_lower,
+                    ).ratio()
+                    if ratio >= 0.7 and abs(len(target_lower) - len(asset_lower)) <= 3:
+                        kind = "fuzzy"
+                if kind is not None:
+                    fuzzy_matches.append({"path": path, "match_kind": kind})
+                    seen.add(path.lower())
+        except Exception:
+            pass
+
+        # Rank fuzzy matches: prefix/suffix > contains > fuzzy. Within
+        # each tier, shorter table names rank first (assumption: a
+        # 5-char table name containing "trog" is a closer hit than a
+        # 30-char one).
+        order = {"prefix": 0, "suffix": 1, "contains": 2, "fuzzy": 3}
+        fuzzy_matches.sort(
+            key=lambda r: (
+                order.get(r["match_kind"], 99),
+                len(r["path"].split(".", 1)[1] if "." in r["path"] else r["path"]),
+                r["path"].lower(),
+            )
+        )
+        # Cap so the prompt stays tight on huge schemas.
+        fuzzy_matches = fuzzy_matches[:25]
+
         return {
             "name": target,
             "matches": merged,
             "match_count": len(merged),
             "from_catalog": catalog_paths,
             "from_live_db": live_paths,
+            # Substring + fuzzy fallback. ALWAYS populated (empty list
+            # when nothing matches) so the LLM has one shape to reason
+            # over. Each entry is ``{path, match_kind}`` where
+            # match_kind is one of: prefix / suffix / contains / fuzzy.
+            "fuzzy_matches": fuzzy_matches,
         }
 
     def _tool_describe_table(self, schema: str, table: str) -> dict[str, Any]:
