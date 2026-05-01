@@ -163,6 +163,38 @@ class DatabaseAdapter(ABC):
     ) -> list[dict[str, Any]]:
         return []
 
+    # ── Catalog hierarchy (Unity Catalog / BigQuery projects) ─────────────
+
+    def supports_catalogs(self) -> bool:
+        """True for backends with a 3-level catalog → schema → table hierarchy.
+
+        Databricks Unity Catalog and BigQuery (project = catalog) need
+        the user to pick a catalog/project BEFORE schemas / tables can
+        be listed unambiguously. PostgreSQL and Snowflake either bind
+        the catalog at connection time or use database == catalog so
+        this is False for them.
+        """
+        return False
+
+    def list_catalogs(self, engine: Engine) -> list[str]:
+        """Catalogs (or projects) visible to the active connection.
+
+        Default returns an empty list. Override on backends where the
+        connection can switch between catalogs without reconnecting
+        (Unity Catalog Databricks, BigQuery via job-level project).
+        """
+        return []
+
+    def list_schemas(self, engine: Engine, catalog: str = "") -> list[str] | None:
+        """Backend-specific schema listing.
+
+        Returning ``None`` tells the connector to fall back to the
+        SQLAlchemy ``inspect().get_schema_names()`` path. Override on
+        backends where the schema list is catalog-scoped (Databricks
+        ``SHOW SCHEMAS IN <catalog>``).
+        """
+        return None
+
     # ── Analytics metadata ────────────────────────────────────────────────
 
     def get_analytics_metadata(

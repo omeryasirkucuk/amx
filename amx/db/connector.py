@@ -265,7 +265,38 @@ class DatabaseConnector:
 
     # ── Schema / asset listing ────────────────────────────────────────────
 
+    def list_catalogs(self) -> list[str]:
+        """Catalogs visible to the active connection.
+
+        Empty list for backends without a 3-level
+        catalog/schema/table hierarchy. Used by the manual-edit
+        wizard on Databricks Unity Catalog so the user picks a
+        catalog before the schema picker fires.
+        """
+        try:
+            return list(self._adapter.list_catalogs(self.engine))
+        except Exception:
+            return []
+
+    def supports_catalogs(self) -> bool:
+        """True when ``list_catalogs`` is meaningful for this adapter."""
+        try:
+            return bool(self._adapter.supports_catalogs())
+        except Exception:
+            return False
+
     def list_schemas(self) -> list[str]:
+        # Adapter-specific override (e.g. Databricks ``SHOW SCHEMAS IN
+        # <catalog>``) takes precedence so catalog-scoped backends
+        # don't fall through to the SQLAlchemy inspector — which
+        # ignores catalog and returns ambiguous results.
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        try:
+            adapter_result = self._adapter.list_schemas(self.engine, catalog)
+        except Exception:
+            adapter_result = None
+        if adapter_result is not None:
+            return list(adapter_result)
         insp = inspect(self.engine)
         system = self._adapter.system_schemas()
         return [s for s in insp.get_schema_names() if s not in system]
