@@ -59,3 +59,44 @@ Aggregate MRR can hide regressions on a small but important slice of
 queries. When comparing providers, also report per-query deltas so a
 better-on-average provider that *worsens* the worst-case query is
 visible.
+
+## Description-quality comparisons (companion to retrieval metrics)
+
+The metrics in this module score *retrieval* — did the right entity
+appear at rank k. To compare *description* quality across LLM / doc /
+code profile combinations, run the same scope under each profile via
+`/run`, then use `/compare` to pivot the runs side-by-side and
+`/compare --json out.json` to dump a long-format JSON document for
+your notebook. The JSON shape is:
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-01T22:00:00",
+  "amx_version": "0.11.0",
+  "run_count": 3,
+  "run_summary":      [{"run_id": ..., "llm_profile": ..., ...}, ...],
+  "per_column":       [{"schema": ..., "table": ..., "column": ...,
+                        "run_id": ..., "description": ...,
+                        "confidence": "high|medium|low",
+                        "logprob_score": ..., "token_count": ...}, ...],
+  "aggregate_metrics":[{"metric": ..., "run_id": ..., "value": ...}, ...]
+}
+```
+
+Both arrays are long-format so they pivot cleanly with
+`pd.DataFrame(payload["per_column"]).pivot(...)` for thesis charts.
+
+Example notebook snippet:
+
+```python
+import json, pandas as pd
+payload = json.load(open("compare.json"))
+runs    = pd.DataFrame(payload["run_summary"])
+per_col = pd.DataFrame(payload["per_column"])
+agg     = pd.DataFrame(payload["aggregate_metrics"])
+
+# Avg logprob by LLM profile
+agg.merge(runs, on="run_id").query("metric == 'avg_logprob_score'") \
+   .groupby("llm_profile")["value"].mean().plot.bar()
+```
