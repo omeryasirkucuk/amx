@@ -184,15 +184,35 @@ def print_db_namespace_hint() -> None:
 
 
 def cmd_profiles(cfg: AMXConfig) -> None:
+    from amx.config import has_legacy_database_default
+
     rows = []
+    legacy_profiles: list[str] = []
     for name, db in sorted(cfg.db_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_db_profile else " "
-        rows.append([f"{mark} {name}", db.backend, db.display_summary])
+        # 0.11.0: surface unpinned-database state (database is now optional).
+        # The display_summary already includes ``(no DB pinned)`` so we just
+        # add a small ``?`` next to the backend so the table glance is
+        # still clean.
+        backend_label = db.backend if db.is_database_pinned() else f"{db.backend} ?"
+        rows.append([f"{mark} {name}", backend_label, db.display_summary])
+        if has_legacy_database_default(db):
+            legacy_profiles.append(name)
     render_table(
-        "DB profiles (* = active)",
+        "DB profiles (* = active, ? = no DB pinned)",
         ["Profile", "Backend", "Connection"],
         rows,
     )
+    # Suggest-don't-mutate: the historical demo default ``database='SAP'``
+    # leaks into UIs as a phantom localhost connection. We never edit the
+    # user's YAML — just hint once per ``/db-profiles`` view.
+    if legacy_profiles:
+        warn(
+            "Profile(s) "
+            + ", ".join(sorted(legacy_profiles))
+            + " still carry the legacy demo default database='SAP'. "
+            "Run `/edit` (and clear the database field) if this isn't your real DB."
+        )
 
 
 def cmd_use(
@@ -338,11 +358,14 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             allow_clear=False,
         )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
+        # Pinning a default database is now OPTIONAL (0.11.0). When the
+        # user leaves it blank we connect to the server and they can pick
+        # the database at /run / /sync / /ask time. Encourage filling it
+        # in for single-DB workflows by keeping the prompt example and
+        # using ``allow_clear=True`` so an explicit blank is accepted.
         database = _ask_update_text(
-            "Database name (e.g. postgres)",
+            "Database name (optional, e.g. postgres — leave blank to pick at command time)",
             defaults.database or "",
-            required=True,
-            allow_clear=False,
         )
         return replace(
             defaults,
@@ -363,11 +386,10 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
         user = _ask_update_text("Username (e.g. ANALYST)", defaults.user, required=True, allow_clear=False)
         password = _ask_update_secret("Password", defaults.password or "", required=True)
+        # Optional in 0.11.0 — see note on PostgreSQL above.
         database = _ask_update_text(
-            "Database name (e.g. ANALYTICS)",
+            "Database name (optional, e.g. ANALYTICS — leave blank to pick at command time)",
             defaults.database,
-            required=True,
-            allow_clear=False,
         )
         warehouse = _ask_update_text("Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or "")
         role = _ask_update_text("Role (optional, e.g. ANALYST)", defaults.role or "")
