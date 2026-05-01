@@ -6,6 +6,57 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-01
+### Changed — SearchAgent god-class split into mixin modules (S1 refactor)
+
+The historical `amx/search/agent.py` carried a 3733-LOC `SearchAgent` class with **70 methods** spanning 6+ logical responsibilities (session memory, planning, target resolution, short-circuit handlers, retrieval, answer synthesis, deterministic answers). v0.9.0 splits those clusters into mixin modules under `amx/search/_agent/` so each file is a manageable size, each cluster is testable in isolation, and `SearchAgent` itself becomes a thin facade composed of the mixins.
+
+**Public API unchanged.** `SearchAgent.ask()` is the only call site outside this package; it still works identically. All inheritance goes through Python's MRO; cross-mixin calls (`self._memory()`, `self._resolve_table_targets()`, etc.) resolve transparently because every mixin is composed into the final `SearchAgent`.
+
+**File layout (before → after):**
+
+```
+amx/search/agent.py    3733 →  767   (-79.5%, -2966 LOC moved out)
+amx/search/_agent/
+  __init__.py             -   →   33   (mixin re-exports)
+  answering.py            -   →  210   (4 methods: _synthesize_answer, _provenance, _confidence, _action_suggestions)
+  deterministic.py        -   →  549   (6 methods: 6 _deterministic_* answer composers)
+  planning.py             -   →  528   (10 methods: _plan_*, _interpret_*, _align_*, _policy_for_plan, _derive_answer_shape)
+  resolution.py           -   →  597   (12 methods: _resolve_*, _explicit_*, _candidate_*, _catalog_resolvable_subject)
+  retrieval.py            -   →  812   (19 methods: _retrieve, _live_*, _plan_live_probe, _execute_live_probe, row helpers)
+  session_memory.py       -   →  201   (10 methods: _llm_*, _memory*, _ensure_session_*, _last_tables, _catalog_ready)
+  short_circuits.py       -   →  338   (6 methods: _handle_chitchat, _handle_meta_query, _handle_followup_reaffirmation, _answer_via_tool_agent, etc.)
+```
+
+**Method distribution after refactor:**
+
+```
+SearchAgent (core)         3 methods   __init__, ask(), _scope_from_tables
+AnsweringMixin             4 methods
+DeterministicAnswersMixin  6 methods
+PlanningMixin             10 methods
+ResolutionMixin           12 methods
+RetrievalMixin            19 methods
+SessionMemoryMixin        10 methods
+ShortCircuitsMixin         6 methods
+                          ─────────
+Total                     70 methods   (matches original — no methods lost)
+```
+
+### Why this matters
+
+The 3733-LOC god-class was the #1 refactor pain point identified in the codebase analysis (24% of the entire 31K LOC codebase concentrated in 3 files; `agent.py` alone was 12%). With the split:
+
+- **Each cluster is independently testable.** `DeterministicAnswersMixin` has zero LLM dependencies — its 6 methods can be unit-tested with synthetic plans + rows. Previously they were tangled in a class that required a full `LLMProvider` + `SearchCatalog` + `DatabaseConnector` to instantiate.
+- **Method discovery becomes O(file)** instead of O(scroll-3700-lines). When extending the planning step (e.g. for the upcoming Phase 3 model-fallback work), the developer opens `planning.py` and sees the 10 relevant methods — not 70.
+- **Cross-mixin calls are explicit.** Each mixin's docstring lists which sibling mixins it depends on (which `self.*` methods it expects). Previously implicit; now documented.
+- **Future splits are cheaper.** The `RetrievalMixin` is still 812 LOC (one method, `_retrieve`, is 217 LOC); a follow-up release can split it further (live-probe pipeline → its own module) without disturbing the rest.
+
+### Followups
+
+- `SearchAgent.ask()` is still 428 LOC — next release will decompose it into a small dispatcher that delegates to the appropriate mixin path (chitchat short-circuit → `_handle_chitchat`, meta-query → `_handle_meta_query`, normal flow → `_plan_with_overrides → _retrieve → _synthesize_answer`).
+- `SearchCatalog` (2033 LOC, 53 methods) is the next god-class on the refactor list per the codebase analysis. Same mixin-extraction technique applies.
+
 ## [0.8.7] - 2026-05-01
 ### Changed
 - **Banner footer no longer duplicates the version** (`amx/utils/console.py:show_banner`): the v0.8.6 footer line was `v0.8.6  •  AI-inferred database descriptions`, but the version is also shown in the "AMX Interactive Session" info block right below the banner alongside Config / Database / LLM context. Two visible "0.8.6" stamps in adjacent panels were noise. The footer is now just the tagline `AI-inferred database descriptions`; version stays in the session info block where it groups naturally with the rest of the runtime state.
