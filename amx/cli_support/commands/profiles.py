@@ -282,6 +282,52 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
     )
 
 
+_DESCRIPTION_VERBOSITY_LEVELS = ("brief", "detailed")
+
+
+def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the description-verbosity level for the active LLM profile.
+
+    Brief (default) = 1 short sentence per column. Detailed = 2-4 sentences
+    covering purpose + typical values + relationships, when supported by
+    evidence. Detailed roughly doubles per-column output token cost.
+    """
+    if not rest:
+        current = cfg.llm.description_verbosity or "brief"
+        heading(f"Description verbosity: {current}")
+        info(
+            "  brief    — 1 sentence per column (e.g. 'Sales document number.')\n"
+            "  detailed — 2-4 sentences covering purpose, typical values, "
+            "and relationships when supported by evidence.\n"
+            f"\nCurrent: [cyan]{current}[/cyan] for LLM profile "
+            f"'{cfg.active_llm_profile or 'default'}'.\n"
+            "Run [cyan]/description-verbosity brief|detailed[/cyan] to change."
+        )
+        return
+
+    level = rest[0].lower().strip()
+    if level not in _DESCRIPTION_VERBOSITY_LEVELS:
+        error(
+            f"Unknown verbosity: {level!r}. "
+            f"Valid: {', '.join(_DESCRIPTION_VERBOSITY_LEVELS)}"
+        )
+        return
+
+    cfg.llm.description_verbosity = level
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].description_verbosity = level
+    cfg.save()
+    success(
+        f"Description verbosity set to [cyan]{level}[/cyan] and saved "
+        f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
+    )
+    if level == "detailed":
+        info(
+            "Detailed mode: per-column output tokens roughly double. "
+            "Tune AMX_LLM_TIMEOUT_SEC / column_batch_size if you hit timeouts."
+        )
+
+
 def cmd_language(cfg: AMXConfig, rest: list[str]) -> None:
     """Show or set the preferred metadata generation language for the active LLM profile."""
     if not rest:

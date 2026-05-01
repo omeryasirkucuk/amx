@@ -289,6 +289,44 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "find_assets_missing_comment",
+                    "description": (
+                        "Return tables and/or columns that have NO comment in the live "
+                        "database (queries the DB directly, NOT the catalog). Use this for "
+                        "'are there any tables without a description?', 'which tables are "
+                        "missing comments?', 'açıklaması olmayan tablolar', 'eksik comment'. "
+                        "Catalog data may be stale right after a /run-apply, so always use "
+                        "this live-DB check for coverage questions instead of the concept "
+                        "search tools."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {
+                                "type": "string",
+                                "description": "Optional schema filter. Omit to scan every schema.",
+                            },
+                            "scope": {
+                                "type": "string",
+                                "description": (
+                                    "What to check: 'tables' (table-level comments only), "
+                                    "'columns' (column-level only), or 'both' (default)."
+                                ),
+                                "default": "both",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max rows per scope (default 50).",
+                                "default": 50,
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "find_joinable_tables",
                     "description": (
                         "Given ONE table, return the tables it can be joined with — verified "
@@ -501,6 +539,100 @@ class ToolBox:
                 }
                 for r in verified
             ],
+        }
+
+    def _tool_find_assets_missing_comment(
+        self,
+        schema: str = "",
+        scope: str = "both",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return tables/columns with no comment, queried from the LIVE DB.
+
+        The catalog can lag behind the live DB right after a ``/run-apply``,
+        so coverage-type questions ("which tables are missing a comment?")
+        must NOT come from ``catalog_entities`` rows — they must come from
+        the source of truth. This tool calls ``get_table_comment`` /
+        ``get_column_comments`` per asset and reports anything blank.
+        """
+        scope = (scope or "both").strip().lower()
+        if scope not in {"tables", "columns", "both"}:
+            scope = "both"
+        limit = max(1, int(limit or 50))
+        db = self._live_db()
+        # Resolve schema list (case-insensitive when the user passed one).
+        try:
+            available = [str(s) for s in db.list_schemas()]
+        except Exception as exc:
+            raise _ToolError(f"Could not list schemas: {exc}") from exc
+        target_schemas: list[str]
+        target = (schema or "").strip()
+        if target:
+            match = next((s for s in available if s.lower() == target.lower()), None)
+            if match is None:
+                return {
+                    "schema": target,
+                    "found": False,
+                    "available_schemas": available,
+                    "message": (
+                        f"No schema named '{target}'. Available schemas: "
+                        + ", ".join(available)
+                    ),
+                    "tables_missing_comment": [],
+                    "columns_missing_comment": [],
+                }
+            target_schemas = [match]
+        else:
+            target_schemas = available
+
+        tables_missing: list[dict[str, str]] = []
+        columns_missing: list[dict[str, str]] = []
+        for sch in target_schemas:
+            try:
+                if hasattr(db, "list_assets"):
+                    asset_iter = [(str(n), str(k)) for n, k in db.list_assets(sch)]
+                else:
+                    asset_iter = [(str(n), "table") for n in db.list_tables(sch)]
+            except Exception:
+                continue
+            for asset_name, asset_kind in asset_iter:
+                if scope in {"tables", "both"} and len(tables_missing) < limit:
+                    try:
+                        tcom = db.get_table_comment(sch, asset_name)
+                    except Exception:
+                        tcom = None
+                    if not (tcom or "").strip():
+                        tables_missing.append(
+                            {"schema": sch, "table": asset_name, "kind": asset_kind}
+                        )
+                if scope in {"columns", "both"} and len(columns_missing) < limit:
+                    try:
+                        col_comments = db.get_column_comments(sch, asset_name)
+                    except Exception:
+                        col_comments = {}
+                    for col_name, col_comment in col_comments.items():
+                        if not (col_comment or "").strip():
+                            columns_missing.append(
+                                {
+                                    "schema": sch,
+                                    "table": asset_name,
+                                    "column": col_name,
+                                }
+                            )
+                            if len(columns_missing) >= limit:
+                                break
+                if len(tables_missing) >= limit and len(columns_missing) >= limit:
+                    break
+            if len(tables_missing) >= limit and len(columns_missing) >= limit:
+                break
+
+        return {
+            "scope": scope,
+            "schemas_scanned": target_schemas,
+            "tables_missing_comment": tables_missing if scope != "columns" else [],
+            "tables_missing_count": len(tables_missing) if scope != "columns" else 0,
+            "columns_missing_comment": columns_missing if scope != "tables" else [],
+            "columns_missing_count": len(columns_missing) if scope != "tables" else 0,
         }
 
     def _tool_list_databases(self) -> dict[str, Any]:

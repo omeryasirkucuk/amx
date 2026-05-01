@@ -766,28 +766,50 @@ class LLMProvider:
             log.debug("Logprob confidence score=%.6f", confidence_score)
 
         if finish == "length":
+            # Distinguish two truncation cases:
+            #
+            # (a) Content was produced but cut off — the user can usually
+            #     fix this by raising max_tokens. Raise the soft
+            #     ``LLMTruncationError`` and let the caller decide.
+            # (b) ``content`` is empty AND output_tokens == max_tokens.
+            #     This is the reasoning-model failure mode: the model
+            #     burned every output token on internal "thinking" and
+            #     returned nothing. No amount of retrying or max_tokens
+            #     bumping helps if the model is the wrong tool — every
+            #     batch fails the same way (the user reported this with
+            #     openrouter/tencent/hy3-preview:free). Treat as fatal so
+            #     the run aborts after one attempt with a clear message.
+            if not content:
+                raise FatalLLMError(
+                    (
+                        f"Model `{model}` returned 0 visible characters and used all "
+                        f"{mt} output tokens — this almost always means a reasoning "
+                        "model burnt the budget on internal thinking. AMX needs visible "
+                        "JSON output. Try a non-reasoning model like "
+                        "`openrouter/openai/gpt-4o-mini`, "
+                        "`openrouter/anthropic/claude-3-5-haiku`, or "
+                        "`openrouter/google/gemini-1.5-flash` under /llm. "
+                        "If you must use this model, raise max_tokens dramatically "
+                        "(e.g. AMX_LLM_MIN_MAX_TOKENS=32000) AND set "
+                        "AMX_REASONING_EFFORT=minimal."
+                    ),
+                    original_message=(
+                        f"finish_reason=length, content_chars=0, "
+                        f"max_tokens={mt}, model={model}"
+                    ),
+                )
             raise LLMTruncationError(
                 f"LLM response truncated (finish_reason=length, model={model}, max_tokens={mt}). "
                 "Increase max_tokens and retry before metadata extraction."
             )
 
         if not content:
-            if finish == "length":
-                log.warning(
-                    "LLM returned EMPTY content (finish_reason=length, model=%s). "
-                    "For gpt-5 / o-series, output budget may be spent on reasoning only — "
-                    "increase max_tokens in ~/.amx/config.yml (e.g. 32000), set env "
-                    "AMX_LLM_MIN_MAX_TOKENS, and/or AMX_REASONING_EFFORT=minimal. "
-                    "Or use gpt-4o for non-reasoning completions.",
-                    model,
-                )
-            else:
-                log.warning(
-                    "LLM returned EMPTY content (finish_reason=%s, model=%s). "
-                    "Check model name, API key, and provider dashboard.",
-                    finish,
-                    model,
-                )
+            log.warning(
+                "LLM returned EMPTY content (finish_reason=%s, model=%s). "
+                "Check model name, API key, and provider dashboard.",
+                finish,
+                model,
+            )
         # Tool/function calls — extracted when the caller passes ``tools`` in
         # ``extra``. LiteLLM mirrors the OpenAI shape across providers, so we
         # read ``message.tool_calls[*].function.{name,arguments}`` regardless
