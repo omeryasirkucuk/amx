@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-04-30
+### Fixed
+- **`/description-verbosity` now appears in `/llm` namespace help, autocomplete, and Tab-toggle catalog** (`amx/cli_support/session.py`): v0.6.0 added the slash command but only registered it in the dispatch handler and the `llm_cmd_heads` routing set — it was missing from the namespace help text (so `/help` inside `/llm` didn't show it) and from `_slash_command_catalog` (so the autocomplete dropdown didn't list it). Now it's wired through all four discovery paths: dispatch (`_handle_session_builtin`), routing (`llm_cmd_heads`), help (namespace help text), and autocomplete (`llm_cmds`).
+
+### Why this matters
+Open-source users who don't know a command exists won't ever run it. Slash-command discovery has historically been fragmented across four lists in this codebase; v0.6.1 ensures the new commands surface uniformly. Future additions need to update all four points; we should consolidate to a single source of truth in a follow-up but that's a larger refactor.
+
 ## [0.6.0] - 2026-04-30
 ### Added
 - **`/llm description-verbosity` slash command** + `description_verbosity` LLM-profile field (`amx/config.py`, `amx/cli_support/commands/profiles.py`, `amx/cli_support/session.py`): two presets, `brief` (default — current 1-sentence-per-column behavior) and `detailed` (2–4 sentences covering purpose + typical values + relationships when supported by evidence). Wired into `ProfileAgent._build_system_prompt` so the model emits longer descriptions when asked. Detailed mode roughly doubles per-column output cost; the slash command warns about that.
