@@ -242,6 +242,34 @@ _FATAL_MESSAGE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Error fragments emitted by providers that don't support logprobs at
+# all (Gemini Flash, OpenAI o-series, some Anthropic via OpenRouter).
+# We catch these specifically so AMX can retry the SAME call without
+# the ``logprobs=True`` request flag, instead of treating the 400 as a
+# fatal error and aborting the whole run.
+_LOGPROBS_UNSUPPORTED_PATTERNS: tuple[str, ...] = (
+    "logprobs is not enabled for this model",  # Gemini Flash exact text
+    "logprobs is not supported",
+    "logprobs not supported",
+    "logprobs are not supported",
+    "logprob is not supported",
+    "does not support logprobs",
+    "logprobs parameter is not supported",
+)
+
+
+def _is_logprobs_unsupported_error(exc: BaseException) -> bool:
+    """True when the exception indicates the model rejected ``logprobs=True``.
+
+    Detection is message-based because providers wrap the rejection
+    inside provider-specific exception types (``GeminiException``,
+    ``BadRequestError``, etc.) — the only reliable signal is the
+    inner JSON body.
+    """
+    msg = str(exc).lower()
+    return any(pat in msg for pat in _LOGPROBS_UNSUPPORTED_PATTERNS)
+
+
 def _classify_fatal_llm_error(exc: BaseException) -> FatalLLMError | None:
     """Return ``FatalLLMError`` when ``exc`` is non-retryable, else None.
 
@@ -598,9 +626,15 @@ class LLMProvider:
     def supports_logprobs(self) -> bool:
         """Whether AMX should request logprobs for this profile.
 
-        Defaults to True (force-enable), but can be overridden per profile by
-        setting ``force_logprobs`` on the LLM config object.
+        Defaults to True (force-enable), can be overridden per profile via
+        ``force_logprobs`` on the LLM config, AND is auto-disabled at
+        runtime when the provider rejects the request (see
+        ``_logprobs_runtime_disabled`` set by ``chat()`` when it sees a
+        ``Logprobs is not enabled for this model`` 400 from Gemini /
+        OpenAI o-series / etc.).
         """
+        if getattr(self, "_logprobs_runtime_disabled", False):
+            return False
         return bool(getattr(self.cfg, "force_logprobs", True))
 
     @property
@@ -683,6 +717,13 @@ class LLMProvider:
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
 
+        # Honor a runtime-discovered disable flag — set lower in the
+        # exception path when a provider returns
+        # ``Logprobs is not enabled for this model`` (Gemini Flash,
+        # OpenAI o-series, some others). Without this, every subsequent
+        # call in the same session would re-trigger the same 400.
+        if use_logprobs and getattr(self, "_logprobs_runtime_disabled", False):
+            use_logprobs = False
         if use_logprobs:
             # Force-request logprobs regardless of provider capability metadata.
             extra["logprobs"] = True
@@ -743,6 +784,37 @@ class LLMProvider:
                 break
             except Exception as exc:
                 last_exc = exc
+
+                # Logprobs-not-supported recovery: Gemini Flash, OpenAI
+                # o-series, and a few OpenRouter-fronted models reject
+                # ``logprobs=True`` with a 400. Strip the flag, set the
+                # session-level disable so subsequent calls skip it
+                # upfront, and retry the same call once.
+                if (
+                    extra.get("logprobs")
+                    and _is_logprobs_unsupported_error(exc)
+                    and not getattr(self, "_logprobs_runtime_disabled", False)
+                ):
+                    log.info(
+                        "Provider %s/%s rejected logprobs=True. Disabling "
+                        "logprobs for this session and retrying. Confidence "
+                        "bands will use heuristic scoring instead of "
+                        "calibrated token logprobs.",
+                        self.cfg.provider,
+                        self.cfg.model,
+                    )
+                    self._logprobs_runtime_disabled = True
+                    for key in ("logprobs", "top_logprobs", "num_probs"):
+                        extra.pop(key, None)
+                    try:
+                        resp = _do_completion(call_api_base)
+                        last_exc = None
+                        break
+                    except Exception as logprobs_retry_exc:
+                        last_exc = logprobs_retry_exc
+                        # Fall through to the standard classification path
+                        # so the user sees the real underlying issue if
+                        # the retry also fails.
 
                 # Fatal errors (auth / quota / payment / model-not-found) are
                 # not transient — every retry will fail the same way. Raise
