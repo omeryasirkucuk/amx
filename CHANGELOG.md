@@ -6,6 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-05-01
+### Fixed
+- **`/ask "is there any boolean column in vbak"` returned "no" with confidence on SAP-style schemas**. Reproducer: any DB where boolean SEMANTICS are stored as `char(1)` / `varchar(1)` flag columns (`'X'` / `''` or `'Y'` / `'N'`) — the dominant pattern in SAP and many enterprise systems. Pre-v0.9.8, `find_columns_by_dtype('boolean')` only matched literal `bool` / `boolean` PG dtypes, so SAP `vbak`'s flag columns (`autlf`, `faksk`, `lifsk`, …) were invisible and the LLM honestly said "no boolean columns" — same false-negative pattern as the join-discovery bug fixed in v0.9.7.
+
+### Changed
+- **`_DTYPE_FAMILIES["boolean"]` now includes single-character fixed-width strings** (`amx/search/agent_tools.py`): `bool`, `boolean`, `char(1)`, `varchar(1)`, `character(1)`, `character varying(1)`. The query continues to match by `IN (...)` plus `LIKE '%token%'`, so any column whose dtype contains `(1)` and a char-family base will surface.
+- **Each result row carries a new `kind` field** — `native_boolean` (real `bool` / `boolean` dtype), `flag_candidate` (single-char fixed-width that's commonly used as a flag), or `exact_dtype_match` (any other dtype family). The `kind` field is propagated through the per-table roll-up so the LLM gets it whether it reads the flat list or the grouped output.
+- **Tool description for `find_columns_by_dtype` now spells out the boolean semantics** and instructs the LLM: do NOT say "no boolean columns" when `flag_candidate` rows are present — say "no native boolean columns, but the table has these likely flag columns: …" and list them. Without this rule the LLM defaults to a literal interpretation of "boolean" that's wrong for the user's question.
+- **Tool description for `describe_table`** now includes the same boolean-flag guidance, since `describe_table(vbak)` is the natural call when the user names a specific table — the LLM should scan the column list for `char(1)`/`varchar(1)` flags and surface them alongside any native booleans.
+
+### Why this matters
+Same lesson as v0.9.7 (join discovery on FK-free schemas): the catalog's surface schema doesn't always carry the user's semantic intent. "Boolean" almost always means "the column has Y/N or X-blank semantics" — even though the stored type is `char(1)`. Returning an empty list with confidence misled users into thinking AMX had searched the table when in fact it had answered a literal-dtype question that had nothing to do with the user's actual data model.
+
+### Followups
+- A future tier could ALSO probe the live DB for distinct-value distribution on flag candidates: a `char(1)` column with cardinality ≤ 2 and values like `{X, ''}` or `{Y, N}` is virtually certain to be a boolean flag, while one with `{A, B, C, D, …}` is a category code. AMX could surface that distinction as a confidence band on each `flag_candidate` row.
+- The same `kind`-tagging pattern should extend to other "semantic" queries (date columns hidden as `varchar(8)` in `YYYYMMDD` form, percentages stored as `numeric(5,2)`, etc.).
+
 ## [0.9.7] - 2026-05-01
 ### Fixed
 - **`/ask "which tables can I join with vbrk"` returned 0 candidates on FK-free schemas**. Reproducer: SAP / legacy schemas with no declared `FOREIGN KEY` constraints. Pre-v0.9.7, `find_joinable_tables` only consulted `catalog_relationships` (populated from `profile.foreign_keys` / `profile.referenced_by` during `/sync`); when those were empty the tool returned `joinable_tables=[]` and the LLM honestly said "no joinable tables found", which is wrong — `vbrk` is the SAP billing header and should obviously join with `vbrp`, `kna1`, `vbpa`, etc. on shared keys like `vbeln` and `mandt`.

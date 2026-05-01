@@ -156,7 +156,14 @@ class ToolBox:
                         "Return the table comment, column count, and column metadata "
                         "(name + dtype + comment) for a fully-qualified table. Use this to "
                         "answer 'what's the vbrk table?', 'describe sap_s6p.adrc', "
-                        "'X tablosunda hangi kolonlar var?'."
+                        "'X tablosunda hangi kolonlar var?'. Also use this when the user "
+                        "asks 'is there any boolean / flag / Y-N column in TABLE' — call "
+                        "describe_table(TABLE) and scan the column list yourself. Native "
+                        "boolean dtypes are 'bool'/'boolean'; in SAP / legacy schemas "
+                        "boolean SEMANTICS are stored as 'char(1)'/'varchar(1)' flag "
+                        "columns ('X'/'' or 'Y'/'N'). When answering: list BOTH the native "
+                        "booleans (if any) AND the char(1)/varchar(1) flag candidates "
+                        "instead of saying 'no boolean columns'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -275,7 +282,18 @@ class ToolBox:
                         "('boolean', 'int', 'integer', 'text', 'date', 'timestamp', 'numeric', "
                         "etc.). Use this for 'which tables have boolean columns?', "
                         "'all date columns', 'tables with bigint primary keys'. Matches by "
-                        "dtype FAMILY when possible (e.g. 'int' covers BIGINT/INTEGER/SMALLINT)."
+                        "dtype FAMILY when possible (e.g. 'int' covers BIGINT/INTEGER/SMALLINT). "
+                        "For 'boolean' the family includes BOTH native bool/boolean dtypes AND "
+                        "single-character fixed-width strings (char(1)/varchar(1)) which SAP and "
+                        "many legacy schemas use as boolean flags ('X'/'' or 'Y'/'N'). Each "
+                        "result row carries a 'kind' field — 'native_boolean' (real bool dtype) "
+                        "or 'flag_candidate' (single-char that MAY be used as a flag). When you "
+                        "compose the final answer, ALWAYS state which kind you found: do NOT "
+                        "say 'no boolean columns' when flag_candidate rows are present — say "
+                        "'no native boolean columns, but the table has these likely flag "
+                        "columns:' and list the flag_candidate rows. The user usually means "
+                        "'columns with boolean SEMANTICS', not 'columns whose stored type is "
+                        "literally bool'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -710,8 +728,21 @@ class ToolBox:
     # passed through verbatim and matched as a substring against the column's
     # dtype field.
     _DTYPE_FAMILIES: dict[str, list[str]] = {
-        "boolean": ["bool", "boolean"],
-        "bool": ["bool", "boolean"],
+        # ``boolean`` matches the literal PG ``bool``/``boolean`` types
+        # AND single-character fixed-width strings (``char(1)`` /
+        # ``varchar(1)`` / ``character(1)``) which SAP and many legacy
+        # schemas use as boolean flags ("X" / "" or "Y" / "N"). Without
+        # the char(1) family, /ask "are there any boolean columns in
+        # vbak?" would say "no" with confidence even though SAP vbak
+        # has dozens of single-char flags (autlf, faksk, lifsk, ...).
+        "boolean": [
+            "bool", "boolean",
+            "char(1)", "varchar(1)", "character(1)", "character varying(1)",
+        ],
+        "bool": [
+            "bool", "boolean",
+            "char(1)", "varchar(1)", "character(1)", "character varying(1)",
+        ],
         "int": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
         "integer": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
         "bigint": ["bigint"],
@@ -765,16 +796,36 @@ class ToolBox:
             params.extend([f"%{f}%" for f in family])
             params.append(int(limit))
             rows = conn.execute(query, tuple(params)).fetchall()
-        results = [
-            {
+        # Classify each match so the LLM can be honest in its
+        # answer: native_boolean vs flag_candidate (single-char
+        # fixed-width fields used as boolean flags by SAP / legacy
+        # schemas). For non-boolean queries this is always
+        # ``exact_dtype_match``.
+        is_boolean_query = token in {"bool", "boolean"}
+        results = []
+        for r in rows:
+            dtype_raw = str(r["dtype"] or "")
+            dtype_lower = dtype_raw.lower()
+            if is_boolean_query:
+                if dtype_lower in {"bool", "boolean"}:
+                    kind = "native_boolean"
+                elif "(1)" in dtype_lower and any(
+                    base in dtype_lower
+                    for base in ("char", "varchar", "character")
+                ):
+                    kind = "flag_candidate"
+                else:
+                    kind = "exact_dtype_match"
+            else:
+                kind = "exact_dtype_match"
+            results.append({
                 "schema": str(r["schema_name"] or ""),
                 "table": str(r["table_name"] or ""),
                 "column": str(r["column_name"] or ""),
-                "dtype": str(r["dtype"] or ""),
+                "dtype": dtype_raw,
                 "description": str(r["effective_description"] or ""),
-            }
-            for r in rows
-        ]
+                "kind": kind,
+            })
         # Roll up to (schema, table) so the LLM gets a clean per-table view.
         by_table: dict[tuple[str, str], list[dict[str, str]]] = {}
         for entry in results:
@@ -784,6 +835,7 @@ class ToolBox:
                     "column": entry["column"],
                     "dtype": entry["dtype"],
                     "description": entry["description"],
+                    "kind": entry["kind"],
                 }
             )
         tables = [
