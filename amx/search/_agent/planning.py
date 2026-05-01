@@ -29,6 +29,13 @@ import re
 from dataclasses import asdict
 from typing import Any
 
+from amx.search._agent._types import (
+    SearchPlan,
+    SearchPolicy,
+    _ANSWER_SHAPES,
+    _json_block,
+    _merge_usage,
+)
 from amx.utils.logging import get_logger
 
 log = get_logger("search.agent.planning")

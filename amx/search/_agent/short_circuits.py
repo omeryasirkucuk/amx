@@ -21,6 +21,7 @@ import json
 import time
 from typing import Any
 
+from amx.search._agent._types import SearchPlan
 from amx.utils.logging import get_logger
 
 log = get_logger("search.agent.short_circuits")

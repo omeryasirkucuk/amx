@@ -25,6 +25,10 @@ import re
 from collections import Counter
 from typing import Any
 
+from amx.search._catalog._constants import (
+    _active_embedding_kind,
+    _vector_score_floor,
+)
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.search")
