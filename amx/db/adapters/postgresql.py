@@ -33,23 +33,22 @@ class PostgreSQLAdapter(DatabaseAdapter):
             )
         if "permission denied" in msg:
             return "Insufficient privileges for profiling. Grant SELECT on this object or use a higher-privileged role."
-        # Catch the "no DB pinned" failure mode specifically — when the
-        # profile has no ``database`` set, libpq falls back to a database
-        # named after the user. That database almost never exists, so
-        # ``/connect`` fails with ``FATAL: database "<user>" does not
-        # exist``. Without this branch the next clause (``does not
-        # exist``) maps it to "Referenced relation is missing", which
-        # sends users hunting for the wrong bug. PostgreSQL is a 2-level
-        # backend (database → schema → table); a database name is
-        # required for connect, unlike Databricks/BigQuery where the
-        # workspace/project connection works without one.
+        # Catch a missing-database error from the server. When the
+        # ``database`` profile field is blank, AMX falls back to the
+        # ``postgres`` system database (see ``DBConfig.url`` for
+        # postgresql), so this branch only fires when the user
+        # explicitly pinned a database name that the server doesn't
+        # have, OR when their role lacks ``CONNECT`` on the requested
+        # database. In both cases the actionable next step is the same:
+        # fix the name (or grant the privilege).
         if 'database "' in msg and "does not exist" in msg:
             return (
-                "PostgreSQL connection requires a database name. Open the profile "
-                "with /edit and fill in the `database` field (or run "
-                "/add-db-profile to create a new profile that includes one). "
-                "Note: PostgreSQL is a 2-level backend — unlike Databricks/BigQuery, "
-                "the connection itself can't proceed without a target database."
+                "PostgreSQL refused: the `database` field on this profile points "
+                "at a database that does not exist on this server. Open the "
+                "profile with /edit and correct the name, or create the database "
+                "first. (Tip: leave the `database` field blank to connect to the "
+                "default `postgres` system database and pick a real database "
+                "later with /database <name>.)"
             )
         if "undefined_table" in msg or "does not exist" in msg:
             return (

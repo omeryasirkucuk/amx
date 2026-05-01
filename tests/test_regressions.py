@@ -3860,19 +3860,24 @@ class PostgreSQLAdapterUnitTests(unittest.TestCase):
         self.assertIn("missing", msg.lower())
 
     def test_actionable_profile_error_database_does_not_exist(self) -> None:
-        """User reproduced this with a postgres profile that had no
-        database pinned. libpq fell back to a database named after the
-        user ("amx") which didn't exist, producing
-        ``FATAL: database "amx" does not exist``. The adapter previously
-        mapped that to the generic "Referenced relation is missing"
-        message, which sent the user hunting for the wrong bug.
+        """The wizard advertises ``database`` as optional ("leave blank
+        to pick at command time"). For that promise to hold, AMX must
+        actually be able to connect when the field is blank — see
+        ``test_postgres_url_falls_back_to_postgres_system_db_when_empty``
+        for the URL-builder side. Once the fallback is in place, this
+        error only fires when the user explicitly pinned a database
+        name the server doesn't have, so the message points at /edit
+        rather than blaming a "missing required field".
         """
         msg = self.adapter.actionable_profile_error(
-            RuntimeError('FATAL:  database "amx" does not exist')
+            RuntimeError('FATAL:  database "wrong_name" does not exist')
         )
         self.assertIsNotNone(msg)
-        self.assertIn("PostgreSQL connection requires a database", msg)
+        self.assertIn("does not exist on this server", msg)
         self.assertIn("/edit", msg)
+        # Tip should mention the blank-database fallback so users know
+        # the optional path actually works now:
+        self.assertIn("blank", msg.lower())
         # And NOT the misleading "Referenced relation" message:
         self.assertNotIn("Referenced relation", msg)
 
