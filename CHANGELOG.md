@@ -6,6 +6,52 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-01
+### Changed — SearchCatalog god-class split into 6 mixin modules (S2 refactor)
+
+After v0.9.0 trimmed `SearchAgent`, `SearchCatalog` was the next biggest god-class on the codebase analysis: 2033 LOC, 53 methods, fan-in 13 (everything that touches the catalog imports it). v0.9.1 applies the same mixin pattern: split by responsibility, keep the public API stable, let Python MRO compose the result.
+
+**File layout (before → after):**
+
+```
+amx/search/catalog.py    2033 →  200   (-90.2%, -1833 LOC moved out)
+amx/search/_catalog/
+  __init__.py               -  →   28   (mixin re-exports)
+  entity_crud.py            -  →  315   (6 methods: _entity_row, _upsert_entity, _insert_description, _index_entity, _resolve_effective_description, _update_search_text)
+  sync.py                   -  →  534   (11 methods: sync_table_profile, _sync_table_profile_conn, sync_review_decision, sync_generated_suggestions, sync_code_report, sync_status, sources_status, start_sync_job, finish_sync_job, rebuild_profile, clear_code_evidence)
+  search.py                 -  →  603   (17 methods: search_tables, search_columns, name_search_columns, find_*, _exact_candidates, _rank_rows, _description_tokens, _tokens, _similarity, _attach_column_counts, _dtype_family, schema_inventory, count_tables, known_databases, known_schemas)
+  join.py                   -  →  385   (7 methods: joinable_tables, join_candidates, semantic_join_candidates, semantic_joinable_tables, _semantic_column_pair_score, _band_for_semantic_score, _extract_join_pairs)
+  usage.py                  -  →  249   (6 methods: _store_query_usage, mark_applied, _mark_run_result_state, history_counts, record_manual_description, record_dedup_decision)
+  settings.py               -  →   91   (3 methods: set_setting, get_settings, explain_table)
+```
+
+**Method distribution:**
+
+```
+SearchCatalog (core)       3 methods   __init__, from_history_store, _connect
+EntityCrudMixin            6 methods
+SyncMixin                 11 methods
+SearchMixin               17 methods
+JoinMixin                  7 methods
+UsageMixin                 6 methods
+SettingsMixin              3 methods
+                          ─────────
+Total                     53 methods   (matches original — no methods lost)
+```
+
+### Why this matters
+
+`SearchCatalog` is the most-imported internal module after `config` (fan-in 13). Every read-path call site (`SearchAgent.ask()` retrieval, `/metadata edit`, `/run-apply` write-back, `/history` rendering) goes through it. Splitting by responsibility makes it possible to:
+
+- **Unit-test the search path in isolation** — `SearchMixin` has 17 methods that produce row dicts; with a fixture connection they don't need real LLM/DB providers.
+- **Add a new sync source without touching the search path.** Want to ingest descriptions from a Confluence dump? Edit only `sync.py`; everything else is unaffected.
+- **Replace the underlying storage.** A future move from SQLite to Postgres would touch only `entity_crud.py` + the connection layer; the public methods on the other mixins keep their signatures.
+
+### Followups
+
+- `JoinMixin.joinable_tables` is still 90 LOC and `JoinMixin.join_candidates` is 87 LOC — these can be decomposed (symbolic vs semantic paths) in a follow-up.
+- The codebase's #3 god-class is now `Orchestrator` (1719 LOC, 21 methods). `process_table` is still 281 LOC — that's the next refactor target on the original analysis (the agreed S3 step: `Orchestrator.process_table` → `TableProcessor`).
+
 ## [0.9.0] - 2026-05-01
 ### Changed — SearchAgent god-class split into mixin modules (S1 refactor)
 
