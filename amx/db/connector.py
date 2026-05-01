@@ -430,7 +430,21 @@ class DatabaseConnector:
                     row_count = conn.execute(text(f"SELECT COUNT(*) FROM {fqn}")).scalar() or 0
                     profile.row_count = int(row_count or 0)
             except Exception as exc:
-                log.warning("Exact row count failed for %s.%s: %s", schema, table, exc)
+                # Demoted from WARNING to DEBUG in v0.10.9: the exact
+                # COUNT(*) failure is fully recovered by falling back
+                # to the estimated row count, so the user sees no
+                # functional regression. The previous WARNING leaked
+                # through the live-display panel during /ask answers
+                # ("[WARNING] amx.db.connector — Exact row count
+                # failed for public.bkpf: ...") which alarmed users
+                # despite being a no-op recovery. Operators who want
+                # to investigate slow / blocked counts can still get
+                # the line via ``AMX_LOG_LEVEL=debug``.
+                log.debug(
+                    "Exact row count failed for %s.%s; falling back to "
+                    "estimated row count (%d). Detail: %s",
+                    schema, table, estimated_rows, exc,
+                )
                 profile.row_count = estimated_rows
         else:
             profile.row_count = estimated_rows
