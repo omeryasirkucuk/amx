@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-05-01
+### Added
+- **`/run` Column scope** (`amx/services/analyze_scope.py`, `amx/agents/orchestrator.py`, `amx/cli_support/commands/analyze_flow.py`): user noticed there was no way to re-run AI inference on a single column. Added a 5th option to the analysis-scope picker — `Column` — that drills schema → table → column and restricts the run to just that one column. Useful when one comment came out wrong (the LLM picked the wrong meaning for `code`, say) and you want to regenerate it without re-profiling the whole table.
+- **`ScopeResult` (subclass of dict)** in `amx/services/analyze_scope.py` carries an optional `column_overrides: dict[(schema, table), set[str]]`. Existing scope shapes (Database / Schema / Asset / Default) are unchanged plain dicts, so consumers that just iterate `scope.items()` keep working. Column scope returns `ScopeResult({schema: [table]}, column_overrides={(schema, table): {column}})`.
+- **`Orchestrator.column_overrides`**: new attribute consulted in `process_table` before the missing-only / dedup filters. When a `(schema, table)` key is present, `profile.columns` is restricted to the override set; nothing else on the table gets re-inferred. The table-level comment is preserved as-is — Column scope is column-targeted by definition.
+- **Equivalence pre-walk respects Column overrides** so the dedup pass doesn't accidentally walk every column of the table when the user only picked one.
+
+### Why this matters
+Before this release, the only way to fix one bad column comment was: `/metadata edit <db>.<schema>.<table>.<column>` and type the description manually, OR re-run `/run` on the whole table (paying for ALL columns to be re-profiled). The new Column scope gives the AI a single-column re-inference path without spending tokens on already-curated columns next to it.
+
 ## [0.8.4] - 2026-05-01
 ### Changed
 - **Dedup question now precedes the scope picker** (`amx/cli_support/commands/analyze_flow.py`): user clarified — twice — that the `/edit` pattern means the binary mode-selector is the FIRST runtime question, before any drill-down. v0.8.2 already moved dedup ahead of coverage and review_strategy, but it still came AFTER the analysis-scope picker (Database / Schema / Asset / Default) AND the schema picker. v0.8.4 hoists `ask_choice("Equivalence-class deduplication?", ["dedup", "per-column"])` to right after `_resolve_completion_mode` and BEFORE the `with command_display(...)` block — so it fires before the scope picker fires. Profile-modification, LLM-test, and completion-mode prompts stay where they are because they're infrastructure questions, not run-mode questions.

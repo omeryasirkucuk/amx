@@ -367,6 +367,13 @@ class Orchestrator:
         # to the live DB), so process_table filters them out of the
         # ProfileAgent batch. The orchestrator does NOT re-write them.
         self.dedup_skip_set: set[tuple[str, str, str]] = set()
+        # Column-scope overrides. When the user picks Column scope,
+        # the resolver populates ``column_overrides[(schema, table)] =
+        # {col1, col2, ...}``. ``process_table`` then restricts
+        # ``profile.columns`` to ONLY those columns — no filter is
+        # applied for tables not in this map (so other scope levels
+        # behave exactly as before).
+        self.column_overrides: dict[tuple[str, str], set[str]] = {}
 
     _SQL_VERB_RE = re.compile(r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE)
 
@@ -432,6 +439,41 @@ class Orchestrator:
                 )
                 # Keep columns empty so agents focus on the table comment.
                 profile.columns = []
+
+        # ── Column-scope override ──────────────────────────────────────────
+        # When the user picks Column scope, the resolver populates
+        # ``column_overrides[(schema, table)] = {col1, ...}``. Restrict
+        # ``profile.columns`` to those names; nothing else (table
+        # comment, other columns) gets re-inferred for this run. The
+        # restriction is applied BEFORE the missing_only / dedup
+        # filters so they operate on the already-narrowed set — that
+        # way "missing-only Column scope" really only re-runs the
+        # picked column when its comment is missing.
+        column_override_set = self.column_overrides.get((schema, table))
+        if column_override_set is not None:
+            before_co = len(profile.columns)
+            profile.columns = [
+                col for col in profile.columns
+                if col.name in column_override_set
+            ]
+            removed_co = before_co - len(profile.columns)
+            if removed_co:
+                info(
+                    f"Column scope: restricting {schema}.{table} to "
+                    f"{len(profile.columns)} column(s) "
+                    f"({', '.join(c.name for c in profile.columns)}); "
+                    f"{removed_co} other column(s) skipped."
+                )
+            if not profile.columns:
+                warn(
+                    f"Column scope: no matching columns on {schema}.{table} "
+                    f"(asked for {sorted(column_override_set)}). Skipping."
+                )
+                return []
+            # Suppress the table-level inference too — Column scope is
+            # explicitly column-targeted; the user didn't ask for a new
+            # table comment. Keep the existing one if present.
+            profile.existing_comment = profile.existing_comment
 
         # ── Equivalence-class dedup skip ─────────────────────────────────────
         # Columns whose equivalence class was already handled by the

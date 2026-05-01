@@ -125,13 +125,24 @@ def _build_equivalence_members(
     Respects ``missing_only``: when set, only columns whose existing
     live-DB comment is empty (or a known placeholder) are included; that
     way the dedup pass can't accidentally re-write a curated description.
+
+    When the scope is a :class:`ScopeResult` with ``column_overrides``
+    set (Column scope), only the explicitly-picked columns are
+    considered — otherwise dedup would walk every column of the table
+    and find unrelated equivalence classes the user didn't ask about.
     """
     from amx.agents.equivalence import ColumnMember
     from amx.agents.orchestrator import is_placeholder_description
+    from amx.services.analyze_scope import ScopeResult
+
+    overrides: dict[tuple[str, str], set[str]] = {}
+    if isinstance(scope, ScopeResult):
+        overrides = scope.column_overrides or {}
 
     members: list[ColumnMember] = []
     for schema_name, assets in scope.items():
         for asset_name in assets:
+            override_cols = overrides.get((schema_name, asset_name))
             try:
                 column_profiles = list(db.list_column_profiles(schema_name, asset_name))  # type: ignore[attr-defined]
             except Exception:
@@ -141,6 +152,8 @@ def _build_equivalence_members(
             except Exception:
                 comments_map = {}
             for cp in column_profiles:
+                if override_cols is not None and cp.name not in override_cols:
+                    continue
                 existing = (comments_map or {}).get(cp.name) or ""
                 if missing_only:
                     if existing.strip() and not is_placeholder_description(existing):
@@ -411,6 +424,7 @@ def execute_analyze_run(
     from amx.db.connector import DatabaseConnector, ProfilingError
     from amx.docs.rag import RAGStore
     from amx.llm.provider import FatalLLMError, LLMProvider
+    from amx.services.analyze_scope import ScopeResult
     from amx.utils.logging import clear_request_id, set_request_id
 
     # Tag every log line emitted during this analyze run with a stable
@@ -689,6 +703,11 @@ def execute_analyze_run(
                 # filters them out of the ProfileAgent batch and doesn't
                 # re-write descriptions for them.
                 orch.dedup_skip_set = dedup_outcome.skip_set
+            # When the scope was Column-level, hand the overrides to
+            # the orchestrator so process_table restricts profile.columns
+            # to just the chosen column(s) for the matching table.
+            if isinstance(scope, ScopeResult) and scope.column_overrides:
+                orch.column_overrides = scope.column_overrides
 
             display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
             display.start(
