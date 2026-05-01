@@ -293,6 +293,11 @@ def execute_analyze_run(
     skipped: list[object] = []
     processed_assets: list[str] = []
     skipped_assets: list[str] = []
+    # Tables the missing-only filter dropped because they were already
+    # fully commented. Tracked separately from ``skipped_assets`` (which
+    # only grows on ProfilingError) so /history can report planned_count
+    # = total_assets - <filter skips> accurately.
+    filter_skipped_count = 0
     final_status: str | None = None
     final_error_text = ""
 
@@ -508,27 +513,24 @@ def execute_analyze_run(
                                         # process_table returned suggestions —
                                         # this asset truly went through agents
                                         # (filter didn't skip it as fully-
-                                        # commented). Otherwise an empty list
-                                        # means "skipped by missing-only" and
-                                        # planned_count needs to drop too.
+                                        # commented).
                                         hs.increment_run_processed(run_id, by=1)
                                         if review_strategy == "auto-apply":
                                             applied_in_table = sum(1 for r in results if r.applied)
                                             if applied_in_table:
                                                 hs.increment_run_applied(run_id, by=applied_in_table)
                                     else:
-                                        # Filter dropped this asset — adjust
-                                        # planned_count down so the X/Y in
-                                        # /history matches reality.
+                                        # Filter dropped this asset (it was
+                                        # already fully commented). Bump the
+                                        # filter-skip tally and recompute
+                                        # planned_count = total - filter_skips
+                                        # so /history's Processed column shows
+                                        # processed/<remaining>.
+                                        filter_skipped_count += 1
                                         hs.update_run_planned_count(
                                             run_id,
-                                            max(0, total_assets - len(skipped_assets) - 1),
+                                            max(0, total_assets - filter_skipped_count),
                                         )
-                                        # NOTE: total_assets above is the
-                                        # *original* selection. We subtract
-                                        # the running skipped tally so each
-                                        # filter-skip lowers planned_count
-                                        # incrementally.
                                 except Exception as exc:
                                     log.debug(
                                         "Could not update analyze run counters for run_id=%s: %s",
@@ -541,16 +543,28 @@ def execute_analyze_run(
                             continue
 
                     if len(assets) > 1 or total_schemas > 1:
-                        schema_meta = orch.process_schema_meta(schema_name, all_results)
+                        schema_meta = orch.process_schema_meta(
+                            schema_name,
+                            all_results,
+                            auto_apply=(review_strategy == "auto-apply"),
+                        )
                         all_results.extend(schema_meta)
             finally:
                 display.stop()
 
         if total_schemas > 1:
-            db_meta = orch.process_database_meta(all_results)
+            db_meta = orch.process_database_meta(
+                all_results,
+                auto_apply=(review_strategy == "auto-apply"),
+            )
             all_results.extend(db_meta)
 
-        all_results = orch.batch_review(all_results)
+        # auto-apply: skip the human-review step entirely. Per-table writes
+        # already happened inside process_table; schema/database meta were
+        # marked applied above. Calling batch_review would just bring the
+        # interactive picker back, which contradicts the user's choice.
+        if review_strategy != "auto-apply":
+            all_results = orch.batch_review(all_results)
 
         if rag_store is None:
             token_tracker.drop_steps({"rag_agent", "rag_agent(batch)"})
@@ -589,7 +603,28 @@ def execute_analyze_run(
                     "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
                 )
 
-        if apply and approved and confirm("Apply these metadata comments to the database?"):
+        # auto-apply: per-table writes already happened in process_table;
+        # there is no batch left to apply, so skip the confirm AND the
+        # batch apply altogether. For other strategies, prompt as before.
+        if review_strategy == "auto-apply":
+            # Schema / database meta produced by the *_meta steps need a
+            # final write since per-table apply didn't reach them.
+            meta_to_apply = [
+                r for r in approved
+                if (r.column is None and r.table == "")
+                or r.asset_kind in ("schema", "database")
+            ]
+            if apply and meta_to_apply:
+                from amx.pending_review import clear_pending
+
+                applied_n = orch.apply_results(meta_to_apply)
+                clear_pending()
+                if hs is not None and run_id is not None and applied_n:
+                    try:
+                        hs.increment_run_applied(run_id, by=int(applied_n))
+                    except Exception as exc:
+                        log.debug("Could not bump applied counter: %s", exc)
+        elif apply and approved and confirm("Apply these metadata comments to the database?"):
             from amx.pending_review import clear_pending
 
             applied_n = orch.apply_results(approved)

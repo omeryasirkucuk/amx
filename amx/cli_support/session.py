@@ -38,6 +38,7 @@ from amx.cli_support.commands.profiles import (
     cmd_llm_profiles as _cmd_llm_profiles,
     cmd_logprob_thresholds as _cmd_logprob_thresholds,
     cmd_n_alternatives as _cmd_n_alternatives,
+    cmd_description_verbosity as _cmd_description_verbosity,
     cmd_prompt_detail as _cmd_prompt_detail,
     cmd_remove_code_profile as _cmd_remove_code_profile,
     cmd_remove_doc_profile as _cmd_remove_doc_profile,
@@ -254,10 +255,15 @@ Commands (in order):
                                           Controls which DB fields are included in the LLM prompt.
                                           Run without args to show the current level + what each
                                           preset includes.
-  8) /n-alternatives [N]                Show or set number of description alternatives per column
-  9) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
+  8) /description-verbosity [level]     Show or set the OUTPUT description length
+                                          Levels: brief (default) | detailed
+                                          brief = 1 sentence per column
+                                          detailed = 2-4 sentences with purpose, typical values,
+                                          and relationships when supported by evidence.
+  9) /n-alternatives [N]                Show or set number of description alternatives per column
+ 10) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
                                           Range: 1 – 5  (default: 3)
- 10) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
+ 11) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
                                          as context in every profile batch prompt
 
 Model examples (what to type in "Model name"):
@@ -497,6 +503,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
         ("/language", "Show/set metadata generation language (/language [name])"),
         ("/prompt-detail", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
+        ("/description-verbosity", "Show/set output description length (/description-verbosity [brief|detailed])"),
         ("/n-alternatives", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
         ("/llm-batch-size", "Show/set number of columns per LLM call (/llm-batch-size [N])"),
         ("/batch-context-columns", "Show/set extra non-batch column names in each batch (/batch-context-columns [off|all|N])"),
@@ -695,6 +702,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "prompt-detail"):
             return True
         _cmd_prompt_detail(cfg, parts[1:])
+        return True
+    if head == "description-verbosity":
+        if not _require_namespace(head, namespace, "llm", "description-verbosity"):
+            return True
+        _cmd_description_verbosity(cfg, parts[1:])
         return True
     if head == "language":
         if not _require_namespace(head, namespace, "llm", "language"):
@@ -990,6 +1002,7 @@ def run_interactive_session(
             "remove-llm-profile",
             "language",
             "prompt-detail",
+            "description-verbosity",
             "n-alternatives",
             "llm-batch-size",
             "batch-context-columns",

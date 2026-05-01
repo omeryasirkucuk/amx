@@ -563,6 +563,12 @@ class LLMConfig(_ObservableConfig):
     column_batch_size: int = 10  # how many columns to process in one LLM call
     batch_context_column_names: int = 0  # how many non-batch column names to include as context (0=off, -1=all)
     prompt_detail: str = "standard"  # minimal | standard | detailed | full
+    # Description verbosity controls the LENGTH/DEPTH of generated
+    # descriptions, separate from ``prompt_detail`` (which controls how
+    # much context AMX feeds the LLM). ``brief`` = 1 sentence (current
+    # behavior); ``detailed`` = 2-4 sentences with purpose, typical
+    # values, and relationships when supported by evidence.
+    description_verbosity: str = "brief"  # brief | detailed
     logprob_high: float = 0.85
     logprob_medium: float = 0.50
     force_logprobs: bool = True
@@ -594,6 +600,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         column_batch_size=int(m.get("column_batch_size", 10)),
         batch_context_column_names=int(m.get("batch_context_column_names", 0)),
         prompt_detail=str(m.get("prompt_detail", "standard")),
+        description_verbosity=str(m.get("description_verbosity", "brief")),
         logprob_high=float(m.get("logprob_high", 0.85)),
         logprob_medium=float(m.get("logprob_medium", 0.50)),
         force_logprobs=bool(m.get("force_logprobs", True)),
@@ -614,6 +621,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "column_batch_size": llm.column_batch_size,
         "batch_context_column_names": llm.batch_context_column_names,
         "prompt_detail": llm.prompt_detail,
+        "description_verbosity": llm.description_verbosity,
         "logprob_high": llm.logprob_high,
         "logprob_medium": llm.logprob_medium,
         "force_logprobs": llm.force_logprobs,
