@@ -329,6 +329,90 @@ def _highlight_best(values: list[float | None], higher_is_better: bool) -> int |
 # ── Table renderers ─────────────────────────────────────────────────────────
 
 
+def _settings_for_run(run: dict[str, Any]) -> dict[str, Any]:
+    """Return the captured ``settings_json`` dict for a run, or {}.
+
+    Older rows (pre-settings_json migration) return ``{}`` so the
+    settings table renders dashes for them instead of crashing. The
+    storage layer already deserialises the JSON column in
+    ``find_runs_for_scope`` / ``get_run``, so we just unwrap.
+    """
+    raw = run.get("settings_json") if isinstance(run, dict) else None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _render_run_settings(runs: list[dict[str, Any]]) -> None:
+    """Show the LLM/run knobs the user can vary across runs.
+
+    Lives between :func:`_render_run_summary` (identity — who/what/when)
+    and the per-column pivot (the actual descriptions). The user-reported
+    motivation is "I should see exactly which settings I used" —
+    prompt_detail, language, batch sizes, etc., not just the profile
+    names. Pre-2026-05-02 these knobs weren't captured at all; older
+    rows render as ``—``.
+    """
+    table = Table(
+        title="Run settings",
+        show_lines=True,
+        box=box.SIMPLE_HEAVY,
+    )
+    table.add_column("Run", style="cyan", no_wrap=True)
+    table.add_column("Prompt detail", no_wrap=True)
+    table.add_column("Language", no_wrap=True)
+    table.add_column("Verbosity", no_wrap=True)
+    table.add_column("N alts", justify="right", no_wrap=True)
+    table.add_column("Batch size", justify="right", no_wrap=True)
+    table.add_column("Ctx cols", justify="right", no_wrap=True)
+    table.add_column("Completion", no_wrap=True)
+    table.add_column("Temp", justify="right", no_wrap=True)
+    table.add_column("Dedup", no_wrap=True)
+    table.add_column("Missing only", no_wrap=True)
+    table.add_column("Review strat.", no_wrap=True)
+
+    def _opt(s: dict[str, Any], key: str, fmt: str = "{}") -> str:
+        v = s.get(key)
+        if v is None or v == "":
+            return "—"
+        try:
+            return fmt.format(v)
+        except (KeyError, IndexError, ValueError):
+            return str(v)
+
+    def _bool_opt(s: dict[str, Any], key: str) -> str:
+        v = s.get(key)
+        if v is None:
+            return "—"
+        return "yes" if bool(v) else "no"
+
+    for r in runs:
+        s = _settings_for_run(r)
+        cells = [
+            Text(f"#{r.get('id')}", style="cyan"),
+            Text(_opt(s, "prompt_detail")),
+            Text(_opt(s, "language")),
+            Text(_opt(s, "description_verbosity")),
+            Text(_opt(s, "n_alternatives")),
+            Text(_opt(s, "column_batch_size")),
+            Text(_opt(s, "batch_context_column_names")),
+            Text(_opt(s, "completion_mode")),
+            Text(_opt(s, "temperature", "{:.2f}")),
+            Text(_bool_opt(s, "dedup_used")),
+            Text(_bool_opt(s, "missing_only")),
+            Text(_opt(s, "review_strategy")),
+        ]
+        table.add_row(*cells)
+
+    console.print(table)
+
+
 def _render_run_summary(runs: list[dict[str, Any]], by: str) -> None:
     table = Table(
         title="Run summary",
@@ -653,6 +737,15 @@ _AGGREGATE_METRICS: tuple[tuple[str, str], ...] = (
 
 
 def _collect_run_summary_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One dict per run, rolled up for CSV / Markdown / JSON exports.
+
+    Includes the captured ``settings_json`` snapshot so notebooks can
+    pivot on prompt_detail, batch_size, dedup_used, etc. — the same
+    knobs the on-screen ``Run settings`` table surfaces. Older rows
+    that predate the settings_json migration round-trip with empty
+    settings (``{}``) instead of ``None`` so notebooks don't have to
+    null-check.
+    """
     rows: list[dict[str, Any]] = []
     for r in runs:
         rows.append(
@@ -669,6 +762,7 @@ def _collect_run_summary_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]
                 "duration_sec": float(r.get("duration_sec") or 0.0),
                 "processed_count": int(r.get("processed_count") or 0),
                 "applied_count": int(r.get("applied_count") or 0),
+                "settings": _settings_for_run(r),
             }
         )
     return rows
@@ -1075,6 +1169,10 @@ def register_compare_command(
         )
 
         _render_run_summary(runs, by=resolved_by)
+        # Settings table sits between identity and per-column results
+        # so reviewers see WHICH knobs varied before reading the
+        # descriptions those knobs produced.
+        _render_run_settings(runs)
         _render_per_column_pivot(
             runs,
             results_by_run,

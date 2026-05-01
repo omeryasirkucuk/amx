@@ -649,6 +649,31 @@ def execute_analyze_run(
                         llm_profile=cfg.active_llm_profile,
                         doc_profile=cfg.active_doc_profile or None,
                         code_profile=cfg.active_code_profile or None,
+                        # Snapshot every LLM/run knob the user can vary
+                        # so /history compare can show exactly which
+                        # settings differed between runs. Persisted as
+                        # settings_json so adding new fields later
+                        # doesn't need another schema migration.
+                        settings={
+                            "prompt_detail": getattr(cfg.llm, "prompt_detail", ""),
+                            "language": getattr(cfg.llm, "language", ""),
+                            "column_batch_size": int(getattr(cfg.llm, "column_batch_size", 0) or 0),
+                            "batch_context_column_names": int(
+                                getattr(cfg.llm, "batch_context_column_names", 0) or 0
+                            ),
+                            "n_alternatives": int(getattr(cfg.llm, "n_alternatives", 0) or 0),
+                            "completion_mode": getattr(cfg.llm, "completion_mode", ""),
+                            "description_verbosity": getattr(cfg.llm, "description_verbosity", ""),
+                            "temperature": float(getattr(cfg.llm, "temperature", 0.0) or 0.0),
+                            "max_tokens": int(getattr(cfg.llm, "max_tokens", 0) or 0),
+                            "logprob_high": float(getattr(cfg.llm, "logprob_high", 0.0) or 0.0),
+                            "logprob_medium": float(getattr(cfg.llm, "logprob_medium", 0.0) or 0.0),
+                            "force_logprobs": bool(getattr(cfg.llm, "force_logprobs", True)),
+                            "dedup_used": bool(use_dedup),
+                            "missing_only": bool(missing_only),
+                            "review_strategy": review_strategy,
+                            "use_batch": bool(use_batch),
+                        },
                     )
                 except Exception as exc:
                     warn(f"History persistence disabled for this run: {exc}")
