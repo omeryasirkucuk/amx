@@ -1,4 +1,8 @@
-"""Write-through state persistence for headless and CLI AMX sessions."""
+"""Write-through state persistence for headless and CLI AMX sessions.
+
+Part of the **public API** — see ``docs/PUBLIC_API.md`` for the
+stability contract.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from amx.config import AMXConfig
+
+__all__ = ["StateManager"]
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
 

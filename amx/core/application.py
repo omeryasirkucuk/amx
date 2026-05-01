@@ -1,7 +1,8 @@
 """Headless AMX application facade.
 
 This module is the library-first entry point. The CLI should remain a thin
-adapter over these core services.
+adapter over these core services. Part of the **public API** — see
+``docs/PUBLIC_API.md`` for the stability contract.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from amx.core.state import StateManager
 from amx.search.catalog import SearchAnswer, SearchCatalog
 from amx.search.service import SearchService
 from amx.storage.sqlite_store import SQLiteHistoryStore, history_store, init_history_store
+
+__all__ = ["AMXApplication"]
 
 
 @dataclass
