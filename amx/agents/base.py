@@ -15,12 +15,12 @@ class Confidence(Enum):
 
 
 def apply_logprob_confidence(
-    suggestions: list["MetadataSuggestion"],
+    suggestions: list[MetadataSuggestion],
     logprobs: list | None,
     high_threshold: float = 0.85,
     medium_threshold: float = 0.50,
     response_text: str | None = None,
-) -> list["MetadataSuggestion"]:
+) -> list[MetadataSuggestion]:
     """Set confidence from logprob statistics (text labels are ignored).
 
     If logprobs are unavailable/unparseable, keep existing confidence labels.
@@ -105,5 +105,4 @@ class BaseAgent(ABC):
     name: str = "base"
 
     @abstractmethod
-    def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
-        ...
+    def run(self, ctx: AgentContext) -> list[MetadataSuggestion]: ...

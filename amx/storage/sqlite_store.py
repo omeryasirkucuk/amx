@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -137,27 +137,21 @@ class SQLiteHistoryStore:
                 """
             )
             # Backward-compatible migration for older history DBs.
-            try:
-                conn.execute("ALTER TABLE run_results ADD COLUMN asset_kind TEXT NOT NULL DEFAULT 'table'")
-            except sqlite3.OperationalError:
-                pass
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "ALTER TABLE run_results ADD COLUMN asset_kind TEXT NOT NULL DEFAULT 'table'"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE run_results ADD COLUMN applied_at REAL")
-            except sqlite3.OperationalError:
-                pass
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ALTER TABLE run_results ADD COLUMN logprob_score REAL")
-            except sqlite3.OperationalError:
-                pass
             for stmt in (
                 "ALTER TABLE run_results ADD COLUMN raw_logprob REAL",
                 "ALTER TABLE run_results ADD COLUMN token_count INTEGER",
                 "ALTER TABLE run_results ADD COLUMN model_version TEXT NOT NULL DEFAULT ''",
             ):
-                try:
+                with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
-                except sqlite3.OperationalError:
-                    pass
             for stmt in (
                 "ALTER TABLE run_results ADD COLUMN catalog_status TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE run_results ADD COLUMN catalog_indexed_at REAL",
@@ -166,14 +160,9 @@ class SQLiteHistoryStore:
                 "ALTER TABLE run_results ADD COLUMN superseded_at REAL",
                 "ALTER TABLE run_results ADD COLUMN rejection_reason TEXT NOT NULL DEFAULT ''",
             ):
-                try:
+                with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
-                except sqlite3.OperationalError:
-                    pass
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_run_results_run_id "
-                "ON run_results(run_id)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
                 "ON run_results(schema_name, table_name, column_name)"
@@ -363,10 +352,7 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_chat_turns_session_index "
                 "ON chat_turns(session_id, turn_index)"
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_turns_run "
-                "ON chat_turns(run_id)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_turns_run ON chat_turns(run_id)")
 
     def _ensure_run_columns(self, conn: Any) -> None:
         """Idempotently add the v0.5.2 reporting columns to analysis_runs.
@@ -399,9 +385,7 @@ class SQLiteHistoryStore:
             if col_name in existing_cols:
                 continue
             try:
-                conn.execute(
-                    f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}"
-                )
+                conn.execute(f"ALTER TABLE analysis_runs ADD COLUMN {col_name} {col_type}")
                 log.info(
                     "Migrated analysis_runs: added column %s %s",
                     col_name,
@@ -726,16 +710,12 @@ class SQLiteHistoryStore:
             d = dict(r)
             raw = d.get("alternatives_json")
             if isinstance(raw, str) and raw:
-                try:
+                with contextlib.suppress(Exception):
                     d["alternatives_json"] = json.loads(raw)
-                except Exception:
-                    pass
             out.append(d)
         return out
 
-    def list_runs_with_result_counts(
-        self, limit: int = 20
-    ) -> list[dict[str, Any]]:
+    def list_runs_with_result_counts(self, limit: int = 20) -> list[dict[str, Any]]:
         """List recent runs augmented with pending evaluation count."""
         with self._connect() as conn:
             rows = conn.execute(
@@ -771,10 +751,8 @@ class SQLiteHistoryStore:
             d = dict(row)
             raw = d.get("scope_json")
             if isinstance(raw, str) and raw:
-                try:
+                with contextlib.suppress(Exception):
                     d["scope_json"] = json.loads(raw)
-                except Exception:
-                    pass
             out.append(d)
         return out
 
@@ -828,10 +806,8 @@ class SQLiteHistoryStore:
             for key in ("scope_json", "metrics_json"):
                 raw = d.get(key)
                 if isinstance(raw, str) and raw:
-                    try:
+                    with contextlib.suppress(Exception):
                         d[key] = json.loads(raw)
-                    except Exception:
-                        pass
             out.append(d)
         return out
 
@@ -886,10 +862,8 @@ class SQLiteHistoryStore:
             for key in ("scope_json", "metrics_json", "tokens_json"):
                 raw = d.get(key)
                 if isinstance(raw, str) and raw:
-                    try:
+                    with contextlib.suppress(Exception):
                         d[key] = json.loads(raw)
-                    except Exception:
-                        pass
             out.append(d)
         return out
 
@@ -905,17 +879,13 @@ class SQLiteHistoryStore:
         for key in ("scope_json", "metrics_json", "tokens_json", "results_json"):
             raw = out.get(key)
             if isinstance(raw, str) and raw:
-                try:
+                with contextlib.suppress(Exception):
                     out[key] = json.loads(raw)
-                except Exception:
-                    pass
         return out
 
     def stats(self) -> dict[str, Any]:
         with self._connect() as conn:
-            total_runs = conn.execute(
-                "SELECT COUNT(*) AS n FROM analysis_runs"
-            ).fetchone()["n"]
+            total_runs = conn.execute("SELECT COUNT(*) AS n FROM analysis_runs").fetchone()["n"]
             ok_runs = conn.execute(
                 "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'success'"
             ).fetchone()["n"]
@@ -931,9 +901,7 @@ class SQLiteHistoryStore:
             last_started = conn.execute(
                 "SELECT MAX(started_at) AS v FROM analysis_runs"
             ).fetchone()["v"]
-            total_events = conn.execute(
-                "SELECT COUNT(*) AS n FROM app_events"
-            ).fetchone()["n"]
+            total_events = conn.execute("SELECT COUNT(*) AS n FROM app_events").fetchone()["n"]
             metrics_rows = conn.execute(
                 "SELECT metrics_json FROM analysis_runs WHERE metrics_json IS NOT NULL"
             ).fetchall()
@@ -951,11 +919,7 @@ class SQLiteHistoryStore:
             if val > 0:
                 model_durations.append(val)
 
-        avg_model_duration = (
-            sum(model_durations) / len(model_durations)
-            if model_durations
-            else 0.0
-        )
+        avg_model_duration = sum(model_durations) / len(model_durations) if model_durations else 0.0
 
         return {
             "total_runs": int(total_runs or 0),
@@ -984,10 +948,8 @@ class SQLiteHistoryStore:
             d = dict(r)
             raw = d.get("details_json")
             if isinstance(raw, str) and raw:
-                try:
+                with contextlib.suppress(Exception):
                     d["details_json"] = json.loads(raw)
-                except Exception:
-                    pass
             out.append(d)
         return out
 

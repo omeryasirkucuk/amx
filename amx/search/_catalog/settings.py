@@ -34,6 +34,7 @@ class SettingsMixin:
         for row in rows:
             out[str(row["key_name"])] = str(row["value_text"])
         return out
+
     def set_setting(self, db_profile: str, key: str, value: str) -> None:
         now = time.time()
         with self._connect() as conn:
@@ -47,6 +48,7 @@ class SettingsMixin:
                 """,
                 (db_profile, key, value, now),
             )
+
     def explain_table(self, db_profile: str, table_path: str) -> dict[str, Any] | None:
         parts = table_path.split(".")
         if len(parts) != 2:

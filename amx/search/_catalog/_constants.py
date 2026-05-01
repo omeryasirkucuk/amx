@@ -93,7 +93,8 @@ _DEFAULT_SCORE_FLOOR = 2.5
 
 
 def _vector_score_floor(
-    settings: dict[str, str], embedding_kind: str | None = None,
+    settings: dict[str, str],
+    embedding_kind: str | None = None,
 ) -> float:
     """Minimum match_score a vector-only hit must reach to survive filter.
 

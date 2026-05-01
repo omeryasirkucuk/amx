@@ -34,7 +34,9 @@ class PostgreSQLAdapter(DatabaseAdapter):
         if "permission denied" in msg:
             return "Insufficient privileges for profiling. Grant SELECT on this object or use a higher-privileged role."
         if "undefined_table" in msg or "does not exist" in msg:
-            return "Referenced relation is missing or inaccessible in the current schema search path."
+            return (
+                "Referenced relation is missing or inaccessible in the current schema search path."
+            )
         return None
 
     def system_schemas(self) -> frozenset[str]:
@@ -75,9 +77,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
 
     # ── Table stats ───────────────────────────────────────────────────────
 
-    def get_table_stats(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, int]:
+    def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
         with engine.connect() as conn:
             row = conn.execute(
                 text(
@@ -192,9 +192,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
 
     # ── Analytics metadata ────────────────────────────────────────────────
 
-    def get_analytics_metadata(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, Any]:
+    def get_analytics_metadata(self, engine: Engine, schema: str, table: str) -> dict[str, Any]:
         """PostgreSQL analytics metadata.
 
         Pulls partition info from ``pg_partitioned_table`` /
@@ -262,7 +260,9 @@ class PostgreSQLAdapter(DatabaseAdapter):
                     cols: list[str] = []
                     if "(" in indexdef and indexdef.rstrip().endswith(")"):
                         col_str = indexdef.rsplit("(", 1)[1].rstrip(")")
-                        cols = [c.strip().strip('"').split()[0] for c in col_str.split(",") if c.strip()]
+                        cols = [
+                            c.strip().strip('"').split()[0] for c in col_str.split(",") if c.strip()
+                        ]
                     indexes.append({"name": name, "columns": cols, "unique": unique})
                 out["indexes"] = indexes
             except Exception as exc:
@@ -338,15 +338,11 @@ class PostgreSQLAdapter(DatabaseAdapter):
 
     # ── Comment writing ───────────────────────────────────────────────────
 
-    def set_table_comment_sql(
-        self, schema: str, table: str, asset_keyword: str
-    ) -> str:
+    def set_table_comment_sql(self, schema: str, table: str, asset_keyword: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON {asset_keyword} {fqn} IS :cmt"
 
-    def set_column_comment_sql(
-        self, schema: str, table: str, column: str
-    ) -> str:
+    def set_column_comment_sql(self, schema: str, table: str, column: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON COLUMN {fqn}.{self.quote_identifier(column)} IS :cmt"
 

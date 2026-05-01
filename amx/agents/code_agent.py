@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import re
 
-from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
-from amx.codebase.analyzer import CodeReference, CodebaseReport
+from amx.agents.base import (
+    AgentContext,
+    BaseAgent,
+    Confidence,
+    MetadataSuggestion,
+    apply_logprob_confidence,
+)
+from amx.codebase.analyzer import CodebaseReport, CodeReference
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
@@ -56,11 +62,13 @@ REASONING: The code joins, filters, and groups records by this field across rela
 
 def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
     n = max(1, min(5, n_alternatives))
-    desc_lines = "\n".join(
-        f"DESCRIPTION_{i}: <alternative>"
-        for i in range(2, n + 1)
-    ) if n > 1 else ""
-    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines, target_language=target_language).strip() + "\n"
+    desc_lines = (
+        "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
+    )
+    return (
+        _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines, target_language=target_language).strip()
+        + "\n"
+    )
 
 
 class CodeAgent(BaseAgent):
@@ -92,9 +100,7 @@ class CodeAgent(BaseAgent):
             return None
 
         table_refs = (
-            self.report.references.get(ctx.table.lower(), [])
-            if self.report.references
-            else []
+            self.report.references.get(ctx.table.lower(), []) if self.report.references else []
         )
 
         all_code_blocks: list[str] = []
@@ -102,26 +108,16 @@ class CodeAgent(BaseAgent):
         if table_refs:
             all_code_blocks.append(
                 "## Table-level references\n"
-                + "\n---\n".join(
-                    f"File: {r.file}:{r.line_no}\n{r.context}"
-                    for r in table_refs[:8]
-                )
+                + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in table_refs[:8])
             )
 
         for col in columns:
             col_name = col["name"].lower()
-            refs = (
-                self.report.references.get(col_name, [])
-                if self.report.references
-                else []
-            )
+            refs = self.report.references.get(col_name, []) if self.report.references else []
             if refs:
                 all_code_blocks.append(
                     f"## Column: {col['name']}\n"
-                    + "\n---\n".join(
-                        f"File: {r.file}:{r.line_no}\n{r.context}"
-                        for r in refs[:5]
-                    )
+                    + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in refs[:5])
                 )
 
         if has_sem:
@@ -142,31 +138,28 @@ class CodeAgent(BaseAgent):
         if ext_flat:
             all_code_blocks.append(
                 "## Other identifiers (not in connected DB catalog)\n"
-                + "\n---\n".join(
-                    f"File: {r.file}:{r.line_no}\n{r.context}"
-                    for r in ext_flat[:5]
-                )
+                + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in ext_flat[:5])
             )
 
         if not all_code_blocks:
             return None
 
-        col_lines = "\n".join(
-            f"  - {c['name']} (type={c['dtype']})" for c in columns
-        )
+        col_lines = "\n".join(f"  - {c['name']} (type={c['dtype']})" for c in columns)
         user_msg = (
             f"Schema: {ctx.schema}\n"
             f"Table: {ctx.table}\n\n"
             f"Columns:\n{col_lines}\n\n"
             f"Code references:\n\n" + "\n\n".join(all_code_blocks)
         )
-        system = _build_system_prompt(self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english")
+        system = _build_system_prompt(
+            self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english"
+        )
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
 
-    def collect_messages(self, ctx: AgentContext) -> "list":
+    def collect_messages(self, ctx: AgentContext) -> list:
         """Return a ``BatchRequest`` for this table (or empty list when no code context)."""
         from amx.llm.batch import BatchRequest
 
@@ -195,9 +188,7 @@ class CodeAgent(BaseAgent):
 
         columns = ctx.db_profile.get("columns", [])
         est = estimate_tokens(messages)
-        with step_spinner(
-            f"Code Agent: {len(columns)} columns", token_estimate=est
-        ):
+        with step_spinner(f"Code Agent: {len(columns)} columns", token_estimate=est):
             result = self.llm.chat(messages)
         tracker.record("code_agent", est, result.usage)
 
@@ -225,11 +216,17 @@ class CodeAgent(BaseAgent):
             line = line.strip()
             if line.startswith("COLUMN:"):
                 if current_col and descs:
-                    suggestions.append(MetadataSuggestion(
-                        schema=ctx.schema, table=ctx.table, column=current_col,
-                        suggestions=descs, confidence=conf, reasoning=reasoning,
-                        source="codebase",
-                    ))
+                    suggestions.append(
+                        MetadataSuggestion(
+                            schema=ctx.schema,
+                            table=ctx.table,
+                            column=current_col,
+                            suggestions=descs,
+                            confidence=conf,
+                            reasoning=reasoning,
+                            source="codebase",
+                        )
+                    )
                 current_col = line.split(":", 1)[1].strip()
                 descs = []
                 conf = Confidence.MEDIUM
@@ -243,10 +240,16 @@ class CodeAgent(BaseAgent):
                 reasoning = line.split(":", 1)[1].strip()
 
         if current_col and descs:
-            suggestions.append(MetadataSuggestion(
-                schema=ctx.schema, table=ctx.table, column=current_col,
-                suggestions=descs, confidence=conf, reasoning=reasoning,
-                source="codebase",
-            ))
+            suggestions.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=current_col,
+                    suggestions=descs,
+                    confidence=conf,
+                    reasoning=reasoning,
+                    source="codebase",
+                )
+            )
 
         return suggestions

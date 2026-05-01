@@ -46,9 +46,7 @@ class DatabricksAdapter(DatabaseAdapter):
 
         resolved = Path(os.path.expandvars(os.path.expanduser(raw)))
         if not resolved.is_file():
-            raise FileNotFoundError(
-                f"Databricks trusted CA bundle file was not found: {resolved}"
-            )
+            raise FileNotFoundError(f"Databricks trusted CA bundle file was not found: {resolved}")
         return str(resolved)
 
     def create_engine(self) -> Engine:
@@ -103,15 +101,17 @@ class DatabricksAdapter(DatabaseAdapter):
         if trusted_ca:
             connect_args["_tls_trusted_ca_file"] = trusted_ca
 
-        with sql.connect(
-            server_hostname=self.cfg.host,
-            http_path=self.cfg.http_path,
-            access_token=self.cfg.access_token or self.cfg.password,
-            **connect_args,
-        ) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchall()
+        with (
+            sql.connect(
+                server_hostname=self.cfg.host,
+                http_path=self.cfg.http_path,
+                access_token=self.cfg.access_token or self.cfg.password,
+                **connect_args,
+            ) as conn,
+            conn.cursor() as cursor,
+        ):
+            cursor.execute("SELECT 1")
+            cursor.fetchall()
 
     def comment_sql_with_params(
         self,
@@ -181,9 +181,7 @@ class DatabricksAdapter(DatabaseAdapter):
 
     # ── Table stats ───────────────────────────────────────────────────────
 
-    def get_table_stats(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, int]:
+    def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
         fqn = self.fully_qualified_name(schema, table)
         try:
             with engine.connect() as conn:
@@ -235,19 +233,17 @@ class DatabricksAdapter(DatabaseAdapter):
             return None  # let connector fall back to SQLAlchemy inspector
         try:
             with engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"SHOW SCHEMAS IN `{cat}`")
-                ).fetchall()
+                rows = conn.execute(text(f"SHOW SCHEMAS IN `{cat}`")).fetchall()
             system = self.system_schemas()
-            return [
-                str(r[0]) for r in rows
-                if r and r[0] and str(r[0]).lower() not in system
-            ]
+            return [str(r[0]) for r in rows if r and r[0] and str(r[0]).lower() not in system]
         except Exception:
             return None
 
     def list_tables(
-        self, engine: Engine, schema: str, catalog: str = "",
+        self,
+        engine: Engine,
+        schema: str,
+        catalog: str = "",
     ) -> list[str] | None:
         """``SHOW TABLES IN <catalog>.<schema>`` — catalog-aware.
 
@@ -266,21 +262,19 @@ class DatabricksAdapter(DatabaseAdapter):
             return None
         try:
             with engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"SHOW TABLES IN `{cat}`.`{sch}`")
-                ).fetchall()
+                rows = conn.execute(text(f"SHOW TABLES IN `{cat}`.`{sch}`")).fetchall()
             # SHOW TABLES in Databricks returns at least:
             # (database, tableName, isTemporary, [information])
             # tableName is column index 1.
-            return [
-                str(r[1]) for r in rows
-                if r and len(r) >= 2 and r[1]
-            ]
+            return [str(r[1]) for r in rows if r and len(r) >= 2 and r[1]]
         except Exception:
             return None
 
     def list_views(
-        self, engine: Engine, schema: str, catalog: str = "",
+        self,
+        engine: Engine,
+        schema: str,
+        catalog: str = "",
     ) -> list[str] | None:
         """``SHOW VIEWS IN <catalog>.<schema>`` — same pattern as list_tables."""
         cat = (catalog or "").strip()
@@ -289,14 +283,9 @@ class DatabricksAdapter(DatabaseAdapter):
             return None
         try:
             with engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"SHOW VIEWS IN `{cat}`.`{sch}`")
-                ).fetchall()
+                rows = conn.execute(text(f"SHOW VIEWS IN `{cat}`.`{sch}`")).fetchall()
             # SHOW VIEWS rows: (namespace, viewName, isTemporary)
-            return [
-                str(r[1]) for r in rows
-                if r and len(r) >= 2 and r[1]
-            ]
+            return [str(r[1]) for r in rows if r and len(r) >= 2 and r[1]]
         except Exception:
             return None
 
@@ -307,9 +296,7 @@ class DatabricksAdapter(DatabaseAdapter):
         qualified = f"`{catalog}`.`{schema}`" if catalog else f"`{schema}`"
         try:
             with engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"DESCRIBE SCHEMA {qualified}")
-                ).fetchall()
+                rows = conn.execute(text(f"DESCRIBE SCHEMA {qualified}")).fetchall()
             for r in rows:
                 if str(r[0]).lower() == "comment" and r[1]:
                     return str(r[1])
@@ -323,9 +310,7 @@ class DatabricksAdapter(DatabaseAdapter):
             return None
         try:
             with engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"DESCRIBE CATALOG `{catalog}`")
-                ).fetchall()
+                rows = conn.execute(text(f"DESCRIBE CATALOG `{catalog}`")).fetchall()
             for r in rows:
                 if str(r[0]).lower() == "comment" and r[1]:
                     return str(r[1])
@@ -342,9 +327,7 @@ class DatabricksAdapter(DatabaseAdapter):
 
     # ── Analytics metadata ────────────────────────────────────────────────
 
-    def get_analytics_metadata(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, Any]:
+    def get_analytics_metadata(self, engine: Engine, schema: str, table: str) -> dict[str, Any]:
         """Databricks analytics metadata via ``DESCRIBE DETAIL`` + ``DESCRIBE TABLE EXTENDED``.
 
         Pulls partition columns, storage format (delta / parquet / iceberg),
@@ -409,17 +392,13 @@ class DatabricksAdapter(DatabaseAdapter):
 
     # ── Comment writing ───────────────────────────────────────────────────
 
-    def set_table_comment_sql(
-        self, schema: str, table: str, asset_keyword: str
-    ) -> str:
+    def set_table_comment_sql(self, schema: str, table: str, asset_keyword: str) -> str:
         if asset_keyword not in self.capabilities.comment_asset_keywords:
             raise self.unsupported(f"Comment write-back for {asset_keyword.lower()} assets")
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON {asset_keyword} {fqn} IS :cmt"
 
-    def set_column_comment_sql(
-        self, schema: str, table: str, column: str
-    ) -> str:
+    def set_column_comment_sql(self, schema: str, table: str, column: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
         col = self.quote_identifier(column)
         return f"ALTER TABLE {fqn} ALTER COLUMN {col} COMMENT :cmt"
@@ -447,5 +426,7 @@ class DatabricksAdapter(DatabaseAdapter):
     def set_database_comment_sql(self) -> str:
         catalog = getattr(self.cfg, "catalog", "") or ""
         if not catalog:
-            raise self.unsupported("Database/catalog comment write-back without a Databricks catalog")
+            raise self.unsupported(
+                "Database/catalog comment write-back without a Databricks catalog"
+            )
         return f"COMMENT ON CATALOG `{catalog}` IS :cmt"

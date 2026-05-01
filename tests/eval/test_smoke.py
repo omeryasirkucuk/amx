@@ -64,9 +64,7 @@ class EvalHarnessSmokeTests(unittest.TestCase):
             }
         )
 
-        per_query_pairs = [
-            (retriever.query(q, k=5), self.FIXTURE[q]) for q in self.FIXTURE
-        ]
+        per_query_pairs = [(retriever.query(q, k=5), self.FIXTURE[q]) for q in self.FIXTURE]
 
         self.assertEqual(mean_reciprocal_rank(per_query_pairs), 1.0)
         for ranked, relevant in per_query_pairs:
@@ -83,9 +81,7 @@ class EvalHarnessSmokeTests(unittest.TestCase):
             }
         )
 
-        per_query_pairs = [
-            (retriever.query(q, k=5), self.FIXTURE[q]) for q in self.FIXTURE
-        ]
+        per_query_pairs = [(retriever.query(q, k=5), self.FIXTURE[q]) for q in self.FIXTURE]
 
         mrr = mean_reciprocal_rank(per_query_pairs)
         self.assertLess(mrr, 1.0)
@@ -102,9 +98,7 @@ class EvalHarnessSmokeTests(unittest.TestCase):
         # Retriever returns nothing — every metric must be 0.0 without
         # raising. Real eval scripts treat this as a hard failure.
         retriever = FakeRetriever({})
-        per_query_pairs = [
-            (retriever.query(q, k=5), self.FIXTURE[q]) for q in self.FIXTURE
-        ]
+        per_query_pairs = [(retriever.query(q, k=5), self.FIXTURE[q]) for q in self.FIXTURE]
         self.assertEqual(mean_reciprocal_rank(per_query_pairs), 0.0)
         for ranked, relevant in per_query_pairs:
             self.assertEqual(hit_at_k(ranked, relevant, k=5), 0.0)

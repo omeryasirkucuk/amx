@@ -47,7 +47,9 @@ def load_pending() -> list[ReviewResult]:
             continue
         try:
             conf_raw = str(row.get("confidence", "medium")).lower()
-            conf = Confidence(conf_raw) if conf_raw in ("high", "medium", "low") else Confidence.MEDIUM
+            conf = (
+                Confidence(conf_raw) if conf_raw in ("high", "medium", "low") else Confidence.MEDIUM
+            )
         except Exception:
             conf = Confidence.MEDIUM
         out.append(

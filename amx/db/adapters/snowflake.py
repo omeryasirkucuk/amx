@@ -26,8 +26,7 @@ class SnowflakeAdapter(DatabaseAdapter):
             from sqlalchemy import create_engine
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                "SQLAlchemy is required for Snowflake. "
-                "Install with: pip install 'amx[snowflake]'"
+                "SQLAlchemy is required for Snowflake. Install with: pip install 'amx[snowflake]'"
             ) from exc
         try:
             import snowflake.sqlalchemy  # noqa: F401 — registers dialect
@@ -92,9 +91,7 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     # ── Table stats ───────────────────────────────────────────────────────
 
-    def get_table_stats(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, int]:
+    def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
         row = self._fetch_table_row(engine, schema, table, "ROW_COUNT")
         n_live = int(row[0] or 0) if row else 0
         return {"seq_scan": 0, "idx_scan": 0, "n_live_tup": n_live}
@@ -128,8 +125,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         with engine.connect() as conn:
             row = conn.execute(
                 text(
-                    f"SELECT {column} FROM INFORMATION_SCHEMA.SCHEMATA "
-                    "WHERE SCHEMA_NAME = :schema"
+                    f"SELECT {column} FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = :schema"
                 ),
                 {"schema": schema},
             ).fetchone()
@@ -137,8 +133,7 @@ class SnowflakeAdapter(DatabaseAdapter):
                 return row
             return conn.execute(
                 text(
-                    f"SELECT {column} FROM INFORMATION_SCHEMA.SCHEMATA "
-                    "WHERE SCHEMA_NAME = :schema"
+                    f"SELECT {column} FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = :schema"
                 ),
                 {"schema": schema.upper()},
             ).fetchone()
@@ -202,9 +197,7 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     # ── Analytics metadata ────────────────────────────────────────────────
 
-    def get_analytics_metadata(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, Any]:
+    def get_analytics_metadata(self, engine: Engine, schema: str, table: str) -> dict[str, Any]:
         """Snowflake analytics metadata.
 
         Pulls clustering keys / size / row count / last_altered /
@@ -245,8 +238,10 @@ class SnowflakeAdapter(DatabaseAdapter):
                         # Snowflake reports. Strip the wrapper.
                         ck = str(row[0])
                         if ck.upper().startswith("LINEAR(") and ck.endswith(")"):
-                            inner = ck[len("LINEAR("):-1]
-                            out["clustering_keys"] = [c.strip() for c in inner.split(",") if c.strip()]
+                            inner = ck[len("LINEAR(") : -1]
+                            out["clustering_keys"] = [
+                                c.strip() for c in inner.split(",") if c.strip()
+                            ]
                         else:
                             out["clustering_keys"] = [ck]
                     if row[1] is not None:
@@ -307,15 +302,11 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     # ── Comment writing ───────────────────────────────────────────────────
 
-    def set_table_comment_sql(
-        self, schema: str, table: str, asset_keyword: str
-    ) -> str:
+    def set_table_comment_sql(self, schema: str, table: str, asset_keyword: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON {asset_keyword} {fqn} IS :cmt"
 
-    def set_column_comment_sql(
-        self, schema: str, table: str, column: str
-    ) -> str:
+    def set_column_comment_sql(self, schema: str, table: str, column: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
         return f"COMMENT ON COLUMN {fqn}.{self.quote_identifier(column)} IS :cmt"
 

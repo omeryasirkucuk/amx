@@ -8,21 +8,24 @@ import sys
 import click
 
 from amx import __version__
-from amx.config import AMXConfig
+from amx.cli_support import run_interactive_session
 from amx.cli_support.commands.analyze_flow import register_analyze_run_command
 from amx.cli_support.commands.chat_session import register_chat_session_commands
 from amx.cli_support.commands.code import register_code_commands
+from amx.cli_support.commands.compare import register_compare_command
 from amx.cli_support.commands.db import (
     interactive_db_block as _interactive_db_block,
+)
+from amx.cli_support.commands.db import (
     print_db_namespace_hint as _print_db_namespace_hint,
 )
 from amx.cli_support.commands.docs import register_docs_commands
 from amx.cli_support.commands.history import register_history_commands
 from amx.cli_support.commands.manual import register_manual_commands
-from amx.cli_support.commands.compare import register_compare_command
-from amx.cli_support.commands.search import register_search_commands
 from amx.cli_support.commands.profiles import (
     interactive_llm_block as _interactive_llm_block,
+)
+from amx.cli_support.commands.profiles import (
     warn_no_doc_paths_for_scan_or_ingest as _warn_no_doc_paths_for_scan_or_ingest,
 )
 from amx.cli_support.commands.run import (
@@ -30,8 +33,10 @@ from amx.cli_support.commands.run import (
     _resolve_codebase_for_run,
     register_analyze_commands,
 )
-from amx.cli_support import run_interactive_session
+from amx.cli_support.commands.search import register_search_commands
 from amx.cli_support.root_commands import register_root_commands
+from amx.config import AMXConfig
+from amx.storage.sqlite_store import history_store, init_history_store
 from amx.utils.console import (
     error,
     info,
@@ -39,7 +44,6 @@ from amx.utils.console import (
     warn,
 )
 from amx.utils.logging import get_logger
-from amx.storage.sqlite_store import history_store, init_history_store
 
 log = get_logger("cli")
 
@@ -95,6 +99,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
         # Suggest-don't-mutate: surface profiles still carrying the legacy
         # demo default ``database='SAP'``. We never edit YAML automatically.
         from amx.config import has_legacy_database_default
+
         legacy_active = has_legacy_database_default(cfg.db)
         if legacy_active:
             warn(
@@ -106,9 +111,7 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
     if not cfg.active_llm_profile or not cfg.llm_profiles or not cfg.llm.is_configured():
         info("LLM: (not configured — run /setup or /add-llm-profile)")
     else:
-        llm_line = (
-            f"{cfg.llm.provider}/{cfg.llm.model} [{cfg.llm.language or 'english'}]"
-        )
+        llm_line = f"{cfg.llm.provider}/{cfg.llm.model} [{cfg.llm.language or 'english'}]"
         info(f"LLM: profile '{cfg.active_llm_profile}' → {llm_line} (metadata language)")
 
     if cfg.current_schema or cfg.current_table:
@@ -117,7 +120,6 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
 
 def _fix_codebase_cli_tail(tokens: list[str]) -> list[str]:
     """Turn mistaken flags like `--sap_s6p` into `--schema sap_s6p` for `analyze codebase`."""
-    known = {"--schema", "-s", "--help", "-h"}
     out: list[str] = []
     k = 0
     while k < len(tokens):

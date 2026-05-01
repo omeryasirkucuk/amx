@@ -23,7 +23,6 @@ from pathlib import Path
 
 from amx.utils.logging import LOG_DIR
 
-
 CRASH_DIR = LOG_DIR / "crashes"
 _REDACTED_PLACEHOLDER = "<redacted>"
 
@@ -65,9 +64,7 @@ _KV_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # Bearer / Basic auth tokens in HTTP headers.
-_BEARER_PATTERN = re.compile(
-    r"(?i)\b(Bearer|Basic)\s+([A-Za-z0-9_\-./=+]{8,})"
-)
+_BEARER_PATTERN = re.compile(r"(?i)\b(Bearer|Basic)\s+([A-Za-z0-9_\-./=+]{8,})")
 
 
 def redact_secrets(text: str) -> str:
@@ -133,7 +130,7 @@ def write_crash_report(
 
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     parts: list[str] = [
-        f"AMX crash report",
+        "AMX crash report",
         f"timestamp: {stamp}",
         f"request_id: {rid}",
         f"exception: {exc.__class__.__name__}: {exc}",

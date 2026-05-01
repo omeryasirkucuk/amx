@@ -74,24 +74,26 @@ def register_history_commands(
                     processed_label += f"  applied {applied}"
             else:
                 processed_label = "—"
-            table_rows.append([
-                str(row.get("id", "")),
-                f"{float(row.get('started_at') or 0):.0f}",
-                {
-                    "success": "[bold green]success[/bold green]",
-                    "failed": "[bold red]failed[/bold red]",
-                    "cancelled": "[bold yellow]cancelled[/bold yellow]",
-                    "ready_for_review": "[bold magenta]ready_for_review[/bold magenta]",
-                    "running": "[bold cyan]running[/bold cyan]",
-                }.get(str(row.get("status", "")), str(row.get("status", ""))),
-                str(row.get("mode", "")),
-                str(row.get("db_backend", "")),
-                format_run_scope(row.get("scope_json")),
-                processed_label,
-                f"{row.get('llm_provider', '')}/{row.get('llm_model', '')}",
-                f"{float(row.get('duration_sec') or 0):.2f}",
-                f"{float((row.get('metrics_json') or {}).get('model_processing_sec') or 0):.2f}",
-            ])
+            table_rows.append(
+                [
+                    str(row.get("id", "")),
+                    f"{float(row.get('started_at') or 0):.0f}",
+                    {
+                        "success": "[bold green]success[/bold green]",
+                        "failed": "[bold red]failed[/bold red]",
+                        "cancelled": "[bold yellow]cancelled[/bold yellow]",
+                        "ready_for_review": "[bold magenta]ready_for_review[/bold magenta]",
+                        "running": "[bold cyan]running[/bold cyan]",
+                    }.get(str(row.get("status", "")), str(row.get("status", ""))),
+                    str(row.get("mode", "")),
+                    str(row.get("db_backend", "")),
+                    format_run_scope(row.get("scope_json")),
+                    processed_label,
+                    f"{row.get('llm_provider', '')}/{row.get('llm_model', '')}",
+                    f"{float(row.get('duration_sec') or 0):.2f}",
+                    f"{float((row.get('metrics_json') or {}).get('model_processing_sec') or 0):.2f}",
+                ]
+            )
 
         render_table(
             "Recent runs",
@@ -143,7 +145,9 @@ def register_history_commands(
         payload["metadata_decisions"] = {
             "total": len(result_rows),
             "pending": sum(1 for r in result_rows if not r.get("evaluation")),
-            "reviewed": sum(1 for r in result_rows if r.get("evaluation") in {"accepted", "custom"}),
+            "reviewed": sum(
+                1 for r in result_rows if r.get("evaluation") in {"accepted", "custom"}
+            ),
             "rejected": sum(1 for r in result_rows if r.get("evaluation") == "skipped"),
             "indexed": sum(1 for r in result_rows if r.get("catalog_indexed_at")),
             "applied": sum(1 for r in result_rows if r.get("applied_at")),
@@ -174,7 +178,10 @@ def register_history_commands(
                 ["success_runs", stats.get("success_runs", 0)],
                 ["failed_runs", stats.get("failed_runs", 0)],
                 ["avg_duration_sec", f"{float(stats.get('avg_duration_sec') or 0):.2f}"],
-                ["avg_model_processing_sec", f"{float(stats.get('avg_model_processing_sec') or 0):.2f}"],
+                [
+                    "avg_model_processing_sec",
+                    f"{float(stats.get('avg_model_processing_sec') or 0):.2f}",
+                ],
                 ["last_started_at", f"{float(stats.get('last_started_at') or 0):.0f}"],
                 ["total_events", stats.get("total_events", 0)],
                 ["reviewed_descriptions", search_counts.get("reviewed_count", 0)],
@@ -223,7 +230,9 @@ def register_history_commands(
             return
         rows = hs.get_run_results(run_id)
         if not rows:
-            error(f"No saved alternatives for run {run_id}. (Alternatives are only stored for runs made with v0.1.39+.)")
+            error(
+                f"No saved alternatives for run {run_id}. (Alternatives are only stored for runs made with v0.1.39+.)"
+            )
             return
 
         heading(f"Saved alternatives - run #{run_id}")
@@ -253,12 +262,16 @@ def register_history_commands(
                 if selected_at:
                     lines.append(
                         "  [dim]Selected at:[/dim] "
-                        + datetime.fromtimestamp(selected_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        + datetime.fromtimestamp(selected_at, tz=timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
                     )
                 if applied_at:
                     lines.append(
                         "  [dim]Applied at:[/dim] "
-                        + datetime.fromtimestamp(applied_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                        + datetime.fromtimestamp(applied_at, tz=timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
                     )
                 console.print(
                     Panel(
@@ -273,27 +286,37 @@ def register_history_commands(
         for row in column_rows:
             alternatives = row.get("alternatives_json") or []
             if alternatives:
-                alternatives_str = "\n".join(f"{index}. {alt}" for index, alt in enumerate(alternatives, 1))
+                alternatives_str = "\n".join(
+                    f"{index}. {alt}" for index, alt in enumerate(alternatives, 1)
+                )
             else:
                 alternatives_str = "-"
             evaluated_at = row.get("evaluated_at")
             applied_at = row.get("applied_at")
-            table_rows.append([
-                row.get("id", ""),
-                row.get("table_name", ""),
-                row.get("column_name") or "(table)",
-                row.get("confidence", ""),
-                f"{float(row.get('logprob_score')):.4f}" if row.get("logprob_score") is not None else "N/A",
-                alternatives_str,
-                row.get("evaluation") or "pending",
-                (row.get("chosen_description") or "")[:40],
-                row.get("catalog_status") or "-",
-                row.get("effective_source_kind") or "-",
-                "yes" if row.get("catalog_indexed_at") else "no",
-                row.get("db_applied_status") or ("applied" if row.get("applied_at") else "-"),
-                datetime.fromtimestamp(evaluated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if evaluated_at else "",
-                datetime.fromtimestamp(applied_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if applied_at else "",
-            ])
+            table_rows.append(
+                [
+                    row.get("id", ""),
+                    row.get("table_name", ""),
+                    row.get("column_name") or "(table)",
+                    row.get("confidence", ""),
+                    f"{float(row.get('logprob_score')):.4f}"
+                    if row.get("logprob_score") is not None
+                    else "N/A",
+                    alternatives_str,
+                    row.get("evaluation") or "pending",
+                    (row.get("chosen_description") or "")[:40],
+                    row.get("catalog_status") or "-",
+                    row.get("effective_source_kind") or "-",
+                    "yes" if row.get("catalog_indexed_at") else "no",
+                    row.get("db_applied_status") or ("applied" if row.get("applied_at") else "-"),
+                    datetime.fromtimestamp(evaluated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                    if evaluated_at
+                    else "",
+                    datetime.fromtimestamp(applied_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                    if applied_at
+                    else "",
+                ]
+            )
         if table_rows:
             render_table(
                 f"Run #{run_id} - Column alternatives",
@@ -359,16 +382,22 @@ def register_history_commands(
         rows = hs.get_run_results(run_id, unevaluated_only=unevaluated_only)
         if not rows:
             if unevaluated_only:
-                success(f"No pending items for run #{run_id} - all alternatives have been evaluated.")
+                success(
+                    f"No pending items for run #{run_id} - all alternatives have been evaluated."
+                )
             else:
                 error(f"No saved alternatives for run #{run_id}.")
             return
 
         heading(f"Re-evaluating alternatives - run #{run_id} ({len(rows)} item(s))")
         if unevaluated_only:
-            info(f"Showing {len(rows)} unevaluated item(s) only (use without --unevaluated-only to review all).")
+            info(
+                f"Showing {len(rows)} unevaluated item(s) only (use without --unevaluated-only to review all)."
+            )
         else:
-            info(f"Showing all {len(rows)} item(s) - already-evaluated rows will ask if you want to change your choice.")
+            info(
+                f"Showing all {len(rows)} item(s) - already-evaluated rows will ask if you want to change your choice."
+            )
 
         def _mark_run_success() -> None:
             try:
@@ -376,13 +405,17 @@ def register_history_commands(
             except Exception as exc:
                 warn(f"Could not update run #{run_id} status to success: {exc}")
 
-        rows_sorted = sorted(rows, key=lambda row: (0 if not row.get("column_name") else 1, row.get("id", 0)))
+        rows_sorted = sorted(
+            rows, key=lambda row: (0 if not row.get("column_name") else 1, row.get("id", 0))
+        )
 
         results_to_review = []
         for row in rows_sorted:
             alternatives: list[str] = row.get("alternatives_json") or []
             if not alternatives:
-                warn(f"Row {row['id']} ({row['table_name']}.{row.get('column_name') or '(table)'}) has no alternatives stored - skipping.")
+                warn(
+                    f"Row {row['id']} ({row['table_name']}.{row.get('column_name') or '(table)'}) has no alternatives stored - skipping."
+                )
                 continue
 
             try:
@@ -410,7 +443,11 @@ def register_history_commands(
                     asset_kind=row.get("asset_kind", "table"),
                     result_id=row["id"],
                     alternatives=alternatives,
-                    logprob_score=(float(row["logprob_score"]) if row.get("logprob_score") is not None else None),
+                    logprob_score=(
+                        float(row["logprob_score"])
+                        if row.get("logprob_score") is not None
+                        else None
+                    ),
                 )
             )
 
@@ -467,7 +504,9 @@ def register_history_commands(
                             if catalog is not None:
                                 catalog.mark_applied(result.result_id)
                         except Exception as exc:
-                            warn(f"Could not update /search apply state for result {result.result_id}: {exc}")
+                            warn(
+                                f"Could not update /search apply state for result {result.result_id}: {exc}"
+                            )
 
                 def _on_failed(result: Any, exc: Exception) -> None:
                     inner_hs = history_store()
@@ -475,7 +514,9 @@ def register_history_commands(
                         try:
                             inner_hs.record_db_apply_failure(result.result_id, str(exc))
                         except Exception as inner_exc:
-                            warn(f"Could not record failed DB apply state for result {result.result_id}: {inner_exc}")
+                            warn(
+                                f"Could not record failed DB apply state for result {result.result_id}: {inner_exc}"
+                            )
 
                 _on_progress, _finish_progress = create_live_writeback_progress(
                     total=len(newly_approved),

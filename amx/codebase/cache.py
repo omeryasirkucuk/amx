@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import subprocess
@@ -9,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from amx.codebase.analyzer import CodeReference, CodebaseReport
+from amx.codebase.analyzer import CodebaseReport, CodeReference
 from amx.docs.scanner import normalize_github_url
 from amx.utils.logging import get_logger
 
@@ -133,7 +134,9 @@ def save_cached_report(
         "scanned_at": int(time.time()),
     }
     (dirp / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    (dirp / "report.json").write_text(json.dumps(report_to_dict(report), indent=2), encoding="utf-8")
+    (dirp / "report.json").write_text(
+        json.dumps(report_to_dict(report), indent=2), encoding="utf-8"
+    )
     log.info("Saved codebase cache under %s", dirp)
     return dirp
 
@@ -217,9 +220,7 @@ def invalidate_cache(profile_name: str, source_path: str) -> bool:
         return False
     for p in dirp.iterdir():
         p.unlink(missing_ok=True)
-    try:
+    with contextlib.suppress(OSError):
         dirp.rmdir()
-    except OSError:
-        pass
     log.info("Invalidated codebase cache %s", dirp)
     return True

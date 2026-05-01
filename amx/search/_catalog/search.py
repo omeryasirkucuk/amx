@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections import Counter
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -45,24 +44,32 @@ class SearchMixin:
     """Catalog search + find + ranking methods for ``SearchCatalog``."""
 
     def _tokens(self, text: str) -> list[str]:
-        return [token for token in re.findall(r"\w+", text.lower(), flags=re.UNICODE) if len(token) >= 2]
+        return [
+            token for token in re.findall(r"\w+", text.lower(), flags=re.UNICODE) if len(token) >= 2
+        ]
+
     def _similarity(self, left: str, right: str) -> float:
         a = (left or "").strip().lower()
         b = (right or "").strip().lower()
         if not a or not b:
             return 0.0
         return SequenceMatcher(None, a, b).ratio()
+
     def _dtype_family(self, dtype: str) -> str:
         value = (dtype or "").strip().lower()
         if any(token in value for token in ("char", "text", "string", "uuid", "clob")):
             return "text"
-        if any(token in value for token in ("int", "numeric", "decimal", "number", "float", "double", "real")):
+        if any(
+            token in value
+            for token in ("int", "numeric", "decimal", "number", "float", "double", "real")
+        ):
             return "number"
         if any(token in value for token in ("date", "time", "timestamp")):
             return "temporal"
         if any(token in value for token in ("bool", "bit")):
             return "boolean"
         return value or "unknown"
+
     def _description_tokens(self, text: str) -> set[str]:
         stop = {
             "this",
@@ -88,7 +95,10 @@ class SearchMixin:
             "for",
         }
         return {token for token in self._tokens(text) if token not in stop}
-    def _exact_candidates(self, db_profile: DBProfileFilter, question: str, limit: int = 20) -> list[dict[str, Any]]:
+
+    def _exact_candidates(
+        self, db_profile: DBProfileFilter, question: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
         clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
         with self._connect() as conn:
@@ -122,7 +132,10 @@ class SearchMixin:
             hits.append(item)
         hits.sort(key=lambda item: item["match_score"], reverse=True)
         return hits[:limit]
-    def name_search_columns(self, db_profile: DBProfileFilter, question: str, limit: int = 8) -> list[dict[str, Any]]:
+
+    def name_search_columns(
+        self, db_profile: DBProfileFilter, question: str, limit: int = 8
+    ) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
         needle = (tokens[0] if tokens else question.strip().lower())[:128]
         if not needle:
@@ -175,7 +188,10 @@ class SearchMixin:
         settings_profile = scope_names[0] if scope_names else ""
         ranked = self._rank_rows(ranked, self.get_settings(settings_profile), limit * 2)
         return ranked[:limit]
-    def find_table_candidates(self, db_profile: DBProfileFilter, hint: str, limit: int = 5) -> list[dict[str, Any]]:
+
+    def find_table_candidates(
+        self, db_profile: DBProfileFilter, hint: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
         needle = (hint or "").strip().lower()
         if not needle:
             return []
@@ -213,6 +229,7 @@ class SearchMixin:
             ranked.append(item)
         ranked.sort(key=lambda item: float(item.get("rank_score") or 0.0), reverse=True)
         return ranked[:limit]
+
     def find_tables_by_exact_name(
         self,
         db_profile: DBProfileFilter,
@@ -247,6 +264,7 @@ class SearchMixin:
                 [*binds, needle, int(limit)],
             ).fetchall()
         return [dict(row) for row in rows]
+
     def find_columns_by_exact_name(
         self,
         db_profile: DBProfileFilter,
@@ -281,6 +299,7 @@ class SearchMixin:
                 [*binds, needle, int(limit)],
             ).fetchall()
         return [dict(row) for row in rows]
+
     def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -294,6 +313,7 @@ class SearchMixin:
                 (db_profile,),
             ).fetchall()
         return [dict(row) for row in rows]
+
     def known_schemas(
         self,
         db_profile: str,
@@ -311,13 +331,14 @@ class SearchMixin:
                 MIN(database_name) AS database_name,
                 COUNT(*) AS table_count
             FROM catalog_entities
-            WHERE {' AND '.join(where)}
+            WHERE {" AND ".join(where)}
             GROUP BY schema_name
             ORDER BY schema_name
         """
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
+
     def count_tables(
         self,
         db_profile: str,
@@ -337,6 +358,7 @@ class SearchMixin:
         with self._connect() as conn:
             row = conn.execute(query, tuple(params)).fetchone()
         return int((row["cnt"] if row else 0) or 0)
+
     def schema_inventory(
         self,
         db_profile: str,
@@ -373,7 +395,7 @@ class SearchMixin:
              AND c.table_name = t.table_name
              AND c.entity_kind = 'column'
             LEFT JOIN catalog_descriptions cd ON cd.id = c.effective_description_id
-            WHERE {' AND '.join(where)}
+            WHERE {" AND ".join(where)}
             GROUP BY t.id
             ORDER BY t.schema_name, t.table_name
             LIMIT ?
@@ -382,6 +404,7 @@ class SearchMixin:
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
+
     def search_columns(
         self,
         db_profile: DBProfileFilter,
@@ -411,7 +434,9 @@ class SearchMixin:
                     seen_exact[entity_id] = row
                     continue
                 existing = dict(existing)
-                existing["match_score"] = float(existing.get("match_score") or 0.0) + float(row.get("match_score") or 0.0)
+                existing["match_score"] = float(existing.get("match_score") or 0.0) + float(
+                    row.get("match_score") or 0.0
+                )
                 seen_exact[entity_id] = existing
         exact_hits = list(seen_exact.values())
         by_id: dict[int, dict[str, Any]] = {}
@@ -421,7 +446,9 @@ class SearchMixin:
             by_id[int(row["id"])] = row
         if settings.get("enable_vector_search", "true").lower() == "true":
             for variant in variants:
-                for hit in self.index.query(variant, db_profile=db_profile, n_results=max(limit * 2, 10)):
+                for hit in self.index.query(
+                    variant, db_profile=db_profile, n_results=max(limit * 2, 10)
+                ):
                     entity_id = int((hit.get("metadata") or {}).get("entity_id") or 0)
                     if not entity_id:
                         continue
@@ -437,7 +464,9 @@ class SearchMixin:
                         by_id[entity_id] = row
                     dist = hit.get("distance")
                     if dist is not None:
-                        row["match_score"] = float(row.get("match_score") or 0.0) + max(0.0, 3.0 - float(dist))
+                        row["match_score"] = float(row.get("match_score") or 0.0) + max(
+                            0.0, 3.0 - float(dist)
+                        )
         hints = [str(item).strip().lower() for item in (entity_hints or []) if str(item).strip()]
         rows = list(by_id.values())
         if hints:
@@ -451,11 +480,12 @@ class SearchMixin:
         ranked = self._rank_rows(rows, settings, limit * 2)
         score_floor = _vector_score_floor(settings, _active_embedding_kind())
         ranked = [
-            row for row in ranked
-            if not row.get("vector_only")
-            or float(row.get("match_score") or 0.0) >= score_floor
+            row
+            for row in ranked
+            if not row.get("vector_only") or float(row.get("match_score") or 0.0) >= score_floor
         ]
         return ranked[:limit]
+
     def search_tables(
         self,
         db_profile: DBProfileFilter,
@@ -481,7 +511,9 @@ class SearchMixin:
                     exact_hits[entity_id] = dict(row)
                     continue
                 merged = dict(existing)
-                merged["match_score"] = float(merged.get("match_score") or 0.0) + float(row.get("match_score") or 0.0)
+                merged["match_score"] = float(merged.get("match_score") or 0.0) + float(
+                    row.get("match_score") or 0.0
+                )
                 exact_hits[entity_id] = merged
         table_rows: dict[int, dict[str, Any]] = {}
         column_match_counts: dict[int, int] = {}
@@ -518,7 +550,11 @@ class SearchMixin:
                 table_id = int(table["id"])
                 table_row = table_rows.get(table_id) or dict(table)
                 table_row["row_type"] = "table"
-                table_row["match_score"] = float(table_row.get("match_score") or 0.0) + float(row.get("match_score") or 0.0) + 0.75
+                table_row["match_score"] = (
+                    float(table_row.get("match_score") or 0.0)
+                    + float(row.get("match_score") or 0.0)
+                    + 0.75
+                )
                 matched_columns = list(table_row.get("matched_columns") or [])
                 column_name = str(row.get("column_name") or "")
                 if column_name and column_name not in matched_columns:
@@ -528,7 +564,9 @@ class SearchMixin:
                 column_match_counts[table_id] = column_match_counts.get(table_id, 0) + 1
             if settings.get("enable_vector_search", "true").lower() == "true":
                 for variant in variants:
-                    for hit in self.index.query(variant, db_profile=db_profile, n_results=max(limit * 4, 20)):
+                    for hit in self.index.query(
+                        variant, db_profile=db_profile, n_results=max(limit * 4, 20)
+                    ):
                         metadata = hit.get("metadata") or {}
                         entity_id = int(metadata.get("entity_id") or 0)
                         if not entity_id:
@@ -564,7 +602,9 @@ class SearchMixin:
                         table_row.setdefault("matched_columns", [])
                         distance = hit.get("distance")
                         if distance is not None:
-                            table_row["match_score"] = float(table_row.get("match_score") or 0.0) + max(0.0, 2.0 - float(distance))
+                            table_row["match_score"] = float(
+                                table_row.get("match_score") or 0.0
+                            ) + max(0.0, 2.0 - float(distance))
                         table_rows[table_id] = table_row
         hints = [str(item).strip().lower() for item in (entity_hints or []) if str(item).strip()]
         rows = list(table_rows.values())
@@ -572,7 +612,9 @@ class SearchMixin:
             table_id = int(row["id"])
             match_count = int(column_match_counts.get(table_id, 0))
             if match_count > 1:
-                row["match_score"] = float(row.get("match_score") or 0.0) + min(3.0, 0.8 * match_count)
+                row["match_score"] = float(row.get("match_score") or 0.0) + min(
+                    3.0, 0.8 * match_count
+                )
             table_name = str(row.get("table_name") or "").lower()
             schema_name = str(row.get("schema_name") or "").lower()
             for hint in hints:
@@ -584,7 +626,10 @@ class SearchMixin:
         self._attach_column_counts(db_profile, rows)
         ranked = self._rank_rows(rows, settings, limit * 3)
         return ranked[:limit]
-    def _attach_column_counts(self, db_profile: DBProfileFilter, rows: list[dict[str, Any]]) -> None:
+
+    def _attach_column_counts(
+        self, db_profile: DBProfileFilter, rows: list[dict[str, Any]]
+    ) -> None:
         targets: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for row in rows:
@@ -614,12 +659,17 @@ class SearchMixin:
         counts: dict[tuple[str, str], int] = {}
         with self._connect() as conn:
             for r in conn.execute(sql, tuple(params)).fetchall():
-                counts[(str(r["schema_name"] or ""), str(r["table_name"] or ""))] = int(r["column_count"] or 0)
+                counts[(str(r["schema_name"] or ""), str(r["table_name"] or ""))] = int(
+                    r["column_count"] or 0
+                )
         for row in rows:
             key = (str(row.get("schema_name") or ""), str(row.get("table_name") or ""))
             if key in counts:
                 row["column_count"] = counts[key]
-    def _rank_rows(self, rows: list[dict[str, Any]], settings: dict[str, str], limit: int) -> list[dict[str, Any]]:
+
+    def _rank_rows(
+        self, rows: list[dict[str, Any]], settings: dict[str, str], limit: int
+    ) -> list[dict[str, Any]]:
         weight_map = {
             "manual": float(settings.get("manual_weight", "6.0")),
             "reviewed": float(settings.get("reviewed_weight", "4.5")),

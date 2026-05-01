@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
-from difflib import get_close_matches
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import quote_plus
@@ -21,7 +21,6 @@ from amx.storage.secrets import (
     make_reference,
     parse_reference,
 )
-
 
 SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 DISABLED_PROFILE = "__none__"
@@ -37,19 +36,22 @@ DEFAULT_EMBEDDING_KIND = "minilm"
 # §3.5 of docs/design/multi-db-plan.md). The match is per-backend: the
 # legacy default leaked only into PG / Snowflake; Databricks/BigQuery
 # already used their own catalog/dataset fields.
-_LEGACY_DATABASE_DEFAULTS: frozenset[tuple[str, str]] = frozenset({
-    ("postgresql", "SAP"),
-    ("snowflake", "SAP"),
-})
+_LEGACY_DATABASE_DEFAULTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("postgresql", "SAP"),
+        ("snowflake", "SAP"),
+    }
+)
 
 
-def has_legacy_database_default(db: "DBConfig") -> bool:
+def has_legacy_database_default(db: DBConfig) -> bool:
     """Return True when *db* still carries the historical ``database='SAP'`` default.
 
     Used by the CLI to surface a one-time hint suggesting the user run
     ``/edit`` to clear the value. Never mutates the config.
     """
     return (db.backend, db.database) in _LEGACY_DATABASE_DEFAULTS
+
 
 # Secret-bearing fields per scope. These are externalised to the OS keyring
 # on save and resolved back to plaintext on load via amx.storage.secrets.
@@ -100,9 +102,7 @@ def _externalise_secrets_in_data(
             if not isinstance(mapping, dict):
                 continue
             for fld in _DB_SECRET_FIELDS:
-                _externalise_secret(
-                    mapping, fld, f"db_profiles/{name}/{fld}", store
-                )
+                _externalise_secret(mapping, fld, f"db_profiles/{name}/{fld}", store)
 
     llm_profiles = data.get("llm_profiles") or {}
     if isinstance(llm_profiles, dict):
@@ -110,23 +110,17 @@ def _externalise_secrets_in_data(
             if not isinstance(mapping, dict):
                 continue
             for fld in _LLM_SECRET_FIELDS:
-                _externalise_secret(
-                    mapping, fld, f"llm_profiles/{name}/{fld}", store
-                )
+                _externalise_secret(mapping, fld, f"llm_profiles/{name}/{fld}", store)
 
     db_top = data.get("db")
     if isinstance(db_top, dict) and active_db_profile:
         for fld in _DB_SECRET_FIELDS:
-            _externalise_secret(
-                db_top, fld, f"db_profiles/{active_db_profile}/{fld}", store
-            )
+            _externalise_secret(db_top, fld, f"db_profiles/{active_db_profile}/{fld}", store)
 
     llm_top = data.get("llm")
     if isinstance(llm_top, dict) and active_llm_profile:
         for fld in _LLM_SECRET_FIELDS:
-            _externalise_secret(
-                llm_top, fld, f"llm_profiles/{active_llm_profile}/{fld}", store
-            )
+            _externalise_secret(llm_top, fld, f"llm_profiles/{active_llm_profile}/{fld}", store)
 
     embedding = data.get("embedding")
     if isinstance(embedding, dict):
@@ -135,9 +129,7 @@ def _externalise_secrets_in_data(
     return data
 
 
-def _resolve_secret_field(
-    mapping: dict[str, Any], field_name: str, store: SecretStore
-) -> None:
+def _resolve_secret_field(mapping: dict[str, Any], field_name: str, store: SecretStore) -> None:
     value = mapping.get(field_name, "")
     if not is_secret_reference(value):
         return
@@ -184,6 +176,7 @@ def _resolve_secrets_in_data(data: dict[str, Any], store: SecretStore) -> dict[s
         for fld in _EMBEDDING_SECRET_FIELDS:
             _resolve_secret_field(embedding, fld, store)
     return data
+
 
 _OPENROUTER_MODEL_NAMESPACES = (
     "openai",
@@ -248,7 +241,9 @@ def normalize_llm_model(provider: str, model: str) -> str:
             lower = raw.lower()
     elif "/" in raw:
         head, tail = raw.split("/", 1)
-        head_norm = _closest_provider_namespace(head, (provider_norm,)) if provider_norm else head.lower()
+        head_norm = (
+            _closest_provider_namespace(head, (provider_norm,)) if provider_norm else head.lower()
+        )
         if provider_norm and head_norm == provider_norm and tail:
             raw = tail.strip("/")
             lower = raw.lower()
@@ -275,25 +270,27 @@ class PromptDetail:
     """
 
     # --- Column-level fields ---
-    include_samples: bool = True       # Sample values per column
-    max_samples: int = 3               # How many sample values to include (when enabled)
-    include_null_counts: bool = True   # null_count / row_count
-    include_min_max: bool = True       # min_val / max_val
+    include_samples: bool = True  # Sample values per column
+    max_samples: int = 3  # How many sample values to include (when enabled)
+    include_null_counts: bool = True  # null_count / row_count
+    include_min_max: bool = True  # min_val / max_val
     include_cardinality: bool = False  # distinct_count + cardinality_ratio
     include_existing_col_comment: bool = True  # existing DB comment on the column
 
     # --- Table-level fields ---
-    include_pk_fk: bool = True         # Primary key + outgoing/incoming foreign keys
+    include_pk_fk: bool = True  # Primary key + outgoing/incoming foreign keys
     include_unique_check: bool = False  # Unique constraints + check constraints
     include_usage_stats: bool = False  # seq_scan / idx_scan / n_live_tup from pg_stat
     include_schema_db_comments: bool = False  # Schema-level and database-level comments
-    include_related_comments: bool = False    # Existing comments on FK-neighbour tables
-    include_query_log_analysis: bool = False  # SQL/code query-usage hints (table/column usage patterns)
+    include_related_comments: bool = False  # Existing comments on FK-neighbour tables
+    include_query_log_analysis: bool = (
+        False  # SQL/code query-usage hints (table/column usage patterns)
+    )
 
     # --- RAG agent tuning ---
-    rag_table_hits: int = 5   # Doc chunks fetched for the table-level query
-    rag_col_hits: int = 1     # Doc chunks fetched per column query
-    rag_max_chunks: int = 8   # Hard cap on total chunks injected into the RAG prompt
+    rag_table_hits: int = 5  # Doc chunks fetched for the table-level query
+    rag_col_hits: int = 1  # Doc chunks fetched per column query
+    rag_max_chunks: int = 8  # Hard cap on total chunks injected into the RAG prompt
 
 
 PROMPT_DETAIL_LEVELS = ("minimal", "standard", "detailed", "full")
@@ -441,10 +438,7 @@ class DBConfig(_ObservableConfig):
             # Snowflake's SQLAlchemy URL accepts no database — connect to the
             # account, let the user pick at query time. Keep ``/<database>``
             # only when pinned so the engine starts in that DB.
-            url = (
-                f"snowflake://{quote_plus(self.user)}:{quote_plus(self.password)}"
-                f"@{self.account}"
-            )
+            url = f"snowflake://{quote_plus(self.user)}:{quote_plus(self.password)}@{self.account}"
             if self.database:
                 url += f"/{quote_plus(self.database)}"
             params: list[str] = []
@@ -594,38 +588,63 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
     base: dict[str, Any] = {"backend": db.backend}
 
     if db.backend == "postgresql":
-        base.update({
-            "host": db.host, "port": db.port, "user": db.user,
-            "password": db.password, "database": db.database,
-        })
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+            }
+        )
     elif db.backend == "snowflake":
-        base.update({
-            "account": db.account, "user": db.user, "password": db.password,
-            "database": db.database, "warehouse": db.warehouse, "role": db.role,
-        })
+        base.update(
+            {
+                "account": db.account,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+                "warehouse": db.warehouse,
+                "role": db.role,
+            }
+        )
     elif db.backend == "databricks":
-        base.update({
-            "host": db.host, "http_path": db.http_path,
-            "access_token": db.access_token, "catalog": db.catalog,
-            "database": db.database,
-            "tls_no_verify": db.tls_no_verify,
-            "tls_trusted_ca_file": db.tls_trusted_ca_file,
-        })
+        base.update(
+            {
+                "host": db.host,
+                "http_path": db.http_path,
+                "access_token": db.access_token,
+                "catalog": db.catalog,
+                "database": db.database,
+                "tls_no_verify": db.tls_no_verify,
+                "tls_trusted_ca_file": db.tls_trusted_ca_file,
+            }
+        )
     elif db.backend == "bigquery":
-        base.update({
-            "project": db.project, "dataset": db.dataset,
-            "credentials_path": db.credentials_path,
-        })
+        base.update(
+            {
+                "project": db.project,
+                "dataset": db.dataset,
+                "credentials_path": db.credentials_path,
+            }
+        )
     else:
-        base.update({
-            "host": db.host, "port": db.port, "user": db.user,
-            "password": db.password, "database": db.database,
-        })
-    base.update({
-        "profiling_mode": db.profiling_mode,
-        "profiling_max_rows": int(db.profiling_max_rows),
-        "profiling_sample_size": int(db.profiling_sample_size),
-    })
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+            }
+        )
+    base.update(
+        {
+            "profiling_mode": db.profiling_mode,
+            "profiling_max_rows": int(db.profiling_max_rows),
+            "profiling_sample_size": int(db.profiling_sample_size),
+        }
+    )
     return base
 
 
@@ -639,9 +658,11 @@ class LLMConfig(_ObservableConfig):
     temperature: float = 0.2
     max_tokens: int = 4096  # reduced from 16384; reasoning models raise this automatically
     completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
-    n_alternatives: int = 3   # how many description alternatives per column (1–5)
+    n_alternatives: int = 3  # how many description alternatives per column (1–5)
     column_batch_size: int = 10  # how many columns to process in one LLM call
-    batch_context_column_names: int = 0  # how many non-batch column names to include as context (0=off, -1=all)
+    batch_context_column_names: int = (
+        0  # how many non-batch column names to include as context (0=off, -1=all)
+    )
     prompt_detail: str = "standard"  # minimal | standard | detailed | full
     # Description verbosity controls the LENGTH/DEPTH of generated
     # descriptions, separate from ``prompt_detail`` (which controls how
@@ -718,9 +739,9 @@ class EmbeddingConfig(_ObservableConfig):
     """
 
     kind: str = DEFAULT_EMBEDDING_KIND  # minilm | openai_compatible | sentence_transformers
-    model: str = ""        # provider-specific (e.g. text-embedding-3-small, BAAI/bge-large-en-v1.5)
-    api_key: str = ""      # only used by openai_compatible; secret-managed
-    base_url: str = ""     # only used by openai_compatible; defaults to OpenAI proper
+    model: str = ""  # provider-specific (e.g. text-embedding-3-small, BAAI/bge-large-en-v1.5)
+    api_key: str = ""  # only used by openai_compatible; secret-managed
+    base_url: str = ""  # only used by openai_compatible; defaults to OpenAI proper
 
     def is_configured(self) -> bool:
         """True when the configured provider has the minimum fields to operate.
@@ -790,9 +811,7 @@ class AMXConfig:
     # current REPL is appending to. Reset to None on every load.
     active_chat_session_id: int | None = field(default=None)
 
-    CONFIG_DIR: str = field(
-        default_factory=lambda: str(Path.home() / ".amx"), init=False
-    )
+    CONFIG_DIR: str = field(default_factory=lambda: str(Path.home() / ".amx"), init=False)
     _config_path: str = field(default="", init=False, repr=False)
     _autosave_ready: bool = field(default=False, init=False, repr=False)
     _autosave_suspended: int = field(default=0, init=False, repr=False)
@@ -830,15 +849,13 @@ class AMXConfig:
             self._attach_children()
         if name in self._PERSISTED_FIELDS:
             if name == "write_through_config" and getattr(self, "_autosave_ready", False):
-                try:
+                with suppress(Exception):
                     self.save()
-                except Exception:
-                    pass
                 return
             self._autosave_nested()
 
     @classmethod
-    def load(cls, path: str | None = None) -> "AMXConfig":
+    def load(cls, path: str | None = None) -> AMXConfig:
         cfg = cls()
         p = Path(path) if path else Path(cfg.CONFIG_DIR) / "config.yml"
         object.__setattr__(cfg, "_config_path", str(p))
@@ -890,9 +907,7 @@ class AMXConfig:
                 if ordered:
                     cfg.active_db_profile = ordered[0]
             else:
-                cfg.active_db_profiles = (
-                    [cfg.active_db_profile] if cfg.active_db_profile else []
-                )
+                cfg.active_db_profiles = [cfg.active_db_profile] if cfg.active_db_profile else []
             cfg.current_schema = str(data.get("current_schema") or "")
             cfg.current_table = str(data.get("current_table") or "")
 
@@ -972,8 +987,10 @@ class AMXConfig:
                 key = "default" if idx == 0 else f"repo{idx}"
                 cfg.code_profiles[key] = p
             if not cfg.active_code_profile and cfg.code_profiles:
-                cfg.active_code_profile = "default" if "default" in cfg.code_profiles else next(
-                    iter(cfg.code_profiles.keys())
+                cfg.active_code_profile = (
+                    "default"
+                    if "default" in cfg.code_profiles
+                    else next(iter(cfg.code_profiles.keys()))
                 )
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
@@ -989,10 +1006,8 @@ class AMXConfig:
         # each turn so the next ``main()`` call sees the same session.
         bridge_sid = os.getenv("AMX_CHAT_SESSION_ID", "").strip()
         if bridge_sid:
-            try:
+            with suppress(ValueError):
                 cfg.active_chat_session_id = int(bridge_sid)
-            except ValueError:
-                pass
 
         object.__setattr__(cfg, "_autosave_suspended", 0)
         cfg._attach_children()
@@ -1017,8 +1032,10 @@ class AMXConfig:
             # compatibility: a 0.10.x reader keeps working from the
             # scalar; 0.11+ readers prefer the list. The scalar is
             # always the first list entry so the two views never diverge.
-            scope_list = list(self.active_db_profiles) if self.active_db_profiles else (
-                [self.active_db_profile] if self.active_db_profile else []
+            scope_list = (
+                list(self.active_db_profiles)
+                if self.active_db_profiles
+                else ([self.active_db_profile] if self.active_db_profile else [])
             )
             data = {
                 "db": _db_to_mapping(self.db),
@@ -1064,10 +1081,8 @@ class AMXConfig:
             os.replace(tmp_path, p)
             # Restrict the config file to the current user — passwords and API
             # keys live here. Best-effort: chmod is a no-op on Windows.
-            try:
+            with suppress(OSError):
                 os.chmod(p, 0o600)
-            except OSError:
-                pass
             object.__setattr__(self, "_config_path", str(p))
             self._attach_children()
             object.__setattr__(self, "_autosave_ready", True)
@@ -1100,9 +1115,7 @@ class AMXConfig:
         Nested transactions are supported; only the outermost exit
         flushes.
         """
-        object.__setattr__(
-            self, "_autosave_suspended", self._autosave_suspended + 1
-        )
+        object.__setattr__(self, "_autosave_suspended", self._autosave_suspended + 1)
         raised = False
         try:
             yield
@@ -1235,9 +1248,7 @@ class AMXConfig:
         # 0.11.0: also evict from the multi-pick scope to prevent ghost
         # selections after a profile is removed.
         if name in self.active_db_profiles:
-            self.active_db_profiles = [
-                n for n in self.active_db_profiles if n != name
-            ]
+            self.active_db_profiles = [n for n in self.active_db_profiles if n != name]
         if self.active_db_profile == name:
             self.active_db_profile = next(iter(self.db_profiles.keys()))
             self.db = self.db_profiles[self.active_db_profile]
@@ -1333,28 +1344,18 @@ class AMXConfig:
         self._autosave()
 
     def _attach_children(self) -> None:
-        try:
+        with suppress(Exception):
             object.__setattr__(self.db, "_amx_owner", self)
-        except Exception:
-            pass
-        try:
+        with suppress(Exception):
             object.__setattr__(self.llm, "_amx_owner", self)
-        except Exception:
-            pass
-        try:
+        with suppress(Exception):
             object.__setattr__(self.embedding, "_amx_owner", self)
-        except Exception:
-            pass
         for profile in getattr(self, "db_profiles", {}).values():
-            try:
+            with suppress(Exception):
                 object.__setattr__(profile, "_amx_owner", self)
-            except Exception:
-                pass
         for profile in getattr(self, "llm_profiles", {}).values():
-            try:
+            with suppress(Exception):
                 object.__setattr__(profile, "_amx_owner", self)
-            except Exception:
-                pass
 
     def effective_doc_paths(self) -> list[str]:
         if self.doc_profiles:

@@ -6,7 +6,6 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import click
 
@@ -89,7 +88,10 @@ def register_docs_commands(
                 render_table(
                     f"Found {len(documents)} documents ({size:.1f} MB)",
                     ["File", "Size (KB)", "Type", "Source"],
-                    [[d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type] for d in documents[:50]],
+                    [
+                        [d.path, f"{d.size_bytes / 1024:.1f}", d.extension, d.source_type]
+                        for d in documents[:50]
+                    ],
                 )
 
                 if len(documents) > 50:
@@ -145,7 +147,9 @@ def register_docs_commands(
 
         documents = []
         try:
-            with command_display(mode="docs-ingest", provider=cfg.llm.provider, model=cfg.llm.model):
+            with command_display(
+                mode="docs-ingest", provider=cfg.llm.provider, model=cfg.llm.model
+            ):
                 with step_spinner("Scanning document sources"):
                     documents = scan_all_sources(all_paths)
                 size = total_size_mb(documents)
@@ -183,7 +187,9 @@ def register_docs_commands(
         help="Use this document profile (default: active profile).",
     )
     @click.pass_obj
-    def docs_export_report(cfg: AMXConfig, output_file: str | None, doc_profile: str | None) -> None:
+    def docs_export_report(
+        cfg: AMXConfig, output_file: str | None, doc_profile: str | None
+    ) -> None:
         """Export a summary of the RAG document store to a markdown file."""
         from amx.docs.rag import RAGStore
 
@@ -271,7 +277,12 @@ def register_docs_commands(
 
         llm = LLMProvider(cfg.llm)
         db = DatabaseConnector(cfg.db)
-        with command_display(schema=schema or cfg.current_schema or "", mode="docs-analyze", provider=cfg.llm.provider, model=cfg.llm.model):
+        with command_display(
+            schema=schema or cfg.current_schema or "",
+            mode="docs-analyze",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
             with step_spinner("Testing database connection..."):
                 connected = db.test_connection()
             if not connected:
@@ -295,11 +306,15 @@ def register_docs_commands(
                     table=table_name,
                     db_profile={
                         "row_count": table_profile.row_count,
-                        "columns": [{"name": c.name, "dtype": c.dtype} for c in table_profile.columns],
+                        "columns": [
+                            {"name": c.name, "dtype": c.dtype} for c in table_profile.columns
+                        ],
                     },
                     existing_metadata={},
                 )
-                info(f"RAG Agent: {schema_name}.{table_name} ({len(table_profile.columns)} columns)")
+                info(
+                    f"RAG Agent: {schema_name}.{table_name} ({len(table_profile.columns)} columns)"
+                )
                 suggestions = agent.run(ctx)
                 all_suggestions.extend(suggestions)
                 info(f"  -> {len(suggestions)} suggestions")
@@ -310,7 +325,11 @@ def register_docs_commands(
             return
 
         rows = [
-            [s.column or s.table, s.suggestions[0][:60] if s.suggestions else "", s.confidence.value]
+            [
+                s.column or s.table,
+                s.suggestions[0][:60] if s.suggestions else "",
+                s.confidence.value,
+            ]
             for s in all_suggestions
         ]
         render_table("RAG Agent suggestions", ["Asset", "Suggestion", "Confidence"], rows[:40])

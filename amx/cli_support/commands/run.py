@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -11,16 +12,40 @@ import click
 from amx.config import AMXConfig
 from amx.services.analyze_scope import (
     asset_display_list as _svc_asset_display_list,
+)
+from amx.services.analyze_scope import (
     filter_non_business_assets as _svc_filter_non_business_assets,
+)
+from amx.services.analyze_scope import (
     finalize_scope as _svc_finalize_scope,
+)
+from amx.services.analyze_scope import (
     is_non_business_asset as _svc_is_non_business_asset,
+)
+from amx.services.analyze_scope import (
     pick_assets as _svc_pick_assets,
+)
+from amx.services.analyze_scope import (
     resolve_codebase_for_run as _svc_resolve_codebase_for_run,
+)
+from amx.services.analyze_scope import (
     resolve_run_scope as _svc_resolve_run_scope,
+)
+from amx.services.analyze_scope import (
     validate_assets_in_schema as _svc_validate_assets_in_schema,
 )
 from amx.storage.sqlite_store import history_store
-from amx.utils.console import ask_choice, ask_multi_choice, confirm, error, heading, info, render_table, success, warn
+from amx.utils.console import (
+    ask_choice,
+    ask_multi_choice,
+    confirm,
+    error,
+    heading,
+    info,
+    render_table,
+    success,
+    warn,
+)
 
 LogEvent = Callable[..., None]
 
@@ -96,6 +121,7 @@ def _resolve_codebase_for_run(
 ) -> object | None:
     """Load or build codebase report for /run and /run-apply."""
     from amx.utils.console import step_spinner
+
     return _svc_resolve_codebase_for_run(
         cfg,
         db,
@@ -125,7 +151,10 @@ def register_analyze_commands(
     @pass_config
     def analyze_apply(cfg: AMXConfig) -> None:
         """Write pending approved descriptions to the database (COMMENT ON TABLE/COLUMN)."""
-        from amx.agents.orchestrator import apply_review_results_to_db, create_live_writeback_progress
+        from amx.agents.orchestrator import (
+            apply_review_results_to_db,
+            create_live_writeback_progress,
+        )
         from amx.db.connector import DatabaseConnector
         from amx.pending_review import clear_pending, load_pending
 
@@ -179,18 +208,14 @@ def register_analyze_commands(
         def _on_applied(result: Any) -> None:
             hs = history_store()
             if result.result_id is not None and hs is not None:
-                try:
+                with contextlib.suppress(Exception):
                     hs.record_applied(result.result_id)
-                except Exception:
-                    pass
 
         def _on_failed(result: Any, exc: Exception) -> None:
             hs = history_store()
             if result.result_id is not None and hs is not None:
-                try:
+                with contextlib.suppress(Exception):
                     hs.record_db_apply_failure(result.result_id, str(exc))
-                except Exception:
-                    pass
 
         _on_progress, _finish_progress = create_live_writeback_progress(
             total=len(pending),

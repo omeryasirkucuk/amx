@@ -84,7 +84,7 @@ class ProfileScope:
         names: Sequence[str],
         *,
         default: str | None = None,
-    ) -> "ProfileScope":
+    ) -> ProfileScope:
         """Build from an explicit (typically CLI-derived) list of names.
 
         Dedupes while preserving user-specified order. Falls through
@@ -106,7 +106,7 @@ class ProfileScope:
         return cls(profiles=tuple(ordered), default=chosen_default)
 
     @classmethod
-    def from_config(cls, cfg: "AMXConfig") -> "ProfileScope":
+    def from_config(cls, cfg: AMXConfig) -> ProfileScope:
         """Build the *persisted* default scope from an AMXConfig.
 
         Reads ``cfg.active_db_profiles`` first (0.11.0+ source of truth),
@@ -122,19 +122,19 @@ class ProfileScope:
         return cls(profiles=tuple(names), default=default)
 
     @classmethod
-    def empty(cls) -> "ProfileScope":
+    def empty(cls) -> ProfileScope:
         return cls(profiles=(), default="")
 
     # ── Resolution helpers ────────────────────────────────────────────
 
-    def configs(self, cfg: "AMXConfig") -> list[tuple[str, "DBConfig"]]:
+    def configs(self, cfg: AMXConfig) -> list[tuple[str, DBConfig]]:
         """Resolve scope names to the currently-saved ``DBConfig`` objects.
 
         Skips names that no longer exist in ``cfg.db_profiles`` (could
         happen after ``/remove-db-profile``); the caller can compare
         the returned length to ``len(self)`` to detect drift.
         """
-        out: list[tuple[str, "DBConfig"]] = []
+        out: list[tuple[str, DBConfig]] = []
         for name in self.profiles:
             cfgrow = cfg.db_profiles.get(name)
             if cfgrow is None:
@@ -142,9 +142,7 @@ class ProfileScope:
             out.append((name, cfgrow))
         return out
 
-    def connectors(
-        self, cfg: "AMXConfig"
-    ) -> Iterator[tuple[str, "DBConfig", "DatabaseConnector"]]:
+    def connectors(self, cfg: AMXConfig) -> Iterator[tuple[str, DBConfig, DatabaseConnector]]:
         """Yield ``(name, DBConfig, connector)`` one profile at a time.
 
         Each connector is opened just before the yield and disposed
@@ -167,7 +165,7 @@ class ProfileScope:
                     # close() must not break the per-profile loop.
                     pass
 
-    def with_default(self, name: str) -> "ProfileScope":
+    def with_default(self, name: str) -> ProfileScope:
         """Return a copy with a different ``default`` profile.
 
         Useful when a write-back command needs to retarget the "primary"
@@ -175,9 +173,7 @@ class ProfileScope:
         not in the scope.
         """
         if name not in self.profiles:
-            raise ValueError(
-                f"Profile {name!r} is not in this scope ({list(self.profiles)})"
-            )
+            raise ValueError(f"Profile {name!r} is not in this scope ({list(self.profiles)})")
         return ProfileScope(profiles=self.profiles, default=name)
 
     def __str__(self) -> str:

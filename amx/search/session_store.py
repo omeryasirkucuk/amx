@@ -24,8 +24,8 @@ from amx.utils.token_tracker import estimate_tokens
 log = get_logger("search.session_store")
 
 
-_COMPACTION_RATIO = 0.40   # of model input budget — when exceeded, compact.
-_KEEP_TAIL_RATIO = 0.70    # post-compaction kept tail size, relative to threshold.
+_COMPACTION_RATIO = 0.40  # of model input budget — when exceeded, compact.
+_KEEP_TAIL_RATIO = 0.70  # post-compaction kept tail size, relative to threshold.
 _SUMMARY_MAX_TOKENS = 400
 
 
@@ -35,13 +35,26 @@ def _input_budget_for(model: str | None) -> int:
     if not model:
         return 60_000
     name = model.lower()
-    if any(token in name for token in (
-        "claude-3-5", "claude-sonnet-4", "claude-opus-4", "claude-3-opus", "claude-haiku-4",
-    )):
+    if any(
+        token in name
+        for token in (
+            "claude-3-5",
+            "claude-sonnet-4",
+            "claude-opus-4",
+            "claude-3-opus",
+            "claude-haiku-4",
+        )
+    ):
         return 150_000
-    if any(token in name for token in (
-        "gemini-1.5-pro", "gemini-2.0-pro", "gemini-2.0-flash", "gemini-1.5-flash",
-    )):
+    if any(
+        token in name
+        for token in (
+            "gemini-1.5-pro",
+            "gemini-2.0-pro",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+        )
+    ):
         return 250_000
     return 60_000
 
@@ -155,7 +168,11 @@ class ChatSessionStore:
         question: str,
         estimated_tokens: int | None = None,
     ) -> int:
-        est = estimated_tokens if estimated_tokens is not None else _estimate_turn_tokens(question, None)
+        est = (
+            estimated_tokens
+            if estimated_tokens is not None
+            else _estimate_turn_tokens(question, None)
+        )
         now = time.time()
         with self._history._lock, self._history._connect() as conn:
             idx = self._next_turn_index(conn, session_id)
@@ -193,7 +210,11 @@ class ChatSessionStore:
         request_id: str | None = None,
         estimated_tokens: int | None = None,
     ) -> int:
-        est = estimated_tokens if estimated_tokens is not None else _estimate_turn_tokens(None, answer_summary)
+        est = (
+            estimated_tokens
+            if estimated_tokens is not None
+            else _estimate_turn_tokens(None, answer_summary)
+        )
         now = time.time()
         tables_json = json.dumps(list(tables or []), ensure_ascii=True)
         columns_json = json.dumps(list(columns or []), ensure_ascii=True)
@@ -291,7 +312,11 @@ class ChatSessionStore:
                 try:
                     d[key.removesuffix("_json")] = json.loads(raw)
                 except Exception:
-                    d[key.removesuffix("_json")] = [] if key.endswith("_json") and key.startswith(("tables", "columns")) else {}
+                    d[key.removesuffix("_json")] = (
+                        []
+                        if key.endswith("_json") and key.startswith(("tables", "columns"))
+                        else {}
+                    )
             else:
                 d[key.removesuffix("_json")] = [] if key.startswith(("tables", "columns")) else {}
         return d

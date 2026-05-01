@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from collections import defaultdict
-from dataclasses import dataclass, field
 import re
-import time
-from typing import Any, Callable
+from collections import defaultdict
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
-from amx.storage.sqlite_store import history_store
 from amx.codebase.analyzer import CodebaseReport
 from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
-from amx.llm.provider import FatalLLMError, LLMProvider
+from amx.llm.provider import LLMProvider
+from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
     ask,
     ask_choice,
-    confirm,
     console,
     error,
     heading,
@@ -110,7 +108,7 @@ Return only the requested labeled fields.
 """
 
 
-def _writeback_asset_label(result: "ReviewResult", *, include_column: bool = True) -> str:
+def _writeback_asset_label(result: ReviewResult, *, include_column: bool = True) -> str:
     schema = getattr(result, "schema", "") or ""
     table = getattr(result, "table", "") or ""
     column = getattr(result, "column", "") or ""
@@ -154,7 +152,9 @@ def create_live_writeback_progress(
     failed_count = 0
     started = False
 
-    def _on_progress(result: ReviewResult, status: str, index: int, total_count: int, detail: str) -> None:
+    def _on_progress(
+        result: ReviewResult, status: str, index: int, total_count: int, detail: str
+    ) -> None:
         nonlocal applied_count, failed_count, started
         if status == "started":
             label = f"Writeback {index}/{total_count}: {_writeback_asset_label(result)}"
@@ -239,9 +239,9 @@ def apply_review_results_to_db(
     db: DatabaseConnector,
     results: list[ReviewResult],
     *,
-    on_applied: "Callable[[ReviewResult], None] | None" = None,
-    on_failed: "Callable[[ReviewResult, Exception], None] | None" = None,
-    on_progress: "Callable[[ReviewResult, str, int, int, str], None] | None" = None,
+    on_applied: Callable[[ReviewResult], None] | None = None,
+    on_failed: Callable[[ReviewResult, Exception], None] | None = None,
+    on_progress: Callable[[ReviewResult, str, int, int, str], None] | None = None,
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
     applied = 0
@@ -251,10 +251,9 @@ def apply_review_results_to_db(
     # "Auto-inference missed a reliable description; please review
     # manually." and the user would have no idea their schema got polluted.
     pending = [
-        r for r in results
-        if r.applied
-        and r.final_description
-        and not is_placeholder_description(r.final_description)
+        r
+        for r in results
+        if r.applied and r.final_description and not is_placeholder_description(r.final_description)
     ]
     if not pending:
         return 0
@@ -267,17 +266,17 @@ def apply_review_results_to_db(
                 kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
             except ValueError:
                 kind = AssetKind.TABLE
-            if (
-                r.column is not None
-                and kind == AssetKind.TABLE
-                and index + 1 < total
-            ):
+            if r.column is not None and kind == AssetKind.TABLE and index + 1 < total:
                 group = [r]
                 next_index = index + 1
                 while next_index < total:
                     candidate = pending[next_index]
                     try:
-                        candidate_kind = AssetKind(candidate.asset_kind) if candidate.asset_kind else AssetKind.TABLE
+                        candidate_kind = (
+                            AssetKind(candidate.asset_kind)
+                            if candidate.asset_kind
+                            else AssetKind.TABLE
+                        )
                     except ValueError:
                         candidate_kind = AssetKind.TABLE
                     if (
@@ -290,15 +289,27 @@ def apply_review_results_to_db(
                     group.append(candidate)
                     next_index += 1
                 if len(group) > 1:
-                    batched_comments = [(item.column or "", item.final_description) for item in group]
+                    batched_comments = [
+                        (item.column or "", item.final_description) for item in group
+                    ]
                     try:
                         if on_progress is not None:
-                            on_progress(group[0], "started", index + 1, total, f"batch:{len(group)}")
-                        if db.apply_column_comments_batch(r.schema, r.table, batched_comments, conn=conn):
+                            on_progress(
+                                group[0], "started", index + 1, total, f"batch:{len(group)}"
+                            )
+                        if db.apply_column_comments_batch(
+                            r.schema, r.table, batched_comments, conn=conn
+                        ):
                             for offset, item in enumerate(group, start=1):
                                 applied += 1
                                 if on_progress is not None:
-                                    on_progress(item, "applied", index + offset, total, f"batch:{len(group)}")
+                                    on_progress(
+                                        item,
+                                        "applied",
+                                        index + offset,
+                                        total,
+                                        f"batch:{len(group)}",
+                                    )
                                 if on_applied is not None:
                                     on_applied(item)
                             index = next_index
@@ -331,7 +342,9 @@ def apply_review_results_to_db(
                     on_progress(r, "failed", index + 1, total, str(exc))
                 if on_failed is not None:
                     on_failed(r, exc)
-                error(f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}")
+                error(
+                    f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}"
+                )
             index += 1
     return applied
 
@@ -375,7 +388,9 @@ class Orchestrator:
         # behave exactly as before).
         self.column_overrides: dict[tuple[str, str], set[str]] = {}
 
-    _SQL_VERB_RE = re.compile(r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE)
+    _SQL_VERB_RE = re.compile(
+        r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE
+    )
 
     def process_table(
         self,
@@ -417,13 +432,13 @@ class Orchestrator:
         human-review picker — same contract as ``process_table``.
         """
         heading(f"Analyzing Schema: {schema}")
-        
+
         # Gather top-level table descriptions
         table_summaries = []
         for r in table_results:
             if r.column is None and r.schema == schema:
                 table_summaries.append(f"Table: {r.table}\nDescription: {r.final_description}")
-        
+
         if not table_summaries:
             log.info("No table descriptions found to summarize schema %s", schema)
             return []
@@ -434,7 +449,7 @@ class Orchestrator:
             tables_summary=tables_text,
             target_language=getattr(self.llm.cfg, "language", "english") or "english",
         )
-        
+
         with step_spinner(f"Generating description for schema {schema}"):
             res = self.llm.chat(
                 [
@@ -442,11 +457,11 @@ class Orchestrator:
                     {"role": "user", "content": prompt},
                 ]
             )
-        
+
         desc, conf, reasoning = self._parse_meta_response(res.content)
         if not desc:
             return []
-            
+
         result = ReviewResult(
             schema=schema,
             table="",
@@ -495,12 +510,12 @@ class Orchestrator:
         human-review picker.
         """
         heading("Analyzing Database")
-        
+
         schema_summaries = []
         for r in schema_results:
             if r.asset_kind == AssetKind.SCHEMA.value:
                 schema_summaries.append(f"Schema: {r.schema}\nDescription: {r.final_description}")
-        
+
         if not schema_summaries:
             log.info("No schema descriptions found to summarize database")
             return []
@@ -510,7 +525,7 @@ class Orchestrator:
             schemas_summary=schemas_text,
             target_language=getattr(self.llm.cfg, "language", "english") or "english",
         )
-        
+
         with step_spinner("Generating description for database"):
             res = self.llm.chat(
                 [
@@ -518,11 +533,11 @@ class Orchestrator:
                     {"role": "user", "content": prompt},
                 ]
             )
-        
+
         desc, conf, reasoning = self._parse_meta_response(res.content)
         if not desc:
             return []
-            
+
         result = ReviewResult(
             schema="",
             table="",
@@ -592,7 +607,7 @@ class Orchestrator:
             fallback_desc = (
                 c.existing_comment
                 or f"Column {c.name} in table {profile.name}. "
-                   "Auto-inference missed a reliable description; please review manually."
+                "Auto-inference missed a reliable description; please review manually."
             )
             out.append(
                 MetadataSuggestion(
@@ -613,18 +628,20 @@ class Orchestrator:
         desc = ""
         conf = Confidence.MEDIUM
         reasoning = ""
-        
+
         lines = text.splitlines()
         for line in lines:
             if line.upper().startswith("DESCRIPTION:"):
                 desc = line[12:].strip()
             elif line.upper().startswith("CONFIDENCE:"):
                 c = line[11:].strip().upper()
-                if "HIGH" in c: conf = Confidence.HIGH
-                elif "LOW" in c: conf = Confidence.LOW
+                if "HIGH" in c:
+                    conf = Confidence.HIGH
+                elif "LOW" in c:
+                    conf = Confidence.LOW
             elif line.upper().startswith("REASONING:"):
                 reasoning = line[10:].strip()
-        
+
         return desc, conf, reasoning
 
     def _run_enabled_agents(self, ctx: AgentContext) -> list[MetadataSuggestion]:
@@ -645,10 +662,7 @@ class Orchestrator:
 
         out: list[MetadataSuggestion] = []
         with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
-            fut_to_label = {
-                ex.submit(agent.run, ctx): label
-                for label, agent in jobs
-            }
+            fut_to_label = {ex.submit(agent.run, ctx): label for label, agent in jobs}
             for fut in as_completed(fut_to_label):
                 label = fut_to_label[fut]
                 try:
@@ -737,7 +751,7 @@ class Orchestrator:
                     break
 
         top_cols = sorted(
-            (name for name in col_counts.keys() if col_counts[name] > 0),
+            (name for name in col_counts if col_counts[name] > 0),
             key=lambda n: col_counts[n],
             reverse=True,
         )[:12]
@@ -799,9 +813,7 @@ class Orchestrator:
             },
         ]
         est = estimate_tokens(messages)
-        with step_spinner(
-            f"Merging suggestions: {len(needs_merge)} columns", token_estimate=est
-        ):
+        with step_spinner(f"Merging suggestions: {len(needs_merge)} columns", token_estimate=est):
             result = self.llm.chat(messages)
         tracker.record("merge", est, result.usage)
 
@@ -818,23 +830,27 @@ class Orchestrator:
                     if d not in all_descs:
                         all_descs.append(d)
 
-            merge_results.append(MetadataSuggestion(
-                schema=ctx.schema,
-                table=ctx.table,
-                column=col_name,
-                suggestions=all_descs[:5],
-                confidence=conf,
-                reasoning=reasoning,
-                source="combined",
-            ))
+            merge_results.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=col_name,
+                    suggestions=all_descs[:5],
+                    confidence=conf,
+                    reasoning=reasoning,
+                    source="combined",
+                )
+            )
 
-        merged.extend(apply_logprob_confidence(
-            merge_results,
-            result.logprobs,
-            high_threshold=self.llm.cfg.logprob_high,
-            medium_threshold=self.llm.cfg.logprob_medium,
-            response_text=result.content,
-        ))
+        merged.extend(
+            apply_logprob_confidence(
+                merge_results,
+                result.logprobs,
+                high_threshold=self.llm.cfg.logprob_high,
+                medium_threshold=self.llm.cfg.logprob_medium,
+                response_text=result.content,
+            )
+        )
         return merged
 
     # ── Persistence helpers ───────────────────────────────────────────────────
@@ -876,10 +892,7 @@ class Orchestrator:
             log.warning("Could not persist run_results: %s", exc)
             return {}
         # Map column_name → DB row id  (column=None → key None)
-        return {
-            s.column: rid
-            for s, rid in zip(suggestions, ids)
-        }
+        return {s.column: rid for s, rid in zip(suggestions, ids, strict=False)}
 
     def _record_evaluation(
         self,
@@ -1004,13 +1017,15 @@ class Orchestrator:
             heading(f"Column descriptions for {schema}.{table} ({col_count} {noun})")
             rows = []
             for s in col_suggestions:
-                rows.append([
-                    s.column,
-                    s.suggestions[0] if s.suggestions else "N/A",
-                    s.confidence.value,
-                    f"{s.logprob_score:.4f}" if s.logprob_score is not None else "N/A",
-                    s.source,
-                ])
+                rows.append(
+                    [
+                        s.column,
+                        s.suggestions[0] if s.suggestions else "N/A",
+                        s.confidence.value,
+                        f"{s.logprob_score:.4f}" if s.logprob_score is not None else "N/A",
+                        s.source,
+                    ]
+                )
             render_table(
                 "Suggested descriptions",
                 ["Column", "Best Suggestion", "Confidence", "Logprob", "Source"],
@@ -1026,48 +1041,50 @@ class Orchestrator:
 
             for s in col_suggestions:
                 rid = result_id_map.get(s.column)
-                if review_mode == "accept-all":
+                if (
+                    review_mode == "accept-all"
+                    or review_mode == "accept-all-high"
+                    and s.confidence == Confidence.HIGH
+                ):
                     rr = ReviewResult(
-                        schema=s.schema, table=s.table, column=s.column,
+                        schema=s.schema,
+                        table=s.table,
+                        column=s.column,
                         final_description=s.suggestions[0],
-                        confidence=s.confidence, source=s.source, applied=True,
-                        asset_kind=asset_kind, result_id=rid,
+                        confidence=s.confidence,
+                        source=s.source,
+                        applied=True,
+                        asset_kind=asset_kind,
+                        result_id=rid,
                         logprob_score=s.logprob_score,
                     )
-                    self._record_evaluation(rid, chosen_description=s.suggestions[0], evaluation="accepted")
-                    results.append(rr)
-                elif review_mode == "accept-all-high" and s.confidence == Confidence.HIGH:
-                    rr = ReviewResult(
-                        schema=s.schema, table=s.table, column=s.column,
-                        final_description=s.suggestions[0],
-                        confidence=s.confidence, source=s.source, applied=True,
-                        asset_kind=asset_kind, result_id=rid,
-                        logprob_score=s.logprob_score,
+                    self._record_evaluation(
+                        rid, chosen_description=s.suggestions[0], evaluation="accepted"
                     )
-                    self._record_evaluation(rid, chosen_description=s.suggestions[0], evaluation="accepted")
                     results.append(rr)
-                elif review_mode == "accept-all-high" and s.confidence != Confidence.HIGH:
+                elif (
+                    review_mode == "accept-all-high"
+                    and s.confidence != Confidence.HIGH
+                    or review_mode == "reject-all"
+                ):
                     rr = ReviewResult(
-                        schema=s.schema, table=s.table, column=s.column,
+                        schema=s.schema,
+                        table=s.table,
+                        column=s.column,
                         final_description="",
-                        confidence=s.confidence, source=s.source, applied=False,
-                        asset_kind=asset_kind, result_id=rid,
-                        logprob_score=s.logprob_score,
-                    )
-                    self._record_evaluation(rid, chosen_description="", evaluation="skipped")
-                    results.append(rr)
-                elif review_mode == "reject-all":
-                    rr = ReviewResult(
-                        schema=s.schema, table=s.table, column=s.column,
-                        final_description="",
-                        confidence=s.confidence, source=s.source, applied=False,
-                        asset_kind=asset_kind, result_id=rid,
+                        confidence=s.confidence,
+                        source=s.source,
+                        applied=False,
+                        asset_kind=asset_kind,
+                        result_id=rid,
                         logprob_score=s.logprob_score,
                     )
                     self._record_evaluation(rid, chosen_description="", evaluation="skipped")
                     results.append(rr)
                 else:
-                    result = self._review_single(s, is_table=False, asset_kind=asset_kind, result_id=rid)
+                    result = self._review_single(
+                        s, is_table=False, asset_kind=asset_kind, result_id=rid
+                    )
                     results.append(result)
 
         return results
@@ -1083,30 +1100,30 @@ class Orchestrator:
             return results
 
         heading(f"Batch Review: {len(to_review)} items pending")
-        
+
         # Group by table for better UX
         by_table = defaultdict(list)
         for r in to_review:
             by_table[(r.schema, r.table)].append(r)
-        
-        final_results = [r for r in results if r.applied] # Keep already applied/meta
-        
+
+        final_results = [r for r in results if r.applied]  # Keep already applied/meta
+
         for (sch, tbl), items in by_table.items():
             heading(f"Reviewing {sch}.{tbl}")
-            
+
             # Separate table-level and column-level
             table_items = [r for r in items if r.column is None]
             col_items = [r for r in items if r.column is not None]
-            
+
             for r in table_items:
                 reviewed = self._review_single_result(r)
                 final_results.append(reviewed)
-                
+
             if col_items:
                 col_count = len(col_items)
                 noun = "column" if col_count == 1 else "columns"
                 info(f"Found {col_count} {noun} for {sch}.{tbl}")
-                
+
                 rows = [
                     [
                         r.column,
@@ -1117,41 +1134,51 @@ class Orchestrator:
                     ]
                     for r in col_items
                 ]
-                render_table("Suggested descriptions", ["Column", "Best Suggestion", "Confidence", "Logprob", "Source"], rows)
-                
+                render_table(
+                    "Suggested descriptions",
+                    ["Column", "Best Suggestion", "Confidence", "Logprob", "Source"],
+                    rows,
+                )
+
                 review_mode = ask_choice(
                     "How would you like to review these columns?",
                     ["one-by-one", "accept-all-high", "accept-all", "reject-all"],
                     default="one-by-one",
                 )
-                
+
                 for r in col_items:
-                    if review_mode == "accept-all":
+                    if (
+                        review_mode == "accept-all"
+                        or review_mode == "accept-all-high"
+                        and r.confidence == Confidence.HIGH
+                    ):
                         r.applied = True
-                        self._record_evaluation(r.result_id, chosen_description=r.final_description, evaluation="accepted")
+                        self._record_evaluation(
+                            r.result_id,
+                            chosen_description=r.final_description,
+                            evaluation="accepted",
+                        )
                         final_results.append(r)
-                    elif review_mode == "accept-all-high" and r.confidence == Confidence.HIGH:
-                        r.applied = True
-                        self._record_evaluation(r.result_id, chosen_description=r.final_description, evaluation="accepted")
-                        final_results.append(r)
-                    elif review_mode == "accept-all-high" and r.confidence != Confidence.HIGH:
+                    elif (
+                        review_mode == "accept-all-high"
+                        and r.confidence != Confidence.HIGH
+                        or review_mode == "reject-all"
+                    ):
                         r.applied = False
-                        self._record_evaluation(r.result_id, chosen_description="", evaluation="skipped")
-                        final_results.append(r)
-                    elif review_mode == "reject-all":
-                        r.applied = False
-                        self._record_evaluation(r.result_id, chosen_description="", evaluation="skipped")
+                        self._record_evaluation(
+                            r.result_id, chosen_description="", evaluation="skipped"
+                        )
                         final_results.append(r)
                     else:
                         reviewed = self._review_single_result(r)
                         final_results.append(reviewed)
-        
+
         return final_results
 
     def _review_single_result(self, r: ReviewResult) -> ReviewResult:
         """Helper to review a single result by looking up its alternatives if needed."""
         suggestions = r.alternatives if r.alternatives else [r.final_description]
-        
+
         # Create a dummy MetadataSuggestion for the UI
         s = MetadataSuggestion(
             schema=r.schema,
@@ -1160,11 +1187,12 @@ class Orchestrator:
             suggestions=suggestions,
             confidence=r.confidence,
             reasoning="Deferred review",
-            source=r.source
-            ,
+            source=r.source,
             logprob_score=r.logprob_score,
         )
-        return self._review_single(s, is_table=(r.column is None), asset_kind=r.asset_kind, result_id=r.result_id)
+        return self._review_single(
+            s, is_table=(r.column is None), asset_kind=r.asset_kind, result_id=r.result_id
+        )
 
     def _review_single(
         self,
@@ -1174,9 +1202,13 @@ class Orchestrator:
         result_id: int | None = None,
     ) -> ReviewResult:
         kind_label = asset_kind.replace("_", " ").title() if is_table else "Column"
-        asset = f"{kind_label}: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
+        asset = (
+            f"{kind_label}: {s.schema}.{s.table}" if is_table else f"Column: {s.table}.{s.column}"
+        )
         console.print(f"\n  [heading]{asset}[/heading]")
-        console.print(f"  Confidence: [{'success' if s.confidence == Confidence.HIGH else 'warning'}]{s.confidence.value}[/]")
+        console.print(
+            f"  Confidence: [{'success' if s.confidence == Confidence.HIGH else 'warning'}]{s.confidence.value}[/]"
+        )
         console.print(
             f"  Logprob: {f'{s.logprob_score:.4f}' if s.logprob_score is not None else 'N/A'}"
         )
@@ -1190,9 +1222,14 @@ class Orchestrator:
         if choice == "Skip":
             self._record_evaluation(result_id, chosen_description="", evaluation="skipped")
             return ReviewResult(
-                schema=s.schema, table=s.table, column=s.column,
-                final_description="", confidence=s.confidence,
-                source=s.source, applied=False, asset_kind=asset_kind,
+                schema=s.schema,
+                table=s.table,
+                column=s.column,
+                final_description="",
+                confidence=s.confidence,
+                source=s.source,
+                applied=False,
+                asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
             )
@@ -1200,18 +1237,28 @@ class Orchestrator:
             custom = ask("Enter your description")
             self._record_evaluation(result_id, chosen_description=custom, evaluation="custom")
             return ReviewResult(
-                schema=s.schema, table=s.table, column=s.column,
-                final_description=custom, confidence=Confidence.HIGH,
-                source="human", applied=True, asset_kind=asset_kind,
+                schema=s.schema,
+                table=s.table,
+                column=s.column,
+                final_description=custom,
+                confidence=Confidence.HIGH,
+                source="human",
+                applied=True,
+                asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
             )
         else:
             self._record_evaluation(result_id, chosen_description=choice, evaluation="accepted")
             return ReviewResult(
-                schema=s.schema, table=s.table, column=s.column,
-                final_description=choice, confidence=s.confidence,
-                source=s.source, applied=True, asset_kind=asset_kind,
+                schema=s.schema,
+                table=s.table,
+                column=s.column,
+                final_description=choice,
+                confidence=s.confidence,
+                source=s.source,
+                applied=True,
+                asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
             )
@@ -1247,7 +1294,7 @@ class Orchestrator:
 
         n_assets = len(tables)
         info(f"[Batch] Profiling {n_assets} asset(s)…")
-        profiles: dict[str, "TableProfile"] = {}
+        profiles: dict[str, TableProfile] = {}
         for table in tables:
             ak = asset_kinds.get(table)
             with step_spinner(f"Profiling {schema}.{table}"):
@@ -1258,7 +1305,7 @@ class Orchestrator:
         # coverage have their column list narrowed to the gaps before
         # building agent prompts.
         if self.missing_only:
-            kept: dict[str, "TableProfile"] = {}
+            kept: dict[str, TableProfile] = {}
             skipped_full = 0
             for table, prof in profiles.items():
                 total_cols = len(prof.columns)
@@ -1285,13 +1332,11 @@ class Orchestrator:
             profiles = kept
             tables = [t for t in tables if t in profiles]
             if not profiles:
-                info(
-                    f"[Batch] All {n_assets} asset(s) already fully commented — nothing to do."
-                )
+                info(f"[Batch] All {n_assets} asset(s) already fully commented — nothing to do.")
                 return []
 
         all_requests: list[BatchRequest] = []
-        ctx_map: dict[str, "AgentContext"] = {}
+        ctx_map: dict[str, AgentContext] = {}
 
         for table in tables:
             ctx = self._build_context(profiles[table])
@@ -1307,10 +1352,7 @@ class Orchestrator:
             warn("No LLM requests to submit — all agents had nothing to process.")
             return []
 
-        info(
-            f"[Batch] Submitting {len(all_requests)} request(s) for "
-            f"{n_assets} asset(s)…"
-        )
+        info(f"[Batch] Submitting {len(all_requests)} request(s) for {n_assets} asset(s)…")
         batch_results = run_batch(all_requests, self.llm.cfg)
 
         all_reviewed: list[ReviewResult] = []
@@ -1333,9 +1375,15 @@ class Orchestrator:
                 if chat_result and chat_result.content:
                     cols_slice = profile.columns[idx * batch_size : (idx + 1) * batch_size]
                     col_dicts = [
-                        {"name": c.name, "dtype": c.dtype, "nullable": c.nullable,
-                         "row_count": c.row_count, "null_count": c.null_count,
-                         "distinct_count": c.distinct_count, "samples": c.samples}
+                        {
+                            "name": c.name,
+                            "dtype": c.dtype,
+                            "nullable": c.nullable,
+                            "row_count": c.row_count,
+                            "null_count": c.null_count,
+                            "distinct_count": c.distinct_count,
+                            "samples": c.samples,
+                        }
                         for c in cols_slice
                     ]
                     batch_ctx = self.profile_agent._ctx_with_columns(ctx, col_dicts)
@@ -1393,7 +1441,9 @@ class Orchestrator:
                 continue
 
             result_id_map = self._save_merged_suggestions(merged, asset_kind=ak)
-            reviewed = self._human_review(merged, schema, table, asset_kind=ak, result_id_map=result_id_map)
+            reviewed = self._human_review(
+                merged, schema, table, asset_kind=ak, result_id_map=result_id_map
+            )
             self.results.extend(reviewed)
             all_reviewed.extend(reviewed)
 
@@ -1415,7 +1465,9 @@ class Orchestrator:
             try:
                 hs.record_applied(r.result_id)
             except Exception as exc:
-                log.debug("Could not record applied timestamp for result_id=%s: %s", r.result_id, exc)
+                log.debug(
+                    "Could not record applied timestamp for result_id=%s: %s", r.result_id, exc
+                )
         if r.result_id is not None:
             try:
                 from amx.search.catalog import SearchCatalog
@@ -1424,7 +1476,11 @@ class Orchestrator:
                 if catalog is not None:
                     catalog.mark_applied(r.result_id)
             except Exception as exc:
-                log.debug("Could not mark applied search catalog state for result_id=%s: %s", r.result_id, exc)
+                log.debug(
+                    "Could not mark applied search catalog state for result_id=%s: %s",
+                    r.result_id,
+                    exc,
+                )
 
     def apply_results(self, results: list[ReviewResult] | None = None) -> int:
         results = results or self.results
@@ -1438,7 +1494,11 @@ class Orchestrator:
                 try:
                     hs.record_db_apply_failure(r.result_id, str(exc))
                 except Exception as inner_exc:
-                    log.debug("Could not record failed DB apply state for result_id=%s: %s", r.result_id, inner_exc)
+                    log.debug(
+                        "Could not record failed DB apply state for result_id=%s: %s",
+                        r.result_id,
+                        inner_exc,
+                    )
 
         total = len([r for r in results if r.applied and r.final_description])
         _on_progress, _finish_progress = create_live_writeback_progress(

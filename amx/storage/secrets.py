@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from typing import Protocol
 
-
 KEYRING_PREFIX = "keyring:"
 SERVICE_NAME = "amx"
 
@@ -142,7 +141,7 @@ def make_reference(key: str) -> str:
 def parse_reference(ref: str) -> str:
     if not is_secret_reference(ref):
         raise ValueError(f"Not a secret reference: {ref!r}")
-    return ref[len(KEYRING_PREFIX):]
+    return ref[len(KEYRING_PREFIX) :]
 
 
 # ── Default store singleton ───────────────────────────────────────────
