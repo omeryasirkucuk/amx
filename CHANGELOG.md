@@ -6,6 +6,64 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-01
+### Added — Analytics-DB metadata extension
+
+AMX now extracts analytics-aware metadata for every profiled table — partition keys, clustering keys, storage format (native / parquet / delta / iceberg / external), storage size, file count, last-modified, table type, governance tags, PII columns, indexes — across all 4 backends (PostgreSQL, Snowflake, BigQuery, Databricks). The fields surface in the `describe_table` tool result so the search agent can answer the questions analytics-DB users actually ask: performance optimization opportunities, freshness, storage footprint, governance, format.
+
+**Why this matters.** AMX's previous metadata coverage was tuned for OLTP-style introspection (FK relationships, table comments, column samples). Analytics workloads — Snowflake / BigQuery / Databricks where AMX is most useful — care about partitions, clustering, size, format, last-altered, and governance tags. Without that metadata the agent could only chitchat about "performance optimization" instead of pointing at a specific opportunity.
+
+### Changes
+
+- **New `AnalyticsMetadata` dataclass** (`amx/db/connector.py`) — per-table fields:
+  - `partition_keys: list[str]` + `partition_strategy: str` (range / list / hash / time / bucket / none)
+  - `clustering_keys: list[str]` (Snowflake CLUSTER BY, BigQuery CLUSTER BY, Databricks ZORDER)
+  - `storage_format: str` (native / parquet / delta / iceberg / csv / external)
+  - `storage_bytes: int`, `storage_files_count: int`
+  - `last_modified: str` (ISO 8601)
+  - `table_type: str` (managed / external / view / materialized_view / temporary / foreign)
+  - `tags: dict[str, str]` (column-or-table → tag value)
+  - `pii_columns: list[str]` (auto-derived from tag names containing PII / SENSITIVE / GDPR)
+  - `indexes: list[dict]` (`{name, columns, unique}`; PostgreSQL only for now)
+  - `warnings: list[str]` — per-adapter best-effort: when a query fails (permissions, unsupported region, view-not-allowed), the affected field is left empty and a warning is recorded. The agent surfaces these so users know the scope of "no data" answers.
+- **`TableProfile.analytics` field** — populated by `profile_table` via the new `AdapterBase.get_analytics_metadata(engine, schema, table)` method. Old call sites continue to work unchanged.
+- **PostgreSQL adapter** — partition info from `pg_partitioned_table` + `pg_attribute`; indexes from `pg_indexes`; storage size from `pg_total_relation_size` (table + TOAST + indexes); last-modified from `pg_stat_user_tables` (max of last_analyze / last_autoanalyze / last_vacuum / last_autovacuum); table_type from `pg_class.relkind` (view / materialized_view / partitioned / foreign).
+- **BigQuery adapter** — partition / cluster / type / DDL parsed from `INFORMATION_SCHEMA.TABLES`; size + last_modified_time from legacy `__TABLES__`. Partition expressions like `DATE(_PARTITIONTIME)` are recognised and tagged as `time`-strategy.
+- **Snowflake adapter** — clustering_key + bytes + last_altered + table_type from `INFORMATION_SCHEMA.TABLES`; tags + PII column derivation from `TAG_REFERENCES_ALL_COLUMNS` (soft-fails when the role lacks permission).
+- **Databricks adapter** — `DESCRIBE DETAIL` for format / size / partition / clustering / lastModified; `DESCRIBE TABLE EXTENDED` for table type. Supports Delta, Parquet, Iceberg, CSV, and external tables. ZORDER columns surface as `clustering_keys`.
+
+### Tool integration
+
+- **`describe_table` returns the new `analytics` field** (`amx/search/agent_tools.py`) — only non-empty sub-fields are included to keep the prompt tight on backends that expose less.
+- **Tool description rewritten** to teach the LLM the analytics fields and how to use them. Concrete examples in the prompt cover the user's wishlist:
+  - "is there a performance optimization opportunity?" → check `partition_keys`, `clustering_keys`, `indexes`, `storage_bytes` vs `row_count`.
+  - "when was X last updated?" → `last_modified`.
+  - "which tables are > 1 TB?" → `storage_bytes` (cross-table — would need multi-call from caller).
+  - "is there any PII column in finance schema?" → `pii_columns` + `tags`.
+  - "what format is sales_fact stored in?" → `storage_format`.
+- **System prompt rule** — when fields are absent (because the backend doesn't expose that signal), the LLM should say "this DB doesn't surface partition info" instead of "this table has no partition" — same interpretive-answering principle from v0.9.11.
+
+### Backend coverage matrix
+
+| Field | PostgreSQL | Snowflake | BigQuery | Databricks |
+|---|---|---|---|---|
+| partition_keys / strategy | ✓ | — (handled via clustering) | ✓ | ✓ |
+| clustering_keys | — | ✓ | ✓ | ✓ (ZORDER) |
+| storage_format | native | native / external | native / external | delta / parquet / iceberg / csv / external |
+| storage_bytes | ✓ | ✓ | ✓ | ✓ |
+| storage_files_count | — | — | — | ✓ |
+| last_modified | ✓ | ✓ | ✓ | ✓ |
+| table_type | ✓ | ✓ | ✓ | ✓ |
+| tags / pii_columns | — | ✓ | partial (column policy tags follow-up) | partial (Unity Catalog tags follow-up) |
+| indexes | ✓ | — | — | — |
+
+### Followups
+
+- **Lineage** — `inventory_reports → upstream tables`. Requires query history tap (Snowflake QUERY_HISTORY, BigQuery `INFORMATION_SCHEMA.JOBS`, Databricks SystemTable). Out-of-scope for v0.10.0 because each backend exposes it differently and the per-call cost is high. Planned for a separate `lineage_for_table` tool.
+- **Schema evolution** — diff between two snapshots. Requires AMX to keep periodic snapshots of `columns_by_dtype` per table, then expose a `compare_schema_snapshots` tool. Tracked as v0.11 work.
+- **Cross-table aggregates** — "which tables > 1 TB" needs a list-then-filter call across the whole catalog. The agent currently has to call `describe_table` per table; a future `find_tables_by_size_range` tool will batch this.
+- **Column-level analytics** — null ratios per column are already in `ColumnProfile.null_count` / `row_count`; surfacing them through `describe_table` is a small follow-up.
+
 ## [0.9.11] - 2026-05-01
 ### Fixed
 - **`/ask "I only remember 'trog' from the table name"` returned "no table similar to trog"**. Reproducer: any partial / approximate / fragment table-name query. Pre-v0.9.11 `find_table_by_name` did exact-match only (`asset_name.lower() == target.lower()`), so a non-exact fragment returned 0 and the LLM honestly said "nothing found".

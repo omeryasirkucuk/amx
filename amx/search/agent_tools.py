@@ -185,7 +185,22 @@ class ToolBox:
                         "'X'/'' or 'Y'/'N') — surface those alongside any native bool "
                         "instead of saying 'no boolean columns'. Use ``columns_truncated`` "
                         "to caveat the answer ('showing X of Y rows in details') only "
-                        "when the user wants comments / examples per column."
+                        "when the user wants comments / examples per column.\n"
+                        "ANALYTICS METADATA — the response also includes an ``analytics`` "
+                        "object with backend-aware fields when the active DB exposes them: "
+                        "``partition_keys`` / ``partition_strategy`` (range / list / hash / "
+                        "time / bucket), ``clustering_keys`` (Snowflake / BigQuery / "
+                        "Databricks ZORDER), ``storage_format`` (native / parquet / delta / "
+                        "iceberg / external), ``storage_bytes`` + ``storage_files_count``, "
+                        "``last_modified`` (ISO timestamp), ``table_type`` (managed / "
+                        "external / view / materialized_view), ``tags`` + ``pii_columns`` "
+                        "(governance), and ``indexes`` (PostgreSQL). Use these to answer "
+                        "questions like 'is there a performance optimization opportunity', "
+                        "'when was X last updated', 'which tables are larger than N GB', "
+                        "'is there any PII column', 'is X partitioned'. Empty / absent "
+                        "fields mean the active backend doesn't expose that signal — say "
+                        "'this DB doesn't surface partition info' instead of 'this table "
+                        "has no partition'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -694,6 +709,25 @@ class ToolBox:
             )
         sorted_cols = sorted(all_cols, key=_sort_key)
 
+        # ── Analytics metadata ──
+        # v0.10.0 introduced AnalyticsMetadata on TableProfile; pull
+        # the non-empty fields here so the LLM can answer
+        # performance-optimization / freshness / governance questions
+        # without an extra tool round-trip. Empty fields are dropped to
+        # keep the prompt tight.
+        analytics_payload: dict[str, Any] = {}
+        am = getattr(profile, "analytics", None)
+        if am is not None:
+            for attr in (
+                "partition_keys", "partition_strategy", "clustering_keys",
+                "storage_format", "storage_bytes", "storage_files_count",
+                "last_modified", "table_type", "tags", "pii_columns",
+                "indexes", "warnings",
+            ):
+                value = getattr(am, attr, None)
+                if value:  # drop empty list / "" / 0 / {}
+                    analytics_payload[attr] = value
+
         return {
             "schema": schema_name,
             "table": table_name,
@@ -707,6 +741,10 @@ class ToolBox:
             "columns_by_dtype": columns_by_dtype,
             "columns_truncated": len(all_cols) > 60,
             "columns": sorted_cols[:60],
+            # Analytics-aware metadata — partition / cluster / size /
+            # format / freshness / tags. Per-backend coverage varies;
+            # only non-empty fields are included.
+            "analytics": analytics_payload,
         }
 
     @staticmethod

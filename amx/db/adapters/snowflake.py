@@ -200,6 +200,111 @@ class SnowflakeAdapter(DatabaseAdapter):
             actionable = self.actionable_profile_error(exc)
             raise RuntimeError(actionable or str(exc)) from exc
 
+    # ── Analytics metadata ────────────────────────────────────────────────
+
+    def get_analytics_metadata(
+        self, engine: Engine, schema: str, table: str
+    ) -> dict[str, Any]:
+        """Snowflake analytics metadata.
+
+        Pulls clustering keys / size / row count / last_altered /
+        table_type from ``INFORMATION_SCHEMA.TABLES``. Tag references
+        come from ``INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS``
+        when available; columns whose tag NAME contains "PII" or
+        "SENSITIVE" are surfaced as ``pii_columns``.
+
+        Snowflake stores all managed tables in proprietary micropartitions
+        — ``storage_format`` is set to ``native`` for managed tables and
+        ``external`` for external tables.
+        """
+        out: dict[str, Any] = {}
+        warnings: list[str] = []
+
+        with engine.connect() as conn:
+            try:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT
+                            CLUSTERING_KEY,
+                            BYTES,
+                            ROW_COUNT,
+                            CAST(LAST_ALTERED AS VARCHAR) AS last_altered,
+                            TABLE_TYPE,
+                            IS_TRANSIENT
+                        FROM INFORMATION_SCHEMA.TABLES
+                        WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table
+                        LIMIT 1
+                        """
+                    ),
+                    {"schema": schema.upper(), "table": table.upper()},
+                ).fetchone()
+                if row:
+                    if row[0]:
+                        # CLUSTERING_KEY is the literal "LINEAR(col1, col2)" string
+                        # Snowflake reports. Strip the wrapper.
+                        ck = str(row[0])
+                        if ck.upper().startswith("LINEAR(") and ck.endswith(")"):
+                            inner = ck[len("LINEAR("):-1]
+                            out["clustering_keys"] = [c.strip() for c in inner.split(",") if c.strip()]
+                        else:
+                            out["clustering_keys"] = [ck]
+                    if row[1] is not None:
+                        out["storage_bytes"] = int(row[1])
+                    if row[3]:
+                        out["last_modified"] = str(row[3])
+                    raw_type = str(row[4] or "").lower()
+                    type_map = {
+                        "base table": "managed",
+                        "view": "view",
+                        "materialized view": "materialized_view",
+                        "external table": "external",
+                        "temporary table": "temporary",
+                    }
+                    out["table_type"] = type_map.get(raw_type, raw_type)
+                    out["storage_format"] = "external" if "external" in raw_type else "native"
+            except Exception as exc:
+                warnings.append(f"INFORMATION_SCHEMA.TABLES: {exc}")
+
+            # ── Tags / PII columns ──
+            # TAG_REFERENCES_ALL_COLUMNS may not be readable to all
+            # roles; soft-fail and leave the field empty when blocked.
+            try:
+                rows = conn.execute(
+                    text(
+                        """
+                        SELECT COLUMN_NAME, TAG_NAME, TAG_VALUE
+                        FROM TABLE(INFORMATION_SCHEMA.TAG_REFERENCES_ALL_COLUMNS(
+                            :fqn, 'TABLE'
+                        ))
+                        """
+                    ),
+                    {"fqn": f"{schema}.{table}"},
+                ).fetchall()
+                tags: dict[str, str] = {}
+                pii_cols: list[str] = []
+                for r in rows:
+                    column_name = str(r[0] or "")
+                    tag_name = str(r[1] or "")
+                    tag_value = str(r[2] or "")
+                    if not tag_name:
+                        continue
+                    tags[f"{column_name}:{tag_name}" if column_name else tag_name] = tag_value
+                    upper = tag_name.upper()
+                    if column_name and ("PII" in upper or "SENSITIVE" in upper or "GDPR" in upper):
+                        if column_name not in pii_cols:
+                            pii_cols.append(column_name)
+                if tags:
+                    out["tags"] = tags
+                if pii_cols:
+                    out["pii_columns"] = pii_cols
+            except Exception as exc:
+                warnings.append(f"TAG_REFERENCES_ALL_COLUMNS: {exc}")
+
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
     # ── Comment writing ───────────────────────────────────────────────────
 
     def set_table_comment_sql(
