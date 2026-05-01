@@ -151,6 +151,20 @@ def register_root_commands(
                 active_ca = str(getattr(cfg.db, "tls_trusted_ca_file", "") or "").strip()
                 if active_ca:
                     info(f"Active Databricks trusted CA bundle: {active_ca}")
+                # Catalog picker — Databricks Unity Catalog needs the
+                # user to pin a catalog before any list_schemas /
+                # list_tables runs, otherwise downstream queries hit
+                # the SQLAlchemy fallback path and fail with
+                # ``SHOW TABLES FROM None.<schema>``. Hoisting the
+                # picker here means /connect is the canonical place
+                # to lock the catalog for the rest of the session;
+                # /run, /ask, /edit and friends inherit it.
+                try:
+                    from amx.cli_support.catalog_picker import ensure_catalog_selected
+                    db_for_pick = DatabaseConnector(cfg.db)
+                    ensure_catalog_selected(db_for_pick)
+                except Exception as _exc:
+                    pass
                 if getattr(cfg.db, "tls_no_verify", False):
                     warn("Active Databricks profile now uses TLS no-verify. Replace this with a trusted CA bundle when possible.")
                 success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
