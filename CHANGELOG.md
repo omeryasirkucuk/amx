@@ -17,6 +17,9 @@ New search-namespace command that pivots run history side-by-side, so users runn
 - Resolution order: explicit run IDs → scope filter (`--schema` / `--table` / current schema) with `--last N` → error if neither.
 - Schema additive migration: `analysis_runs` gains `llm_profile`, `doc_profile`, `code_profile` columns (idempotent ALTER, NULL for legacy rows). `/run` and `/ask` now persist the active profile names so post-hoc comparisons across doc/code/llm-profile differences are meaningful.
 - Discovery hint: after a successful `/ask`, when ≥2 prior `search.ask` runs already touched the same schema, a single dim line suggests `/compare --last 3 --schema <X>`. Quiet, never on the first or second ask.
+- `--diff` flag enables word-level highlighting in the per-column pivot. The leftmost run is the baseline; insertions render bold green, deletions render strike-red. Uses stdlib `difflib`, no new deps. Off by default so non-diff users still see clean text.
+- `--csv FILE` exports all three tables to a single CSV with `# section: <name>` markers (run_summary / per_column / aggregate_metrics), long-format so pandas/Excel users can pivot however they like.
+- `--md FILE` exports GitHub-flavoured Markdown with the per-column block in wide format — ready to paste into Notion, GitHub PR descriptions, or thesis appendices without reformatting.
 
 ## [0.11.0] - 2026-05-01
 ### Added — Multi-DB execution + optional `database` per connector
