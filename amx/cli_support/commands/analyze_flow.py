@@ -109,6 +109,130 @@ def _maybe_modify_profiles_before_run(cfg: AMXConfig, db: object, llm: object) -
     return db, llm
 
 
+def _build_equivalence_members(
+    db: object,
+    scope: dict[str, list[str]],
+    *,
+    missing_only: bool,
+) -> list[Any]:
+    """Walk in-scope tables and build a flat list of ColumnMember records.
+
+    The pre-walk happens BEFORE any LLM call so we can compute equivalence
+    classes upfront. We use the same dtype/comment metadata the orchestrator
+    will see later, so what we group here is what the dedup pass actually
+    operates on.
+
+    Respects ``missing_only``: when set, only columns whose existing
+    live-DB comment is empty (or a known placeholder) are included; that
+    way the dedup pass can't accidentally re-write a curated description.
+    """
+    from amx.agents.equivalence import ColumnMember
+    from amx.agents.orchestrator import is_placeholder_description
+
+    members: list[ColumnMember] = []
+    for schema_name, assets in scope.items():
+        for asset_name in assets:
+            try:
+                column_profiles = list(db.list_column_profiles(schema_name, asset_name))  # type: ignore[attr-defined]
+            except Exception:
+                continue
+            try:
+                comments_map = db.get_column_comments(schema_name, asset_name)  # type: ignore[attr-defined]
+            except Exception:
+                comments_map = {}
+            for cp in column_profiles:
+                existing = (comments_map or {}).get(cp.name) or ""
+                if missing_only:
+                    if existing.strip() and not is_placeholder_description(existing):
+                        continue
+                members.append(
+                    ColumnMember(
+                        schema=schema_name,
+                        table=asset_name,
+                        column=cp.name,
+                        dtype=str(cp.dtype),
+                        existing_comment=existing or "",
+                    )
+                )
+    return members
+
+
+def _maybe_run_equivalence_dedup(
+    cfg: AMXConfig,
+    db: object,
+    llm: object,
+    *,
+    scope: dict[str, list[str]],
+    missing_only: bool,
+    apply: bool,
+    run_id: int | None,
+) -> Any | None:
+    """Pre-walk the scope, compute classes, ask the user, run the dedup pass.
+
+    Returns the :class:`DedupOutcome` so callers can pass its
+    ``skip_set`` to every Orchestrator created downstream. Returns
+    ``None`` when the user declines or there's nothing to dedup.
+    """
+    from amx.agents.equivalence import (
+        compute_column_equivalence_classes,
+        summarize_classes,
+    )
+    from amx.agents.equivalence_agent import run_equivalence_pass
+
+    members = _build_equivalence_members(db, scope, missing_only=missing_only)
+    if not members:
+        return None
+
+    classes = compute_column_equivalence_classes(members)
+    summary = summarize_classes(classes)
+    if summary.multi_member_classes == 0:
+        info(
+            "Equivalence dedup: every in-scope column is unique by "
+            "(name, dtype) — nothing to deduplicate."
+        )
+        return None
+
+    # User-facing summary. Numbers are computed pre-LLM so the user can
+    # decide based on actual savings, not a guess.
+    largest_note = (
+        f" (largest: '{summary.largest_class_name}' with "
+        f"{summary.largest_class_size} members)"
+    )
+    info(
+        f"Equivalence analysis: {summary.total_members} columns → "
+        f"{summary.total_classes} class(es) "
+        f"({summary.multi_member_classes} multi-member, "
+        f"{summary.singleton_classes} singleton)."
+        + largest_note
+    )
+    info(
+        f"Estimated LLM-call saving if you opt in: "
+        f"{summary.llm_call_savings_pct:.1f}% "
+        f"({summary.total_members - summary.total_classes} fewer column-level prompts)."
+    )
+
+    if not confirm(
+        "Use equivalence-class deduplication for this run? "
+        "(One LLM call per class, applied to every member.)",
+        default=True,
+    ):
+        info("Equivalence dedup declined; falling back to per-column profiling.")
+        return None
+
+    multi_classes = [c for c in classes.values() if not c.is_singleton]
+    outcome = run_equivalence_pass(
+        multi_classes,
+        llm=llm,
+        db=db,
+        apply_to_db=apply,
+        run_id=run_id,
+        db_profile=cfg.active_db_profile or "default",
+        db_backend=cfg.db.backend,
+        asset_kind="column",
+    )
+    return outcome
+
+
 def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> bool:
     from amx.llm.batch import supported_providers as batch_supported_providers
     from amx.utils.console import ask_choice as prompt_choice
@@ -424,6 +548,31 @@ def execute_analyze_run(
             )
             info(f"Scope: {scope_summary}")
 
+        # ── Equivalence-class deduplication pass (Phase 2) ─────────────────
+        # Pre-walk the scope, compute equivalence classes by (column
+        # name, dtype family), present the savings to the user, and —
+        # if they accept — run ONE LLM call per multi-member class with
+        # all member tables in context. Members that are dedup'd are
+        # added to ``dedup_outcome.skip_set`` so the per-table flow
+        # below can filter them out of the ProfileAgent batch.
+        # Singletons and DIVERGES classes are left alone and flow
+        # through normally.
+        dedup_outcome: Any | None = None
+        try:
+            dedup_outcome = _maybe_run_equivalence_dedup(
+                cfg,
+                db,
+                llm,
+                scope=scope,
+                missing_only=missing_only,
+                apply=apply,
+                run_id=run_id,
+            )
+        except Exception as exc:
+            warn(f"Equivalence dedup pass failed; continuing without dedup: {exc}")
+            log.warning("Equivalence dedup pass failed: %s", exc, exc_info=True)
+            dedup_outcome = None
+
         rag_store = None
         try:
             if cfg.active_doc_profile == DISABLED_PROFILE:
@@ -473,6 +622,12 @@ def execute_analyze_run(
                 search_profile=cfg.active_db_profile or "default",
                 missing_only=missing_only,
             )
+            if dedup_outcome is not None and dedup_outcome.skip_set:
+                # Tell the orchestrator which (schema, table, column)
+                # tuples were already handled by the dedup pass so it
+                # filters them out of the ProfileAgent batch and doesn't
+                # re-write descriptions for them.
+                orch.dedup_skip_set = dedup_outcome.skip_set
 
             display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
             display.start(
@@ -574,6 +729,36 @@ def execute_analyze_run(
         approved = [r for r in all_results if r.applied]
         skipped = [r for r in all_results if not r.applied]
         info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
+
+        # Equivalence-class dedup recap. Numbers come from the upfront
+        # dedup pass, NOT from ``approved`` / ``skipped`` (those track
+        # only what flowed through the per-table ProfileAgent path).
+        if dedup_outcome is not None and (
+            dedup_outcome.classes_processed
+            or dedup_outcome.classes_diverged
+            or dedup_outcome.classes_failed
+        ):
+            total_dedup_members = dedup_outcome.members_skipped
+            classes_done = dedup_outcome.classes_processed
+            saved_pct = 0.0
+            if total_dedup_members:
+                saved_calls = total_dedup_members - classes_done
+                saved_pct = (saved_calls / total_dedup_members) * 100.0 if total_dedup_members else 0.0
+            info(
+                f"Equivalence dedup: {classes_done} class(es) applied → "
+                f"{total_dedup_members} column(s) "
+                f"(~{saved_pct:.1f}% fewer column-level LLM calls)."
+            )
+            if dedup_outcome.classes_diverged:
+                info(
+                    f"  {dedup_outcome.classes_diverged} class(es) flagged DIVERGES — "
+                    "their members fell back to per-table profiling."
+                )
+            if dedup_outcome.classes_failed:
+                warn(
+                    f"  {dedup_outcome.classes_failed} class(es) failed during the "
+                    "dedup LLM call; their members fell back to per-table profiling."
+                )
 
         if approved:
             render_table(

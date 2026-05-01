@@ -209,6 +209,32 @@ class ReviewResult:
     logprob_score: float | None = None
 
 
+# Substrings that mark a description as a "fallback placeholder" produced
+# by ``_ensure_complete_table_coverage`` when the model failed to give a
+# real description for a column or table. These must NEVER be written to
+# the live database — they're a UI hint for human review, not metadata.
+# Detection is substring-based (not exact match) so they survive minor
+# edits the user might have made before clicking Skip.
+_PLACEHOLDER_MARKERS: tuple[str, ...] = (
+    "Auto-inference missed a reliable description",
+    "Auto-inference missed a reliable table description",
+)
+
+
+def is_placeholder_description(text: str | None) -> bool:
+    """Return True when ``text`` is the auto-inference fallback placeholder.
+
+    Used as a guard before COMMENT ON SQL: writing the placeholder
+    pollutes the live DB metadata. ``apply_review_results_to_db`` skips
+    placeholder rows; ``/run`` with missing-only treats placeholder
+    comments as "still missing" so the user can re-analyse them.
+    """
+    if not text:
+        return False
+    sample = str(text).strip()
+    return any(marker in sample for marker in _PLACEHOLDER_MARKERS)
+
+
 def apply_review_results_to_db(
     db: DatabaseConnector,
     results: list[ReviewResult],
@@ -219,7 +245,17 @@ def apply_review_results_to_db(
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
     applied = 0
-    pending = [r for r in results if r.applied and r.final_description]
+    # Filter out fallback placeholders BEFORE we hit the DB. They're a UI
+    # hint for human review (so the user can see which columns the LLM
+    # missed); writing them would replace real metadata with text like
+    # "Auto-inference missed a reliable description; please review
+    # manually." and the user would have no idea their schema got polluted.
+    pending = [
+        r for r in results
+        if r.applied
+        and r.final_description
+        and not is_placeholder_description(r.final_description)
+    ]
     if not pending:
         return 0
     with db.engine.begin() as conn:
@@ -325,6 +361,12 @@ class Orchestrator:
         # See ``process_table`` for the per-table filter.
         self.missing_only = bool(missing_only)
         self.results: list[ReviewResult] = []
+        # Equivalence-class dedup skip set. Columns in this set were
+        # already handled by the upfront ``run_equivalence_pass`` (their
+        # description is already written to catalog and, in apply mode,
+        # to the live DB), so process_table filters them out of the
+        # ProfileAgent batch. The orchestrator does NOT re-write them.
+        self.dedup_skip_set: set[tuple[str, str, str]] = set()
 
     _SQL_VERB_RE = re.compile(r"\b(select|insert|update|delete|merge|join|where|group\s+by|order\s+by)\b", re.IGNORECASE)
 
@@ -352,8 +394,21 @@ class Orchestrator:
         # thousands of LLM tokens on partially-curated databases.
         if self.missing_only:
             total_cols = len(profile.columns)
-            cols_missing = [c for c in profile.columns if not (c.existing_comment or "").strip()]
-            table_has_comment = bool((profile.existing_comment or "").strip())
+            # Placeholder comments left over from previous runs (the
+            # "Auto-inference missed a reliable description; please review
+            # manually." string) are treated as MISSING so the user can
+            # re-analyse them by simply re-running with missing-only. This
+            # is how legacy DBs polluted before the v0.6.3 write-back fix
+            # get organically cleaned up.
+            cols_missing = [
+                c for c in profile.columns
+                if not (c.existing_comment or "").strip()
+                or is_placeholder_description(c.existing_comment)
+            ]
+            table_has_comment = bool(
+                (profile.existing_comment or "").strip()
+                and not is_placeholder_description(profile.existing_comment)
+            )
             if table_has_comment and not cols_missing:
                 info(
                     f"Skipping {schema}.{table}: already has a table comment and all "
@@ -377,6 +432,38 @@ class Orchestrator:
                 )
                 # Keep columns empty so agents focus on the table comment.
                 profile.columns = []
+
+        # ── Equivalence-class dedup skip ─────────────────────────────────────
+        # Columns whose equivalence class was already handled by the
+        # upfront dedup pass (run by analyze_flow before any
+        # process_table calls) are filtered out here. The dedup pass
+        # already wrote the description to the catalog and, when in
+        # apply mode, to the live DB — so this orchestrator must NOT
+        # spend tokens re-profiling them. Singletons and DIVERGES
+        # classes are not in the skip set and flow through normally.
+        if self.dedup_skip_set:
+            before = len(profile.columns)
+            profile.columns = [
+                col for col in profile.columns
+                if (schema, table, col.name) not in self.dedup_skip_set
+            ]
+            removed = before - len(profile.columns)
+            if removed:
+                info(
+                    f"Equivalence skip: {removed}/{before} column(s) on "
+                    f"{schema}.{table} were already handled by the dedup pass."
+                )
+            if not profile.columns and not (
+                profile.existing_comment is None
+                or not profile.existing_comment.strip()
+            ):
+                # Every column was dedup'd AND the table already had a
+                # table-level comment — nothing left to do here.
+                info(
+                    f"{schema}.{table}: all columns covered by dedup pass and "
+                    "table comment already present; skipping."
+                )
+                return []
 
         ctx = self._build_context(profile)
 
