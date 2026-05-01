@@ -125,13 +125,24 @@ def _build_equivalence_members(
     Respects ``missing_only``: when set, only columns whose existing
     live-DB comment is empty (or a known placeholder) are included; that
     way the dedup pass can't accidentally re-write a curated description.
+
+    When the scope is a :class:`ScopeResult` with ``column_overrides``
+    set (Column scope), only the explicitly-picked columns are
+    considered — otherwise dedup would walk every column of the table
+    and find unrelated equivalence classes the user didn't ask about.
     """
     from amx.agents.equivalence import ColumnMember
     from amx.agents.orchestrator import is_placeholder_description
+    from amx.services.analyze_scope import ScopeResult
+
+    overrides: dict[tuple[str, str], set[str]] = {}
+    if isinstance(scope, ScopeResult):
+        overrides = scope.column_overrides or {}
 
     members: list[ColumnMember] = []
     for schema_name, assets in scope.items():
         for asset_name in assets:
+            override_cols = overrides.get((schema_name, asset_name))
             try:
                 column_profiles = list(db.list_column_profiles(schema_name, asset_name))  # type: ignore[attr-defined]
             except Exception:
@@ -141,6 +152,8 @@ def _build_equivalence_members(
             except Exception:
                 comments_map = {}
             for cp in column_profiles:
+                if override_cols is not None and cp.name not in override_cols:
+                    continue
                 existing = (comments_map or {}).get(cp.name) or ""
                 if missing_only:
                     if existing.strip() and not is_placeholder_description(existing):
@@ -192,34 +205,52 @@ def _maybe_run_equivalence_dedup(
         )
         return None
 
-    # User-facing summary. Numbers are computed pre-LLM so the user can
-    # decide based on actual savings, not a guess.
-    largest_note = (
-        f" (largest: '{summary.largest_class_name}' with "
-        f"{summary.largest_class_size} members)"
-    )
+    # ── Equivalence analysis panel ───────────────────────────────────
+    # Mirrors the /metadata edit "Bulk-update analysis for 'X'" header
+    # so the user gets a consistent before-action summary across run
+    # commands and bulk-edit. Heading line + key numbers + a small
+    # table of the top classes that will dedup.
+    heading("Equivalence analysis")
     info(
-        f"Equivalence analysis: {summary.total_members} columns → "
+        f"  {summary.total_members} column(s) → "
         f"{summary.total_classes} class(es) "
         f"({summary.multi_member_classes} multi-member, "
         f"{summary.singleton_classes} singleton)."
-        + largest_note
     )
     info(
-        f"Estimated LLM-call saving if you opt in: "
-        f"{summary.llm_call_savings_pct:.1f}% "
+        f"  Largest class: '{summary.largest_class_name}' with "
+        f"{summary.largest_class_size} members."
+    )
+    info(
+        f"  Estimated LLM-call saving: {summary.llm_call_savings_pct:.1f}% "
         f"({summary.total_members - summary.total_classes} fewer column-level prompts)."
     )
 
-    if not confirm(
-        "Use equivalence-class deduplication for this run? "
-        "(One LLM call per class, applied to every member.)",
-        default=True,
-    ):
-        info("Equivalence dedup declined; falling back to per-column profiling.")
-        return None
-
+    # Top-N preview: the largest classes by member count, so the user
+    # can sanity-check what's about to be deduplicated.
     multi_classes = [c for c in classes.values() if not c.is_singleton]
+    preview_classes = sorted(multi_classes, key=lambda c: c.size, reverse=True)[:10]
+    preview_rows = []
+    for klass in preview_classes:
+        sample_tables = ", ".join(klass.tables(limit=3))
+        if klass.size > 3:
+            sample_tables += f", … (+{klass.size - 3} more)"
+        preview_rows.append([
+            klass.name,
+            klass.family,
+            str(klass.size),
+            sample_tables,
+        ])
+    if preview_rows:
+        render_table(
+            f"Top {len(preview_rows)} classes that will dedup",
+            ["Column", "Type family", "Members", "Tables (sample)"],
+            preview_rows,
+        )
+    info(
+        "  One LLM call per multi-member class will run; the description "
+        "is then applied to every member."
+    )
     outcome = run_equivalence_pass(
         multi_classes,
         llm=llm,
@@ -393,6 +424,7 @@ def execute_analyze_run(
     from amx.db.connector import DatabaseConnector, ProfilingError
     from amx.docs.rag import RAGStore
     from amx.llm.provider import FatalLLMError, LLMProvider
+    from amx.services.analyze_scope import ScopeResult
     from amx.utils.logging import clear_request_id, set_request_id
 
     # Tag every log line emitted during this analyze run with a stable
@@ -424,6 +456,15 @@ def execute_analyze_run(
     filter_skipped_count = 0
     final_status: str | None = None
     final_error_text = ""
+    # Pre-init these so the KeyboardInterrupt / Exception handlers
+    # below don't trip an UnboundLocalError when the user cancels at the
+    # scope picker (which is BEFORE the runtime questions get a chance
+    # to assign these). Both get overwritten by the real prompts inside
+    # the ``with command_display(...)`` block; the defaults here only
+    # exist so the cancellation path can finalize history cleanly.
+    review_strategy: str = "individual"
+    use_dedup: bool = False
+    dedup_outcome: Any | None = None
 
     try:
         token_tracker.reset()
@@ -446,6 +487,35 @@ def execute_analyze_run(
         db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
         _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
+
+        # ── Equivalence-class dedup choice (FIRST run-mode question) ─────────
+        # Mirrors /metadata edit's binary mode-selector pattern: ask the
+        # high-impact yes/no decision BEFORE any drill-down. In /run that
+        # means dedup comes ahead of scope picker, coverage filter, and
+        # review strategy — those are the analogue of /edit's "drill
+        # down DB → schema → table → column" steps and follow the
+        # mode-decision. Profile/LLM test/completion mode above are
+        # infrastructure questions, not run-mode questions, so they
+        # stay where they are.
+        use_dedup_choice = ask_choice(
+            "Equivalence-class deduplication?",
+            ["dedup", "per-column"],
+            default="dedup",
+            descriptions={
+                "dedup": (
+                    "Group identical columns by (name + dtype family) across "
+                    "tables; one LLM call per group, applied to every member. "
+                    "Saves tokens on repeated columns (mandt, customer_id, "
+                    "created_at, …). Recommended for wide schemas."
+                ),
+                "per-column": (
+                    "Send each column to the LLM individually. Fine-grained, "
+                    "but slow + expensive on SAP-style schemas where the same "
+                    "column appears in dozens of tables."
+                ),
+            },
+        )
+        use_dedup = use_dedup_choice == "dedup"
 
         tables_arg = list(tables_pos) + list(table)
         with command_display(
@@ -549,29 +619,34 @@ def execute_analyze_run(
             info(f"Scope: {scope_summary}")
 
         # ── Equivalence-class deduplication pass (Phase 2) ─────────────────
-        # Pre-walk the scope, compute equivalence classes by (column
-        # name, dtype family), present the savings to the user, and —
-        # if they accept — run ONE LLM call per multi-member class with
-        # all member tables in context. Members that are dedup'd are
-        # added to ``dedup_outcome.skip_set`` so the per-table flow
-        # below can filter them out of the ProfileAgent batch.
-        # Singletons and DIVERGES classes are left alone and flow
-        # through normally.
-        dedup_outcome: Any | None = None
-        try:
-            dedup_outcome = _maybe_run_equivalence_dedup(
-                cfg,
-                db,
-                llm,
-                scope=scope,
-                missing_only=missing_only,
-                apply=apply,
-                run_id=run_id,
-            )
-        except Exception as exc:
-            warn(f"Equivalence dedup pass failed; continuing without dedup: {exc}")
-            log.warning("Equivalence dedup pass failed: %s", exc, exc_info=True)
-            dedup_outcome = None
+        # The dedup choice was made upfront (see ``use_dedup`` above,
+        # asked alongside coverage + review_strategy). When opted in,
+        # AMX pre-walks the scope, computes equivalence classes by
+        # (column name, dtype family), and runs ONE LLM call per
+        # multi-member class with all member tables in context.
+        # Members that are dedup'd are added to
+        # ``dedup_outcome.skip_set`` so the per-table flow below can
+        # filter them out of the ProfileAgent batch. Singletons and
+        # DIVERGES classes are left alone and flow through normally.
+        # ``dedup_outcome`` is pre-initialised at the function top so
+        # the cancellation handlers can read it without UnboundLocalError.
+        if use_dedup:
+            try:
+                dedup_outcome = _maybe_run_equivalence_dedup(
+                    cfg,
+                    db,
+                    llm,
+                    scope=scope,
+                    missing_only=missing_only,
+                    apply=apply,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                warn(f"Equivalence dedup pass failed; continuing without dedup: {exc}")
+                log.warning("Equivalence dedup pass failed: %s", exc, exc_info=True)
+                dedup_outcome = None
+        else:
+            info("Equivalence dedup: opted out — every column will be profiled individually.")
 
         rag_store = None
         try:
@@ -628,6 +703,11 @@ def execute_analyze_run(
                 # filters them out of the ProfileAgent batch and doesn't
                 # re-write descriptions for them.
                 orch.dedup_skip_set = dedup_outcome.skip_set
+            # When the scope was Column-level, hand the overrides to
+            # the orchestrator so process_table restricts profile.columns
+            # to just the chosen column(s) for the matching table.
+            if isinstance(scope, ScopeResult) and scope.column_overrides:
+                orch.column_overrides = scope.column_overrides
 
             display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
             display.start(

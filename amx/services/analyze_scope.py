@@ -12,6 +12,37 @@ AskMultiChoiceFn = Callable[..., list[str]]
 ConsoleFn = Callable[[str], None]
 
 
+class ScopeResult(dict):
+    """A scope dict that may carry per-asset column overrides.
+
+    Most scope shapes (Database / Schema / Asset / Default) are just
+    ``{schema_name: [asset_name, ...]}`` — no column overrides. The
+    Column scope (added in v0.8.5) drills DB → schema → table → column
+    and returns a single (schema, table, column) tuple; the dict still
+    looks like ``{schema: [table]}`` so existing consumers (codebase
+    report builder, history persistence, ProfileAgent loop) keep
+    working unchanged. The extra ``column_overrides`` attribute is
+    consulted only by the orchestrator's per-table column filter.
+
+    Subclassing dict instead of returning a tuple keeps callers that
+    iterate the scope dict happy without needing the override.
+    """
+
+    def __init__(
+        self,
+        *args,
+        column_overrides: dict[tuple[str, str], set[str]] | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        # ``column_overrides[(schema, table)] = {col1, col2, ...}`` —
+        # if (schema, table) appears as a key, the orchestrator must
+        # restrict the ProfileAgent batch to those columns only.
+        self.column_overrides: dict[tuple[str, str], set[str]] = (
+            dict(column_overrides) if column_overrides else {}
+        )
+
+
 def _list_schemas(db: object, *, label: str) -> list[str]:
     from amx.utils.console import step_spinner
 
@@ -133,12 +164,17 @@ def resolve_run_scope(
 
     scope_level = ask_choice(
         "Select analysis scope",
-        ["Database", "Schema", "Asset", "Default"],
+        ["Database", "Schema", "Asset", "Column", "Default"],
         default="Schema",
         descriptions={
             "Database": "All schemas, all assets (tables, views, materialized views)",
             "Schema": "Select schema(s), analyze all assets within",
             "Asset": "Select specific tables or views",
+            "Column": (
+                "Re-run AI inference on a SINGLE column. Drill schema → "
+                "table → column. Useful when one comment came out wrong "
+                "and you want to regenerate it without touching anything else."
+            ),
             "Default": "Use current /db context: schema and optional table",
         },
     )
@@ -173,6 +209,55 @@ def resolve_run_scope(
             "or pick Schema/Asset scope."
         )
         return {}
+
+    if scope_level == "Column":
+        # Single-column re-inference: drill schema → table → column,
+        # return a normal-looking scope dict but stash the column
+        # restriction in ``column_overrides``. The orchestrator's
+        # per-table column filter consults this set; everything else
+        # (history persistence, codebase report, equivalence pass) keeps
+        # treating the scope as a single-table run.
+        from amx.utils.console import step_spinner
+
+        schemas = _list_schemas(db, label="Listing schemas for column scope")
+        if not schemas:
+            warn("No schemas available for column scope.")
+            return {}
+        schema_name = ask_choice("Select schema", schemas)
+        if not schema_name:
+            return {}
+        assets = asset_display_list(db, schema_name)
+        if not assets:
+            warn(f"No assets in {schema_name} to pick a column from.")
+            return {}
+        table_choice = ask_choice("Select table/view", assets)
+        if not table_choice:
+            return {}
+        # ``asset_display_list`` returns tagged labels ("name  [view]") —
+        # strip the tag so the chosen value is the bare table name.
+        table_name = table_choice.split("  [")[0].strip()
+        with step_spinner(f"Listing columns for {schema_name}.{table_name}"):
+            try:
+                column_profiles = list(db.list_column_profiles(schema_name, table_name))  # type: ignore[attr-defined]
+            except Exception as exc:
+                warn(f"Could not list columns for {schema_name}.{table_name}: {exc}")
+                return {}
+        column_names = [c.name for c in column_profiles]
+        if not column_names:
+            warn(f"No columns found for {schema_name}.{table_name}.")
+            return {}
+        column_descriptions = {c.name: c.dtype for c in column_profiles}
+        column_name = ask_choice(
+            "Select column to re-infer",
+            column_names,
+            descriptions=column_descriptions,
+        )
+        if not column_name:
+            return {}
+        return ScopeResult(
+            {schema_name: [table_name]},
+            column_overrides={(schema_name, table_name): {column_name}},
+        )
 
     schema_name = ask_choice("Select schema", _list_schemas(db, label="Listing schemas for asset scope"))
     chosen = pick_assets(asset_display_list(db, schema_name), ask_multi_choice=ask_multi_choice)
@@ -224,6 +309,13 @@ def finalize_scope(
     if not filtered:
         error("No business assets to analyze after filtering system/telemetry objects.")
         return None
+    # Preserve column_overrides if the original scope was a ScopeResult
+    # (Column-scope path). validate_assets_in_schema and
+    # filter_non_business_assets both return plain dicts; promote the
+    # final result back to ScopeResult so the orchestrator can read
+    # ``scope.column_overrides``.
+    if isinstance(scope, ScopeResult) and scope.column_overrides:
+        return ScopeResult(filtered, column_overrides=scope.column_overrides)
     return filtered
 
 
