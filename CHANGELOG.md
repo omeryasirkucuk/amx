@@ -6,6 +6,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-04-30
+### Added
+- **`/llm description-verbosity` slash command** + `description_verbosity` LLM-profile field (`amx/config.py`, `amx/cli_support/commands/profiles.py`, `amx/cli_support/session.py`): two presets, `brief` (default — current 1-sentence-per-column behavior) and `detailed` (2–4 sentences covering purpose + typical values + relationships when supported by evidence). Wired into `ProfileAgent._build_system_prompt` so the model emits longer descriptions when asked. Detailed mode roughly doubles per-column output cost; the slash command warns about that.
+- **`find_assets_missing_comment` agent tool** (`amx/search/agent_tools.py`): queries the LIVE DB (NOT the catalog) to list tables and/or columns with no comment. Routes via the system prompt for questions like "are there any tables without descriptions?" / "açıklaması olmayan tablolar". Catalog can lag right after `/run-apply`, so this tool is the source of truth for coverage questions.
+- **`Orchestrator._ensure_run_columns` helper** (`amx/storage/sqlite_store.py`): idempotent migration that adds `selected_count / planned_count / processed_count / applied_count / review_strategy` to `analysis_runs`. Runs on every `init()` AND now also at the top of every `create_run` as a belt-and-suspenders for users whose `init()` ran on stale code under a pipx editable install.
+
+### Fixed
+- **auto-apply was still asking for review at the schema/database meta step** (`amx/agents/orchestrator.py`, `amx/cli_support/commands/analyze_flow.py`): `process_schema_meta` and `process_database_meta` produced `ReviewResult(applied=False)` regardless of the picked strategy, so `batch_review` brought the picker back. Both methods now accept `auto_apply: bool` and mark results applied accordingly. The end-of-run `confirm("Apply these metadata comments to the database?")` is also skipped in auto-apply mode (per-table writes already happened in `process_table`); only schema/database-level meta produced after the loop are written by a final `apply_results` call.
+- **`/ask "tables without description"` returned stale data** — the catalog-search tools matched concept names, not actual coverage. Now the system prompt explicitly routes these questions to `find_assets_missing_comment`, which queries the live DB. Also: tools are renamed in the routing guidance so the LLM doesn't fall back to `search_*` when asked about coverage.
+
+### Why 0.6.0 (MINOR bump)
+- New CLI command (`/llm description-verbosity`) and new agent tool (`find_assets_missing_comment`) constitute a public-API addition.
+- Behavior change for auto-apply: previously prompted at meta steps, now fully unattended. Existing scripts that relied on the post-loop confirm will need to know it's gone.
+
 ## [0.5.9] - 2026-04-30
 ### Fixed
 - **Reasoning-style models that return empty content now abort the run with one clear message** (`amx/llm/provider.py`): user reported `openrouter/tencent/hy3-preview:free` exhausting all output tokens on internal "thinking" and returning `content=""` with `finish_reason=length` on every batch. Previous behavior raised the soft `LLMTruncationError` per batch, which the agents caught and recorded as a diagnostic, churning through the table list while the same failure repeated. Now: when `finish_reason=length` AND `content == ""`, we raise `FatalLLMError` instead — the run aborts after the first attempt with a friendly message naming non-reasoning paid alternatives (`openrouter/openai/gpt-4o-mini`, `openrouter/anthropic/claude-3-5-haiku`, `openrouter/google/gemini-1.5-flash`) and pointing at `AMX_LLM_MIN_MAX_TOKENS` / `AMX_REASONING_EFFORT=minimal` for users who insist on a reasoning model.
