@@ -35,14 +35,34 @@ _BANNER_SHOWN = False
 
 
 def show_banner(force: bool = False) -> None:
-    """Render AMX startup banner once per process."""
+    """Render AMX startup banner once per process.
+
+    The banner has three tiers — tagline → ASCII art → version+url —
+    each on its own line and rendered in a slightly different cyan
+    tint so the eye can pick out the hierarchy. The tagline replaces
+    the previous redundant "Metadata Extraction System" subtitle (the
+    title was already saying the same thing); the version line gives
+    open-source users a quick "what version am I on" + project URL.
+
+    Box-drawing brackets ``┃ ... ┃`` substitute for the previous
+    asterisks so the framing matches the terminal-native font of the
+    rest of the banner instead of mixing vector glyphs with grid art.
+    """
     global _BANNER_SHOWN
     if _BANNER_SHOWN and not force:
         return
     if os.getenv("AMX_NO_BANNER", "").lower() in {"1", "true", "yes"}:
         return
 
-    title = Text("* AMX (Agentic Metadata Extractor) *", style="bold cyan")
+    # Lazy import keeps utils.console free of a hard dependency on the
+    # top-level package — important because show_banner is called from
+    # cli.py during early startup.
+    try:
+        from amx import __version__ as _amx_version
+    except Exception:
+        _amx_version = ""
+
+    tagline = Text("┃  Agentic Metadata Extractor  ┃", style="bold cyan")
     art = Text(
         "\n".join(
             [
@@ -56,9 +76,19 @@ def show_banner(force: bool = False) -> None:
         ),
         style="bold bright_cyan",
     )
-    subtitle = Text("Metadata Extraction System", style="bold #66ffff")
+    version_label = f"v{_amx_version}" if _amx_version else "development build"
+    footer = Text.assemble(
+        (version_label, "bold cyan"),
+        ("  •  ", "dim cyan"),
+        ("AI-inferred database descriptions", "cyan"),
+    )
 
-    content = Text.assemble(title, "\n\n", art, "\n", subtitle, justify="center")
+    content = Text.assemble(
+        tagline, "\n\n",
+        art, "\n\n",
+        footer,
+        justify="center",
+    )
     console.print(
         Panel(
             Align.center(content),
