@@ -28,6 +28,7 @@ from amx.cli_support.commands.compare import (
     _collect_run_summary_rows,
     _detect_by,
     _export_csv,
+    _export_json,
     _export_markdown,
     _resolve_runs,
     _top_alternative,
@@ -564,6 +565,67 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual({r["run_id"] for r in rows}, {rid1, rid2})
             self.assertEqual({r["column"] for r in rows}, {"id"})
+
+
+class ExportJSONTests(unittest.TestCase):
+    def test_json_round_trip_has_expected_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid1, rid2 = _seed_two_runs_for_export(store)
+            runs = [store.get_run(rid2), store.get_run(rid1)]
+            results_by_run = {
+                rid1: store.get_run_results(rid1),
+                rid2: store.get_run_results(rid2),
+            }
+            out_path = Path(tmp) / "compare.json"
+            _export_json(out_path, runs, results_by_run)
+            self.assertTrue(out_path.exists())
+            import json as _json
+
+            payload = _json.loads(out_path.read_text())
+            for key in (
+                "schema_version",
+                "generated_at",
+                "amx_version",
+                "run_count",
+                "run_summary",
+                "per_column",
+                "aggregate_metrics",
+            ):
+                self.assertIn(key, payload)
+            self.assertEqual(payload["run_count"], 2)
+            self.assertEqual(len(payload["run_summary"]), 2)
+            self.assertEqual({r["run_id"] for r in payload["run_summary"]}, {rid1, rid2})
+            # per_column rows are long-format → 2 (assets) × 2 (runs) but
+            # the asset is shared, so 2 total.
+            self.assertEqual(len(payload["per_column"]), 2)
+            self.assertEqual(
+                {r["description"] for r in payload["per_column"]},
+                {"Primary key for orders", "Order identifier"},
+            )
+
+    def test_json_long_format_aggregate_one_row_per_metric_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid1, rid2 = _seed_two_runs_for_export(store)
+            runs = [store.get_run(rid1), store.get_run(rid2)]
+            results_by_run = {
+                rid1: store.get_run_results(rid1),
+                rid2: store.get_run_results(rid2),
+            }
+            out_path = Path(tmp) / "compare.json"
+            _export_json(out_path, runs, results_by_run)
+            import json as _json
+
+            payload = _json.loads(out_path.read_text())
+            # 11 metric rows × 2 runs = 22 entries.
+            self.assertEqual(len(payload["aggregate_metrics"]), 11 * 2)
+            metrics_seen = {r["metric"] for r in payload["aggregate_metrics"]}
+            self.assertIn("avg_logprob_score", metrics_seen)
+            self.assertIn("approval_rate", metrics_seen)
+            self.assertIn("total_tokens", metrics_seen)
 
 
 if __name__ == "__main__":

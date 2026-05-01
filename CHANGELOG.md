@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/compare --json` for thesis / notebook workflows
+
+Direct continuation of the `/compare --csv` and `--md` flags from the previous PR. The JSON document is shaped specifically for pandas / Jupyter consumption — long-format `per_column` and `aggregate_metrics` arrays so notebooks can `pd.DataFrame(payload["per_column"]).pivot(...)` without reshaping.
+
+- **`/compare --json FILE`** writes the comparison as `{schema_version, generated_at, amx_version, run_count, run_summary, per_column, aggregate_metrics}`. Pairs cleanly with `--csv` / `--md` — pass any combination and AMX writes all of them.
+- `tests/eval/README.md` now documents how to feed the JSON into a notebook for thesis-style "average logprob by LLM profile" / "tokens-vs-confidence" charts. Two new tests in `tests/test_compare.py` lock the JSON shape so it's safe to depend on.
+
 ### Added — `amx doctor` + config schema versioning
 
 Two changes that together kill the **version-skew bug class** that hit on 2026-05-01: two `amx` binaries on `PATH` writing to the same `~/.amx/config.yml` made profiles silently disappear when the older binary stripped keys it didn't recognise.
