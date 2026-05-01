@@ -5134,5 +5134,103 @@ class FirstRunConfigTests(unittest.TestCase):
         self.assertTrue(LLMConfig(provider="openai", model="gpt-4o").is_configured())
 
 
+class LiveDisplayNestedPauseResumeTests(unittest.TestCase):
+    """User reported 2026-05-02: ``Only one live display may be active at once``
+    fired after they accepted column results during ``/run``.
+
+    Root cause: nested pause/resume calls were unbalanced.
+    ``TableProcessor`` paused for human review, then ``ask_choice``
+    inside the review paused again via ``_live_paused_for_input``.
+    The inner ``resume`` restarted Rich's ``Live`` early; the outer
+    ``resume`` then tried to start an already-started Live and Rich
+    rejected it.
+
+    Fix: refcounted pause depth in ``LiveDisplay`` so only the
+    outermost pause/resume actually toggles Rich.
+    """
+
+    def _build_display_with_fake_live(self):
+        from unittest.mock import MagicMock
+
+        from amx.utils.live_display import LiveDisplay
+
+        ld = LiveDisplay(console=MagicMock())
+        # Stand in for Rich's Live: tracks calls, raises like Rich does
+        # when start() is invoked while already started.
+        calls: list[str] = []
+        fake = MagicMock()
+        ld._live = fake
+
+        def fake_start() -> None:
+            if calls and calls[-1] == "started":
+                raise RuntimeError("Only one live display may be active at once")
+            calls.append("started")
+
+        def fake_stop() -> None:
+            calls.append("stopped")
+
+        fake.start = fake_start
+        fake.stop = fake_stop
+        return ld, calls
+
+    def test_nested_pause_resume_triggers_one_stop_and_one_start(self) -> None:
+        ld, calls = self._build_display_with_fake_live()
+
+        ld.pause()  # outer: TableProcessor before human review
+        ld.pause()  # inner: ask_choice inside human review
+        ld.resume()  # inner returns
+        ld.resume()  # outer resumes after review
+
+        self.assertEqual(
+            calls,
+            ["stopped", "started"],
+            "Nested pause/resume should produce exactly one underlying "
+            "stop + one start. The user-reported "
+            "'Only one live display may be active at once' came from "
+            "the inner resume restarting the Live early, which made the "
+            "outer resume hit Rich's already-started guard.",
+        )
+
+    def test_resume_with_zero_depth_is_a_safe_noop(self) -> None:
+        """Calling ``resume()`` when the display was never paused must
+        not raise and must not start the Live. Some code paths
+        defensively call ``resume()`` even when their matching
+        ``pause()`` short-circuited."""
+        ld, calls = self._build_display_with_fake_live()
+        ld.resume()
+        self.assertEqual(calls, [])
+
+    def test_pause_when_live_is_none_is_a_safe_noop(self) -> None:
+        """``LiveDisplay`` callers can call pause / resume on a display
+        that was never started (``self._live is None``). The depth
+        counter must NOT increment in that case — otherwise a later
+        call after ``start()`` would think we're already paused.
+        """
+        from unittest.mock import MagicMock
+
+        from amx.utils.live_display import LiveDisplay
+
+        ld = LiveDisplay(console=MagicMock())
+        self.assertIsNone(ld._live)
+        ld.pause()
+        ld.resume()
+        self.assertEqual(ld._pause_depth, 0)
+
+    def test_start_resets_pause_depth(self) -> None:
+        """A leftover counter from a previous start/stop cycle must not
+        survive a fresh ``start()``."""
+        from unittest.mock import MagicMock
+
+        from amx.utils.live_display import LiveDisplay
+
+        ld = LiveDisplay(console=MagicMock())
+        ld._pause_depth = 5  # synthetic leftover
+
+        with patch("amx.utils.live_display.Live") as MockLive:
+            MockLive.return_value = MagicMock()
+            ld.start()
+        self.assertEqual(ld._pause_depth, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
