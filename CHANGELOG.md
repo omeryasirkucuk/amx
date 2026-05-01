@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-05-01
+### Fixed
+- **`describe_table` truncated wide tables before the LLM could see boolean columns**. Reproducer: user asks "do vbak have any boolean column?" against an SAP schema where `vbak` has 155+ columns and the only `bool` column is `is_deleted` at column position 155. Pre-v0.9.9, `_tool_describe_table` returned `cols[:60]` — `is_deleted` was past the cap and invisible. The LLM read 60 columns, saw no `bool` dtype, and said "no native boolean columns" with confidence. (`is_deleted` IS a real PG `bool` here; the v0.9.8 char(1) flag fallback didn't apply.)
+
+### Changed
+- **`describe_table` now ships a `dtype_summary` field** (`amx/search/agent_tools.py`) — a `{"bool": 1, "int": 30, "float": 70, "string": 50, ...}` count of dtype families across **all** columns (not just the truncated head). This is the LLM's authoritative source for "does this table have a column of family X" — it travels with the prompt even when the columns list is truncated. Tool description now instructs the LLM to ALWAYS read `dtype_summary` instead of inferring from the truncated `columns` list.
+- **Smart truncation order** — when the columns list is capped at 60, the cap now applies to a sorted list, not insertion order. Columns are sorted by:
+  1. Commented columns first (someone curated them — they're worth seeing).
+  2. Rare dtypes next (a single `bool` column on a table with 100 `float8`s gets surfaced ahead of the floats).
+  3. Alphabetical tiebreak.
+  This means `is_deleted` (the only `bool` on `vbak`) now sits in the first batch of returned columns instead of being silently dropped at position 155.
+- **New `columns_truncated: bool` field** so the LLM knows whether to caveat its answer with "showing X of Y columns; use find_columns_by_dtype for the complete dtype picture".
+- **New `_dtype_family_label` static helper** that maps raw dtypes to coarse family labels (`bool` / `int` / `float` / `string` / `date` / `timestamp` / `time` / `json` / `uuid` / `binary` / fallback to lowered raw). Same vocabulary as the equivalence-class deduplication module, kept as a static method so it can be reused without instantiating the tool box.
+
+### Why this matters
+Same false-negative pattern as v0.9.7 (joins) and v0.9.8 (boolean flags): the agent's tool surface didn't carry enough information for the LLM to answer correctly, and the LLM's "I checked and found nothing" confidence misled the user. The combination of `dtype_summary` (complete picture) + smart-sorted `columns` (rare dtypes survive truncation) + `columns_truncated` (explicit honesty signal) closes the gap for wide tables.
+
+### Followups
+- Apply the same dtype_summary pattern to `find_columns_by_dtype` so list-mode answers also include a per-family summary even when the result is truncated.
+- The hardcoded 60-column cap could become a soft target — keep ALL rare dtypes (`bool`, `date`, `uuid`, `json`) regardless of position, then fill the rest of the budget with the truncation-sorted head.
+
 ## [0.9.8] - 2026-05-01
 ### Fixed
 - **`/ask "is there any boolean column in vbak"` returned "no" with confidence on SAP-style schemas**. Reproducer: any DB where boolean SEMANTICS are stored as `char(1)` / `varchar(1)` flag columns (`'X'` / `''` or `'Y'` / `'N'`) — the dominant pattern in SAP and many enterprise systems. Pre-v0.9.8, `find_columns_by_dtype('boolean')` only matched literal `bool` / `boolean` PG dtypes, so SAP `vbak`'s flag columns (`autlf`, `faksk`, `lifsk`, …) were invisible and the LLM honestly said "no boolean columns" — same false-negative pattern as the join-discovery bug fixed in v0.9.7.
