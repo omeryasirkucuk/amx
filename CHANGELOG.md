@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-05-01
+### Changed
+- **Startup banner cleanup** (`amx/utils/console.py:show_banner`):
+  - Dropped the redundant "Metadata Extraction System" subtitle — it was saying the same thing as "Agentic Metadata Extractor" two lines above. The new banner is single-source-of-truth: tagline at top, ASCII art in the middle, footer at the bottom.
+  - Replaced the asterisk framing (`* AMX (Agentic Metadata Extractor) *`) with box-drawing brackets (`┃  Agentic Metadata Extractor  ┃`). The asterisks were rendered with the system font; the brackets sit in the same Unicode block as the rest of the ANSI Shadow art, so the framing now matches the grid aesthetic instead of mixing vector glyphs with grid art.
+  - Added a footer line: `v0.8.6  •  AI-inferred database descriptions`. The version is auto-pulled from `amx.__version__` (lazy import keeps `utils.console` free of a hard top-level dependency); the tagline gives new users an immediate one-liner about what the tool does without scrolling.
+  - Tier-style cyan hierarchy across the three tiers (`bold cyan`, `bold bright_cyan`, `cyan`) so the eye picks out the levels.
+
+### Why this matters
+The banner is the first thing users see when they `amx` in a fresh terminal. Open-source readability matters here — three discrete tiers (what / how it looks / which version) beats two redundant tiers + decorative noise. Box-drawing framing also keeps the UTF-8 art consistent: no more mixed-glyph-class look.
+
 ## [0.8.5] - 2026-05-01
 ### Added
 - **`/run` Column scope** (`amx/services/analyze_scope.py`, `amx/agents/orchestrator.py`, `amx/cli_support/commands/analyze_flow.py`): user noticed there was no way to re-run AI inference on a single column. Added a 5th option to the analysis-scope picker — `Column` — that drills schema → table → column and restricts the run to just that one column. Useful when one comment came out wrong (the LLM picked the wrong meaning for `code`, say) and you want to regenerate it without re-profiling the whole table.
