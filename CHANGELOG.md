@@ -6,6 +6,25 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-05-01
+### Fixed
+- **"how is X uploaded / loaded / populated / refreshed?" was being routed to `detect_scd_pattern`** (which answers "how is HISTORY kept", a different concern). Reproducer: user asked "how is vbak uploaded?", agent ran the SCD detector, returned the canned "no SCD signals; provide a business_key" recovery message — completely off-topic.
+
+### Changed
+- **System prompt new routing rule** (`amx/search/tool_agent.py`). When the user asks the LOAD-MECHANISM question (English: "how is X uploaded / loaded / populated / ingested / refreshed", Turkish: "nasıl yükleniyor / besleniyor / ETL süreci nasıl / data nasıl geliyor"), the agent should:
+  1. Call `describe_table` and read `analytics.last_modified` — the most recent write timestamp.
+  2. Call `inspect_data_quality` on the main temporal column (`created_at` / `erdat` / `load_date` / `ingestion_ts`) — `min_value` is when data first appeared, `max_value` is the latest record, the gap + row_count is a rough load-cadence hint.
+  3. If columns shaped like CDC are present (`created_at` + `updated_at`, `deleted_at` flag), call them out as an in-band CDC signal.
+  4. ALWAYS state what AMX CANNOT see: "Direct visibility into the orchestrator (Airflow / Dagster / dbt Cloud / Snowflake Snowpipe / BigQuery Data Transfer / Databricks DLT) is a v0.11 planned feature — AMX currently infers from the data, not from the load job."
+
+The rule explicitly bans `detect_scd_pattern` for this question class because that tool answers a different concern (history retention) and gives an unhelpful recovery message when the user's actual question is unrelated.
+
+### Why this matters
+Same pattern as the v0.10.3 "duplication" / "update soon" routing fixes: AMX has the right data already (`last_modified` from v0.10.0 analytics, `inspect_data_quality` from v0.10.2) — it just needs the routing rule. Without the rule the agent picks whatever tool's keyword overlaps loosely ("uploaded" sounds vaguely temporal → SCD); with it, the agent goes straight to the load-pattern signals + the explicit ETL-tap limit.
+
+### Followups
+- The actual answer ("scheduled by `ELT_orders_hourly` Airflow DAG, last run 2026-05-01 14:00 UTC") needs the v0.11 query-history / orchestrator tap. Until then, the data-side inference is the best AMX can do.
+
 ## [0.10.9] - 2026-05-01
 ### Fixed
 - **`[WARNING] amx.db.connector — Exact row count failed for X.Y: ...`** was bleeding through the live-display panel during `/ask` answers. Same UX noise pattern as the v0.10.1 `tool_calls` warning: the message is purely informational (the code already falls back to the estimated row count and continues), but it surfaced as a WARNING level alarm in the panel mid-stream. Demoted to DEBUG in `amx/db/connector.py:profile_table`. Operators who want to investigate slow / blocked counts can still get the line via `AMX_LOG_LEVEL=debug`.
