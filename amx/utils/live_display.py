@@ -88,6 +88,18 @@ class LiveDisplay:
         self._total_tokens_in: int = 0
         self._total_tokens_out: int = 0
 
+        # Reentrancy counter for ``pause()`` / ``resume()``. Nested
+        # contexts (e.g. TableProcessor pauses for human review which
+        # internally invokes ``ask_choice`` which itself pauses via
+        # ``_live_paused_for_input``) need balanced pairs without
+        # double-starting Rich's underlying ``Live``. The outer pause
+        # actually stops the Live; inner pauses just bump the depth;
+        # the matching resumes decrement; only the outermost resume
+        # restarts the Live. Without this, the inner resume restarted
+        # the Live, and the outer resume hit
+        # ``Only one live display may be active at once``.
+        self._pause_depth: int = 0
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def start(
@@ -123,12 +135,17 @@ class LiveDisplay:
             transient=True,
         )
         self._live.start()
+        # Reset pause depth on a fresh start so a leftover counter from
+        # a previous start/stop cycle doesn't make the next pause/resume
+        # asymmetric.
+        self._pause_depth = 0
 
     def stop(self) -> None:
         if self._live:
             self._live.update(self._render())
             self._live.stop()
             self._live = None
+        self._pause_depth = 0
         # After the transient live region clears, leave a quiet, single-line
         # summary of the pipeline so the user can still tell what AMX did.
         # Skip when there were no real activities (e.g. a deterministic
@@ -163,18 +180,52 @@ class LiveDisplay:
         return tree
 
     def pause(self) -> None:
-        if self._live:
-            self._live.stop()
+        """Stop the Rich ``Live`` so prompt_toolkit can echo keystrokes.
+
+        Reentrant — only the **first** pause actually stops the live
+        region; nested pauses just bump the depth counter. This
+        matches the natural call pattern where TableProcessor pauses
+        for human review and the prompt helpers inside that review
+        (``ask_choice`` via ``_live_paused_for_input``) pause again
+        per-keystroke.
+        """
+        if self._live is None:
+            return
+        if self._pause_depth == 0:
+            try:
+                self._live.stop()
+            except Exception:
+                # Defensive — if Rich's internal state is already off,
+                # don't break the user-facing flow.
+                pass
+        self._pause_depth += 1
 
     def resume(self) -> None:
-        if self._live:
-            self._live = Live(
-                self,
-                console=self._console,
-                refresh_per_second=10,
-                transient=True,
-            )
-            self._live.start()
+        """Restart the paused ``Live`` region.
+
+        Reentrant counterpart to :meth:`pause`. The matching outer
+        ``resume`` is the one that restarts Rich's ``Live``; inner
+        resumes just decrement the depth. Without this, the inner
+        ``resume`` started the Live early, and the outer ``resume``
+        hit ``Only one live display may be active at once`` because
+        Rich rejects starting an already-started Live.
+
+        No-op when the display was never paused (or when pause was
+        called on a None ``_live``) — keeps callers from having to
+        track whether they actually paused.
+        """
+        if self._live is None or self._pause_depth == 0:
+            return
+        self._pause_depth -= 1
+        if self._pause_depth == 0:
+            try:
+                self._live.start()
+            except Exception:
+                # If Rich refuses (e.g. another Live snuck in), surface
+                # the issue via debug logging rather than crashing the
+                # outer flow. The display may end up out of sync but
+                # the user's run continues.
+                pass
 
     @property
     def is_active(self) -> bool:
