@@ -6,6 +6,46 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-05-01
+### Changed — `execute_analyze_run` extracted into 3 phase helpers (S4 refactor)
+
+The `/run` and `/run-apply` entry point — `execute_analyze_run` — was a 600-line procedural script juggling 12 local variables across 3 top-level exception handlers (`FatalLLMError`, `KeyboardInterrupt`, `Exception`) and a `finally` block. Three different bugs surfaced here in this conversation alone (UnboundLocalError on Ctrl+C during scope picker, dedup-question ordering, `review_strategy` initialization) — every change risked tripping over neighbouring state.
+
+v0.9.4 lifts the three largest contiguous chunks into standalone functions under a new `amx/cli_support/commands/_analyze/` package:
+
+```
+amx/cli_support/commands/analyze_flow.py        1099 →  877 LOC  (-20%)
+amx/cli_support/commands/_analyze/
+  __init__.py                                     -   →   35 LOC   (re-exports)
+  run_loop.py                                     -   →  227 LOC   (PerSchemaLoopResult dataclass + run_per_schema_loop + chat-mode helper)
+  run_summary.py                                  -   →  206 LOC   (render_summary_and_apply + dedup recap + apply branch)
+  interrupt.py                                    -   →   85 LOC   (handle_keyboard_interrupt — final-status decision)
+```
+
+**`execute_analyze_run` is now 390 lines** (was 600). The remaining body is mostly the 4 runtime prompts (dedup / scope / coverage / review-strategy) plus history-run creation plus the equivalence-dedup pre-walk; each of those is short and tightly coupled to local state, so further extraction would just move pain around.
+
+**Phase functions:**
+
+* **`run_per_schema_loop(...)` → `PerSchemaLoopResult`** — replaces the `for schema_name, assets in scope.items()` block. Mutates the result lists in-place so the surrounding exception handlers can still inspect partial progress on cancel; returns the accumulated lists + the `last_orchestrator` so the caller can run `apply_results` after the loop. Internally splits chat-mode (`process_table` per asset, with history counter bumps) from batch-mode (`process_tables_batch_mode`) as helper `_process_assets_chat_mode`.
+* **`render_summary_and_apply(...)` → `(approved, skipped)`** — replaces the post-loop block: deferred batch_review (skipped for auto-apply), token-tracker drop, summary heading, dedup recap (separate counter from per-table counts), approved-table render, save_pending, apply branch (auto-apply meta-only writes vs interactive confirm + write).
+* **`handle_keyboard_interrupt(...)` → `(final_status, final_error_text)`** — replaces the `except KeyboardInterrupt:` body. Saves partial pending, decides between `cancelled` / `ready_for_review` based on `review_strategy` (auto-apply always cancels, others may be reviewable), emits the structured log event.
+
+### Why this matters
+
+Before v0.9.4, every new feature in the analyze flow (Phase 2 dedup, Column scope, equivalence pre-walk) had to thread its state through `execute_analyze_run`'s local namespace and remember to update each of the 3 exception handlers. The recent v0.8.3 fix — pre-init `review_strategy` to avoid an UnboundLocalError on Ctrl+C during scope picking — was a direct consequence of this fragility.
+
+Now:
+
+* **Each phase is independently testable** — feed `run_per_schema_loop` a synthetic scope dict + stub Orchestrator, assert the counters / pending state.
+* **The exception handlers no longer race the main path for shared variables** — `handle_keyboard_interrupt` consumes pre-defined values and returns its decisions explicitly.
+* **Future features touch only the phase they affect** — adding e.g. a "stage 2 LLM verification pass" goes in `run_summary.py` next to `_emit_dedup_recap`, not in the middle of the orchestrator.
+
+### Followups
+
+* `execute_analyze_run` still has 4 user-prompt blocks (dedup choice, scope finalization, coverage filter, review strategy) interleaved with state setup; these could be extracted into a `RunBuilder` class in v0.9.5.
+* `_finalize_history_run` (87 LOC) is a near-pure data formatter and could move into `_analyze/finalize.py` if `_analyze/` keeps growing.
+* The codebase analysis still flagged `_run_bulk_edit_by_name` (290 LOC) as the next problematic method (S6); shorter than execute_analyze_run but the same procedural-script smell.
+
 ## [0.9.3] - 2026-05-01
 ### Changed — Slash commands collapsed into a single registry (S5 refactor)
 
