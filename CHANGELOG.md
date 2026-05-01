@@ -6,6 +6,40 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-05-01
+### Fixed
+- **`/ask "which columns are int or double in vbak"` returned "no" with confidence**. Reproducer: any wide-table dtype question. The user pointed out the meta-pattern after v0.9.7 (joins) / v0.9.8 (boolean flags) / v0.9.9 (truncation) all required hand-tuning a separate question shape: "we can't enumerate every dtype-question pattern one by one". Right — the underlying problem was that AMX wasn't giving the LLM a complete dtype picture, so each question class needed a separate fix.
+
+### Changed — design fix, not another patch
+- **`describe_table` now returns `columns_by_dtype: {family: [column_names]}` — complete coverage, never truncated** (`amx/search/agent_tools.py`). On a 200-column SAP `vbak` the LLM now sees:
+  ```
+  {
+    "bool":   ["is_deleted"],
+    "int":    ["mandt", "vbeln", "posnr", ...],
+    "float":  ["gwldt", "submi", "lifsk", ...70 names...],
+    "string": ["autlf", "kunnr", "vkorg", ...],
+    "date":   ["erdat", "audat", ...],
+    "timestamp": ["created_at", "updated_at"]
+  }
+  ```
+  No matter how the user phrases their question ("int or double", "boolean", "which columns are dates", "any json columns"), the LLM has the complete answer in one map. No more whack-a-mole.
+
+- **Tool description rewritten** to teach the LLM the new contract:
+  - `dtype_summary` — counts across ALL columns (authoritative for "how many").
+  - `columns_by_dtype` — names across ALL columns, NEVER truncated (authoritative for "which columns").
+  - `columns` — sorted-and-truncated detailed metadata (use ONLY for comments / nullability per column, NOT for dtype questions).
+  - Explicit rule: "when the user asks 'which columns are dtype X', the COMPLETE answer is in `columns_by_dtype` — read it directly and list the names. Do NOT say 'no X columns' unless the family key is absent or the list is empty."
+
+### Why this matters
+
+The user's diagnosis was correct: this is a **design problem, not a bug**. v0.9.7 / 0.9.8 / 0.9.9 all added more conditional logic ("if the user asks about boolean, also try `char(1)`"; "if the table is wide, sort by interestingness"; "if the dtype is `int`, expand the family map"). That approach scales linearly with question variety. v0.9.10 inverts it — the LLM gets the complete dtype map up front and reasons from there. Future dtype questions ("any json column", "any uuid", "are there bytea fields") need no AMX-side change.
+
+The same lesson applied to v0.9.7's join discovery (3-tier fallback chain with `inference_source`) and v0.9.8's boolean flag (kind-tagging native_boolean / flag_candidate). The pattern: give the LLM a complete picture + honest source attribution + don't pretend a partial result is exhaustive.
+
+### Followups
+- Apply the `columns_by_dtype` pattern to `find_columns_by_dtype` for cross-table queries: instead of returning rows by family, return all rows with their families pre-tagged so the LLM can group them however the question demands.
+- The same "complete map" principle should extend to other surface gaps: e.g. `describe_table` could ALSO return per-column "samples" (top-N distinct values) so the LLM can answer "which columns hold currency codes" without a separate live-DB probe.
+
 ## [0.9.9] - 2026-05-01
 ### Fixed
 - **`describe_table` truncated wide tables before the LLM could see boolean columns**. Reproducer: user asks "do vbak have any boolean column?" against an SAP schema where `vbak` has 155+ columns and the only `bool` column is `is_deleted` at column position 155. Pre-v0.9.9, `_tool_describe_table` returned `cols[:60]` — `is_deleted` was past the cap and invisible. The LLM read 60 columns, saw no `bool` dtype, and said "no native boolean columns" with confidence. (`is_deleted` IS a real PG `bool` here; the v0.9.8 char(1) flag fallback didn't apply.)

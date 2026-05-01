@@ -153,22 +153,30 @@ class ToolBox:
                 "function": {
                     "name": "describe_table",
                     "description": (
-                        "Return the table comment, column count, dtype_summary (per-family "
-                        "counts across ALL columns), and column metadata (name + dtype + "
-                        "comment) for a fully-qualified table. The columns list is sorted "
-                        "by 'interestingness' (commented columns first, then rare dtypes) "
-                        "and TRUNCATED to 60 entries on wide tables — ALWAYS read the "
-                        "dtype_summary field to get the complete dtype picture instead of "
-                        "relying on the truncated columns list. Use this for 'what's the "
-                        "vbrk table?', 'describe sap_s6p.adrc', 'X tablosunda hangi kolonlar "
-                        "var?'. Also use this for 'is there any boolean / flag / Y-N column "
-                        "in TABLE' — check dtype_summary['bool'] for native booleans and "
-                        "dtype_summary['string'] for char(1)/varchar(1) flag candidates. "
-                        "Native boolean dtypes are 'bool'/'boolean'; in SAP / legacy schemas "
-                        "boolean SEMANTICS are stored as 'char(1)'/'varchar(1)' flag columns "
-                        "('X'/'' or 'Y'/'N'). When answering: cite dtype_summary counts and "
-                        "list BOTH the native booleans (if any) AND the char(1)/varchar(1) "
-                        "flag candidates instead of saying 'no boolean columns'."
+                        "Return the table comment, column count, and three complementary "
+                        "views of the column list:\n"
+                        "  • ``dtype_summary`` — {family: count} across ALL columns. "
+                        "Authoritative source for 'how many of dtype X are there'.\n"
+                        "  • ``columns_by_dtype`` — {family: [column_names]} across ALL "
+                        "columns. NEVER truncated. AUTHORITATIVE SOURCE for 'which "
+                        "columns of dtype X exist on this table'.\n"
+                        "  • ``columns`` — list of {name, dtype, nullable, comment} "
+                        "objects. Sorted by 'interestingness' (commented first, then "
+                        "rare dtypes) and TRUNCATED to 60 entries on wide tables. Use "
+                        "this for description / nullability / comment access, NOT for "
+                        "answering dtype questions.\n"
+                        "Family vocabulary: bool, int, float, string, date, timestamp, "
+                        "time, json, uuid, binary (or the lowered raw dtype for exotics).\n"
+                        "RULE: when the user asks 'which columns are dtype X in TABLE' "
+                        "(int, double, bool, string, date, timestamp, …), the COMPLETE "
+                        "answer is in ``columns_by_dtype`` — read it directly and list "
+                        "the names. Do NOT say 'no X columns' unless the family key is "
+                        "absent or the list is empty. SAP / legacy boolean SEMANTICS "
+                        "live in the ``string`` family (char(1)/varchar(1) flags like "
+                        "'X'/'' or 'Y'/'N') — surface those alongside any native bool "
+                        "instead of saying 'no boolean columns'. Use ``columns_truncated`` "
+                        "to caveat the answer ('showing X of Y rows in details') only "
+                        "when the user wants comments / examples per column."
                     ),
                     "parameters": {
                         "type": "object",
@@ -533,19 +541,23 @@ class ToolBox:
             for c in profile.columns
         ]
 
-        # ── Per-dtype family summary ──
-        # On wide SAP tables (vbak has 155+ columns) the column list
-        # gets truncated below to keep the prompt within a reasonable
-        # budget. Without this summary the LLM would not know that
-        # there's e.g. ONE ``bool`` column on a table dominated by 100
-        # ``float8`` columns — it would just see the truncated head and
-        # honestly say "no boolean columns". The summary travels with
-        # the truncated list so the LLM has a complete dtype picture
-        # for the table even when it can't see every column.
+        # ── Per-dtype family summary + complete coverage map ──
+        # The summary gives the LLM the complete dtype picture of the
+        # table even when the columns list below is truncated.
+        # ``columns_by_dtype`` carries the actual column NAMES grouped
+        # by family (NOT truncated, regardless of total table width)
+        # so the LLM can answer "which columns are int / double / bool /
+        # string / date / … in TABLE" by reading one map instead of
+        # asking AMX for one tool-call per dtype. This is the design
+        # fix for the false-negative loop ("we can't enumerate every
+        # dtype question one by one"): give the LLM the complete
+        # picture and trust it to reason.
         dtype_summary: dict[str, int] = {}
+        columns_by_dtype: dict[str, list[str]] = {}
         for c in all_cols:
             family = self._dtype_family_label(c["type"])
             dtype_summary[family] = dtype_summary.get(family, 0) + 1
+            columns_by_dtype.setdefault(family, []).append(c["name"])
 
         # ── Smart truncation order ──
         # When wide tables get capped, the truncation should leave the
@@ -575,6 +587,9 @@ class ToolBox:
             "row_count": int(profile.row_count or 0),
             "column_count": len(all_cols),
             "dtype_summary": dtype_summary,
+            # Complete coverage — no truncation. Authoritative source
+            # for "which columns of dtype X exist on this table".
+            "columns_by_dtype": columns_by_dtype,
             "columns_truncated": len(all_cols) > 60,
             "columns": sorted_cols[:60],
         }
