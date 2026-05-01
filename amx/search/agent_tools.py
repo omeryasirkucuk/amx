@@ -2161,6 +2161,79 @@ class ToolBox:
                     return role
         return ""
 
+    # ── Column-shape patterns ──
+    # Numeric "measure" columns suggest a fact table (financial /
+    # quantity values, summable). Both English and SAP-style names.
+    _MEASURE_NAME_PATTERNS: tuple[str, ...] = (
+        "_amt", "_amount", "amount_", "_value", "_qty", "_quantity",
+        "_total", "_sum", "_price", "_cost", "_fee", "_rate", "_count",
+        "_brutto", "_netto", "_revenue", "_profit", "_margin",
+        "_balance", "_credit", "_debit", "_tax",
+        # SAP-specific currency / quantity columns
+        "netwr", "brtwr", "mwsbp", "mwsbk", "kbetr", "kwert",
+        "fkimg", "fklmg", "kpein", "kzwi", "wavwr",
+    )
+    # ID / key columns — high count suggests a fact joining out.
+    _ID_NAME_PATTERNS: tuple[str, ...] = (
+        "_id", "id_", "_key", "_no", "_num", "_code", "_nr", "_kod",
+        # SAP-specific keys appearing in many tables
+        "mandt", "vbeln", "vgbel", "kunag", "kunrg", "kunwe", "lifnr",
+        "vkorg", "vtweg", "spart", "matnr", "werks", "lgort",
+        "bukrs", "gjahr", "belnr", "buzei", "fkart", "auart",
+    )
+    # Descriptive text columns — high count + low measures suggests
+    # a dimension / reference table.
+    _DESCRIPTIVE_NAME_PATTERNS: tuple[str, ...] = (
+        "_name", "name_", "_desc", "_description", "description_",
+        "_label", "_text", "text_", "_title", "_remark", "_note",
+        "_comment", "_addr", "address_", "_street", "_city",
+        # SAP-specific descriptive columns
+        "ktokd", "kdgrp", "klabc", "konzs", "name1", "name2",
+    )
+
+    def _count_column_shape(self, profile: Any) -> dict[str, int]:
+        """Count measure-like / id-like / descriptive-like columns.
+
+        Used by ``_classify_table_role`` as a structural fallback when
+        naming + FK signals are weak. Returns counts by category;
+        decision logic lives in the caller.
+        """
+        measures = 0
+        ids = 0
+        descriptives = 0
+        for c in profile.columns or []:
+            name_low = str(c.name).lower()
+            dtype_low = str(c.dtype).lower()
+            is_numeric = any(
+                token in dtype_low
+                for token in (
+                    "int", "numeric", "decimal", "double", "float", "real",
+                    "money",
+                )
+            )
+            is_string = any(
+                token in dtype_low
+                for token in ("char", "varchar", "text", "string")
+            )
+            # Measure: numeric AND name suggests value/quantity.
+            if is_numeric and any(p in name_low for p in self._MEASURE_NAME_PATTERNS):
+                measures += 1
+                continue
+            # ID-like: any dtype, name suggests key/code (numeric or
+            # short-fixed-width strings both count).
+            if any(p == name_low or name_low.endswith(p) or name_low.startswith(p) or p in name_low
+                   for p in self._ID_NAME_PATTERNS):
+                ids += 1
+                continue
+            # Descriptive: string AND name suggests label/description.
+            if is_string and any(p in name_low for p in self._DESCRIPTIVE_NAME_PATTERNS):
+                descriptives += 1
+        return {
+            "measures": measures,
+            "ids": ids,
+            "descriptives": descriptives,
+        }
+
     def _classify_table_role(
         self,
         profile: Any,
@@ -2208,6 +2281,36 @@ class ToolBox:
         if naming:
             indicators["naming_signal"] = naming
             evidence.append(f"Naming pattern matches `{naming}` role.")
+
+        # ── Column-shape signal ──
+        # Counts measure-like (numeric financial / quantity) columns,
+        # ID-like (key / code) columns, and descriptive (label / name)
+        # columns. Lets the classifier handle SAP-style schemas with
+        # opaque table names AND no declared FKs — vbrk has no naming
+        # signal AND no FK constraints, but it has many numeric measures
+        # (netwr / mwsbk / fkimg) + many keys (mandt / vbeln / kunag),
+        # which is the column-shape signature of a fact table.
+        shape = self._count_column_shape(profile)
+        indicators["measure_columns"] = shape["measures"]
+        indicators["id_columns"] = shape["ids"]
+        indicators["descriptive_columns"] = shape["descriptives"]
+        if shape["measures"] >= 3:
+            evidence.append(
+                f"{shape['measures']} measure-like numeric column(s) "
+                "(amount / value / qty / SAP currency or quantity field) "
+                "— fact-like column shape."
+            )
+        if shape["ids"] >= 4:
+            evidence.append(
+                f"{shape['ids']} ID / key / code column(s) — joins out "
+                "to many entities (fact-like) or composite-key (bridge-like)."
+            )
+        if shape["descriptives"] >= 5 and shape["measures"] == 0:
+            evidence.append(
+                f"{shape['descriptives']} descriptive (name / label / "
+                "description) column(s) and no measures — dimension / "
+                "reference shape."
+            )
 
         # Row-count percentile vs peers (if peers provided)
         rc_percentile: float | None = None
@@ -2273,7 +2376,11 @@ class ToolBox:
             hypothesis = "dimension"
             confidence = "high" if fk_in >= 1 else "medium"
         else:
-            # Pure structural inference.
+            # Pure structural inference. Order matters — the
+            # column-shape signal (measures + ids) wins for SAP /
+            # FK-free schemas because that's the only ground truth
+            # left when naming is opaque AND constraints aren't
+            # declared.
             if (
                 fk_out >= 3
                 and (rc_percentile is None or rc_percentile >= 0.6)
@@ -2285,12 +2392,42 @@ class ToolBox:
                     "No naming signal; classified by structure (high FK "
                     "fan-out + temporal/partitioned)."
                 )
+            elif (
+                shape["measures"] >= 3
+                and shape["ids"] >= 4
+                and (has_temporal or row_count >= 10_000)
+            ):
+                # Column-shape fact heuristic — fires when FK
+                # constraints are absent (typical SAP) but the column
+                # mix screams "transactional with measures + foreign
+                # keys at the application layer".
+                hypothesis = "fact"
+                confidence = "medium"
+                evidence.append(
+                    f"No FK / naming signal; column-shape shows "
+                    f"{shape['measures']} measure(s) + {shape['ids']} "
+                    f"key(s) + temporal — fact-shaped row."
+                )
             elif fk_in >= 3 and fk_out <= 1:
                 hypothesis = "dimension"
                 confidence = "medium"
                 evidence.append(
                     "No naming signal; classified by structure (high FK "
                     "fan-in, low fan-out)."
+                )
+            elif (
+                shape["descriptives"] >= 5
+                and shape["measures"] == 0
+                and row_count <= 100_000
+            ):
+                # Column-shape dimension heuristic — many descriptive
+                # columns + no measures + moderate row count.
+                hypothesis = "dimension"
+                confidence = "medium"
+                evidence.append(
+                    f"Column-shape dimension: {shape['descriptives']} "
+                    "descriptive column(s) + no measures + moderate row "
+                    "count."
                 )
             elif row_count <= 1000 and col_count <= 12 and fk_in >= 1:
                 hypothesis = "lookup"
