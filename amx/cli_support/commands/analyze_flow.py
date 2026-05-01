@@ -589,7 +589,17 @@ def execute_analyze_run(
                 )
 
             review_strategy = "individual"
-            if not use_batch and total_assets > 1:
+            # Show the run-wide strategy prompt for any chat-mode run,
+            # including single-asset scopes. The pre-2026-05-02 gate
+            # (``total_assets > 1``) skipped this prompt entirely when
+            # the user picked a single table — silently defaulting to
+            # "individual" and hiding the ``auto-apply`` option for the
+            # very flow it was built for: "I trust the agents, just
+            # write the top suggestion to the DB and don't make me
+            # click through a per-column review for one table." Batch
+            # mode still skips because batch reviews everything at the
+            # end regardless of strategy.
+            if not use_batch:
                 review_strategy = ask_choice(
                     "Review strategy",
                     ["individual", "deferred", "auto-apply"],

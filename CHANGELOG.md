@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `auto-apply` is reachable for single-asset `/run`
+
+User report: "where is auto-apply, has been returning past, why did you delete it?". Auto-apply was **not** deleted — the run-wide `Review strategy` prompt that contains it was just hidden when the user picked a single asset.
+
+The gate at `analyze_flow.py:592` was `if not use_batch and total_assets > 1:`. With `total_assets == 1` the prompt was skipped entirely; `review_strategy` silently defaulted to `"individual"` and the user only ever saw the per-table review-mode prompt (`one-by-one` / `accept-all-high` / `accept-all` / `reject-all`) — none of which auto-apply. The gate predates this session (commit `cbd66087`, 2026-04-29).
+
+- **Lift the `total_assets > 1` part of the gate.** The prompt now fires for any chat-mode `/run` scope, so users running a single table can pick `auto-apply` (`Skip human review — write the top LLM suggestion directly`) the same way multi-asset users could.
+- **Batch mode still skips** the prompt because batch reviews everything at the end regardless of strategy — leaving `not use_batch` as the only condition.
+- The existing safety warning fires when `auto-apply` is selected with `/run` (no `--apply`): "auto-apply selected but /run was used (without --apply). The top suggestions will be marked accepted in the catalog, but nothing will be written to the DB. Use /run-apply to actually persist the comments."
+
 ### Fixed — Nested pause/resume in LiveDisplay (the "Only one live display may be active at once" error after `accept-all` review)
 
 User report: after picking `accept-all` for a column-review prompt during `/run`, AMX printed `✗ Only one live display may be active at once` and then drew two stacked panels.
