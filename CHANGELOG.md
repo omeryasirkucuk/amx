@@ -6,6 +6,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/compare` slash command
+
+New search-namespace command that pivots run history side-by-side, so users running the same scope under different LLM / doc / code profiles can finally see which configuration produced the best descriptions.
+
+- `/compare [RUN_IDS…] [--schema] [--table] [--column] [--last N] [--command analyze.run|search.ask|all] [--by auto|llm_profile|doc_profile|code_profile|llm_model|db_profile|run]` renders three Rich tables:
+  - **Run summary** — one row per run (started, status, command, profiles, model, duration, approval rate). The dimension that varies is auto-detected and highlighted in `bold green`.
+  - **Per-column results** — pivots `run_results` so each schema/table/column row shows the top description, confidence band, `logprob_score`, and token count for each run; the highest logprob per row wins in green.
+  - **Aggregate metrics** — wall duration, model processing time, prompt/completion/total tokens, average logprob, confidence distribution, approval rate, saved-result count.
+- Resolution order: explicit run IDs → scope filter (`--schema` / `--table` / current schema) with `--last N` → error if neither.
+- Schema additive migration: `analysis_runs` gains `llm_profile`, `doc_profile`, `code_profile` columns (idempotent ALTER, NULL for legacy rows). `/run` and `/ask` now persist the active profile names so post-hoc comparisons across doc/code/llm-profile differences are meaningful.
+- Discovery hint: after a successful `/ask`, when ≥2 prior `search.ask` runs already touched the same schema, a single dim line suggests `/compare --last 3 --schema <X>`. Quiet, never on the first or second ask.
+
 ## [0.11.0] - 2026-05-01
 ### Added — Multi-DB execution + optional `database` per connector
 
