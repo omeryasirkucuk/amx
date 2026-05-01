@@ -870,6 +870,17 @@ def register_search_commands(
             provider=cfg.llm.provider,
             model=cfg.llm.model,
         ):
+            # Catalog picker for 3-level backends — fires before
+            # _interactive_sync_scope so the schema picker that runs
+            # there is already catalog-aware.
+            try:
+                from amx.cli_support.catalog_picker import ensure_catalog_selected
+                from amx.db.connector import DatabaseConnector
+
+                _db_for_pick = DatabaseConnector(cfg.db)
+                ensure_catalog_selected(_db_for_pick)
+            except Exception:
+                pass
             cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
             if not scope:
                 return

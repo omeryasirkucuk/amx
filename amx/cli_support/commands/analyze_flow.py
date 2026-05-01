@@ -493,6 +493,17 @@ def execute_analyze_run(
         _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
+        # Catalog picker for 3-level backends (Databricks Unity
+        # Catalog, BigQuery projects). Fires BEFORE scope finalization
+        # so list_schemas / list_tables downstream are already
+        # catalog-aware. Silent no-op for PG / Snowflake / single-
+        # catalog Databricks.
+        try:
+            from amx.cli_support.catalog_picker import ensure_catalog_selected
+            ensure_catalog_selected(db)
+        except Exception:
+            pass
+
         # ── Equivalence-class dedup choice (FIRST run-mode question) ─────────
         # Mirrors /metadata edit's binary mode-selector pattern: ask the
         # high-impact yes/no decision BEFORE any drill-down. In /run that

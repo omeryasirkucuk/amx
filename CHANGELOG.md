@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.14] - 2026-05-01
+### Changed
+- **Catalog picker hoisted into a shared helper used by all flows** (`amx/cli_support/catalog_picker.py`). The v0.10.11 picker only fired in `/edit`; user pointed out it should fire wherever AMX needs to list schemas / tables before knowing the catalog. New helper:
+  ```python
+  ensure_catalog_selected(db, *, silent_when_set=False) -> str
+  ```
+  Wired into:
+  - `/connect` (`amx/cli_support/root_commands.py:db_connect`) — Databricks-specific path. After a successful connection test the user picks a catalog; the rest of the session inherits it.
+  - `/run` and `/run-apply` (`amx/cli_support/commands/analyze_flow.py:execute_analyze_run`) — fires after the LLM-test stage and BEFORE the scope picker so `finalize_scope` walks the right schemas.
+  - `/search sync` (`amx/cli_support/commands/search.py:search_sync`) — fires inside the `command_display` block before `_interactive_sync_scope` runs.
+  - `/edit` (`amx/cli_support/commands/manual.py:_select_catalog_for_wizard`) — now a 3-line shim around the shared helper.
+
+The picker is still a no-op for backends that return `False` from `supports_catalogs()` (PostgreSQL, Snowflake, BigQuery without project switching), so existing flows on those backends are unchanged. The `silent_when_set=True` flag is available for non-interactive callers that want to skip the prompt when `cfg.catalog` is already populated; the four wired call sites all default to `False` so the picker behaves consistently across flows.
+
+### Why this matters
+Without this hoist, `/run` and `/search sync` on Databricks would still fall through to the SQLAlchemy inspector with `catalog=None` and fail with `SHOW TABLES FROM None.<schema>`, just like `/edit` did pre-v0.10.12. Same root cause, same fix, applied uniformly.
+
+### Followups
+- A future refinement: make `ensure_catalog_selected` recognise BigQuery projects (`SELECT DISTINCT catalog_name FROM \`region-us\`.INFORMATION_SCHEMA.SCHEMATA`) so cross-project edits / runs work the same way.
+- The `_db_for_pick = DatabaseConnector(cfg.db)` instances created in `/connect` and `/search sync` could be threaded through to subsequent steps to avoid an extra connection round-trip — currently the cfg.catalog mutation propagates through cfg only.
+
 ## [0.10.13] - 2026-05-01
 ### Fixed
 - **Catalog picker auto-skipped after the first pick** — once the user picked a catalog in `/edit`, `cfg.catalog` was set and subsequent wizard runs treated that as authoritative ("existing catalog → return immediately"). User couldn't switch catalogs without restarting AMX or editing the profile manually.

@@ -242,71 +242,17 @@ def _select_db_profile_for_wizard(cfg: AMXConfig) -> tuple[str, DBConfig] | None
 
 
 def _select_catalog_for_wizard(db: object) -> str:
-    """For Databricks Unity Catalog (and any future 3-level backend),
-    let the user pick a catalog before schema/table selection.
+    """Shim that delegates to the shared catalog picker.
 
-    Returns the selected catalog name, or an empty string if the
-    backend doesn't support catalogs / the user cancelled. The empty
-    string falls through to the legacy SQLAlchemy schema inspector
-    (which is fine for PG / Snowflake / BQ and the legacy
-    hive_metastore on Databricks).
-
-    The picker is shown EVERY time even when ``cfg.catalog`` is
-    already set — the existing catalog seeds the default so a user
-    who's happy with their previous pick just presses Enter, and
-    a user who wants to switch catalogs picks a different one. Same
-    UX shape as the schema / table pickers downstream.
+    The actual logic lives in ``amx.cli_support.catalog_picker``
+    so every flow (``/edit``, ``/run``, ``/run-apply``, ``/connect``,
+    ``/search sync``) can call the same helper. Kept as a wrapper
+    for backwards compatibility with existing call sites in this
+    module.
     """
-    from amx.utils.console import step_spinner
+    from amx.cli_support.catalog_picker import ensure_catalog_selected
 
-    if not bool(getattr(db, "supports_catalogs", lambda: False)()):
-        return ""
-    existing_catalog = str(getattr(db, "cfg", None) and getattr(db.cfg, "catalog", "") or "").strip()
-    try:
-        with step_spinner("Listing catalogs for manual edit"):
-            catalogs = list(db.list_catalogs())  # type: ignore[attr-defined]
-    except Exception:
-        catalogs = []
-    if not catalogs:
-        if existing_catalog:
-            # SHOW CATALOGS failed but the cfg has a catalog already —
-            # honour it silently rather than blocking the wizard.
-            return existing_catalog
-        warn(
-            "Backend supports catalogs but `SHOW CATALOGS` returned "
-            "nothing. Falling back to the legacy schema inspector — "
-            "if your Databricks workspace uses Unity Catalog, set "
-            "`/db` profile's catalog explicitly."
-        )
-        return ""
-    if existing_catalog:
-        info(
-            f"Current catalog: '{existing_catalog}'. Press Enter to "
-            "keep it, or pick a different one."
-        )
-    else:
-        info(
-            "Databricks Unity Catalog detected. Pick a catalog before "
-            "the schema and table picker."
-        )
-    default_choice = (
-        existing_catalog
-        if existing_catalog and existing_catalog in catalogs
-        else (catalogs[0] if catalogs else "")
-    )
-    chosen = _ask_choice_or_cancel(
-        "Select catalog", catalogs, default=default_choice,
-    )
-    if chosen and chosen.strip():
-        # Persist on the in-memory cfg so subsequent list_schemas /
-        # list_assets calls scope to this catalog. We don't write
-        # back to disk — this is a per-wizard-session pick.
-        try:
-            db.cfg.catalog = chosen.strip()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        return chosen.strip()
-    return existing_catalog
+    return ensure_catalog_selected(db)
 
 
 def _select_schema_for_wizard(db: object, default: str = "") -> str | None:
