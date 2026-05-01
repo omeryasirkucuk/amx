@@ -6,6 +6,75 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-05-01
+### Added — `detect_dimensional_role` tool
+
+User: "AMX should answer dimensional-modeling questions — what's the main/fact table?, which tables are dimensions?, is this a star schema or snowflake?". One tool covers all three modes. Per-table mode classifies a single table; schema-wide mode ranks every table and infers the overall pattern.
+
+**Roles detected:**
+- `fact` — large + many outgoing FKs / partitioned / temporal column / `fact_*` / `_facts` / `_evt` / `transactions` / `_orders` naming
+- `dimension` — high incoming FK fan-in + low fan-out / `dim_*` / `_dim` / `dimension_*` / `lookup_*` naming
+- `bridge` — roughly equal in/out FKs (both ≥ 2, |out − in| ≤ 1) / `bridge_*` / `xref_*` / `link_*` naming
+- `lookup` — small (≤ 1000 rows, ≤ 12 cols) + at least one incoming FK
+- `staging` — `stg_*` / `staging_*` / `raw_*` / `_landing` / `src_*` naming
+- `audit` — `_history` / `_audit` / `_log` / `_archive` naming
+- `transactional` — has temporal column but no partitioning / no FK fan-out
+- `unknown` — no strong signal in any direction
+
+**Schema-level pattern detection:**
+- `star_schema` — facts + dimensions present, no dimension-to-dimension FKs
+- `snowflake_schema` — at least one dimension references another dimension via FK (the result lists examples like `sap_dim.product_dim → sap_dim.product_category_dim`)
+- `flat` — no fact-shaped tables, only dimensions / reference data
+- `fact_only` — facts present but no dimension-shaped tables (suggests OBT / one-big-table layout)
+- `unknown` — too few tables to classify
+
+**Result shape (per-table):**
+```json
+{
+  "schema": "sales", "table": "fact_orders",
+  "role_hypothesis": "fact",
+  "confidence": "high",
+  "evidence": [
+    "Naming pattern matches `fact` role.",
+    "Row count 12,400,000 is >5× the schema median (340,000) — likely fact / transactional.",
+    "5 outgoing FK(s) — likely fact (joins out to many dimensions).",
+    "[implicit] Partitioned by order_date."
+  ],
+  "indicators": {
+    "row_count": 12_400_000, "fk_outgoing": 5, "fk_incoming": 0,
+    "column_count": 23, "is_partitioned": true, "has_clustering": false,
+    "has_temporal_column": true, "naming_signal": "fact",
+    "row_count_percentile": 0.95, "peer_row_count_median": 340_000
+  }
+}
+```
+
+**Result shape (schema-level):**
+```json
+{
+  "schema": "sales",
+  "table_count": 18,
+  "pattern_hypothesis": "star_schema",
+  "pattern_evidence": [
+    "1 fact table(s) and 6 dimension table(s); no dimension-to-dimension FKs (star layout)."
+  ],
+  "fact_tables": ["sales.fact_orders"],
+  "dimension_tables": ["sales.dim_customer", "sales.dim_product", "sales.dim_date", ...],
+  "bridge_tables": [],
+  "lookup_tables": ["sales.lookup_country", "sales.lookup_currency"],
+  "staging_tables": ["sales.stg_orders_raw"],
+  "classifications": [<full per-table breakdown>]
+}
+```
+
+### Why this matters
+Same single-tool / multi-signal / always-quote-evidence pattern as `detect_scd_pattern` (v0.10.6), `find_joinable_tables` (v0.9.7 inference_source), `find_columns_by_dtype` (v0.10.4 kind tagging). Together these tools make AMX able to talk about **how a schema is organised** — not just what's in it. Real-world data analyst questions land directly on a tool now: "this schema'ın ana tablosu nedir?", "fact ve dim hangileri?", "this is a star or snowflake?", "bu lookup mu transaction mı?".
+
+### Followups
+- **Cross-schema linkage** — when a fact table references a dimension that lives in a SHARED dimensional schema (Kimball "conformed dimensions"), surface that link in the schema-level pattern. Currently per-schema only.
+- **Galaxy / fact constellation** — multi-fact schemas where facts share dimensions; the current code labels these as `star_schema` per-fact but doesn't call out the cross-fact dimension sharing. Planned for v0.10.8.
+- **OBT / wide-table detection refinement** — currently `fact_only` flags potential one-big-table layouts but doesn't quantify width-vs-depth. A `column_count` percentile would help.
+
 ## [0.10.6] - 2026-05-01
 ### Added — `detect_scd_pattern` tool
 
