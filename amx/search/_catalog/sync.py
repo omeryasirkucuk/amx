@@ -24,9 +24,14 @@ writes.
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+from collections.abc import Callable
 from typing import Any
 
+from amx.agents.base import MetadataSuggestion
+from amx.codebase.analyzer import CodebaseReport
+from amx.db.connector import TableProfile
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.sync")

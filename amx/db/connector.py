@@ -6,7 +6,7 @@ Supports multiple backends via the adapter layer in ``amx.db.adapters``.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from enum import Enum
 from typing import Any
 
@@ -67,6 +67,45 @@ class ColumnProfile:
 
 
 @dataclass
+class AnalyticsMetadata:
+    """Per-table metadata that's useful for analytical/warehouse questions.
+
+    Populated by :meth:`AdapterBase.get_analytics_metadata` — each
+    backend fills only the fields it can. Empty/zero defaults mean
+    "this backend doesn't expose this signal" rather than "the value
+    is zero" so the search agent can be honest in its answer ("no
+    partition info available for this DB" vs "this table has no
+    partitions").
+
+    The fields cover the questions analytical DB users actually ask:
+    performance optimization (``partition_keys`` / ``clustering_keys``
+    / ``indexes``), data freshness (``last_modified``), storage
+    footprint (``storage_bytes`` / ``storage_files_count``), table
+    physical layout (``storage_format``, ``table_type``), and
+    governance (``tags`` / ``pii_columns``).
+
+    Each backend's ``get_analytics_metadata`` is best-effort: if a
+    query fails (permissions, view-not-supported, etc.) the field is
+    just left empty. The ``warnings`` list records why so the agent
+    can mention "I couldn't read partition metadata; you may need
+    SELECT on INFORMATION_SCHEMA".
+    """
+
+    partition_keys: list[str] = field(default_factory=list)
+    partition_strategy: str = ""  # range | list | hash | bucket | time | none | ""
+    clustering_keys: list[str] = field(default_factory=list)
+    storage_format: str = ""  # native | parquet | delta | iceberg | csv | json | external | ""
+    storage_bytes: int = 0
+    storage_files_count: int = 0
+    last_modified: str = ""  # ISO 8601 timestamp; empty when unknown
+    table_type: str = ""  # managed | external | view | materialized_view | temporary | foreign | ""
+    tags: dict[str, str] = field(default_factory=dict)  # tag_name -> value
+    pii_columns: list[str] = field(default_factory=list)  # column names flagged as PII
+    indexes: list[dict[str, Any]] = field(default_factory=list)  # {name, columns, unique}
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
 class TableProfile:
     schema: str
     name: str
@@ -85,6 +124,12 @@ class TableProfile:
     schema_comment: str | None = None
     database_comment: str | None = None
     related_comments: list[dict[str, str]] = field(default_factory=list)
+    # Analytical DB metadata — partition / clustering / size / format /
+    # freshness / tags. Populated by the active adapter via
+    # ``get_analytics_metadata``. Backends fill what they can; the
+    # search agent surfaces only the non-empty fields when answering
+    # analytics-aware questions.
+    analytics: "AnalyticsMetadata" = field(default_factory=lambda: AnalyticsMetadata())
 
 
 @dataclass
@@ -385,7 +430,21 @@ class DatabaseConnector:
                     row_count = conn.execute(text(f"SELECT COUNT(*) FROM {fqn}")).scalar() or 0
                     profile.row_count = int(row_count or 0)
             except Exception as exc:
-                log.warning("Exact row count failed for %s.%s: %s", schema, table, exc)
+                # Demoted from WARNING to DEBUG in v0.10.9: the exact
+                # COUNT(*) failure is fully recovered by falling back
+                # to the estimated row count, so the user sees no
+                # functional regression. The previous WARNING leaked
+                # through the live-display panel during /ask answers
+                # ("[WARNING] amx.db.connector — Exact row count
+                # failed for public.bkpf: ...") which alarmed users
+                # despite being a no-op recovery. Operators who want
+                # to investigate slow / blocked counts can still get
+                # the line via ``AMX_LOG_LEVEL=debug``.
+                log.debug(
+                    "Exact row count failed for %s.%s; falling back to "
+                    "estimated row count (%d). Detail: %s",
+                    schema, table, estimated_rows, exc,
+                )
                 profile.row_count = estimated_rows
         else:
             profile.row_count = estimated_rows
@@ -491,6 +550,29 @@ class DatabaseConnector:
 
             cp.existing_comment = col_info.get("comment")
             profile.columns.append(cp)
+
+        # Analytics metadata — best-effort populate of partition /
+        # clustering / size / format / freshness / tags. Each adapter
+        # ships a backend-specific implementation; the default is an
+        # empty dict so old call sites (and adapters that don't need
+        # this) keep working unchanged.
+        try:
+            am = self._adapter.get_analytics_metadata(self.engine, schema, table)
+            if am:
+                # Whitelisted assignment so unknown keys don't blow up
+                # the dataclass when an adapter passes extra fields.
+                allowed = {f.name for f in dc_fields(AnalyticsMetadata)}
+                for key, value in am.items():
+                    if key in allowed:
+                        setattr(profile.analytics, key, value)
+        except Exception as exc:
+            # Analytics metadata is purely additive — never let a
+            # failure here prevent the user from seeing the basic
+            # profile they asked for.
+            log.debug(
+                "Analytics metadata fetch failed for %s.%s: %s",
+                schema, table, exc,
+            )
 
         return profile
 

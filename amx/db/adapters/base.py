@@ -163,6 +163,40 @@ class DatabaseAdapter(ABC):
     ) -> list[dict[str, Any]]:
         return []
 
+    # ── Analytics metadata ────────────────────────────────────────────────
+
+    def get_analytics_metadata(
+        self, engine: Engine, schema: str, table: str
+    ) -> dict[str, Any]:
+        """Return analytics-aware metadata for a single table.
+
+        Each adapter overrides this with backend-specific queries that
+        fill the analytics-relevant fields the user may ask about:
+
+        * ``partition_keys`` / ``partition_strategy`` — for performance
+          optimization questions.
+        * ``clustering_keys`` — Snowflake / BigQuery / Databricks Delta.
+        * ``storage_format`` — native / parquet / delta / iceberg / csv.
+        * ``storage_bytes`` / ``storage_files_count`` — size analysis.
+        * ``last_modified`` — freshness check.
+        * ``table_type`` — managed / external / view / mat-view.
+        * ``tags`` / ``pii_columns`` — governance / compliance lookup.
+        * ``indexes`` — performance-tuning input.
+        * ``warnings`` — list of strings explaining which fields the
+          adapter could NOT populate (permission errors, view limits
+          etc.) so the search agent can be honest in its answer.
+
+        The default returns an empty dict — backends that can't expose
+        analytics metadata at all just inherit this. Returning a dict
+        rather than the dataclass keeps the contract loose so adapters
+        can fill subsets without coupling to the full schema.
+
+        Returns:
+            A dict whose keys match :class:`AnalyticsMetadata` field
+            names. Unknown / inapplicable fields are simply omitted.
+        """
+        return {}
+
     # ── Comment writing ───────────────────────────────────────────────────
 
     @abstractmethod

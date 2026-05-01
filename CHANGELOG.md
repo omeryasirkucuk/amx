@@ -6,6 +6,490 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-05-01
+### Fixed
+- **"how is X uploaded / loaded / populated / refreshed?" was being routed to `detect_scd_pattern`** (which answers "how is HISTORY kept", a different concern). Reproducer: user asked "how is vbak uploaded?", agent ran the SCD detector, returned the canned "no SCD signals; provide a business_key" recovery message — completely off-topic.
+
+### Changed
+- **System prompt new routing rule** (`amx/search/tool_agent.py`). When the user asks the LOAD-MECHANISM question (English: "how is X uploaded / loaded / populated / ingested / refreshed", Turkish: "nasıl yükleniyor / besleniyor / ETL süreci nasıl / data nasıl geliyor"), the agent should:
+  1. Call `describe_table` and read `analytics.last_modified` — the most recent write timestamp.
+  2. Call `inspect_data_quality` on the main temporal column (`created_at` / `erdat` / `load_date` / `ingestion_ts`) — `min_value` is when data first appeared, `max_value` is the latest record, the gap + row_count is a rough load-cadence hint.
+  3. If columns shaped like CDC are present (`created_at` + `updated_at`, `deleted_at` flag), call them out as an in-band CDC signal.
+  4. ALWAYS state what AMX CANNOT see: "Direct visibility into the orchestrator (Airflow / Dagster / dbt Cloud / Snowflake Snowpipe / BigQuery Data Transfer / Databricks DLT) is a v0.11 planned feature — AMX currently infers from the data, not from the load job."
+
+The rule explicitly bans `detect_scd_pattern` for this question class because that tool answers a different concern (history retention) and gives an unhelpful recovery message when the user's actual question is unrelated.
+
+### Why this matters
+Same pattern as the v0.10.3 "duplication" / "update soon" routing fixes: AMX has the right data already (`last_modified` from v0.10.0 analytics, `inspect_data_quality` from v0.10.2) — it just needs the routing rule. Without the rule the agent picks whatever tool's keyword overlaps loosely ("uploaded" sounds vaguely temporal → SCD); with it, the agent goes straight to the load-pattern signals + the explicit ETL-tap limit.
+
+### Followups
+- The actual answer ("scheduled by `ELT_orders_hourly` Airflow DAG, last run 2026-05-01 14:00 UTC") needs the v0.11 query-history / orchestrator tap. Until then, the data-side inference is the best AMX can do.
+
+## [0.10.9] - 2026-05-01
+### Fixed
+- **`[WARNING] amx.db.connector — Exact row count failed for X.Y: ...`** was bleeding through the live-display panel during `/ask` answers. Same UX noise pattern as the v0.10.1 `tool_calls` warning: the message is purely informational (the code already falls back to the estimated row count and continues), but it surfaced as a WARNING level alarm in the panel mid-stream. Demoted to DEBUG in `amx/db/connector.py:profile_table`. Operators who want to investigate slow / blocked counts can still get the line via `AMX_LOG_LEVEL=debug`.
+
+### Why this matters
+Continuing the v0.10.1 cleanup pass: any log line that fires during a clean recovery path doesn't belong at WARNING. The user sees a `[WARNING]` and assumes something is broken — but in this case the answer they got was correct (the duplication probe worked, returned proper numbers). Reserving WARNING for actual problems keeps that signal trustworthy.
+
+### Followups
+- Audit the rest of `amx.db.*` for similar fall-back-but-warn patterns. The next likely candidates are connection-retry messages and adapter-specific permission softfails.
+
+## [0.10.8] - 2026-05-01
+### Fixed
+- **`detect_dimensional_role` returned "unknown"** for FK-free schemas with opaque table names. Reproducer: SAP `vbrk` (billing-document header, archetypal fact table) had no `fact_*` naming, no declared FK constraints, no partitioning, and `erdat` is stored as `varchar(8)` rather than the native `date` type — so neither the naming nor the structural FK signals fired. Pre-v0.10.8 the agent surfaced "unknown / low confidence" with the truthful but unhelpful note "no signals fired".
+
+### Changed
+- **New column-shape signal** (`amx/search/agent_tools.py`). The classifier now also counts:
+  - **Measure-like columns** — numeric dtype + name matches money/quantity patterns (`_amt`, `_amount`, `_value`, `_qty`, `_quantity`, `_total`, `_sum`, `_price`, `_cost`, `_fee`, `_rate`, `_tax`, `_brutto`, `_netto`, `_revenue`, `_profit`, `_margin`, `_balance`) PLUS SAP-specific currency / quantity columns (`netwr`, `brtwr`, `mwsbp`, `mwsbk`, `kbetr`, `kwert`, `fkimg`, `fklmg`, `kpein`, `kzwi`, `wavwr`).
+  - **ID / key columns** — name matches key patterns (`_id`, `_key`, `_no`, `_num`, `_code`) PLUS SAP-specific keys (`mandt`, `vbeln`, `vgbel`, `kunag`, `kunrg`, `kunwe`, `lifnr`, `vkorg`, `vtweg`, `spart`, `matnr`, `werks`, `lgort`, `bukrs`, `gjahr`, `belnr`, `buzei`, `fkart`, `auart`).
+  - **Descriptive columns** — string dtype + name matches description patterns (`_name`, `_desc`, `_label`, `_text`, `_title`, `_remark`, `_addr`) PLUS SAP-specific descriptive columns (`name1`, `name2`, `ktokd`).
+- **Two new structural-fact rules** based on column shape:
+  - `≥3 measures + ≥4 ids + (has_temporal OR row_count ≥ 10K)` → fact (medium confidence). This is the SAP/legacy escape hatch: when naming is opaque and FKs aren't declared, the column mix itself screams "transactional with measures and application-level foreign keys".
+  - `≥5 descriptives + 0 measures + row_count ≤ 100K` → dimension (medium confidence).
+
+For `vbrk` specifically: ≥5 SAP currency columns + ≥6 SAP key columns + 89K rows now classify as `fact` with medium confidence and an evidence line stating exactly which signals fired.
+
+### Why this matters
+Same `evidence + confidence + indicators` design pattern from earlier interpretive-answering releases, applied to dimensional-role detection. The previous pure-naming + pure-FK approach worked for clean dbt / Kimball schemas but failed on SAP, Oracle eBusiness, peoplesoft, and many enterprise schemas where FK constraints aren't declared in the database. Column shape is a third independent signal that's available even when the first two are silent.
+
+### Followups
+- The SAP-name pattern lists are still narrow (covers vbrk / vbap / kna1 territory). A `column_role_inference_packs` namespace where users can add their own org-specific name patterns would let in-house data-warehouse teams steer the classifier without forking AMX.
+- Numeric measure detection currently relies on name patterns; a richer signal would also probe value distributions (continuous distribution → likely measure; bounded category set → likely flag/code) but that requires a sample query per column. Marked as a v0.11 followup since it's only worth the cost when the cheaper signals are inconclusive.
+
+## [0.10.7] - 2026-05-01
+### Added — `detect_dimensional_role` tool
+
+User: "AMX should answer dimensional-modeling questions — what's the main/fact table?, which tables are dimensions?, is this a star schema or snowflake?". One tool covers all three modes. Per-table mode classifies a single table; schema-wide mode ranks every table and infers the overall pattern.
+
+**Roles detected:**
+- `fact` — large + many outgoing FKs / partitioned / temporal column / `fact_*` / `_facts` / `_evt` / `transactions` / `_orders` naming
+- `dimension` — high incoming FK fan-in + low fan-out / `dim_*` / `_dim` / `dimension_*` / `lookup_*` naming
+- `bridge` — roughly equal in/out FKs (both ≥ 2, |out − in| ≤ 1) / `bridge_*` / `xref_*` / `link_*` naming
+- `lookup` — small (≤ 1000 rows, ≤ 12 cols) + at least one incoming FK
+- `staging` — `stg_*` / `staging_*` / `raw_*` / `_landing` / `src_*` naming
+- `audit` — `_history` / `_audit` / `_log` / `_archive` naming
+- `transactional` — has temporal column but no partitioning / no FK fan-out
+- `unknown` — no strong signal in any direction
+
+**Schema-level pattern detection:**
+- `star_schema` — facts + dimensions present, no dimension-to-dimension FKs
+- `snowflake_schema` — at least one dimension references another dimension via FK (the result lists examples like `sap_dim.product_dim → sap_dim.product_category_dim`)
+- `flat` — no fact-shaped tables, only dimensions / reference data
+- `fact_only` — facts present but no dimension-shaped tables (suggests OBT / one-big-table layout)
+- `unknown` — too few tables to classify
+
+**Result shape (per-table):**
+```json
+{
+  "schema": "sales", "table": "fact_orders",
+  "role_hypothesis": "fact",
+  "confidence": "high",
+  "evidence": [
+    "Naming pattern matches `fact` role.",
+    "Row count 12,400,000 is >5× the schema median (340,000) — likely fact / transactional.",
+    "5 outgoing FK(s) — likely fact (joins out to many dimensions).",
+    "[implicit] Partitioned by order_date."
+  ],
+  "indicators": {
+    "row_count": 12_400_000, "fk_outgoing": 5, "fk_incoming": 0,
+    "column_count": 23, "is_partitioned": true, "has_clustering": false,
+    "has_temporal_column": true, "naming_signal": "fact",
+    "row_count_percentile": 0.95, "peer_row_count_median": 340_000
+  }
+}
+```
+
+**Result shape (schema-level):**
+```json
+{
+  "schema": "sales",
+  "table_count": 18,
+  "pattern_hypothesis": "star_schema",
+  "pattern_evidence": [
+    "1 fact table(s) and 6 dimension table(s); no dimension-to-dimension FKs (star layout)."
+  ],
+  "fact_tables": ["sales.fact_orders"],
+  "dimension_tables": ["sales.dim_customer", "sales.dim_product", "sales.dim_date", ...],
+  "bridge_tables": [],
+  "lookup_tables": ["sales.lookup_country", "sales.lookup_currency"],
+  "staging_tables": ["sales.stg_orders_raw"],
+  "classifications": [<full per-table breakdown>]
+}
+```
+
+### Why this matters
+Same single-tool / multi-signal / always-quote-evidence pattern as `detect_scd_pattern` (v0.10.6), `find_joinable_tables` (v0.9.7 inference_source), `find_columns_by_dtype` (v0.10.4 kind tagging). Together these tools make AMX able to talk about **how a schema is organised** — not just what's in it. Real-world data analyst questions land directly on a tool now: "this schema'ın ana tablosu nedir?", "fact ve dim hangileri?", "this is a star or snowflake?", "bu lookup mu transaction mı?".
+
+### Followups
+- **Cross-schema linkage** — when a fact table references a dimension that lives in a SHARED dimensional schema (Kimball "conformed dimensions"), surface that link in the schema-level pattern. Currently per-schema only.
+- **Galaxy / fact constellation** — multi-fact schemas where facts share dimensions; the current code labels these as `star_schema` per-fact but doesn't call out the cross-fact dimension sharing. Planned for v0.10.8.
+- **OBT / wide-table detection refinement** — currently `fact_only` flags potential one-big-table layouts but doesn't quantify width-vs-depth. A `column_count` percentile would help.
+
+## [0.10.6] - 2026-05-01
+### Added — `detect_scd_pattern` tool
+
+User: "AMX should answer SCD-type questions ('how does this table hold history?', 'is this Type 2?', 'değişiklik aynı satırda mı yeni satır mı?', 'eski değerler ayrı kolonda mı?') WITHOUT relying on comments. Lots of variations could come."
+
+Right — this is a single-tool design problem, not whack-a-mole. New `detect_scd_pattern(schema, table, business_key?)` infers the pattern from data signals only:
+
+**Type 2 (history-as-rows) signals:**
+- Temporal validity pair: `valid_from` + `valid_to`, `effective_from` + `effective_to`, `start_date` + `end_date`, SAP `BEGDA` + `ENDDA`, `row_start` + `row_end`, etc.
+- Current/active flag: `is_current`, `is_active`, `current_flag`, `current_record`, `is_latest` (filtered to `bool` / `char(1)` / `varchar(1)` dtypes so a regular int isn't tagged).
+- Version / revision / sequence: `version`, `revision`, `rev_no`, `seq_no`, `row_version`, `scd_version`, `history_seq`.
+
+**Type 3 (history-as-columns) signals:**
+- Paired columns where one has a "previous" prefix and the canonical sibling exists: `prev_status` ↔ `status`, `old_address` ↔ `new_address`, `previous_price` ↔ `current_price`, `before_X` ↔ `after_X`, `last_X` ↔ `X`. Matched against `prev_*` / `previous_*` / `old_*` / `former_*` / `before_*` / `last_*` against canonical / `new_*` / `current_*` / `now_*` / `after_*` siblings.
+
+**Type 4 (separate history table) signals:**
+- Companion table named `<table>_history`, `<table>_hist`, `<table>_audit`, `<table>_log`, `<table>_archive`, `<table>_versions`, `<table>_changes`, `<table>_snapshot` in the same schema (live-DB lookup, not catalog).
+
+**Type 1 vs Type 2 row-cardinality probe (optional):**
+- When the caller passes `business_key` (one or more columns), the tool runs `SELECT COUNT(*), COUNT(DISTINCT (cols))` against the live DB. Avg rows-per-key ≤ 1.05 → Type 1 (current-only). Avg > 1.5 → Type 2 (history rows). In between is reported as ambiguous so the LLM doesn't over-claim.
+
+**Result shape:**
+
+```json
+{
+  "scd_type_hypothesis": "type_2",            // type_1 / type_2 / type_3 / type_4 / unknown
+  "confidence": "high",                         // high / medium / low
+  "evidence": [                                 // ← always quote these in the answer
+    "Type 2 temporal pair: `valid_from` + `valid_to`.",
+    "Type 2 current-flag column: `is_current` (dtype=bool).",
+    "Avg rows-per-business-key = 3.42 → multiple rows per key (likely Type 2)."
+  ],
+  "indicators": {
+    "type2_temporal_pair": ["valid_from", "valid_to"],
+    "type2_current_flag": "is_current",
+    "type2_version_col": "version",
+    "rows_per_key_avg": 3.42
+  },
+  "alternative_hypotheses": ["type_6 (Type 2 in main + Type 4 sibling = hybrid)"],
+  "recommendation": ""
+}
+```
+
+**System prompt rule:** "User asks 'how does X hold history' / 'is this SCD2' / 'değişiklik tek satırda mı yeni satır mı' / 'eski değerler nasıl tutuluyor' → call `detect_scd_pattern`. The result includes `scd_type_hypothesis`, `confidence`, `evidence` (ALWAYS quote in the answer; the hypothesis alone is misleading), and `alternative_hypotheses` for hybrid cases. When evidence is empty, suggest the user provide a candidate `business_key` so the rows-per-key probe can disambiguate Type 1 vs Type 2."
+
+### Why this matters
+SCD detection is the kind of pattern recognition that could spawn a dozen ad-hoc patches over time ("did you check is_current?", "did you check valid_from?", "is there a history table?"). One purpose-built tool with a structured return + multiple signal sources covers the whole question class, lets the LLM be honest about confidence, and surfaces hybrid (Type 6) cases instead of forcing a single label. Same `kind` / `inference_source` / `evidence` design pattern as v0.9.7-v0.10.4.
+
+### Followups
+- Per-row temporal-pair validation: when Type 2 is inferred, verify that `valid_from <= valid_to` for every row and surface violations as data-quality findings.
+- CDC stream detection: when Type 1 + an `updated_at` column, hint that change-data-capture would be needed for actual history.
+- v0.11 lineage will give the third leg — even when in-table signals are absent, the upstream load job's design tells whether history is preserved.
+
+## [0.10.5] - 2026-05-01
+### Added
+- **`sample_column_values(schema, table, column, limit=5)`** — lightweight tool that returns distinct non-null example values via a direct `SELECT DISTINCT col FROM schema.table WHERE col IS NOT NULL LIMIT N`. Bypasses `profile_table` (which scans every column + foreign keys + stats) so a "give me an example" question doesn't pay full-table-profile cost. Result also includes `distinct_count` (single-column `COUNT(DISTINCT)`, soft-fails on un-indexed huge columns).
+
+### Fixed
+- **"give me a sample value from X column" was incorrectly routing to `/search sync` advice** when the agent picked the wrong schema. Reproducer: user asked "format of `aedat` in `bkpf`" — agent picked `public.bkpf` (PG default schema) instead of `sap_s6p.bkpf`, `profile_table` failed because the table doesn't exist in `public`, and the agent told the user to run `/search sync` (misleading — the catalog isn't the issue; the agent just chose the wrong schema). 
+
+  Two-part fix:
+  1. The new `sample_column_values` tool is the right fit for "give me an example" — direct SELECT, no profile overhead. It returns a structured `error` + `hint` when the schema is wrong, instead of the cryptic profile-table failure.
+  2. System prompt rule: "user asks for a sample/example value AND didn't qualify the schema → call `find_table_by_name` FIRST so you don't blindly pick the wrong schema. Only fall through to `/search sync` hints when find_table_by_name returns NO exact AND no fuzzy matches."
+
+### Why this matters
+The previous flow taxed the user twice: once for asking the wrong agent path (full-table profile when they wanted one example), and once for the misleading recovery hint (`/search sync` when the catalog wasn't even relevant). User feedback: "I'll run sync, but is sync expensive every time? My question is just for an example — shouldn't AMX query the database directly?". Right. With v0.10.5 the agent has a cheap direct path AND knows to resolve the schema first instead of guessing.
+
+### Followups
+- The `find_table_by_name` → `sample_column_values` chain could be inlined as a one-shot helper for the common case ("just give me an example value of X.Y, figure out the schema yourself") — but the tool-level chain is more flexible and matches the existing routing pattern.
+
+## [0.10.4] - 2026-05-01
+### Fixed
+- **`/ask "which tables have date related columns"` returned "no date columns"** on schemas where dates are stored as varchar (SAP-style `erdat`, `audat`, `*_date`, etc.). Pre-v0.10.4 `_DTYPE_FAMILIES["date"]` was just `["date"]` — `timestamp`/`timestamptz`/`datetime` were misses, and varchar-with-date-name columns were never considered.
+
+### Changed
+- **`_DTYPE_FAMILIES` semantic-bucket expansion** (`amx/search/agent_tools.py`):
+  - `date`, `timestamp`, `time`, `temporal` are now full temporal families covering `date`, `timestamp`, `timestamptz`, `datetime`, `datetime2`, `smalldatetime`, `time`, `timetz`, `timestamp_ntz`, `timestamp_ltz`. The user can ask any of those tokens and get the same broad coverage.
+- **Name-pattern inference for temporal columns** — when token is one of `{date, timestamp, time, temporal}`, after the dtype query runs, a second catalog query matches column names against well-known temporal patterns:
+  - Suffix patterns: `*_date`, `*_dt`, `*_at`, `*_time`, `*_ts`
+  - Prefix patterns: `dat_*`, `date_*`, `time_*`
+  - SAP-specific names: `erdat`, `audat`, `ernam_dat`, `letzd`, `valid_from`, `valid_to`, `begda`, `endda`, `rldat`, `psotg`, `tzonso`
+  - Generic timestamp patterns: `created*`, `updated*`, `modified*`, `deleted*`
+  
+  Restricted to string-family dtypes (`char`, `varchar`, `text`, `string`) so a numeric column with `_date` in its name doesn't get tagged.
+- **`kind` field on every result row** — `native_temporal` (real date/timestamp dtype) or `name_inferred_temporal` (varchar with date-like name). Same shape as the v0.9.8 boolean `flag_candidate` tagging.
+- **Tool description rewritten** to make the semantic-bucket contract explicit: when LLM queries `boolean` / `date` / `timestamp` / `time`, it ALSO gets columns whose semantics match even though the dtype doesn't. Explicit rule: "NEVER say 'no date columns' when name_inferred_temporal rows are present — say 'no native date dtype, but the schema stores dates as varchar with names like X, Y, Z'".
+
+### Why this matters
+Same false-negative pattern as v0.9.7 (joins) / v0.9.8 (boolean flags) / v0.9.10 (dtype overview) / v0.9.11 (table-name fuzzy) / v0.10.3 (duplication / update-soon). The recurring problem: AMX answered the literal question ("what columns have native dtype X") instead of the semantic question ("what columns CARRY semantics X"). Each release closes a category. v0.10.4 covers temporal columns and reuses the v0.9.8 `kind`-tagging precedent so the LLM stays honest about how the match was found.
+
+### Followups
+- Apply the same name-pattern inference to other semantic categories: `email` / `phone` / `currency` / `id` (the user's original v0.6.4 push-back use case). Each gets its own pattern set + a `kind=name_inferred_<category>` tag.
+- A reverse query: `find_columns_by_pattern(name_pattern)` — instead of mapping pattern → semantic, take an explicit pattern and return matches. Useful for advanced users who know exactly which suffix they want.
+
+## [0.10.3] - 2026-05-01
+### Fixed — interpretive answering for "duplication" + "update soon"
+Two more cases where the agent fell back to literal "I don't know" / "give me columns" instead of using the data it actually had access to. Both followed v0.9.11's interpretive-answering principle: surface what's available, be explicit about limits.
+
+- **"is there any duplication in vbak"** — pre-v0.10.3 the agent called `check_uniqueness` without columns, hit the no-PK branch, got a useless `error: "pass columns explicitly"` payload, and bounced the question back to the user. Fix: when `check_uniqueness` is called with no columns AND the table has no declared PK, the tool now **runs `inspect_data_quality` itself** and returns:
+  - `duplicate_summary` (full inspect_data_quality payload)
+  - `likely_unique_columns` (every column whose `distinct_ratio` ≥ 0.99)
+  - a `hint` field telling the LLM to propose a candidate composite key from `likely_unique_columns` and offer to verify it with a follow-up `check_uniqueness` call.
+  
+  The LLM now has data to work with on the first round. The system prompt was updated with a matching routing rule: "user asks 'is there duplication' WITHOUT naming a candidate key → call inspect_data_quality first, propose the most likely composite key, offer to verify; NEVER bounce back asking for columns".
+
+- **"is there any update on vbak tables soon?"** — pre-v0.10.3 the agent answered "I don't have access to information about upcoming updates", which is technically true but useless. AMX *does* know when the table was LAST modified (via `analytics.last_modified` from v0.10.0), and *does not* yet have an ETL/orchestrator tap. The honest answer is both halves of that, not one or the other. New system prompt rule:
+  > User asks 'when was X last updated' / 'is there an update soon' / 'son güncelleme' / 'next refresh' / 'ETL ne zaman çalıştı' → call describe_table and read `analytics.last_modified`. NEVER answer "I don't know about future updates" as a flat response — instead surface the LAST known modification time AND state explicitly: "AMX can see vbak was last modified at `<ts>` (from `<backend's freshness signal>`). Scheduled future updates require an ETL / orchestrator tap that AMX doesn't currently expose — that's a planned v0.11 feature."
+
+### Why this matters
+Both bugs were the same shape as v0.9.7-v0.9.11: tool returned a thin/empty primary result and the LLM treated that as the answer. The fix pattern is the same too: enrich the tool response with a wider-net field (here: auto-derived `duplicate_summary`) and teach the system prompt to surface what's available + name the limit explicitly. That's the v0.9.11 "interpretive answering" rule applied to two new question shapes.
+
+### Followups
+- ETL / orchestrator tap (the actual answer to "next refresh" — Airflow / Dagster / dbt Cloud) is the v0.11 lineage feature; currently we only know "last_modified", not "next_run_at".
+- A column-rarity heuristic: when `inspect_data_quality` finds many columns with `distinct_ratio = 1.0`, the tool could also recommend the SHORTEST tuple that uniquely identifies rows (instead of returning every candidate).
+
+## [0.10.2] - 2026-05-01
+### Added — Data-quality + uniqueness probes
+
+User shared a wishlist of questions their analyst friends would actually ask AMX. Several mapped cleanly to two new tools that the search agent now ships, both calling the live DB:
+
+- **`check_uniqueness(schema, table, columns?)`** — runs `SELECT COUNT(*), COUNT(DISTINCT (col1, col2, ...))` and reports `total_rows`, `distinct_rows`, `duplicate_rows`, `uniqueness_ratio`, `is_unique`. When `columns` is omitted it falls back to the table's declared primary key. Answers questions like "is `id` a unique key or do I need `(id, time, op)`?", "are the PKs duplicated?", "do composite PKs collapse if I drop one column?".
+
+- **`inspect_data_quality(schema, table, columns?)`** — per-column live-DB stats: `null_count`, `null_ratio`, `distinct_count`, `distinct_ratio`, `min_value`, `max_value`, plus `detected_format` for varchar/text columns whose samples look like dates. Format detection covers ISO 8601, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYYMMDD`, `DD-MM-YYYY`, `DD/MM/YYYY`, `DD.MM.YYYY`, and a few short forms — first-match-wins with a 60% confidence threshold so a table that just happens to have a few date-shaped strings doesn't get mislabelled. Answers "how many nulls in `email`?", "date format `ddmmyyyy` mi?", "ne zamandır tutuluyor?" (read `min_value`/`max_value` of the date column), "çoklama oranı?".
+
+### Changed
+- **System prompt** routes the new questions to the right tool. Concrete examples in the prompt: "is X a primary key" / "(id, time) unique mi" / "composite PK gerekli mi yoksa id yeter mi" → `check_uniqueness`; "date format nedir" / "ne zamandır tutuluyor" / "çoklama oranı" / "how nullable is X" → `inspect_data_quality`.
+
+### Why this matters
+
+The user's analyst friends asked questions like "PK duplicate oluyor mu?", "date'in formatı ddmmyyyy mı yoksa dd-mm-yy mi?", "ne zamandır tutuluyor?", "çoklama durumları var mı?". Pre-v0.10.2 the agent had no tool that answered these directly — `describe_table` knew the structure but never queried actual values, and the catalog rarely carries this information. With these two tools the agent can give grounded data-aware answers without falling back to "you'd need to check that yourself".
+
+### Followups
+
+- **Datamart / aggregate-table detection** ("Bu tablo için belirli bir tarih ya da segment için oluşturulmuş datamart var mı") — naming-pattern heuristic (`_summary` / `_dm` / `_mart` / `_history` / `_snapshot` / `_agg_` / `_daily_` / `_monthly_`) over the catalog. Planned for v0.10.3.
+- **ETL / refresh-frequency inference** ("update edilme nasıl işliyor") — needs query-history tap (same prerequisite as lineage; v0.11).
+- **Best-join cardinality estimate** ("en uygun joinleme mantığı") — extend `find_joinable_tables` rows with sample-based join-cardinality (1:1 / 1:N / N:M) when the user has SELECT permission on both sides. Planned for v0.10.3.
+
+## [0.10.1] - 2026-05-01
+### Fixed
+- **Suppressed false-positive `LLM returned EMPTY content` warning during tool-calling rounds** (`amx/llm/provider.py`). When the LLM returns `finish_reason=tool_calls` (or the legacy `function_call`), an empty content body is the expected OpenAI-protocol shape — the actual call lives in `message.tool_calls`. The pre-v0.10.1 code emitted a noisy `WARNING — LLM returned EMPTY content … Check model name, API key, and provider dashboard.` on every tool-call round, which surfaced in mid-stream of `/ask` answers and looked alarming despite being normal flow.
+
+  Reproducer: any `/ask` question that triggers a tool-calling loop (i.e. anything more complex than chitchat) on `gpt-4o-mini` / Claude / Gemini through `litellm`. The warning fired once per tool-call round and bled through the live display panel.
+
+  Fix: gate the warning on `finish_reason NOT IN {tool_calls, function_call}`. The genuine "model returned nothing" cases — `finish_reason` in `{stop, content_filter, length, end_turn, ""}` with no accompanying tool_calls — still warn loudly because those ARE the symptoms of a misconfigured key / wrong model / quota issue. Tool-call rounds drop to DEBUG level so users running with `AMX_LOG_LEVEL=debug` can still trace them when needed.
+
+### Why this matters
+The warning appeared on every multi-step `/ask` answer (search agent always uses tools), so users were seeing a confidence-eroding "EMPTY content / check your API key" message during what was actually a clean run. With this fix the log stays quiet during normal tool-calling and reserves the warning for the cases where it actually points at a problem.
+
+## [0.10.0] - 2026-05-01
+### Added — Analytics-DB metadata extension
+
+AMX now extracts analytics-aware metadata for every profiled table — partition keys, clustering keys, storage format (native / parquet / delta / iceberg / external), storage size, file count, last-modified, table type, governance tags, PII columns, indexes — across all 4 backends (PostgreSQL, Snowflake, BigQuery, Databricks). The fields surface in the `describe_table` tool result so the search agent can answer the questions analytics-DB users actually ask: performance optimization opportunities, freshness, storage footprint, governance, format.
+
+**Why this matters.** AMX's previous metadata coverage was tuned for OLTP-style introspection (FK relationships, table comments, column samples). Analytics workloads — Snowflake / BigQuery / Databricks where AMX is most useful — care about partitions, clustering, size, format, last-altered, and governance tags. Without that metadata the agent could only chitchat about "performance optimization" instead of pointing at a specific opportunity.
+
+### Changes
+
+- **New `AnalyticsMetadata` dataclass** (`amx/db/connector.py`) — per-table fields:
+  - `partition_keys: list[str]` + `partition_strategy: str` (range / list / hash / time / bucket / none)
+  - `clustering_keys: list[str]` (Snowflake CLUSTER BY, BigQuery CLUSTER BY, Databricks ZORDER)
+  - `storage_format: str` (native / parquet / delta / iceberg / csv / external)
+  - `storage_bytes: int`, `storage_files_count: int`
+  - `last_modified: str` (ISO 8601)
+  - `table_type: str` (managed / external / view / materialized_view / temporary / foreign)
+  - `tags: dict[str, str]` (column-or-table → tag value)
+  - `pii_columns: list[str]` (auto-derived from tag names containing PII / SENSITIVE / GDPR)
+  - `indexes: list[dict]` (`{name, columns, unique}`; PostgreSQL only for now)
+  - `warnings: list[str]` — per-adapter best-effort: when a query fails (permissions, unsupported region, view-not-allowed), the affected field is left empty and a warning is recorded. The agent surfaces these so users know the scope of "no data" answers.
+- **`TableProfile.analytics` field** — populated by `profile_table` via the new `AdapterBase.get_analytics_metadata(engine, schema, table)` method. Old call sites continue to work unchanged.
+- **PostgreSQL adapter** — partition info from `pg_partitioned_table` + `pg_attribute`; indexes from `pg_indexes`; storage size from `pg_total_relation_size` (table + TOAST + indexes); last-modified from `pg_stat_user_tables` (max of last_analyze / last_autoanalyze / last_vacuum / last_autovacuum); table_type from `pg_class.relkind` (view / materialized_view / partitioned / foreign).
+- **BigQuery adapter** — partition / cluster / type / DDL parsed from `INFORMATION_SCHEMA.TABLES`; size + last_modified_time from legacy `__TABLES__`. Partition expressions like `DATE(_PARTITIONTIME)` are recognised and tagged as `time`-strategy.
+- **Snowflake adapter** — clustering_key + bytes + last_altered + table_type from `INFORMATION_SCHEMA.TABLES`; tags + PII column derivation from `TAG_REFERENCES_ALL_COLUMNS` (soft-fails when the role lacks permission).
+- **Databricks adapter** — `DESCRIBE DETAIL` for format / size / partition / clustering / lastModified; `DESCRIBE TABLE EXTENDED` for table type. Supports Delta, Parquet, Iceberg, CSV, and external tables. ZORDER columns surface as `clustering_keys`.
+
+### Tool integration
+
+- **`describe_table` returns the new `analytics` field** (`amx/search/agent_tools.py`) — only non-empty sub-fields are included to keep the prompt tight on backends that expose less.
+- **Tool description rewritten** to teach the LLM the analytics fields and how to use them. Concrete examples in the prompt cover the user's wishlist:
+  - "is there a performance optimization opportunity?" → check `partition_keys`, `clustering_keys`, `indexes`, `storage_bytes` vs `row_count`.
+  - "when was X last updated?" → `last_modified`.
+  - "which tables are > 1 TB?" → `storage_bytes` (cross-table — would need multi-call from caller).
+  - "is there any PII column in finance schema?" → `pii_columns` + `tags`.
+  - "what format is sales_fact stored in?" → `storage_format`.
+- **System prompt rule** — when fields are absent (because the backend doesn't expose that signal), the LLM should say "this DB doesn't surface partition info" instead of "this table has no partition" — same interpretive-answering principle from v0.9.11.
+
+### Backend coverage matrix
+
+| Field | PostgreSQL | Snowflake | BigQuery | Databricks |
+|---|---|---|---|---|
+| partition_keys / strategy | ✓ | — (handled via clustering) | ✓ | ✓ |
+| clustering_keys | — | ✓ | ✓ | ✓ (ZORDER) |
+| storage_format | native | native / external | native / external | delta / parquet / iceberg / csv / external |
+| storage_bytes | ✓ | ✓ | ✓ | ✓ |
+| storage_files_count | — | — | — | ✓ |
+| last_modified | ✓ | ✓ | ✓ | ✓ |
+| table_type | ✓ | ✓ | ✓ | ✓ |
+| tags / pii_columns | — | ✓ | partial (column policy tags follow-up) | partial (Unity Catalog tags follow-up) |
+| indexes | ✓ | — | — | — |
+
+### Followups
+
+- **Lineage** — `inventory_reports → upstream tables`. Requires query history tap (Snowflake QUERY_HISTORY, BigQuery `INFORMATION_SCHEMA.JOBS`, Databricks SystemTable). Out-of-scope for v0.10.0 because each backend exposes it differently and the per-call cost is high. Planned for a separate `lineage_for_table` tool.
+- **Schema evolution** — diff between two snapshots. Requires AMX to keep periodic snapshots of `columns_by_dtype` per table, then expose a `compare_schema_snapshots` tool. Tracked as v0.11 work.
+- **Cross-table aggregates** — "which tables > 1 TB" needs a list-then-filter call across the whole catalog. The agent currently has to call `describe_table` per table; a future `find_tables_by_size_range` tool will batch this.
+- **Column-level analytics** — null ratios per column are already in `ColumnProfile.null_count` / `row_count`; surfacing them through `describe_table` is a small follow-up.
+
+## [0.9.11] - 2026-05-01
+### Fixed
+- **`/ask "I only remember 'trog' from the table name"` returned "no table similar to trog"**. Reproducer: any partial / approximate / fragment table-name query. Pre-v0.9.11 `find_table_by_name` did exact-match only (`asset_name.lower() == target.lower()`), so a non-exact fragment returned 0 and the LLM honestly said "nothing found".
+
+### Changed — interpretive answering, not another patch
+- **`find_table_by_name` adds substring + fuzzy fallback** (`amx/search/agent_tools.py`). Result now carries:
+  - `matches` — exact-name hits (catalog + live DB), unchanged.
+  - `fuzzy_matches` — list of `{path, match_kind}` where `match_kind` is `prefix` / `suffix` / `contains` / `fuzzy`. Populated from BOTH the live DB walk and the catalog scan, ranked by tier (prefix > suffix > contains > fuzzy) and by table-name length within each tier (shorter names win as closer hits). Capped at 25 entries to keep prompts tight on huge schemas.
+  - `match_kind=fuzzy` uses `SequenceMatcher` ratio ≥ 0.7 with length difference ≤ 3 — calibrated for short SAP-style names (4-8 chars) so single-character typos / dropped letters surface.
+- **System prompt — new "Interpretive answering" section** (`amx/search/tool_agent.py`). The rule, in plain English: NEVER reply with a flat "no" — look for adjacent fields in the tool response before declaring nothing found. Concrete examples in the prompt cover the four cases AMX has surfaced this week (fuzzy_matches, columns_truncated → columns_by_dtype, find_joinable_tables inference_source, dtype_summary). General rule: "if you're going to say 'no X', double-check that no related field (fuzzy_matches, dtype_summary, columns_by_dtype, inference_source, kind) carries the answer in another shape."
+
+### Why this matters
+
+The user's broader complaint — accumulating individually-patched question shapes ("we can't enumerate every dtype-question one by one", "this is whack-a-mole") — keeps surfacing because the system was treating tool results as primary facts and the LLM was treating empty primary lists as authoritative answers. v0.9.10 fixed that for dtype questions; v0.9.11 generalises it: every tool now ships a "wider net" field (fuzzy_matches / dtype_summary / inference_source / kind) and the system prompt teaches the LLM to read those fields before saying "no". The next time a user types a partial name, asks about a rare dtype, or queries an FK-free schema, the answer should be useful instead of confidently empty.
+
+### Followups
+- Apply the same `fuzzy_matches` pattern to `find_table_by_name`'s sibling tools (`find_columns_by_concept`, `search_columns_by_concept`) so concept queries that miss exact tokens fall through to substring/fuzzy + cite the partial-match tier.
+- The 0.7 SequenceMatcher threshold is calibrated for short identifiers; longer table names (e.g. snake_case `customer_address_history`) may need a separate threshold or a token-overlap match.
+
+## [0.9.10] - 2026-05-01
+### Fixed
+- **`/ask "which columns are int or double in vbak"` returned "no" with confidence**. Reproducer: any wide-table dtype question. The user pointed out the meta-pattern after v0.9.7 (joins) / v0.9.8 (boolean flags) / v0.9.9 (truncation) all required hand-tuning a separate question shape: "we can't enumerate every dtype-question pattern one by one". Right — the underlying problem was that AMX wasn't giving the LLM a complete dtype picture, so each question class needed a separate fix.
+
+### Changed — design fix, not another patch
+- **`describe_table` now returns `columns_by_dtype: {family: [column_names]}` — complete coverage, never truncated** (`amx/search/agent_tools.py`). On a 200-column SAP `vbak` the LLM now sees:
+  ```
+  {
+    "bool":   ["is_deleted"],
+    "int":    ["mandt", "vbeln", "posnr", ...],
+    "float":  ["gwldt", "submi", "lifsk", ...70 names...],
+    "string": ["autlf", "kunnr", "vkorg", ...],
+    "date":   ["erdat", "audat", ...],
+    "timestamp": ["created_at", "updated_at"]
+  }
+  ```
+  No matter how the user phrases their question ("int or double", "boolean", "which columns are dates", "any json columns"), the LLM has the complete answer in one map. No more whack-a-mole.
+
+- **Tool description rewritten** to teach the LLM the new contract:
+  - `dtype_summary` — counts across ALL columns (authoritative for "how many").
+  - `columns_by_dtype` — names across ALL columns, NEVER truncated (authoritative for "which columns").
+  - `columns` — sorted-and-truncated detailed metadata (use ONLY for comments / nullability per column, NOT for dtype questions).
+  - Explicit rule: "when the user asks 'which columns are dtype X', the COMPLETE answer is in `columns_by_dtype` — read it directly and list the names. Do NOT say 'no X columns' unless the family key is absent or the list is empty."
+
+### Why this matters
+
+The user's diagnosis was correct: this is a **design problem, not a bug**. v0.9.7 / 0.9.8 / 0.9.9 all added more conditional logic ("if the user asks about boolean, also try `char(1)`"; "if the table is wide, sort by interestingness"; "if the dtype is `int`, expand the family map"). That approach scales linearly with question variety. v0.9.10 inverts it — the LLM gets the complete dtype map up front and reasons from there. Future dtype questions ("any json column", "any uuid", "are there bytea fields") need no AMX-side change.
+
+The same lesson applied to v0.9.7's join discovery (3-tier fallback chain with `inference_source`) and v0.9.8's boolean flag (kind-tagging native_boolean / flag_candidate). The pattern: give the LLM a complete picture + honest source attribution + don't pretend a partial result is exhaustive.
+
+### Followups
+- Apply the `columns_by_dtype` pattern to `find_columns_by_dtype` for cross-table queries: instead of returning rows by family, return all rows with their families pre-tagged so the LLM can group them however the question demands.
+- The same "complete map" principle should extend to other surface gaps: e.g. `describe_table` could ALSO return per-column "samples" (top-N distinct values) so the LLM can answer "which columns hold currency codes" without a separate live-DB probe.
+
+## [0.9.9] - 2026-05-01
+### Fixed
+- **`describe_table` truncated wide tables before the LLM could see boolean columns**. Reproducer: user asks "do vbak have any boolean column?" against an SAP schema where `vbak` has 155+ columns and the only `bool` column is `is_deleted` at column position 155. Pre-v0.9.9, `_tool_describe_table` returned `cols[:60]` — `is_deleted` was past the cap and invisible. The LLM read 60 columns, saw no `bool` dtype, and said "no native boolean columns" with confidence. (`is_deleted` IS a real PG `bool` here; the v0.9.8 char(1) flag fallback didn't apply.)
+
+### Changed
+- **`describe_table` now ships a `dtype_summary` field** (`amx/search/agent_tools.py`) — a `{"bool": 1, "int": 30, "float": 70, "string": 50, ...}` count of dtype families across **all** columns (not just the truncated head). This is the LLM's authoritative source for "does this table have a column of family X" — it travels with the prompt even when the columns list is truncated. Tool description now instructs the LLM to ALWAYS read `dtype_summary` instead of inferring from the truncated `columns` list.
+- **Smart truncation order** — when the columns list is capped at 60, the cap now applies to a sorted list, not insertion order. Columns are sorted by:
+  1. Commented columns first (someone curated them — they're worth seeing).
+  2. Rare dtypes next (a single `bool` column on a table with 100 `float8`s gets surfaced ahead of the floats).
+  3. Alphabetical tiebreak.
+  This means `is_deleted` (the only `bool` on `vbak`) now sits in the first batch of returned columns instead of being silently dropped at position 155.
+- **New `columns_truncated: bool` field** so the LLM knows whether to caveat its answer with "showing X of Y columns; use find_columns_by_dtype for the complete dtype picture".
+- **New `_dtype_family_label` static helper** that maps raw dtypes to coarse family labels (`bool` / `int` / `float` / `string` / `date` / `timestamp` / `time` / `json` / `uuid` / `binary` / fallback to lowered raw). Same vocabulary as the equivalence-class deduplication module, kept as a static method so it can be reused without instantiating the tool box.
+
+### Why this matters
+Same false-negative pattern as v0.9.7 (joins) and v0.9.8 (boolean flags): the agent's tool surface didn't carry enough information for the LLM to answer correctly, and the LLM's "I checked and found nothing" confidence misled the user. The combination of `dtype_summary` (complete picture) + smart-sorted `columns` (rare dtypes survive truncation) + `columns_truncated` (explicit honesty signal) closes the gap for wide tables.
+
+### Followups
+- Apply the same dtype_summary pattern to `find_columns_by_dtype` so list-mode answers also include a per-family summary even when the result is truncated.
+- The hardcoded 60-column cap could become a soft target — keep ALL rare dtypes (`bool`, `date`, `uuid`, `json`) regardless of position, then fill the rest of the budget with the truncation-sorted head.
+
+## [0.9.8] - 2026-05-01
+### Fixed
+- **`/ask "is there any boolean column in vbak"` returned "no" with confidence on SAP-style schemas**. Reproducer: any DB where boolean SEMANTICS are stored as `char(1)` / `varchar(1)` flag columns (`'X'` / `''` or `'Y'` / `'N'`) — the dominant pattern in SAP and many enterprise systems. Pre-v0.9.8, `find_columns_by_dtype('boolean')` only matched literal `bool` / `boolean` PG dtypes, so SAP `vbak`'s flag columns (`autlf`, `faksk`, `lifsk`, …) were invisible and the LLM honestly said "no boolean columns" — same false-negative pattern as the join-discovery bug fixed in v0.9.7.
+
+### Changed
+- **`_DTYPE_FAMILIES["boolean"]` now includes single-character fixed-width strings** (`amx/search/agent_tools.py`): `bool`, `boolean`, `char(1)`, `varchar(1)`, `character(1)`, `character varying(1)`. The query continues to match by `IN (...)` plus `LIKE '%token%'`, so any column whose dtype contains `(1)` and a char-family base will surface.
+- **Each result row carries a new `kind` field** — `native_boolean` (real `bool` / `boolean` dtype), `flag_candidate` (single-char fixed-width that's commonly used as a flag), or `exact_dtype_match` (any other dtype family). The `kind` field is propagated through the per-table roll-up so the LLM gets it whether it reads the flat list or the grouped output.
+- **Tool description for `find_columns_by_dtype` now spells out the boolean semantics** and instructs the LLM: do NOT say "no boolean columns" when `flag_candidate` rows are present — say "no native boolean columns, but the table has these likely flag columns: …" and list them. Without this rule the LLM defaults to a literal interpretation of "boolean" that's wrong for the user's question.
+- **Tool description for `describe_table`** now includes the same boolean-flag guidance, since `describe_table(vbak)` is the natural call when the user names a specific table — the LLM should scan the column list for `char(1)`/`varchar(1)` flags and surface them alongside any native booleans.
+
+### Why this matters
+Same lesson as v0.9.7 (join discovery on FK-free schemas): the catalog's surface schema doesn't always carry the user's semantic intent. "Boolean" almost always means "the column has Y/N or X-blank semantics" — even though the stored type is `char(1)`. Returning an empty list with confidence misled users into thinking AMX had searched the table when in fact it had answered a literal-dtype question that had nothing to do with the user's actual data model.
+
+### Followups
+- A future tier could ALSO probe the live DB for distinct-value distribution on flag candidates: a `char(1)` column with cardinality ≤ 2 and values like `{X, ''}` or `{Y, N}` is virtually certain to be a boolean flag, while one with `{A, B, C, D, …}` is a category code. AMX could surface that distinction as a confidence band on each `flag_candidate` row.
+- The same `kind`-tagging pattern should extend to other "semantic" queries (date columns hidden as `varchar(8)` in `YYYYMMDD` form, percentages stored as `numeric(5,2)`, etc.).
+
+## [0.9.7] - 2026-05-01
+### Fixed
+- **`/ask "which tables can I join with vbrk"` returned 0 candidates on FK-free schemas**. Reproducer: SAP / legacy schemas with no declared `FOREIGN KEY` constraints. Pre-v0.9.7, `find_joinable_tables` only consulted `catalog_relationships` (populated from `profile.foreign_keys` / `profile.referenced_by` during `/sync`); when those were empty the tool returned `joinable_tables=[]` and the LLM honestly said "no joinable tables found", which is wrong — `vbrk` is the SAP billing header and should obviously join with `vbrp`, `kna1`, `vbpa`, etc. on shared keys like `vbeln` and `mandt`.
+
+### Added
+- **Name-overlap heuristic — `JoinMixin.name_overlap_joinable_tables`** (`amx/search/_catalog/join.py`). For schemas without FK constraints AND without per-column descriptions yet (catalog hasn't been `/run` -populated), the cheapest signal that two tables might be joinable is "they share a column NAME". Common columns like `mandt` or `id` give a low-signal hit and are deweighted by an inverse-log rarity score: a column present in N tables contributes `1 / log2(N+1)` to the join weight. So a column shared with only 3 other tables (rare, high-signal — likely a real foreign key by convention) wins over `mandt` (shared by every table in the schema). Returns rows in the same shape as `joinable_tables` so existing renderers / tool-result schemas work unchanged.
+
+### Changed
+- **`find_joinable_tables` now follows a 3-tier fallback chain** (`amx/search/agent_tools.py`):
+  1. **Symbolic** — `catalog.joinable_tables` (declared FK relationships, score=10.0, the strongest signal).
+  2. **Name-overlap** — `catalog.name_overlap_joinable_tables` (rarity-weighted shared column names, no FK / no descriptions needed).
+  3. **Semantic** — `catalog.semantic_joinable_tables` (vector similarity on column descriptions, requires a populated catalog).
+  The first non-empty tier wins; the result includes a new `inference_source` field (`foreign_key` / `name_overlap` / `semantic_similarity`) so the LLM can be honest in its answer ("via the declared `vbeln` foreign key" vs "by shared column names: `vbeln`, `posnr`" vs "by semantic similarity to `customer description`").
+- **Tool description for `find_joinable_tables`** updated to spell out the three tiers and to instruct the LLM to ALWAYS surface the `inference_source` in the final answer. Without this rule the LLM would generate the same authoritative-sounding "verified joinable" prose for an FK-backed match and a name-inferred match, which would be misleading.
+
+### Why this matters
+SAP schemas (and most enterprise systems running on PostgreSQL / Oracle) manage referential integrity at the application layer, not the database layer. The pre-v0.9.7 code path was structurally unable to surface joins for those schemas — and the user was being told "no joins found" with confidence when in reality dozens of strong candidates existed via shared `vbeln` / `mandt` / `customer_id` columns. The name-overlap tier closes that gap without requiring `/run` to have completed.
+
+### Followups
+- The name-overlap rarity score could blend in dtype compatibility (`varchar(10)` vs `int4` for the same column name is a weaker signal than two `varchar(10)`s).
+- A future tier could read the foreign-key conventions of the live DB (e.g. SAP table cross-references encoded in `DD03L`) when available.
+
+## [0.9.6] - 2026-05-01
+### Fixed
+- **Cascading mixin import gaps** that v0.9.5 missed: 16 more module-level names referenced from mixin method bodies but not imported into their respective files. Reproducer surfaced after v0.9.5: `/ask` failed with `name 're' is not defined`.
+
+  Full audit + fixes (15 stdlib/typing/project imports added across 12 files):
+  - **`_agent/short_circuits.py`** — added `re`, `SearchAnswer`, `step_spinner`.
+  - **`_agent/planning.py`** — added `json`.
+  - **`_agent/resolution.py`** — added `asdict`.
+  - **`_agent/retrieval.py`** — added `DatabaseConnector`.
+  - **`_agent/session_memory.py`** — added `LLMProvider`.
+  - **`_catalog/entity_crud.py`** — added `sqlite3`.
+  - **`_catalog/sync.py`** — added `sqlite3`, `Callable`, `CodebaseReport`, `TableProfile`, `MetadataSuggestion`.
+  - **`_catalog/search.py`** — added `sqlite3`, `SequenceMatcher`.
+  - **`_catalog/usage.py`** — added `json`, `sqlite3`, `TableProfile`.
+  - **`_catalog/join.py`** — added `CodeReference`.
+  - **`_catalog/settings.py`** — added `time`.
+
+  **Verification:** new full-scope name-resolution audit (every `ast.Name` in `Load` context across all 13 mixin files vs imports + locals + parameters + comprehension targets + tuple-unpacks + builtins) now returns **0 unresolved references**, up from 23 before this fix.
+
+### Why this matters
+v0.9.5 fixed the dataclasses (`SearchPlan` etc.) but skipped the long tail of bare-name references — stdlib modules (`re`, `json`, `time`, `sqlite3`), typing helpers (`Callable`, `asdict`), and project-level type names (`DatabaseConnector`, `LLMProvider`, `TableProfile`, `CodebaseReport`, `MetadataSuggestion`, `CodeReference`, `SearchAnswer`, `SequenceMatcher`, `step_spinner`). Each was originally a top-level import in `agent.py` / `catalog.py`; the mixin split lost them. A full-scope audit (not just keyword spot-checks) would have caught them at refactor time. The new audit script lives in this commit's notes — adding it to CI is the v0.10 followup.
+
+### Followups
+- Adopt the audit script as a `pre-commit` hook so any future mixin extraction can't ship with this class of regression.
+- The original v0.9.0 / v0.9.1 commits' AST-only verification was insufficient; future refactor releases should run runtime-equivalent name-resolution audits before tagging.
+
+## [0.9.5] - 2026-05-01
+### Fixed
+- **Mixin regression: `name 'DEFAULT_SETTINGS' is not defined` (and 16 sibling errors)**. Reproducer: `/ask` would crash with `Ask failed: name 'DEFAULT_SETTINGS' is not defined` after running v0.9.0–v0.9.4. Root cause: when v0.9.0 split `SearchAgent` and v0.9.1 split `SearchCatalog`, the moved method bodies still referenced module-level names (`SearchPlan(...)`, `_input_token_budget_for(...)`, `DEFAULT_SETTINGS`, `SOURCE_PRIORITY`, etc.) by bare name — but each mixin was now its own Python module, so those names weren't in scope. The bugs only fired on first invocation of the affected code paths (synthesizer, catalog `get_settings`, etc.), not at import time, so the AST-only verification I ran during the splits missed them.
+
+  **Fix:** create two new shared modules — `amx/search/_agent/_types.py` and `amx/search/_catalog/_constants.py` — that own the dataclasses + helpers + constants. Both `agent.py` / `catalog.py` and every mixin file import from these shared modules. No circular imports because `_types.py` and `_constants.py` import nothing from their dependents. Public API preserved — `from amx.search.agent import SearchPlan` still works (re-exported).
+
+  **Affected files this release fixes:**
+  - `_agent/_types.py` (new) — `SearchPlan`, `SearchPolicy`, `SearchActionSuggestion`, `LiveProbePlan`, `ResolvedTarget`, `_ANSWER_SHAPES`, `_DEFAULT_INPUT_TOKEN_BUDGET`, `_input_token_budget_for`, `_json_block`, `_merge_usage`, `_question_language_hint`, `_trim_rows_to_token_budget`.
+  - `_catalog/_constants.py` (new) — `DEFAULT_SETTINGS`, `SOURCE_PRIORITY`, `_PROVIDER_SCORE_FLOOR`, `_DEFAULT_SCORE_FLOOR`, `_vector_score_floor`, `_active_embedding_kind`, `_json_loads`, `_database_name`.
+  - `agent.py` and `catalog.py` re-export from these shared modules (no inline duplicates).
+  - 6 `_agent/*.py` mixins + 4 `_catalog/*.py` mixins now import what they reference from the shared modules.
+  - `_agent/deterministic.py` — dropped its locally-redefined `_question_language_hint` (and the `SearchPlan = Any` forward-ref alias) in favour of the shared canonical version.
+
+### Why this matters
+The v0.9.0 / v0.9.1 splits demonstrated the limitation of AST-only verification when refactoring across module boundaries. Splitting a god-class into mixin modules requires every name a mixin method references to either be (a) a `self.*` attribute, (b) imported into the mixin file, or (c) a Python builtin. Bare module-level names that worked in the original god-class file silently break at runtime. v0.9.5 closes that gap by introducing the shared `_types.py` / `_constants.py` modules; future splits should follow this pattern (do the AST analysis, then run a name-resolution audit against each mixin) before shipping.
+
+### Followups
+- Add a CI-time check that imports each mixin module standalone and instantiates the parent class against a stub to catch this class of bug pre-release.
+
 ## [0.9.4] - 2026-05-01
 ### Changed — `execute_analyze_run` extracted into 3 phase helpers (S4 refactor)
 

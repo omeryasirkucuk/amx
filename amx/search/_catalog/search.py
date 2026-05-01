@@ -22,9 +22,15 @@ Read-only — no INSERTs except where the FTS5 index needs a refresh.
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any
 
+from amx.search._catalog._constants import (
+    _active_embedding_kind,
+    _vector_score_floor,
+)
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.search")
