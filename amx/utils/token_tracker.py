@@ -78,6 +78,7 @@ class TokenTracker:
         )
         try:
             from amx.utils.live_display import get_display
+
             display = get_display()
             if display.is_active:
                 display.add_session_tokens(input_tokens=prompt, output_tokens=completion)

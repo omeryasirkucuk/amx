@@ -8,13 +8,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
-from rich import box
 
 import amx
 
@@ -321,9 +320,7 @@ class LiveDisplay:
         tokens_total = self._total_tokens_in + self._total_tokens_out
         tok_str = f"[dim]↓ {tokens_total:,} tokens[/dim]" if tokens_total else ""
 
-        header_text = Text.from_markup(
-            f"  {left}  {right}  {time_str}  {tok_str}"
-        )
+        header_text = Text.from_markup(f"  {left}  {right}  {time_str}  {tok_str}")
         return Panel(header_text, box=box.HEAVY, style="dim", height=3)
 
     def _render_thinking(self) -> Text:
@@ -348,7 +345,9 @@ class LiveDisplay:
         if total_acts > max_visible:
             hidden_count = total_acts - max_visible
             display_acts = self._activities[-max_visible:]
-            tree.add(f"[dim]... {hidden_count} older activities hidden (Press Tab to toggle details) ...[/dim]")
+            tree.add(
+                f"[dim]... {hidden_count} older activities hidden (Press Tab to toggle details) ...[/dim]"
+            )
 
         for act in display_acts:
             elapsed_str = f" [dim]({act.elapsed_str})[/dim]" if act.start_time else ""
@@ -386,9 +385,7 @@ class LiveDisplay:
                 f"[dim]Tab[/dim] toggle details  "
                 f"[dim]Ctrl+C[/dim] interrupt"
             )
-        return Text.from_markup(
-            "  [dim]Tab[/dim] toggle details  [dim]Ctrl+C[/dim] interrupt"
-        )
+        return Text.from_markup("  [dim]Tab[/dim] toggle details  [dim]Ctrl+C[/dim] interrupt")
 
 
 # ── Module singleton ──────────────────────────────────────────────────────
@@ -400,5 +397,6 @@ def get_display() -> LiveDisplay:
     global _display
     if _display is None:
         from amx.utils.console import console
+
         _display = LiveDisplay(console=console)
     return _display

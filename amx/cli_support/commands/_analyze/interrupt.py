@@ -11,6 +11,7 @@ caller's ``finally`` block can pass them to
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from amx.utils.console import warn
@@ -47,10 +48,8 @@ def handle_keyboard_interrupt(
     has_reviewable_results = bool(all_results)
     hs = history_store_fn()
     if not has_reviewable_results and run_id is not None and hs is not None:
-        try:
+        with contextlib.suppress(Exception):
             has_reviewable_results = bool(hs.get_run_results(run_id))
-        except Exception:
-            pass
     if not has_reviewable_results:
         has_reviewable_results = bool(token_tracker.total_tokens)
 
@@ -63,9 +62,7 @@ def handle_keyboard_interrupt(
     if review_strategy == "auto-apply":
         final_status = "cancelled"
     else:
-        final_status = (
-            "ready_for_review" if has_reviewable_results else "cancelled"
-        )
+        final_status = "ready_for_review" if has_reviewable_results else "cancelled"
     final_error_text = "Interrupted by user"
 
     log_event(

@@ -17,7 +17,6 @@ answer instead:
 
 from __future__ import annotations
 
-import json
 import re
 import time
 from typing import Any
@@ -77,6 +76,7 @@ class ShortCircuitsMixin:
                 "stage_metrics": [],
             },
         )
+
     def _record_short_circuit_assistant(self, *, summary: str, intent: str) -> None:
         """Persist a synthetic assistant turn for chitchat / meta / reaffirm.
 
@@ -101,6 +101,7 @@ class ShortCircuitsMixin:
             )
         except Exception as exc:
             log.warning("Failed to record %s assistant turn: %s", intent, exc)
+
     def _handle_meta_query(self, question: str, question_language: str) -> SearchAnswer | None:
         """Answer questions ABOUT the conversation itself (no LLM call).
 
@@ -144,9 +145,9 @@ class ShortCircuitsMixin:
             )
         else:
             summary = (
-                f"Bir önceki sorunuz: \"{prior_question}\""
+                f'Bir önceki sorunuz: "{prior_question}"'
                 if is_turkish
-                else f"Your previous question was: \"{prior_question}\""
+                else f'Your previous question was: "{prior_question}"'
             )
         self._record_short_circuit_assistant(summary=summary, intent="meta_query")
         return SearchAnswer(
@@ -164,6 +165,7 @@ class ShortCircuitsMixin:
                 "stage_metrics": [],
             },
         )
+
     def _handle_followup_reaffirmation(
         self, question: str, question_language: str
     ) -> SearchAnswer | None:
@@ -192,7 +194,9 @@ class ShortCircuitsMixin:
         prior_assistant = ""
         for turn in reversed(turns):
             if str(turn.get("role") or "") == "assistant":
-                prior_assistant = str(turn.get("answer_summary") or turn.get("answer") or "").strip()
+                prior_assistant = str(
+                    turn.get("answer_summary") or turn.get("answer") or ""
+                ).strip()
                 if prior_assistant:
                     break
         if not prior_assistant:
@@ -224,6 +228,7 @@ class ShortCircuitsMixin:
                 "stage_metrics": [],
             },
         )
+
     def _answer_via_tool_agent(
         self,
         *,
@@ -320,11 +325,14 @@ class ShortCircuitsMixin:
                 "tokens": result.usage,
                 "stage_metrics": [{"stage": "tool_agent", "duration_sec": elapsed}],
                 "evidence_sources": [
-                    f"tool:{call.get('name','')}" for call in result.tool_calls if call.get("name")
+                    f"tool:{call.get('name', '')}" for call in result.tool_calls if call.get("name")
                 ],
             },
         )
-    def _should_remember_table_scope(self, plan: SearchPlan, retrieval_details: dict[str, Any], question: str) -> bool:
+
+    def _should_remember_table_scope(
+        self, plan: SearchPlan, retrieval_details: dict[str, Any], question: str
+    ) -> bool:
         if retrieval_details.get("resolved_tables"):
             return True
         if plan.search_mode in {"table_explain", "join_candidates", "joinable_tables"}:

@@ -204,17 +204,41 @@ _FATAL_MESSAGE_PATTERNS: tuple[tuple[str, str], ...] = (
     # Pattern → user-facing summary. Provider names are intentionally stripped
     # so the same patterns work across OpenAI, OpenRouter, Anthropic, etc.
     ("more credits", "Your account is out of credits — top up to continue."),
-    ("insufficient_quota", "Your account has hit its quota — increase the limit or wait for the reset."),
-    ("insufficient quota", "Your account has hit its quota — increase the limit or wait for the reset."),
+    (
+        "insufficient_quota",
+        "Your account has hit its quota — increase the limit or wait for the reset.",
+    ),
+    (
+        "insufficient quota",
+        "Your account has hit its quota — increase the limit or wait for the reset.",
+    ),
     ("requires more credits", "Your account is out of credits — top up to continue."),
     ("can only afford", "Your account is out of credits — top up to continue."),
-    ("invalid api key", "The API key configured for this LLM profile is invalid. Run /llm to fix it."),
-    ("invalid_api_key", "The API key configured for this LLM profile is invalid. Run /llm to fix it."),
-    ("incorrect api key", "The API key configured for this LLM profile is invalid. Run /llm to fix it."),
+    (
+        "invalid api key",
+        "The API key configured for this LLM profile is invalid. Run /llm to fix it.",
+    ),
+    (
+        "invalid_api_key",
+        "The API key configured for this LLM profile is invalid. Run /llm to fix it.",
+    ),
+    (
+        "incorrect api key",
+        "The API key configured for this LLM profile is invalid. Run /llm to fix it.",
+    ),
     ("authentication", "LLM authentication failed — check the API key under /llm."),
-    ("model not found", "The configured model does not exist for this provider. Run /llm to pick another."),
-    ("model_not_found", "The configured model does not exist for this provider. Run /llm to pick another."),
-    ("does not exist", "The configured model does not exist for this provider. Run /llm to pick another."),
+    (
+        "model not found",
+        "The configured model does not exist for this provider. Run /llm to pick another.",
+    ),
+    (
+        "model_not_found",
+        "The configured model does not exist for this provider. Run /llm to pick another.",
+    ),
+    (
+        "does not exist",
+        "The configured model does not exist for this provider. Run /llm to pick another.",
+    ),
 )
 
 
@@ -233,7 +257,11 @@ def _classify_fatal_llm_error(exc: BaseException) -> FatalLLMError | None:
     # fail the same way — short-circuit so the user gets the fix-it message
     # immediately instead of three repeated "certificate verify failed"
     # warnings followed by a generic stack trace.
-    if "certificate verify failed" in msg_lower or "self-signed certificate" in msg_lower or "ssl: certificate" in msg_lower:
+    if (
+        "certificate verify failed" in msg_lower
+        or "self-signed certificate" in msg_lower
+        or "ssl: certificate" in msg_lower
+    ):
         return FatalLLMError(
             "SSL certificate verification failed — your network is using a "
             "TLS-inspecting proxy whose root CA Python doesn't trust. "
@@ -255,7 +283,7 @@ def _classify_fatal_llm_error(exc: BaseException) -> FatalLLMError | None:
     if status is None:
         for code in _FATAL_HTTP_STATUS_CODES:
             if f"{code}" in msg and (
-                f' {code} ' in msg
+                f" {code} " in msg
                 or f'":{code}' in msg
                 or f'"code":{code}' in msg
                 or f'"code": {code}' in msg
@@ -298,7 +326,11 @@ def _lp_token_text(token_obj: object) -> str:
 
 
 def _lp_token_logprob(token_obj: object) -> float | None:
-    raw = token_obj.get("logprob") if isinstance(token_obj, dict) else getattr(token_obj, "logprob", None)
+    raw = (
+        token_obj.get("logprob")
+        if isinstance(token_obj, dict)
+        else getattr(token_obj, "logprob", None)
+    )
     if raw is None:
         return None
     try:
@@ -316,9 +348,7 @@ def _is_value_token(token_text: str) -> bool:
         return False
     if t in {"{", "}", "[", "]", ":", ",", '"', "```"}:
         return False
-    if all(ch in "-_=*#`|:;,.()[]{} " for ch in t):
-        return False
-    return True
+    return not all(ch in "-_=*#`|:;,.()[]{} " for ch in t)
 
 
 def _description_value_spans(text: str) -> list[tuple[int, int]]:
@@ -352,14 +382,18 @@ def _description_value_spans(text: str) -> list[tuple[int, int]]:
     return merged
 
 
-def _weighted_score_for_spans(logprobs_content: list | None, spans: list[tuple[int, int]] | None = None) -> float | None:
+def _weighted_score_for_spans(
+    logprobs_content: list | None, spans: list[tuple[int, int]] | None = None
+) -> float | None:
     if not logprobs_content:
         return None
     weighted_logprob_sum = 0.0
     total_weight = 0.0
     token_spans = _logprob_token_spans(logprobs_content)
     for tok_start, tok_end, token_obj in token_spans:
-        if spans and not any(tok_end > span_start and tok_start < span_end for span_start, span_end in spans):
+        if spans and not any(
+            tok_end > span_start and tok_start < span_end for span_start, span_end in spans
+        ):
             continue
         token_text = _lp_token_text(token_obj)
         if not _is_value_token(token_text):
@@ -426,7 +460,7 @@ def confidence_from_logprobs(
     logprobs_content: list | None,
     high_threshold: float = 0.85,
     medium_threshold: float = 0.50,
-) -> "str | None":
+) -> str | None:
     """Map weighted geometric-mean token probability to HIGH/MEDIUM/LOW."""
     score = logprob_confidence_score(logprobs_content)
     if score is None:
@@ -493,6 +527,8 @@ def _llm_timeout_sec() -> float:
     except ValueError:
         return _DEFAULT_LLM_TIMEOUT_SEC
     return value if value > 0 else _DEFAULT_LLM_TIMEOUT_SEC
+
+
 _TRANSIENT_LLM_EXCEPTION_NAMES: frozenset[str] = frozenset(
     {
         "APITimeoutError",
@@ -571,6 +607,7 @@ class LLMProvider:
     def supports_batch(self) -> bool:
         """True when the configured provider has a registered batch implementation."""
         from amx.llm.batch import get_batch_provider
+
         return get_batch_provider(self.cfg) is not None
 
     def _configure_env(self) -> None:
@@ -671,7 +708,11 @@ class LLMProvider:
                 extra.setdefault("reasoning_effort", effort)
 
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
-        call_api_base = self.cfg.api_base if self.cfg.provider in ("local", "kimi", "ollama", "openrouter") else None
+        call_api_base = (
+            self.cfg.api_base
+            if self.cfg.provider in ("local", "kimi", "ollama", "openrouter")
+            else None
+        )
 
         # Resolve timeout once per call. ``extra`` is the user-passed kwargs;
         # if a caller wants to override the default for a specific call they
@@ -711,8 +752,7 @@ class LLMProvider:
                 # recoverable (handled below).
                 fatal = _classify_fatal_llm_error(exc)
                 if fatal is not None and not (
-                    self.cfg.provider == "ollama"
-                    and "404 page not found" in str(exc).lower()
+                    self.cfg.provider == "ollama" and "404 page not found" in str(exc).lower()
                 ):
                     log.error("Fatal LLM error (no retry): %s", fatal.user_message)
                     raise fatal from exc
@@ -751,7 +791,7 @@ class LLMProvider:
                     and last_exc is not None
                     and _is_transient_llm_error(last_exc)
                 ):
-                    wait = LLM_RETRY_BACKOFF_BASE_SEC * (2 ** attempt)
+                    wait = LLM_RETRY_BACKOFF_BASE_SEC * (2**attempt)
                     log.warning(
                         "LLM transient failure (attempt %d/%d) — retrying in %.1fs: %s",
                         attempt + 1,
@@ -768,8 +808,10 @@ class LLMProvider:
 
         if resp is None:
             # Defensive — the loop should either have populated resp or raised.
-            raise last_exc if last_exc is not None else RuntimeError(
-                "LLM completion failed without a recorded exception"
+            raise (
+                last_exc
+                if last_exc is not None
+                else RuntimeError("LLM completion failed without a recorded exception")
             )
 
         elapsed_sec = max(0.0, time.perf_counter() - t0)
@@ -856,8 +898,7 @@ class LLMProvider:
                         "AMX_REASONING_EFFORT=minimal."
                     ),
                     original_message=(
-                        f"finish_reason=length, content_chars=0, "
-                        f"max_tokens={mt}, model={model}"
+                        f"finish_reason=length, content_chars=0, max_tokens={mt}, model={model}"
                     ),
                 )
             raise LLMTruncationError(
@@ -881,7 +922,8 @@ class LLMProvider:
                 log.debug(
                     "LLM tool-call response (finish_reason=%s, model=%s); "
                     "empty content is expected.",
-                    finish, model,
+                    finish,
+                    model,
                 )
             else:
                 log.warning(

@@ -73,10 +73,7 @@ def index_codebase_tree(
         metadata={"hnsw:space": "cosine"},
     )
 
-    code_files = [
-        f for f in root.rglob("*")
-        if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
-    ]
+    code_files = [f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS]
     total = 0
     root_s = str(root.resolve())
     source_root_s = _normalize_source_filter(source_root or root_s)
@@ -110,7 +107,12 @@ def index_codebase_tree(
             total += 1
 
     if report:
-        log.info("Indexed %d code chunks under %s (report had %d ref keys)", total, root, len(report.references))
+        log.info(
+            "Indexed %d code chunks under %s (report had %d ref keys)",
+            total,
+            root,
+            len(report.references),
+        )
     return total
 
 
@@ -184,7 +186,9 @@ def delete_code_collection(
         rows = coll.get(include=["metadatas"])
         ids = [
             row_id
-            for row_id, meta in zip(rows.get("ids") or [], rows.get("metadatas") or [])
+            for row_id, meta in zip(
+                rows.get("ids") or [], rows.get("metadatas") or [], strict=False
+            )
             if _source_allowed(meta, filters)
         ]
         if not ids:

@@ -53,8 +53,8 @@ class MeanReciprocalRankTests(unittest.TestCase):
     def test_average_across_queries(self) -> None:
         queries = [
             (["users", "orders"], {"orders"}),  # RR = 0.5
-            (["events", "audit"], {"audit"}),   # RR = 0.5
-            (["x", "y", "z"], {"missing"}),     # RR = 0.0
+            (["events", "audit"], {"audit"}),  # RR = 0.5
+            (["x", "y", "z"], {"missing"}),  # RR = 0.0
         ]
         # (0.5 + 0.5 + 0.0) / 3 = 1/3
         self.assertAlmostEqual(mean_reciprocal_rank(queries), 1.0 / 3.0)

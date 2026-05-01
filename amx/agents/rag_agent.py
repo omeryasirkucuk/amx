@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import re
 
-from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
-from amx.config import PromptDetail, prompt_detail_for
+from amx.agents.base import (
+    AgentContext,
+    BaseAgent,
+    Confidence,
+    MetadataSuggestion,
+    apply_logprob_confidence,
+)
+from amx.config import PromptDetail
 from amx.core.token_budget import MaxTokenValidator
 from amx.docs.rag import RAGStore
 from amx.llm.provider import LLMProvider
@@ -58,11 +64,13 @@ REASONING: The retrieved excerpts describe monetary amounts and refer to a compa
 
 def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
     n = max(1, min(5, n_alternatives))
-    desc_lines = "\n".join(
-        f"DESCRIPTION_{i}: <alternative>"
-        for i in range(2, n + 1)
-    ) if n > 1 else ""
-    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines, target_language=target_language).strip() + "\n"
+    desc_lines = (
+        "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
+    )
+    return (
+        _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines, target_language=target_language).strip()
+        + "\n"
+    )
 
 
 class RAGAgent(BaseAgent):
@@ -116,13 +124,14 @@ class RAGAgent(BaseAgent):
             for h in unique_hits[: pd.rag_max_chunks]
         ]
         validator = MaxTokenValidator(
-            comfortable_input_tokens=max(1_000, int(getattr(self.llm.cfg, "max_tokens", 4096) or 4096) * 3)
+            comfortable_input_tokens=max(
+                1_000, int(getattr(self.llm.cfg, "max_tokens", 4096) or 4096) * 3
+            )
         )
         doc_chunks = validator.compact_chunks(doc_chunks)
         doc_text = "\n\n---\n\n".join(doc_chunks)
         col_lines = "\n".join(
-            f"  - {c['name']} (type={c['dtype']}, samples={c.get('samples', [])})"
-            for c in columns
+            f"  - {c['name']} (type={c['dtype']}, samples={c.get('samples', [])})" for c in columns
         )
         user_msg = (
             f"Schema: {ctx.schema}\n"
@@ -130,13 +139,15 @@ class RAGAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Relevant documentation:\n{doc_text}"
         )
-        system = _build_system_prompt(self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english")
+        system = _build_system_prompt(
+            self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english"
+        )
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
 
-    def collect_messages(self, ctx: AgentContext) -> "list":
+    def collect_messages(self, ctx: AgentContext) -> list:
         """Return a ``BatchRequest`` for this table (or empty list when no docs)."""
         from amx.llm.batch import BatchRequest
 
@@ -165,9 +176,7 @@ class RAGAgent(BaseAgent):
 
         columns = ctx.db_profile.get("columns", [])
         est = estimate_tokens(messages)
-        with step_spinner(
-            f"RAG Agent: {len(columns)} columns", token_estimate=est
-        ):
+        with step_spinner(f"RAG Agent: {len(columns)} columns", token_estimate=est):
             result = self.llm.chat(messages)
         tracker.record("rag_agent", est, result.usage)
 
@@ -195,11 +204,17 @@ class RAGAgent(BaseAgent):
             line = line.strip()
             if line.startswith("COLUMN:"):
                 if current_col and descs:
-                    suggestions.append(MetadataSuggestion(
-                        schema=ctx.schema, table=ctx.table, column=current_col,
-                        suggestions=descs, confidence=conf, reasoning=reasoning,
-                        source="rag",
-                    ))
+                    suggestions.append(
+                        MetadataSuggestion(
+                            schema=ctx.schema,
+                            table=ctx.table,
+                            column=current_col,
+                            suggestions=descs,
+                            confidence=conf,
+                            reasoning=reasoning,
+                            source="rag",
+                        )
+                    )
                 current_col = line.split(":", 1)[1].strip()
                 descs = []
                 conf = Confidence.MEDIUM
@@ -213,10 +228,16 @@ class RAGAgent(BaseAgent):
                 reasoning = line.split(":", 1)[1].strip()
 
         if current_col and descs:
-            suggestions.append(MetadataSuggestion(
-                schema=ctx.schema, table=ctx.table, column=current_col,
-                suggestions=descs, confidence=conf, reasoning=reasoning,
-                source="rag",
-            ))
+            suggestions.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=current_col,
+                    suggestions=descs,
+                    confidence=conf,
+                    reasoning=reasoning,
+                    source="rag",
+                )
+            )
 
         return suggestions

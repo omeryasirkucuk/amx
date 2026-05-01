@@ -20,7 +20,6 @@ from typing import Any
 import chromadb
 from chromadb.api.types import EmbeddingFunction
 
-
 _LEGACY_COLLECTION_NAME = "amx_search"
 
 
@@ -222,6 +221,6 @@ class SearchIndex:
         # Multi-profile: rank by distance ascending then trim to the
         # requested top-N. Hits with no distance sink to the end.
         all_hits.sort(
-            key=lambda h: (h.get("distance") if h.get("distance") is not None else float("inf"))
+            key=lambda h: h.get("distance") if h.get("distance") is not None else float("inf")
         )
         return all_hits[:n_per]

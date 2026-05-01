@@ -20,6 +20,7 @@ handled.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -236,10 +237,8 @@ def run_equivalence_pass(
             log.warning("Equivalence agent LLM call failed: %s", exc)
             continue
 
-        try:
+        with contextlib.suppress(Exception):
             tracker.record("equivalence_agent", 0, result.usage)
-        except Exception:
-            pass
 
         raw = (result.content or "").strip()
         if not raw:
@@ -299,17 +298,25 @@ def run_equivalence_pass(
                     # Soft-fail; live DB write still happens if requested.
                     log.debug(
                         "Equivalence pass: catalog write failed for %s.%s.%s: %s",
-                        member.schema, member.table, member.column, exc,
+                        member.schema,
+                        member.table,
+                        member.column,
+                        exc,
                     )
 
             if apply_to_db and db is not None:
                 try:
                     db.set_column_comment(
-                        member.schema, member.table, member.column, description,
+                        member.schema,
+                        member.table,
+                        member.column,
+                        description,
                     )
                     applied_count += 1
                 except Exception as exc:
-                    failed_writes.append((f"{member.schema}.{member.table}.{member.column}", str(exc)))
+                    failed_writes.append(
+                        (f"{member.schema}.{member.table}.{member.column}", str(exc))
+                    )
 
         if apply_to_db and db is not None:
             success(
@@ -322,10 +329,8 @@ def run_equivalence_pass(
                     warn(f"    {label}: {msg[:120]}")
 
         if on_class_done is not None:
-            try:
+            with contextlib.suppress(Exception):
                 on_class_done(decision)
-            except Exception:
-                pass
 
     info(
         f"Equivalence pass complete: {outcome.classes_processed} class(es) "

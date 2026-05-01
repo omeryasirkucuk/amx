@@ -37,7 +37,6 @@ from typing import Any
 from amx.search._agent._types import (
     SearchActionSuggestion,
     SearchPlan,
-    SearchPolicy,
     _question_language_hint,
 )
 from amx.utils.logging import get_logger
@@ -62,7 +61,11 @@ class DeterministicAnswersMixin:
         primary = rows[0]
         if plan.question_class == "join_discovery":
             if plan.search_mode == "joinable_tables":
-                target = f"{primary.get('target_schema_name')}.{primary.get('target_table_name')}".strip(".")
+                target = (
+                    f"{primary.get('target_schema_name')}.{primary.get('target_table_name')}".strip(
+                        "."
+                    )
+                )
                 left = str(primary.get("left_column") or "").strip()
                 right = str(primary.get("right_column") or "").strip()
                 if lang == "turkish":
@@ -83,7 +86,9 @@ class DeterministicAnswersMixin:
                 return f"The strongest join-column match is `{left}` -> `{right}`. Confidence: `{band or 'unknown'}`."
         if plan.search_mode == "table_explain" and retrieval_details.get("resolved_tables"):
             table_path = retrieval_details["resolved_tables"][0]
-            column_count = primary.get("column_count") or retrieval_details.get("table_context", {}).get("column_count")
+            column_count = primary.get("column_count") or retrieval_details.get(
+                "table_context", {}
+            ).get("column_count")
             if lang == "turkish":
                 answer = f"`{table_path}` tablosu icin en guclu aciklama bulundu."
                 if column_count:
@@ -94,7 +99,14 @@ class DeterministicAnswersMixin:
                 answer += f" The catalog shows **{int(column_count)}** columns."
             return answer
         if plan.target_entity == "table":
-            table_path = ".".join(part for part in (str(primary.get("schema_name") or ""), str(primary.get("table_name") or "")) if part)
+            table_path = ".".join(
+                part
+                for part in (
+                    str(primary.get("schema_name") or ""),
+                    str(primary.get("table_name") or ""),
+                )
+                if part
+            )
             if not table_path:
                 return None
             if lang == "turkish":
@@ -164,12 +176,14 @@ class DeterministicAnswersMixin:
         limit = min(limit, len(ordered))
         top = ordered[:limit]
         lang = (plan.answer_language or "english").lower()
-        schema_name = str(retrieval_details.get("schema_name") or top[0].get("schema_name") or "").strip()
-        database_name = str(retrieval_details.get("database_name") or top[0].get("database_name") or "").strip()
+        schema_name = str(
+            retrieval_details.get("schema_name") or top[0].get("schema_name") or ""
+        ).strip()
+        database_name = str(
+            retrieval_details.get("database_name") or top[0].get("database_name") or ""
+        ).strip()
         scope_label = (
-            f"`{schema_name}`" if schema_name
-            else f"`{database_name}`" if database_name
-            else ""
+            f"`{schema_name}`" if schema_name else f"`{database_name}`" if database_name else ""
         )
         # Single-fact branch: one headline sentence, no table.
         if limit <= 1:
@@ -246,21 +260,35 @@ class DeterministicAnswersMixin:
     ) -> str | None:
         lang = (plan.answer_language or "english").lower()
         if plan.search_mode == "schema_inventory":
-            aggregate = self._deterministic_aggregate_inventory_answer(plan, rows, retrieval_details)
+            aggregate = self._deterministic_aggregate_inventory_answer(
+                plan, rows, retrieval_details
+            )
             if aggregate is not None:
                 return aggregate
             summary = dict(retrieval_details.get("schema_explorer_summary") or {})
             table_count = int(summary.get("table_count") or len(rows))
-            total_columns = int(summary.get("total_columns") or sum(int(row.get("column_count") or 0) for row in rows))
+            total_columns = int(
+                summary.get("total_columns")
+                or sum(int(row.get("column_count") or 0) for row in rows)
+            )
             schema_name = str(retrieval_details.get("schema_name") or "").strip()
             database_name = str(retrieval_details.get("database_name") or "").strip()
-            scope_label = f"`{schema_name}` schema" if schema_name else f"`{database_name}` database" if database_name else "the active namespace"
+            scope_label = (
+                f"`{schema_name}` schema"
+                if schema_name
+                else f"`{database_name}` database"
+                if database_name
+                else "the active namespace"
+            )
             cluster_counts: dict[str, int] = {}
             for row in rows:
                 cluster = str(row.get("semantic_cluster") or "Unclustered")
                 cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
             cluster_summary = ", ".join(
-                f"{cluster}: {count}" for cluster, count in sorted(cluster_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+                f"{cluster}: {count}"
+                for cluster, count in sorted(
+                    cluster_counts.items(), key=lambda item: (-item[1], item[0])
+                )[:8]
             )
             header = (
                 f"{scope_label} icin **{table_count}** tablo ve toplam **{total_columns}** kolon bulundu."
@@ -292,8 +320,12 @@ class DeterministicAnswersMixin:
             return header + "\n\n" + "\n".join(table_lines)
         if plan.search_mode == "count_tables" and rows:
             value = int(rows[0].get("value") or 0)
-            schema_name = str(retrieval_details.get("schema_name") or rows[0].get("schema_name") or "")
-            database_name = str(retrieval_details.get("database_name") or rows[0].get("database_name") or "")
+            schema_name = str(
+                retrieval_details.get("schema_name") or rows[0].get("schema_name") or ""
+            )
+            database_name = str(
+                retrieval_details.get("database_name") or rows[0].get("database_name") or ""
+            )
             assumption = str(retrieval_details.get("scope_assumption") or "").strip()
             if lang == "turkish":
                 if schema_name:
@@ -303,7 +335,9 @@ class DeterministicAnswersMixin:
                 else:
                     answer = f"Toplam **{value}** tablo var."
                 if assumption == "current_schema":
-                    answer += f" Acik scope verilmedigi icin aktif schema `{schema_name}` varsayildi."
+                    answer += (
+                        f" Acik scope verilmedigi icin aktif schema `{schema_name}` varsayildi."
+                    )
                 elif assumption == "active_database":
                     answer += f" Acik schema verilmedigi icin aktif veritabani/profil `{self.db_profile}` kullanildi."
                 return answer
@@ -314,14 +348,24 @@ class DeterministicAnswersMixin:
             else:
                 answer = f"There are **{value}** tables."
             if assumption == "current_schema":
-                answer += f" No explicit scope was given, so the current schema `{schema_name}` was used."
+                answer += (
+                    f" No explicit scope was given, so the current schema `{schema_name}` was used."
+                )
             elif assumption == "active_database":
                 answer += f" No explicit schema was given, so the active database/profile `{self.db_profile}` was used."
             return answer
         if plan.search_mode == "list_databases":
-            names = [str(row.get("database_name") or "").strip() for row in rows if str(row.get("database_name") or "").strip()]
+            names = [
+                str(row.get("database_name") or "").strip()
+                for row in rows
+                if str(row.get("database_name") or "").strip()
+            ]
             if not names:
-                return "Bilinen veritabani bulunamadi." if lang == "turkish" else "No known databases were found."
+                return (
+                    "Bilinen veritabani bulunamadi."
+                    if lang == "turkish"
+                    else "No known databases were found."
+                )
             joined = ", ".join(f"`{name}`" for name in names)
             return (
                 f"Su anda su veritabanlari hakkinda bilgi var: {joined}."
@@ -329,13 +373,21 @@ class DeterministicAnswersMixin:
                 else f"I currently have information about these databases: {joined}."
             )
         if plan.search_mode == "list_schemas":
-            names = [str(row.get("schema_name") or "").strip() for row in rows if str(row.get("schema_name") or "").strip()]
+            names = [
+                str(row.get("schema_name") or "").strip()
+                for row in rows
+                if str(row.get("schema_name") or "").strip()
+            ]
             if not names:
                 return "Schema bulunamadi." if lang == "turkish" else "No schemas were found."
             database_name = str(retrieval_details.get("database_name") or "").strip()
             joined = ", ".join(f"`{name}`" for name in names[:25])
             if lang == "turkish":
-                lead = f"`{database_name}` veritabanindaki schemalar" if database_name else "Bulunan schemalar"
+                lead = (
+                    f"`{database_name}` veritabanindaki schemalar"
+                    if database_name
+                    else "Bulunan schemalar"
+                )
                 return f"{lead}: {joined}."
             lead = f"Schemas in `{database_name}`" if database_name else "Schemas found"
             return f"{lead}: {joined}."
@@ -357,7 +409,11 @@ class DeterministicAnswersMixin:
             column_name = str(row.get("column_name") or "")
             if not column_name:
                 continue
-            label = f"{schema_name}.{table_name}.{column_name}" if schema_name and table_name else column_name
+            label = (
+                f"{schema_name}.{table_name}.{column_name}"
+                if schema_name and table_name
+                else column_name
+            )
             if label not in names:
                 names.append(label)
         if not names:
@@ -383,7 +439,9 @@ class DeterministicAnswersMixin:
             ),
             None,
         )
-        if snapshot and (plan.search_mode == "table_explain" or plan.question_class == "table_understanding"):
+        if snapshot and (
+            plan.search_mode == "table_explain" or plan.question_class == "table_understanding"
+        ):
             schema_name = str(snapshot.get("schema_name") or "")
             table_name = str(snapshot.get("table_name") or "")
             table_path = f"{schema_name}.{table_name}" if schema_name and table_name else table_name
@@ -403,7 +461,9 @@ class DeterministicAnswersMixin:
                 if str(row.get("column_name") or "")
             )
             if lang == "turkish":
-                answer = f"Canli DB metadata'sina gore `{table_path}` tablosunda **{total}** kolon var."
+                answer = (
+                    f"Canli DB metadata'sina gore `{table_path}` tablosunda **{total}** kolon var."
+                )
                 if table_comment:
                     answer += f" Tablo comment'i: {table_comment}."
                 else:
@@ -445,7 +505,9 @@ class DeterministicAnswersMixin:
             else:
                 answer = f"Hayir. `{table_path}` tablosunda **{filled}/{total}** kolonun comment'i girili; **{len(missing)}** kolon eksik."
                 if missing:
-                    answer += " Eksik kolonlar: " + ", ".join(f"`{name}`" for name in missing[:25]) + "."
+                    answer += (
+                        " Eksik kolonlar: " + ", ".join(f"`{name}`" for name in missing[:25]) + "."
+                    )
             if query_text:
                 answer += f" Kontrol icin kullanilan probe: `{query_text}`."
             return answer
@@ -454,7 +516,9 @@ class DeterministicAnswersMixin:
         else:
             answer = f"No. Live DB metadata shows comments for **{filled}/{total}** columns on `{table_path}`; **{len(missing)}** columns are missing comments."
             if missing:
-                answer += " Missing columns: " + ", ".join(f"`{name}`" for name in missing[:25]) + "."
+                answer += (
+                    " Missing columns: " + ", ".join(f"`{name}`" for name in missing[:25]) + "."
+                )
         if query_text:
             answer += f" Probe used: `{query_text}`."
         return answer
@@ -496,23 +560,27 @@ class DeterministicAnswersMixin:
                     + ", ".join(f"`{item}`" for item in candidates[:5])
                     + "."
                 )
-            return (
-                f"`{requested}` is the name of more than one table; please qualify it as `schema.table`."
-            )
+            return f"`{requested}` is the name of more than one table; please qualify it as `schema.table`."
         if is_turkish:
-            answer = (
-                f"`{requested}` adında bir tablo bu DB profili için katalog veya canlı metadata'da bulunamadı."
-            )
+            answer = f"`{requested}` adında bir tablo bu DB profili için katalog veya canlı metadata'da bulunamadı."
             if candidates:
-                answer += " Benzer adlar (kesin değil, öneri): " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+                answer += (
+                    " Benzer adlar (kesin değil, öneri): "
+                    + ", ".join(f"`{item}`" for item in candidates[:5])
+                    + "."
+                )
             else:
-                answer += " Önce `/search sync` çalıştırarak katalogu güncellemeyi deneyebilirsiniz."
+                answer += (
+                    " Önce `/search sync` çalıştırarak katalogu güncellemeyi deneyebilirsiniz."
+                )
             return answer
-        answer = (
-            f"I could not find a table named `{requested}` in this DB profile's catalog or live metadata."
-        )
+        answer = f"I could not find a table named `{requested}` in this DB profile's catalog or live metadata."
         if candidates:
-            answer += " Similar names (suggestions, not confirmed): " + ", ".join(f"`{item}`" for item in candidates[:5]) + "."
+            answer += (
+                " Similar names (suggestions, not confirmed): "
+                + ", ".join(f"`{item}`" for item in candidates[:5])
+                + "."
+            )
         else:
             answer += " You may want to run `/search sync` to refresh the catalog first."
         return answer

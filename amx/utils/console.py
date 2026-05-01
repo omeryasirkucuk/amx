@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import threading
 import time
-from contextlib import contextmanager
-from typing import Any, Generator
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
+from typing import Any
 
 from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit.completion import WordCompleter
 from rich import box
 from rich.align import Align
-from prompt_toolkit.completion import WordCompleter
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
@@ -71,8 +72,10 @@ def show_banner(force: bool = False) -> None:
     footer = Text("AI-inferred database descriptions", style="cyan")
 
     content = Text.assemble(
-        tagline, "\n\n",
-        art, "\n\n",
+        tagline,
+        "\n\n",
+        art,
+        "\n\n",
         footer,
         justify="center",
     )
@@ -136,10 +139,8 @@ def _live_paused_for_input() -> Generator[None, None, None]:
         yield
     finally:
         if paused and display is not None:
-            try:
+            with suppress(Exception):
                 display.resume()
-            except Exception:
-                pass
 
 
 def _safe_pt_prompt(*args: Any, **kwargs: Any) -> str:
@@ -343,5 +344,10 @@ def render_token_summary(tracker: object) -> None:
         tot_out += out
         tot_all += total
     table.add_section()
-    table.add_row("[bold]TOTAL[/bold]", f"[bold]{tot_in:,}[/bold]", f"[bold]{tot_out:,}[/bold]", f"[bold]{tot_all:,}[/bold]")
+    table.add_row(
+        "[bold]TOTAL[/bold]",
+        f"[bold]{tot_in:,}[/bold]",
+        f"[bold]{tot_out:,}[/bold]",
+        f"[bold]{tot_all:,}[/bold]",
+    )
     console.print(table)

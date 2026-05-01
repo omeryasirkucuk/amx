@@ -20,16 +20,12 @@ against — so it doesn't have to hallucinate.
 
 from __future__ import annotations
 
-import json
-import time
-from dataclasses import asdict
 from typing import Any
 
 from amx.config import AMXConfig
 from amx.llm.provider import LLMProvider
 from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
-
 
 # Maximum number of tool-call iterations before we force the LLM to answer.
 # A typical question takes 1–3 tool calls; 6 gives headroom for chained
@@ -78,7 +74,9 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
     """
     db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or "(active database)"
     schema_line = (
-        ", ".join(schema_hint) if schema_hint else "(none indexed yet — use list_schemas to discover)"
+        ", ".join(schema_hint)
+        if schema_hint
+        else "(none indexed yet — use list_schemas to discover)"
     )
     current_schema = cfg.current_schema or "(none — user has not pinned a schema)"
     current_table = cfg.current_table or "(none — user has not pinned a table)"
@@ -326,7 +324,7 @@ def run_tool_agent(
 
 def _run_tool_loop(
     *,
-    toolbox: "ToolBox",
+    toolbox: ToolBox,
     cfg: AMXConfig,
     llm: LLMProvider,
     question: str,

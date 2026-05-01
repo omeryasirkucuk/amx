@@ -8,8 +8,18 @@ from dataclasses import replace
 
 import click
 
-from amx.config import AMXConfig, DISABLED_PROFILE
-from amx.utils.console import ask, confirm, error, heading, info, render_table, step_spinner, success, warn
+from amx.config import DISABLED_PROFILE, AMXConfig
+from amx.utils.console import (
+    ask,
+    confirm,
+    error,
+    heading,
+    info,
+    render_table,
+    step_spinner,
+    success,
+    warn,
+)
 from amx.utils.live_commands import command_display
 
 InteractiveDbBlock = Callable[[object], object]
@@ -83,7 +93,9 @@ def register_root_commands(
                 if not path:
                     break
                 if path in existing or path in new_paths:
-                    duplicate = f"This path is already in profile {name!r}: {path}. Add duplicate anyway?"
+                    duplicate = (
+                        f"This path is already in profile {name!r}: {path}. Add duplicate anyway?"
+                    )
                     if not confirm(duplicate, default=False):
                         continue
                 try:
@@ -127,11 +139,12 @@ def register_root_commands(
     @click.pass_obj
     def db_connect(cfg: AMXConfig) -> None:
         """Test database connectivity."""
-        from amx.db.connector import DatabaseConnector
         from amx.cli_support.commands.db import databricks_connect_with_recovery
+        from amx.db.connector import DatabaseConnector
 
         info(f"Testing [{cfg.db.backend}] connection to {cfg.db.display_summary} ...")
         if cfg.db.backend == "databricks":
+
             def _attempt(db_cfg):
                 db_conn = DatabaseConnector(db_cfg)
                 result = db_conn.test_connection_result()
@@ -161,12 +174,15 @@ def register_root_commands(
                 # /run, /ask, /edit and friends inherit it.
                 try:
                     from amx.cli_support.catalog_picker import ensure_catalog_selected
+
                     db_for_pick = DatabaseConnector(cfg.db)
                     ensure_catalog_selected(db_for_pick)
                 except Exception as _exc:
                     pass
                 if getattr(cfg.db, "tls_no_verify", False):
-                    warn("Active Databricks profile now uses TLS no-verify. Replace this with a trusted CA bundle when possible.")
+                    warn(
+                        "Active Databricks profile now uses TLS no-verify. Replace this with a trusted CA bundle when possible."
+                    )
                 success(f"Connected to [{cfg.db.backend}] {cfg.db.display_summary}")
                 return
             error("Connection failed.")
@@ -213,7 +229,9 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
-        with command_display(schema=schema, mode="db-tables", provider=cfg.llm.provider, model=cfg.llm.model):
+        with command_display(
+            schema=schema, mode="db-tables", provider=cfg.llm.provider, model=cfg.llm.model
+        ):
             with step_spinner(f"Listing assets in {schema}"):
                 assets = db_conn.list_assets(schema)
         render_table(
@@ -231,7 +249,13 @@ def register_root_commands(
         from amx.db.connector import DatabaseConnector
 
         db_conn = DatabaseConnector(cfg.db)
-        with command_display(schema=schema, table=table, mode="db-profile", provider=cfg.llm.provider, model=cfg.llm.model):
+        with command_display(
+            schema=schema,
+            table=table,
+            mode="db-profile",
+            provider=cfg.llm.provider,
+            model=cfg.llm.model,
+        ):
             with step_spinner(f"Profiling {schema}.{table}"):
                 profile = db_conn.profile_table(schema, table)
         rows = [
@@ -268,17 +292,27 @@ def register_root_commands(
             f"Profiling: mode={cfg.db.profiling_mode}, "
             f"max_full_scan_rows={max_label}, sample_size={cfg.db.profiling_sample_size}"
         )
-        info(f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}")
+        info(
+            f"Session context: schema={cfg.current_schema or '-'} table={cfg.current_table or '-'}"
+        )
         info(
             f"Active LLM profile: {cfg.active_llm_profile} → "
             f"{cfg.llm.provider}/{cfg.llm.model} [{cfg.llm.language or 'english'} metadata]"
         )
         if cfg.llm_profiles:
             info("LLM profiles: " + ", ".join(sorted(cfg.llm_profiles.keys())))
-        doc_prof = "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else (cfg.active_doc_profile or "-")
+        doc_prof = (
+            "(none)"
+            if cfg.active_doc_profile == DISABLED_PROFILE
+            else (cfg.active_doc_profile or "-")
+        )
         info(f"Active document profile: {doc_prof}")
         info(f"Document paths (active): {cfg.effective_doc_paths() or 'none'}")
-        code_prof = "(none)" if cfg.active_code_profile == DISABLED_PROFILE else (cfg.active_code_profile or "-")
+        code_prof = (
+            "(none)"
+            if cfg.active_code_profile == DISABLED_PROFILE
+            else (cfg.active_code_profile or "-")
+        )
         info(f"Active codebase profile: {code_prof}")
         info(f"Codebase paths (active): {cfg.effective_code_paths() or 'none'}")
         info(f"Selected schemas: {cfg.selected_schemas or 'all'}")

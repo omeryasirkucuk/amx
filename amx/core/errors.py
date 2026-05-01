@@ -66,6 +66,7 @@ _SSL_PATTERNS: tuple[str, ...] = (
     "ca_md_too_weak",
 )
 
+
 def _matches_any(haystack: str, needles: tuple[str, ...]) -> bool:
     return any(needle in haystack for needle in needles)
 
@@ -82,9 +83,9 @@ def _looks_like_missing_database(lower: str) -> bool:
     if "database" not in lower and "catalog" not in lower:
         return False
     # Skip when the message is clearly about an object inside the database.
-    if any(token in lower for token in ("schema", "table", "column", "view", "function", "type")):
-        return False
-    return True
+    return not any(
+        token in lower for token in ("schema", "table", "column", "view", "function", "type")
+    )
 
 
 class ErrorMapper:
@@ -103,19 +104,25 @@ class ErrorMapper:
                 "AMX tried to read pg_stat_statements telemetry, but the extension is not loaded.",
                 "Run `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;`, add it to `shared_preload_libraries`, restart PostgreSQL, or switch profiling detail to avoid usage stats.",
             )
-        if backend_l == "postgresql" and ("permission denied" in lower or "insufficient privilege" in lower):
+        if backend_l == "postgresql" and (
+            "permission denied" in lower or "insufficient privilege" in lower
+        ):
             return ActionableError(
                 "PostgreSQL permission denied",
                 "The active role cannot read one or more selected objects.",
                 "Grant `SELECT` on the target schema/tables or use a profile with sufficient read privileges.",
             )
-        if backend_l == "bigquery" and ("access denied" in lower or "forbidden" in lower or "permission" in lower):
+        if backend_l == "bigquery" and (
+            "access denied" in lower or "forbidden" in lower or "permission" in lower
+        ):
             return ActionableError(
                 "BigQuery permission denied",
                 "The configured principal cannot read metadata or sample table data.",
                 "Grant BigQuery Metadata Viewer and Data Viewer on the project/dataset, then retry.",
             )
-        if backend_l == "databricks" and ("certificate_verify_failed" in lower or "self-signed certificate" in lower):
+        if backend_l == "databricks" and (
+            "certificate_verify_failed" in lower or "self-signed certificate" in lower
+        ):
             return ActionableError(
                 "Databricks TLS verification failed",
                 "The SQL warehouse certificate could not be verified by the local trust store.",
@@ -155,7 +162,11 @@ class ErrorMapper:
                 "Check the database name in the active profile (PostgreSQL: database, Snowflake: database, Databricks: catalog, BigQuery: project) and confirm the user has access to it.",
             )
 
-        if "not found" in lower or "does not exist" in lower or "not exist or not authorized" in lower:
+        if (
+            "not found" in lower
+            or "does not exist" in lower
+            or "not exist or not authorized" in lower
+        ):
             return ActionableError(
                 "Object not found or not visible",
                 "The requested database object is missing or hidden by permissions.",

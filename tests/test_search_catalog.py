@@ -3,7 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
+
+import pytest
 
 from amx.agents.base import Confidence, MetadataSuggestion
 from amx.config import AMXConfig
@@ -11,7 +14,7 @@ from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent
 from amx.db.connector import AssetKind, ColumnProfile, TableProfile
 from amx.search.agent import SearchPlan, SearchPolicy
 from amx.search.catalog import SearchCatalog
-from amx.search.service import SearchService, _SESSION_MEMORY
+from amx.search.service import _SESSION_MEMORY, SearchService
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
@@ -32,9 +35,7 @@ class _FakeIndex:
 
     def reset_profile(self, db_profile: str) -> None:
         self.rows = {
-            key: value
-            for key, value in self.rows.items()
-            if value.get("db_profile") != db_profile
+            key: value for key, value in self.rows.items() if value.get("db_profile") != db_profile
         }
 
     def query(self, question: str, *, db_profile: str, n_results: int = 8):
@@ -76,7 +77,12 @@ class _FakeLLMProvider:
 
     def chat(self, messages, **kwargs):
         self.__class__.calls.append(messages)
-        usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model_processing_sec": 0.1}
+        usage = {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "model_processing_sec": 0.1,
+        }
         self.__class__.usages.append(usage)
         # Tool-agent path takes precedence when the caller passed ``tools=``
         # in kwargs, but we let plain ``responses`` queue serve the legacy
@@ -110,7 +116,12 @@ class _FakeLLMProvider:
             return type(
                 "ChatResult",
                 (),
-                {"content": str(entry), "usage": usage, "tool_calls": None, "finish_reason": "stop"},
+                {
+                    "content": str(entry),
+                    "usage": usage,
+                    "tool_calls": None,
+                    "finish_reason": "stop",
+                },
             )()
         if not self.__class__.responses:
             raise AssertionError("no fake LLM response queued")
@@ -164,9 +175,15 @@ class SearchCatalogTests(unittest.TestCase):
                 }
             ],
             columns=[
-                ColumnProfile(name="vbeln", dtype="TEXT", nullable=False, existing_comment="Sales document"),
-                ColumnProfile(name="netwr", dtype="DECIMAL", nullable=True, existing_comment="Net value"),
-                ColumnProfile(name="kunnr", dtype="TEXT", nullable=True, existing_comment="Customer"),
+                ColumnProfile(
+                    name="vbeln", dtype="TEXT", nullable=False, existing_comment="Sales document"
+                ),
+                ColumnProfile(
+                    name="netwr", dtype="DECIMAL", nullable=True, existing_comment="Net value"
+                ),
+                ColumnProfile(
+                    name="kunnr", dtype="TEXT", nullable=True, existing_comment="Customer"
+                ),
             ],
         )
 
@@ -178,7 +195,11 @@ class SearchCatalogTests(unittest.TestCase):
             row_count=5,
             existing_comment="Customer master",
             primary_key=["kunnr"],
-            columns=[ColumnProfile(name="kunnr", dtype="TEXT", nullable=False, existing_comment="Customer id")],
+            columns=[
+                ColumnProfile(
+                    name="kunnr", dtype="TEXT", nullable=False, existing_comment="Customer id"
+                )
+            ],
         )
 
     def _semantic_customer_profile(self) -> TableProfile:
@@ -189,8 +210,18 @@ class SearchCatalogTests(unittest.TestCase):
             row_count=4,
             existing_comment="Customer mapping helper",
             columns=[
-                ColumnProfile(name="customer_id", dtype="TEXT", nullable=False, existing_comment="Customer id business key"),
-                ColumnProfile(name="customer_name", dtype="TEXT", nullable=True, existing_comment="Customer display name"),
+                ColumnProfile(
+                    name="customer_id",
+                    dtype="TEXT",
+                    nullable=False,
+                    existing_comment="Customer id business key",
+                ),
+                ColumnProfile(
+                    name="customer_name",
+                    dtype="TEXT",
+                    nullable=True,
+                    existing_comment="Customer display name",
+                ),
             ],
         )
 
@@ -202,9 +233,24 @@ class SearchCatalogTests(unittest.TestCase):
             row_count=12,
             existing_comment="Address communication details",
             columns=[
-                ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
-                ColumnProfile(name="date_from", dtype="DATE", nullable=True, existing_comment="Valid-from date for address communication details"),
-                ColumnProfile(name="smtp_addr", dtype="TEXT", nullable=True, existing_comment="Email address detail"),
+                ColumnProfile(
+                    name="addrnumber",
+                    dtype="TEXT",
+                    nullable=False,
+                    existing_comment="Address number",
+                ),
+                ColumnProfile(
+                    name="date_from",
+                    dtype="DATE",
+                    nullable=True,
+                    existing_comment="Valid-from date for address communication details",
+                ),
+                ColumnProfile(
+                    name="smtp_addr",
+                    dtype="TEXT",
+                    nullable=True,
+                    existing_comment="Email address detail",
+                ),
             ],
         )
 
@@ -216,9 +262,24 @@ class SearchCatalogTests(unittest.TestCase):
             row_count=8,
             existing_comment="Address remarks and text details",
             columns=[
-                ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
-                ColumnProfile(name="date_from", dtype="DATE", nullable=True, existing_comment="Valid-from date"),
-                ColumnProfile(name="remark", dtype="TEXT", nullable=True, existing_comment="Address detail remark text"),
+                ColumnProfile(
+                    name="addrnumber",
+                    dtype="TEXT",
+                    nullable=False,
+                    existing_comment="Address number",
+                ),
+                ColumnProfile(
+                    name="date_from",
+                    dtype="DATE",
+                    nullable=True,
+                    existing_comment="Valid-from date",
+                ),
+                ColumnProfile(
+                    name="remark",
+                    dtype="TEXT",
+                    nullable=True,
+                    existing_comment="Address detail remark text",
+                ),
             ],
         )
 
@@ -230,10 +291,19 @@ class SearchCatalogTests(unittest.TestCase):
             row_count=20,
             existing_comment="Address master",
             columns=[
-                ColumnProfile(name="addrnumber", dtype="TEXT", nullable=False, existing_comment="Address number"),
-                ColumnProfile(name="name1", dtype="TEXT", nullable=True, existing_comment="Name line"),
+                ColumnProfile(
+                    name="addrnumber",
+                    dtype="TEXT",
+                    nullable=False,
+                    existing_comment="Address number",
+                ),
+                ColumnProfile(
+                    name="name1", dtype="TEXT", nullable=True, existing_comment="Name line"
+                ),
                 ColumnProfile(name="city1", dtype="TEXT", nullable=True, existing_comment="City"),
-                ColumnProfile(name="city_code", dtype="TEXT", nullable=True, existing_comment="City code"),
+                ColumnProfile(
+                    name="city_code", dtype="TEXT", nullable=True, existing_comment="City code"
+                ),
             ],
         )
 
@@ -338,8 +408,16 @@ class SearchCatalogTests(unittest.TestCase):
                 "table_mentions": 5,
                 "sql_like_table_mentions": 3,
                 "top_column_usage": [
-                    {"column": "netwr", "mentions": 4, "sample_sql_lines": ["select netwr from vbak"]},
-                    {"column": "kunnr", "mentions": 2, "sample_sql_lines": ["join kna1 on vbak.kunnr = kna1.kunnr"]},
+                    {
+                        "column": "netwr",
+                        "mentions": 4,
+                        "sample_sql_lines": ["select netwr from vbak"],
+                    },
+                    {
+                        "column": "kunnr",
+                        "mentions": 2,
+                        "sample_sql_lines": ["join kna1 on vbak.kunnr = kna1.kunnr"],
+                    },
                 ],
             },
         )
@@ -388,7 +466,9 @@ class SearchCatalogTests(unittest.TestCase):
             ).fetchone()
         _FakeIndex.query_hits = [{"metadata": {"entity_id": int(row["id"])}, "distance": 0.2}]
 
-        results = self.catalog.search_columns("default", "unmatched glyph", query_variants=["semantic ghost"])
+        results = self.catalog.search_columns(
+            "default", "unmatched glyph", query_variants=["semantic ghost"]
+        )
 
         self.assertTrue(results)
         self.assertEqual(results[0]["column_name"], "netwr")
@@ -471,6 +551,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(joinable[0]["target_table_name"], "kna1")
         self.assertEqual(joinable[0]["relationship_type"], "foreign_key")
 
+    @pytest.mark.integration
     def test_out_of_domain_question_returns_no_matches(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",
@@ -501,8 +582,12 @@ class SearchCatalogTests(unittest.TestCase):
                 asset_kind=AssetKind.TABLE,
                 row_count=10,
                 columns=[
-                    ColumnProfile(name="mandt", dtype="TEXT", nullable=False, existing_comment="SAP client"),
-                    ColumnProfile(name="bukrs", dtype="TEXT", nullable=False, existing_comment="Company code"),
+                    ColumnProfile(
+                        name="mandt", dtype="TEXT", nullable=False, existing_comment="SAP client"
+                    ),
+                    ColumnProfile(
+                        name="bukrs", dtype="TEXT", nullable=False, existing_comment="Company code"
+                    ),
                 ],
             ),
             query_usage={},
@@ -536,6 +621,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.details.get("reason"), "no_llm")
         self.assertIn("requires an active LLM profile", answer.summary)
 
+    @pytest.mark.integration
     def test_follow_up_uses_session_memory_for_table_explain(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",
@@ -570,8 +656,18 @@ class SearchCatalogTests(unittest.TestCase):
                 asset_kind=AssetKind.TABLE,
                 row_count=10,
                 columns=[
-                    ColumnProfile(name="date_from", dtype="DATE", nullable=False, existing_comment="Effective start date"),
-                    ColumnProfile(name="valid_to", dtype="TIMESTAMP", nullable=True, existing_comment="End validity timestamp"),
+                    ColumnProfile(
+                        name="date_from",
+                        dtype="DATE",
+                        nullable=False,
+                        existing_comment="Effective start date",
+                    ),
+                    ColumnProfile(
+                        name="valid_to",
+                        dtype="TIMESTAMP",
+                        nullable=True,
+                        existing_comment="End validity timestamp",
+                    ),
                 ],
             ),
             query_usage={},
@@ -620,14 +716,22 @@ class SearchCatalogTests(unittest.TestCase):
             )
             with patch.object(SearchService, "_inventory_db", return_value=fake_db):
                 service = SearchService(cfg, self.catalog)
-                answer = service.ask("adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?")
+                answer = service.ask(
+                    "adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?"
+                )
 
         self.assertEqual(answer.confidence, "high")
         self.assertIn("Hayir", answer.summary)
         self.assertIn("`city1`", answer.summary)
         self.assertIn("SELECT column_name, comment", answer.summary)
-        self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["operation"], "column_comments")
-        self.assertIn("Default live probe", answer.details["retrieval"]["live_probe"]["operations"][0]["rationale"])
+        self.assertEqual(
+            answer.details["retrieval"]["live_probe"]["operations"][0]["operation"],
+            "column_comments",
+        )
+        self.assertIn(
+            "Default live probe",
+            answer.details["retrieval"]["live_probe"]["operations"][0]["rationale"],
+        )
         self.assertIn("agent-planned live metadata probe", answer.provenance)
         self.assertTrue(answer.details["executed_actions"])
         self.assertEqual(answer.details["executed_actions"][0]["operation"], "column_comments")
@@ -659,10 +763,14 @@ class SearchCatalogTests(unittest.TestCase):
             )
             with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
                 service = SearchService(cfg, self.catalog)
-                answer = service.ask("adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?")
+                answer = service.ask(
+                    "adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?"
+                )
 
         self.assertIn("`sap_s6p.adrc`", answer.summary)
-        self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc")
+        self.assertEqual(
+            answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc"
+        )
 
     def test_table_explain_uses_live_exact_table_before_fuzzy_catalog_candidate(self) -> None:
         self.catalog.sync_table_profile(
@@ -690,10 +798,25 @@ class SearchCatalogTests(unittest.TestCase):
                     "table": table,
                     "table_comment": "Address master",
                     "columns": [
-                        {"name": "addrnumber", "dtype": "TEXT", "nullable": False, "comment": "Address number"},
-                        {"name": "name1", "dtype": "TEXT", "nullable": True, "comment": "Name line"},
+                        {
+                            "name": "addrnumber",
+                            "dtype": "TEXT",
+                            "nullable": False,
+                            "comment": "Address number",
+                        },
+                        {
+                            "name": "name1",
+                            "dtype": "TEXT",
+                            "nullable": True,
+                            "comment": "Name line",
+                        },
                         {"name": "city1", "dtype": "TEXT", "nullable": True, "comment": "City"},
-                        {"name": "post_code1", "dtype": "TEXT", "nullable": True, "comment": "Postal code"},
+                        {
+                            "name": "post_code1",
+                            "dtype": "TEXT",
+                            "nullable": True,
+                            "comment": "Postal code",
+                        },
                     ],
                 }
 
@@ -711,7 +834,9 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertNotIn("adr6", answer.summary.lower())
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
-        self.assertEqual(answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc")
+        self.assertEqual(
+            answer.details["retrieval"]["live_probe"]["operations"][0]["table_path"], "sap_s6p.adrc"
+        )
         self.assertIn("live verification", answer.provenance)
 
     def test_explicit_missing_table_is_not_replaced_by_fuzzy_candidate(self) -> None:
@@ -772,7 +897,9 @@ class SearchCatalogTests(unittest.TestCase):
             "suggest_sync_if_sparse",
         )
 
-        rows, verification = service._agent._verify_rows(plan, policy, [{"row_type": "table"}], {"resolved_tables": ["sap_s6p.adrc"]})
+        rows, verification = service._agent._verify_rows(
+            plan, policy, [{"row_type": "table"}], {"resolved_tables": ["sap_s6p.adrc"]}
+        )
 
         self.assertEqual(rows[0]["row_type"], "table")
         self.assertFalse(verification["live_verified"])
@@ -826,6 +953,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertNotIn("name2", column_names)
         self.assertIn("`sap_s6p.adrc.city1`", second.summary)
 
+    @pytest.mark.integration
     def test_catalog_overview_question_lists_known_databases(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",
@@ -847,6 +975,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.rows[0]["database_name"], "SAP")
 
+    @pytest.mark.integration
     def test_inventory_question_keeps_llm_answer_language_when_present(self) -> None:
         cfg = self._search_cfg()
         fake_db = type(
@@ -854,7 +983,9 @@ class SearchCatalogTests(unittest.TestCase):
             (),
             {
                 "list_schemas": lambda self: ["public", "sap_s6p", "sap_test"],
-                "list_tables": lambda self, schema: ["adr6"] if schema in {"sap_s6p", "sap_test"} else [],
+                "list_tables": lambda self, schema: (
+                    ["adr6"] if schema in {"sap_s6p", "sap_test"} else []
+                ),
             },
         )()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
@@ -884,7 +1015,7 @@ class SearchCatalogTests(unittest.TestCase):
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"request_type":"metadata_discovery","intent":"find_tables","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"semantic guess","decision_confidence":"medium","needs_clarification":false}',
-                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
+                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}',
             )
             service = SearchService(cfg, self.catalog)
             answer = service.ask("veri tabanlarımızda comment kısmı eksik olanlar var mı")
@@ -914,7 +1045,7 @@ class SearchCatalogTests(unittest.TestCase):
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"intent":"find_tables","out_of_domain":false,"normalized_question":"tables containing address details","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["住所の詳細を含むテーブル","tables containing address details"],"needs_typo_recovery":false,"answer_language":"japanese","reason":"table discovery","decision_confidence":"high","needs_clarification":false}',
-                "住所情報に関連する候補として `sap.adr6` が見つかりました。"
+                "住所情報に関連する候補として `sap.adr6` が見つかりました。",
             )
             service = SearchService(cfg, self.catalog)
             answer = service.ask("住所の詳細を含むテーブルはどれですか？")
@@ -929,7 +1060,9 @@ class SearchCatalogTests(unittest.TestCase):
             (),
             {
                 "list_schemas": lambda self: ["sap", "hr"],
-                "list_tables": lambda self, schema: ["vbak", "kna1", "mara"] if schema == "sap" else ["employees"],
+                "list_tables": lambda self, schema: (
+                    ["vbak", "kna1", "mara"] if schema == "sap" else ["employees"]
+                ),
             },
         )()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
@@ -975,7 +1108,9 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertIn("| sap | vbak | 3 | 10 |", answer.summary)
         self.assertIn("| sap | kna1 | 1 | 5 |", answer.summary)
         self.assertNotIn("Best grounded match", answer.summary)
-        self.assertTrue(any(step["step"] == "schema_explorer" for step in answer.details["thought_trace"]))
+        self.assertTrue(
+            any(step["step"] == "schema_explorer" for step in answer.details["thought_trace"])
+        )
 
     def test_headless_ask_inventory_uses_schema_explorer_strategy(self) -> None:
         self.catalog.sync_table_profile(
@@ -987,7 +1122,9 @@ class SearchCatalogTests(unittest.TestCase):
         )
         cfg = self._search_cfg()
         cfg.current_schema = "sap"
-        response = LoopBasedAskAgent(AskToolbox(cfg, self.catalog)).answer("How many columns per table?")
+        response = LoopBasedAskAgent(AskToolbox(cfg, self.catalog)).answer(
+            "How many columns per table?"
+        )
 
         self.assertEqual(response.strategy, "inventory")
         self.assertEqual(response.tool_results[0].tool, "SchemaExplorer")
@@ -1022,10 +1159,13 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.details["plan"]["target_entity"], "table")
         self.assertNotEqual(answer.intent, "count_tables")
         self.assertTrue(answer.rows)
-        top_tables = {f"{row.get('schema_name')}.{row.get('table_name')}" for row in answer.rows[:2]}
+        top_tables = {
+            f"{row.get('schema_name')}.{row.get('table_name')}" for row in answer.rows[:2]
+        }
         self.assertIn("sap_s6p.adr6", top_tables)
         self.assertIn("sap_s6p.adrt", top_tables)
 
+    @pytest.mark.integration
     def test_single_table_join_question_returns_joinable_tables(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",
@@ -1054,6 +1194,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.rows[0]["target_table_name"], "kna1")
         self.assertEqual(answer.confidence, "high")
 
+    @pytest.mark.integration
     def test_joinable_table_answer_is_deterministic_and_includes_join_columns(self) -> None:
         self.catalog.sync_table_profile(
             db_profile="default",
@@ -1075,7 +1216,9 @@ class SearchCatalogTests(unittest.TestCase):
                 '{"intent":"join_candidates","out_of_domain":false,"normalized_question":"which tables can join with sap.vbak","search_mode":"joinable_tables","question_class":"join_discovery","entity_hints":["sap.vbak"],"search_queries":["which tables can join with sap.vbak"],"needs_typo_recovery":false,"answer_language":"english","reason":"single-table join discovery"}',
             )
             service = SearchService(cfg, self.catalog)
-            answer = service.ask("sap.vbak tablosunu hangi tablolarla joinleyebilirim, hangi kolonlari kullanirim")
+            answer = service.ask(
+                "sap.vbak tablosunu hangi tablolarla joinleyebilirim, hangi kolonlari kullanirim"
+            )
         self.assertTrue(answer.rows)
         self.assertEqual(answer.details["answer_strategy"], "deterministic")
         self.assertIn("`sap.kna1`", answer.summary)
@@ -1201,15 +1344,13 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.details["answer_shape"], "short_table")
         self.assertIn("Top **2** tables", answer.summary)
         # Two data rows in the short table (vbak first, kna1 second).
-        data_lines = [
-            line for line in answer.summary.splitlines()
-            if line.startswith("| sap |")
-        ]
+        data_lines = [line for line in answer.summary.splitlines() if line.startswith("| sap |")]
         self.assertEqual(len(data_lines), 2)
         self.assertIn("vbak", data_lines[0])
         self.assertIn("kna1", data_lines[1])
         self.assertFalse(answer.details["display_rows"])
 
+    @pytest.mark.integration
     def test_broad_inventory_dump_keeps_display_rows_false(self) -> None:
         # No aggregation hints -> answer_shape derives to full_table -> dump path.
         # The bottom Rich Search matches table must still be suppressed since the
@@ -1278,7 +1419,12 @@ class SearchCatalogTests(unittest.TestCase):
                 answer_shape="ranked_list",
             )
             rows = [
-                {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr", "rank_score": 7.5}
+                {
+                    "schema_name": "sap",
+                    "table_name": "vbak",
+                    "column_name": "netwr",
+                    "rank_score": 7.5,
+                }
             ]
             _FakeLLMProvider.queue("vbak.netwr is your strongest pricing match.")
             service._agent._synthesize_answer(
@@ -1292,8 +1438,12 @@ class SearchCatalogTests(unittest.TestCase):
             )
         # Find the synthesis call (user payload JSON contains "answer_shape").
         user_payloads = [msgs[-1]["content"] for msgs in _FakeLLMProvider.calls if msgs]
-        matching = [payload for payload in user_payloads if '"answer_shape": "ranked_list"' in payload]
-        self.assertTrue(matching, f"expected synthesis payload to carry answer_shape; got: {user_payloads!r}")
+        matching = [
+            payload for payload in user_payloads if '"answer_shape": "ranked_list"' in payload
+        ]
+        self.assertTrue(
+            matching, f"expected synthesis payload to carry answer_shape; got: {user_payloads!r}"
+        )
 
     # ------------------------------------------------------------------
     # Subject-form question detection — "what's the vbrk", "describe X",
@@ -1302,6 +1452,7 @@ class SearchCatalogTests(unittest.TestCase):
     # rejected as not-found, rather than silently swapping to an unrelated
     # table the LLM happened to suggest.
     # ------------------------------------------------------------------
+    @pytest.mark.integration
     def test_subject_form_unknown_table_returns_not_found(self) -> None:
         """Bare "what's the vbrk" against a catalog without vbrk → not found."""
         # Seed catalog with adrc only — vbrk does not exist anywhere.
@@ -1368,7 +1519,12 @@ class SearchCatalogTests(unittest.TestCase):
                     "table": table,
                     "table_comment": "Address master",
                     "columns": [
-                        {"name": "addrnumber", "dtype": "TEXT", "nullable": False, "comment": "Address number"},
+                        {
+                            "name": "addrnumber",
+                            "dtype": "TEXT",
+                            "nullable": False,
+                            "comment": "Address number",
+                        },
                     ],
                 }
 
@@ -1425,6 +1581,7 @@ class SearchCatalogTests(unittest.TestCase):
         # final answer references the prior content, not a clarification.
         self.assertIn("only", answer.summary.lower())
 
+    @pytest.mark.integration
     def test_short_circuits_persist_assistant_turn(self) -> None:
         """chitchat / meta / reaffirmation must write a paired assistant turn
         so subsequent ``_memory_summary`` calls return matched (user, assistant)
@@ -1440,6 +1597,7 @@ class SearchCatalogTests(unittest.TestCase):
         sid = cfg.active_chat_session_id
         self.assertIsNotNone(sid)
         from amx.search.session_store import ChatSessionStore
+
         store = ChatSessionStore(self.store)
         turns = store.recent_turns(int(sid), include_summary=False)
         roles = [str(t.get("role") or "") for t in turns]
@@ -1518,6 +1676,7 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertEqual(answer.details.get("iterations"), 1)
         self.assertEqual(answer.details.get("tool_calls"), [])
 
+    @pytest.mark.integration
     def test_strong_table_mention_wins_when_catalog_is_empty(self) -> None:
         """`X table` keyword mentions override LLM mode without catalog match.
 
@@ -1543,7 +1702,9 @@ class SearchCatalogTests(unittest.TestCase):
                     "schema": schema,
                     "table": table,
                     "table_comment": "Billing",
-                    "columns": [{"name": "vbeln", "dtype": "BIGINT", "nullable": False, "comment": "Doc"}],
+                    "columns": [
+                        {"name": "vbeln", "dtype": "BIGINT", "nullable": False, "comment": "Doc"}
+                    ],
                 }
 
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
@@ -1567,6 +1728,7 @@ class SearchCatalogTests(unittest.TestCase):
         # to table_explain because the user said "vbrk table" (strong).
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.vbrk"])
 
+    @pytest.mark.integration
     def test_followup_reaffirmation_restates_prior_assistant_turn(self) -> None:
         """'Are you sure?' / 'emin misin?' restate prior answer, no LLM call."""
         cfg = self._search_cfg()
@@ -1610,6 +1772,7 @@ class SearchCatalogTests(unittest.TestCase):
         # No LLM calls were made.
         self.assertEqual(_FakeLLMProvider.calls, [])
 
+    @pytest.mark.integration
     def test_meta_query_returns_prior_question_from_session_store(self) -> None:
         """'bir önceki sorum neydi' must answer from session memory."""
         cfg = self._search_cfg()
@@ -1631,7 +1794,9 @@ class SearchCatalogTests(unittest.TestCase):
             answer = service.ask("what was my previous question?")
         self.assertEqual(answer.intent, "meta_query")
         self.assertIn("how many columns", answer.summary.lower())
-        self.assertEqual(answer.details["prior_question"], "how many columns are in the address table")
+        self.assertEqual(
+            answer.details["prior_question"], "how many columns are in the address table"
+        )
 
     def test_find_tables_by_exact_name_disambiguates_across_schemas(self) -> None:
         """Same table name in two schemas surfaces both candidates."""

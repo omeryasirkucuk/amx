@@ -23,7 +23,6 @@ from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import error, heading, info, render_table, warn
 
-
 # USD per 1M tokens (input, output). Embedding models track only input.
 # Source: provider public price pages, approximated for end-user
 # orientation only. Update when a model is renamed or repriced.
@@ -151,7 +150,7 @@ def _format_cost(model: str, input_tokens: int, output_tokens: int) -> str:
     output_usd = output_tokens * pricing[1] / 1_000_000.0
     total = input_usd + output_usd
     if total < 0.01:
-        return f"<$0.01"
+        return "<$0.01"
     return f"${total:,.2f}"
 
 
@@ -264,8 +263,7 @@ def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
             f"[bold]{grand_in:,}[/bold]",
             f"[bold]{grand_out:,}[/bold]",
             f"[bold]{grand_total:,}[/bold]",
-            (f"[bold]≈ ${grand_cost_known:,.2f}[/bold]"
-             if grand_cost_seen else "—"),
+            (f"[bold]≈ ${grand_cost_known:,.2f}[/bold]" if grand_cost_seen else "—"),
         ]
     )
     render_table(

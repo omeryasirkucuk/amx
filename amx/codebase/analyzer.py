@@ -5,10 +5,10 @@ from __future__ import annotations
 import ast
 import re
 import tempfile
-from contextlib import contextmanager
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 from amx.utils.logging import get_logger
 
@@ -18,9 +18,26 @@ MAX_REGEX_ASSETS = 5000
 MAX_COL_NAMES = 4000
 
 CODE_EXTENSIONS = {
-    ".py", ".sql", ".java", ".scala", ".kt", ".js", ".ts",
-    ".r", ".R", ".ipynb", ".sh", ".yaml", ".yml", ".json",
-    ".cs", ".go", ".rb", ".php", ".pl", ".lua",
+    ".py",
+    ".sql",
+    ".java",
+    ".scala",
+    ".kt",
+    ".js",
+    ".ts",
+    ".r",
+    ".R",
+    ".ipynb",
+    ".sh",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".cs",
+    ".go",
+    ".rb",
+    ".php",
+    ".pl",
+    ".lua",
 }
 
 
@@ -30,7 +47,7 @@ class CodeReference:
     line_no: int
     line_text: str
     matched_asset: str  # table or column name that was found
-    context: str = ""   # surrounding lines for richer understanding
+    context: str = ""  # surrounding lines for richer understanding
 
 
 @dataclass
@@ -361,7 +378,9 @@ def analyze_codebase(
                 "not a profile name (profile names are for /code /add-code-profile only)."
             )
         if not root.is_dir():
-            raise RuntimeError(f"Codebase path must be a directory or Git URL, not a single file: {root}")
+            raise RuntimeError(
+                f"Codebase path must be a directory or Git URL, not a single file: {root}"
+            )
 
         catalog = known_catalog_tables or frozenset(t.lower() for t in table_names)
 
@@ -378,13 +397,14 @@ def analyze_codebase(
             pattern = re.compile(r"$^")
         else:
             pattern = re.compile(
-                r"\b(" + "|".join(re.escape(a) for a in sorted(assets_list, key=len, reverse=True)) + r")\b",
+                r"\b("
+                + "|".join(re.escape(a) for a in sorted(assets_list, key=len, reverse=True))
+                + r")\b",
                 re.IGNORECASE,
             )
 
         code_files = [
-            f for f in root.rglob("*")
-            if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
+            f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
         ]
         report.total_files = len(code_files)
         if report.total_files == 0:
@@ -397,20 +417,16 @@ def analyze_codebase(
 
         _cb = progress_callback if callable(progress_callback) else None
         if _cb:
-            try:
+            with suppress(Exception):
                 _cb("__total__", len(code_files))
-            except Exception:
-                pass
 
         for fpath in code_files:
             try:
                 lines = fpath.read_text(errors="replace").splitlines()
             except Exception:
                 if _cb:
-                    try:
+                    with suppress(Exception):
                         _cb("__advance__", fpath.name)
-                    except Exception:
-                        pass
                 continue
             report.scanned_files += 1
             rel = str(fpath.relative_to(root))
@@ -467,10 +483,8 @@ def analyze_codebase(
                 )
 
             if _cb:
-                try:
+                with suppress(Exception):
                     _cb("__advance__", fpath.name)
-                except Exception:
-                    pass
 
         ext_n = sum(len(v) for v in report.external_mentions.values())
         log.info(

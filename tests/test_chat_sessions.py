@@ -13,8 +13,8 @@ import unittest
 from pathlib import Path
 
 from amx.search.session_store import (
-    ChatSessionStore,
     _COMPACTION_RATIO,
+    ChatSessionStore,
     _estimate_turn_tokens,
     _input_budget_for,
 )
@@ -111,7 +111,9 @@ class ChatSessionPersistenceTests(unittest.TestCase):
 
 
 class ChatSessionCompactionTests(unittest.TestCase):
-    def _seed_heavy_session(self, store: ChatSessionStore, *, turns: int, per_turn_tokens: int) -> int:
+    def _seed_heavy_session(
+        self, store: ChatSessionStore, *, turns: int, per_turn_tokens: int
+    ) -> int:
         sid = store.start_session(db_profile="dev", llm_profile="default")
         for i in range(turns):
             # Override estimated_tokens so we can drive the threshold deterministically
@@ -134,9 +136,13 @@ class ChatSessionCompactionTests(unittest.TestCase):
             _, store = _fresh_store(td)
             # default budget is 60K * 0.40 = 24K threshold; 30 turns × 2K = 60K
             sid = self._seed_heavy_session(store, turns=30, per_turn_tokens=2_000)
-            self.assertGreater(store.total_turn_tokens(sid), int(_input_budget_for(None) * _COMPACTION_RATIO))
+            self.assertGreater(
+                store.total_turn_tokens(sid), int(_input_budget_for(None) * _COMPACTION_RATIO)
+            )
 
-            llm = _FakeLLM("Summary: investigating SAP sales tables.\n- tables: sap.table_0..9\n- columns: col_0..9\n- intents: find_tables")
+            llm = _FakeLLM(
+                "Summary: investigating SAP sales tables.\n- tables: sap.table_0..9\n- columns: col_0..9\n- intents: find_tables"
+            )
             result = store.maybe_compact(sid, model=None, llm_provider=llm)
 
             self.assertIsNotNone(result)
@@ -205,8 +211,14 @@ class ChatSessionCompactionTests(unittest.TestCase):
             for i in range(20):
                 store.append_user_turn(sid, question=f"q{i}", estimated_tokens=500)
                 store.append_assistant_turn(
-                    sid, run_id=None, answer_summary=f"a{i}", intent="x", topic="x",
-                    tables=[f"t{i}"], columns=[], estimated_tokens=2_000,
+                    sid,
+                    run_id=None,
+                    answer_summary=f"a{i}",
+                    intent="x",
+                    topic="x",
+                    tables=[f"t{i}"],
+                    columns=[],
+                    estimated_tokens=2_000,
                 )
             llm = _FakeLLM("Investigated SAP sales tables.")
             store.maybe_compact(sid, model=None, llm_provider=llm)
@@ -274,7 +286,7 @@ class TokenEstimationTests(unittest.TestCase):
 
 class ConfidenceBandTests(unittest.TestCase):
     def test_band_thresholds(self) -> None:
-        from amx.search.confidence import band, BAND_HIGH, BAND_MEDIUM, BAND_LOW
+        from amx.search.confidence import BAND_HIGH, BAND_LOW, BAND_MEDIUM, band
 
         self.assertEqual(band(12.0), BAND_HIGH)
         self.assertEqual(band(11.99), BAND_MEDIUM)

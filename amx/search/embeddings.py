@@ -28,10 +28,10 @@ dict; it returns ``None`` for the MiniLM default so callers can pass
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
-
 
 SUPPORTED_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
 DEFAULT_KIND = "minilm"
@@ -120,9 +120,7 @@ def configure_from_amx_config(cfg: Any, *, on_warning: Callable[[str], None] | N
     set_default_embedding_function(_factory)
 
 
-def _openai_client_factory(
-    *, api_key: str, base_url: str, timeout: float | None
-) -> Any:
+def _openai_client_factory(*, api_key: str, base_url: str, timeout: float | None) -> Any:
     """Build a real OpenAI-compatible client. Indirected so tests can patch."""
     try:
         from openai import OpenAI
@@ -230,8 +228,7 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
     def __init__(self, *, model: str) -> None:
         if not model:
             raise ValueError(
-                "SentenceTransformerEmbedding requires a model id "
-                "(e.g. 'BAAI/bge-large-en-v1.5')"
+                "SentenceTransformerEmbedding requires a model id (e.g. 'BAAI/bge-large-en-v1.5')"
             )
         try:
             from sentence_transformers import SentenceTransformer
@@ -286,6 +283,4 @@ def make_embedding_function(
         )
     if normalised == "sentence_transformers":
         return SentenceTransformerEmbedding(model=model)
-    raise ValueError(
-        f"Unknown embedding kind: {kind!r}. Expected one of {SUPPORTED_KINDS}."
-    )
+    raise ValueError(f"Unknown embedding kind: {kind!r}. Expected one of {SUPPORTED_KINDS}.")

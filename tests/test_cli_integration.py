@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from amx.cli import main
@@ -49,7 +50,9 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             def set_context(self, **kwargs) -> None:
                 return None
 
-            def update_activity(self, idx: int, *, label: str | None = None, reset_details: bool = False) -> None:
+            def update_activity(
+                self, idx: int, *, label: str | None = None, reset_details: bool = False
+            ) -> None:
                 return None
 
             def begin_activity(self, idx: int) -> None:
@@ -311,7 +314,9 @@ class RootCommandIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Connect stage failed: saved profile", result.output)
-        self.assertIn("Connect stage passed: env CA bundle (AMX_DATABRICKS_TRUSTED_CA_FILE)", result.output)
+        self.assertIn(
+            "Connect stage passed: env CA bundle (AMX_DATABRICKS_TRUSTED_CA_FILE)", result.output
+        )
         self.assertIn("Active Databricks trusted CA bundle", result.output)
         self.assertEqual(cfg.db.tls_trusted_ca_file, ca_file)
         cfg.save.assert_called()
@@ -462,6 +467,7 @@ class RootCommandIntegrationTests(unittest.TestCase):
 
 
 class HistoryListIntegrationTests(unittest.TestCase):
+    @pytest.mark.integration
     def test_history_list_renders_scope_summary(self) -> None:
         runner = CliRunner()
         fake_store = Mock()
@@ -517,7 +523,15 @@ class DocsIntegrationTests(unittest.TestCase):
         with patch("amx.cli_support.commands.docs._run_docs_semantic_search") as search_docs:
             result = runner.invoke(
                 main,
-                ["--config", "test-config.yml", "docs", "search-docs", "sales order", "--results", "3"],
+                [
+                    "--config",
+                    "test-config.yml",
+                    "docs",
+                    "search-docs",
+                    "sales order",
+                    "--results",
+                    "3",
+                ],
                 env={"AMX_SESSION_CHILD": "1"},
                 catch_exceptions=False,
             )
@@ -552,13 +566,30 @@ class SearchIntegrationTests(unittest.TestCase):
         from amx.cli_support.commands.search import _render_search_rows
 
         rows = [
-            {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr",
-             "rank_score": 7.5, "matched_columns": ["netwr"], "row_count": 100,
-             "column_count": 12, "effective_description": "Net value"},
-            {"schema_name": "sap", "table_name": "kna1", "column_name": "kunnr",
-             "score": 0.0, "effective_description": "Customer"},
-            {"schema_name": "sap", "table_name": "z", "column_name": "x",
-             "rank_score": 0.0, "effective_description": "noise"},
+            {
+                "schema_name": "sap",
+                "table_name": "vbak",
+                "column_name": "netwr",
+                "rank_score": 7.5,
+                "matched_columns": ["netwr"],
+                "row_count": 100,
+                "column_count": 12,
+                "effective_description": "Net value",
+            },
+            {
+                "schema_name": "sap",
+                "table_name": "kna1",
+                "column_name": "kunnr",
+                "score": 0.0,
+                "effective_description": "Customer",
+            },
+            {
+                "schema_name": "sap",
+                "table_name": "z",
+                "column_name": "x",
+                "rank_score": 0.0,
+                "effective_description": "noise",
+            },
         ]
         with patch("amx.cli_support.commands.search.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list")
@@ -580,10 +611,16 @@ class SearchIntegrationTests(unittest.TestCase):
         from amx.cli_support.commands.search import _render_search_rows
 
         rows = [
-            {"schema_name": "sap", "table_name": "vbak", "column_name": "netwr",
-             "rank_score": 165.0, "matched_columns": ["netwr"],
-             "effective_source_kind": "manual", "current_confidence": "verified",
-             "effective_description": "Net value"},
+            {
+                "schema_name": "sap",
+                "table_name": "vbak",
+                "column_name": "netwr",
+                "rank_score": 165.0,
+                "matched_columns": ["netwr"],
+                "effective_source_kind": "manual",
+                "current_confidence": "verified",
+                "effective_description": "Net value",
+            },
         ]
         with patch("amx.cli_support.commands.search.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list", debug=True)
@@ -600,9 +637,14 @@ class SearchIntegrationTests(unittest.TestCase):
         from amx.cli_support.commands.search import _render_search_rows
 
         rows = [
-            {"schema_name": "sap", "table_name": "vbak", "column_name": "x",
-             "rank_score": 12.0, "matched_columns": ["supplier_id", "vendor_name"],
-             "effective_description": "Sales header"},
+            {
+                "schema_name": "sap",
+                "table_name": "vbak",
+                "column_name": "x",
+                "rank_score": 12.0,
+                "matched_columns": ["supplier_id", "vendor_name"],
+                "effective_description": "Sales header",
+            },
         ]
         with patch("amx.cli_support.commands.search.console") as console_mock:
             _render_search_rows(rows, answer_shape="ranked_list")
@@ -666,6 +708,7 @@ class SearchIntegrationTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("requires an active LLM profile", result.output)
 
+    @pytest.mark.integration
     def test_search_ask_actions_prompt_requires_human_approval(self) -> None:
         runner = CliRunner()
         cfg = AMXConfig()
@@ -680,7 +723,9 @@ class SearchIntegrationTests(unittest.TestCase):
             summary="No strong matches.",
             provenance=[],
             details={
-                "actions": [{"action": "sync_catalog", "reason": "Refresh catalog structure and comments."}],
+                "actions": [
+                    {"action": "sync_catalog", "reason": "Refresh catalog structure and comments."}
+                ],
                 "retrieval": {},
                 "verification": {},
                 "policy": {},
@@ -740,7 +785,9 @@ class SearchIntegrationTests(unittest.TestCase):
             def begin_activity(self, idx: int) -> None:
                 return None
 
-            def update_activity(self, idx: int, *, label: str | None = None, reset_details: bool = False) -> None:
+            def update_activity(
+                self, idx: int, *, label: str | None = None, reset_details: bool = False
+            ) -> None:
                 return None
 
             def complete_activity(self, idx: int, detail: str = "") -> None:
@@ -759,7 +806,10 @@ class SearchIntegrationTests(unittest.TestCase):
             patch("amx.cli_support.commands.search._catalog", return_value=fake_catalog),
             patch("amx.utils.live_display.get_display", return_value=display),
             patch("amx.utils.live_commands.get_display", return_value=display),
-            patch("amx.cli_support.commands.search._interactive_sync_scope", return_value=(cfg, {"sap": ["vbak"]})),
+            patch(
+                "amx.cli_support.commands.search._interactive_sync_scope",
+                return_value=(cfg, {"sap": ["vbak"]}),
+            ),
             patch("amx.cli_support.commands.search._sync_db_scope", return_value=(0, 1)),
             patch("amx.cli_support.commands.search._sync_cached_code_evidence", return_value=True),
         ):
@@ -846,7 +896,17 @@ class ManualIntegrationTests(unittest.TestCase):
         ):
             result = runner.invoke(
                 main,
-                ["--config", "test-config.yml", "manual", "edit", "column", "vbeln", "--comment", "Sales document", "--yes"],
+                [
+                    "--config",
+                    "test-config.yml",
+                    "manual",
+                    "edit",
+                    "column",
+                    "vbeln",
+                    "--comment",
+                    "Sales document",
+                    "--yes",
+                ],
                 env={"AMX_SESSION_CHILD": "1"},
                 catch_exceptions=False,
             )
@@ -873,7 +933,17 @@ class ManualIntegrationTests(unittest.TestCase):
         ):
             result = runner.invoke(
                 main,
-                ["--config", "test-config.yml", "manual", "edit", "table", "vbak", "--comment", "x", "--yes"],
+                [
+                    "--config",
+                    "test-config.yml",
+                    "manual",
+                    "edit",
+                    "table",
+                    "vbak",
+                    "--comment",
+                    "x",
+                    "--yes",
+                ],
                 env={"AMX_SESSION_CHILD": "1"},
                 catch_exceptions=False,
             )
@@ -895,7 +965,16 @@ class ManualIntegrationTests(unittest.TestCase):
         ):
             result = runner.invoke(
                 main,
-                ["--config", "test-config.yml", "manual", "edit", "table", "--comment", "x", "--yes"],
+                [
+                    "--config",
+                    "test-config.yml",
+                    "manual",
+                    "edit",
+                    "table",
+                    "--comment",
+                    "x",
+                    "--yes",
+                ],
                 env={"AMX_SESSION_CHILD": "1"},
                 catch_exceptions=False,
             )
@@ -941,7 +1020,9 @@ class ManualIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Updated table default.sap_test.adr6", result.output)
-        self.assertEqual(FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)])
+        self.assertEqual(
+            FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)]
+        )
 
     def test_metadata_namespace_is_primary_for_edit(self) -> None:
         runner = CliRunner()
@@ -982,7 +1063,9 @@ class ManualIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Updated table sap_test.adr6", result.output)
-        self.assertEqual(FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)])
+        self.assertEqual(
+            FakeDatabaseConnector.calls, [("sap_test", "adr6", "Address data", AssetKind.TABLE)]
+        )
 
 
 if __name__ == "__main__":

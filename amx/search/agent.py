@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import re
+import contextlib
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Any, Callable
+from typing import Any
 
-from amx.agents.tools import SchemaExplorer
 from amx.config import AMXConfig
-from amx.db.connector import DatabaseConnector, ProfilingError
+from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
 from amx.search._agent import (
     AnsweringMixin,
@@ -26,7 +25,6 @@ from amx.search.session_store import ChatSessionStore
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
-from amx.utils.token_tracker import estimate_tokens
 
 log = get_logger("search.agent")
 
@@ -43,35 +41,34 @@ class _SessionMemoryShim:
         store = history_store()
         if store is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             ChatSessionStore(store).reset_for_test()
-        except Exception:
-            pass
 
 
 _SESSION_MEMORY = _SessionMemoryShim()
 
 
-
-
 # Dataclasses + helpers + constants shared with the mixin modules now
 # live in ``_agent/_types.py`` (v0.9.5 fix). Re-exported here so the
 # public names (``SearchPlan`` etc.) keep their old import paths and
-# the mixins pick up the SAME class object via Python MRO.
-from amx.search._agent._types import (
+# the mixins pick up the SAME class object via Python MRO. The import
+# lives below the module body to break a circular dependency that
+# would otherwise trigger when ``_agent`` modules import this file.
+from amx.search._agent._types import (  # noqa: E402, F401
+    _ANSWER_SHAPES,
+    _DEFAULT_INPUT_TOKEN_BUDGET,
     LiveProbePlan,
     ResolvedTarget,
     SearchActionSuggestion,
     SearchPlan,
     SearchPolicy,
-    _ANSWER_SHAPES,
-    _DEFAULT_INPUT_TOKEN_BUDGET,
     _input_token_budget_for,
     _json_block,
     _merge_usage,
     _question_language_hint,
     _trim_rows_to_token_budget,
 )
+
 
 # Conservative input-token budget per LLM family. The /synthesize_answer
 # step builds a JSON payload that includes potentially many retrieval
@@ -145,7 +142,9 @@ class SearchAgent(
         # across the user's scope).
         self.settings = catalog.get_settings(self.db_profile)
         self._llm_factory = llm_factory
-        self._inventory_db_factory = inventory_db_factory or (lambda: DatabaseConnector(self.cfg.db))
+        self._inventory_db_factory = inventory_db_factory or (
+            lambda: DatabaseConnector(self.cfg.db)
+        )
         self._llm: LLMProvider | None = None
         self._llm_profile = cfg.active_llm_profile or "default"
         self._session_store: ChatSessionStore | None = None
@@ -166,7 +165,7 @@ class SearchAgent(
         return len(self.db_profiles) > 1
 
     @property
-    def db_profile_filter(self) -> "str | list[str]":
+    def db_profile_filter(self) -> str | list[str]:
         """Filter argument for catalog read methods.
 
         Returns the bare scalar when single-profile (preserving the
@@ -184,16 +183,58 @@ class SearchAgent(
     # LLM-driven planner. ``_handle_chitchat`` short-circuits these with a
     # one-line friendly redirect so the user doesn't get a confusing
     # "Could you clarify the exact scope?" reply for "nasılsın".
-    _CHITCHAT_TOKENS: frozenset[str] = frozenset({
-        "hi", "hello", "hey", "hola", "yo", "sup", "howdy",
-        "merhaba", "selam", "slm", "naber", "nbr", "nasilsin", "nasılsın",
-        "iyimisin", "iyi", "misin", "musun", "musunuz", "miydin", "iyiydin",
-        "teşekkür", "teşekkürler", "tesekkur", "tesekkurler", "teşekkurler",
-        "thanks", "thank", "ty", "thx", "ok", "okay", "tamam",
-        "günaydın", "gunaydin", "günler", "gunler", "akşamlar", "aksamlar",
-        "good", "morning", "evening", "afternoon", "night",
-        "what's", "whats", "wassup", "up",
-    })
+    _CHITCHAT_TOKENS: frozenset[str] = frozenset(
+        {
+            "hi",
+            "hello",
+            "hey",
+            "hola",
+            "yo",
+            "sup",
+            "howdy",
+            "merhaba",
+            "selam",
+            "slm",
+            "naber",
+            "nbr",
+            "nasilsin",
+            "nasılsın",
+            "iyimisin",
+            "iyi",
+            "misin",
+            "musun",
+            "musunuz",
+            "miydin",
+            "iyiydin",
+            "teşekkür",
+            "teşekkürler",
+            "tesekkur",
+            "tesekkurler",
+            "teşekkurler",
+            "thanks",
+            "thank",
+            "ty",
+            "thx",
+            "ok",
+            "okay",
+            "tamam",
+            "günaydın",
+            "gunaydin",
+            "günler",
+            "gunler",
+            "akşamlar",
+            "aksamlar",
+            "good",
+            "morning",
+            "evening",
+            "afternoon",
+            "night",
+            "what's",
+            "whats",
+            "wassup",
+            "up",
+        }
+    )
 
     # Short reaffirmation / doubt phrasings the user uses to push back on the
     # PRIOR answer. Without a deterministic handler, the LLM planner reads
@@ -291,19 +332,29 @@ class SearchAgent(
         try:
             t0 = time.monotonic()
             with step_spinner("Search Agent: interpreting question"):
-                interpretation_mode = str(self.settings.get("interpretation_mode", "balanced") or "balanced").strip().lower()
+                interpretation_mode = (
+                    str(self.settings.get("interpretation_mode", "balanced") or "balanced")
+                    .strip()
+                    .lower()
+                )
                 if interpretation_mode == "single":
                     llm_plan, interpretation_usage = self._interpret_question_pass1(clean_question)
                 else:
-                    llm_plan, interpretation_usage = self._interpret_question_balanced(clean_question)
-                plan = self._plan_with_overrides(question=clean_question, base=llm_plan, question_language=question_language)
+                    llm_plan, interpretation_usage = self._interpret_question_balanced(
+                        clean_question
+                    )
+                plan = self._plan_with_overrides(
+                    question=clean_question, base=llm_plan, question_language=question_language
+                )
             thought_trace.append(
                 {
                     "step": "interpret_question",
                     "observation": f"Route selected: {plan.search_mode}/{plan.question_class} targeting {plan.target_entity}.",
                 }
             )
-            stage_metrics.append({"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)})
+            stage_metrics.append(
+                {"stage": "interpretation", "duration_sec": round(time.monotonic() - t0, 4)}
+            )
         except Exception as exc:
             return SearchAnswer(
                 intent="unsupported",
@@ -315,10 +366,9 @@ class SearchAgent(
                 details={"reason": "llm_failure", "stage": "interpretation"},
             )
 
-        should_clarify = (
-            str(self.settings.get("clarification_on_low_confidence", "true")).lower() == "true"
-            and (plan.needs_clarification or plan.decision_confidence == "low")
-        )
+        should_clarify = str(
+            self.settings.get("clarification_on_low_confidence", "true")
+        ).lower() == "true" and (plan.needs_clarification or plan.decision_confidence == "low")
         # If the question contains a token the catalog confirms is a real
         # table, we have enough to answer — skip the clarification round
         # rather than asking "could you clarify the exact scope?" right
@@ -327,13 +377,10 @@ class SearchAgent(
             should_clarify = False
             plan = self._align_plan_shape(plan, clean_question)
         if should_clarify:
-            clarification = (
-                plan.clarification_question.strip()
-                or (
-                    "Could you clarify the exact scope (database/schema/table) so I can route this correctly?"
-                    if (plan.answer_language or "english").lower() == "english"
-                    else "Dogru yonlendirme icin tam kapsami (veritabani/sema/tablo) netlestirebilir misiniz?"
-                )
+            clarification = plan.clarification_question.strip() or (
+                "Could you clarify the exact scope (database/schema/table) so I can route this correctly?"
+                if (plan.answer_language or "english").lower() == "english"
+                else "Dogru yonlendirme icin tam kapsami (veritabani/sema/tablo) netlestirebilir misiniz?"
             )
             return SearchAnswer(
                 intent="clarification",
@@ -352,7 +399,9 @@ class SearchAgent(
             )
 
         if plan.out_of_domain or plan.search_mode == "unsupported":
-            has_hints = bool(plan.entity_hints) or bool(self._explicit_table_mentions_for_question(clean_question))
+            has_hints = bool(plan.entity_hints) or bool(
+                self._explicit_table_mentions_for_question(clean_question)
+            )
             if has_hints:
                 # Soften rejection gate: fallback to semantic search if there are valid metadata keywords/hints
                 plan = SearchPlan(
@@ -367,7 +416,9 @@ class SearchAgent(
                     needs_typo_recovery=plan.needs_typo_recovery,
                     answer_language=plan.answer_language,
                     ambiguity_flags=list(plan.ambiguity_flags),
-                    reason=(plan.reason + "; recovered from unsupported classification").strip("; "),
+                    reason=(plan.reason + "; recovered from unsupported classification").strip(
+                        "; "
+                    ),
                 )
             else:
                 return SearchAnswer(
@@ -405,7 +456,7 @@ class SearchAgent(
                 details={
                     "reason": "redirect_to_analyze",
                     "plan": asdict(plan),
-                    "stage_metrics": stage_metrics
+                    "stage_metrics": stage_metrics,
                 },
             )
 
@@ -422,7 +473,11 @@ class SearchAgent(
         stage_metrics.append({"stage": "planning", "duration_sec": round(time.monotonic() - t0, 4)})
 
         if policy.requires_catalog and not ready:
-            actions = [SearchActionSuggestion("sync_catalog", "Search catalog is empty for semantic reasoning.")]
+            actions = [
+                SearchActionSuggestion(
+                    "sync_catalog", "Search catalog is empty for semantic reasoning."
+                )
+            ]
             return SearchAnswer(
                 intent=plan.intent,
                 question=question,
@@ -469,7 +524,9 @@ class SearchAgent(
                 "observation": trace_observation,
             }
         )
-        stage_metrics.append({"stage": "retrieval", "duration_sec": round(time.monotonic() - t0, 4)})
+        stage_metrics.append(
+            {"stage": "retrieval", "duration_sec": round(time.monotonic() - t0, 4)}
+        )
         rows = self._normalize_rows(plan, rows)
 
         live_probe_usage: dict[str, Any] = {}
@@ -477,7 +534,9 @@ class SearchAgent(
         try:
             t0 = time.monotonic()
             with step_spinner("Search Agent: checking evidence gaps"):
-                probe_plan, live_probe_usage = self._plan_live_probe(clean_question, plan, policy, rows, retrieval_details)
+                probe_plan, live_probe_usage = self._plan_live_probe(
+                    clean_question, plan, policy, rows, retrieval_details
+                )
                 live_rows, live_probe = self._execute_live_probe(probe_plan)
                 retrieval_details["live_probe"] = live_probe
                 if live_rows:
@@ -498,7 +557,9 @@ class SearchAgent(
                     ),
                 }
             )
-            stage_metrics.append({"stage": "live_probe", "duration_sec": round(time.monotonic() - t0, 4)})
+            stage_metrics.append(
+                {"stage": "live_probe", "duration_sec": round(time.monotonic() - t0, 4)}
+            )
         except Exception as exc:
             live_probe = {"executed": False, "error": str(exc), "operations": []}
             retrieval_details["live_probe"] = live_probe
@@ -514,7 +575,9 @@ class SearchAgent(
                 "observation": f"Verification checks: {', '.join(verification.get('checks') or []) or 'none'}; live_verified={bool(verification.get('live_verified'))}.",
             }
         )
-        stage_metrics.append({"stage": "verification", "duration_sec": round(time.monotonic() - t0, 4)})
+        stage_metrics.append(
+            {"stage": "verification", "duration_sec": round(time.monotonic() - t0, 4)}
+        )
         rows = self._normalize_rows(plan, rows)
         rows, suppressed_rows_count = self._suppress_rows(plan, rows)
         retrieval_details["visible_rows"] = rows
@@ -522,30 +585,44 @@ class SearchAgent(
         answer_usage: dict[str, Any] = {}
         answer_strategy = "deterministic"
         answer_text = None
-        allow_language_optimized_deterministic = (plan.answer_language or "english").strip().lower() in {"english", "turkish"}
+        allow_language_optimized_deterministic = (
+            plan.answer_language or "english"
+        ).strip().lower() in {"english", "turkish"}
         if allow_language_optimized_deterministic:
-            answer_text = self._deterministic_target_resolution_answer(plan, retrieval_details, live_probe)
+            answer_text = self._deterministic_target_resolution_answer(
+                plan, retrieval_details, live_probe
+            )
         if policy.deterministic_answer and allow_language_optimized_deterministic:
             if answer_text is None:
                 answer_text = self._deterministic_inventory_answer(plan, rows, retrieval_details)
             if answer_text is None:
                 answer_text = self._deterministic_column_name_answer(plan, rows, retrieval_details)
-        if answer_text is None and live_probe.get("executed") and allow_language_optimized_deterministic:
+        if (
+            answer_text is None
+            and live_probe.get("executed")
+            and allow_language_optimized_deterministic
+        ):
             answer_text = self._deterministic_live_probe_answer(plan, rows, live_probe)
-        
+
         confidence = self._confidence(plan, rows, verification, retrieval_details)
         actions = self._action_suggestions(plan, rows, ready, retrieval_details, confidence)
         executed_actions = list(live_probe.get("operations") or [])
         if allow_language_optimized_deterministic:
-            answer_text = answer_text or self._deterministic_ranked_answer(clean_question, plan, rows, retrieval_details, actions)
-        
+            answer_text = answer_text or self._deterministic_ranked_answer(
+                clean_question, plan, rows, retrieval_details, actions
+            )
+
         if answer_text is None:
             try:
                 t0 = time.monotonic()
                 with step_spinner("Search Agent: synthesizing answer"):
-                    answer_text, answer_usage = self._synthesize_answer(clean_question, plan, policy, rows, retrieval_details, verification, actions)
+                    answer_text, answer_usage = self._synthesize_answer(
+                        clean_question, plan, policy, rows, retrieval_details, verification, actions
+                    )
                     answer_strategy = "llm_synthesis"
-                stage_metrics.append({"stage": "synthesis", "duration_sec": round(time.monotonic() - t0, 4)})
+                stage_metrics.append(
+                    {"stage": "synthesis", "duration_sec": round(time.monotonic() - t0, 4)}
+                )
             except Exception as exc:
                 return SearchAnswer(
                     intent=plan.intent,
@@ -567,7 +644,9 @@ class SearchAgent(
 
         provenance = self._provenance(plan, rows, verification)
         tables = retrieval_details.get("resolved_tables") or []
-        if not tables and self._should_remember_table_scope(plan, retrieval_details, clean_question):
+        if not tables and self._should_remember_table_scope(
+            plan, retrieval_details, clean_question
+        ):
             seen_tables: list[str] = []
             for row in rows:
                 schema_name = str(row.get("schema_name") or "")
@@ -583,7 +662,9 @@ class SearchAgent(
                 "question": clean_question,
                 "intent": plan.intent,
                 "topic": plan.normalized_question or clean_question,
-                "tables": tables if self._should_remember_table_scope(plan, retrieval_details, clean_question) else [],
+                "tables": tables
+                if self._should_remember_table_scope(plan, retrieval_details, clean_question)
+                else [],
                 "columns": [col for col in columns if col],
                 "answer_summary": (answer_text or "")[:1000],
                 "confidence": confidence,
@@ -601,7 +682,11 @@ class SearchAgent(
         # carries the data inline. The shapes that benefit from a separate Rich
         # table (ranked_list, table_summary, join_candidates) keep display_rows=True.
         retrieval_display = bool(retrieval_details.get("display_rows", True))
-        shape_wants_rich_table = policy.answer_shape in {"ranked_list", "table_summary", "join_candidates"}
+        shape_wants_rich_table = policy.answer_shape in {
+            "ranked_list",
+            "table_summary",
+            "join_candidates",
+        }
         display_rows = retrieval_display and shape_wants_rich_table
         return SearchAnswer(
             intent=plan.intent,
@@ -624,7 +709,8 @@ class SearchAgent(
                 "executed_actions": executed_actions,
                 "suppressed_rows_count": suppressed_rows_count,
                 "answer_strategy": answer_strategy,
-                "ambiguity_flags": list(plan.ambiguity_flags) + list(retrieval_details.get("ambiguity_flags") or []),
+                "ambiguity_flags": list(plan.ambiguity_flags)
+                + list(retrieval_details.get("ambiguity_flags") or []),
                 "evidence_sources": retrieval_details.get("evidence_sources", []),
                 "stage_metrics": stage_metrics,
                 "thought_trace": thought_trace,

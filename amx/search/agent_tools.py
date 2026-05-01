@@ -17,9 +17,11 @@ The ``ToolBox`` class holds the catalog/DB references and exposes ``schemas``
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Callable
 from difflib import SequenceMatcher
-from typing import Any, Callable
+from typing import Any
 
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
@@ -73,13 +75,11 @@ class ToolBox:
         ``OSError: [Errno 24] Too many open files`` after several turns).
         """
         if self._db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._db.close()
-            except Exception:
-                pass
             self._db = None
 
-    def __enter__(self) -> "ToolBox":
+    def __enter__(self) -> ToolBox:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -609,8 +609,7 @@ class ToolBox:
                                 "type": "array",
                                 "items": {"type": "string"},
                                 "description": (
-                                    "Column names to probe. Omit to scan all "
-                                    "columns of the table."
+                                    "Column names to probe. Omit to scan all columns of the table."
                                 ),
                             },
                         },
@@ -782,7 +781,9 @@ class ToolBox:
                 # as a cheap proxy: 0.7+ ≈ 1-2 edits on short SAP-style
                 # names (4-8 chars).
                 ratio = SequenceMatcher(
-                    None, target_lower, asset_lower,
+                    None,
+                    target_lower,
+                    asset_lower,
                 ).ratio()
                 if ratio >= 0.7 and abs(len(target_lower) - len(asset_lower)) <= 3:
                     kind = "fuzzy"
@@ -820,7 +821,9 @@ class ToolBox:
                     kind = "suffix"
                 else:
                     ratio = SequenceMatcher(
-                        None, target_lower, asset_lower,
+                        None,
+                        target_lower,
+                        asset_lower,
                     ).ratio()
                     if ratio >= 0.7 and abs(len(target_lower) - len(asset_lower)) <= 3:
                         kind = "fuzzy"
@@ -915,16 +918,18 @@ class ToolBox:
         # worth seeing). Numeric / varchar columns without comments
         # cluster at the bottom because there are many of them and
         # they're typically interchangeable.
-        rarity = {family: count for family, count in dtype_summary.items()}
+        rarity = dict(dtype_summary.items())
+
         def _sort_key(col: dict[str, Any]) -> tuple[int, int, str]:
             family = self._dtype_family_label(col["type"])
             commented = 1 if col.get("comment") else 0
             # rarity rank — fewer columns of this dtype family => earlier
             return (
-                -commented,                # comments first
-                rarity.get(family, 999),   # rare dtypes next (lower count first)
-                col["name"],               # alphabetical tiebreak
+                -commented,  # comments first
+                rarity.get(family, 999),  # rare dtypes next (lower count first)
+                col["name"],  # alphabetical tiebreak
             )
+
         sorted_cols = sorted(all_cols, key=_sort_key)
 
         # ── Analytics metadata ──
@@ -937,10 +942,18 @@ class ToolBox:
         am = getattr(profile, "analytics", None)
         if am is not None:
             for attr in (
-                "partition_keys", "partition_strategy", "clustering_keys",
-                "storage_format", "storage_bytes", "storage_files_count",
-                "last_modified", "table_type", "tags", "pii_columns",
-                "indexes", "warnings",
+                "partition_keys",
+                "partition_strategy",
+                "clustering_keys",
+                "storage_format",
+                "storage_bytes",
+                "storage_files_count",
+                "last_modified",
+                "table_type",
+                "tags",
+                "pii_columns",
+                "indexes",
+                "warnings",
             ):
                 value = getattr(am, attr, None)
                 if value:  # drop empty list / "" / 0 / {}
@@ -985,11 +998,30 @@ class ToolBox:
         head = base.split()[0] if base else raw
         if head in {"bool", "boolean"}:
             return "bool"
-        if head in {"int", "integer", "int4", "int8", "int2", "bigint", "smallint", "serial", "bigserial"}:
+        if head in {
+            "int",
+            "integer",
+            "int4",
+            "int8",
+            "int2",
+            "bigint",
+            "smallint",
+            "serial",
+            "bigserial",
+        }:
             return "int"
         if head in {"float", "float4", "float8", "double", "real", "numeric", "decimal", "money"}:
             return "float"
-        if head in {"char", "varchar", "text", "string", "nchar", "nvarchar", "character", "bpchar"}:
+        if head in {
+            "char",
+            "varchar",
+            "text",
+            "string",
+            "nchar",
+            "nvarchar",
+            "character",
+            "bpchar",
+        }:
             return "string"
         if head in {"date"}:
             return "date"
@@ -1095,8 +1127,7 @@ class ToolBox:
                     "found": False,
                     "available_schemas": available,
                     "message": (
-                        f"No schema named '{target}'. Available schemas: "
-                        + ", ".join(available)
+                        f"No schema named '{target}'. Available schemas: " + ", ".join(available)
                     ),
                     "tables_missing_comment": [],
                     "columns_missing_comment": [],
@@ -1112,6 +1143,7 @@ class ToolBox:
         try:
             from amx.services.analyze_scope import is_non_business_asset
         except Exception:
+
             def is_non_business_asset(_name: str) -> bool:  # type: ignore[misc]
                 return False
 
@@ -1204,12 +1236,20 @@ class ToolBox:
         # vbak?" would say "no" with confidence even though SAP vbak
         # has dozens of single-char flags (autlf, faksk, lifsk, ...).
         "boolean": [
-            "bool", "boolean",
-            "char(1)", "varchar(1)", "character(1)", "character varying(1)",
+            "bool",
+            "boolean",
+            "char(1)",
+            "varchar(1)",
+            "character(1)",
+            "character varying(1)",
         ],
         "bool": [
-            "bool", "boolean",
-            "char(1)", "varchar(1)", "character(1)", "character varying(1)",
+            "bool",
+            "boolean",
+            "char(1)",
+            "varchar(1)",
+            "character(1)",
+            "character varying(1)",
         ],
         "int": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
         # ``date`` is a SEMANTIC bucket — it covers every temporal
@@ -1222,17 +1262,38 @@ class ToolBox:
         # added in ``_tool_find_columns_by_dtype`` via a separate
         # name-pattern query, NOT as additional dtype tokens here.
         "date": [
-            "date", "timestamp", "timestamptz", "datetime", "datetime2",
-            "smalldatetime", "time", "timetz", "timestamp_ntz", "timestamp_ltz",
+            "date",
+            "timestamp",
+            "timestamptz",
+            "datetime",
+            "datetime2",
+            "smalldatetime",
+            "time",
+            "timetz",
+            "timestamp_ntz",
+            "timestamp_ltz",
         ],
         "timestamp": [
-            "timestamp", "timestamptz", "datetime", "datetime2",
-            "smalldatetime", "timestamp_ntz", "timestamp_ltz",
+            "timestamp",
+            "timestamptz",
+            "datetime",
+            "datetime2",
+            "smalldatetime",
+            "timestamp_ntz",
+            "timestamp_ltz",
         ],
         "time": ["time", "timetz"],
         "temporal": [
-            "date", "timestamp", "timestamptz", "datetime", "datetime2",
-            "smalldatetime", "time", "timetz", "timestamp_ntz", "timestamp_ltz",
+            "date",
+            "timestamp",
+            "timestamptz",
+            "datetime",
+            "datetime2",
+            "smalldatetime",
+            "time",
+            "timetz",
+            "timestamp_ntz",
+            "timestamp_ltz",
         ],
         "integer": ["int", "integer", "bigint", "smallint", "tinyint", "mediumint"],
         "bigint": ["bigint"],
@@ -1245,8 +1306,6 @@ class ToolBox:
         "varchar": ["varchar", "text", "char"],
         "string": ["text", "varchar", "char", "string"],
         "char": ["char", "varchar"],
-        "date": ["date"],
-        "timestamp": ["timestamp", "timestamptz", "datetime"],
         "datetime": ["timestamp", "timestamptz", "datetime"],
         "json": ["json", "jsonb"],
         "jsonb": ["jsonb"],
@@ -1277,7 +1336,7 @@ class ToolBox:
                       AND ce.entity_kind = 'column'
                       AND ce.dtype IS NOT NULL
                 ) WHERE LOWER(dtype) IN ({placeholders})
-                   OR {' OR '.join(['LOWER(dtype) LIKE ?'] * len(family))}
+                   OR {" OR ".join(["LOWER(dtype) LIKE ?"] * len(family))}
                 ORDER BY schema_name, table_name, column_name
                 LIMIT ?
             """
@@ -1301,8 +1360,7 @@ class ToolBox:
                 if dtype_lower in {"bool", "boolean"}:
                     kind = "native_boolean"
                 elif "(1)" in dtype_lower and any(
-                    base in dtype_lower
-                    for base in ("char", "varchar", "character")
+                    base in dtype_lower for base in ("char", "varchar", "character")
                 ):
                     kind = "flag_candidate"
                 else:
@@ -1312,14 +1370,16 @@ class ToolBox:
                 kind = "native_temporal"
             else:
                 kind = "exact_dtype_match"
-            results.append({
-                "schema": str(r["schema_name"] or ""),
-                "table": str(r["table_name"] or ""),
-                "column": str(r["column_name"] or ""),
-                "dtype": dtype_raw,
-                "description": str(r["effective_description"] or ""),
-                "kind": kind,
-            })
+            results.append(
+                {
+                    "schema": str(r["schema_name"] or ""),
+                    "table": str(r["table_name"] or ""),
+                    "column": str(r["column_name"] or ""),
+                    "dtype": dtype_raw,
+                    "description": str(r["effective_description"] or ""),
+                    "kind": kind,
+                }
+            )
 
         # ── Name-pattern inference for semantic buckets ──
         # When the user asks about "date" (semantic) and the catalog
@@ -1332,21 +1392,35 @@ class ToolBox:
         if is_temporal_query:
             seen_keys = {(r["schema"], r["table"], r["column"]) for r in results}
             name_patterns = [
-                "%_date", "%_dt", "%_at", "%_time", "%_ts",
-                "dat_%", "date_%", "time_%",
-                "erdat", "audat", "ernam_dat", "letzd", "valid_from", "valid_to",
-                "created%", "updated%", "modified%", "deleted%",
-                "begda", "endda", "rldat", "psotg", "tzonso",
+                "%_date",
+                "%_dt",
+                "%_at",
+                "%_time",
+                "%_ts",
+                "dat_%",
+                "date_%",
+                "time_%",
+                "erdat",
+                "audat",
+                "ernam_dat",
+                "letzd",
+                "valid_from",
+                "valid_to",
+                "created%",
+                "updated%",
+                "modified%",
+                "deleted%",
+                "begda",
+                "endda",
+                "rldat",
+                "psotg",
+                "tzonso",
             ]
             string_dtypes_like = ["%char%", "%text%", "%string%", "%varchar%"]
             with self.catalog._connect() as conn:  # noqa: SLF001
                 # OR-of name LIKE patterns AND OR-of string dtype LIKE patterns
-                name_like_clause = " OR ".join(
-                    "LOWER(column_name) LIKE ?" for _ in name_patterns
-                )
-                dtype_like_clause = " OR ".join(
-                    "LOWER(dtype) LIKE ?" for _ in string_dtypes_like
-                )
+                name_like_clause = " OR ".join("LOWER(column_name) LIKE ?" for _ in name_patterns)
+                dtype_like_clause = " OR ".join("LOWER(dtype) LIKE ?" for _ in string_dtypes_like)
                 q = f"""
                     SELECT ce.schema_name, ce.table_name, ce.column_name,
                            ce.dtype,
@@ -1375,14 +1449,16 @@ class ToolBox:
                 column_n = str(r["column_name"] or "")
                 if (schema_n, table_n, column_n) in seen_keys:
                     continue
-                results.append({
-                    "schema": schema_n,
-                    "table": table_n,
-                    "column": column_n,
-                    "dtype": str(r["dtype"] or ""),
-                    "description": str(r["effective_description"] or ""),
-                    "kind": "name_inferred_temporal",
-                })
+                results.append(
+                    {
+                        "schema": schema_n,
+                        "table": table_n,
+                        "column": column_n,
+                        "dtype": str(r["dtype"] or ""),
+                        "description": str(r["effective_description"] or ""),
+                        "kind": "name_inferred_temporal",
+                    }
+                )
         # Roll up to (schema, table) so the LLM gets a clean per-table view.
         by_table: dict[tuple[str, str], list[dict[str, str]]] = {}
         for entry in results:
@@ -1465,14 +1541,18 @@ class ToolBox:
         inference_source = "foreign_key"
         if not rows:
             rows = self.catalog.name_overlap_joinable_tables(
-                self.db_profile, target, limit=12,
+                self.db_profile,
+                target,
+                limit=12,
             )
             if rows:
                 inference_source = "name_overlap"
         if not rows:
             try:
                 rows = self.catalog.semantic_joinable_tables(
-                    self.db_profile, target, limit=12,
+                    self.db_profile,
+                    target,
+                    limit=12,
                 )
             except Exception:
                 rows = []
@@ -1544,7 +1624,10 @@ class ToolBox:
         return ""
 
     def _tool_check_uniqueness(
-        self, schema: str, table: str, columns: list[str] | None = None,
+        self,
+        schema: str,
+        table: str,
+        columns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Verify whether (col1, col2, ...) is unique across the table.
 
@@ -1564,7 +1647,9 @@ class ToolBox:
         if not target_cols:
             try:
                 profile = self._live_db().profile_table(
-                    schema_name, table_name, sample_size=0,
+                    schema_name,
+                    table_name,
+                    sample_size=0,
                 )
                 target_cols = list(profile.primary_key or [])
             except Exception as exc:
@@ -1585,7 +1670,9 @@ class ToolBox:
             # has a hypothesis.
             try:
                 quality = self._tool_inspect_data_quality(
-                    schema_name, table_name, columns=None,
+                    schema_name,
+                    table_name,
+                    columns=None,
                 )
             except Exception as exc:
                 quality = {"error": str(exc)}
@@ -1653,7 +1740,10 @@ class ToolBox:
         }
 
     def _tool_inspect_data_quality(
-        self, schema: str, table: str, columns: list[str] | None = None,
+        self,
+        schema: str,
+        table: str,
+        columns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Per-column live-DB stats: nulls, distincts, min/max, date format.
 
@@ -1672,7 +1762,9 @@ class ToolBox:
             # profiler already does. Use a small but informative sample
             # so this stays fast even on huge tables.
             profile = self._live_db().profile_table(
-                schema_name, table_name, sample_size=50,
+                schema_name,
+                table_name,
+                sample_size=50,
             )
         except Exception as exc:
             return {
@@ -1701,12 +1793,8 @@ class ToolBox:
                 "null_ratio": round(null_ratio, 6),
                 "distinct_count": int(cp.distinct_count or 0),
                 "distinct_ratio": round(distinct_ratio, 6),
-                "min_value": (
-                    str(cp.min_val) if cp.min_val is not None else ""
-                ),
-                "max_value": (
-                    str(cp.max_val) if cp.max_val is not None else ""
-                ),
+                "min_value": (str(cp.min_val) if cp.min_val is not None else ""),
+                "max_value": (str(cp.max_val) if cp.max_val is not None else ""),
             }
             # Detected date format — only meaningful for string-family
             # dtypes (varchar / text / char). Native date / timestamp
@@ -1729,7 +1817,11 @@ class ToolBox:
         }
 
     def _tool_sample_column_values(
-        self, schema: str, table: str, column: str, limit: int = 5,
+        self,
+        schema: str,
+        table: str,
+        column: str,
+        limit: int = 5,
     ) -> dict[str, Any]:
         """Pull a few distinct non-null example values from a single column.
 
@@ -1767,20 +1859,18 @@ class ToolBox:
                     ),
                     {"n": n},
                 ).fetchall()
-                samples = [
-                    str(r[0]) for r in rows if r and r[0] is not None
-                ]
+                samples = [str(r[0]) for r in rows if r and r[0] is not None]
                 # Also fetch distinct count when cheap (single-column
                 # COUNT(DISTINCT) is fast on indexed tables; soft-fails
                 # on big un-indexed columns where the planner gives up).
                 try:
                     distinct_row = conn.execute(
-                        _text(
-                            f"SELECT COUNT(DISTINCT {col_q}) FROM {fqn}"
-                        ),
+                        _text(f"SELECT COUNT(DISTINCT {col_q}) FROM {fqn}"),
                     ).fetchone()
                     distinct_count = (
-                        int(distinct_row[0]) if distinct_row and distinct_row[0] is not None else None
+                        int(distinct_row[0])
+                        if distinct_row and distinct_row[0] is not None
+                        else None
                     )
                 except Exception:
                     distinct_count = None
@@ -1815,31 +1905,71 @@ class ToolBox:
     # so a column called ``effective_from_date`` matches the type-2
     # temporal pair before the generic ``_from`` filter.
     _SCD_VALID_FROM_NAMES: tuple[str, ...] = (
-        "valid_from", "valid_start", "effective_from", "effective_start",
-        "start_date", "start_dt", "begin_date", "begda", "from_date",
-        "active_from", "row_start",
+        "valid_from",
+        "valid_start",
+        "effective_from",
+        "effective_start",
+        "start_date",
+        "start_dt",
+        "begin_date",
+        "begda",
+        "from_date",
+        "active_from",
+        "row_start",
     )
     _SCD_VALID_TO_NAMES: tuple[str, ...] = (
-        "valid_to", "valid_end", "effective_to", "effective_end",
-        "end_date", "end_dt", "endda", "to_date", "active_to", "row_end",
+        "valid_to",
+        "valid_end",
+        "effective_to",
+        "effective_end",
+        "end_date",
+        "end_dt",
+        "endda",
+        "to_date",
+        "active_to",
+        "row_end",
     )
     _SCD_CURRENT_FLAG_NAMES: tuple[str, ...] = (
-        "is_current", "is_active", "current_flag", "active_flag",
-        "is_latest", "current_record", "is_current_version",
+        "is_current",
+        "is_active",
+        "current_flag",
+        "active_flag",
+        "is_latest",
+        "current_record",
+        "is_current_version",
     )
     _SCD_VERSION_NAMES: tuple[str, ...] = (
-        "version", "revision", "rev_no", "seq_no", "row_version",
-        "scd_version", "history_seq",
+        "version",
+        "revision",
+        "rev_no",
+        "seq_no",
+        "row_version",
+        "scd_version",
+        "history_seq",
     )
     _SCD_PREV_PREFIXES: tuple[str, ...] = (
-        "prev_", "previous_", "old_", "former_", "before_", "last_",
+        "prev_",
+        "previous_",
+        "old_",
+        "former_",
+        "before_",
+        "last_",
     )
     _SCD_NEW_PREFIXES: tuple[str, ...] = (
-        "new_", "current_", "now_", "after_",
+        "new_",
+        "current_",
+        "now_",
+        "after_",
     )
     _SCD_HISTORY_SUFFIXES: tuple[str, ...] = (
-        "_history", "_hist", "_audit", "_log", "_archive", "_versions",
-        "_changes", "_snapshot",
+        "_history",
+        "_hist",
+        "_audit",
+        "_log",
+        "_archive",
+        "_versions",
+        "_changes",
+        "_snapshot",
     )
 
     def _tool_detect_scd_pattern(
@@ -1872,7 +2002,9 @@ class ToolBox:
         # Profile the table once to get column names + dtypes + PK.
         try:
             profile = self._live_db().profile_table(
-                schema_name, table_name, sample_size=0,
+                schema_name,
+                table_name,
+                sample_size=0,
             )
         except Exception as exc:
             return {
@@ -1880,10 +2012,7 @@ class ToolBox:
                 "table": table_name,
                 "found": False,
                 "error": str(exc),
-                "hint": (
-                    "If schema/table didn't resolve, call "
-                    "find_table_by_name first."
-                ),
+                "hint": ("If schema/table didn't resolve, call find_table_by_name first."),
             }
 
         col_names_lower = [str(c.name).lower() for c in profile.columns]
@@ -1893,13 +2022,15 @@ class ToolBox:
         indicators: dict[str, Any] = {}
 
         # ── Type 2 — temporal row-validity pair ──
-        valid_from_hits = [n for n in col_names_lower if any(p in n for p in self._SCD_VALID_FROM_NAMES)]
-        valid_to_hits = [n for n in col_names_lower if any(p in n for p in self._SCD_VALID_TO_NAMES)]
+        valid_from_hits = [
+            n for n in col_names_lower if any(p in n for p in self._SCD_VALID_FROM_NAMES)
+        ]
+        valid_to_hits = [
+            n for n in col_names_lower if any(p in n for p in self._SCD_VALID_TO_NAMES)
+        ]
         if valid_from_hits and valid_to_hits:
             indicators["type2_temporal_pair"] = [valid_from_hits[0], valid_to_hits[0]]
-            evidence.append(
-                f"Type 2 temporal pair: `{valid_from_hits[0]}` + `{valid_to_hits[0]}`."
-            )
+            evidence.append(f"Type 2 temporal pair: `{valid_from_hits[0]}` + `{valid_to_hits[0]}`.")
         elif valid_from_hits:
             indicators["type2_open_ended_temporal"] = valid_from_hits[0]
             evidence.append(
@@ -1909,15 +2040,19 @@ class ToolBox:
 
         # ── Type 2 — current/active flag ──
         flag_hits = [
-            n for n in col_names_lower
+            n
+            for n in col_names_lower
             if any(p == n or n.endswith("_" + p) or n == p for p in self._SCD_CURRENT_FLAG_NAMES)
             or n in self._SCD_CURRENT_FLAG_NAMES
         ]
         # Restrict to boolean-shape dtypes so a regular int isn't tagged.
         flag_hits = [
-            n for n in flag_hits
-            if any(token in str(col_lookup[n].dtype).lower()
-                   for token in ("bool", "char(1)", "varchar(1)"))
+            n
+            for n in flag_hits
+            if any(
+                token in str(col_lookup[n].dtype).lower()
+                for token in ("bool", "char(1)", "varchar(1)")
+            )
         ]
         if flag_hits:
             indicators["type2_current_flag"] = flag_hits[0]
@@ -1930,16 +2065,14 @@ class ToolBox:
         version_hits = [n for n in col_names_lower if n in self._SCD_VERSION_NAMES]
         if version_hits:
             indicators["type2_version_col"] = version_hits[0]
-            evidence.append(
-                f"Type 2 version column: `{version_hits[0]}`."
-            )
+            evidence.append(f"Type 2 version column: `{version_hits[0]}`.")
 
         # ── Type 3 — paired (current_X, prev_X) columns ──
         prev_pairs: list[tuple[str, str]] = []
         for col in col_names_lower:
             for prev_p in self._SCD_PREV_PREFIXES:
                 if col.startswith(prev_p):
-                    base = col[len(prev_p):]
+                    base = col[len(prev_p) :]
                     # Look for the canonical sibling in the same table.
                     if base in col_names_lower:
                         prev_pairs.append((base, col))
@@ -1955,17 +2088,19 @@ class ToolBox:
                 {"current": cur, "previous": prev} for cur, prev in prev_pairs[:5]
             ]
             evidence.append(
-                f"Type 3 column pair(s): " + ", ".join(
-                    f"`{prev}`↔`{cur}`" for cur, prev in prev_pairs[:3]
-                ) + "."
+                "Type 3 column pair(s): "
+                + ", ".join(f"`{prev}`↔`{cur}`" for cur, prev in prev_pairs[:3])
+                + "."
             )
 
         # ── Type 4 — sibling history table in same schema ──
         sibling_path = ""
         try:
             db = self._live_db()
-            assets = db.list_assets(schema_name) if hasattr(db, "list_assets") else (
-                (n, "table") for n in db.list_tables(schema_name)
+            assets = (
+                db.list_assets(schema_name)
+                if hasattr(db, "list_assets")
+                else ((n, "table") for n in db.list_tables(schema_name))
             )
             for name, _kind in assets:
                 low = str(name).lower()
@@ -1980,8 +2115,7 @@ class ToolBox:
         if sibling_path:
             indicators["type4_history_sibling"] = sibling_path
             evidence.append(
-                f"Type 4 sibling history table: `{sibling_path}` exists "
-                "next to the base table."
+                f"Type 4 sibling history table: `{sibling_path}` exists next to the base table."
             )
 
         # ── Type 1 vs 2 — row-per-key probe (only if business_key given) ──
@@ -2024,9 +2158,7 @@ class ToolBox:
                             "→ ambiguous; could be Type 1 with rare history."
                         )
             except Exception as exc:
-                evidence.append(
-                    f"Could not run rows-per-key probe: {exc}"
-                )
+                evidence.append(f"Could not run rows-per-key probe: {exc}")
 
         # ── Decide hypothesis ──
         # Strongest signals win; sibling history table is the most
@@ -2047,9 +2179,7 @@ class ToolBox:
             and type3_hits == 0
         )
 
-        if type2_hits >= 2 or (
-            type2_hits >= 1 and rows_per_key is not None and rows_per_key > 1.5
-        ):
+        if type2_hits >= 2 or (type2_hits >= 1 and rows_per_key is not None and rows_per_key > 1.5):
             hypothesis = "type_2"
             confidence = "high" if type2_hits >= 2 else "medium"
         elif type3_hits and type2_hits == 0:
@@ -2079,17 +2209,11 @@ class ToolBox:
         # table also exists (so this is closer to Type 6)".
         alternatives: list[str] = []
         if hypothesis == "type_2" and type4_hits:
-            alternatives.append(
-                "type_6 (Type 2 in main + Type 4 sibling = hybrid)"
-            )
+            alternatives.append("type_6 (Type 2 in main + Type 4 sibling = hybrid)")
         if hypothesis == "type_4" and type2_hits:
-            alternatives.append(
-                "type_6 (history sibling + in-table type 2 signals = hybrid)"
-            )
+            alternatives.append("type_6 (history sibling + in-table type 2 signals = hybrid)")
         if hypothesis == "type_2" and type3_hits:
-            alternatives.append(
-                "type_6 (in-table previous-value columns alongside row-history)"
-            )
+            alternatives.append("type_6 (in-table previous-value columns alongside row-history)")
 
         recommendation = ""
         if hypothesis == "type_2" and "type2_temporal_pair" not in indicators:
@@ -2130,26 +2254,59 @@ class ToolBox:
         # lowered table name. Order doesn't matter — every role
         # contributes to a separate naming-signal bucket.
         "fact": (
-            "fact_", "_fact", "_facts", "fact", "f_",
-            "_evt", "_event", "_events",
-            "transactions", "_trans", "_txn", "_orders",
-            "_sales", "_invoice", "_invoices",
+            "fact_",
+            "_fact",
+            "_facts",
+            "fact",
+            "f_",
+            "_evt",
+            "_event",
+            "_events",
+            "transactions",
+            "_trans",
+            "_txn",
+            "_orders",
+            "_sales",
+            "_invoice",
+            "_invoices",
         ),
         "dimension": (
-            "dim_", "_dim", "_dimension", "dimension_",
-            "_lookup", "lookup_",
+            "dim_",
+            "_dim",
+            "_dimension",
+            "dimension_",
+            "_lookup",
+            "lookup_",
         ),
         "staging": (
-            "stg_", "staging_", "_staging", "_landing",
-            "raw_", "_raw", "src_", "_src",
+            "stg_",
+            "staging_",
+            "_staging",
+            "_landing",
+            "raw_",
+            "_raw",
+            "src_",
+            "_src",
         ),
         "bridge": (
-            "bridge_", "_bridge", "xref_", "_xref",
-            "link_", "_link", "rel_", "_rel",
+            "bridge_",
+            "_bridge",
+            "xref_",
+            "_xref",
+            "link_",
+            "_link",
+            "rel_",
+            "_rel",
         ),
         "audit": (
-            "_audit", "audit_", "_log", "log_",
-            "_history", "history_", "_archive", "archive_",
+            "_audit",
+            "audit_",
+            "_log",
+            "log_",
+            "_history",
+            "history_",
+            "_archive",
+            "archive_",
         ),
     }
 
@@ -2165,30 +2322,98 @@ class ToolBox:
     # Numeric "measure" columns suggest a fact table (financial /
     # quantity values, summable). Both English and SAP-style names.
     _MEASURE_NAME_PATTERNS: tuple[str, ...] = (
-        "_amt", "_amount", "amount_", "_value", "_qty", "_quantity",
-        "_total", "_sum", "_price", "_cost", "_fee", "_rate", "_count",
-        "_brutto", "_netto", "_revenue", "_profit", "_margin",
-        "_balance", "_credit", "_debit", "_tax",
+        "_amt",
+        "_amount",
+        "amount_",
+        "_value",
+        "_qty",
+        "_quantity",
+        "_total",
+        "_sum",
+        "_price",
+        "_cost",
+        "_fee",
+        "_rate",
+        "_count",
+        "_brutto",
+        "_netto",
+        "_revenue",
+        "_profit",
+        "_margin",
+        "_balance",
+        "_credit",
+        "_debit",
+        "_tax",
         # SAP-specific currency / quantity columns
-        "netwr", "brtwr", "mwsbp", "mwsbk", "kbetr", "kwert",
-        "fkimg", "fklmg", "kpein", "kzwi", "wavwr",
+        "netwr",
+        "brtwr",
+        "mwsbp",
+        "mwsbk",
+        "kbetr",
+        "kwert",
+        "fkimg",
+        "fklmg",
+        "kpein",
+        "kzwi",
+        "wavwr",
     )
     # ID / key columns — high count suggests a fact joining out.
     _ID_NAME_PATTERNS: tuple[str, ...] = (
-        "_id", "id_", "_key", "_no", "_num", "_code", "_nr", "_kod",
+        "_id",
+        "id_",
+        "_key",
+        "_no",
+        "_num",
+        "_code",
+        "_nr",
+        "_kod",
         # SAP-specific keys appearing in many tables
-        "mandt", "vbeln", "vgbel", "kunag", "kunrg", "kunwe", "lifnr",
-        "vkorg", "vtweg", "spart", "matnr", "werks", "lgort",
-        "bukrs", "gjahr", "belnr", "buzei", "fkart", "auart",
+        "mandt",
+        "vbeln",
+        "vgbel",
+        "kunag",
+        "kunrg",
+        "kunwe",
+        "lifnr",
+        "vkorg",
+        "vtweg",
+        "spart",
+        "matnr",
+        "werks",
+        "lgort",
+        "bukrs",
+        "gjahr",
+        "belnr",
+        "buzei",
+        "fkart",
+        "auart",
     )
     # Descriptive text columns — high count + low measures suggests
     # a dimension / reference table.
     _DESCRIPTIVE_NAME_PATTERNS: tuple[str, ...] = (
-        "_name", "name_", "_desc", "_description", "description_",
-        "_label", "_text", "text_", "_title", "_remark", "_note",
-        "_comment", "_addr", "address_", "_street", "_city",
+        "_name",
+        "name_",
+        "_desc",
+        "_description",
+        "description_",
+        "_label",
+        "_text",
+        "text_",
+        "_title",
+        "_remark",
+        "_note",
+        "_comment",
+        "_addr",
+        "address_",
+        "_street",
+        "_city",
         # SAP-specific descriptive columns
-        "ktokd", "kdgrp", "klabc", "konzs", "name1", "name2",
+        "ktokd",
+        "kdgrp",
+        "klabc",
+        "konzs",
+        "name1",
+        "name2",
     )
 
     def _count_column_shape(self, profile: Any) -> dict[str, int]:
@@ -2207,22 +2432,26 @@ class ToolBox:
             is_numeric = any(
                 token in dtype_low
                 for token in (
-                    "int", "numeric", "decimal", "double", "float", "real",
+                    "int",
+                    "numeric",
+                    "decimal",
+                    "double",
+                    "float",
+                    "real",
                     "money",
                 )
             )
-            is_string = any(
-                token in dtype_low
-                for token in ("char", "varchar", "text", "string")
-            )
+            is_string = any(token in dtype_low for token in ("char", "varchar", "text", "string"))
             # Measure: numeric AND name suggests value/quantity.
             if is_numeric and any(p in name_low for p in self._MEASURE_NAME_PATTERNS):
                 measures += 1
                 continue
             # ID-like: any dtype, name suggests key/code (numeric or
             # short-fixed-width strings both count).
-            if any(p == name_low or name_low.endswith(p) or name_low.startswith(p) or p in name_low
-                   for p in self._ID_NAME_PATTERNS):
+            if any(
+                p == name_low or name_low.endswith(p) or name_low.startswith(p) or p in name_low
+                for p in self._ID_NAME_PATTERNS
+            ):
                 ids += 1
                 continue
             # Descriptive: string AND name suggests label/description.
@@ -2270,8 +2499,7 @@ class ToolBox:
 
         # Has temporal column? (any column with date/timestamp dtype family)
         has_temporal = any(
-            any(token in str(c.dtype).lower()
-                for token in ("date", "timestamp", "datetime"))
+            any(token in str(c.dtype).lower() for token in ("date", "timestamp", "datetime"))
             for c in profile.columns
         )
         indicators["has_temporal_column"] = has_temporal
@@ -2328,20 +2556,17 @@ class ToolBox:
                 )
             elif row_count <= 1000 and col_count <= 10:
                 evidence.append(
-                    f"Small table ({row_count} rows, {col_count} cols) — "
-                    "likely lookup / reference."
+                    f"Small table ({row_count} rows, {col_count} cols) — likely lookup / reference."
                 )
 
         # FK fan-out / fan-in
         if fk_out >= 3:
             evidence.append(
-                f"{fk_out} outgoing FK(s) — likely fact (joins out to "
-                "many dimensions)."
+                f"{fk_out} outgoing FK(s) — likely fact (joins out to many dimensions)."
             )
         if fk_in >= 3:
             evidence.append(
-                f"{fk_in} incoming FK(s) — likely dimension (referenced "
-                "by many tables)."
+                f"{fk_in} incoming FK(s) — likely dimension (referenced by many tables)."
             )
 
         # Bridge: roughly equal in/out, both ≥ 2
@@ -2369,7 +2594,8 @@ class ToolBox:
         elif naming == "fact":
             hypothesis = "fact"
             confidence = (
-                "high" if (fk_out >= 2 or rc_percentile is not None and rc_percentile >= 0.75)
+                "high"
+                if (fk_out >= 2 or rc_percentile is not None and rc_percentile >= 0.75)
                 else "medium"
             )
         elif naming == "dimension":
@@ -2412,14 +2638,9 @@ class ToolBox:
                 hypothesis = "dimension"
                 confidence = "medium"
                 evidence.append(
-                    "No naming signal; classified by structure (high FK "
-                    "fan-in, low fan-out)."
+                    "No naming signal; classified by structure (high FK fan-in, low fan-out)."
                 )
-            elif (
-                shape["descriptives"] >= 5
-                and shape["measures"] == 0
-                and row_count <= 100_000
-            ):
+            elif shape["descriptives"] >= 5 and shape["measures"] == 0 and row_count <= 100_000:
                 # Column-shape dimension heuristic — many descriptive
                 # columns + no measures + moderate row count.
                 hypothesis = "dimension"
@@ -2432,9 +2653,7 @@ class ToolBox:
             elif row_count <= 1000 and col_count <= 12 and fk_in >= 1:
                 hypothesis = "lookup"
                 confidence = "medium"
-                evidence.append(
-                    "Small + referenced — likely lookup / reference table."
-                )
+                evidence.append("Small + referenced — likely lookup / reference table.")
             elif has_temporal and not (is_partitioned or fk_out):
                 hypothesis = "transactional"
                 confidence = "low"
@@ -2461,7 +2680,9 @@ class ToolBox:
         }
 
     def _tool_detect_dimensional_role(
-        self, schema: str, table: str | None = None,
+        self,
+        schema: str,
+        table: str | None = None,
     ) -> dict[str, Any]:
         """Single-table or schema-wide dimensional-role classifier.
 
@@ -2476,7 +2697,9 @@ class ToolBox:
         if table:
             try:
                 profile = self._live_db().profile_table(
-                    schema_name, table.strip(), sample_size=0,
+                    schema_name,
+                    table.strip(),
+                    sample_size=0,
                 )
             except Exception as exc:
                 return {
@@ -2538,9 +2761,7 @@ class ToolBox:
         role_to_paths: dict[str, list[str]] = {}
         for c in classifications:
             role = c["role_hypothesis"]
-            role_to_paths.setdefault(role, []).append(
-                f"{c['schema']}.{c['table']}"
-            )
+            role_to_paths.setdefault(role, []).append(f"{c['schema']}.{c['table']}")
 
         # Star vs snowflake — only meaningful if BOTH facts and
         # dimensions exist. Snowflake = at least one dimension references
@@ -2556,17 +2777,14 @@ class ToolBox:
             for p in per_table:
                 if f"{p.schema}.{p.name}" not in dim_paths:
                     continue
-                for fk in (p.foreign_keys or []):
+                for fk in p.foreign_keys or []:
                     target = (
-                        f"{fk.get('referred_schema') or p.schema}."
-                        f"{fk.get('referred_table') or ''}"
+                        f"{fk.get('referred_schema') or p.schema}.{fk.get('referred_table') or ''}"
                     )
                     if target in dim_paths and target != f"{p.schema}.{p.name}":
                         dim_to_dim_links += 1
                         if len(dim_to_dim_examples) < 3:
-                            dim_to_dim_examples.append(
-                                f"{p.schema}.{p.name} → {target}"
-                            )
+                            dim_to_dim_examples.append(f"{p.schema}.{p.name} → {target}")
             if dim_to_dim_links:
                 pattern = "snowflake_schema"
                 pattern_evidence.append(
@@ -2610,4 +2828,3 @@ class ToolBox:
             "unknown_tables": role_to_paths.get("unknown", []),
             "classifications": classifications,
         }
-

@@ -61,7 +61,7 @@ class AnsweringMixin:
             "  ranked_list   -> one sentence + 3-5 bullet matches, one line each.\n"
             "  table_summary -> one sentence + key columns as a markdown table (<=8 rows).\n"
             "  prose         -> 2-4 sentence explanation, no table.\n"
-            "For ranked_list answers, the headline sentence should name the 1-3 best-matching tables and weave in WHY each matched, citing specific `matched_columns` from the rows when present (e.g., \"matched on supplier_id and vendor_name\"). Keep the rationale to one sentence; do not duplicate it in the bullets below.\n"
+            'For ranked_list answers, the headline sentence should name the 1-3 best-matching tables and weave in WHY each matched, citing specific `matched_columns` from the rows when present (e.g., "matched on supplier_id and vendor_name"). Keep the rationale to one sentence; do not duplicate it in the bullets below.\n'
             "Answer only from the retrieved metadata evidence you are given.\n"
             "Treat verified/live evidence as stronger than semantic or vector-only evidence.\n"
             "If evidence is weak or empty (e.g. no direct match), do NOT just say 'I found nothing'. Instead, be constructive: present the closest semantic matches or diagnostic rows provided as related/alternative suggestions.\n"
@@ -121,7 +121,10 @@ class AnsweringMixin:
             use_logprobs=False,
         )
         return result.content.strip(), result.usage or {}
-    def _provenance(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]) -> list[str]:
+
+    def _provenance(
+        self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any]
+    ) -> list[str]:
         labels: list[str] = []
         if any((row.get("source") or "") == "live_db" for row in rows):
             labels.append("live database introspection")
@@ -135,7 +138,11 @@ class AnsweringMixin:
             labels.append("schema explorer structural inventory")
         if plan.question_class == "join_discovery":
             labels.append("structural relationships")
-            if any(str(row.get("confidence_band") or "") in {"high_likelihood", "possible", "weak_hypothesis"} for row in rows):
+            if any(
+                str(row.get("confidence_band") or "")
+                in {"high_likelihood", "possible", "weak_hypothesis"}
+                for row in rows
+            ):
                 labels.append("semantic join inference")
         if plan.search_mode == "table_explain":
             labels.append("effective table metadata")
@@ -147,14 +154,23 @@ class AnsweringMixin:
             labels.append("behavioral code evidence")
         if verification.get("live_verified"):
             labels.append("live verification")
-        if self.settings.get("allow_vector_support", "true").lower() == "true" and plan.search_mode in {"semantic_concept", "compare_entities"}:
+        if self.settings.get(
+            "allow_vector_support", "true"
+        ).lower() == "true" and plan.search_mode in {"semantic_concept", "compare_entities"}:
             labels.append("vector support")
         out: list[str] = []
         for label in labels:
             if label not in out:
                 out.append(label)
         return out
-    def _confidence(self, plan: SearchPlan, rows: list[dict[str, Any]], verification: dict[str, Any], retrieval_details: dict[str, Any] | None = None) -> str:
+
+    def _confidence(
+        self,
+        plan: SearchPlan,
+        rows: list[dict[str, Any]],
+        verification: dict[str, Any],
+        retrieval_details: dict[str, Any] | None = None,
+    ) -> str:
         retrieval_details = retrieval_details or {}
         if (retrieval_details.get("target_resolution") or {}).get("unresolved_explicit"):
             return "low"
@@ -188,6 +204,7 @@ class AnsweringMixin:
         if score >= 4.0:
             return "medium"
         return "low"
+
     def _action_suggestions(
         self,
         plan: SearchPlan,
@@ -198,20 +215,71 @@ class AnsweringMixin:
     ) -> list[SearchActionSuggestion]:
         actions: list[SearchActionSuggestion] = []
         if (retrieval_details.get("target_resolution") or {}).get("unresolved_explicit"):
-            return [SearchActionSuggestion("narrow_scope", "Specify the schema.table exactly or switch to the DB/schema where the requested table exists.")]
-        if not ready and plan.question_class in {"semantic_discovery", "join_discovery", "table_understanding", "comparative_reasoning"}:
-            actions.append(SearchActionSuggestion("sync_catalog", "Search catalog is empty for semantic reasoning."))
-        if ready and not rows and plan.question_class in {"semantic_discovery", "entity_lookup", "table_understanding", "comparative_reasoning"}:
-            actions.append(SearchActionSuggestion("sync_catalog", "Refresh catalog structure and comments, then retry the question."))
-            actions.append(SearchActionSuggestion("refresh_code_evidence", "Refresh code evidence so practical table and column usage can support retrieval."))
+            return [
+                SearchActionSuggestion(
+                    "narrow_scope",
+                    "Specify the schema.table exactly or switch to the DB/schema where the requested table exists.",
+                )
+            ]
+        if not ready and plan.question_class in {
+            "semantic_discovery",
+            "join_discovery",
+            "table_understanding",
+            "comparative_reasoning",
+        }:
+            actions.append(
+                SearchActionSuggestion(
+                    "sync_catalog", "Search catalog is empty for semantic reasoning."
+                )
+            )
+        if (
+            ready
+            and not rows
+            and plan.question_class
+            in {
+                "semantic_discovery",
+                "entity_lookup",
+                "table_understanding",
+                "comparative_reasoning",
+            }
+        ):
+            actions.append(
+                SearchActionSuggestion(
+                    "sync_catalog",
+                    "Refresh catalog structure and comments, then retry the question.",
+                )
+            )
+            actions.append(
+                SearchActionSuggestion(
+                    "refresh_code_evidence",
+                    "Refresh code evidence so practical table and column usage can support retrieval.",
+                )
+            )
         if confidence == "low" and plan.question_class == "join_discovery":
-            actions.append(SearchActionSuggestion("refresh_code_evidence", "Code evidence may reveal practical joins that are not explicit in metadata."))
-        if confidence == "low" and plan.question_class in {"semantic_discovery", "table_understanding"}:
+            actions.append(
+                SearchActionSuggestion(
+                    "refresh_code_evidence",
+                    "Code evidence may reveal practical joins that are not explicit in metadata.",
+                )
+            )
+        if confidence == "low" and plan.question_class in {
+            "semantic_discovery",
+            "table_understanding",
+        }:
             resolved = retrieval_details.get("resolved_tables") or []
             if resolved:
-                actions.append(SearchActionSuggestion("analyze_table", f"Generate richer metadata for `{resolved[0]}` to improve search quality."))
+                actions.append(
+                    SearchActionSuggestion(
+                        "analyze_table",
+                        f"Generate richer metadata for `{resolved[0]}` to improve search quality.",
+                    )
+                )
         if retrieval_details.get("scope_assumption") in {"current_schema", "active_database"}:
-            actions.append(SearchActionSuggestion("narrow_scope", "Specify a schema or table to avoid scope assumptions."))
+            actions.append(
+                SearchActionSuggestion(
+                    "narrow_scope", "Specify a schema or table to avoid scope assumptions."
+                )
+            )
         return actions[:3]
 
 

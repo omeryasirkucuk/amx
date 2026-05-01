@@ -5,26 +5,18 @@ import logging
 import os
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 
 import click
+import pytest
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator, ReviewResult, apply_review_results_to_db
-from amx.codebase.analyzer import CodebaseReport, analyze_codebase
-from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
-from amx.cli_support.commands.history import format_run_scope
-from amx.cli_support.commands.manual import _run_edit_wizard
-from amx.cli_support.commands.profiles import cmd_use_doc, default_model
 from amx.cli_support import inject_session_defaults, session_to_click_args
-from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
-from amx.config import AMXConfig, DBConfig, LLMConfig, normalize_llm_model
-from amx.core import AMXApplication, UniversalMetadataAdapter
-from amx.core.errors import ErrorMapper
 from amx.cli_support.commands.db import (
     cmd_add_profile,
     cmd_profiling,
@@ -32,19 +24,31 @@ from amx.cli_support.commands.db import (
     databricks_connect_with_recovery,
     interactive_db_block,
 )
+from amx.cli_support.commands.history import format_run_scope
+from amx.cli_support.commands.manual import _run_edit_wizard
+from amx.cli_support.commands.profiles import cmd_use_doc, default_model
+from amx.cli_support.session import _format_session_click_error, _handle_manual_usage_shortcuts
+from amx.codebase.analyzer import CodebaseReport, analyze_codebase
+from amx.codebase.code_rag import _normalize_source_filter, _source_allowed
+from amx.config import AMXConfig, DBConfig, LLMConfig, normalize_llm_model
+from amx.core import AMXApplication, UniversalMetadataAdapter
+from amx.core.errors import ErrorMapper
 from amx.db.adapters.base import BackendCapabilities, UnsupportedDatabaseOperation
 from amx.db.adapters.bigquery import BigQueryAdapter
 from amx.db.adapters.databricks import DatabricksAdapter
 from amx.db.adapters.postgresql import PostgreSQLAdapter
 from amx.db.adapters.snowflake import SnowflakeAdapter
-from amx.db.connector import AssetKind, DatabaseConnector
-from amx.db.connector import ColumnProfile, TableProfile
+from amx.db.connector import AssetKind, ColumnProfile, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
 from amx.docs.scanner import _resolve_github, _resolve_s3, cleanup_scan_artifacts
 from amx.llm.batch import BatchRequest, OpenAIBatchProvider
 from amx.llm.provider import LLMProvider, logprob_confidence_score
 from amx.services.analyze_scope import filter_non_business_assets
-from amx.services.manual_metadata import collect_metadata_coverage, resolve_manual_target, resolve_path_target
+from amx.services.manual_metadata import (
+    collect_metadata_coverage,
+    resolve_manual_target,
+    resolve_path_target,
+)
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
@@ -198,7 +202,9 @@ class CoreArchitectureTests(unittest.TestCase):
 
     def test_error_mapper_categorises_ssl_handshake_failure(self) -> None:
         mapped = ErrorMapper.map(
-            RuntimeError("SSL: CERTIFICATE_VERIFY_FAILED [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"),
+            RuntimeError(
+                "SSL: CERTIFICATE_VERIFY_FAILED [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+            ),
             backend="snowflake",
         )
         self.assertIsNotNone(mapped)
@@ -368,7 +374,9 @@ class CodeRAGFilteringTests(unittest.TestCase):
             patch("amx.codebase.code_rag.code_collection_count", return_value=1) as count,
             patch(
                 "amx.codebase.code_rag.query_code_snippets",
-                return_value=[{"text": "spark.read.table('sap.vbak')", "metadata": {}, "distance": 0.1}],
+                return_value=[
+                    {"text": "spark.read.table('sap.vbak')", "metadata": {}, "distance": 0.1}
+                ],
             ) as query,
         ):
             messages = agent._build_messages(ctx)
@@ -399,6 +407,7 @@ class BackendCapabilityTests(unittest.TestCase):
         with self.assertRaises(UnsupportedDatabaseOperation):
             db.set_database_comment("Project description")
 
+    @pytest.mark.integration
     def test_apply_flow_does_not_count_unsupported_writeback_as_applied(self) -> None:
         db = DatabaseConnector(DBConfig(backend="bigquery", project="p", dataset="d"))
         row = ReviewResult(
@@ -762,7 +771,21 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
                         llm_provider, llm_model, scope_json, metrics_json, tokens_json, results_json, error_text
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (1.0, "success", "run", "chat", "databricks", "default", "openai", "gpt", "{}", "{}", "{}", "{}", ""),
+                    (
+                        1.0,
+                        "success",
+                        "run",
+                        "chat",
+                        "databricks",
+                        "default",
+                        "openai",
+                        "gpt",
+                        "{}",
+                        "{}",
+                        "{}",
+                        "{}",
+                        "",
+                    ),
                 )
                 run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
                 conn.execute(
@@ -772,7 +795,18 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
                         source, confidence, reasoning, alternatives_json
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (run_id, 1.0, "public", "orders", "id", "table", "manual", "high", "", '["Order identifier"]'),
+                    (
+                        run_id,
+                        1.0,
+                        "public",
+                        "orders",
+                        "id",
+                        "table",
+                        "manual",
+                        "high",
+                        "",
+                        '["Order identifier"]',
+                    ),
                 )
                 result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
@@ -786,7 +820,9 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
         adapter = DatabricksAdapter(DBConfig(backend="databricks"))
 
         message = adapter.actionable_profile_error(
-            Exception("SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain")
+            Exception(
+                "SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain"
+            )
         )
 
         self.assertIsNotNone(message)
@@ -809,10 +845,14 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
             name = "databricks"
 
             def test_connection(self, engine=None):
-                raise Exception("SSLCertVerificationError: self-signed certificate in certificate chain")
+                raise Exception(
+                    "SSLCertVerificationError: self-signed certificate in certificate chain"
+                )
 
             def actionable_profile_error(self, exc):
-                return DatabricksAdapter(DBConfig(backend="databricks")).actionable_profile_error(exc)
+                return DatabricksAdapter(DBConfig(backend="databricks")).actionable_profile_error(
+                    exc
+                )
 
         db._adapter = FakeAdapter()
 
@@ -920,9 +960,13 @@ class SQLiteHistoryStoreTests(unittest.TestCase):
                 sql = str(stmt)
                 executed.append((sql, params))
                 if sql.startswith("SHOW MATERIALIZED VIEWS"):
-                    return SimpleNamespace(fetchall=lambda: [FakeRow((None, "fallback_name"), {"name": "mv_orders"})])
+                    return SimpleNamespace(
+                        fetchall=lambda: [FakeRow((None, "fallback_name"), {"name": "mv_orders"})]
+                    )
                 if sql.startswith("SHOW DATABASES"):
-                    return SimpleNamespace(fetchall=lambda: [FakeRow((), {"comment": "Warehouse comment"})])
+                    return SimpleNamespace(
+                        fetchall=lambda: [FakeRow((), {"comment": "Warehouse comment"})]
+                    )
                 raise AssertionError(sql)
 
         class FakeEngine:
@@ -1002,7 +1046,9 @@ class ProfilingGuardrailTests(unittest.TestCase):
 
     def test_databricks_connect_recovery_persists_env_ca_bundle(self) -> None:
         cfg = AMXConfig()
-        cfg.db = DBConfig(backend="databricks", host="workspace", http_path="/sql", access_token="token")
+        cfg.db = DBConfig(
+            backend="databricks", host="workspace", http_path="/sql", access_token="token"
+        )
         cfg.db_profiles = {"corp": cfg.db}
         cfg.active_db_profile = "corp"
         cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
@@ -1023,14 +1069,19 @@ class ProfilingGuardrailTests(unittest.TestCase):
                 ok, attempts = databricks_connect_with_recovery(cfg, fake_connect)
 
         self.assertTrue(ok)
-        self.assertEqual([attempt.label for attempt in attempts], ["saved profile", "env CA bundle (AMX_DATABRICKS_TRUSTED_CA_FILE)"])
+        self.assertEqual(
+            [attempt.label for attempt in attempts],
+            ["saved profile", "env CA bundle (AMX_DATABRICKS_TRUSTED_CA_FILE)"],
+        )
         self.assertEqual(cfg.db.tls_trusted_ca_file, str(ca_file))
         self.assertFalse(cfg.db.tls_no_verify)
         self.assertEqual(calls[-1].tls_trusted_ca_file, str(ca_file))
 
     def test_databricks_connect_recovery_persists_tls_no_verify_last(self) -> None:
         cfg = AMXConfig()
-        cfg.db = DBConfig(backend="databricks", host="workspace", http_path="/sql", access_token="token")
+        cfg.db = DBConfig(
+            backend="databricks", host="workspace", http_path="/sql", access_token="token"
+        )
         cfg.db_profiles = {"corp": cfg.db}
         cfg.active_db_profile = "corp"
         cfg.save = lambda: "/tmp/amx-test-config.yml"  # type: ignore[method-assign]
@@ -1046,7 +1097,9 @@ class ProfilingGuardrailTests(unittest.TestCase):
         ok, attempts = databricks_connect_with_recovery(cfg, fake_connect)
 
         self.assertTrue(ok)
-        self.assertEqual([attempt.label for attempt in attempts], ["saved profile", "TLS no-verify fallback"])
+        self.assertEqual(
+            [attempt.label for attempt in attempts], ["saved profile", "TLS no-verify fallback"]
+        )
         self.assertTrue(cfg.db.tls_no_verify)
         self.assertTrue(calls[-1].tls_no_verify)
 
@@ -1084,9 +1137,22 @@ class ProfilingGuardrailTests(unittest.TestCase):
         choice_values = iter(["yes"])
 
         with (
-            patch("amx.cli_support.commands.db.ask_choice", side_effect=lambda *args, **kwargs: next(ask_values) if args and "Select database backend" in args[0] else next(choice_values)),
-            patch("amx.cli_support.commands.db.ask", side_effect=lambda *args, **kwargs: next(ask_values)),
-            patch("amx.cli_support.commands.db.ask_password", side_effect=lambda *args, **kwargs: next(secret_values)),
+            patch(
+                "amx.cli_support.commands.db.ask_choice",
+                side_effect=lambda *args, **kwargs: (
+                    next(ask_values)
+                    if args and "Select database backend" in args[0]
+                    else next(choice_values)
+                ),
+            ),
+            patch(
+                "amx.cli_support.commands.db.ask",
+                side_effect=lambda *args, **kwargs: next(ask_values),
+            ),
+            patch(
+                "amx.cli_support.commands.db.ask_password",
+                side_effect=lambda *args, **kwargs: next(secret_values),
+            ),
         ):
             updated = interactive_db_block(defaults)
 
@@ -1115,9 +1181,22 @@ class ProfilingGuardrailTests(unittest.TestCase):
         choice_values = iter(["no"])
 
         with (
-            patch("amx.cli_support.commands.db.ask_choice", side_effect=lambda *args, **kwargs: next(ask_values) if args and "Select database backend" in args[0] else next(choice_values)),
-            patch("amx.cli_support.commands.db.ask", side_effect=lambda *args, **kwargs: next(ask_values)),
-            patch("amx.cli_support.commands.db.ask_password", side_effect=lambda *args, **kwargs: next(secret_values)),
+            patch(
+                "amx.cli_support.commands.db.ask_choice",
+                side_effect=lambda *args, **kwargs: (
+                    next(ask_values)
+                    if args and "Select database backend" in args[0]
+                    else next(choice_values)
+                ),
+            ),
+            patch(
+                "amx.cli_support.commands.db.ask",
+                side_effect=lambda *args, **kwargs: next(ask_values),
+            ),
+            patch(
+                "amx.cli_support.commands.db.ask_password",
+                side_effect=lambda *args, **kwargs: next(secret_values),
+            ),
         ):
             updated = interactive_db_block(defaults)
 
@@ -1160,7 +1239,9 @@ class ProfilingGuardrailTests(unittest.TestCase):
                 return {"text": "Existing table comment"}
 
             def get_columns(self, table: str, schema: str):
-                return [{"name": "id", "type": "INTEGER", "nullable": False, "comment": "Identifier"}]
+                return [
+                    {"name": "id", "type": "INTEGER", "nullable": False, "comment": "Identifier"}
+                ]
 
             def get_pk_constraint(self, table: str, schema: str):
                 return {"constrained_columns": ["id"]}
@@ -1320,7 +1401,12 @@ class ProfilingGuardrailTests(unittest.TestCase):
                 return []
 
         db = object.__new__(DatabaseConnector)
-        db.cfg = DBConfig(backend="bigquery", profiling_mode="full", profiling_max_rows=1_000_000, profiling_sample_size=0)
+        db.cfg = DBConfig(
+            backend="bigquery",
+            profiling_mode="full",
+            profiling_max_rows=1_000_000,
+            profiling_sample_size=0,
+        )
         db._engine = FakeEngine()
         db._adapter = FakeAdapter()
 
@@ -1353,6 +1439,7 @@ class ProfileHelperTests(unittest.TestCase):
             "qwen/qwen3.6-plus",
         )
 
+    @pytest.mark.integration
     def test_openrouter_provider_does_not_reprefix_normalized_model(self) -> None:
         provider = LLMProvider.__new__(LLMProvider)
         provider.cfg = SimpleNamespace(provider="openrouter", model="qwen/qwen3.6-plus")
@@ -1520,7 +1607,9 @@ class ManualMetadataTests(unittest.TestCase):
                 self.last_call = (schema, table, column, comment)
 
         db = FakeDB()
-        target = resolve_manual_target(cfg, db, "column", ["sap_test.adr6.smtp_addr"], error=errors.append)
+        target = resolve_manual_target(
+            cfg, db, "column", ["sap_test.adr6.smtp_addr"], error=errors.append
+        )
 
         self.assertEqual(target[0], "column sap_test.adr6.smtp_addr")
         target[1]("Email address")
@@ -1538,7 +1627,9 @@ class ManualMetadataTests(unittest.TestCase):
                 self.last_call = (schema, table, column, comment)
 
         db = FakeDB()
-        target = resolve_path_target(cfg, db, "warehouse", "warehouse.sap_test.adr6.smtp_addr", error=errors.append)
+        target = resolve_path_target(
+            cfg, db, "warehouse", "warehouse.sap_test.adr6.smtp_addr", error=errors.append
+        )
 
         self.assertEqual(target.label, "column warehouse.sap_test.adr6.smtp_addr")
         target.writer("Email address")
@@ -1563,6 +1654,7 @@ class ManualMetadataTests(unittest.TestCase):
         self.assertEqual(db.last_call, "Warehouse profile")
         self.assertEqual(errors, [])
 
+    @pytest.mark.integration
     def test_edit_wizard_drills_to_column_target(self) -> None:
         cfg = AMXConfig()
         cfg.db_profiles = {"default": cfg.db}
@@ -1715,7 +1807,9 @@ class BatchLogprobTests(unittest.TestCase):
             messages=[{"role": "user", "content": "Describe columns"}],
         )
 
-        body = json.loads(OpenAIBatchProvider._build_jsonl([req], "gpt-4o-mini").decode().splitlines()[0])["body"]
+        body = json.loads(
+            OpenAIBatchProvider._build_jsonl([req], "gpt-4o-mini").decode().splitlines()[0]
+        )["body"]
 
         self.assertTrue(body["logprobs"])
         self.assertEqual(body["top_logprobs"], 5)
@@ -1757,6 +1851,7 @@ class OrchestratorFallbackTests(unittest.TestCase):
         self.assertIn("amount", by_column)
         self.assertEqual(by_column["amount"].confidence, Confidence.LOW)
 
+    @pytest.mark.integration
     def test_process_table_surfaces_profile_agent_diagnostics(self) -> None:
         class NullStep:
             def __enter__(self):
@@ -1789,7 +1884,9 @@ class OrchestratorFallbackTests(unittest.TestCase):
 
         orch = Orchestrator(DummyDB(), DummyLLM())
         orch.profile_agent.run = lambda ctx: []
-        orch.profile_agent.consume_diagnostics = lambda: ["Profile Agent failed: upstream model is unavailable"]
+        orch.profile_agent.consume_diagnostics = lambda: [
+            "Profile Agent failed: upstream model is unavailable"
+        ]
 
         warnings: list[str] = []
         with (
@@ -1879,9 +1976,7 @@ class SecretKeychainTests(unittest.TestCase):
             self.assertNotIn("super-secret", yaml_text)
             self.assertIn("keyring:db_profiles/prod/password", yaml_text)
             # The actual secret lives in the (in-memory) keyring.
-            self.assertEqual(
-                self._store.get("db_profiles/prod/password"), "super-secret"
-            )
+            self.assertEqual(self._store.get("db_profiles/prod/password"), "super-secret")
 
     def test_load_resolves_keyring_reference_back_to_plaintext(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1932,9 +2027,7 @@ class SecretKeychainTests(unittest.TestCase):
 
             # Saving migrates the secret into the keyring.
             cfg.save(str(cfg_path))
-            self.assertEqual(
-                self._store.get("db_profiles/legacy/password"), "legacy-plain"
-            )
+            self.assertEqual(self._store.get("db_profiles/legacy/password"), "legacy-plain")
             yaml_text = cfg_path.read_text()
             self.assertNotIn("legacy-plain", yaml_text)
 
@@ -1978,9 +2071,7 @@ class SecretKeychainTests(unittest.TestCase):
             cfg.save(str(cfg_path))
 
             self.assertNotIn("sk-test-1234", cfg_path.read_text())
-            self.assertEqual(
-                self._store.get("llm_profiles/main/api_key"), "sk-test-1234"
-            )
+            self.assertEqual(self._store.get("llm_profiles/main/api_key"), "sk-test-1234")
 
     def test_null_store_keeps_plaintext_when_keyring_unavailable(self) -> None:
         """If the OS has no keyring backend, secrets stay in plaintext rather
@@ -2422,12 +2513,15 @@ class ProfilePersistenceRaceTests(unittest.TestCase):
                 api_key="sk-test-key",
                 language="english",
             )
-            with patch(
-                "amx.cli_support.commands.profiles.interactive_llm_block",
-                return_value=new_llm,
-            ), patch(
-                "amx.cli_support.commands.profiles.confirm",
-                return_value=True,  # accept "Activate now?"
+            with (
+                patch(
+                    "amx.cli_support.commands.profiles.interactive_llm_block",
+                    return_value=new_llm,
+                ),
+                patch(
+                    "amx.cli_support.commands.profiles.confirm",
+                    return_value=True,  # accept "Activate now?"
+                ),
             ):
                 cmd_add_llm_profile(cfg, ["work"])
             del cfg
@@ -2482,12 +2576,15 @@ class ProfilePersistenceRaceTests(unittest.TestCase):
                 return_value=new_db,
             ):
                 cmd_add_profile(cfg, ["prod_pg"])
-            with patch(
-                "amx.cli_support.commands.profiles.interactive_llm_block",
-                return_value=new_llm,
-            ), patch(
-                "amx.cli_support.commands.profiles.confirm",
-                return_value=True,
+            with (
+                patch(
+                    "amx.cli_support.commands.profiles.interactive_llm_block",
+                    return_value=new_llm,
+                ),
+                patch(
+                    "amx.cli_support.commands.profiles.confirm",
+                    return_value=True,
+                ),
             ):
                 cmd_add_llm_profile(cfg, ["work"])
             del cfg
@@ -2663,10 +2760,7 @@ class TokenBudgetPreCheckTests(unittest.TestCase):
     def test_trim_rows_preserves_all_under_budget(self) -> None:
         from amx.search.agent import _trim_rows_to_token_budget
 
-        rows = [
-            {"match_score": 5.0, "schema_name": "p", "table_name": f"t{i}"}
-            for i in range(3)
-        ]
+        rows = [{"match_score": 5.0, "schema_name": "p", "table_name": f"t{i}"} for i in range(3)]
         kept, dropped = _trim_rows_to_token_budget(
             rows,
             system_text="sys",
@@ -2689,12 +2783,24 @@ class TokenBudgetPreCheckTests(unittest.TestCase):
         # vacuously without exercising the trimmer.
         words = " ".join(string.ascii_lowercase * 50)
         rows = [
-            {"match_score": 1.0, "schema_name": "p", "table_name": "t1",
-             "description": f"Description one — {words}"},
-            {"match_score": 9.0, "schema_name": "p", "table_name": "t9",
-             "description": f"Description nine — {words}"},
-            {"match_score": 5.0, "schema_name": "p", "table_name": "t5",
-             "description": f"Description five — {words}"},
+            {
+                "match_score": 1.0,
+                "schema_name": "p",
+                "table_name": "t1",
+                "description": f"Description one — {words}",
+            },
+            {
+                "match_score": 9.0,
+                "schema_name": "p",
+                "table_name": "t9",
+                "description": f"Description nine — {words}",
+            },
+            {
+                "match_score": 5.0,
+                "schema_name": "p",
+                "table_name": "t5",
+                "description": f"Description five — {words}",
+            },
         ]
         kept, dropped = _trim_rows_to_token_budget(
             rows,
@@ -2746,9 +2852,7 @@ class AskPathDeprecationTests(unittest.TestCase):
             warnings.simplefilter("always", DeprecationWarning)
             LoopBasedAskAgent(toolbox)
 
-        deprecation_warnings = [
-            w for w in caught if issubclass(w.category, DeprecationWarning)
-        ]
+        deprecation_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         self.assertGreaterEqual(len(deprecation_warnings), 1)
         message = str(deprecation_warnings[0].message)
         self.assertIn("LoopBasedAskAgent", message)
@@ -2842,7 +2946,6 @@ class RequestIdWiringTests(unittest.TestCase):
         from amx.utils.logging import (
             clear_request_id,
             get_request_id,
-            set_request_id,
         )
 
         clear_request_id()
@@ -3005,8 +3108,13 @@ class StructuredLoggingTests(unittest.TestCase):
 
         clear_request_id()
         record = stdlib_logging.LogRecord(
-            name="amx.test", level=stdlib_logging.INFO,
-            pathname=__file__, lineno=1, msg="m", args=(), exc_info=None,
+            name="amx.test",
+            level=stdlib_logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="m",
+            args=(),
+            exc_info=None,
         )
         kept = _RequestIdFilter().filter(record)
         self.assertTrue(kept)
@@ -3024,8 +3132,13 @@ class StructuredLoggingTests(unittest.TestCase):
         try:
             set_request_id("rid-abc-123")
             record = stdlib_logging.LogRecord(
-                name="amx.test", level=stdlib_logging.INFO,
-                pathname=__file__, lineno=1, msg="m", args=(), exc_info=None,
+                name="amx.test",
+                level=stdlib_logging.INFO,
+                pathname=__file__,
+                lineno=1,
+                msg="m",
+                args=(),
+                exc_info=None,
             )
             _RequestIdFilter().filter(record)
             self.assertEqual(record.request_id, "rid-abc-123")
@@ -3119,11 +3232,7 @@ class DatabaseConnectionRetryTests(unittest.TestCase):
         sees the categorised auth message without waiting through a
         pointless retry."""
         connector, attempts = self._make_connector(
-            [
-                RuntimeError(
-                    'FATAL: password authentication failed for user "alice"'
-                )
-            ]
+            [RuntimeError('FATAL: password authentication failed for user "alice"')]
         )
         result = connector.test_connection_result()
         self.assertFalse(result.ok)
@@ -3151,30 +3260,20 @@ class DatabaseConnectionRetryTests(unittest.TestCase):
         from amx.db.connector import _is_transient_db_connection_error
 
         # Transient.
-        self.assertTrue(
-            _is_transient_db_connection_error(ConnectionResetError("Connection reset"))
-        )
-        self.assertTrue(
-            _is_transient_db_connection_error(TimeoutError("timed out"))
-        )
+        self.assertTrue(_is_transient_db_connection_error(ConnectionResetError("Connection reset")))
+        self.assertTrue(_is_transient_db_connection_error(TimeoutError("timed out")))
         self.assertTrue(
             _is_transient_db_connection_error(
                 RuntimeError("getaddrinfo failed: Name or service not known")
             )
         )
-        self.assertTrue(
-            _is_transient_db_connection_error(RuntimeError("503 Service Unavailable"))
-        )
+        self.assertTrue(_is_transient_db_connection_error(RuntimeError("503 Service Unavailable")))
         # Non-transient (auth / permission / missing-db / SSL-trust).
         self.assertFalse(
-            _is_transient_db_connection_error(
-                RuntimeError("password authentication failed")
-            )
+            _is_transient_db_connection_error(RuntimeError("password authentication failed"))
         )
         self.assertFalse(
-            _is_transient_db_connection_error(
-                RuntimeError("permission denied for relation orders")
-            )
+            _is_transient_db_connection_error(RuntimeError("permission denied for relation orders"))
         )
         self.assertFalse(
             _is_transient_db_connection_error(
@@ -3182,9 +3281,7 @@ class DatabaseConnectionRetryTests(unittest.TestCase):
             )
         )
         self.assertFalse(
-            _is_transient_db_connection_error(
-                RuntimeError('database "missing_db" does not exist')
-            )
+            _is_transient_db_connection_error(RuntimeError('database "missing_db" does not exist'))
         )
 
 
@@ -3250,10 +3347,8 @@ class UsageCommandTests(unittest.TestCase):
                 "tokens_json": json.dumps(
                     {
                         "records": [
-                            {"prompt_tokens": 100, "completion_tokens": 50,
-                             "total_tokens": 150},
-                            {"prompt_tokens": 200, "completion_tokens": 80,
-                             "total_tokens": 280},
+                            {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+                            {"prompt_tokens": 200, "completion_tokens": 80, "total_tokens": 280},
                         ]
                     }
                 ),
@@ -3262,8 +3357,11 @@ class UsageCommandTests(unittest.TestCase):
                 "llm_provider": "anthropic",
                 "llm_model": "claude-sonnet-4",
                 "tokens_json": json.dumps(
-                    {"records": [{"prompt_tokens": 1000, "completion_tokens": 400,
-                                  "total_tokens": 1400}]}
+                    {
+                        "records": [
+                            {"prompt_tokens": 1000, "completion_tokens": 400, "total_tokens": 1400}
+                        ]
+                    }
                 ),
             },
         ]
@@ -3371,7 +3469,7 @@ class DBInspectCommandTests(unittest.TestCase):
             cfg.db = cfg.db_profiles["prod"]
         return cfg
 
-    def _patch_connector(self, fake_connector_class: type) -> "patch":
+    def _patch_connector(self, fake_connector_class: type) -> patch:
         return patch(
             "amx.db.connector.DatabaseConnector",
             fake_connector_class,
@@ -3404,8 +3502,10 @@ class DBInspectCommandTests(unittest.TestCase):
                 calls.append("init")
 
             capabilities = SimpleNamespace(
-                column_comments=True, relationships=True,
-                row_count_stats=True, materialized_views=False,
+                column_comments=True,
+                relationships=True,
+                row_count_stats=True,
+                materialized_views=False,
             )
 
             def test_connection_result(self) -> ConnectionTestResult:
@@ -3431,8 +3531,10 @@ class DBInspectCommandTests(unittest.TestCase):
 
         class FakeConnector:
             capabilities = SimpleNamespace(
-                column_comments=True, relationships=True,
-                row_count_stats=True, materialized_views=False,
+                column_comments=True,
+                relationships=True,
+                row_count_stats=True,
+                materialized_views=False,
             )
 
             def __init__(self, profile):
@@ -3466,8 +3568,10 @@ class DBInspectCommandTests(unittest.TestCase):
 
         class FakeConnector:
             capabilities = SimpleNamespace(
-                column_comments=True, relationships=True,
-                row_count_stats=True, materialized_views=False,
+                column_comments=True,
+                relationships=True,
+                row_count_stats=True,
+                materialized_views=False,
             )
 
             def __init__(self, profile):
@@ -3673,9 +3777,9 @@ class DatabricksEngineBoundTests(unittest.TestCase):
 
         engine = MagicMock()
         cm = MagicMock()
-        cm.__enter__ = MagicMock(return_value=MagicMock(
-            execute=MagicMock(side_effect=RuntimeError("not authorized"))
-        ))
+        cm.__enter__ = MagicMock(
+            return_value=MagicMock(execute=MagicMock(side_effect=RuntimeError("not authorized")))
+        )
         cm.__exit__ = MagicMock(return_value=False)
         engine.connect = MagicMock(return_value=cm)
 
@@ -3734,9 +3838,7 @@ class PostgreSQLAdapterUnitTests(unittest.TestCase):
 
     def test_actionable_profile_error_pg_stat_statements(self) -> None:
         msg = self.adapter.actionable_profile_error(
-            RuntimeError(
-                "ERROR: pg_stat_statements must be loaded via shared_preload_libraries"
-            )
+            RuntimeError("ERROR: pg_stat_statements must be loaded via shared_preload_libraries")
         )
         self.assertIsNotNone(msg)
         self.assertIn("pg_stat_statements", msg)
@@ -3769,8 +3871,8 @@ class PostgreSQLAdapterUnitTests(unittest.TestCase):
         # Must compute null_cnt, dist_cnt, min, max — each underpins a
         # different prompt-detail field in the LLM batch payload.
         for fragment in (
-            "COUNT(*) FILTER (WHERE \"email\" IS NULL)",
-            "COUNT(DISTINCT \"email\")",
+            'COUNT(*) FILTER (WHERE "email" IS NULL)',
+            'COUNT(DISTINCT "email")',
             'MIN("email"::text)',
             'MAX("email"::text)',
         ):
@@ -3885,9 +3987,7 @@ class DatabricksAdapterUnitTests(unittest.TestCase):
         self.adapter = DatabricksAdapter(self.cfg)
 
     def test_actionable_profile_error_invalid_token(self) -> None:
-        msg = self.adapter.actionable_profile_error(
-            RuntimeError("HTTP 401: invalid access token")
-        )
+        msg = self.adapter.actionable_profile_error(RuntimeError("HTTP 401: invalid access token"))
         self.assertIsNotNone(msg)
         self.assertIn("Databricks access token", msg)
         self.assertIn("PAT", msg)
@@ -3999,9 +4099,7 @@ class PerProfileCollectionTests(unittest.TestCase):
     def test_two_profiles_get_distinct_collection_names(self) -> None:
         from amx.search.index import _collection_name_for
 
-        self.assertNotEqual(
-            _collection_name_for("prod"), _collection_name_for("dev")
-        )
+        self.assertNotEqual(_collection_name_for("prod"), _collection_name_for("dev"))
 
     def test_profile_name_with_unicode_and_spaces_hashes_safely(self) -> None:
         """Profile names can contain anything users type; the name fed to
@@ -4050,14 +4148,24 @@ class PerProfileCollectionTests(unittest.TestCase):
                 idx = index_module.SearchIndex(persist_dir=td)
                 idx.upsert_entities(
                     [
-                        {"id": 1, "search_text": "row in prod",
-                         "db_profile": "prod", "schema_name": "s",
-                         "table_name": "t", "column_name": "c",
-                         "entity_kind": "column"},
-                        {"id": 2, "search_text": "row in dev",
-                         "db_profile": "dev", "schema_name": "s",
-                         "table_name": "t", "column_name": "c",
-                         "entity_kind": "column"},
+                        {
+                            "id": 1,
+                            "search_text": "row in prod",
+                            "db_profile": "prod",
+                            "schema_name": "s",
+                            "table_name": "t",
+                            "column_name": "c",
+                            "entity_kind": "column",
+                        },
+                        {
+                            "id": 2,
+                            "search_text": "row in dev",
+                            "db_profile": "dev",
+                            "schema_name": "s",
+                            "table_name": "t",
+                            "column_name": "c",
+                            "entity_kind": "column",
+                        },
                     ]
                 )
 
@@ -4322,9 +4430,7 @@ class LLMTransientRetryTests(unittest.TestCase):
                     logprobs=None,
                 )
             ],
-            usage=SimpleNamespace(
-                prompt_tokens=10, completion_tokens=5, total_tokens=15
-            ),
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
         )
 
     def test_transient_429_retried_then_succeeds(self) -> None:
@@ -4368,6 +4474,7 @@ class LLMTransientRetryTests(unittest.TestCase):
         # MAX_LLM_RETRIES=2 → 3 total attempts (initial + 2 retries).
         self.assertEqual(calls["count"], 3)
 
+    @pytest.mark.live
     def test_non_transient_error_does_not_retry(self) -> None:
         """Authentication / bad-request style errors must propagate
         immediately so the user sees the categorised error fast — retrying
@@ -4449,8 +4556,11 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
         from amx.cli_support.commands.embeddings import cmd_embeddings
 
         cfg = AMXConfig()
+
         # Pretend a non-default factory is currently installed.
-        sentinel_factory = lambda: object()
+        def sentinel_factory():
+            return object()
+
         self.embeddings_module.set_default_embedding_function(sentinel_factory)
         self.assertIsNotNone(self.embeddings_module._default_factory)
 
@@ -4466,7 +4576,9 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
 
         cfg = AMXConfig()
         with (
-            patch("amx.cli_support.commands.embeddings.ask", return_value="https://api.openai.com/v1"),
+            patch(
+                "amx.cli_support.commands.embeddings.ask", return_value="https://api.openai.com/v1"
+            ),
             patch("amx.cli_support.commands.embeddings.ask_password", return_value="sk-test"),
         ):
             cmd_embeddings(cfg, ["openai", "text-embedding-3-small"])
@@ -4528,7 +4640,7 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
         self.assertEqual(cfg.embedding.kind, original_kind)
 
     def test_picker_explicit_cancel_does_not_mutate(self) -> None:
-        from amx.cli_support.commands.embeddings import cmd_embeddings, _LABEL_CANCEL
+        from amx.cli_support.commands.embeddings import _LABEL_CANCEL, cmd_embeddings
 
         cfg = AMXConfig()
         original_kind = cfg.embedding.kind
@@ -4542,7 +4654,7 @@ class EmbeddingsSlashCommandTests(unittest.TestCase):
     def test_picker_minilm_choice_routes_to_minilm_branch(self) -> None:
         """Selecting the verbose 'MiniLM' label from the picker must route
         through the same code path as `/embeddings minilm`."""
-        from amx.cli_support.commands.embeddings import cmd_embeddings, _LABEL_MINILM, _LABEL_OPENAI
+        from amx.cli_support.commands.embeddings import _LABEL_MINILM, cmd_embeddings
         from amx.config import EmbeddingConfig
 
         cfg = AMXConfig()
@@ -4641,7 +4753,8 @@ class EmbeddingDefaultFactoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with patch.object(index_module.chromadb, "PersistentClient", FakeClient):
                 index_module.SearchIndex(
-                    persist_dir=td, embedding_function=explicit  # type: ignore[arg-type]
+                    persist_dir=td,
+                    embedding_function=explicit,  # type: ignore[arg-type]
                 )
 
         self.assertIs(captured.get("embedding_function"), explicit)
@@ -4675,7 +4788,9 @@ class EmbeddingConfigPersistenceTests(unittest.TestCase):
 
         self.assertFalse(EmbeddingConfig(kind="openai_compatible", model="").is_configured())
         self.assertTrue(
-            EmbeddingConfig(kind="openai_compatible", model="text-embedding-3-small").is_configured()
+            EmbeddingConfig(
+                kind="openai_compatible", model="text-embedding-3-small"
+            ).is_configured()
         )
 
     def test_save_and_load_round_trip_preserves_embedding_settings(self) -> None:
@@ -4831,9 +4946,7 @@ class FirstRunConfigTests(unittest.TestCase):
         self.assertFalse(
             DBConfig(backend="databricks", host="", access_token="", password="").is_configured()
         )
-        self.assertTrue(
-            DBConfig(backend="bigquery", project="my-project").is_configured()
-        )
+        self.assertTrue(DBConfig(backend="bigquery", project="my-project").is_configured())
 
     def test_llm_is_configured_requires_provider_and_model(self) -> None:
         from amx.config import LLMConfig

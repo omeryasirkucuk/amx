@@ -127,9 +127,7 @@ class DatabaseAdapter(ABC):
 
     # ── Table-level statistics ────────────────────────────────────────────
 
-    def get_table_stats(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, int]:
+    def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
         """Return backend-specific usage stats (seq_scan, idx_scan, n_live_tup, …).
 
         Keys that don't apply to the backend may be omitted or zero.
@@ -196,7 +194,10 @@ class DatabaseAdapter(ABC):
         return None
 
     def list_tables(
-        self, engine: Engine, schema: str, catalog: str = "",
+        self,
+        engine: Engine,
+        schema: str,
+        catalog: str = "",
     ) -> list[str] | None:
         """Backend-specific table listing.
 
@@ -209,16 +210,17 @@ class DatabaseAdapter(ABC):
         return None
 
     def list_views(
-        self, engine: Engine, schema: str, catalog: str = "",
+        self,
+        engine: Engine,
+        schema: str,
+        catalog: str = "",
     ) -> list[str] | None:
         """Backend-specific view listing. ``None`` → SQLAlchemy fallback."""
         return None
 
     # ── Analytics metadata ────────────────────────────────────────────────
 
-    def get_analytics_metadata(
-        self, engine: Engine, schema: str, table: str
-    ) -> dict[str, Any]:
+    def get_analytics_metadata(self, engine: Engine, schema: str, table: str) -> dict[str, Any]:
         """Return analytics-aware metadata for a single table.
 
         Each adapter overrides this with backend-specific queries that
@@ -251,16 +253,12 @@ class DatabaseAdapter(ABC):
     # ── Comment writing ───────────────────────────────────────────────────
 
     @abstractmethod
-    def set_table_comment_sql(
-        self, schema: str, table: str, asset_keyword: str
-    ) -> str:
+    def set_table_comment_sql(self, schema: str, table: str, asset_keyword: str) -> str:
         """Return a SQL template for comment text write-back."""
         ...
 
     @abstractmethod
-    def set_column_comment_sql(
-        self, schema: str, table: str, column: str
-    ) -> str:
+    def set_column_comment_sql(self, schema: str, table: str, column: str) -> str:
         """Return a SQL template for comment text write-back."""
         ...
 

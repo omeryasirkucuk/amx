@@ -30,7 +30,6 @@ class BatchRequest:
 
 
 class BatchProvider(ABC):
-
     def __init__(self, cfg: LLMConfig) -> None:
         self.cfg = cfg
 
@@ -43,7 +42,6 @@ class BatchProvider(ABC):
 
 
 class OpenAIBatchProvider(BatchProvider):
-
     def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]:
         import io
 
@@ -84,9 +82,7 @@ class OpenAIBatchProvider(BatchProvider):
         batch, elapsed = self._poll(client, batch, len(requests))
 
         if batch.status != "completed":
-            raise RuntimeError(
-                f"Batch job {batch.id} ended with status '{batch.status}'."
-            )
+            raise RuntimeError(f"Batch job {batch.id} ended with status '{batch.status}'.")
 
         console.print(
             f"[green]  ✓ Completed in {elapsed}s "
@@ -119,12 +115,16 @@ class OpenAIBatchProvider(BatchProvider):
                 body["max_completion_tokens"] = req.max_tokens
             else:
                 body["max_tokens"] = req.max_tokens
-            lines.append(json.dumps({
-                "custom_id": req.custom_id,
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": body,
-            }))
+            lines.append(
+                json.dumps(
+                    {
+                        "custom_id": req.custom_id,
+                        "method": "POST",
+                        "url": "/v1/chat/completions",
+                        "body": body,
+                    }
+                )
+            )
         return ("\n".join(lines) + "\n").encode()
 
     @staticmethod
@@ -133,10 +133,7 @@ class OpenAIBatchProvider(BatchProvider):
         if "/" in m:
             m = m.split("/")[-1]
         return (
-            m.startswith("gpt-5")
-            or m.startswith("o1")
-            or m.startswith("o3")
-            or m.startswith("o4")
+            m.startswith("gpt-5") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4")
         )
 
     @staticmethod
@@ -162,11 +159,11 @@ class OpenAIBatchProvider(BatchProvider):
             # or every heartbeat seconds as a keep-alive.
             if snap != last_snapshot or (elapsed - last_print_elapsed) >= _POLL_HEARTBEAT:
                 if activity_idx is not None:
-                    display.update_activity(activity_idx, label=f"Batch polling {done}/{cnt} — {batch.status}")
-                else:
-                    console.print(
-                        f"[dim]  ↳ [{elapsed:>4}s] {batch.status} — {done}/{cnt}[/dim]"
+                    display.update_activity(
+                        activity_idx, label=f"Batch polling {done}/{cnt} — {batch.status}"
                     )
+                else:
+                    console.print(f"[dim]  ↳ [{elapsed:>4}s] {batch.status} — {done}/{cnt}[/dim]")
                 last_snapshot = snap
                 last_print_elapsed = elapsed
             time.sleep(_POLL_INTERVAL)
@@ -178,7 +175,9 @@ class OpenAIBatchProvider(BatchProvider):
             if batch.status == "completed":
                 display.complete_activity(activity_idx, f"Batch completed {done}/{cnt}")
             else:
-                display.fail_activity(activity_idx, f"Batch ended with status {batch.status} ({done}/{cnt})")
+                display.fail_activity(
+                    activity_idx, f"Batch ended with status {batch.status} ({done}/{cnt})"
+                )
         return batch, elapsed
 
     @staticmethod
@@ -228,13 +227,8 @@ class OpenAIBatchProvider(BatchProvider):
 
         log.debug("Parsed %d results from batch output", len(results))
         if not results and getattr(batch, "error_file_id", None):
-            err_preview = OpenAIBatchProvider._download_error_preview(
-                client, batch.error_file_id
-            )
-            raise RuntimeError(
-                "Batch produced no parsable results. "
-                f"First errors: {err_preview}"
-            )
+            err_preview = OpenAIBatchProvider._download_error_preview(client, batch.error_file_id)
+            raise RuntimeError(f"Batch produced no parsable results. First errors: {err_preview}")
         return results
 
     @staticmethod
@@ -277,7 +271,6 @@ class OpenAIBatchProvider(BatchProvider):
 
 
 class AnthropicBatchProvider(BatchProvider):
-
     def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]:
         try:
             import anthropic
@@ -307,8 +300,7 @@ class AnthropicBatchProvider(BatchProvider):
 
         if batch.processing_status != "ended":
             raise RuntimeError(
-                f"Anthropic batch {batch.id} ended with status "
-                f"'{batch.processing_status}'."
+                f"Anthropic batch {batch.id} ended with status '{batch.processing_status}'."
             )
 
         succeeded = batch.request_counts.succeeded or 0
@@ -318,16 +310,12 @@ class AnthropicBatchProvider(BatchProvider):
             + (batch.request_counts.canceled or 0)
             + (batch.request_counts.expired or 0)
         )
-        console.print(
-            f"[green]  ✓ Completed in {elapsed}s ({succeeded}/{total})[/green]"
-        )
+        console.print(f"[green]  ✓ Completed in {elapsed}s ({succeeded}/{total})[/green]")
 
         return self._collect_results(client, batch)
 
     @staticmethod
-    def _build_requests(
-        requests: list[BatchRequest], model: str
-    ) -> list[dict[str, Any]]:
+    def _build_requests(requests: list[BatchRequest], model: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for req in requests:
             system_parts = [m["content"] for m in req.messages if m["role"] == "system"]
@@ -368,7 +356,10 @@ class AnthropicBatchProvider(BatchProvider):
             snap = (str(batch.processing_status), int(done), int(total))
             if snap != last_snapshot or (elapsed - last_print_elapsed) >= _POLL_HEARTBEAT:
                 if activity_idx is not None:
-                    display.update_activity(activity_idx, label=f"Batch polling {done}/{total} — {batch.processing_status}")
+                    display.update_activity(
+                        activity_idx,
+                        label=f"Batch polling {done}/{total} — {batch.processing_status}",
+                    )
                 else:
                     console.print(
                         f"[dim]  ↳ [{elapsed:>4}s] {batch.processing_status} — {done}/{total}[/dim]"
@@ -399,18 +390,22 @@ class AnthropicBatchProvider(BatchProvider):
                 continue
             msg = entry.result.message
             content = ""
-            for block in (msg.content or []):
+            for block in msg.content or []:
                 if getattr(block, "type", None) == "text":
                     content += block.text
             usage = msg.usage
-            usage_dict = {
-                "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
-                "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
-                "total_tokens": (
-                    (getattr(usage, "input_tokens", 0) or 0)
-                    + (getattr(usage, "output_tokens", 0) or 0)
-                ),
-            } if usage else None
+            usage_dict = (
+                {
+                    "prompt_tokens": getattr(usage, "input_tokens", 0) or 0,
+                    "completion_tokens": getattr(usage, "output_tokens", 0) or 0,
+                    "total_tokens": (
+                        (getattr(usage, "input_tokens", 0) or 0)
+                        + (getattr(usage, "output_tokens", 0) or 0)
+                    ),
+                }
+                if usage
+                else None
+            )
             results[cid] = ChatResult(content=content, usage=usage_dict)
 
         log.debug("Parsed %d results from Anthropic batch", len(results))
