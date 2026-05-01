@@ -771,6 +771,49 @@ def _md_table(headers: list[str], rows: list[list[Any]]) -> str:
     return "\n".join(body_lines) + "\n"
 
 
+def _export_json(
+    path: Path,
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+    *,
+    column_filter: str = "",
+) -> None:
+    """Write the comparison as a structured JSON document.
+
+    Designed for the thesis / data-science workflow: load the file
+    into a Jupyter notebook with ``json.load(open(path))`` and feed
+    the long-format ``per_column`` and ``aggregate_metrics`` arrays
+    into pandas / matplotlib without any reshaping.
+
+    Shape::
+
+        {
+          "schema_version": 1,
+          "generated_at": "2026-05-01T22:00:00",
+          "amx_version": "0.11.0",
+          "run_count": 3,
+          "run_summary":      [ {run_id, started_at, status, ...}, ... ],
+          "per_column":       [ {schema, table, column, run_id,
+                                 description, confidence, logprob_score,
+                                 token_count}, ... ],
+          "aggregate_metrics":[ {metric, run_id, value}, ... ]
+        }
+    """
+    from amx import __version__
+
+    payload = {
+        "schema_version": 1,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "amx_version": __version__,
+        "run_count": len(runs),
+        "run_summary": _collect_run_summary_rows(runs),
+        "per_column": _collect_per_column_long(runs, results_by_run, column_filter=column_filter),
+        "aggregate_metrics": _collect_aggregate_long(runs, results_by_run),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+
+
 def _export_markdown(
     path: Path,
     runs: list[dict[str, Any]],
@@ -970,6 +1013,17 @@ def register_compare_command(
         default=None,
         help="Also write the comparison as GitHub-flavoured Markdown (wide-format per-column table).",
     )
+    @click.option(
+        "--json",
+        "json_path",
+        type=click.Path(dir_okay=False, writable=True, resolve_path=True),
+        default=None,
+        help=(
+            "Also write the comparison as a structured JSON document — "
+            "feeds straight into pandas / Jupyter notebooks for thesis "
+            "charts (long-format per_column + aggregate_metrics arrays)."
+        ),
+    )
     @pass_config
     def search_compare(
         cfg: AMXConfig,
@@ -983,6 +1037,7 @@ def register_compare_command(
         diff_mode: bool,
         csv_path: str | None,
         md_path: str | None,
+        json_path: str | None,
     ) -> None:
         """Compare runs side-by-side: descriptions, logprobs, timing, tokens."""
         runs = _resolve_runs(
@@ -1050,6 +1105,17 @@ def register_compare_command(
                 success(f"Wrote Markdown → {md_path}")
             except OSError as exc:
                 error(f"Markdown export failed: {exc}")
+        if json_path:
+            try:
+                _export_json(
+                    Path(json_path),
+                    runs,
+                    results_by_run,
+                    column_filter=column_opt,
+                )
+                success(f"Wrote JSON → {json_path}")
+            except OSError as exc:
+                error(f"JSON export failed: {exc}")
 
         log_event(
             event_type="search_compare",
@@ -1065,6 +1131,7 @@ def register_compare_command(
                 "diff": diff_mode,
                 "exported_csv": bool(csv_path),
                 "exported_md": bool(md_path),
+                "exported_json": bool(json_path),
             },
         )
 
