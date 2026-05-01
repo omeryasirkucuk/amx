@@ -6,6 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.13] - 2026-05-01
+### Fixed
+- **Catalog picker auto-skipped after the first pick** — once the user picked a catalog in `/edit`, `cfg.catalog` was set and subsequent wizard runs treated that as authoritative ("existing catalog → return immediately"). User couldn't switch catalogs without restarting AMX or editing the profile manually.
+
+### Changed
+- **`_select_catalog_for_wizard` always shows the picker** when the backend supports catalogs (`amx/cli_support/commands/manual.py`). The picker now defaults to the current `cfg.catalog` if set so a happy user just presses Enter, and a user who wants to switch catalogs picks a different option from the list. Mirrors the schema / table picker UX downstream — "current as default, Enter keeps, different value switches".
+- When `SHOW CATALOGS` fails AND `cfg.catalog` is already set, the existing value is honoured silently (no false-positive catalog list).
+
+### Why this matters
+The previous early-return path treated catalog as a one-time pinning decision; in reality users want to bounce between catalogs (dev / prod, main / sandbox, staging / final) within the same session. With the picker always shown:
+1. First wizard run: no `cfg.catalog` → user picks → cfg gets set.
+2. Subsequent run: picker shows current as default → Enter keeps it → schema picker fires.
+3. User wants different catalog: picker shows current as default → user picks a different one → cfg.catalog updates.
+
+### Followups
+- Same UX should apply to BigQuery project switching once that adapter override lands. The helper is generic now; only the source list (`db.list_catalogs()`) changes per backend.
+
 ## [0.10.12] - 2026-05-01
 ### Fixed
 - **`SHOW TABLES FROM None.dev`** still failed after v0.10.11. The catalog picker correctly populated `cfg.catalog` and `list_schemas` switched to `SHOW SCHEMAS IN <catalog>` — but `list_tables` and `list_views` were still using SQLAlchemy's `inspect().get_table_names(schema=schema)`, which on Databricks issues `SHOW TABLES FROM <schema>` (no catalog context) and resolves catalog as whatever the connection's default is — `None` when the user hadn't run `USE CATALOG`.
