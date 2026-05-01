@@ -33,6 +33,24 @@ class PostgreSQLAdapter(DatabaseAdapter):
             )
         if "permission denied" in msg:
             return "Insufficient privileges for profiling. Grant SELECT on this object or use a higher-privileged role."
+        # Catch the "no DB pinned" failure mode specifically — when the
+        # profile has no ``database`` set, libpq falls back to a database
+        # named after the user. That database almost never exists, so
+        # ``/connect`` fails with ``FATAL: database "<user>" does not
+        # exist``. Without this branch the next clause (``does not
+        # exist``) maps it to "Referenced relation is missing", which
+        # sends users hunting for the wrong bug. PostgreSQL is a 2-level
+        # backend (database → schema → table); a database name is
+        # required for connect, unlike Databricks/BigQuery where the
+        # workspace/project connection works without one.
+        if 'database "' in msg and "does not exist" in msg:
+            return (
+                "PostgreSQL connection requires a database name. Open the profile "
+                "with /edit and fill in the `database` field (or run "
+                "/add-db-profile to create a new profile that includes one). "
+                "Note: PostgreSQL is a 2-level backend — unlike Databricks/BigQuery, "
+                "the connection itself can't proceed without a target database."
+            )
         if "undefined_table" in msg or "does not exist" in msg:
             return (
                 "Referenced relation is missing or inaccessible in the current schema search path."
