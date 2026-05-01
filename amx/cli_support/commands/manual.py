@@ -285,6 +285,44 @@ def _select_column_for_wizard(db: object, schema: str, table: str) -> str | None
 
 
 def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
+    # First question — let the user decide how MANY entities they want to
+    # touch, before they walk into the per-asset wizard. Without this, a
+    # user that wanted to bulk-edit ``customer_id`` across 50 tables had
+    # to either type the bare name on the command line or step through
+    # one (database → schema → table → column) cycle per occurrence.
+    edit_mode = _ask_choice_or_cancel(
+        "How would you like to edit?",
+        [
+            "Single entity",
+            "Bulk by name (column or table across many schemas)",
+        ],
+        default="Single entity",
+    )
+    if edit_mode is None:
+        return None
+    if edit_mode.startswith("Bulk"):
+        bare_name = _ask_text_or_cancel(
+            "Entity name to bulk-edit (column or table; AMX finds every match)",
+            default="",
+        )
+        if bare_name is None or not bare_name.strip():
+            warn("Bulk edit cancelled.")
+            return None
+        # The bulk flow runs to completion on its own (writes to DB,
+        # syncs catalog) and returns no ManualEditTarget. Returning
+        # ``None`` here is the documented signal that the caller (the
+        # command's outer try/except wrapper) shouldn't try to apply
+        # another edit on top.
+        _run_bulk_edit_by_name(
+            cfg,
+            bare_name=bare_name.strip(),
+            comment=None,
+            skip_confirm=False,
+            log_event=None,
+            preselected_mode="bulk",
+        )
+        return None
+
     selected = _select_db_profile_for_wizard(cfg)
     if selected is None:
         return None
@@ -393,8 +431,14 @@ def _run_bulk_edit_by_name(
     comment: str | None,
     skip_confirm: bool,
     log_event: LogEvent | None,
+    preselected_mode: str | None = None,
 ) -> None:
     """Bulk-edit comment by bare entity name.
+
+    ``preselected_mode`` lets a caller (e.g. the wizard, when the user
+    already picked "Bulk by name" at the very first step) skip the
+    bulk-vs-individual question. Accepted values: ``"bulk"`` ,
+    ``"individual"`` , or ``None`` (ask the user as usual).
 
     Searches the catalog for tables and columns matching the name, then
     offers a multi-select picker. The same comment text is applied to
@@ -451,8 +495,30 @@ def _run_bulk_edit_by_name(
             "existing": str(r.get("effective_description") or ""),
         })
 
+    # Bulk-update analysis header — explicit summary of what AMX is about
+    # to do, so the user can see the impact at a glance before any
+    # selection. Counts how many tables vs columns matched and how many
+    # schemas are involved.
+    table_match_count = sum(1 for e in entries if e["kind"] == "table")
+    column_match_count = sum(1 for e in entries if e["kind"] == "column")
+    distinct_schemas = sorted({e["schema"] for e in entries if e["schema"]})
     console.print(
-        f"\n  [heading]Found {len(entries)} match(es) for '{bare_name}'[/heading]"
+        f"\n  [heading]Bulk-update analysis for '{bare_name}'[/heading]"
+    )
+    summary_bits: list[str] = []
+    if table_match_count:
+        summary_bits.append(f"{table_match_count} table(s)")
+    if column_match_count:
+        summary_bits.append(f"{column_match_count} column(s)")
+    schemas_text = (
+        f"{len(distinct_schemas)} schema(s): {', '.join(distinct_schemas[:5])}"
+        + ("…" if len(distinct_schemas) > 5 else "")
+    )
+    info(
+        f"  Found {' + '.join(summary_bits) or 'no matches'} across {schemas_text}."
+    )
+    info(
+        "  Whatever you select below will be updated TOGETHER with the same comment."
     )
     rows_for_render = []
     for idx, e in enumerate(entries, start=1):
@@ -489,20 +555,25 @@ def _run_bulk_edit_by_name(
         # cases instead of duplicating it here.
         return
 
-    # Ask the user how they want to handle multiple matches BEFORE
-    # locking them into bulk mode. Some entities just happen to share
-    # a name and need different descriptions; the user wants the choice.
-    mode = _ask_text_or_cancel(
-        "How to handle these matches? "
-        "[bulk] one comment for selected rows  |  "
-        "[individual] walk through each row separately  |  "
-        "[cancel]",
-        default="bulk",
-    )
-    if mode is None:
-        warn("Edit cancelled.")
-        return
-    mode_norm = mode.strip().lower()
+    # If the caller already locked the mode (e.g. the wizard's first
+    # prompt picked "Bulk by name"), skip the second-level question.
+    if preselected_mode in {"bulk", "individual"}:
+        mode_norm = preselected_mode
+    else:
+        # Ask the user how they want to handle multiple matches BEFORE
+        # locking them into bulk mode. Some entities just happen to share
+        # a name and need different descriptions; the user wants the choice.
+        mode = _ask_text_or_cancel(
+            "How to handle these matches? "
+            "[bulk] one comment for selected rows  |  "
+            "[individual] walk through each row separately  |  "
+            "[cancel]",
+            default="bulk",
+        )
+        if mode is None:
+            warn("Edit cancelled.")
+            return
+        mode_norm = mode.strip().lower()
     if mode_norm in {"cancel", "exit", "q", "quit"}:
         warn("Edit cancelled.")
         return
@@ -516,7 +587,7 @@ def _run_bulk_edit_by_name(
         )
         return
     if mode_norm not in {"bulk", "b", "batch", ""}:
-        warn(f"Unknown mode {mode!r}. Use 'bulk', 'individual', or 'cancel'.")
+        warn(f"Unknown mode {mode_norm!r}. Use 'bulk', 'individual', or 'cancel'.")
         return
 
     selection_raw = _ask_text_or_cancel(

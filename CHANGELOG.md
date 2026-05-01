@@ -6,6 +6,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-04-30
+### Changed
+- **`/metadata edit` wizard now asks bulk-vs-individual at the FIRST step** (`amx/cli_support/commands/manual.py:_run_edit_wizard`): user said "I want the bulk option BEFORE 'What do you want to edit?'". The wizard now starts with a top-level choice: `Single entity` (existing database → schema → table → column flow) or `Bulk by name` (type a column or table name once, AMX handles every match across schemas). Single mode is unchanged; bulk mode reuses `_run_bulk_edit_by_name` with the new `preselected_mode="bulk"` argument so the user isn't asked the same question twice.
+- **Bulk-update analysis header** before the match table: counts match types ("12 column(s) across 5 schema(s): sap_s6p, sap_test, …") and explicitly states "Whatever you select below will be updated TOGETHER with the same comment." So the user understands the impact of multi-select BEFORE picking rows. Per the user's request: "show me a simple analysis — these columns in these tables will all be updated."
+
 ## [0.7.1] - 2026-04-30
 ### Changed
 - **`/metadata edit <name>` now asks bulk-vs-individual before locking the user into bulk** (`amx/cli_support/commands/manual.py`): v0.7.0 went straight to the multi-select picker after finding matches, but a user might want to handle each entity separately when entities just happen to share a name (e.g. `code` in `country.code` vs `currency.code`). New three-way prompt: `bulk` (one comment for selected rows — original 0.7.0 behavior), `individual` (walk through each match one at a time, type a different comment per row, Enter to skip), `cancel`. Single-match cases auto-switch to single-target edit and skip the prompt entirely.
