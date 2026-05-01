@@ -4496,6 +4496,92 @@ class LLMTransientRetryTests(unittest.TestCase):
         # MAX_LLM_RETRIES=2 → 3 total attempts (initial + 2 retries).
         self.assertEqual(calls["count"], 3)
 
+    # ── Logprobs auto-fallback ──────────────────────────────────────────
+
+    def test_logprobs_unsupported_error_detector_matches_gemini_message(self) -> None:
+        """The user-reported Gemini Flash error verbatim must be detected.
+        Other phrasings producers might use ("logprobs not supported"
+        etc.) are also covered by the pattern set."""
+        from amx.llm.provider import _is_logprobs_unsupported_error
+
+        gemini_msg = (
+            "litellm.BadRequestError: GeminiException BadRequestError - {\n"
+            '  "error": {\n'
+            '    "code": 400,\n'
+            '    "message": "Logprobs is not enabled for this model",\n'
+            '    "status": "INVALID_ARGUMENT"\n  }\n}'
+        )
+        self.assertTrue(_is_logprobs_unsupported_error(RuntimeError(gemini_msg)))
+        self.assertTrue(_is_logprobs_unsupported_error(RuntimeError("logprobs not supported")))
+        self.assertTrue(_is_logprobs_unsupported_error(RuntimeError("does not support logprobs")))
+        # Unrelated 400 must NOT match — we don't want to swallow real
+        # bad-request errors as if they were logprobs issues.
+        self.assertFalse(_is_logprobs_unsupported_error(RuntimeError("invalid request: bad model")))
+
+    def test_chat_retries_without_logprobs_when_provider_rejects_them(self) -> None:
+        """User report 2026-05-02: gemini/gemini-flash-latest returned a
+        400 with ``Logprobs is not enabled for this model``. Pre-fix
+        AMX retried 3× with the same flag (all failing) and finally
+        surfaced the error. Post-fix the provider strips ``logprobs``
+        from the second attempt and the call succeeds.
+        """
+
+        class BadRequestError(Exception):
+            pass
+
+        calls: list[dict] = []
+
+        def fake_completion(**kwargs):
+            calls.append(dict(kwargs))
+            if "logprobs" in kwargs:
+                raise BadRequestError(
+                    'GeminiException BadRequestError - {"error": {"code": 400, '
+                    '"message": "Logprobs is not enabled for this model"}}'
+                )
+            return self._ok_response()
+
+        with self._patch_litellm_with(fake_completion):
+            result = self._provider.chat([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(result.content, "ok")
+        # Exactly two calls: first with logprobs (rejected), second without.
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0].get("logprobs"))
+        self.assertNotIn("logprobs", calls[1])
+        # And the runtime-disable flag is now set so subsequent chats
+        # in this session skip the logprobs request upfront.
+        self.assertTrue(getattr(self._provider, "_logprobs_runtime_disabled", False))
+        self.assertFalse(self._provider.supports_logprobs)
+
+    def test_subsequent_chat_after_logprobs_rejection_skips_logprobs_upfront(self) -> None:
+        """Once the runtime-disable flag is set, the NEXT chat() call
+        must not request logprobs at all — otherwise every call in a
+        long /run would hit the same 400, retry once, and continue.
+        """
+
+        class BadRequestError(Exception):
+            pass
+
+        seen_logprobs_keys: list[bool] = []
+
+        def fake_completion(**kwargs):
+            seen_logprobs_keys.append("logprobs" in kwargs)
+            if "logprobs" in kwargs:
+                raise BadRequestError("Logprobs is not enabled for this model")
+            return self._ok_response()
+
+        with self._patch_litellm_with(fake_completion):
+            self._provider.chat([{"role": "user", "content": "hi"}])
+            # Reset the per-call tracking before the second call so we
+            # measure only the second invocation's logprobs flag.
+            calls_after = list(seen_logprobs_keys)
+            self._provider.chat([{"role": "user", "content": "again"}])
+
+        # First chat: 1st attempt with logprobs (rejected) + 2nd without (ok).
+        self.assertEqual(calls_after, [True, False])
+        # Second chat: single attempt, logprobs already disabled.
+        self.assertEqual(seen_logprobs_keys[len(calls_after) :], [False])
+
     @pytest.mark.live
     def test_non_transient_error_does_not_retry(self) -> None:
         """Authentication / bad-request style errors must propagate
