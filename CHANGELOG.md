@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Auto-fallback when the LLM provider rejects logprobs
+
+User report: with `gemini/gemini-flash-latest` configured, every `/run` and `/connect` test failed with `litellm.BadRequestError: GeminiException BadRequestError - "Logprobs is not enabled for this model"`. AMX defaults `force_logprobs: true` (the confidence-band system depends on token logprobs for calibrated scoring), but several models reject the parameter outright — Gemini Flash, OpenAI o-series, some OpenRouter-fronted Anthropic models. Pre-fix the 400 wasn't classified as fatal so AMX retried the same call 3× (all 400) before surfacing the error.
+
+- **New `_is_logprobs_unsupported_error` detector** matches the seven phrasings providers use ("Logprobs is not enabled for this model", "logprobs not supported", "does not support logprobs", etc.). Catches the verbatim Gemini Flash error from the user's report.
+- **Recovery branch in `chat()`**: when the detector fires AND the failing call had `logprobs=True`, AMX strips the logprob keys (`logprobs`, `top_logprobs`, `num_probs`) and retries the same call once. The retry succeeds; the run continues with heuristic confidence scoring instead of calibrated token logprobs.
+- **Session-level disable flag** (`_logprobs_runtime_disabled`) — set after the first successful fallback so subsequent calls in the same session skip logprobs upfront. Prevents a long `/run` from triggering the same 400 + retry cycle for every column.
+- **One-time INFO log** explains the trade-off: "Provider gemini/gemini-flash-latest rejected logprobs=True. Disabling logprobs for this session and retrying. Confidence bands will use heuristic scoring instead of calibrated token logprobs."
+- **3 new tests** (`LLMTransientRetryTests`): detector pattern coverage, the auto-retry-without-logprobs path, the second-call-skips-upfront behaviour. End-to-end script with the user's verbatim error message validates the flow.
+
 ### Fixed — PostgreSQL "leave database blank" actually works now
 
 User report: the `/add-db-profile` wizard advertised `database` as optional ("leave blank to pick at command time"), then `/connect` rejected the saved profile with "PostgreSQL connection requires a database name." The wizard's promise was never wired up in the URL builder — the resulting URL had no database segment, libpq silently fell back to a database named after the user, and the connection failed.
