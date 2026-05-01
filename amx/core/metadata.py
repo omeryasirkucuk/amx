@@ -1,7 +1,14 @@
 """Canonical metadata abstractions for library-first AMX workflows.
 
 The Universal Metadata Interface (UMI) keeps downstream agents focused on
-observable signals instead of backend-specific naming conventions.
+observable signals instead of backend-specific naming conventions. Part of
+the **public API** — see ``docs/PUBLIC_API.md`` for the stability contract.
+
+Public names (re-exported via ``amx.core``): ``AbstractEntity``,
+``UniversalMetadataAdapter``. ``LexicalSignal``, ``StructuralSignal``,
+``StatisticalSignal``, ``SemanticSignal`` are part of the
+``AbstractEntity`` shape and therefore implicitly public — additive
+field changes only across minor versions.
 """
 
 from __future__ import annotations
@@ -10,6 +17,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from amx.db.connector import ColumnProfile, TableProfile
+
+__all__ = [
+    "AbstractEntity",
+    "LexicalSignal",
+    "SemanticSignal",
+    "StatisticalSignal",
+    "StructuralSignal",
+    "UniversalMetadataAdapter",
+]
 
 
 @dataclass(frozen=True)

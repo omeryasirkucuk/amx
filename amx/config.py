@@ -1,4 +1,16 @@
-"""Central configuration store shared across all AMX modules."""
+"""Central configuration store shared across all AMX modules.
+
+INTERNAL — not part of the public API. Programmatic users should go
+through :func:`amx.init` or :class:`amx.core.AMXApplication.load`,
+which return a configured application without exposing the
+``AMXConfig`` dataclass shape. The shape is **not** stable across
+minor versions; see ``docs/PUBLIC_API.md``.
+
+Two names *are* stable because they leak through the on-disk config
+schema contract: :data:`CONFIG_SCHEMA_VERSION` and
+:exc:`ConfigSchemaTooNewError` (used by callers who load configs
+themselves and want to render an actionable upgrade message).
+"""
 
 from __future__ import annotations
 

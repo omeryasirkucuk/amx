@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — Public Python API contract (`docs/PUBLIC_API.md`)
+
+The structural change with the longest tail of consequences: pinning what's stable before `1.0` ships. Every name documented in the new contract follows SemVer from 1.0 onward; everything else is internal and can move freely.
+
+- **New `docs/PUBLIC_API.md`** — canonical reference for the stable surface (top-level `amx`, `amx.core`, the CLI command set, on-disk config + history schemas, `--json` export shape). Spells out what's NOT public (`amx.cli_support`, `amx.agents`, `amx.search`, `amx.config.AMXConfig` shape, internal helpers).
+- **Explicit `__all__`** added to every module backing `amx.core`: `application.py`, `ask_agent.py`, `inference.py`, `metadata.py`, `state.py`. Each docstring now references the contract doc.
+- **`amx.config` marked INTERNAL** in its module docstring — programmatic users go through `amx.init()` or `amx.core.AMXApplication.load()` instead. The two stable leaks (`CONFIG_SCHEMA_VERSION`, `ConfigSchemaTooNewError`) are called out explicitly.
+- **README's "Programmatic API" example** rewritten to use `amx.init()` instead of importing `AMXConfig` directly, plus a link to `docs/PUBLIC_API.md`.
+- **`tests/test_public_api_contract.py`** locks the contract: 10 cases that fail loudly if a public name is removed, renamed, or its `__all__` declaration silently drifts during a future `ruff format` import sort.
+
 ### Documentation — README hero, 5-minute quickstart, and screenshot slots
 
 The README's first 130 lines were a feature list; new readers had to scroll past architecture diagrams and prerequisite tables to see what AMX actually produces. Restructured so the value proposition + a concrete before/after example + the 30-second quickstart all live above the fold.
