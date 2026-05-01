@@ -297,7 +297,11 @@ class ToolBox:
                         "missing comments?', 'açıklaması olmayan tablolar', 'eksik comment'. "
                         "Catalog data may be stale right after a /run-apply, so always use "
                         "this live-DB check for coverage questions instead of the concept "
-                        "search tools."
+                        "search tools. By default, system / extension assets (e.g. "
+                        "pg_stat_statements, pg_statio_*) are filtered out — same rule "
+                        "the /run flow uses; AMX never describes those. Set "
+                        "``include_system=True`` only if the user EXPLICITLY asks about "
+                        "system tables (e.g. 'including system views')."
                     ),
                     "parameters": {
                         "type": "object",
@@ -318,6 +322,15 @@ class ToolBox:
                                 "type": "integer",
                                 "description": "Max rows per scope (default 50).",
                                 "default": 50,
+                            },
+                            "include_system": {
+                                "type": "boolean",
+                                "description": (
+                                    "Include PostgreSQL extension / system assets like "
+                                    "pg_stat_statements. Default false — only set true "
+                                    "when the user explicitly asks about system tables."
+                                ),
+                                "default": False,
                             },
                         },
                         "required": [],
@@ -546,6 +559,7 @@ class ToolBox:
         schema: str = "",
         scope: str = "both",
         limit: int = 50,
+        include_system: bool = False,
     ) -> dict[str, Any]:
         """Return tables/columns with no comment, queried from the LIVE DB.
 
@@ -554,6 +568,12 @@ class ToolBox:
         must NOT come from ``catalog_entities`` rows — they must come from
         the source of truth. This tool calls ``get_table_comment`` /
         ``get_column_comments`` per asset and reports anything blank.
+
+        System / telemetry assets (PostgreSQL extension views like
+        ``pg_stat_statements``) are filtered out by default — the same
+        filter the ``/run`` flow uses — because they aren't user data and
+        AMX never describes them. Set ``include_system=True`` only when the
+        user explicitly asks about system tables.
         """
         scope = (scope or "both").strip().lower()
         if scope not in {"tables", "columns", "both"}:
@@ -585,8 +605,19 @@ class ToolBox:
         else:
             target_schemas = available
 
+        # Reuse the same system-asset filter the /run flow uses so /ask
+        # doesn't surface PostgreSQL extension views (pg_stat_statements,
+        # pg_statio_*, etc.) as gaps. Users can ask about system tables
+        # explicitly via include_system=True if needed.
+        try:
+            from amx.services.analyze_scope import is_non_business_asset
+        except Exception:
+            def is_non_business_asset(_name: str) -> bool:  # type: ignore[misc]
+                return False
+
         tables_missing: list[dict[str, str]] = []
         columns_missing: list[dict[str, str]] = []
+        skipped_system: list[str] = []
         for sch in target_schemas:
             try:
                 if hasattr(db, "list_assets"):
@@ -596,6 +627,9 @@ class ToolBox:
             except Exception:
                 continue
             for asset_name, asset_kind in asset_iter:
+                if not include_system and is_non_business_asset(asset_name):
+                    skipped_system.append(f"{sch}.{asset_name}")
+                    continue
                 if scope in {"tables", "both"} and len(tables_missing) < limit:
                     try:
                         tcom = db.get_table_comment(sch, asset_name)
@@ -633,6 +667,12 @@ class ToolBox:
             "tables_missing_count": len(tables_missing) if scope != "columns" else 0,
             "columns_missing_comment": columns_missing if scope != "tables" else [],
             "columns_missing_count": len(columns_missing) if scope != "tables" else 0,
+            # Surfaced so the LLM knows we filtered system objects and can
+            # mention it in the answer ("4 system views were excluded;
+            # they aren't user data and AMX doesn't describe them").
+            "system_assets_skipped": skipped_system,
+            "system_assets_skipped_count": len(skipped_system),
+            "include_system": bool(include_system),
         }
 
     def _tool_list_databases(self) -> dict[str, Any]:

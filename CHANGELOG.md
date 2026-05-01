@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-04-30
+### Fixed
+- **`/ask "tables without description"` no longer surfaces system / extension assets** (`amx/search/agent_tools.py`): user reported `pg_stat_statements` and `pg_stat_statements_info` (PostgreSQL extension views) showing up as "tables without descriptions". These aren't user data — they're statistics views AMX never describes, and the `/run` flow has been filtering them out for releases via `services.analyze_scope.is_non_business_asset`. The `find_assets_missing_comment` agent tool now reuses the same filter so coverage queries don't surface these as gaps. New `include_system: bool` parameter (default false) lets the LLM opt back in only when the user explicitly asks about system tables (e.g. "tables including system views?"). Result payload now reports `system_assets_skipped` + count so the LLM can mention the filter in the answer.
+
 ## [0.6.1] - 2026-04-30
 ### Fixed
 - **`/description-verbosity` now appears in `/llm` namespace help, autocomplete, and Tab-toggle catalog** (`amx/cli_support/session.py`): v0.6.0 added the slash command but only registered it in the dispatch handler and the `llm_cmd_heads` routing set — it was missing from the namespace help text (so `/help` inside `/llm` didn't show it) and from `_slash_command_catalog` (so the autocomplete dropdown didn't list it). Now it's wired through all four discovery paths: dispatch (`_handle_session_builtin`), routing (`llm_cmd_heads`), help (namespace help text), and autocomplete (`llm_cmds`).
