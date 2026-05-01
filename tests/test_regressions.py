@@ -4920,6 +4920,32 @@ class FirstRunConfigTests(unittest.TestCase):
                 msg="top-level llm: block should not appear on fresh install",
             )
 
+    def test_test_suite_does_not_pollute_developer_home_dir(self) -> None:
+        """An autouse conftest fixture redirects ``Path.home()`` to a
+        per-test tempdir. Without it, a test that does ``AMXConfig()``
+        followed by anything that triggers ``cfg.save()`` (e.g.
+        ``cmd_add_profile``) overwrites the developer's real
+        ``~/.amx/config.yml`` — the 2026-05-02 user-reported regression
+        where ``databricks-default`` showed up in a fresh install.
+        """
+        # Path.home() must point at a tempdir during this test. The fact
+        # that we can write a sentinel file there and find it immediately
+        # — without seeing it appear in the developer's actual
+        # ``$HOME/.amx-test-sentinel`` after the test — proves the
+        # isolation. Pytest cleans up the tempdir automatically.
+        sentinel = Path.home() / ".amx-test-sentinel"
+        sentinel.write_text("test")
+        self.assertTrue(sentinel.exists())
+        # The CONFIG_DIR resolved on a fresh AMXConfig must land under
+        # the same tempdir, not under the real home.
+        cfg = AMXConfig()
+        self.assertEqual(
+            Path(cfg.CONFIG_DIR).parent.resolve(),
+            Path.home().resolve(),
+            "AMXConfig.CONFIG_DIR must resolve relative to the (patched) "
+            "Path.home(), so test cfg.save() calls land in the tempdir.",
+        )
+
     def test_dbconfig_credential_defaults_are_empty(self) -> None:
         """Pre-fix DBConfig defaulted to user='amx', password='amx_pass' —
         demo credentials that ended up in the saved YAML on first install
