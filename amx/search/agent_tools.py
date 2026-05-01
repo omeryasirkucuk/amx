@@ -175,8 +175,10 @@ class ToolBox:
                     "description": (
                         "Semantic / lexical search over the catalog for tables whose names or "
                         "comments relate to a business concept (pricing, customer, address, "
-                        "billing, ...). Use this for 'tables about pricing', "
-                        "'müşteri ile ilgili tablolar', 'find tables that store invoices'."
+                        "billing, ...). Returns a CANDIDATE SET — read each row's description "
+                        "and filter false positives before composing your answer. Use for "
+                        "'tables about pricing', 'müşteri ile ilgili tablolar', 'find tables "
+                        "that store invoices'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -200,9 +202,15 @@ class ToolBox:
                 "function": {
                     "name": "search_columns_by_concept",
                     "description": (
-                        "Lexical search over indexed catalog columns. Use this for 'where is "
-                        "the customer_id column?', 'which tables have an email column?', "
-                        "'address related columns'."
+                        "Lexical search over indexed catalog columns. Returns a CANDIDATE "
+                        "SET ranked by name/description similarity — many matches are FALSE "
+                        "POSITIVES. For example, searching 'phone' returns every column with "
+                        "'number' in the name (addrnumber, consnumber, persnumber, ...) even "
+                        "though only tel_number / fax_number are actual phone numbers. After "
+                        "calling, you MUST read each row's description text and filter the "
+                        "list to ones that genuinely match the user's concept. Don't echo the "
+                        "raw tool output. Use for 'where is the customer_id column?', 'which "
+                        "tables have an email column?', 'address related columns'."
                     ),
                     "parameters": {
                         "type": "object",

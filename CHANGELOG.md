@@ -6,6 +6,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-04-30
+### Changed
+- **Tool-agent system prompt now demands relevance filtering and proper push-back handling** (`amx/search/tool_agent.py`): user reported asking "which tables have phone-number columns" and getting `addrnumber`, `consnumber`, `persnumber`, `roomnumber` (and `tel_number`/`fax_number`) — the raw `search_columns_by_concept` candidate set, not actually-phone-number columns. When pushed back ("I guess some are not correct"), the agent just thanked the user and repeated the same list. Two prompt-level fixes: (a) explicit "Result validation" rule telling the model that `search_*_by_concept` returns a candidate set with FALSE POSITIVES and that it MUST drop rows whose description doesn't fit before composing the final answer; (b) "Push-back handling" rule listing concrete actions the model should take when the user pushes back (re-call with refined query, drill into descriptions, or admit the limitation) — explicitly forbids "Thank you for your patience!" + same list.
+- **Tool descriptions for `search_columns_by_concept` and `search_tables_by_concept`** now state inline that the result is a "CANDIDATE SET" and warn about false positives, so the model doesn't have to rediscover this each time. Includes a worked example for the phone-number case.
+
+### Why this matters
+Concept search is a fuzzy ranking, not a query language. If the LLM treats every returned row as "definitely matches the user's intent", the answers look authoritative but are wrong (the failure mode that prompted this fix). Two changes — one in tool description, one in system prompt — push the model toward an explicit filter step + a productive push-back response, both improving open-source UX without changing any retrieval logic.
+
 ## [0.6.3] - 2026-04-30
 ### Fixed
 - **Auto-inference fallback placeholders no longer reach the live database** (`amx/agents/orchestrator.py`): user reported their DB had `Column rewrt in table bseg. Auto-inference missed a reliable description; please review manually.` written as the actual `COMMENT ON COLUMN` for several columns. The placeholder was meant as a UI hint for human review (`_ensure_complete_table_coverage` injects it when the LLM misses a column in its response), but it flowed through `apply_review_results_to_db` and got persisted as real metadata. New `is_placeholder_description` predicate + filter at the top of `apply_review_results_to_db` block these out before any SQL hits the DB. Existing rows produced by older `/run-apply` invocations stay polluted; use the new cleanup command (below) to remove them.
