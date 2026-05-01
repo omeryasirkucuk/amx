@@ -187,6 +187,10 @@ class PlanningMixin:
                 "current_table": self.cfg.current_table or "",
                 "metadata_generation_language": metadata_language,
                 "active_db_profile": self.db_profile,
+                # 0.11.0: surface the full multi-DB scope so the planner
+                # can mention all configured profiles in its answer when
+                # the user has opted into ``/use-db a b c`` semantics.
+                "active_db_profiles": list(self.db_profiles),
             },
             ensure_ascii=True,
         )
@@ -225,6 +229,7 @@ class PlanningMixin:
                 "current_schema": self.cfg.current_schema or "",
                 "current_table": self.cfg.current_table or "",
                 "active_db_profile": self.db_profile,
+                "active_db_profiles": list(self.db_profiles),
             },
             ensure_ascii=True,
         )

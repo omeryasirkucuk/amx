@@ -29,12 +29,22 @@ def _catalog() -> SearchCatalog | None:
     return SearchCatalog.from_history_store()
 
 
-def _service(cfg: AMXConfig) -> SearchService | None:
+def _service(
+    cfg: AMXConfig,
+    *,
+    db_profiles: list[str] | None = None,
+) -> SearchService | None:
+    """Build a SearchService bound to the given (or persisted) DB scope.
+
+    0.11.0: ``db_profiles`` is a per-call override used by
+    ``/ask --db-profile``. When omitted the service falls back to the
+    persisted active scope (``cfg.active_db_profiles``).
+    """
     catalog = _catalog()
     if catalog is None:
         error("Search catalog is not initialized.")
         return None
-    return SearchService(cfg, catalog)
+    return SearchService(cfg, catalog, db_profiles=db_profiles)
 
 
 def _render_search_rows(
@@ -145,7 +155,17 @@ def _render_search_rows(
             visible.append(row)
     if not visible:
         return
+    # 0.11.0: when results span multiple DB profiles, surface the
+    # originating profile so the user can tell at a glance which DB
+    # each row came from. The rows have ``db_profile`` stamped by the
+    # catalog read methods.
+    profiles_in_view = {
+        str(row.get("db_profile") or "") for row in visible if row.get("db_profile")
+    }
+    show_profile_col = len(profiles_in_view) > 1
     table = Table(title="Search matches", show_lines=True, box=box.SIMPLE_HEAVY)
+    if show_profile_col:
+        table.add_column("Profile", style="magenta", no_wrap=True)
     table.add_column("Schema.Table", style="cyan", no_wrap=True)
     table.add_column("Match", no_wrap=True)
     table.add_column("Why", style="white", overflow="fold", max_width=32)
@@ -173,7 +193,10 @@ def _render_search_rows(
         rows_str = str(int(rows_value)) if isinstance(rows_value, (int, float)) and rows_value else "—"
         cols_str = str(int(cols_value)) if isinstance(cols_value, (int, float)) and cols_value else "—"
         desc = str(row.get("effective_description", "") or "")
-        cells = [
+        cells: list[Any] = []
+        if show_profile_col:
+            cells.append(str(row.get("db_profile") or "—"))
+        cells += [
             st,
             match_text,
             Text(why),
@@ -651,10 +674,48 @@ def register_search_commands(
         is_flag=True,
         help="Show the planner's thought trace, raw match scores, and source kind for each result.",
     )
+    @click.option(
+        "--db-profile", "db_profile",
+        multiple=True,
+        help=(
+            "Override the DB profile scope for this question. "
+            "Pass multiple times for multi-DB retrieval, e.g. "
+            "--db-profile prod_pg --db-profile analytics_bq. "
+            "When omitted, uses the persisted scope set by /use-db."
+        ),
+    )
     @click.argument("question", nargs=-1, required=True)
     @pass_config
-    def search_ask(cfg: AMXConfig, take_actions: bool, debug: bool, question: tuple[str, ...]) -> None:
-        svc = _service(cfg)
+    def search_ask(
+        cfg: AMXConfig,
+        take_actions: bool,
+        debug: bool,
+        db_profile: tuple[str, ...],
+        question: tuple[str, ...],
+    ) -> None:
+        # 0.11.0: --db-profile (multi) lets the user override the
+        # persisted active scope for a single question. Validate names
+        # against configured profiles before constructing the service —
+        # an unknown profile here is a user error worth surfacing
+        # explicitly rather than letting retrieval silently return
+        # nothing.
+        scope_override: list[str] | None = None
+        if db_profile:
+            unknown = [n for n in db_profile if n not in cfg.db_profiles]
+            if unknown:
+                error(
+                    f"Unknown DB profile(s): {', '.join(unknown)}. "
+                    f"Available: {', '.join(sorted(cfg.db_profiles)) or '(none)'}."
+                )
+                return
+            # Dedupe preserving order so --db-profile a --db-profile a → [a].
+            seen: set[str] = set()
+            scope_override = []
+            for name in db_profile:
+                if name not in seen:
+                    seen.add(name)
+                    scope_override.append(name)
+        svc = _service(cfg, db_profiles=scope_override)
         if svc is None:
             return
         question_text = " ".join(question).strip()

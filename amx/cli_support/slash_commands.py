@@ -162,7 +162,10 @@ _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
-    SlashCommand("/ask", "search", "Ask a metadata question; add --actions for approved follow-up execution"),
+    SlashCommand(
+        "/ask", "search",
+        "Ask a metadata question; add --db-profile NAME (multi) for cross-DB scope; --actions for approved follow-up execution",
+    ),
     SlashCommand("/status", "search", "Show catalog/index status"),
     SlashCommand("/sources", "search", "Show evidence sources and settings"),
     SlashCommand("/config", "search", "Show/set search config (/config [key] [value])"),

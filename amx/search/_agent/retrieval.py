@@ -474,7 +474,7 @@ class RetrievalMixin:
             return [table_row, *top_columns], details
         if plan.search_mode == "name_lookup":
             query_text = plan.entity_hints[0] if plan.entity_hints else plan.normalized_question
-            rows = self.catalog.name_search_columns(self.db_profile, query_text, limit=limit)
+            rows = self.catalog.name_search_columns(self.db_profile_filter, query_text, limit=limit)
             details["query_text"] = query_text
             details["evidence_sources"] = ["lexical_index"]
             return rows, details
@@ -512,7 +512,7 @@ class RetrievalMixin:
                     database_name = db_lookup[normalized]
                     explicit_scope = True
                     continue
-                if self.catalog.find_table_candidates(self.db_profile, normalized, limit=1):
+                if self.catalog.find_table_candidates(self.db_profile_filter, normalized, limit=1):
                     table_paths = self._resolve_table_paths([normalized], question)
                     if table_paths and not schema_name:
                         schema_name = table_paths[0].split(".", 1)[0]
@@ -576,7 +576,7 @@ class RetrievalMixin:
             return rows, details
         if plan.search_mode == "compare_entities":
             rows = self.catalog.search_columns(
-                self.db_profile,
+                self.db_profile_filter,
                 plan.normalized_question or question,
                 limit=limit,
                 entity_hints=plan.entity_hints,
@@ -589,7 +589,7 @@ class RetrievalMixin:
             merged: list[dict[str, Any]] = []
             seen_ids: set[int] = set()
             for term in self._column_name_lookup_terms(question, plan):
-                candidates = self.catalog.name_search_columns(self.db_profile, term, limit=lookup_limit)
+                candidates = self.catalog.name_search_columns(self.db_profile_filter, term, limit=lookup_limit)
                 strict = [row for row in candidates if term in str(row.get("column_name") or "").lower()]
                 for row in strict or candidates:
                     entity_id = int(row.get("id") or 0)
@@ -605,7 +605,7 @@ class RetrievalMixin:
                 return merged[:lookup_limit], details
         if plan.question_class == "semantic_discovery" and plan.target_entity == "table":
             rows = self.catalog.search_tables(
-                self.db_profile,
+                self.db_profile_filter,
                 plan.normalized_question or question,
                 limit=limit,
                 entity_hints=plan.entity_hints,
@@ -616,7 +616,7 @@ class RetrievalMixin:
             details["evidence_sources"] = ["effective_metadata", "aggregated_column_metadata", "vector_support"]
             return rows, details
         rows = self.catalog.search_columns(
-            self.db_profile,
+            self.db_profile_filter,
             plan.normalized_question or question,
             limit=limit,
             entity_hints=plan.entity_hints,
