@@ -6,6 +6,15 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — PostgreSQL "leave database blank" actually works now
+
+User report: the `/add-db-profile` wizard advertised `database` as optional ("leave blank to pick at command time"), then `/connect` rejected the saved profile with "PostgreSQL connection requires a database name." The wizard's promise was never wired up in the URL builder — the resulting URL had no database segment, libpq silently fell back to a database named after the user, and the connection failed.
+
+- **`DBConfig.url` for postgres now falls back to `/postgres`** (the system database every PostgreSQL install ships with and grants `CONNECT` to PUBLIC by default) when the profile's `database` field is empty. Connections succeed; users can pick a real database later via `/database <name>` or by editing the profile.
+- **The "database does not exist" error message is rewritten** for the now-narrower failure mode — it only fires when the user explicitly pinned a database name the server doesn't have, so the message points at `/edit` to correct the name (or the blank-fallback tip) rather than blaming a missing required field.
+- **Two new URL-builder tests** lock the fallback (`test_postgres_url_falls_back_to_postgres_system_db_when_empty`) and the explicit-name path (`test_postgres_url_uses_explicit_database_when_set`); the previously-passing test that asserted the old "no trailing slash" behaviour was rewritten to match the new contract.
+- **Manual flow walk-through** done before declaring the fix complete: `/add-db-profile` postgres with no database → `/connect` → URL is `postgresql://...:5432/postgres` (proper system DB), error wording is actionable. The previous PR shipped a unit-tested message without exercising the user-facing path; that gap is now closed.
+
 ### Fixed — Tests no longer pollute the developer's `~/.amx/`
 
 User report: after merging the `fresh-install YAML is clean` fix and reopening AMX, `/db-profiles` STILL showed a `databricks-default` row pointing at the synthetic test placeholders (`adb-1234567890123456.7.azuredatabricks.net`, `catalog=my_catalog`). The earlier fix made `cfg.save()` write a clean YAML on truly-fresh installs, but on this developer's machine the file already contained synthetic data — written by **`pytest`**.

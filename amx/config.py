@@ -490,16 +490,27 @@ class DBConfig(_ObservableConfig):
                 url += f"?credentials_path={quote_plus(self.credentials_path)}"
             return url
 
-        # Default: PostgreSQL. When database is unpinned, drop the trailing
-        # ``/<db>`` so SQLAlchemy connects to the server and the user
-        # picks at query time. The engine still works without a default
-        # database — adapters handle the "no database" case.
+        # Default: PostgreSQL. When the user leaves ``database`` blank
+        # (the ``/add-db-profile`` wizard advertises it as optional —
+        # "leave blank to pick at command time"), fall back to the
+        # ``postgres`` system database that every PostgreSQL install
+        # ships with and grants CONNECT to PUBLIC by default. Without
+        # this fallback, libpq silently substitutes the username as the
+        # database name, which almost never exists and produces
+        # ``FATAL: database "<user>" does not exist``. The user then
+        # blames AMX for an "optional" promise the URL builder never
+        # actually honoured.
+        #
+        # The user can switch databases at command time with
+        # ``/database <name>`` (or by running ``/edit`` and pinning one
+        # explicitly into the profile). The fallback only affects the
+        # initial connection — listings, profiling, and write-back all
+        # respect whatever database is currently in scope.
         url = (
             f"postgresql://{quote_plus(self.user)}:{quote_plus(self.password)}"
             f"@{self.host}:{self.port}"
         )
-        if self.database:
-            url += f"/{quote_plus(self.database)}"
+        url += f"/{quote_plus(self.database) if self.database else 'postgres'}"
         return url
 
     @property
