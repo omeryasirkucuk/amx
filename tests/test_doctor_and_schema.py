@@ -199,5 +199,49 @@ class DoctorEndToEndTests(unittest.TestCase):
             self.assertIn("amx on PATH", result.output)
 
 
+class DoctorCrossNamespaceDispatchTests(unittest.TestCase):
+    """`/doctor` must work from every namespace tab, not just /search.
+
+    Regression guard: registering ``cross_namespace=True`` in the slash
+    registry was not enough — without an entry in
+    ``session.shortcut_map``, ``/doctor`` from /search fell through to
+    ``["search", "ask", "doctor"]`` (sent the literal "doctor" string to
+    the search agent as a question), and from any other namespace fell
+    through to ``[namespace, "doctor"]`` which Click rejected.
+    """
+
+    def test_dispatch_from_root_namespace(self) -> None:
+        from amx.cli_support.session import session_to_click_args
+
+        self.assertEqual(session_to_click_args("", ["doctor"]), ["doctor"])
+
+    def test_dispatch_from_search_namespace(self) -> None:
+        from amx.cli_support.session import session_to_click_args
+
+        # The bug specifically masqueraded as "works under search"
+        # because /search swallows unknown verbs as questions.
+        self.assertEqual(session_to_click_args("search", ["doctor"]), ["doctor"])
+
+    def test_dispatch_from_other_namespaces(self) -> None:
+        from amx.cli_support.session import session_to_click_args
+
+        for ns in ("db", "metadata", "docs", "llm", "code", "analyze", "history"):
+            with self.subTest(namespace=ns):
+                self.assertEqual(
+                    session_to_click_args(ns, ["doctor"]),
+                    ["doctor"],
+                    f"/doctor must dispatch to top-level click "
+                    f"`doctor` from /{ns}, not get swallowed.",
+                )
+
+    def test_skip_network_flag_passed_through(self) -> None:
+        from amx.cli_support.session import session_to_click_args
+
+        self.assertEqual(
+            session_to_click_args("llm", ["doctor", "--skip-network"]),
+            ["doctor", "--skip-network"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
