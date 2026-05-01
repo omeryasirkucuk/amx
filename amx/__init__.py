@@ -1,6 +1,6 @@
 """AMX — Agentic Metadata Extractor."""
 
-__version__ = "0.10.15"
+__version__ = "0.11.0a1"
 
 __all__ = [
     "AMXApplication",
