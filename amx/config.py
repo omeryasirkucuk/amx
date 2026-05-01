@@ -411,8 +411,14 @@ class DBConfig(_ObservableConfig):
     # Common fields (PostgreSQL / generic)
     host: str = "localhost"
     port: int = 5432
-    user: str = "amx"
-    password: str = "amx_pass"
+    # Credential defaults are empty so a fresh DBConfig (e.g., the
+    # active-mirror dataclass on first install) carries no demo
+    # credentials that could leak into ~/.amx/config.yml when save()
+    # runs before the user has added any real profile. Pre-0.11 these
+    # were "amx" / "amx_pass", which materialised as a phantom
+    # localhost connection in /db-profiles.
+    user: str = ""
+    password: str = ""
     # ``database`` is now optional. Empty string means "no DB pinned to this
     # profile" — the user picks a database at command time (interactive
     # picker, or `--database`). Historically the default was the demo value
@@ -1093,28 +1099,39 @@ class AMXConfig:
                 if self.active_db_profiles
                 else ([self.active_db_profile] if self.active_db_profile else [])
             )
-            data = {
+            # The top-level ``db:`` / ``llm:`` blocks mirror the active
+            # profile's contents for backwards compatibility (pre-profile
+            # configs only had these scalars). When no profiles exist
+            # we skip writing them — otherwise a first-run save would
+            # leak hardcoded dataclass defaults (host=localhost,
+            # port=5432, etc.) into config.yml as if the user had
+            # configured something. Older readers that DO have a real
+            # active profile still get the mirror; brand-new installs
+            # see a clean YAML with empty profile dicts.
+            data: dict[str, Any] = {
                 "schema_version": CONFIG_SCHEMA_VERSION,
-                "db": _db_to_mapping(self.db),
-                "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
-                "active_db_profile": self.active_db_profile,
-                "active_db_profiles": scope_list,
-                "current_schema": self.current_schema,
-                "current_table": self.current_table,
-                "llm": _llm_to_mapping(self.llm),
-                "llm_profiles": {k: _llm_to_mapping(v) for k, v in self.llm_profiles.items()},
-                "active_llm_profile": self.active_llm_profile,
-                "doc_paths": doc_paths_yaml,
-                "doc_profiles": {k: list(v) for k, v in self.doc_profiles.items()},
-                "active_doc_profile": self.active_doc_profile,
-                "code_paths": code_paths_yaml,
-                "code_profiles": dict(self.code_profiles),
-                "active_code_profile": self.active_code_profile,
-                "selected_schemas": self.selected_schemas,
-                "selected_tables": self.selected_tables,
-                "write_through_config": self.write_through_config,
-                "embedding": _embedding_to_mapping(self.embedding),
             }
+            if self.db_profiles:
+                data["db"] = _db_to_mapping(self.db)
+            data["db_profiles"] = {k: _db_to_mapping(v) for k, v in self.db_profiles.items()}
+            data["active_db_profile"] = self.active_db_profile
+            data["active_db_profiles"] = scope_list
+            data["current_schema"] = self.current_schema
+            data["current_table"] = self.current_table
+            if self.llm_profiles:
+                data["llm"] = _llm_to_mapping(self.llm)
+            data["llm_profiles"] = {k: _llm_to_mapping(v) for k, v in self.llm_profiles.items()}
+            data["active_llm_profile"] = self.active_llm_profile
+            data["doc_paths"] = doc_paths_yaml
+            data["doc_profiles"] = {k: list(v) for k, v in self.doc_profiles.items()}
+            data["active_doc_profile"] = self.active_doc_profile
+            data["code_paths"] = code_paths_yaml
+            data["code_profiles"] = dict(self.code_profiles)
+            data["active_code_profile"] = self.active_code_profile
+            data["selected_schemas"] = self.selected_schemas
+            data["selected_tables"] = self.selected_tables
+            data["write_through_config"] = self.write_through_config
+            data["embedding"] = _embedding_to_mapping(self.embedding)
             # Move plaintext secrets to the OS keyring; the YAML now stores only
             # opaque "keyring:..." references. No-op when keyring is unavailable.
             _externalise_secrets_in_data(

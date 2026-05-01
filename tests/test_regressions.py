@@ -3859,6 +3859,23 @@ class PostgreSQLAdapterUnitTests(unittest.TestCase):
         self.assertIsNotNone(msg)
         self.assertIn("missing", msg.lower())
 
+    def test_actionable_profile_error_database_does_not_exist(self) -> None:
+        """User reproduced this with a postgres profile that had no
+        database pinned. libpq fell back to a database named after the
+        user ("amx") which didn't exist, producing
+        ``FATAL: database "amx" does not exist``. The adapter previously
+        mapped that to the generic "Referenced relation is missing"
+        message, which sent the user hunting for the wrong bug.
+        """
+        msg = self.adapter.actionable_profile_error(
+            RuntimeError('FATAL:  database "amx" does not exist')
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("PostgreSQL connection requires a database", msg)
+        self.assertIn("/edit", msg)
+        # And NOT the misleading "Referenced relation" message:
+        self.assertNotIn("Referenced relation", msg)
+
     def test_actionable_profile_error_unrecognised_returns_none(self) -> None:
         msg = self.adapter.actionable_profile_error(
             RuntimeError("Some weird internal error AMX has not seen before")
@@ -4871,6 +4888,49 @@ class FirstRunConfigTests(unittest.TestCase):
             self.assertEqual(cfg.active_db_profile, "")
             self.assertEqual(dict(cfg.llm_profiles), {})
             self.assertEqual(cfg.active_llm_profile, "")
+
+    def test_save_on_fresh_install_writes_clean_yaml(self) -> None:
+        """A user's first ``cfg.save()`` after a fresh install must not
+        leak phantom top-level ``db:`` / ``llm:`` blocks built from the
+        empty active-mirror dataclasses. Pre-fix the YAML file contained
+        a fake postgresql connection (host=localhost, port=5432,
+        database='') and an empty LLM block, both of which masqueraded
+        as configuration the user never entered.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yml"
+            cfg = AMXConfig.load(str(cfg_path))
+            cfg.save()
+            text = cfg_path.read_text()
+            self.assertIn("db_profiles: {}", text)
+            self.assertIn("llm_profiles: {}", text)
+            self.assertNotIn("password:", text, "no credential field in clean YAML")
+            self.assertNotIn("amx_pass", text, "no demo password leaked")
+            # The top-level ``db:`` and ``llm:`` mirrors only get written
+            # when at least one profile exists. On a fresh install both
+            # profile dicts are empty so neither block should appear.
+            self.assertNotRegex(
+                text,
+                r"^db:\s*$",
+                msg="top-level db: block should not appear on fresh install",
+            )
+            self.assertNotRegex(
+                text,
+                r"^llm:\s*$",
+                msg="top-level llm: block should not appear on fresh install",
+            )
+
+    def test_dbconfig_credential_defaults_are_empty(self) -> None:
+        """Pre-fix DBConfig defaulted to user='amx', password='amx_pass' —
+        demo credentials that ended up in the saved YAML on first install
+        as if the user had configured them. Defaults must be empty so the
+        absence of credentials is visible.
+        """
+        from amx.config import DBConfig
+
+        db = DBConfig()
+        self.assertEqual(db.user, "")
+        self.assertEqual(db.password, "")
 
     def test_load_from_existing_file_without_profiles_leaves_active_empty(self) -> None:
         """An existing config file with no profiles must NOT auto-synthesize a
