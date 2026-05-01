@@ -6,6 +6,28 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.15] - 2026-05-01
+### Added
+- **Corporate-network friendly SSL configuration** (`amx/llm/provider.py:_configure_ssl_environment`). Two new env vars unblock users behind TLS-inspecting proxies (Zscaler, Netskope, internal CA, ZIA, etc.) where every LLM call previously died with `[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain`:
+  - `AMX_CA_BUNDLE=/path/to/corp_root.pem` — preferred. Sets `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE` so requests / httpx / urllib3 / curl all trust the corporate CA. The bundle path must exist; an invalid path is silently ignored so misconfiguration doesn't break clean networks.
+  - `AMX_INSECURE_SSL=1` — diagnostics only. Sets `litellm.ssl_verify = False` AND `PYTHONHTTPSVERIFY=0`. Logs a `WARNING` at startup so it's obvious it's on. Use to confirm the failure IS a CA-trust issue; switch to `AMX_CA_BUNDLE` for daily use.
+
+  Both vars are read on first `_litellm()` call (lazy import) so they take effect before httpx clients are constructed. No effect on machines that don't set them, so personal laptops are unchanged.
+
+### Fixed
+- **SSL cert errors no longer retry 3× with identical failure noise.** `_classify_fatal_llm_error` now recognises `certificate verify failed` / `self-signed certificate` / `ssl: certificate` substrings and raises `FatalLLMError` immediately with the exact fix-it instruction:
+  > SSL certificate verification failed — your network is using a TLS-inspecting proxy whose root CA Python doesn't trust. Fix: set AMX_CA_BUNDLE=/path/to/corp_root.pem (preferred), or AMX_INSECURE_SSL=1 for diagnostics only.
+
+  Previously the user saw 3 stacked `LLM call failed: ... CERTIFICATE_VERIFY_FAILED` ERROR lines (one per retry × per agent — search agent was logging it twice for tool-agent + legacy-router fallback paths) before AMX gave up; now they see one fatal message and an actionable fix.
+
+### Why this matters
+The user reported AMX working on a personal laptop but failing on a second computer (corporate network). Same OpenRouter key, same model, same config. Root cause: the second machine routes outbound HTTPS through a corporate inspection proxy that re-signs every connection with an internal root CA — and Python's bundled `certifi` truststore doesn't include it. This is the single most common "AMX works at home but not at work" failure mode and now has a documented two-line fix.
+
+### Followups
+- Surface `AMX_CA_BUNDLE` / `AMX_INSECURE_SSL` in `/llm` wizard so users can configure them without editing shell rc files.
+- Consider falling back to system trust store automatically (via `pip-system-certs` or `truststore` package) on macOS / Windows where the OS keychain already has the corporate CA installed.
+- Apply the same env-var pattern to outbound DB connections — Databricks / Snowflake clients can hit the same proxy and need the same CA bundle.
+
 ## [0.10.14] - 2026-05-01
 ### Changed
 - **Catalog picker hoisted into a shared helper used by all flows** (`amx/cli_support/catalog_picker.py`). The v0.10.11 picker only fired in `/edit`; user pointed out it should fire wherever AMX needs to list schemas / tables before knowing the catalog. New helper:
