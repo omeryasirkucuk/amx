@@ -6,6 +6,250 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-05-01
+### Changed — `execute_analyze_run` extracted into 3 phase helpers (S4 refactor)
+
+The `/run` and `/run-apply` entry point — `execute_analyze_run` — was a 600-line procedural script juggling 12 local variables across 3 top-level exception handlers (`FatalLLMError`, `KeyboardInterrupt`, `Exception`) and a `finally` block. Three different bugs surfaced here in this conversation alone (UnboundLocalError on Ctrl+C during scope picker, dedup-question ordering, `review_strategy` initialization) — every change risked tripping over neighbouring state.
+
+v0.9.4 lifts the three largest contiguous chunks into standalone functions under a new `amx/cli_support/commands/_analyze/` package:
+
+```
+amx/cli_support/commands/analyze_flow.py        1099 →  877 LOC  (-20%)
+amx/cli_support/commands/_analyze/
+  __init__.py                                     -   →   35 LOC   (re-exports)
+  run_loop.py                                     -   →  227 LOC   (PerSchemaLoopResult dataclass + run_per_schema_loop + chat-mode helper)
+  run_summary.py                                  -   →  206 LOC   (render_summary_and_apply + dedup recap + apply branch)
+  interrupt.py                                    -   →   85 LOC   (handle_keyboard_interrupt — final-status decision)
+```
+
+**`execute_analyze_run` is now 390 lines** (was 600). The remaining body is mostly the 4 runtime prompts (dedup / scope / coverage / review-strategy) plus history-run creation plus the equivalence-dedup pre-walk; each of those is short and tightly coupled to local state, so further extraction would just move pain around.
+
+**Phase functions:**
+
+* **`run_per_schema_loop(...)` → `PerSchemaLoopResult`** — replaces the `for schema_name, assets in scope.items()` block. Mutates the result lists in-place so the surrounding exception handlers can still inspect partial progress on cancel; returns the accumulated lists + the `last_orchestrator` so the caller can run `apply_results` after the loop. Internally splits chat-mode (`process_table` per asset, with history counter bumps) from batch-mode (`process_tables_batch_mode`) as helper `_process_assets_chat_mode`.
+* **`render_summary_and_apply(...)` → `(approved, skipped)`** — replaces the post-loop block: deferred batch_review (skipped for auto-apply), token-tracker drop, summary heading, dedup recap (separate counter from per-table counts), approved-table render, save_pending, apply branch (auto-apply meta-only writes vs interactive confirm + write).
+* **`handle_keyboard_interrupt(...)` → `(final_status, final_error_text)`** — replaces the `except KeyboardInterrupt:` body. Saves partial pending, decides between `cancelled` / `ready_for_review` based on `review_strategy` (auto-apply always cancels, others may be reviewable), emits the structured log event.
+
+### Why this matters
+
+Before v0.9.4, every new feature in the analyze flow (Phase 2 dedup, Column scope, equivalence pre-walk) had to thread its state through `execute_analyze_run`'s local namespace and remember to update each of the 3 exception handlers. The recent v0.8.3 fix — pre-init `review_strategy` to avoid an UnboundLocalError on Ctrl+C during scope picking — was a direct consequence of this fragility.
+
+Now:
+
+* **Each phase is independently testable** — feed `run_per_schema_loop` a synthetic scope dict + stub Orchestrator, assert the counters / pending state.
+* **The exception handlers no longer race the main path for shared variables** — `handle_keyboard_interrupt` consumes pre-defined values and returns its decisions explicitly.
+* **Future features touch only the phase they affect** — adding e.g. a "stage 2 LLM verification pass" goes in `run_summary.py` next to `_emit_dedup_recap`, not in the middle of the orchestrator.
+
+### Followups
+
+* `execute_analyze_run` still has 4 user-prompt blocks (dedup choice, scope finalization, coverage filter, review strategy) interleaved with state setup; these could be extracted into a `RunBuilder` class in v0.9.5.
+* `_finalize_history_run` (87 LOC) is a near-pure data formatter and could move into `_analyze/finalize.py` if `_analyze/` keeps growing.
+* The codebase analysis still flagged `_run_bulk_edit_by_name` (290 LOC) as the next problematic method (S6); shorter than execute_analyze_run but the same procedural-script smell.
+
+## [0.9.3] - 2026-05-01
+### Changed — Slash commands collapsed into a single registry (S5 refactor)
+
+Pre-v0.9.3 each AMX slash command had to be listed in **four** separate places inside `amx/cli_support/session.py` (1283 LOC):
+
+1. `_slash_command_catalog` (~129 LOC) — autocomplete `(slash, short_description)` pairs per namespace.
+2. `*_cmd_heads` frozensets in `run_interactive_session` (~63 LOC) — bare command names used by the dispatch chain.
+3. `_print_session_help` (~298 LOC) — multi-line help blocks with numbered commands per namespace.
+4. The dispatch `if head in db_cmd_heads: namespace = "db"` ladder.
+
+Drift between those four sources was the root cause of the v0.6.1 / v0.6.2 regressions where new commands (the v0.5.x `/description-verbosity` setting) were missing from autocomplete + help even though they had handlers wired up. v0.9.3 collapses the data-side duplication into a single Python data module — `amx/cli_support/slash_commands.py` — that the autocomplete catalog and `cmd_heads` frozensets now derive from.
+
+**File layout:**
+
+```
+amx/cli_support/session.py          1283 → 1125 LOC  (-158, -12%)
+amx/cli_support/slash_commands.py     -  →  301 LOC  (single source of truth)
+```
+
+**New module — `slash_commands.py`:**
+
+* `SlashCommand` frozen dataclass — one entry per command, fields: `command`, `namespace`, `short_desc`, `long_desc`, `aliases`, `cross_namespace`.
+* `ALL_COMMANDS` — declared in registry order; 77 entries cover root + 8 sub-namespaces.
+* `commands_for_namespace(ns)` — autocomplete pairs for that namespace (with cross-namespace builtins prepended).
+* `cmd_heads_for_namespace(ns)` — bare-head frozenset used by the dispatch chain.
+* `find_command(slash_or_head)` — resolve a user-typed token to its `SlashCommand` (handles aliases like `/manual` → `/metadata`).
+
+**`session.py` adapter:**
+
+* `_slash_command_catalog` is now a 5-line adapter that calls the registry.
+* The 7 hand-maintained `*_cmd_heads = frozenset({...})` definitions inside `run_interactive_session` now read `_registry_cmd_heads("db")` etc., except the `search_cmd_heads` set still adds `embeddings`/`embedding` heads (those are routed through search but not first-class commands).
+* `_print_session_help` is unchanged — its prose is text-heavy (engine lists, examples, navigation hints), not just a command list, so the registry can supplement but not replace it. A follow-up could enrich the help blocks from the registry's `long_desc` field.
+
+**Drift fix found by the refactor:** `/tls` was listed in the autocomplete catalog but missing from `db_cmd_heads`, so typing `/tls` from root wouldn't enter the db namespace. With the registry as single source, `/tls` now correctly routes to db.
+
+### Why this matters
+
+Adding a new slash command is now a one-line edit to `slash_commands.py` instead of three coordinated edits across `session.py`. Drift between autocomplete and dispatch is structurally impossible — both derive from the same dataclass tuple. Future enhancements (per-command `requires_db`/`requires_llm` gating, `/help <command>` long-form rendering, validation checks for handler dotted-paths) all become feasible without re-introducing duplication.
+
+### Followups
+
+- `_print_session_help` (298 LOC, 8 namespace blocks) can be partially generated from the registry — the per-command rows could be auto-rendered while engine summaries / navigation hints stay hand-written.
+- The `search_cmd_heads` extras (`embeddings`, `embedding`, `find-columns`, `join-candidates`, `explain`, `explain-table`) are still hand-listed; if these become first-class they should join the registry.
+
+## [0.9.2] - 2026-05-01
+### Changed — `Orchestrator.process_table` god-method extracted into `TableProcessor` (S3 refactor)
+
+The 281-line `Orchestrator.process_table` method had grown four overlapping filter chains (missing-only, column-scope, dedup-skip), an agent loop, and three apply branches (auto-apply, deferred, interactive-review). Every recent feature (Phase 2 dedup, Column scope) added another filter at the top, pushing the method up to 281 LOC. v0.9.2 extracts that flow into `amx/agents/_orchestrator/table_processor.py` as a stateful helper class with one method per phase.
+
+**File layout (before → after):**
+
+```
+amx/agents/orchestrator.py        1719 → 1463   (-256 LOC out of process_table)
+amx/agents/_orchestrator/
+  __init__.py                       -   →   12   (TableProcessor re-export)
+  table_processor.py                -   →  447   (12 phase methods, none over 77 LOC)
+```
+
+**`Orchestrator.process_table` is now 25 lines** — a thin delegator that constructs a `TableProcessor` and calls `.run()`. Public signature is unchanged (`schema`, `table`, `asset_kind`, `interactive_review`, `auto_apply`).
+
+**TableProcessor phase methods:**
+
+```
+run                            18 LOC   public entry point
+_fetch_profile                  5 LOC   db.profile_table(...)
+_apply_filters                  9 LOC   chain of 3 filters; bails on first 'False'
+  _filter_missing_only         48 LOC   skip already-commented columns
+  _filter_column_override      32 LOC   restrict to Column-scope picks
+  _filter_dedup_skip           33 LOC   drop columns handled by upfront dedup pass
+_run_agents_and_persist        51 LOC   Profile / RAG / Code agents + merge + save
+_dispatch_apply_or_review      12 LOC   pick branch by run-mode
+  _auto_apply_branch           77 LOC   accept top suggestion + write live DB
+  _deferred_branch             25 LOC   wrap as un-applied for batch review
+  _interactive_review_branch   33 LOC   prompt-toolkit picker w/ live-display pause
+```
+
+### Why this matters
+
+`process_table` was the architectural pain point named in the v0.9 codebase analysis: every new analyze-flow feature landed in this single method, and every feature pushed it 30-40 LOC larger. After this refactor:
+
+- **Each filter is unit-testable in isolation.** `_filter_missing_only` no longer needs a full agent stack to test — give it a `TableProfile` and `orch.missing_only=True`, assert the column list shrinks correctly.
+- **New filters land beside their siblings, not on top.** Adding e.g. a `_filter_pinned_columns` (next-release request) becomes a 30-LOC method next to the existing three; the chain method `_apply_filters` adds one line.
+- **The three apply branches stop competing for context.** `_auto_apply_branch` (77 LOC) is the only one that touches the live DB; `_deferred_branch` (25 LOC) is a pure data wrap; `_interactive_review_branch` (33 LOC) only handles display+prompt. Previously they were interleaved in one method body.
+
+### Followups
+
+- The codebase analysis ranked `execute_analyze_run` (600 LOC, single function) as the next refactor target. Same technique applies — extract `RunBuilder` / `RunExecutor` from the procedural script.
+- `_auto_apply_branch` at 77 LOC is the largest TableProcessor method; could be split further into `_persist_decisions` + `_writeback_to_db` if needed.
+
+## [0.9.1] - 2026-05-01
+### Changed — SearchCatalog god-class split into 6 mixin modules (S2 refactor)
+
+After v0.9.0 trimmed `SearchAgent`, `SearchCatalog` was the next biggest god-class on the codebase analysis: 2033 LOC, 53 methods, fan-in 13 (everything that touches the catalog imports it). v0.9.1 applies the same mixin pattern: split by responsibility, keep the public API stable, let Python MRO compose the result.
+
+**File layout (before → after):**
+
+```
+amx/search/catalog.py    2033 →  200   (-90.2%, -1833 LOC moved out)
+amx/search/_catalog/
+  __init__.py               -  →   28   (mixin re-exports)
+  entity_crud.py            -  →  315   (6 methods: _entity_row, _upsert_entity, _insert_description, _index_entity, _resolve_effective_description, _update_search_text)
+  sync.py                   -  →  534   (11 methods: sync_table_profile, _sync_table_profile_conn, sync_review_decision, sync_generated_suggestions, sync_code_report, sync_status, sources_status, start_sync_job, finish_sync_job, rebuild_profile, clear_code_evidence)
+  search.py                 -  →  603   (17 methods: search_tables, search_columns, name_search_columns, find_*, _exact_candidates, _rank_rows, _description_tokens, _tokens, _similarity, _attach_column_counts, _dtype_family, schema_inventory, count_tables, known_databases, known_schemas)
+  join.py                   -  →  385   (7 methods: joinable_tables, join_candidates, semantic_join_candidates, semantic_joinable_tables, _semantic_column_pair_score, _band_for_semantic_score, _extract_join_pairs)
+  usage.py                  -  →  249   (6 methods: _store_query_usage, mark_applied, _mark_run_result_state, history_counts, record_manual_description, record_dedup_decision)
+  settings.py               -  →   91   (3 methods: set_setting, get_settings, explain_table)
+```
+
+**Method distribution:**
+
+```
+SearchCatalog (core)       3 methods   __init__, from_history_store, _connect
+EntityCrudMixin            6 methods
+SyncMixin                 11 methods
+SearchMixin               17 methods
+JoinMixin                  7 methods
+UsageMixin                 6 methods
+SettingsMixin              3 methods
+                          ─────────
+Total                     53 methods   (matches original — no methods lost)
+```
+
+### Why this matters
+
+`SearchCatalog` is the most-imported internal module after `config` (fan-in 13). Every read-path call site (`SearchAgent.ask()` retrieval, `/metadata edit`, `/run-apply` write-back, `/history` rendering) goes through it. Splitting by responsibility makes it possible to:
+
+- **Unit-test the search path in isolation** — `SearchMixin` has 17 methods that produce row dicts; with a fixture connection they don't need real LLM/DB providers.
+- **Add a new sync source without touching the search path.** Want to ingest descriptions from a Confluence dump? Edit only `sync.py`; everything else is unaffected.
+- **Replace the underlying storage.** A future move from SQLite to Postgres would touch only `entity_crud.py` + the connection layer; the public methods on the other mixins keep their signatures.
+
+### Followups
+
+- `JoinMixin.joinable_tables` is still 90 LOC and `JoinMixin.join_candidates` is 87 LOC — these can be decomposed (symbolic vs semantic paths) in a follow-up.
+- The codebase's #3 god-class is now `Orchestrator` (1719 LOC, 21 methods). `process_table` is still 281 LOC — that's the next refactor target on the original analysis (the agreed S3 step: `Orchestrator.process_table` → `TableProcessor`).
+
+## [0.9.0] - 2026-05-01
+### Changed — SearchAgent god-class split into mixin modules (S1 refactor)
+
+The historical `amx/search/agent.py` carried a 3733-LOC `SearchAgent` class with **70 methods** spanning 6+ logical responsibilities (session memory, planning, target resolution, short-circuit handlers, retrieval, answer synthesis, deterministic answers). v0.9.0 splits those clusters into mixin modules under `amx/search/_agent/` so each file is a manageable size, each cluster is testable in isolation, and `SearchAgent` itself becomes a thin facade composed of the mixins.
+
+**Public API unchanged.** `SearchAgent.ask()` is the only call site outside this package; it still works identically. All inheritance goes through Python's MRO; cross-mixin calls (`self._memory()`, `self._resolve_table_targets()`, etc.) resolve transparently because every mixin is composed into the final `SearchAgent`.
+
+**File layout (before → after):**
+
+```
+amx/search/agent.py    3733 →  767   (-79.5%, -2966 LOC moved out)
+amx/search/_agent/
+  __init__.py             -   →   33   (mixin re-exports)
+  answering.py            -   →  210   (4 methods: _synthesize_answer, _provenance, _confidence, _action_suggestions)
+  deterministic.py        -   →  549   (6 methods: 6 _deterministic_* answer composers)
+  planning.py             -   →  528   (10 methods: _plan_*, _interpret_*, _align_*, _policy_for_plan, _derive_answer_shape)
+  resolution.py           -   →  597   (12 methods: _resolve_*, _explicit_*, _candidate_*, _catalog_resolvable_subject)
+  retrieval.py            -   →  812   (19 methods: _retrieve, _live_*, _plan_live_probe, _execute_live_probe, row helpers)
+  session_memory.py       -   →  201   (10 methods: _llm_*, _memory*, _ensure_session_*, _last_tables, _catalog_ready)
+  short_circuits.py       -   →  338   (6 methods: _handle_chitchat, _handle_meta_query, _handle_followup_reaffirmation, _answer_via_tool_agent, etc.)
+```
+
+**Method distribution after refactor:**
+
+```
+SearchAgent (core)         3 methods   __init__, ask(), _scope_from_tables
+AnsweringMixin             4 methods
+DeterministicAnswersMixin  6 methods
+PlanningMixin             10 methods
+ResolutionMixin           12 methods
+RetrievalMixin            19 methods
+SessionMemoryMixin        10 methods
+ShortCircuitsMixin         6 methods
+                          ─────────
+Total                     70 methods   (matches original — no methods lost)
+```
+
+### Why this matters
+
+The 3733-LOC god-class was the #1 refactor pain point identified in the codebase analysis (24% of the entire 31K LOC codebase concentrated in 3 files; `agent.py` alone was 12%). With the split:
+
+- **Each cluster is independently testable.** `DeterministicAnswersMixin` has zero LLM dependencies — its 6 methods can be unit-tested with synthetic plans + rows. Previously they were tangled in a class that required a full `LLMProvider` + `SearchCatalog` + `DatabaseConnector` to instantiate.
+- **Method discovery becomes O(file)** instead of O(scroll-3700-lines). When extending the planning step (e.g. for the upcoming Phase 3 model-fallback work), the developer opens `planning.py` and sees the 10 relevant methods — not 70.
+- **Cross-mixin calls are explicit.** Each mixin's docstring lists which sibling mixins it depends on (which `self.*` methods it expects). Previously implicit; now documented.
+- **Future splits are cheaper.** The `RetrievalMixin` is still 812 LOC (one method, `_retrieve`, is 217 LOC); a follow-up release can split it further (live-probe pipeline → its own module) without disturbing the rest.
+
+### Followups
+
+- `SearchAgent.ask()` is still 428 LOC — next release will decompose it into a small dispatcher that delegates to the appropriate mixin path (chitchat short-circuit → `_handle_chitchat`, meta-query → `_handle_meta_query`, normal flow → `_plan_with_overrides → _retrieve → _synthesize_answer`).
+- `SearchCatalog` (2033 LOC, 53 methods) is the next god-class on the refactor list per the codebase analysis. Same mixin-extraction technique applies.
+
+## [0.8.7] - 2026-05-01
+### Changed
+- **Banner footer no longer duplicates the version** (`amx/utils/console.py:show_banner`): the v0.8.6 footer line was `v0.8.6  •  AI-inferred database descriptions`, but the version is also shown in the "AMX Interactive Session" info block right below the banner alongside Config / Database / LLM context. Two visible "0.8.6" stamps in adjacent panels were noise. The footer is now just the tagline `AI-inferred database descriptions`; version stays in the session info block where it groups naturally with the rest of the runtime state.
+
+### Why this matters
+Banner = identity (what is this tool); session info block = runtime state (what version + which profiles are active). Mixing the two produces redundancy and dilutes both.
+
+## [0.8.6] - 2026-05-01
+### Changed
+- **Startup banner cleanup** (`amx/utils/console.py:show_banner`):
+  - Dropped the redundant "Metadata Extraction System" subtitle — it was saying the same thing as "Agentic Metadata Extractor" two lines above. The new banner is single-source-of-truth: tagline at top, ASCII art in the middle, footer at the bottom.
+  - Replaced the asterisk framing (`* AMX (Agentic Metadata Extractor) *`) with box-drawing brackets (`┃  Agentic Metadata Extractor  ┃`). The asterisks were rendered with the system font; the brackets sit in the same Unicode block as the rest of the ANSI Shadow art, so the framing now matches the grid aesthetic instead of mixing vector glyphs with grid art.
+  - Added a footer line: `v0.8.6  •  AI-inferred database descriptions`. The version is auto-pulled from `amx.__version__` (lazy import keeps `utils.console` free of a hard top-level dependency); the tagline gives new users an immediate one-liner about what the tool does without scrolling.
+  - Tier-style cyan hierarchy across the three tiers (`bold cyan`, `bold bright_cyan`, `cyan`) so the eye picks out the levels.
+
+### Why this matters
+The banner is the first thing users see when they `amx` in a fresh terminal. Open-source readability matters here — three discrete tiers (what / how it looks / which version) beats two redundant tiers + decorative noise. Box-drawing framing also keeps the UTF-8 art consistent: no more mixed-glyph-class look.
+
 ## [0.8.5] - 2026-05-01
 ### Added
 - **`/run` Column scope** (`amx/services/analyze_scope.py`, `amx/agents/orchestrator.py`, `amx/cli_support/commands/analyze_flow.py`): user noticed there was no way to re-run AI inference on a single column. Added a 5th option to the analysis-scope picker — `Column` — that drills schema → table → column and restricts the run to just that one column. Useful when one comment came out wrong (the LLM picked the wrong meaning for `code`, say) and you want to regenerate it without re-profiling the whole table.

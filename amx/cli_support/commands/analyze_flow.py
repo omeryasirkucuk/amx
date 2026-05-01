@@ -420,6 +420,11 @@ def execute_analyze_run(
     log_event: LogEvent,
 ) -> None:
     from amx.agents.orchestrator import Orchestrator
+    from amx.cli_support.commands._analyze import (
+        handle_keyboard_interrupt,
+        render_summary_and_apply,
+        run_per_schema_loop,
+    )
     from amx.config import DISABLED_PROFILE
     from amx.db.connector import DatabaseConnector, ProfilingError
     from amx.docs.rag import RAGStore
@@ -683,227 +688,43 @@ def execute_analyze_run(
             code_report = resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
         token_tracker.reset()
 
-        from amx.utils.live_display import get_display
+        # Per-schema orchestration loop (extracted in v0.9.4). Returns
+        # the accumulated results lists; mutates them as it goes so the
+        # exception handlers below can still inspect partial progress.
+        loop_result = run_per_schema_loop(
+            cfg=cfg,
+            db=db,
+            llm=llm,
+            scope=scope,
+            rag_store=rag_store,
+            code_report=code_report,
+            run_id=run_id,
+            use_batch=use_batch,
+            missing_only=missing_only,
+            review_strategy=review_strategy,
+            dedup_outcome=dedup_outcome,
+            total_assets=total_assets,
+            total_schemas=total_schemas,
+            history_store_fn=history_store,
+        )
+        all_results = loop_result.all_results
+        processed_assets = loop_result.processed_assets
+        skipped_assets = loop_result.skipped_assets
+        filter_skipped_count = loop_result.filter_skipped_count
+        orch = loop_result.last_orchestrator
 
-        display = get_display()
-        for schema_name, assets in scope.items():
-            asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
-            orch = Orchestrator(
-                db,
-                llm,
-                rag_store=rag_store,
-                code_report=code_report,
-                run_id=run_id,
-                search_profile=cfg.active_db_profile or "default",
-                missing_only=missing_only,
-            )
-            if dedup_outcome is not None and dedup_outcome.skip_set:
-                # Tell the orchestrator which (schema, table, column)
-                # tuples were already handled by the dedup pass so it
-                # filters them out of the ProfileAgent batch and doesn't
-                # re-write descriptions for them.
-                orch.dedup_skip_set = dedup_outcome.skip_set
-            # When the scope was Column-level, hand the overrides to
-            # the orchestrator so process_table restricts profile.columns
-            # to just the chosen column(s) for the matching table.
-            if isinstance(scope, ScopeResult) and scope.column_overrides:
-                orch.column_overrides = scope.column_overrides
-
-            display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
-            display.start(
-                schema=schema_name,
-                table=display_label,
-                mode="batch" if use_batch else "chat",
-                provider=cfg.llm.provider,
-                model=cfg.llm.model,
-            )
-            try:
-                if use_batch:
-                    results = orch.process_tables_batch_mode(
-                        schema_name,
-                        list(assets),
-                        asset_kinds=asset_kinds,
-                    )
-                    all_results.extend(results)
-                    processed_assets.extend([f"{schema_name}.{asset_name}" for asset_name in assets])
-                else:
-                    for asset_name in assets:
-                        display.set_context(table=asset_name)
-                        try:
-                            results = orch.process_table(
-                                schema_name,
-                                asset_name,
-                                asset_kind=asset_kinds.get(asset_name),
-                                interactive_review=(review_strategy == "individual"),
-                                auto_apply=(review_strategy == "auto-apply"),
-                            )
-                            all_results.extend(results)
-                            processed_assets.append(f"{schema_name}.{asset_name}")
-                            # Counter bumps survive Ctrl+C: even if the user
-                            # interrupts mid-loop, /history reflects what was
-                            # actually processed and (for auto-apply) applied.
-                            if hs is not None and run_id is not None:
-                                try:
-                                    if results:
-                                        # process_table returned suggestions —
-                                        # this asset truly went through agents
-                                        # (filter didn't skip it as fully-
-                                        # commented).
-                                        hs.increment_run_processed(run_id, by=1)
-                                        if review_strategy == "auto-apply":
-                                            applied_in_table = sum(1 for r in results if r.applied)
-                                            if applied_in_table:
-                                                hs.increment_run_applied(run_id, by=applied_in_table)
-                                    else:
-                                        # Filter dropped this asset (it was
-                                        # already fully commented). Bump the
-                                        # filter-skip tally and recompute
-                                        # planned_count = total - filter_skips
-                                        # so /history's Processed column shows
-                                        # processed/<remaining>.
-                                        filter_skipped_count += 1
-                                        hs.update_run_planned_count(
-                                            run_id,
-                                            max(0, total_assets - filter_skipped_count),
-                                        )
-                                except Exception as exc:
-                                    log.debug(
-                                        "Could not update analyze run counters for run_id=%s: %s",
-                                        run_id,
-                                        exc,
-                                    )
-                        except ProfilingError as exc:
-                            skipped_assets.append(f"{schema_name}.{asset_name}")
-                            warn(f"Skipping {schema_name}.{asset_name}: {exc}")
-                            continue
-
-                    if len(assets) > 1 or total_schemas > 1:
-                        schema_meta = orch.process_schema_meta(
-                            schema_name,
-                            all_results,
-                            auto_apply=(review_strategy == "auto-apply"),
-                        )
-                        all_results.extend(schema_meta)
-            finally:
-                display.stop()
-
-        if total_schemas > 1:
-            db_meta = orch.process_database_meta(
-                all_results,
-                auto_apply=(review_strategy == "auto-apply"),
-            )
-            all_results.extend(db_meta)
-
-        # auto-apply: skip the human-review step entirely. Per-table writes
-        # already happened inside process_table; schema/database meta were
-        # marked applied above. Calling batch_review would just bring the
-        # interactive picker back, which contradicts the user's choice.
-        if review_strategy != "auto-apply":
-            all_results = orch.batch_review(all_results)
-
-        if rag_store is None:
-            token_tracker.drop_steps({"rag_agent", "rag_agent(batch)"})
-
-        heading("Summary")
-        render_token_summary(token_tracker)
-        approved = [r for r in all_results if r.applied]
-        skipped = [r for r in all_results if not r.applied]
-        info(f"Approved: {len(approved)}  |  Skipped: {len(skipped)}")
-
-        # Equivalence-class dedup recap. Numbers come from the upfront
-        # dedup pass, NOT from ``approved`` / ``skipped`` (those track
-        # only what flowed through the per-table ProfileAgent path).
-        if dedup_outcome is not None and (
-            dedup_outcome.classes_processed
-            or dedup_outcome.classes_diverged
-            or dedup_outcome.classes_failed
-        ):
-            total_dedup_members = dedup_outcome.members_skipped
-            classes_done = dedup_outcome.classes_processed
-            saved_pct = 0.0
-            if total_dedup_members:
-                saved_calls = total_dedup_members - classes_done
-                saved_pct = (saved_calls / total_dedup_members) * 100.0 if total_dedup_members else 0.0
-            info(
-                f"Equivalence dedup: {classes_done} class(es) applied → "
-                f"{total_dedup_members} column(s) "
-                f"(~{saved_pct:.1f}% fewer column-level LLM calls)."
-            )
-            if dedup_outcome.classes_diverged:
-                info(
-                    f"  {dedup_outcome.classes_diverged} class(es) flagged DIVERGES — "
-                    "their members fell back to per-table profiling."
-                )
-            if dedup_outcome.classes_failed:
-                warn(
-                    f"  {dedup_outcome.classes_failed} class(es) failed during the "
-                    "dedup LLM call; their members fell back to per-table profiling."
-                )
-
-        if approved:
-            render_table(
-                "Approved metadata",
-                ["Asset", "Description", "Confidence", "Logprob", "Source"],
-                [
-                    [
-                        f"{r.schema}.{r.table}.{r.column}"
-                        if r.column
-                        else (f"{r.schema}.{r.table}" if r.table else r.schema),
-                        (r.final_description or "")[:60],
-                        r.confidence.value,
-                        f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A",
-                        r.source,
-                    ]
-                    for r in approved
-                ],
-            )
-
-        if approved:
-            from amx.pending_review import save_pending
-
-            save_pending(approved)
-            if not apply:
-                info(
-                    f"Saved {len(approved)} approved description(s) as pending. "
-                    "Run `/analyze` then `/apply` (or `/run-apply` next time) to write them to the database."
-                )
-
-        # auto-apply: per-table writes already happened in process_table;
-        # there is no batch left to apply, so skip the confirm AND the
-        # batch apply altogether. For other strategies, prompt as before.
-        if review_strategy == "auto-apply":
-            # Schema / database meta produced by the *_meta steps need a
-            # final write since per-table apply didn't reach them.
-            meta_to_apply = [
-                r for r in approved
-                if (r.column is None and r.table == "")
-                or r.asset_kind in ("schema", "database")
-            ]
-            if apply and meta_to_apply:
-                from amx.pending_review import clear_pending
-
-                applied_n = orch.apply_results(meta_to_apply)
-                clear_pending()
-                if hs is not None and run_id is not None and applied_n:
-                    try:
-                        hs.increment_run_applied(run_id, by=int(applied_n))
-                    except Exception as exc:
-                        log.debug("Could not bump applied counter: %s", exc)
-        elif apply and approved and confirm("Apply these metadata comments to the database?"):
-            from amx.pending_review import clear_pending
-
-            applied_n = orch.apply_results(approved)
-            clear_pending()
-            # Count distinct (schema, table) pairs as the "applied tables"
-            # tally for /history. apply_results returns total rows written
-            # (table-comments + column-comments), which we record under the
-            # applied_count counter — surfaced in /history as the "Applied"
-            # part of the X/Y display.
-            if hs is not None and run_id is not None and applied_n:
-                try:
-                    hs.increment_run_applied(run_id, by=int(applied_n))
-                except Exception as exc:
-                    log.debug("Could not bump applied counter: %s", exc)
+        # Post-loop summary + apply branch (extracted in v0.9.4).
+        # Returns approved/skipped lists for the finally block.
+        approved, skipped = render_summary_and_apply(
+            all_results=all_results,
+            orch=orch,
+            review_strategy=review_strategy,
+            apply=apply,
+            rag_store=rag_store,
+            dedup_outcome=dedup_outcome,
+            run_id=run_id,
+            history_store_fn=history_store,
+        )
 
         final_status = "success"
     except FatalLLMError as fatal:
@@ -935,48 +756,17 @@ def execute_analyze_run(
         )
         return
     except KeyboardInterrupt:
+        # Body extracted in v0.9.4 — see ``handle_keyboard_interrupt``.
         approved = [r for r in all_results if getattr(r, "applied", False)]
         skipped = [r for r in all_results if not getattr(r, "applied", False)]
-        if approved:
-            try:
-                from amx.pending_review import save_pending
-
-                save_pending(approved)
-            except Exception:
-                pass
-
-        has_reviewable_results = bool(all_results)
-        hs = history_store()
-        if not has_reviewable_results and run_id is not None and hs is not None:
-            try:
-                has_reviewable_results = bool(hs.get_run_results(run_id))
-            except Exception:
-                pass
-        if not has_reviewable_results:
-            has_reviewable_results = bool(token_tracker.total_tokens)
-
-        # auto-apply runs explicitly skip human review; landing them in
-        # ``ready_for_review`` would tell the user to "go review what you've
-        # done" — exactly the step they opted out of. The accepted partial
-        # results are already in the catalog (and on /run-apply they're in
-        # the live DB via apply_review_results_to_db), so 'cancelled' is the
-        # correct terminal state.
-        if review_strategy == "auto-apply":
-            final_status = "cancelled"
-        else:
-            final_status = "ready_for_review" if has_reviewable_results else "cancelled"
-        final_error_text = "Interrupted by user"
-        log_event(
-            event_type="analyze_run",
-            status=final_status,
-            command="analyze.run",
-            details={
-                "mode": ("batch" if use_batch else "chat"),
-                "error": "KeyboardInterrupt",
-                "results_ready": has_reviewable_results,
-            },
+        final_status, final_error_text = handle_keyboard_interrupt(
+            all_results=all_results,
+            review_strategy=review_strategy,
+            use_batch=use_batch,
+            run_id=run_id,
+            history_store_fn=history_store,
+            log_event=log_event,
         )
-        warn("User interrupted process.")
         return
     except Exception as exc:
         final_status = "failed"

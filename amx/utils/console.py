@@ -35,14 +35,26 @@ _BANNER_SHOWN = False
 
 
 def show_banner(force: bool = False) -> None:
-    """Render AMX startup banner once per process."""
+    """Render AMX startup banner once per process.
+
+    Two tiers — tagline above the ASCII art, one-liner footer below.
+    Box-drawing brackets ``┃ ... ┃`` substitute for the previous
+    asterisks so the framing matches the Unicode block of the ASCII
+    art instead of mixing vector glyphs with grid art.
+
+    The version is intentionally NOT shown here. The "AMX Interactive
+    Session" info block (rendered by the session module) already lists
+    ``Version`` alongside the runtime Config / Database / LLM context;
+    duplicating it in the banner produces visible noise without adding
+    information. Banner = identity; session info = runtime state.
+    """
     global _BANNER_SHOWN
     if _BANNER_SHOWN and not force:
         return
     if os.getenv("AMX_NO_BANNER", "").lower() in {"1", "true", "yes"}:
         return
 
-    title = Text("* AMX (Agentic Metadata Extractor) *", style="bold cyan")
+    tagline = Text("┃  Agentic Metadata Extractor  ┃", style="bold cyan")
     art = Text(
         "\n".join(
             [
@@ -56,9 +68,14 @@ def show_banner(force: bool = False) -> None:
         ),
         style="bold bright_cyan",
     )
-    subtitle = Text("Metadata Extraction System", style="bold #66ffff")
+    footer = Text("AI-inferred database descriptions", style="cyan")
 
-    content = Text.assemble(title, "\n\n", art, "\n", subtitle, justify="center")
+    content = Text.assemble(
+        tagline, "\n\n",
+        art, "\n\n",
+        footer,
+        justify="center",
+    )
     console.print(
         Panel(
             Align.center(content),
