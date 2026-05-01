@@ -6,6 +6,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Postgres database picker + quieter / shorter warnings
+
+User report: with a postgres profile that had no `database` pinned, `/run` connected to the `postgres` system DB (the fallback added in PR #54), enumerated only the empty `public` schema, and left the user wondering why their actual data was invisible. Plus three noisy warnings cluttered the run flow.
+
+- **New runtime database picker** for PostgreSQL / Snowflake. After the catalog picker (3-level backends) `/run` now runs an analogous picker for 2-level backends when `database=""`: lists user-visible databases via `SELECT datname FROM pg_database WHERE datistemplate = false`, prompts the user, updates `db.cfg.database` for the in-memory session, and reconnects so subsequent `list_schemas` / `list_tables` target the chosen database. Pick is session-scoped — `/edit` is still the way to pin permanently.
+- **`DatabaseConnector.reconnect()`** disposes the active engine and clears the cached handle so the picker's `cfg.database = X` mutation actually takes effect on the next listing query.
+- **`PostgreSQLAdapter.list_databases`** + base-adapter default (returns `[]`). Snowflake adapter inherits the default until a picker is wired for it.
+- **Demoted noisy `WARNING` to `DEBUG`**: "Requested logprobs but response had none" was firing during every spinner render even though the new auto-fallback (PR #55) handles it gracefully. Surfacing it as WARNING confused users into thinking something failed.
+- **Tightened the apply warning**: "Without --apply, approved metadata is not written to the database. Use `/analyze` then `/apply`, or `/run-apply`, to persist comments." → "Approved metadata stays in review. Use /apply or /run-apply to persist."
+- **Tightened the unpinned-database fallback warning** for Snowflake (still no picker): now a single line, fires only when the picker isn't available or the user cancelled.
+- **Manual flow walk-through** done before declaring done (per the new memory rule from PR #54). Replayed all picker code paths against a mocked connector: 3 user DBs + pick, already-pinned (no-op), empty server (graceful warn), Snowflake fallback (warn), Databricks (silent).
+
 ### Fixed — Auto-fallback when the LLM provider rejects logprobs
 
 User report: with `gemini/gemini-flash-latest` configured, every `/run` and `/connect` test failed with `litellm.BadRequestError: GeminiException BadRequestError - "Logprobs is not enabled for this model"`. AMX defaults `force_logprobs: true` (the confidence-band system depends on token logprobs for calibrated scoring), but several models reject the parameter outright — Gemini Flash, OpenAI o-series, some OpenRouter-fronted Anthropic models. Pre-fix the 400 wasn't classified as fatal so AMX retried the same call 3× (all 400) before surfacing the error.

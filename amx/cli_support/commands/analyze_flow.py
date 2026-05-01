@@ -486,10 +486,7 @@ def execute_analyze_run(
         llm = LLMProvider(cfg.llm)
 
         if not apply:
-            warn(
-                "Without --apply, approved metadata is not written to the database. "
-                "Use `/analyze` then `/apply`, or `/run-apply`, to persist comments."
-            )
+            warn("Approved metadata stays in review. Use /apply or /run-apply to persist.")
 
         db, llm = _maybe_modify_profiles_before_run(cfg, db, llm)
         _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
@@ -501,9 +498,19 @@ def execute_analyze_run(
         # catalog-aware. Silent no-op for PG / Snowflake / single-
         # catalog Databricks.
         try:
-            from amx.cli_support.catalog_picker import ensure_catalog_selected
+            from amx.cli_support.catalog_picker import (
+                ensure_catalog_selected,
+                ensure_database_selected,
+            )
 
             ensure_catalog_selected(db)
+            # Database picker for 2-level backends (PostgreSQL /
+            # Snowflake). Fires when the profile has ``database=""``
+            # so list_schemas / list_tables target the user's actual
+            # data instead of the ``postgres`` system DB fallback.
+            # Silent no-op when a database is already pinned or the
+            # backend uses catalogs.
+            ensure_database_selected(db)
         except Exception:
             pass
 
