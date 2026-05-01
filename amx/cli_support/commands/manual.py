@@ -17,7 +17,7 @@ from amx.services.manual_metadata import (
     resolve_manual_target as _resolve_manual_target,
     split_metadata_path,
 )
-from amx.utils.console import ask, confirm, console, error, render_table, success, warn
+from amx.utils.console import ask, confirm, console, error, info, render_table, success, warn
 
 LogEvent = Callable[..., None]
 
@@ -284,6 +284,59 @@ def _select_column_for_wizard(db: object, schema: str, table: str) -> str | None
     return _ask_text_or_cancel("Column")
 
 
+def _resolve_bulk_target_name(cfg: AMXConfig, bulk_pick_mode: str) -> str | None:
+    """Resolve the bare entity name for a bulk-edit run.
+
+    There are three paths:
+    * ``Pick a column`` — drill DB → schema → table → column. Uses the
+      picked column's NAME (not the fully qualified path) so that
+      ``_run_bulk_edit_by_name`` can fan out to every other table/schema
+      that has a column with the same name.
+    * ``Pick a table`` — drill DB → schema → table. Uses the table NAME
+      so the bulk-edit picks up the same table name across every schema.
+    * ``Type a name manually`` — keeps the legacy text-entry path for
+      power users who already know the name.
+
+    Returns ``None`` if the user cancels at any step.
+    """
+    mode = (bulk_pick_mode or "").lower()
+    if mode.startswith("type"):
+        return _ask_text_or_cancel(
+            "Entity name to bulk-edit (column or table; AMX finds every match)",
+            default="",
+        )
+
+    selected = _select_db_profile_for_wizard(cfg)
+    if selected is None:
+        return None
+    _, profile_cfg = selected
+    db = _connector_for_profile(profile_cfg)
+
+    schema = _select_schema_for_wizard(db, default=cfg.current_schema)
+    if schema is None:
+        return None
+    table = _select_table_for_wizard(db, schema, default=cfg.current_table)
+    if table is None:
+        return None
+
+    if mode.startswith("pick a column"):
+        column = _select_column_for_wizard(db, schema, table)
+        if column is None:
+            return None
+        info(
+            f"  Using column name '{column}' (from {schema}.{table}) as bulk target — "
+            "AMX will find every other column that shares this name."
+        )
+        return column
+
+    # "Pick a table" path
+    info(
+        f"  Using table name '{table}' (from schema {schema}) as bulk target — "
+        "AMX will find every other table that shares this name."
+    )
+    return table
+
+
 def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
     # First question — let the user decide how MANY entities they want to
     # touch, before they walk into the per-asset wizard. Without this, a
@@ -301,10 +354,23 @@ def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
     if edit_mode is None:
         return None
     if edit_mode.startswith("Bulk"):
-        bare_name = _ask_text_or_cancel(
-            "Entity name to bulk-edit (column or table; AMX finds every match)",
-            default="",
+        # Pick how the user wants to identify the entity to bulk-edit.
+        # The drill-down options reuse the existing wizard pickers so the
+        # user doesn't have to remember the exact spelling — they pick a
+        # concrete table/column from the live DB and AMX uses that
+        # asset's NAME to find every other asset that shares it.
+        bulk_pick_mode = _ask_choice_or_cancel(
+            "Bulk-edit by what?",
+            [
+                "Pick a column from the catalog",
+                "Pick a table from the catalog",
+                "Type a name manually",
+            ],
+            default="Pick a column from the catalog",
         )
+        if bulk_pick_mode is None:
+            return None
+        bare_name = _resolve_bulk_target_name(cfg, bulk_pick_mode)
         if bare_name is None or not bare_name.strip():
             warn("Bulk edit cancelled.")
             return None
