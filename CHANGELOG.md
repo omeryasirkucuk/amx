@@ -6,6 +6,15 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Tests no longer pollute the developer's `~/.amx/`
+
+User report: after merging the `fresh-install YAML is clean` fix and reopening AMX, `/db-profiles` STILL showed a `databricks-default` row pointing at the synthetic test placeholders (`adb-1234567890123456.7.azuredatabricks.net`, `catalog=my_catalog`). The earlier fix made `cfg.save()` write a clean YAML on truly-fresh installs, but on this developer's machine the file already contained synthetic data — written by **`pytest`**.
+
+Root cause: many tests construct `AMXConfig()` with no path override, then trigger a code path that calls `cfg.save()` (e.g. `cmd_add_profile(cfg, ["databricks-default"])`). Without isolation, those saves resolve `~/.amx/config.yml` and overwrite the developer's real config with synthetic test fixtures. CI containers have an empty home so they never noticed; local devs got their config nuked silently every test run.
+
+- **New autouse `_isolate_amx_home` conftest fixture** — patches `pathlib.Path.home()` to a per-test tempdir for every test (`unittest.TestCase` included). `AMXConfig.CONFIG_DIR` is computed from `Path.home() / ".amx"` at instance creation, so anything constructed inside a test now points at the tempdir. Pytest cleans the tempdir up after each test.
+- **Regression test in `FirstRunConfigTests`** asserts that `Path.home()` resolves under a tempdir during the test and that `AMXConfig().CONFIG_DIR` lives under the same tempdir — locks the isolation in place so a future "helpful" refactor can't accidentally re-introduce the pollution path.
+
 ### Fixed — Fresh-install YAML is clean + actionable PostgreSQL no-DB error
 
 User report: 1) the saved `~/.amx/config.yml` carried phantom `db:` and `llm:` blocks on a fresh install with no profiles, including hardcoded credential defaults (`user: amx`, `password: amx_pass`) that masqueraded as configured connection details. 2) When connecting to a PostgreSQL profile with no `database` pinned, the failure surfaced as the misleading "Referenced relation is missing or inaccessible in the current schema search path."
