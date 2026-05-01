@@ -1340,14 +1340,41 @@ class ToolBox:
                     "error": f"Could not load table profile: {exc}",
                 }
         if not target_cols:
+            # No PK declared and the caller didn't pass columns. Don't
+            # bounce back with "give me columns" — that's the literal
+            # answer the user is trying to escape. Instead, run
+            # inspect_data_quality so the LLM sees per-column distinct
+            # ratios + can name the most likely candidate keys
+            # (columns where distinct_ratio ≈ 1.0). The LLM can then
+            # follow up with a targeted check_uniqueness call once it
+            # has a hypothesis.
+            try:
+                quality = self._tool_inspect_data_quality(
+                    schema_name, table_name, columns=None,
+                )
+            except Exception as exc:
+                quality = {"error": str(exc)}
+            candidate_cols = []
+            if isinstance(quality, dict) and quality.get("found"):
+                # Likely-unique columns first (distinct_ratio close to 1.0).
+                for entry in quality.get("columns", []):
+                    if entry.get("distinct_ratio", 0) >= 0.99:
+                        candidate_cols.append(entry["column"])
             return {
                 "schema": schema_name,
                 "table": table_name,
                 "columns": [],
                 "found": False,
-                "error": (
-                    "No columns specified and the table has no declared "
-                    "primary key. Pass ``columns`` explicitly."
+                "no_primary_key": True,
+                "duplicate_summary": quality,
+                "likely_unique_columns": candidate_cols,
+                "hint": (
+                    "No primary key is declared on this table. The "
+                    "duplicate_summary above carries per-column distinct "
+                    "ratios; columns with ratio ≈ 1.0 are likely unique. "
+                    "Pick a candidate composite key and call "
+                    "check_uniqueness again with explicit ``columns``, or "
+                    "ask the user which key they care about."
                 ),
             }
 
