@@ -407,6 +407,7 @@ class BackendCapabilityTests(unittest.TestCase):
         with self.assertRaises(UnsupportedDatabaseOperation):
             db.set_database_comment("Project description")
 
+    @pytest.mark.integration
     def test_apply_flow_does_not_count_unsupported_writeback_as_applied(self) -> None:
         db = DatabaseConnector(DBConfig(backend="bigquery", project="p", dataset="d"))
         row = ReviewResult(
