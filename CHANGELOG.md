@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-05-01
+### Fixed
+- **`UnboundLocalError: cannot access local variable 'review_strategy'`** when the user cancels at the schema picker (`amx/cli_support/commands/analyze_flow.py`). Pre-existing bug: the `KeyboardInterrupt` handler at line 933 reads `review_strategy` to decide whether to mark the run as `cancelled` vs `ready_for_review`, but the variable is only assigned inside the `with command_display(...)` block — which the user hasn't reached yet if they cancel during scope finalization. Now `review_strategy="individual"`, `use_dedup=False`, and `dedup_outcome=None` are pre-initialised at the function top alongside the other early-init defaults (`final_status`, `final_error_text`, etc.), so the cancellation paths can finalize history cleanly without a secondary crash. Reproducer: `/run` → Asset scope → Enter on the schema picker (no selection) → Ctrl+C / blank input.
+
+### Why this matters
+The crash hid the original cancellation reason behind a confusing Python traceback. Open-source users who reach for AMX would assume the tool itself is broken, when really they just hit Ctrl+C at the wrong moment. With pre-initialised defaults, the cancellation finalises with a clean log entry.
+
 ## [0.8.2] - 2026-05-01
 ### Changed
 - **Dedup question is now the FIRST runtime question** (`amx/cli_support/commands/analyze_flow.py`): user feedback "ask in the same order as /edit". v0.8.1 still placed dedup AFTER coverage and review_strategy; the user wanted it as the very first question after the scope picker, mirroring `/metadata edit`'s rule that the binary mode-selector (Single vs Bulk) always comes first. Order is now: scope → dedup (dedup / per-column) → coverage (missing-only / all) → review_strategy (individual / deferred / auto-apply).

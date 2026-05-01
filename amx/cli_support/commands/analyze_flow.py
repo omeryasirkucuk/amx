@@ -442,6 +442,15 @@ def execute_analyze_run(
     filter_skipped_count = 0
     final_status: str | None = None
     final_error_text = ""
+    # Pre-init these so the KeyboardInterrupt / Exception handlers
+    # below don't trip an UnboundLocalError when the user cancels at the
+    # scope picker (which is BEFORE the runtime questions get a chance
+    # to assign these). Both get overwritten by the real prompts inside
+    # the ``with command_display(...)`` block; the defaults here only
+    # exist so the cancellation path can finalize history cleanly.
+    review_strategy: str = "individual"
+    use_dedup: bool = False
+    dedup_outcome: Any | None = None
 
     try:
         token_tracker.reset()
@@ -603,7 +612,8 @@ def execute_analyze_run(
         # ``dedup_outcome.skip_set`` so the per-table flow below can
         # filter them out of the ProfileAgent batch. Singletons and
         # DIVERGES classes are left alone and flow through normally.
-        dedup_outcome: Any | None = None
+        # ``dedup_outcome`` is pre-initialised at the function top so
+        # the cancellation handlers can read it without UnboundLocalError.
         if use_dedup:
             try:
                 dedup_outcome = _maybe_run_equivalence_dedup(
