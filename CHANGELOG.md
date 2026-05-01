@@ -6,6 +6,50 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-05-01
+### Changed — Slash commands collapsed into a single registry (S5 refactor)
+
+Pre-v0.9.3 each AMX slash command had to be listed in **four** separate places inside `amx/cli_support/session.py` (1283 LOC):
+
+1. `_slash_command_catalog` (~129 LOC) — autocomplete `(slash, short_description)` pairs per namespace.
+2. `*_cmd_heads` frozensets in `run_interactive_session` (~63 LOC) — bare command names used by the dispatch chain.
+3. `_print_session_help` (~298 LOC) — multi-line help blocks with numbered commands per namespace.
+4. The dispatch `if head in db_cmd_heads: namespace = "db"` ladder.
+
+Drift between those four sources was the root cause of the v0.6.1 / v0.6.2 regressions where new commands (the v0.5.x `/description-verbosity` setting) were missing from autocomplete + help even though they had handlers wired up. v0.9.3 collapses the data-side duplication into a single Python data module — `amx/cli_support/slash_commands.py` — that the autocomplete catalog and `cmd_heads` frozensets now derive from.
+
+**File layout:**
+
+```
+amx/cli_support/session.py          1283 → 1125 LOC  (-158, -12%)
+amx/cli_support/slash_commands.py     -  →  301 LOC  (single source of truth)
+```
+
+**New module — `slash_commands.py`:**
+
+* `SlashCommand` frozen dataclass — one entry per command, fields: `command`, `namespace`, `short_desc`, `long_desc`, `aliases`, `cross_namespace`.
+* `ALL_COMMANDS` — declared in registry order; 77 entries cover root + 8 sub-namespaces.
+* `commands_for_namespace(ns)` — autocomplete pairs for that namespace (with cross-namespace builtins prepended).
+* `cmd_heads_for_namespace(ns)` — bare-head frozenset used by the dispatch chain.
+* `find_command(slash_or_head)` — resolve a user-typed token to its `SlashCommand` (handles aliases like `/manual` → `/metadata`).
+
+**`session.py` adapter:**
+
+* `_slash_command_catalog` is now a 5-line adapter that calls the registry.
+* The 7 hand-maintained `*_cmd_heads = frozenset({...})` definitions inside `run_interactive_session` now read `_registry_cmd_heads("db")` etc., except the `search_cmd_heads` set still adds `embeddings`/`embedding` heads (those are routed through search but not first-class commands).
+* `_print_session_help` is unchanged — its prose is text-heavy (engine lists, examples, navigation hints), not just a command list, so the registry can supplement but not replace it. A follow-up could enrich the help blocks from the registry's `long_desc` field.
+
+**Drift fix found by the refactor:** `/tls` was listed in the autocomplete catalog but missing from `db_cmd_heads`, so typing `/tls` from root wouldn't enter the db namespace. With the registry as single source, `/tls` now correctly routes to db.
+
+### Why this matters
+
+Adding a new slash command is now a one-line edit to `slash_commands.py` instead of three coordinated edits across `session.py`. Drift between autocomplete and dispatch is structurally impossible — both derive from the same dataclass tuple. Future enhancements (per-command `requires_db`/`requires_llm` gating, `/help <command>` long-form rendering, validation checks for handler dotted-paths) all become feasible without re-introducing duplication.
+
+### Followups
+
+- `_print_session_help` (298 LOC, 8 namespace blocks) can be partially generated from the registry — the per-command rows could be auto-rendered while engine summaries / navigation hints stay hand-written.
+- The `search_cmd_heads` extras (`embeddings`, `embedding`, `find-columns`, `join-candidates`, `explain`, `explain-table`) are still hand-listed; if these become first-class they should join the registry.
+
 ## [0.9.2] - 2026-05-01
 ### Changed — `Orchestrator.process_table` god-method extracted into `TableProcessor` (S3 refactor)
 

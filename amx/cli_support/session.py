@@ -27,6 +27,10 @@ from amx.cli_support.commands.db import (
 )
 from amx.cli_support.commands.embeddings import cmd_embeddings as _cmd_embeddings
 from amx.cli_support.commands.usage import cmd_usage as _cmd_usage
+from amx.cli_support.slash_commands import (
+    cmd_heads_for_namespace as _registry_cmd_heads,
+    commands_for_namespace as _registry_commands_for_namespace,
+)
 from amx.cli_support.commands.profiles import (
     cmd_add_code_profile as _cmd_add_code_profile,
     cmd_add_doc_profile as _cmd_add_doc_profile,
@@ -461,134 +465,20 @@ class _SlashCompleter(Completer):
 
 
 def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, str]]:
-    root = [
-        ("/help", "Contextual help"),
-        ("/exit", "Exit session"),
-        ("/clear", "Clear terminal output"),
-        ("/setup", "Run setup wizard"),
-        ("/config", "Show configuration"),
-        ("/db", "Enter /db namespace"),
-        ("/docs", "Enter /docs namespace"),
-        ("/metadata", "Enter /metadata namespace"),
-        ("/manual", "Alias for /metadata"),
-        ("/llm", "Enter /llm namespace"),
-        ("/code", "Enter /code namespace"),
-        ("/analyze", "Enter /analyze namespace"),
-        ("/search", "Enter /search namespace"),
-        ("/history", "Enter /history namespace"),
-        ("/session", "Manage /ask conversation sessions"),
-        ("/save", "Save config to disk"),
-    ]
-    db_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/db-profiles", "List DB profiles"),
-        ("/use-db", "Switch DB profile (lists PostgreSQL, BigQuery, … per profile)"),
-        ("/add-db-profile", "Add profile — choose engine then connection details"),
-        ("/remove-db-profile", "Remove DB profile (/remove-db-profile <name>)"),
-        ("/profiling", "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])"),
-        ("/tls", "Show/set Databricks TLS settings (/tls [on|off] [ca_path|clear])"),
-        ("/save", "Save config to disk"),
-        ("/schema", "Set current schema (/schema <name>)"),
-        ("/table", "Set current table (/table <name>)"),
-        ("/connect", "Test DB connectivity"),
-        ("/schemas", "List schemas"),
-        ("/tables", "List tables (/tables [schema])"),
-        ("/profile", "Profile table (/profile [schema] [table])"),
-        ("/cleanup-placeholders", "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])"),
-    ]
-    docs_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/doc-profiles", "List document profiles"),
-        ("/use-doc", "Switch document profile (/use-doc <name>)"),
-        ("/add-doc-profile", "Add/update document profile"),
-        ("/remove-doc-profile", "Remove document profile (/remove-doc-profile <name>)"),
-        ("/scan", "Scan documents (/scan [--doc-profile NAME] [paths...])"),
-        ("/ingest", "Ingest (/ingest [--doc-profile NAME] [--refresh] [paths...])"),
-        ("/search-docs", "Similarity search (/search-docs <text>, no LLM)"),
-        ("/doc-analyze", "Run RAG Agent standalone (/doc-analyze [TABLE …])"),
-        ("/export-doc-report", "Export doc RAG summary (/export-doc-report [FILE])"),
-    ]
-    metadata_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/inspect", "Inspect current metadata (/inspect [schema] [table])"),
-        ("/edit", "Edit wizard or /edit <db>[.<schema>[.<table>[.<column>]]]"),
-        ("/monitor", "Show metadata coverage (/monitor [schema])"),
-    ]
-    llm_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/llm-profiles", "List LLM profiles"),
-        ("/use-llm", "Switch LLM profile (/use-llm <name>)"),
-        ("/add-llm-profile", "Add/update LLM profile"),
-        ("/remove-llm-profile", "Remove LLM profile (/remove-llm-profile <name>)"),
-        ("/language", "Show/set metadata generation language (/language [name])"),
-        ("/prompt-detail", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
-        ("/description-verbosity", "Show/set output description length (/description-verbosity [brief|detailed])"),
-        ("/n-alternatives", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
-        ("/llm-batch-size", "Show/set number of columns per LLM call (/llm-batch-size [N])"),
-        ("/batch-context-columns", "Show/set extra non-batch column names in each batch (/batch-context-columns [off|all|N])"),
-        ("/logprob-thresholds", "Show/set confidence thresholds (/logprob-thresholds [high] [med])"),
-    ]
-    code_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/code-profiles", "List codebase profiles"),
-        ("/use-code", "Switch codebase profile (/use-code <name>)"),
-        ("/add-code-profile", "Add/update codebase profile"),
-        ("/remove-code-profile", "Remove codebase profile (/remove-code-profile <name>)"),
-        ("/code-scan", "Scan codebase + save (/code-scan [path] [--code-profile NAME])"),
-        ("/code-refresh", "Clear cache + semantic code index"),
-        ("/code-results", "Show last cached scan results"),
-        ("/code-analyze", "Run Code Agent standalone (/code-analyze [TABLE …])"),
-        ("/export-code-report", "Export scan to markdown (/export-code-report [FILE])"),
-    ]
-    analyze_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/run", "Run all agents — scope: database / schema / asset (/run [ASSET …] [--schema …] [--apply])"),
-        ("/run-apply", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
-        ("/apply", "Write pending comments to the database"),
-    ]
-    search_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/ask", "Ask a metadata question; add --actions for approved follow-up execution"),
-        ("/status", "Show catalog/index status"),
-        ("/sources", "Show evidence sources and settings"),
-        ("/config", "Show/set search config (/config [key] [value])"),
-        ("/sync", "Sync DB structure/comments and code evidence"),
-        ("/rebuild", "Rebuild effective search state and vector index"),
-    ]
-    history_cmds = [
-        ("/back", "Return to root namespace"),
-        ("/clear", "Clear terminal output"),
-        ("/list", "Show recent runs (/list -n 20)"),
-        ("/show", "Show one run payload (/show <run_id>)"),
-        ("/stats", "Aggregate run/event metrics"),
-        ("/events", "Recent app events (/events -n 30)"),
-        ("/results", "Show saved LLM alternatives (/results <run_id>)"),
-        ("/review", "Re-evaluate alternatives (/review <run_id> [--unevaluated-only] [--apply])"),
-    ]
-    if namespace == "db":
-        return db_cmds
-    if namespace == "docs":
-        return docs_cmds
-    if _canonical_namespace(namespace) == "metadata":
-        return metadata_cmds
-    if namespace == "llm":
-        return llm_cmds
-    if namespace == "code":
-        return code_cmds
-    if namespace == "analyze":
-        return analyze_cmds
-    if namespace == "search":
-        return search_cmds
-    if namespace == "history":
-        return history_cmds
-    return root
+    """Return ``(slash_command, short_description)`` pairs for autocomplete.
+
+    Pre-v0.9.3 this function carried hand-maintained lists for every
+    namespace — the same data was also duplicated in the dispatch
+    chain's ``*_cmd_heads`` frozensets, in ``_print_session_help``
+    blocks, and in ``run_interactive_session``. The
+    ``amx.cli_support.slash_commands`` registry is now the single
+    source of truth; this function is just an adapter that converts
+    :class:`SlashCommand` records into the ``(slash, desc)`` tuples
+    the autocompleter expects.
+    """
+    canonical = _canonical_namespace(namespace) if namespace else ""
+    cmds = _registry_commands_for_namespace(canonical or namespace)
+    return [(c.command, c.short_desc) for c in cmds]
 
 
 def _require_namespace(cmd: str, namespace: str, expected: str, replacement: str) -> bool:
@@ -997,69 +887,21 @@ def run_interactive_session(
     )
     namespace = ""
 
-    db_cmd_heads = frozenset(
-        {
-            "db-profiles",
-            "use-db",
-            "add-db-profile",
-            "remove-db-profile",
-            "profiling",
-            "connect",
-            "schema",
-            "table",
-            "schemas",
-            "tables",
-            "profile",
-            "cleanup-placeholders",
-        }
-    )
-    metadata_cmd_heads = frozenset({"inspect", "edit", "monitor"})
-    docs_cmd_heads = frozenset(
-        {
-            "doc-profiles",
-            "use-doc",
-            "add-doc-profile",
-            "remove-doc-profile",
-            "scan",
-            "ingest",
-            "search-docs",
-            "doc-analyze",
-            "export-doc-report",
-        }
-    )
-    llm_cmd_heads = frozenset(
-        {
-            "llm-profiles",
-            "use-llm",
-            "add-llm-profile",
-            "remove-llm-profile",
-            "language",
-            "prompt-detail",
-            "description-verbosity",
-            "n-alternatives",
-            "llm-batch-size",
-            "batch-context-columns",
-            "logprob-thresholds",
-        }
-    )
-    code_cmd_heads = frozenset(
-        {
-            "code-profiles",
-            "use-code",
-            "add-code-profile",
-            "remove-code-profile",
-            "code-scan",
-            "code-refresh",
-            "code-results",
-            "code-analyze",
-            "export-code-report",
-        }
-    )
-    analyze_cmd_heads = frozenset({"run", "run-apply", "apply"})
-    search_cmd_heads = frozenset(
-        {"ask", "status", "sources", "config", "sync", "rebuild", "embeddings", "embedding"}
-    )
-    history_cmd_heads = frozenset({"list", "show", "stats", "events", "results", "review"})
+    # Pre-v0.9.3 each cmd_heads frozenset was hand-maintained here AND
+    # in ``_slash_command_catalog`` AND in ``_print_session_help`` —
+    # drift between those caused the v0.6.1/0.6.2 description-verbosity
+    # regressions. The ``amx.cli_support.slash_commands`` registry is
+    # now the single source of truth; we just look up the head set per
+    # namespace. The ``embeddings``/``embedding`` heads are not in the
+    # registry as primary commands but still routed through /search.
+    db_cmd_heads = _registry_cmd_heads("db")
+    metadata_cmd_heads = _registry_cmd_heads("metadata")
+    docs_cmd_heads = _registry_cmd_heads("docs")
+    llm_cmd_heads = _registry_cmd_heads("llm")
+    code_cmd_heads = _registry_cmd_heads("code")
+    analyze_cmd_heads = _registry_cmd_heads("analyze")
+    search_cmd_heads = _registry_cmd_heads("search") | frozenset({"embeddings", "embedding"})
+    history_cmd_heads = _registry_cmd_heads("history")
 
     prev_sigwinch = signal.getsignal(signal.SIGWINCH)
 
