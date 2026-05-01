@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-05-01
+### Changed
+- **Dedup question now precedes the scope picker** (`amx/cli_support/commands/analyze_flow.py`): user clarified — twice — that the `/edit` pattern means the binary mode-selector is the FIRST runtime question, before any drill-down. v0.8.2 already moved dedup ahead of coverage and review_strategy, but it still came AFTER the analysis-scope picker (Database / Schema / Asset / Default) AND the schema picker. v0.8.4 hoists `ask_choice("Equivalence-class deduplication?", ["dedup", "per-column"])` to right after `_resolve_completion_mode` and BEFORE the `with command_display(...)` block — so it fires before the scope picker fires. Profile-modification, LLM-test, and completion-mode prompts stay where they are because they're infrastructure questions, not run-mode questions.
+
+### Why this matters
+The whole point of the `/edit` pattern is that the user makes the high-impact yes/no decision before AMX walks any structure. With the previous ordering, users on a `/run` had to wade through 4–5 prompts (profile / completion mode / scope / schema picker) before they could opt out of dedup; if they wanted per-column profiling, they were forced through scope selection they didn't really care about for that particular run. Asking dedup right at the start lets the user lock in the run mode first, then drill down — exactly like `/metadata edit` Single-vs-Bulk.
+
 ## [0.8.3] - 2026-05-01
 ### Fixed
 - **`UnboundLocalError: cannot access local variable 'review_strategy'`** when the user cancels at the schema picker (`amx/cli_support/commands/analyze_flow.py`). Pre-existing bug: the `KeyboardInterrupt` handler at line 933 reads `review_strategy` to decide whether to mark the run as `cancelled` vs `ready_for_review`, but the variable is only assigned inside the `with command_display(...)` block — which the user hasn't reached yet if they cancel during scope finalization. Now `review_strategy="individual"`, `use_dedup=False`, and `dedup_outcome=None` are pre-initialised at the function top alongside the other early-init defaults (`final_status`, `final_error_text`, etc.), so the cancellation paths can finalize history cleanly without a secondary crash. Reproducer: `/run` → Asset scope → Enter on the schema picker (no selection) → Ctrl+C / blank input.
