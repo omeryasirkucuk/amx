@@ -725,3 +725,105 @@ def cmd_tls(cfg: AMXConfig, rest: list[str]) -> None:
     success(
         f"Databricks TLS settings saved: tls_no_verify={no_verify}, trusted_ca={shown_path}."
     )
+
+
+def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:
+    """Remove auto-inference fallback placeholder strings from the live DB.
+
+    Pre-v0.6.3 ``/run-apply`` could write the placeholder text
+    ``"... Auto-inference missed a reliable description; please review
+    manually."`` directly to ``COMMENT ON TABLE/COLUMN`` when the LLM
+    failed to produce a real description. v0.6.3 stops the write at the
+    source, but legacy DBs already polluted with the placeholder need
+    a one-shot cleanup. This command scans every table/column comment
+    in the active DB profile, NULLs out any matching placeholder, and
+    reports counts. Optional ``[schema]`` arg limits the scope.
+    """
+    from amx.agents.orchestrator import is_placeholder_description
+    from amx.db.connector import AssetKind, DatabaseConnector
+
+    target_schema = rest[0].strip() if rest else ""
+    db = DatabaseConnector(cfg.db)
+    try:
+        try:
+            available = [str(s) for s in db.list_schemas()]
+        except Exception as exc:
+            error(f"Could not list schemas: {exc}")
+            return
+
+        target_schemas: list[str]
+        if target_schema:
+            match = next((s for s in available if s.lower() == target_schema.lower()), None)
+            if match is None:
+                error(f"No schema named '{target_schema}'. Available: {', '.join(available)}")
+                return
+            target_schemas = [match]
+        else:
+            target_schemas = available
+
+        heading(
+            f"Cleanup: scanning {len(target_schemas)} schema(s) for fallback placeholders"
+        )
+        cleaned_table = 0
+        cleaned_column = 0
+        for sch in target_schemas:
+            try:
+                if hasattr(db, "list_assets"):
+                    assets = list(db.list_assets(sch))
+                else:
+                    assets = [(name, AssetKind.TABLE) for name in db.list_tables(sch)]
+            except Exception as exc:
+                warn(f"Could not list assets in {sch}: {exc}")
+                continue
+            for asset_name, asset_kind in assets:
+                kind = asset_kind if isinstance(asset_kind, AssetKind) else AssetKind.TABLE
+                # Table-level comment
+                try:
+                    tcom = db.get_table_comment(sch, asset_name)
+                except Exception:
+                    tcom = None
+                if is_placeholder_description(tcom):
+                    try:
+                        db.apply_comment(
+                            schema=sch,
+                            table=asset_name,
+                            column=None,
+                            comment="",
+                            asset_kind=kind,
+                        )
+                        cleaned_table += 1
+                        info(f"Cleared placeholder on {sch}.{asset_name} (table comment)")
+                    except Exception as exc:
+                        warn(f"Could not clear {sch}.{asset_name}: {exc}")
+                # Column-level comments
+                try:
+                    col_comments = db.get_column_comments(sch, asset_name)
+                except Exception:
+                    col_comments = {}
+                for col_name, col_comment in col_comments.items():
+                    if is_placeholder_description(col_comment):
+                        try:
+                            db.apply_comment(
+                                schema=sch,
+                                table=asset_name,
+                                column=col_name,
+                                comment="",
+                                asset_kind=kind,
+                            )
+                            cleaned_column += 1
+                        except Exception as exc:
+                            warn(
+                                f"Could not clear {sch}.{asset_name}.{col_name}: {exc}"
+                            )
+                if cleaned_column and cleaned_column % 25 == 0:
+                    info(f"  cleared {cleaned_column} column placeholders so far …")
+        success(
+            f"Cleanup done. Cleared {cleaned_table} table comment(s) and "
+            f"{cleaned_column} column comment(s). Re-run /run-apply with "
+            f"missing-only to fill them with real descriptions."
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
