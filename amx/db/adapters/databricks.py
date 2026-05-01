@@ -240,6 +240,73 @@ class DatabricksAdapter(DatabaseAdapter):
     ) -> list[dict[str, Any]]:
         return []
 
+    # ── Analytics metadata ────────────────────────────────────────────────
+
+    def get_analytics_metadata(
+        self, engine: Engine, schema: str, table: str
+    ) -> dict[str, Any]:
+        """Databricks analytics metadata via ``DESCRIBE DETAIL`` + ``DESCRIBE TABLE EXTENDED``.
+
+        Pulls partition columns, storage format (delta / parquet / iceberg),
+        size in bytes, file count, last modified, table type, and ZORDER
+        clustering keys when present. Soft-fails on permission errors —
+        the DESCRIBE statements work for any role with USAGE on the
+        catalog/schema, but listing files may require additional ACLs.
+        """
+        out: dict[str, Any] = {}
+        warnings: list[str] = []
+
+        with engine.connect() as conn:
+            # ── DESCRIBE DETAIL — Delta-style metadata (size, format, partition, clustering) ──
+            try:
+                fqn = self.fully_qualified_name(schema, table)
+                row = conn.execute(text(f"DESCRIBE DETAIL {fqn}")).fetchone()
+                if row:
+                    rd = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+                    fmt = str(rd.get("format") or "").lower()
+                    if fmt:
+                        out["storage_format"] = fmt  # delta, parquet, iceberg, csv...
+                    if rd.get("sizeInBytes") is not None:
+                        out["storage_bytes"] = int(rd["sizeInBytes"])
+                    if rd.get("numFiles") is not None:
+                        out["storage_files_count"] = int(rd["numFiles"])
+                    if rd.get("lastModified"):
+                        out["last_modified"] = str(rd["lastModified"])
+                    pcols = rd.get("partitionColumns") or []
+                    if pcols:
+                        out["partition_keys"] = list(pcols)
+                        out["partition_strategy"] = "list"  # Databricks partitions are list-style.
+                    # ZORDER columns — only present if user ran OPTIMIZE ZORDER BY.
+                    zorder = rd.get("clusteringColumns") or []
+                    if zorder:
+                        out["clustering_keys"] = list(zorder)
+            except Exception as exc:
+                warnings.append(f"DESCRIBE DETAIL: {exc}")
+
+            # ── Table type from DESCRIBE TABLE EXTENDED Type field ──
+            try:
+                fqn = self.fully_qualified_name(schema, table)
+                rows = conn.execute(text(f"DESCRIBE TABLE EXTENDED {fqn}")).fetchall()
+                for r in rows:
+                    rd = dict(r._mapping) if hasattr(r, "_mapping") else dict(r)
+                    name = str(rd.get("col_name") or "").strip()
+                    if name == "Type":
+                        raw_type = str(rd.get("data_type") or "").lower()
+                        type_map = {
+                            "managed": "managed",
+                            "external": "external",
+                            "view": "view",
+                            "materialized_view": "materialized_view",
+                        }
+                        out["table_type"] = type_map.get(raw_type, raw_type)
+                        break
+            except Exception as exc:
+                warnings.append(f"DESCRIBE TABLE EXTENDED: {exc}")
+
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
     # ── Comment writing ───────────────────────────────────────────────────
 
     def set_table_comment_sql(

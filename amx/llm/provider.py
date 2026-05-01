@@ -804,12 +804,30 @@ class LLMProvider:
             )
 
         if not content:
-            log.warning(
-                "LLM returned EMPTY content (finish_reason=%s, model=%s). "
-                "Check model name, API key, and provider dashboard.",
-                finish,
-                model,
-            )
+            # ``finish_reason=tool_calls`` means the model is asking for
+            # a tool to run — an empty content body is the expected
+            # OpenAI-protocol shape (the function call lives in
+            # ``message.tool_calls`` instead). Don't warn on that; it's
+            # normal flow and just adds log noise. Same goes for
+            # ``function_call`` (legacy single-tool mode).
+            #
+            # Genuine "model returned nothing" cases — finish_reason in
+            # {stop, content_filter, length, end_turn, ""} with no
+            # accompanying tool_calls — still warrant the WARNING below.
+            tool_call_finishes = {"tool_calls", "function_call"}
+            if str(finish or "").lower() in tool_call_finishes:
+                log.debug(
+                    "LLM tool-call response (finish_reason=%s, model=%s); "
+                    "empty content is expected.",
+                    finish, model,
+                )
+            else:
+                log.warning(
+                    "LLM returned EMPTY content (finish_reason=%s, model=%s). "
+                    "Check model name, API key, and provider dashboard.",
+                    finish,
+                    model,
+                )
         # Tool/function calls — extracted when the caller passes ``tools`` in
         # ``extra``. LiteLLM mirrors the OpenAI shape across providers, so we
         # read ``message.tool_calls[*].function.{name,arguments}`` regardless

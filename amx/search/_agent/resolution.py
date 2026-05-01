@@ -25,11 +25,11 @@ Reads from ``self.catalog``, ``self.db``, ``self.cfg``,
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from typing import Any
 
+from amx.search._agent._types import ResolvedTarget, SearchPlan
 from amx.utils.logging import get_logger
-
-ResolvedTarget = Any  # Forward reference to dataclass in agent.py.
 
 log = get_logger("search.agent.resolution")
 

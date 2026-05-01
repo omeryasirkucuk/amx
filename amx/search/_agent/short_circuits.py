@@ -18,9 +18,13 @@ answer instead:
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
+from amx.search._agent._types import SearchPlan
+from amx.search.catalog import SearchAnswer
+from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
 
 log = get_logger("search.agent.short_circuits")

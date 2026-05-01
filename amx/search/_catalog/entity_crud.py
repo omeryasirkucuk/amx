@@ -26,9 +26,11 @@ dependencies on other mixins.
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from typing import Any
 
+from amx.search._catalog._constants import SOURCE_PRIORITY, _json_loads
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.entity_crud")

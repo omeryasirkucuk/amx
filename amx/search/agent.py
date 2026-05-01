@@ -52,213 +52,40 @@ class _SessionMemoryShim:
 _SESSION_MEMORY = _SessionMemoryShim()
 
 
+
+
+# Dataclasses + helpers + constants shared with the mixin modules now
+# live in ``_agent/_types.py`` (v0.9.5 fix). Re-exported here so the
+# public names (``SearchPlan`` etc.) keep their old import paths and
+# the mixins pick up the SAME class object via Python MRO.
+from amx.search._agent._types import (
+    LiveProbePlan,
+    ResolvedTarget,
+    SearchActionSuggestion,
+    SearchPlan,
+    SearchPolicy,
+    _ANSWER_SHAPES,
+    _DEFAULT_INPUT_TOKEN_BUDGET,
+    _input_token_budget_for,
+    _json_block,
+    _merge_usage,
+    _question_language_hint,
+    _trim_rows_to_token_budget,
+)
+
 # Conservative input-token budget per LLM family. The /synthesize_answer
 # step builds a JSON payload that includes potentially many retrieval
 # rows; without a budget guard, large catalogs blow the model's context
 # window with an opaque LLM error. The numbers leave headroom for the
 # system prompt, plan, policy, retrieval_details, verification, and the
 # generated answer max_tokens.
-_DEFAULT_INPUT_TOKEN_BUDGET = 60_000
-
-
-def _input_token_budget_for(model: str | None) -> int:
-    """Conservative input-token budget for the active LLM model.
-
-    Frontier models with very large context windows (Claude 3.5/4,
-    Gemini 1.5/2.0 pro) get a higher budget; everything else uses the
-    default 60K which fits OpenAI gpt-4o, gpt-4o-mini, DeepSeek, and
-    most local servers.
-    """
-    if not model:
-        return _DEFAULT_INPUT_TOKEN_BUDGET
-    name = model.lower()
-    if any(token in name for token in (
-        "claude-3-5", "claude-sonnet-4", "claude-opus-4", "claude-3-opus",
-        "claude-haiku-4",
-    )):
-        return 150_000  # Claude family: 200K context window.
-    if any(token in name for token in (
-        "gemini-1.5-pro", "gemini-2.0-pro", "gemini-2.0-flash",
-        "gemini-1.5-flash",
-    )):
-        return 250_000  # Gemini family: 1M-2M context.
-    return _DEFAULT_INPUT_TOKEN_BUDGET
-
-
-def _trim_rows_to_token_budget(
-    rows: list[dict[str, Any]],
-    *,
-    system_text: str,
-    base_payload: dict[str, Any],
-    budget: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """Drop lowest-scored rows until the prompt fits ``budget`` tokens.
-
-    Computes the per-row cost from a single full-payload encoding plus
-    a no-rows encoding (O(n) total) rather than re-encoding inside a
-    loop, so large row sets do not pay quadratic cost.
-
-    Returns ``(kept_rows, dropped_count)``. The result is sorted by
-    descending ``match_score`` so the highest-confidence rows survive.
-    """
-    if not rows:
-        return rows, 0
-
-    sorted_rows = sorted(
-        rows, key=lambda row: float(row.get("match_score") or 0.0), reverse=True
-    )
-
-    full_payload = dict(base_payload, rows=sorted_rows, result_count=len(sorted_rows))
-    full_msgs = [
-        {"role": "system", "content": system_text},
-        {"role": "user", "content": json.dumps(full_payload, ensure_ascii=True)},
-    ]
-    full_tokens = estimate_tokens(full_msgs)
-    if full_tokens <= budget:
-        return sorted_rows, 0
-
-    empty_payload = dict(base_payload, rows=[], result_count=0)
-    empty_msgs = [
-        {"role": "system", "content": system_text},
-        {"role": "user", "content": json.dumps(empty_payload, ensure_ascii=True)},
-    ]
-    base_tokens = estimate_tokens(empty_msgs)
-
-    rows_token_cost = max(1, full_tokens - base_tokens)
-    avg_per_row = max(1, rows_token_cost // len(sorted_rows))
-    available_for_rows = max(0, budget - base_tokens)
-    keep_count = max(0, available_for_rows // avg_per_row)
-    keep_count = min(keep_count, len(sorted_rows))
-
-    if keep_count >= len(sorted_rows):
-        return sorted_rows, 0
-    return sorted_rows[:keep_count], len(sorted_rows) - keep_count
-
-
 @dataclass
-class SearchPlan:
-    intent: str
-    out_of_domain: bool
-    normalized_question: str
-    search_mode: str
-    question_class: str
-    target_entity: str
-    entity_hints: list[str]
-    search_queries: list[str]
-    needs_typo_recovery: bool
-    answer_language: str
-    ambiguity_flags: list[str]
-    reason: str
-    decision_confidence: str = "high"
-    needs_clarification: bool = False
-    clarification_question: str = ""
-    review_notes: str = ""
-    # Answer-shape hints. Empty/zero defaults mean "no signal from interpretation"
-    # — the policy/derivation step picks a shape based on question_class.
-    aggregation_op: str = ""        # "" | "max" | "min" | "top_k" | "bottom_k" | "count"
-    aggregation_field: str = ""     # "" | "row_count" | "column_count" | "table_count"
-    aggregation_limit: int = 0      # 0 = no aggregation; 1 for superlatives; N for top-K
-    answer_shape: str = ""          # See _ANSWER_SHAPES below; "" = derive from policy.
-
-
 # Closed set of presentation shapes the agent + renderer dispatch on.
 # Kept as a module-level constant so tests and the renderer share the same vocabulary.
-_ANSWER_SHAPES = {
-    "single_fact",     # one-sentence headline, no list, no rich table
-    "short_table",     # headline + 2-5 row markdown table inline in summary
-    "full_table",      # broad inventory dump (existing behaviour)
-    "ranked_list",     # headline + rich Search matches table (filtered to non-zero scores)
-    "table_summary",   # headline + key-columns rich table for table_explain
-    "join_candidates", # existing join Rich table dispatch
-    "prose",           # 2-4 sentence explanation, no table
-}
-
-
 @dataclass
-class SearchPolicy:
-    question_class: str
-    retrieval_policy: str
-    requires_catalog: bool
-    deterministic_answer: bool
-    verify_live: bool
-    allow_vector: bool
-    allow_code: bool
-    answer_format: str
-    fallback_behavior: str
-    answer_shape: str = ""  # Derived from plan.answer_shape or question_class.
-
-
 @dataclass
-class SearchActionSuggestion:
-    action: str
-    reason: str
-
-
 @dataclass
-class LiveProbePlan:
-    needs_live_probe: bool
-    reason: str
-    operations: list[dict[str, str]]
-
-
 @dataclass
-class ResolvedTarget:
-    requested: str
-    resolved_path: str
-    source: str
-    is_exact: bool
-    confidence: str
-    warnings: list[str]
-    candidates: list[str]
-
-
-def _question_language_hint(text: str) -> str:
-    sample = (text or "").strip()
-    if not sample:
-        return "english"
-    lower = sample.lower()
-    if re.search(r"[\u0600-\u06FF]", sample):
-        return "arabic"
-    if re.search(r"[\u3040-\u30FF\u4E00-\u9FFF]", sample):
-        return "japanese"
-    if re.search(r"[\uAC00-\uD7AF]", sample):
-        return "korean"
-    if re.search(r"[\u0400-\u04FF]", sample):
-        return "russian"
-    if any(ch in lower for ch in "çğıöşü"):
-        return "turkish"
-    return "english"
-
-
-def _json_block(text: str) -> dict[str, Any]:
-    raw = (text or "").strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start >= 0 and end > start:
-        raw = raw[start : end + 1]
-    return json.loads(raw)
-
-
-def _merge_usage(*payloads: dict[str, Any] | None) -> dict[str, Any]:
-    merged = {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "model_processing_sec": 0.0,
-    }
-    for payload in payloads:
-        if not payload:
-            continue
-        merged["prompt_tokens"] += int(payload.get("prompt_tokens") or 0)
-        merged["completion_tokens"] += int(payload.get("completion_tokens") or 0)
-        merged["total_tokens"] += int(payload.get("total_tokens") or 0)
-        merged["model_processing_sec"] += float(payload.get("model_processing_sec") or 0.0)
-    return merged
-
-
 class SearchAgent(
     SessionMemoryMixin,
     ShortCircuitsMixin,
