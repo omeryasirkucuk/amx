@@ -29,6 +29,28 @@ PROFILING_MODES = ("full", "sampled", "metadata")
 SUPPORTED_EMBEDDING_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
 DEFAULT_EMBEDDING_KIND = "minilm"
 
+# Pre-0.11 ``DBConfig.database`` shipped with a five-year-old demo default
+# (``"SAP"``) that surfaced in the UI as a phantom "SAP @ localhost:5432"
+# row for users who never finished setup. The default is now empty, but
+# we still detect existing YAML configs that carry the legacy value so we
+# can suggest the user clear it (we never mutate their YAML — see
+# §3.5 of docs/design/multi-db-plan.md). The match is per-backend: the
+# legacy default leaked only into PG / Snowflake; Databricks/BigQuery
+# already used their own catalog/dataset fields.
+_LEGACY_DATABASE_DEFAULTS: frozenset[tuple[str, str]] = frozenset({
+    ("postgresql", "SAP"),
+    ("snowflake", "SAP"),
+})
+
+
+def has_legacy_database_default(db: "DBConfig") -> bool:
+    """Return True when *db* still carries the historical ``database='SAP'`` default.
+
+    Used by the CLI to surface a one-time hint suggesting the user run
+    ``/edit`` to clear the value. Never mutates the config.
+    """
+    return (db.backend, db.database) in _LEGACY_DATABASE_DEFAULTS
+
 # Secret-bearing fields per scope. These are externalised to the OS keyring
 # on save and resolved back to plaintext on load via amx.storage.secrets.
 _DB_SECRET_FIELDS = ("password", "access_token")
@@ -382,7 +404,14 @@ class DBConfig(_ObservableConfig):
     port: int = 5432
     user: str = "amx"
     password: str = "amx_pass"
-    database: str = "SAP"
+    # ``database`` is now optional. Empty string means "no DB pinned to this
+    # profile" — the user picks a database at command time (interactive
+    # picker, or `--database`). Historically the default was the demo value
+    # ``"SAP"``, which surfaced as a phantom localhost connection in
+    # ``/db-profiles`` for users who had not finished setup. The legacy
+    # value is kept readable on load (see ``LEGACY_DATABASE_DEFAULTS`` and
+    # the startup hint), but new profiles never get pre-filled with it.
+    database: str = ""
 
     # Snowflake
     account: str = ""
@@ -409,10 +438,15 @@ class DBConfig(_ObservableConfig):
     @property
     def url(self) -> str:
         if self.backend == "snowflake":
+            # Snowflake's SQLAlchemy URL accepts no database — connect to the
+            # account, let the user pick at query time. Keep ``/<database>``
+            # only when pinned so the engine starts in that DB.
             url = (
                 f"snowflake://{quote_plus(self.user)}:{quote_plus(self.password)}"
-                f"@{self.account}/{self.database}"
+                f"@{self.account}"
             )
+            if self.database:
+                url += f"/{quote_plus(self.database)}"
             params: list[str] = []
             if self.warehouse:
                 params.append(f"warehouse={quote_plus(self.warehouse)}")
@@ -444,41 +478,83 @@ class DBConfig(_ObservableConfig):
                 url += f"?credentials_path={quote_plus(self.credentials_path)}"
             return url
 
-        # Default: PostgreSQL
-        return (
+        # Default: PostgreSQL. When database is unpinned, drop the trailing
+        # ``/<db>`` so SQLAlchemy connects to the server and the user
+        # picks at query time. The engine still works without a default
+        # database — adapters handle the "no database" case.
+        url = (
             f"postgresql://{quote_plus(self.user)}:{quote_plus(self.password)}"
-            f"@{self.host}:{self.port}/{self.database}"
+            f"@{self.host}:{self.port}"
         )
+        if self.database:
+            url += f"/{quote_plus(self.database)}"
+        return url
 
     @property
     def display_summary(self) -> str:
         """Short human-readable connection summary for the UI."""
+        unpinned_label = "(no DB pinned)"
         if self.backend == "snowflake":
-            return f"{self.database}@{self.account} (user {self.user})"
+            db = self.database or unpinned_label
+            return f"{db}@{self.account} (user {self.user})"
         if self.backend == "databricks":
-            cat = f" catalog={self.catalog}" if self.catalog else ""
+            cat = f" catalog={self.catalog}" if self.catalog else f" {unpinned_label}"
             return f"{self.host}{cat}"
         if self.backend == "bigquery":
-            ds = f".{self.dataset}" if self.dataset else ""
+            ds = f".{self.dataset}" if self.dataset else f" {unpinned_label}"
             return f"{self.project}{ds}"
-        return f"{self.database} @ {self.host}:{self.port} (user {self.user})"
+        db = self.database or unpinned_label
+        return f"{db} @ {self.host}:{self.port} (user {self.user})"
 
-    def is_configured(self) -> bool:
-        """True when the profile has the minimum fields needed to actually connect.
+    def is_connection_configured(self) -> bool:
+        """True when the profile has the minimum *connection* fields.
 
-        Used to distinguish "user has not set up a DB yet" from "user has a profile
-        with broken defaults" so the UI can route them to ``/setup`` instead of
-        showing a phantom ``localhost`` connection.
+        This is the new (0.11.0) "can we even open a connection" predicate —
+        a database / catalog / dataset is **not** required. PG/SF/DB will
+        connect to the engine and let the user pick a database at run time;
+        BigQuery requires a project (no project = no connection).
         """
         if self.backend == "postgresql":
-            return bool(self.host and self.user and self.database)
+            return bool(self.host and self.user)
         if self.backend == "snowflake":
-            return bool(self.account and self.user and self.database)
+            return bool(self.account and self.user)
         if self.backend == "databricks":
             return bool(self.host and (self.access_token or self.password))
         if self.backend == "bigquery":
             return bool(self.project)
         return False
+
+    def is_database_pinned(self) -> bool:
+        """True when the profile pins a specific database / catalog / dataset.
+
+        When False, the user is expected to pick the database at command
+        time (catalog picker, `--database` flag, etc.). 3-level backends
+        (Databricks Unity Catalog, BigQuery datasets) treat catalog /
+        dataset as the database-equivalent.
+        """
+        if self.backend == "postgresql":
+            return bool(self.database)
+        if self.backend == "snowflake":
+            return bool(self.database)
+        if self.backend == "databricks":
+            return bool(self.catalog)
+        if self.backend == "bigquery":
+            return bool(self.dataset)
+        return False
+
+    def is_configured(self) -> bool:
+        """Back-compat: True when the profile is connection-ready.
+
+        Pre-0.11 callers used this to gate "show profile in UI" / "drive
+        ``DatabaseConnector(cfg.db)``" decisions. We deliberately drop the
+        ``database``-required clauses here so an unpinned profile still
+        counts as "configured" — the missing-database case is now surfaced
+        separately via :meth:`is_database_pinned` and a startup hint.
+
+        Use :meth:`is_connection_configured` in new code; this alias stays
+        for the 99 existing call sites.
+        """
+        return self.is_connection_configured()
 
 
 # ── Serialization helpers ─────────────────────────────────────────────────
@@ -492,7 +568,11 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         port=int(m.get("port", 5432)),
         user=str(m.get("user", "amx")),
         password=str(m.get("password", "")),
-        database=str(m.get("database", "SAP")),
+        # Fallback to ``""`` rather than the legacy ``"SAP"`` demo value.
+        # Old YAML that already has ``database: SAP`` will still load with
+        # that string; this only changes what happens when the key is
+        # absent (e.g. partial profiles or older serialisations).
+        database=str(m.get("database", "")),
         account=str(m.get("account", "")),
         warehouse=str(m.get("warehouse", "")),
         role=str(m.get("role", "")),
@@ -680,7 +760,22 @@ class AMXConfig:
     selected_schemas: list[str] = field(default_factory=list)
     selected_tables: list[str] = field(default_factory=list)
     db_profiles: dict[str, DBConfig] = field(default_factory=dict)
+    # Single-active mirror — kept for back-compat with the 99 call sites
+    # that read ``cfg.active_db_profile`` directly. In 0.11.0 the source
+    # of truth becomes ``active_db_profiles`` (the multi-pick scope set
+    # by ``/use-db prod_pg analytics_bq``); this scalar mirrors the
+    # **first** entry of that list. ``set_active_db_profile`` updates
+    # both, ``set_active_db_profiles`` collapses the list to a single
+    # entry when called with one name. Reads that need the full scope
+    # use ``active_db_profiles`` (or ``ProfileScope.from_config(cfg)``).
     active_db_profile: str = "default"
+    # 0.11.0 multi-DB execution scope. When non-empty this is the set of
+    # profiles that ``/ask``, ``/run`` and ``/sync`` operate on by default.
+    # Loaded with one-element fallback from the legacy ``active_db_profile``
+    # when the YAML pre-dates this release. Saved on every write alongside
+    # the legacy scalar so a 0.10.x reader can still round-trip without
+    # losing the user's active profile.
+    active_db_profiles: list[str] = field(default_factory=list)
     current_schema: str = ""
     current_table: str = ""
     llm_profiles: dict[str, LLMConfig] = field(default_factory=dict)
@@ -714,6 +809,7 @@ class AMXConfig:
             "selected_tables",
             "db_profiles",
             "active_db_profile",
+            "active_db_profiles",
             "current_schema",
             "current_table",
             "llm_profiles",
@@ -774,6 +870,29 @@ class AMXConfig:
                         cfg.db_profiles[str(name)] = _db_from_mapping(m)
 
             cfg.active_db_profile = str(data.get("active_db_profile") or "default")
+            # 0.11.0: multi-pick scope. When the YAML predates this
+            # release we synthesise a one-element list from the legacy
+            # scalar so the rest of the code can treat it uniformly.
+            raw_scope = data.get("active_db_profiles")
+            if isinstance(raw_scope, list) and raw_scope:
+                # Dedupe while preserving user-specified order, drop empties.
+                seen: set[str] = set()
+                ordered: list[str] = []
+                for item in raw_scope:
+                    name = str(item or "").strip()
+                    if not name or name in seen:
+                        continue
+                    seen.add(name)
+                    ordered.append(name)
+                cfg.active_db_profiles = ordered
+                # Mirror first entry into the legacy scalar so old readers
+                # still see a valid active profile.
+                if ordered:
+                    cfg.active_db_profile = ordered[0]
+            else:
+                cfg.active_db_profiles = (
+                    [cfg.active_db_profile] if cfg.active_db_profile else []
+                )
             cfg.current_schema = str(data.get("current_schema") or "")
             cfg.current_table = str(data.get("current_table") or "")
 
@@ -815,12 +934,24 @@ class AMXConfig:
             # so the CLI prompts setup instead of showing a phantom row built
             # from hardcoded defaults or the active mirror.
             cfg.active_db_profile = ""
+            cfg.active_db_profiles = []
         else:
+            # Drop scope entries that point at deleted profiles. Without this,
+            # an outdated YAML carrying ``active_db_profiles: [foo]`` after
+            # ``foo`` was removed would resurface as a ghost selection.
+            cfg.active_db_profiles = [
+                name for name in cfg.active_db_profiles if name in cfg.db_profiles
+            ]
             try:
                 cfg.apply_active_db_profile()
             except Exception:
                 cfg.active_db_profile = next(iter(cfg.db_profiles.keys()))
                 cfg.db = cfg.db_profiles[cfg.active_db_profile]
+            # Re-anchor the multi-pick scope. apply_active_db_profile may
+            # have changed active_db_profile (or kept it the same); keep
+            # the list in sync as the canonical scope.
+            if not cfg.active_db_profiles and cfg.active_db_profile:
+                cfg.active_db_profiles = [cfg.active_db_profile]
 
         if not cfg.llm_profiles:
             cfg.active_llm_profile = ""
@@ -881,10 +1012,19 @@ class AMXConfig:
             doc_paths_yaml = self._doc_paths_for_yaml()
             code_paths_yaml = self._code_paths_for_yaml()
 
+            # Always write both ``active_db_profile`` (legacy scalar) and
+            # ``active_db_profiles`` (0.11.0 multi-pick). Round-trip
+            # compatibility: a 0.10.x reader keeps working from the
+            # scalar; 0.11+ readers prefer the list. The scalar is
+            # always the first list entry so the two views never diverge.
+            scope_list = list(self.active_db_profiles) if self.active_db_profiles else (
+                [self.active_db_profile] if self.active_db_profile else []
+            )
             data = {
                 "db": _db_to_mapping(self.db),
                 "db_profiles": {k: _db_to_mapping(v) for k, v in self.db_profiles.items()},
                 "active_db_profile": self.active_db_profile,
+                "active_db_profiles": scope_list,
                 "current_schema": self.current_schema,
                 "current_table": self.current_table,
                 "llm": _llm_to_mapping(self.llm),
@@ -1013,6 +1153,13 @@ class AMXConfig:
             self.db = self.db_profiles[name]
 
     def set_active_db_profile(self, name: str) -> None:
+        """Set a single active DB profile (collapses the multi-pick scope).
+
+        Equivalent to ``set_active_db_profiles([name])`` — kept as a
+        thin shim because every existing call site (``cmd_use``,
+        ``_maybe_modify_profiles_before_run``, etc.) speaks the
+        single-name idiom and would be churn-y to migrate.
+        """
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")
         # The autosave triggered by ``active_db_profile = name`` runs save(),
@@ -1022,7 +1169,56 @@ class AMXConfig:
         # fields converge before the YAML is written.
         with self.transaction():
             self.active_db_profile = name
+            # Single-pick collapses the scope. Symmetric: any caller that
+            # explicitly switches the active profile is opting back to a
+            # single-DB workflow.
+            self.active_db_profiles = [name]
             self.db = self.db_profiles[name]
+
+    def set_active_db_profiles(self, names: list[str]) -> None:
+        """0.11.0 multi-pick: set the persisted scope of active DB profiles.
+
+        Validates every name, dedupes preserving order, and mirrors the
+        first entry into the legacy scalar (``active_db_profile``) and
+        the ``cfg.db`` shortcut so single-profile call sites still see
+        the user's primary choice.
+
+        An empty list is rejected — pass ``set_active_db_profile(name)``
+        with a single profile if the user wants to narrow back down.
+        """
+        if not names:
+            raise ValueError("At least one profile name is required")
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for raw in names:
+            n = str(raw or "").strip()
+            if not n or n in seen:
+                continue
+            if n not in self.db_profiles:
+                raise KeyError(f"Unknown DB profile: {n}")
+            seen.add(n)
+            ordered.append(n)
+        if not ordered:
+            raise ValueError("At least one valid profile name is required")
+        with self.transaction():
+            self.active_db_profiles = ordered
+            self.active_db_profile = ordered[0]
+            self.db = self.db_profiles[ordered[0]]
+
+    def effective_db_profiles(self) -> list[str]:
+        """Resolved scope for the current process.
+
+        Returns the persisted ``active_db_profiles`` list when populated,
+        otherwise falls back to the legacy single-active scalar. Always
+        returns a list — empty when no profile is configured. Use this
+        instead of reading ``active_db_profiles`` directly so legacy
+        configs (and tests) without a list field still work.
+        """
+        if self.active_db_profiles:
+            return [n for n in self.active_db_profiles if n in self.db_profiles]
+        if self.active_db_profile and self.active_db_profile in self.db_profiles:
+            return [self.active_db_profile]
+        return []
 
     def upsert_db_profile(self, name: str, db: DBConfig) -> None:
         self.db_profiles[name] = db
@@ -1036,9 +1232,17 @@ class AMXConfig:
         if name == self.active_db_profile and len(self.db_profiles) == 1:
             raise ValueError("Cannot remove the last DB profile")
         del self.db_profiles[name]
+        # 0.11.0: also evict from the multi-pick scope to prevent ghost
+        # selections after a profile is removed.
+        if name in self.active_db_profiles:
+            self.active_db_profiles = [
+                n for n in self.active_db_profiles if n != name
+            ]
         if self.active_db_profile == name:
             self.active_db_profile = next(iter(self.db_profiles.keys()))
             self.db = self.db_profiles[self.active_db_profile]
+            if not self.active_db_profiles:
+                self.active_db_profiles = [self.active_db_profile]
         self._autosave()
 
     def apply_active_llm_profile(self) -> None:

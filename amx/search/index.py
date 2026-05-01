@@ -13,6 +13,7 @@ have not adopted the per-profile API yet.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -156,21 +157,71 @@ class SearchIndex:
         if ids:
             col.delete(ids=ids)
 
-    def query(self, question: str, *, db_profile: str, n_results: int = 8) -> list[dict[str, Any]]:
-        col = self._collection_for(db_profile)
-        res = col.query(
-            query_texts=[question],
-            n_results=max(1, int(n_results)),
-            # No ``where`` clause needed — the collection is profile-scoped,
-            # so cross-profile pollution is impossible regardless of caller
-            # discipline.
+    def query(
+        self,
+        question: str,
+        *,
+        db_profile: str | Sequence[str],
+        n_results: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Vector-similarity query.
+
+        0.11.0 ``db_profile`` accepts either a single profile name (the
+        original signature) or a sequence of profile names — used by
+        ``/ask`` retrieval when the active scope spans multiple DB
+        profiles. Multi-profile queries hit each collection in turn
+        and the union of hits is returned, sorted by distance ascending
+        so the consumer's existing "smaller distance = better" ranking
+        still works. Each hit carries the originating profile in
+        ``metadata['db_profile']`` so callers can render a Profile
+        column or build cross-profile join candidates.
+        """
+        # Normalise to a list so we can treat single + multi uniformly.
+        if isinstance(db_profile, str):
+            profiles = [db_profile]
+        else:
+            seen: set[str] = set()
+            profiles = []
+            for raw in db_profile:
+                name = (raw or "").strip()
+                if name in seen:
+                    continue
+                seen.add(name)
+                profiles.append(name)
+            if not profiles:
+                # Empty filter → no hits. The legacy "" fallback to the
+                # legacy collection still works because the empty list
+                # is distinct from "single empty string".
+                return []
+
+        n_per = max(1, int(n_results))
+        all_hits: list[dict[str, Any]] = []
+        for profile in profiles:
+            col = self._collection_for(profile)
+            res = col.query(
+                query_texts=[question],
+                n_results=n_per,
+                # No ``where`` clause needed — the collection is
+                # profile-scoped, so cross-profile pollution is
+                # impossible regardless of caller discipline.
+            )
+            docs = (res.get("documents") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            distances = (res.get("distances") or [[]])[0]
+            for idx, doc in enumerate(docs):
+                meta = dict(metas[idx]) if idx < len(metas) and metas[idx] else {}
+                # Stamp the originating profile so the agent can group /
+                # filter rows by db_profile downstream.
+                meta.setdefault("db_profile", profile)
+                dist = distances[idx] if idx < len(distances) else None
+                all_hits.append({"text": doc, "metadata": meta, "distance": dist})
+
+        if len(profiles) == 1:
+            return all_hits
+
+        # Multi-profile: rank by distance ascending then trim to the
+        # requested top-N. Hits with no distance sink to the end.
+        all_hits.sort(
+            key=lambda h: (h.get("distance") if h.get("distance") is not None else float("inf"))
         )
-        docs = (res.get("documents") or [[]])[0]
-        metas = (res.get("metadatas") or [[]])[0]
-        distances = (res.get("distances") or [[]])[0]
-        hits: list[dict[str, Any]] = []
-        for idx, doc in enumerate(docs):
-            meta = metas[idx] if idx < len(metas) else {}
-            dist = distances[idx] if idx < len(distances) else None
-            hits.append({"text": doc, "metadata": meta or {}, "distance": dist})
-        return hits
+        return all_hits[:n_per]

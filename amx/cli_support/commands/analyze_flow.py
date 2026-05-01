@@ -841,6 +841,16 @@ def register_analyze_run_command(
             "'batch' = Batch API (async, ~50 %% cheaper)."
         ),
     )
+    @click.option(
+        "--db-profile", "db_profile_override",
+        multiple=True,
+        help=(
+            "Override the DB profile scope for this run. Pass multiple "
+            "times to run the orchestrator once per profile, e.g. "
+            "--db-profile prod_pg --db-profile analytics_bq. When "
+            "omitted, the persisted scope (set by /use-db) is used."
+        ),
+    )
     @click.pass_obj
     def analyze_run(
         cfg: AMXConfig,
@@ -851,38 +861,111 @@ def register_analyze_run_command(
         code_refresh: bool,
         code_profile: str | None,
         mode: str | None,
+        db_profile_override: tuple[str, ...],
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
 
-        try:
-            db_init = DatabaseConnector(cfg.db)
-            label = (
-                f"Testing {cfg.db.backend} connection to {cfg.db.display_summary} ..."
-                if cfg.db.display_summary
-                else f"Testing {cfg.db.backend} connection ..."
-            )
-            with step_spinner(label):
-                if not db_init.test_connection():
-                    error("Cannot connect to database.")
-                    sys.exit(1)
+        # 0.11.0: resolve the effective scope for this run.
+        # Priority: --db-profile (CLI) > persisted active_db_profiles
+        # > legacy single active_db_profile.
+        if db_profile_override:
+            unknown = [n for n in db_profile_override if n not in cfg.db_profiles]
+            if unknown:
+                error(
+                    f"Unknown DB profile(s): {', '.join(unknown)}. "
+                    f"Available: {', '.join(sorted(cfg.db_profiles)) or '(none)'}."
+                )
+                sys.exit(1)
+            scope_names = []
+            seen: set[str] = set()
+            for name in db_profile_override:
+                if name not in seen:
+                    seen.add(name)
+                    scope_names.append(name)
+        else:
+            scope_names = list(cfg.effective_db_profiles())
+        if not scope_names:
+            # Fall through to legacy behaviour: single active profile.
+            scope_names = [cfg.active_db_profile or "default"]
 
-            execute_analyze_run(
-                cfg,
-                schema=schema,
-                table=table,
-                apply=apply,
-                mode=mode,
-                tables_pos=tables_pos,
-                db=db_init,
-                code_profile=code_profile,
-                code_refresh=code_refresh,
-                finalize_scope=finalize_scope,
-                resolve_codebase_for_run=resolve_codebase_for_run,
-                log_event=log_event,
+        is_multi = len(scope_names) > 1
+        if is_multi:
+            info(
+                f"Running analyze across {len(scope_names)} DB profiles: "
+                f"{', '.join(scope_names)}"
             )
+
+        # Save the persisted active pointer so we can restore it after
+        # the loop. The orchestrator reads cfg.db / cfg.active_db_profile
+        # at many points, so we temporarily switch the active profile
+        # for each iteration and restore at the end.
+        original_active = cfg.active_db_profile
+
+        try:
+            for idx, profile_name in enumerate(scope_names, start=1):
+                if is_multi:
+                    heading(
+                        f"Profile {idx}/{len(scope_names)}: {profile_name}"
+                    )
+                # Temporarily activate this profile so cfg.db and the
+                # downstream orchestrator see the right DB. We do NOT
+                # call cfg.save() inside the loop — the multi-profile
+                # context is per-call, not persisted.
+                if profile_name in cfg.db_profiles:
+                    object.__setattr__(cfg, "active_db_profile", profile_name)
+                    cfg.db = cfg.db_profiles[profile_name]
+
+                db_init = DatabaseConnector(cfg.db)
+                label = (
+                    f"Testing {cfg.db.backend} connection to {cfg.db.display_summary} ..."
+                    if cfg.db.display_summary
+                    else f"Testing {cfg.db.backend} connection ..."
+                )
+                with step_spinner(label):
+                    if not db_init.test_connection():
+                        error(
+                            f"Cannot connect to database for profile "
+                            f"'{profile_name}'."
+                        )
+                        if is_multi:
+                            warn(
+                                "Skipping this profile and continuing with "
+                                "the remaining profiles in scope."
+                            )
+                            continue
+                        sys.exit(1)
+                # 0.11.0: Phase 8 — flag unpinned-database profiles on
+                # 2-level backends so the user knows up front the
+                # subsequent listings may be empty.
+                try:
+                    from amx.cli_support.catalog_picker import warn_when_database_unpinned
+                    warn_when_database_unpinned(db_init)
+                except Exception:
+                    pass
+
+                execute_analyze_run(
+                    cfg,
+                    schema=schema,
+                    table=table,
+                    apply=apply,
+                    mode=mode,
+                    tables_pos=tables_pos,
+                    db=db_init,
+                    code_profile=code_profile,
+                    code_refresh=code_refresh,
+                    finalize_scope=finalize_scope,
+                    resolve_codebase_for_run=resolve_codebase_for_run,
+                    log_event=log_event,
+                )
         except KeyboardInterrupt:
             warn("User interrupted process.")
             return
         except Exception as exc:
             raise click.ClickException(str(exc))
+        finally:
+            # Restore the original active pointer so subsequent commands
+            # still see the user's persisted choice.
+            if original_active and original_active in cfg.db_profiles:
+                object.__setattr__(cfg, "active_db_profile", original_active)
+                cfg.db = cfg.db_profiles[original_active]

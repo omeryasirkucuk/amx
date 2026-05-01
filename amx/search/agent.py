@@ -110,11 +110,40 @@ class SearchAgent(
         *,
         llm_factory: type[LLMProvider] = LLMProvider,
         inventory_db_factory: Callable[[], DatabaseConnector] | None = None,
+        db_profiles: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.cfg = cfg
         self.catalog = catalog
-        self.settings = catalog.get_settings(cfg.active_db_profile or "default")
-        self.db_profile = cfg.active_db_profile or "default"
+        # 0.11.0 multi-DB scope: when db_profiles is supplied (typically
+        # from `/ask --db-profile A --db-profile B`), retrieval and
+        # planning union rows across those profiles. When omitted we
+        # fall back to the persisted active scope (cfg.active_db_profiles)
+        # which collapses to a single profile in the legacy single-DB
+        # workflow. ``self.db_profile`` (the legacy scalar) keeps
+        # pointing at the FIRST profile in the scope so all 27+ existing
+        # mixin call sites that read it directly stay valid — the scalar
+        # represents the "primary / write-back / settings-anchor"
+        # profile, the list represents the full retrieval scope.
+        configured = list(db_profiles) if db_profiles else cfg.effective_db_profiles()
+        if not configured:
+            # Legacy fallback when no profiles are configured at all —
+            # mirror the previous "default" sentinel used by tests so
+            # behaviour is unchanged on fresh installs.
+            configured = [cfg.active_db_profile or "default"]
+        # Dedupe defensively (cfg already does this on save, but explicit
+        # multi-pick CLI invocations might pass duplicates).
+        seen: set[str] = set()
+        scope: list[str] = []
+        for name in configured:
+            if name and name not in seen:
+                seen.add(name)
+                scope.append(name)
+        self.db_profiles: list[str] = scope
+        self.db_profile: str = scope[0] if scope else "default"
+        # Settings: per-profile semantics survive multi-mode by anchoring
+        # on the primary profile (the typical case is homogeneous tuning
+        # across the user's scope).
+        self.settings = catalog.get_settings(self.db_profile)
         self._llm_factory = llm_factory
         self._inventory_db_factory = inventory_db_factory or (lambda: DatabaseConnector(self.cfg.db))
         self._llm: LLMProvider | None = None
@@ -124,6 +153,32 @@ class SearchAgent(
         # Per-process fallback used when no SQLiteHistoryStore has been
         # initialised (some unit-test paths). Keyed by db_profile:llm_profile.
         self._fallback_memory: list[dict[str, Any]] = []
+
+    # ── Multi-DB scope helpers ────────────────────────────────────────────
+
+    @property
+    def is_multi_profile(self) -> bool:
+        """True when retrieval should union rows across multiple profiles.
+
+        Mixin code that wants to short-circuit a same-profile assumption
+        (e.g. join inference, write-back) can branch on this flag.
+        """
+        return len(self.db_profiles) > 1
+
+    @property
+    def db_profile_filter(self) -> "str | list[str]":
+        """Filter argument for catalog read methods.
+
+        Returns the bare scalar when single-profile (preserving the
+        most-tested code path) and the full list when multi-profile.
+        Catalog mixins normalise via ``_db_profile_clause`` so both
+        shapes are accepted; this just picks the "minimal" form so
+        the legacy single-profile retrieval path still emits exactly
+        the same SQL as before.
+        """
+        if len(self.db_profiles) <= 1:
+            return self.db_profile
+        return list(self.db_profiles)
 
     # Tokens that — alone or in a short greeting — should not be sent to the
     # LLM-driven planner. ``_handle_chitchat`` short-circuits these with a

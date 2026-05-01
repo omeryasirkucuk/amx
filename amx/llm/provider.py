@@ -22,9 +22,50 @@ log = get_logger("llm.provider")
 _litellm_module: ModuleType | None = None
 
 
+def _configure_ssl_environment() -> None:
+    """Honor ``AMX_CA_BUNDLE`` / ``AMX_INSECURE_SSL`` so corporate networks work.
+
+    Corporate environments routinely run TLS-inspecting proxies (Zscaler,
+    Netskope, etc.) that re-sign every HTTPS connection with an internal
+    root CA. Out of the box, ``httpx`` / ``openai`` / ``litellm`` don't
+    trust that CA → "self-signed certificate in certificate chain" and
+    every LLM call fails. We expose two env vars to make this fixable
+    without touching code:
+
+    - ``AMX_CA_BUNDLE=/path/to/corp_root.pem`` — point requests / httpx /
+      curl at the corporate CA bundle. Most reliable fix.
+    - ``AMX_INSECURE_SSL=1`` — disable SSL verification entirely. Useful
+      for a one-shot test; do NOT use in production.
+    """
+    ca_bundle = os.getenv("AMX_CA_BUNDLE", "").strip()
+    if ca_bundle and os.path.exists(ca_bundle):
+        # ``requests`` / ``httpx`` / ``urllib3`` / ``curl`` all read these.
+        for var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
+            os.environ.setdefault(var, ca_bundle)
+
+    insecure = os.getenv("AMX_INSECURE_SSL", "").strip().lower()
+    if insecure in ("1", "true", "yes", "on"):
+        try:
+            import litellm as _lm
+
+            _lm.ssl_verify = False  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        # Also tell the underlying httpx clients used by openai/anthropic.
+        os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
+        log.warning(
+            "AMX_INSECURE_SSL=1 — SSL certificate verification is DISABLED. "
+            "Use only for diagnostics; set AMX_CA_BUNDLE in production."
+        )
+
+
 def _litellm() -> ModuleType:
     global _litellm_module
     if _litellm_module is None:
+        # Apply corp-CA / insecure-SSL overrides BEFORE the first litellm call
+        # so the underlying httpx client picks them up at construction time.
+        _configure_ssl_environment()
+
         import litellm as lm
 
         for logger_name in ("LiteLLM", "litellm"):
@@ -33,6 +74,13 @@ def _litellm() -> ModuleType:
             ext_logger.addHandler(logging.NullHandler())
             ext_logger.propagate = False
             ext_logger.setLevel(logging.CRITICAL + 1)
+
+        # Re-apply ssl_verify after import in case env-driven flag was set.
+        if os.getenv("AMX_INSECURE_SSL", "").strip().lower() in ("1", "true", "yes", "on"):
+            try:
+                lm.ssl_verify = False  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         _litellm_module = lm
     return _litellm_module
@@ -180,6 +228,20 @@ def _classify_fatal_llm_error(exc: BaseException) -> FatalLLMError | None:
     """
     msg = str(exc)
     msg_lower = msg.lower()
+
+    # Corporate SSL inspection / self-signed CA bundles cause every retry to
+    # fail the same way — short-circuit so the user gets the fix-it message
+    # immediately instead of three repeated "certificate verify failed"
+    # warnings followed by a generic stack trace.
+    if "certificate verify failed" in msg_lower or "self-signed certificate" in msg_lower or "ssl: certificate" in msg_lower:
+        return FatalLLMError(
+            "SSL certificate verification failed — your network is using a "
+            "TLS-inspecting proxy whose root CA Python doesn't trust. "
+            "Fix: set AMX_CA_BUNDLE=/path/to/corp_root.pem (preferred), or "
+            "AMX_INSECURE_SSL=1 for diagnostics only.",
+            original_message=msg,
+        )
+
     status: int | None = None
     for attr in ("status_code", "code"):
         candidate = getattr(exc, attr, None)
