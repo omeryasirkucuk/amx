@@ -622,6 +622,9 @@ def execute_analyze_run(
                         selected_count=total_assets,
                         planned_count=total_assets,
                         review_strategy=review_strategy,
+                        llm_profile=cfg.active_llm_profile,
+                        doc_profile=cfg.active_doc_profile or None,
+                        code_profile=cfg.active_code_profile or None,
                     )
                 except Exception as exc:
                     warn(f"History persistence disabled for this run: {exc}")

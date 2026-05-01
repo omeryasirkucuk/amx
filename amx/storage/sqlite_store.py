@@ -389,6 +389,12 @@ class SQLiteHistoryStore:
             ("processed_count", "INTEGER NOT NULL DEFAULT 0"),
             ("applied_count", "INTEGER NOT NULL DEFAULT 0"),
             ("review_strategy", "TEXT"),
+            # 0.11.x — profile names captured for /compare so runs that
+            # differ only by LLM/doc/code profile can be told apart.
+            # Older rows stay NULL and render as '—' in comparisons.
+            ("llm_profile", "TEXT"),
+            ("doc_profile", "TEXT"),
+            ("code_profile", "TEXT"),
         ):
             if col_name in existing_cols:
                 continue
@@ -422,6 +428,9 @@ class SQLiteHistoryStore:
         selected_count: int = 0,
         planned_count: int = 0,
         review_strategy: str | None = None,
+        llm_profile: str | None = None,
+        doc_profile: str | None = None,
+        code_profile: str | None = None,
     ) -> int:
         started = time.time()
         # Sensible defaults if caller didn't pass counts explicitly: derive
@@ -466,8 +475,9 @@ class SQLiteHistoryStore:
                     started_at, status, command, mode,
                     db_backend, db_profile, llm_provider, llm_model, scope_json,
                     selected_count, planned_count, processed_count, applied_count,
-                    review_strategy
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                    review_strategy,
+                    llm_profile, doc_profile, code_profile
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)
                 """,
                 (
                     started,
@@ -482,6 +492,9 @@ class SQLiteHistoryStore:
                     int(selected_count),
                     int(planned_count),
                     str(review_strategy or ""),
+                    (llm_profile or None),
+                    (doc_profile or None),
+                    (code_profile or None),
                 ),
             )
             return int(cur.lastrowid)
@@ -738,6 +751,9 @@ class SQLiteHistoryStore:
                     r.db_profile,
                     r.llm_provider,
                     r.llm_model,
+                    r.llm_profile,
+                    r.doc_profile,
+                    r.code_profile,
                     r.scope_json,
                     COUNT(rr.id)          AS total_alternatives,
                     SUM(CASE WHEN rr.evaluation IS NULL OR rr.evaluation = ''
@@ -797,7 +813,9 @@ class SQLiteHistoryStore:
             rows = conn.execute(
                 """
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
-                       db_backend, db_profile, llm_provider, llm_model, scope_json, metrics_json
+                       db_backend, db_profile, llm_provider, llm_model,
+                       llm_profile, doc_profile, code_profile,
+                       scope_json, metrics_json
                 FROM analysis_runs
                 ORDER BY started_at DESC
                 LIMIT ?
@@ -808,6 +826,64 @@ class SQLiteHistoryStore:
         for r in rows:
             d = dict(r)
             for key in ("scope_json", "metrics_json"):
+                raw = d.get(key)
+                if isinstance(raw, str) and raw:
+                    try:
+                        d[key] = json.loads(raw)
+                    except Exception:
+                        pass
+            out.append(d)
+        return out
+
+    def find_runs_for_scope(
+        self,
+        *,
+        schema: str | None = None,
+        table: str | None = None,
+        command_filter: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return runs whose scope_json mentions ``schema`` (and optionally ``table``).
+
+        Used by ``/compare`` to auto-pick the last N runs touching a
+        given asset. Filter is a LIKE match on the JSON-encoded scope —
+        not a full JSON search, but adequate for the typical
+        ``{"<schema>": ["<table>", ...]}`` shape produced by AMX.
+        ``command_filter`` accepts ``"analyze.run"``, ``"search.ask"``,
+        or ``None`` (any).
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if command_filter:
+            clauses.append("command = ?")
+            params.append(command_filter)
+        if schema:
+            clauses.append("scope_json LIKE ?")
+            params.append(f'%"{schema}"%')
+        if table:
+            clauses.append("scope_json LIKE ?")
+            params.append(f'%"{table}"%')
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, started_at, ended_at, duration_sec, status, command, mode,
+                       db_backend, db_profile, llm_provider, llm_model,
+                       llm_profile, doc_profile, code_profile,
+                       scope_json, metrics_json, tokens_json,
+                       selected_count, planned_count, processed_count, applied_count
+                FROM analysis_runs
+                {where_sql}
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            for key in ("scope_json", "metrics_json", "tokens_json"):
                 raw = d.get(key)
                 if isinstance(raw, str) and raw:
                     try:
