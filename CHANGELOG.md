@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Nested pause/resume in LiveDisplay (the "Only one live display may be active at once" error after `accept-all` review)
+
+User report: after picking `accept-all` for a column-review prompt during `/run`, AMX printed `✗ Only one live display may be active at once` and then drew two stacked panels.
+
+Root cause traced: `TableProcessor` paused the live display before invoking `_human_review`, and `ask_choice` *inside* the review paused it AGAIN via `_live_paused_for_input`. The inner `resume()` restarted Rich's `Live` early; when the outer `resume()` ran, Rich rejected starting an already-started Live with that exact message.
+
+- **Refcounted pause/resume** — `LiveDisplay` now tracks a `_pause_depth` counter. Only the **outermost** pause actually stops Rich's Live; inner pauses just bump the depth. Mirroring resumes only restart on the way back to depth 0. Nested pause/resume across multiple call sites is now safe.
+- **`start()` resets `_pause_depth`** so a leftover counter from a previous lifecycle can't asymmetrically affect the next session.
+- **`pause` / `resume` are no-ops** when the display was never started or when called with depth 0 — defensive callers don't need to track whether they actually paused.
+- **4 new regression tests** in `LiveDisplayNestedPauseResumeTests` lock the user-reported scenario, plus three edge cases (resume-with-zero-depth, pause-on-uninstalled-display, depth reset on start). End-to-end script with the user's exact pause/pause/resume/resume sequence validates the fix.
+
 ### Fixed — Postgres database picker + quieter / shorter warnings
 
 User report: with a postgres profile that had no `database` pinned, `/run` connected to the `postgres` system DB (the fallback added in PR #54), enumerated only the empty `public` schema, and left the user wondering why their actual data was invisible. Plus three noisy warnings cluttered the run flow.
