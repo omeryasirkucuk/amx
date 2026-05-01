@@ -90,7 +90,9 @@ class UniversalMetadataAdapter:
                 referenced_by=tuple(dict(item) for item in profile.referenced_by),
             ),
             statistical=StatisticalSignal(row_count=int(profile.row_count or 0)),
-            semantic=SemanticSignal(description=profile.existing_comment or "", source="database_comment"),
+            semantic=SemanticSignal(
+                description=profile.existing_comment or "", source="database_comment"
+            ),
             provenance=("table_profile",),
         )
         columns = [
@@ -123,7 +125,9 @@ class UniversalMetadataAdapter:
                 max_value=column.max_val,
                 samples=tuple(column.samples or ()),
             ),
-            semantic=SemanticSignal(description=column.existing_comment or "", source="database_comment"),
+            semantic=SemanticSignal(
+                description=column.existing_comment or "", source="database_comment"
+            ),
             provenance=("table_profile", "column_profile"),
         )
 

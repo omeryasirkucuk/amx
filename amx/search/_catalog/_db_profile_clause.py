@@ -15,9 +15,8 @@ into hand-written queries.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Union
 
-DBProfileFilter = Union[str, Sequence[str]]
+DBProfileFilter = str | Sequence[str]
 
 
 def _normalise_profiles(value: DBProfileFilter) -> list[str]:

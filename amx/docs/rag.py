@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import chromadb
 from langchain_community.document_loaders import (
@@ -85,7 +85,9 @@ class RAGStore:
             chunk_overlap=200,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
-        self.source_filters = [self._normalize_source_filter(s) for s in (source_filters or []) if s]
+        self.source_filters = [
+            self._normalize_source_filter(s) for s in (source_filters or []) if s
+        ]
 
     def delete_chunks_for_sources(self, sources: list[str]) -> int:
         """Remove chunks by resolved file path or original configured source path."""
@@ -169,7 +171,9 @@ class RAGStore:
 
     def rerank(self, question: str, hits: list[dict]) -> list[dict]:
         """Prioritize explanatory chunks over repetitive technical headers."""
-        q_tokens = {token for token in re.findall(r"\w+", (question or "").lower()) if len(token) > 2}
+        q_tokens = {
+            token for token in re.findall(r"\w+", (question or "").lower()) if len(token) > 2
+        }
 
         def _score(hit: dict) -> float:
             text = str(hit.get("text") or "")

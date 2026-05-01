@@ -99,7 +99,9 @@ def validate_assets_in_schema(db: object, schema: str, names: list[str]) -> list
 
     if not names:
         raise ValueError("No assets selected.")
-    available = [asset[0] for asset in _list_assets(db, schema, label=f"Validating assets in {schema}")]
+    available = [
+        asset[0] for asset in _list_assets(db, schema, label=f"Validating assets in {schema}")
+    ]
     available_set = set(available)
     by_lower = {asset.lower(): asset for asset in available}
     resolved: list[str] = []
@@ -191,7 +193,11 @@ def resolve_run_scope(
 
     if scope_level == "Schema":
         schemas = _list_schemas(db, label="Listing schemas for schema scope")
-        selected = schemas if len(schemas) == 1 else ask_multi_choice("Select schema(s) to analyze", schemas)
+        selected = (
+            schemas
+            if len(schemas) == 1
+            else ask_multi_choice("Select schema(s) to analyze", schemas)
+        )
         result: dict[str, list[str]] = {}
         for schema_name in selected:
             names = [asset[0] for asset in _list_assets(db, schema_name)]
@@ -203,7 +209,9 @@ def resolve_run_scope(
         if cfg.current_schema:
             if cfg.current_table:
                 return {cfg.current_schema: [cfg.current_table]}
-            return {cfg.current_schema: [asset[0] for asset in _list_assets(db, cfg.current_schema)]}
+            return {
+                cfg.current_schema: [asset[0] for asset in _list_assets(db, cfg.current_schema)]
+            }
         warn(
             "Default scope requires /db context. Set /schema (and optionally /table) first, "
             "or pick Schema/Asset scope."
@@ -259,7 +267,9 @@ def resolve_run_scope(
             column_overrides={(schema_name, table_name): {column_name}},
         )
 
-    schema_name = ask_choice("Select schema", _list_schemas(db, label="Listing schemas for asset scope"))
+    schema_name = ask_choice(
+        "Select schema", _list_schemas(db, label="Listing schemas for asset scope")
+    )
     chosen = pick_assets(asset_display_list(db, schema_name), ask_multi_choice=ask_multi_choice)
     return {schema_name: chosen}
 
@@ -359,7 +369,9 @@ def resolve_codebase_for_run(
     all_tables: list[str] = []
     column_names: list[str] = []
     seen_columns: set[str] = set()
-    all_assets_flat = [(schema_name, table_name) for schema_name, tables in scope.items() for table_name in tables]
+    all_assets_flat = [
+        (schema_name, table_name) for schema_name, tables in scope.items() for table_name in tables
+    ]
     total_assets = sum(len(tables) for tables in scope.values())
 
     with step_spinner(f"Collecting column names from {total_assets} asset(s)"):
@@ -376,7 +388,9 @@ def resolve_codebase_for_run(
 
     catalog_set: set[str] = set()
     for schema_name in scope:
-        for name, _kind in _list_assets(db, schema_name, label=f"Loading catalog assets in {schema_name}"):
+        for name, _kind in _list_assets(
+            db, schema_name, label=f"Loading catalog assets in {schema_name}"
+        ):
             all_tables.append(name)
             catalog_set.add(name.lower())
     catalog = frozenset(catalog_set)

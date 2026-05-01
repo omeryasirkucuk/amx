@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from amx.config import DBConfig
     from amx.db.adapters.base import DatabaseAdapter
 
-_BACKEND_REGISTRY: dict[str, type["DatabaseAdapter"]] = {}
+_BACKEND_REGISTRY: dict[str, type[DatabaseAdapter]] = {}
 
 SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
 
@@ -27,14 +27,13 @@ def _ensure_registry() -> None:
     _BACKEND_REGISTRY["bigquery"] = BigQueryAdapter
 
 
-def get_adapter(cfg: "DBConfig") -> "DatabaseAdapter":
+def get_adapter(cfg: DBConfig) -> DatabaseAdapter:
     """Return the correct adapter instance for *cfg.backend*."""
     _ensure_registry()
     backend = getattr(cfg, "backend", "postgresql") or "postgresql"
     cls = _BACKEND_REGISTRY.get(backend)
     if cls is None:
         raise ValueError(
-            f"Unknown database backend {backend!r}. "
-            f"Supported: {', '.join(SUPPORTED_BACKENDS)}"
+            f"Unknown database backend {backend!r}. Supported: {', '.join(SUPPORTED_BACKENDS)}"
         )
     return cls(cfg)

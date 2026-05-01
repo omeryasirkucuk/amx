@@ -5,11 +5,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from amx.agents.base import AgentContext, BaseAgent, Confidence, MetadataSuggestion, apply_logprob_confidence
-from amx.config import PromptDetail, prompt_detail_for
+from amx.agents.base import (
+    AgentContext,
+    BaseAgent,
+    Confidence,
+    MetadataSuggestion,
+    apply_logprob_confidence,
+)
+from amx.config import PromptDetail
 from amx.llm.provider import FatalLLMError, LLMProvider
 from amx.utils.console import step_spinner
-from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, LOG_DIR, get_logger
+from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.profile")
@@ -84,13 +90,9 @@ def _build_system_prompt(
     else:
         alt_instruction = f"Up to {n} alternative descriptions ranked by likelihood."
         extra_items = ""
-        desc_lines = "\n".join(
-            f"DESCRIPTION_{i}: <alternative>"
-            for i in range(2, n + 1)
-        )
+        desc_lines = "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1))
         table_desc_lines = "\n".join(
-            f"TABLE_DESCRIPTION_{i}: <alternative table description>"
-            for i in range(2, n + 1)
+            f"TABLE_DESCRIPTION_{i}: <alternative table description>" for i in range(2, n + 1)
         )
     if (description_verbosity or "brief").lower() == "detailed":
         description_length_rule = (
@@ -103,14 +105,17 @@ def _build_system_prompt(
         )
     else:
         description_length_rule = "A concise description (1-2 sentences)."
-    return _BASE_SYSTEM_PROMPT.format(
-        target_language=target_language,
-        description_length_rule=description_length_rule,
-        alt_instruction=alt_instruction,
-        extra_items=extra_items,
-        desc_lines=desc_lines,
-        table_desc_lines=table_desc_lines,
-    ).strip() + "\n"
+    return (
+        _BASE_SYSTEM_PROMPT.format(
+            target_language=target_language,
+            description_length_rule=description_length_rule,
+            alt_instruction=alt_instruction,
+            extra_items=extra_items,
+            desc_lines=desc_lines,
+            table_desc_lines=table_desc_lines,
+        ).strip()
+        + "\n"
+    )
 
 
 class ProfileAgent(BaseAgent):
@@ -163,11 +168,11 @@ class ProfileAgent(BaseAgent):
 
         all_suggestions: list[MetadataSuggestion] = []
         batches = [
-            columns[i : i + self.batch_size]
-            for i in range(0, len(columns), self.batch_size)
+            columns[i : i + self.batch_size] for i in range(0, len(columns), self.batch_size)
         ]
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         max_workers = self._profile_batch_workers(len(batches))
 
         if max_workers == 1:
@@ -175,7 +180,10 @@ class ProfileAgent(BaseAgent):
                 col_names = ", ".join(c["name"] for c in batch)
                 log.info(
                     "Profile agent batch %d/%d (%d cols: %s)",
-                    idx, len(batches), len(batch), col_names,
+                    idx,
+                    len(batches),
+                    len(batch),
+                    col_names,
                 )
                 try:
                     batch_ctx = self._ctx_with_columns(ctx, batch)
@@ -194,7 +202,9 @@ class ProfileAgent(BaseAgent):
                     # warnings while iterating through tables.
                     raise
                 except Exception as exc:
-                    self._record_diagnostic(f"Profile Agent batch {idx}/{len(batches)} failed: {exc}")
+                    self._record_diagnostic(
+                        f"Profile Agent batch {idx}/{len(batches)} failed: {exc}"
+                    )
                     log.error("Profile agent batch %d failed: %s", idx, exc)
         else:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -203,7 +213,10 @@ class ProfileAgent(BaseAgent):
                     col_names = ", ".join(c["name"] for c in batch)
                     log.info(
                         "Profile agent batch %d/%d (%d cols: %s)",
-                        idx, len(batches), len(batch), col_names,
+                        idx,
+                        len(batches),
+                        len(batch),
+                        col_names,
                     )
                     batch_ctx = self._ctx_with_columns(ctx, batch)
                     fut = ex.submit(
@@ -229,7 +242,9 @@ class ProfileAgent(BaseAgent):
                             other_fut.cancel()
                     except Exception as exc:
                         idx = fut_to_batch[fut]
-                        self._record_diagnostic(f"Profile Agent batch {idx}/{len(batches)} failed: {exc}")
+                        self._record_diagnostic(
+                            f"Profile Agent batch {idx}/{len(batches)} failed: {exc}"
+                        )
                         log.error("Profile agent batch %d failed: %s", idx, exc)
                 if fatal_to_raise is not None:
                     raise fatal_to_raise
@@ -240,7 +255,9 @@ class ProfileAgent(BaseAgent):
             )
             log.warning(
                 "Profile agent produced zero suggestions across %d batches for %s.%s.",
-                len(batches), ctx.schema, ctx.table,
+                len(batches),
+                ctx.schema,
+                ctx.table,
             )
             return all_suggestions
 
@@ -263,7 +280,8 @@ class ProfileAgent(BaseAgent):
         remaining_names = [
             str(c.get("name", "")).strip()
             for c in full_columns
-            if str(c.get("name", "")).strip() and str(c.get("name", "")).strip() not in current_names
+            if str(c.get("name", "")).strip()
+            and str(c.get("name", "")).strip() not in current_names
         ]
         extra_setting = int(getattr(self.llm.cfg, "batch_context_column_names", 0))
         if extra_setting == -1:
@@ -286,7 +304,7 @@ class ProfileAgent(BaseAgent):
             existing_metadata=ctx.existing_metadata,
         )
 
-    def collect_messages(self, ctx: AgentContext) -> "list":
+    def collect_messages(self, ctx: AgentContext) -> list:
         """Return ``BatchRequest`` objects for every profile prompt without calling LLM.
 
         Used by the orchestrator in Batch mode.
@@ -303,16 +321,13 @@ class ProfileAgent(BaseAgent):
         batches = (
             [columns]
             if len(columns) <= self.batch_size
-            else [
-                columns[i : i + self.batch_size]
-                for i in range(0, len(columns), self.batch_size)
-            ]
+            else [columns[i : i + self.batch_size] for i in range(0, len(columns), self.batch_size)]
         )
         requests: list[BatchRequest] = []
         for idx, batch in enumerate(batches):
             batch_ctx = self._ctx_with_columns(ctx, batch)
             msgs = self._build_messages(batch_ctx)
-            
+
             mt = max(self.llm.cfg.max_tokens, len(batch) * 150)
             requests.append(
                 BatchRequest(
@@ -353,14 +368,17 @@ class ProfileAgent(BaseAgent):
         messages = self._build_messages(ctx)
         log.debug(
             "Profile agent prompt for %s.%s: %d chars, %d columns",
-            ctx.schema, ctx.table, len(messages[-1]["content"]), len(columns),
+            ctx.schema,
+            ctx.table,
+            len(messages[-1]["content"]),
+            len(columns),
         )
         est = estimate_tokens(messages)
         label = f"Profile Agent {batch_label}" if batch_label else "Profile Agent"
-        
+
         # dynamically adjust max_tokens based on columns count if model defaults are too low
         mt = max(self.llm.cfg.max_tokens, len(columns) * 150)
-        
+
         try:
             with step_spinner(label, token_estimate=est):
                 result = self.llm.chat(messages, max_tokens=mt)
@@ -380,15 +398,15 @@ class ProfileAgent(BaseAgent):
             log.warning(
                 "LLM returned an EMPTY response for %s.%s (%d columns). "
                 "Check model name, API key, and billing on the provider dashboard.",
-                ctx.schema, ctx.table, len(columns),
+                ctx.schema,
+                ctx.table,
+                len(columns),
             )
             return []
 
         suggestions = self._parse_response(response, ctx)
         if not suggestions and len(response.strip()) > 20:
-            log.warning(
-                "Strict parse found no COLUMN:/DESCRIPTION_ blocks; trying loose parser."
-            )
+            log.warning("Strict parse found no COLUMN:/DESCRIPTION_ blocks; trying loose parser.")
             suggestions = self._parse_response_loose(response, ctx)
         if not suggestions:
             suggestions = self._parse_by_known_column_names(response, ctx)
@@ -400,8 +418,7 @@ class ProfileAgent(BaseAgent):
                 f"Raw reply saved to {LAST_PROFILE_RESPONSE_FILE}."
             )
             log.warning(
-                "Profile agent produced zero suggestions for batch. "
-                "Raw reply saved to %s",
+                "Profile agent produced zero suggestions for batch. Raw reply saved to %s",
                 LAST_PROFILE_RESPONSE_FILE,
             )
             return []
@@ -422,9 +439,7 @@ class ProfileAgent(BaseAgent):
                 f"# schema={ctx.schema} table={ctx.table}\n"
                 f"# ---\n\n"
             )
-            Path(LAST_PROFILE_RESPONSE_FILE).write_text(
-                header + (response or ""), encoding="utf-8"
-            )
+            Path(LAST_PROFILE_RESPONSE_FILE).write_text(header + (response or ""), encoding="utf-8")
         except OSError as exc:
             log.debug("Could not write %s: %s", LAST_PROFILE_RESPONSE_FILE, exc)
 
@@ -462,7 +477,7 @@ class ProfileAgent(BaseAgent):
             rf"^\s*[-*]\s*\**{escaped}\**(?:\s*[\u2013\-:])+\s*(.+)$",
             rf"^\s*\**{escaped}\**(?:\s*[\u2013\-:])+\s*(.+)$",
             rf"^\s*COLUMN:?\s*{escaped}\s*[:\-]\s*(.+)$",
-            rf"(?:^|\n)\s*#{1,4}\s+{escaped}\s*[:\-]?\s*(.+)$",
+            rf"(?:^|\n)\s*#{1, 4}\s+{escaped}\s*[:\-]?\s*(.+)$",
         ]
         for pat in patterns:
             m = re.search(pat, text, flags)
@@ -509,8 +524,12 @@ class ProfileAgent(BaseAgent):
         # ── Keys and constraints ────────────────────────────────────────────
         if pd.include_pk_fk:
             lines.append(f"Primary key: {p.get('primary_key') or []}")
-            lines.append(f"Outgoing foreign keys (upstream dependencies): {p.get('foreign_keys') or []}")
-            lines.append(f"Incoming foreign keys (downstream dependents): {p.get('referenced_by') or []}")
+            lines.append(
+                f"Outgoing foreign keys (upstream dependencies): {p.get('foreign_keys') or []}"
+            )
+            lines.append(
+                f"Incoming foreign keys (downstream dependents): {p.get('referenced_by') or []}"
+            )
         if pd.include_unique_check:
             lines.append(f"Unique constraints: {p.get('unique_constraints') or []}")
             lines.append(f"Check constraints: {p.get('check_constraints') or []}")
@@ -596,11 +615,17 @@ class ProfileAgent(BaseAgent):
             line = line.strip()
             if line.startswith("COLUMN:"):
                 if current_col and descs:
-                    suggestions.append(MetadataSuggestion(
-                        schema=ctx.schema, table=ctx.table, column=current_col,
-                        suggestions=descs, confidence=conf, reasoning=reasoning,
-                        source="db_profile",
-                    ))
+                    suggestions.append(
+                        MetadataSuggestion(
+                            schema=ctx.schema,
+                            table=ctx.table,
+                            column=current_col,
+                            suggestions=descs,
+                            confidence=conf,
+                            reasoning=reasoning,
+                            source="db_profile",
+                        )
+                    )
                 current_col = line.split(":", 1)[1].strip()
                 descs = []
                 conf = Confidence.MEDIUM
@@ -617,23 +642,38 @@ class ProfileAgent(BaseAgent):
                 table_descs.append(line.split(":", 1)[1].strip())
             elif line.startswith("TABLE_CONFIDENCE:"):
                 tconf_str = line.split(":", 1)[1].strip().upper()
-                table_conf = Confidence[tconf_str] if tconf_str in Confidence.__members__ else Confidence.MEDIUM
+                table_conf = (
+                    Confidence[tconf_str]
+                    if tconf_str in Confidence.__members__
+                    else Confidence.MEDIUM
+                )
 
         if current_col and descs:
-            suggestions.append(MetadataSuggestion(
-                schema=ctx.schema, table=ctx.table, column=current_col,
-                suggestions=descs, confidence=conf, reasoning=reasoning,
-                source="db_profile",
-            ))
+            suggestions.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=current_col,
+                    suggestions=descs,
+                    confidence=conf,
+                    reasoning=reasoning,
+                    source="db_profile",
+                )
+            )
 
         # Append the table-level suggestion once with ALL alternatives
         if table_descs:
-            suggestions.append(MetadataSuggestion(
-                schema=ctx.schema, table=ctx.table, column=None,
-                suggestions=table_descs, confidence=table_conf,
-                reasoning="Inferred from table name, columns, and data profile",
-                source="db_profile",
-            ))
+            suggestions.append(
+                MetadataSuggestion(
+                    schema=ctx.schema,
+                    table=ctx.table,
+                    column=None,
+                    suggestions=table_descs,
+                    confidence=table_conf,
+                    reasoning="Inferred from table name, columns, and data profile",
+                    source="db_profile",
+                )
+            )
 
         return suggestions
 
@@ -655,7 +695,9 @@ class ProfileAgent(BaseAgent):
             m_tc = re.search(r"(?im)TABLE_CONFIDENCE:\s*(HIGH|MEDIUM|LOW)", t)
             if m_tc:
                 tconf_str = m_tc.group(1).upper()
-            tconf = Confidence[tconf_str] if tconf_str in Confidence.__members__ else Confidence.MEDIUM
+            tconf = (
+                Confidence[tconf_str] if tconf_str in Confidence.__members__ else Confidence.MEDIUM
+            )
             suggestions.append(
                 MetadataSuggestion(
                     schema=ctx.schema,

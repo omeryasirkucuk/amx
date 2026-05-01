@@ -31,9 +31,7 @@ LAST_PROFILE_RESPONSE_FILE = LOG_DIR / "last_profile_agent_response.txt"
 
 # ── Request-id context propagation ────────────────────────────────────
 
-_request_id_var: ContextVar[str | None] = ContextVar(
-    "amx_request_id", default=None
-)
+_request_id_var: ContextVar[str | None] = ContextVar("amx_request_id", default=None)
 
 
 def set_request_id(request_id: str | None = None) -> str:

@@ -32,7 +32,6 @@ from amx.utils.console import (
     warn,
 )
 
-
 _LABEL_MINILM = "MiniLM"
 _LABEL_OPENAI = "OpenAI-compatible"
 _LABEL_LOCAL = "Local sentence-transformers"
@@ -43,11 +42,11 @@ _LABEL_CANCEL = "Cancel"
 # these — they only differ in base_url and the API-key value, which is why
 # we surface the URLs here rather than adding bespoke kinds for each.
 _OPENAI_COMPATIBLE_EXAMPLES: list[tuple[str, str]] = [
-    ("OpenAI",       "https://api.openai.com/v1"),
-    ("OpenRouter",   "https://openrouter.ai/api/v1"),
-    ("Together",     "https://api.together.xyz/v1"),
-    ("Mistral",      "https://api.mistral.ai/v1"),
-    ("DeepInfra",    "https://api.deepinfra.com/v1/openai"),
+    ("OpenAI", "https://api.openai.com/v1"),
+    ("OpenRouter", "https://openrouter.ai/api/v1"),
+    ("Together", "https://api.together.xyz/v1"),
+    ("Mistral", "https://api.mistral.ai/v1"),
+    ("DeepInfra", "https://api.deepinfra.com/v1/openai"),
     ("Azure OpenAI", "https://<resource>.openai.azure.com/openai/deployments/<deployment>"),
     ("vLLM / LM Studio / llama.cpp (local)", "http://localhost:8000/v1"),
 ]
@@ -70,19 +69,23 @@ def _print_current(cfg: AMXConfig) -> None:
     heading("Current search-index embedding provider")
     emb = cfg.embedding
     if emb.kind in {"minilm", "default", "minilm-l6-v2", ""}:
-        info("MiniLM (--default) — Chroma's bundled all-MiniLM-L6-v2; offline, fastest, lowest quality.")
+        info(
+            "MiniLM (--default) — Chroma's bundled all-MiniLM-L6-v2; offline, fastest, lowest quality."
+        )
         info("No setup required; this is what every fresh install starts with.")
         return
     if emb.kind == "openai_compatible":
         info("OpenAI-compatible /embeddings endpoint.")
         info(f"  Model:   {emb.model or '(unset — required)'}")
         info(f"  Base URL: {emb.base_url or DEFAULT_OPENAI_BASE_URL}")
-        info(f"  API key:  {'(set, stored in OS keyring)' if emb.api_key else '(unset — required)'}")
+        info(
+            f"  API key:  {'(set, stored in OS keyring)' if emb.api_key else '(unset — required)'}"
+        )
         return
     if emb.kind == "sentence_transformers":
         info("Local sentence-transformers (offline, stronger than MiniLM).")
         info(f"  Model: {emb.model or '(unset — required)'}")
-        info("Requires `pip install \"amx[local-embeddings]\"`.")
+        info('Requires `pip install "amx[local-embeddings]"`.')
         return
     info(f"Kind: {emb.kind}")
     info(f"Model: {emb.model or '(unset)'}")
@@ -104,17 +107,24 @@ def _set_openai_compatible(cfg: AMXConfig, rest: list[str]) -> None:
     for label, url in _OPENAI_COMPATIBLE_EXAMPLES:
         info(f"  • {label}: {url}")
 
-    model = rest[0] if rest else ask(
-        "Embedding model id (e.g. text-embedding-3-small for OpenAI, "
-        "openai/text-embedding-3-small for OpenRouter)"
+    model = (
+        rest[0]
+        if rest
+        else ask(
+            "Embedding model id (e.g. text-embedding-3-small for OpenAI, "
+            "openai/text-embedding-3-small for OpenRouter)"
+        )
     )
     if not model:
         error("A model id is required for OpenAI-compatible embeddings.")
         return
-    base_url = ask(
-        "Base URL (Enter for the default OpenAI endpoint)",
-        default=DEFAULT_OPENAI_BASE_URL,
-    ) or DEFAULT_OPENAI_BASE_URL
+    base_url = (
+        ask(
+            "Base URL (Enter for the default OpenAI endpoint)",
+            default=DEFAULT_OPENAI_BASE_URL,
+        )
+        or DEFAULT_OPENAI_BASE_URL
+    )
     api_key = ask_password("API key (stored in your OS keyring, not the YAML)")
 
     cfg.embedding = EmbeddingConfig(
@@ -139,9 +149,7 @@ def _set_sentence_transformers(cfg: AMXConfig, rest: list[str]) -> None:
     info("  • intfloat/e5-large-v2           English, 1024-dim, fast")
     info("  • intfloat/multilingual-e5-large Multilingual, 1024-dim")
 
-    model = rest[0] if rest else ask(
-        "HuggingFace model id (e.g. BAAI/bge-large-en-v1.5)"
-    )
+    model = rest[0] if rest else ask("HuggingFace model id (e.g. BAAI/bge-large-en-v1.5)")
     if not model:
         error("A model id is required for local sentence-transformers embeddings.")
         return
@@ -149,7 +157,7 @@ def _set_sentence_transformers(cfg: AMXConfig, rest: list[str]) -> None:
     configure_from_amx_config(cfg, on_warning=warn)
     success(f"Embeddings switched to local sentence-transformers / {model}.")
     info(
-        "Requires `pip install \"amx[local-embeddings]\"` if you have not "
+        'Requires `pip install "amx[local-embeddings]"` if you have not '
         "already done so. The model will be downloaded on first /search use."
     )
     info("Run /rebuild (inside /search) to re-embed the catalog with the new provider.")

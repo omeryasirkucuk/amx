@@ -15,43 +15,93 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import CompleteStyle, PromptSession
 from prompt_toolkit.styles import Style
 
-from amx.config import AMXConfig, SUPPORTED_BACKENDS
 from amx.cli_support.commands.db import (
     cmd_add_profile as _cmd_add_profile,
+)
+from amx.cli_support.commands.db import (
     cmd_cleanup_placeholders as _cmd_cleanup_placeholders,
+)
+from amx.cli_support.commands.db import (
     cmd_inspect as _cmd_inspect,
+)
+from amx.cli_support.commands.db import (
     cmd_profiles as _cmd_profiles,
+)
+from amx.cli_support.commands.db import (
     cmd_profiling as _cmd_profiling,
+)
+from amx.cli_support.commands.db import (
     cmd_remove_profile as _cmd_remove_profile,
+)
+from amx.cli_support.commands.db import (
     cmd_use as _cmd_use,
 )
 from amx.cli_support.commands.embeddings import cmd_embeddings as _cmd_embeddings
+from amx.cli_support.commands.profiles import (
+    cmd_add_code_profile as _cmd_add_code_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_add_doc_profile as _cmd_add_doc_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_add_llm_profile as _cmd_add_llm_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_batch_context_columns as _cmd_batch_context_columns,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_code_profiles as _cmd_code_profiles,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_description_verbosity as _cmd_description_verbosity,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_doc_profiles as _cmd_doc_profiles,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_language as _cmd_language,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_llm_batch_size as _cmd_llm_batch_size,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_llm_profiles as _cmd_llm_profiles,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_logprob_thresholds as _cmd_logprob_thresholds,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_n_alternatives as _cmd_n_alternatives,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_prompt_detail as _cmd_prompt_detail,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_remove_code_profile as _cmd_remove_code_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_remove_doc_profile as _cmd_remove_doc_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_remove_llm_profile as _cmd_remove_llm_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_use_code as _cmd_use_code,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_use_doc as _cmd_use_doc,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_use_llm as _cmd_use_llm,
+)
 from amx.cli_support.commands.usage import cmd_usage as _cmd_usage
 from amx.cli_support.slash_commands import (
     cmd_heads_for_namespace as _registry_cmd_heads,
+)
+from amx.cli_support.slash_commands import (
     commands_for_namespace as _registry_commands_for_namespace,
 )
-from amx.cli_support.commands.profiles import (
-    cmd_add_code_profile as _cmd_add_code_profile,
-    cmd_add_doc_profile as _cmd_add_doc_profile,
-    cmd_add_llm_profile as _cmd_add_llm_profile,
-    cmd_batch_context_columns as _cmd_batch_context_columns,
-    cmd_code_profiles as _cmd_code_profiles,
-    cmd_doc_profiles as _cmd_doc_profiles,
-    cmd_llm_batch_size as _cmd_llm_batch_size,
-    cmd_language as _cmd_language,
-    cmd_llm_profiles as _cmd_llm_profiles,
-    cmd_logprob_thresholds as _cmd_logprob_thresholds,
-    cmd_n_alternatives as _cmd_n_alternatives,
-    cmd_description_verbosity as _cmd_description_verbosity,
-    cmd_prompt_detail as _cmd_prompt_detail,
-    cmd_remove_code_profile as _cmd_remove_code_profile,
-    cmd_remove_doc_profile as _cmd_remove_doc_profile,
-    cmd_remove_llm_profile as _cmd_remove_llm_profile,
-    cmd_use_code as _cmd_use_code,
-    cmd_use_doc as _cmd_use_doc,
-    cmd_use_llm as _cmd_use_llm,
-)
+from amx.config import SUPPORTED_BACKENDS, AMXConfig
 from amx.utils.console import console, error, heading, info, success, warn
 
 LogEvent = Callable[..., None]
@@ -136,7 +186,9 @@ def _print_namespace_hint(
     elif namespace == "docs":
         info("Manage RAG document paths for schema context. Use /add-doc-profile to map paths.")
     elif namespace == "llm":
-        info("Manage LLM profiles, metadata generation language, and cost settings. Search answers follow the user's question language.")
+        info(
+            "Manage LLM profiles, metadata generation language, and cost settings. Search answers follow the user's question language."
+        )
     elif namespace == "code":
         info("Scan your codebase to find how tables are used. Run /code-scan after adding a path.")
     elif namespace == "analyze":
@@ -516,9 +568,7 @@ def _run_ask_repl(
     sid = cfg.active_chat_session_id
     sid_label = f"#{sid}" if sid else "new"
     heading(f"Ask mode (session {sid_label})")
-    info(
-        "Type a question, press Enter. /exit (or Ctrl-D on an empty line) to leave."
-    )
+    info("Type a question, press Enter. /exit (or Ctrl-D on an empty line) to leave.")
     # Mirror the active session id into the environment BEFORE the first
     # ``main_command.main()`` so ``AMXConfig.load`` picks it up. Without this
     # bridge each invocation re-opens a fresh chat session and follow-ups
@@ -812,7 +862,18 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "help": ["--help"],
     }
     if head == "search" and len(parts) > 1:
-        if parts[1] in {"ask", "status", "sources", "config", "sync", "rebuild", "find-columns", "join-candidates", "explain", "explain-table"}:
+        if parts[1] in {
+            "ask",
+            "status",
+            "sources",
+            "config",
+            "sync",
+            "rebuild",
+            "find-columns",
+            "join-candidates",
+            "explain",
+            "explain-table",
+        }:
             return parts
         return ["search", "ask"] + parts[1:]
     if namespace == "search":
@@ -831,7 +892,20 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
                 return ["metadata"] + parts[1:]
             return parts
         return ["search", "ask"] + parts
-    if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history", "session", "setup", "config"}:
+    if head in {
+        "db",
+        "metadata",
+        "manual",
+        "docs",
+        "llm",
+        "code",
+        "analyze",
+        "search",
+        "history",
+        "session",
+        "setup",
+        "config",
+    }:
         if head == "manual":
             return ["metadata"] + parts[1:]
         return parts
@@ -1024,7 +1098,17 @@ def run_interactive_session(
                     print_db_namespace_hint=print_db_namespace_hint,
                 )
                 continue
-            if cmdline in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "search", "history"}:
+            if cmdline in {
+                "db",
+                "metadata",
+                "manual",
+                "docs",
+                "llm",
+                "code",
+                "analyze",
+                "search",
+                "history",
+            }:
                 namespace = "metadata" if cmdline == "manual" else cmdline
                 console.clear()
                 show_banner(force=True)
@@ -1065,7 +1149,12 @@ def run_interactive_session(
                 elif head in analyze_cmd_heads:
                     namespace = "analyze"
                     info("Assumed /analyze namespace for this command.")
-                elif head in search_cmd_heads or head in {"find-columns", "join-candidates", "explain", "explain-table"}:
+                elif head in search_cmd_heads or head in {
+                    "find-columns",
+                    "join-candidates",
+                    "explain",
+                    "explain-table",
+                }:
                     namespace = "search"
                     info("Assumed /search namespace for this command.")
                 elif head in history_cmd_heads:
@@ -1077,7 +1166,11 @@ def run_interactive_session(
                     error("Usage: /search-docs <text>")
                     info('Example: /search-docs What does field "BUKRS" mean in our docs?')
                     continue
-                if parts[0] in {"ingest", "scan"} and len(parts) == 1 and not cfg.effective_doc_paths():
+                if (
+                    parts[0] in {"ingest", "scan"}
+                    and len(parts) == 1
+                    and not cfg.effective_doc_paths()
+                ):
                     warn_no_doc_paths_for_scan_or_ingest(cfg, cmd=parts[0])
                     continue
             if _handle_manual_usage_shortcuts(namespace, parts):

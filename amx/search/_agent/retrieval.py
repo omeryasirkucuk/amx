@@ -24,16 +24,12 @@ Calls back into planning + resolution mixins via ``self.``.
 
 from __future__ import annotations
 
-import json
 import re
-import time
-from dataclasses import asdict
 from typing import Any
 
 from amx.agents.tools import SchemaExplorer
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search._agent._types import LiveProbePlan, SearchPlan, SearchPolicy
-from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
 
 log = get_logger("search.agent.retrieval")
@@ -44,11 +40,14 @@ class RetrievalMixin:
 
     def _should_use_llm_probe_planner(self) -> bool:
         return False
+
     def _context_detail(self) -> str:
         value = str(self.settings.get("context_detail", "standard") or "standard").strip().lower()
         return value if value in {"minimal", "standard", "rich", "deep"} else "standard"
+
     def _inventory_db(self) -> DatabaseConnector:
         return self._inventory_db_factory()
+
     def _known_database_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -72,12 +71,16 @@ class RetrievalMixin:
                 {
                     "row_type": "database",
                     "db_profile": self.db_profile,
-                    "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                    "database_name": self.cfg.db.database
+                    or self.cfg.db.catalog
+                    or self.cfg.db.project
+                    or "",
                     "backend": self.cfg.db.backend,
                     "source": "config",
                 }
             )
         return rows
+
     def _live_schema_rows(self) -> list[dict[str, Any]]:
         db = self._inventory_db()
         rows: list[dict[str, Any]] = []
@@ -89,13 +92,17 @@ class RetrievalMixin:
             rows.append(
                 {
                     "row_type": "schema",
-                    "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                    "database_name": self.cfg.db.database
+                    or self.cfg.db.catalog
+                    or self.cfg.db.project
+                    or "",
                     "schema_name": schema_name,
                     "table_count": table_count,
                     "source": "live_db",
                 }
             )
         return rows
+
     def _live_table_count(self, schema_name: str | None) -> tuple[int, dict[str, Any]]:
         db = self._inventory_db()
         schemas = db.list_schemas()
@@ -107,7 +114,10 @@ class RetrievalMixin:
                 return count, {
                     "scope_kind": "schema",
                     "schema_name": resolved,
-                    "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+                    "database_name": self.cfg.db.database
+                    or self.cfg.db.catalog
+                    or self.cfg.db.project
+                    or "",
                     "scope_assumption": "current_schema",
                 }
         total = 0
@@ -118,10 +128,16 @@ class RetrievalMixin:
                 continue
         return total, {
             "scope_kind": "database",
-            "database_name": self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or "",
+            "database_name": self.cfg.db.database
+            or self.cfg.db.catalog
+            or self.cfg.db.project
+            or "",
             "schema_count": len(schemas),
-            "scope_assumption": "active_database" if not schema_name else "invalid_current_schema_fallback",
+            "scope_assumption": "active_database"
+            if not schema_name
+            else "invalid_current_schema_fallback",
         }
+
     def _live_joinable_tables(self, table_path: str, limit: int) -> list[dict[str, Any]]:
         if "." not in table_path:
             return []
@@ -140,8 +156,12 @@ class RetrievalMixin:
                     "table_name": table_name,
                     "target_schema_name": str(fk.get("referred_schema") or schema_name),
                     "target_table_name": str(fk.get("referred_table") or ""),
-                    "left_column": ", ".join(str(item) for item in (fk.get("constrained_columns") or []) if str(item)),
-                    "right_column": ", ".join(str(item) for item in (fk.get("referred_columns") or []) if str(item)),
+                    "left_column": ", ".join(
+                        str(item) for item in (fk.get("constrained_columns") or []) if str(item)
+                    ),
+                    "right_column": ", ".join(
+                        str(item) for item in (fk.get("referred_columns") or []) if str(item)
+                    ),
                     "relationship_type": "foreign_key",
                     "source": "live_db",
                     "score": 10.0,
@@ -157,8 +177,16 @@ class RetrievalMixin:
                     "table_name": table_name,
                     "target_schema_name": str(fk.get("source_schema") or schema_name),
                     "target_table_name": str(fk.get("source_table") or ""),
-                    "left_column": ", ".join(str(item) for item in (fk.get("referred_columns") or []) if str(item)),
-                    "right_column": ", ".join(str(item) for item in (fk.get("source_columns") or fk.get("constrained_columns") or []) if str(item)),
+                    "left_column": ", ".join(
+                        str(item) for item in (fk.get("referred_columns") or []) if str(item)
+                    ),
+                    "right_column": ", ".join(
+                        str(item)
+                        for item in (
+                            fk.get("source_columns") or fk.get("constrained_columns") or []
+                        )
+                        if str(item)
+                    ),
                     "relationship_type": "incoming_foreign_key",
                     "source": "live_db",
                     "score": 10.0,
@@ -173,15 +201,24 @@ class RetrievalMixin:
                 str(row.get("target_schema_name") or "").lower(),
                 str(row.get("target_table_name") or "").lower(),
                 str(row.get("relationship_type") or "").lower(),
-                f"{row.get('left_column','')}|{row.get('right_column','')}",
+                f"{row.get('left_column', '')}|{row.get('right_column', '')}",
             )
             if key in seen or not row.get("target_table_name"):
                 continue
             seen.add(key)
             out.append(row)
         return out[:limit]
-    def _should_plan_live_probe(self, question: str, plan: SearchPlan, table_paths: list[str]) -> bool:
-        if not table_paths or plan.search_mode in {"list_databases", "list_schemas", "count_tables", "join_candidates", "joinable_tables"}:
+
+    def _should_plan_live_probe(
+        self, question: str, plan: SearchPlan, table_paths: list[str]
+    ) -> bool:
+        if not table_paths or plan.search_mode in {
+            "list_databases",
+            "list_schemas",
+            "count_tables",
+            "join_candidates",
+            "joinable_tables",
+        }:
             return False
         if plan.search_mode == "table_explain" or plan.question_class == "table_understanding":
             return True
@@ -222,7 +259,10 @@ class RetrievalMixin:
             or any(term in sample for term in verification_terms)
             or bool(tokens.intersection(short_verification_tokens))
         )
-    def _default_live_probe_operations(self, question: str, table_paths: list[str]) -> list[dict[str, str]]:
+
+    def _default_live_probe_operations(
+        self, question: str, table_paths: list[str]
+    ) -> list[dict[str, str]]:
         if not table_paths:
             return []
         sample = (question or "").strip().lower()
@@ -249,6 +289,7 @@ class RetrievalMixin:
             }
             for table_path in table_paths[:2]
         ]
+
     def _merge_probe_operations(self, *groups: list[dict[str, str]]) -> list[dict[str, str]]:
         merged: list[dict[str, str]] = []
         seen: set[tuple[str, str]] = set()
@@ -268,6 +309,7 @@ class RetrievalMixin:
                     }
                 )
         return merged[:4]
+
     def _plan_live_probe(
         self,
         question: str,
@@ -283,10 +325,16 @@ class RetrievalMixin:
             if isinstance(item, dict) and str(item.get("resolved_path") or "")
         ]
         if target_resolution.get("unresolved_explicit") and not resolved_targets:
-            return LiveProbePlan(False, "Explicit table target was not found in live metadata.", []), {}
+            return LiveProbePlan(
+                False, "Explicit table target was not found in live metadata.", []
+            ), {}
         explicit_table_paths = self._explicit_table_paths_for_question(question)
         if plan.search_mode == "table_explain" or plan.question_class == "table_understanding":
-            table_paths = resolved_targets or explicit_table_paths or self._candidate_table_paths_for_question(plan.entity_hints, question)
+            table_paths = (
+                resolved_targets
+                or explicit_table_paths
+                or self._candidate_table_paths_for_question(plan.entity_hints, question)
+            )
         else:
             table_paths = resolved_targets or explicit_table_paths
             if not table_paths:
@@ -301,13 +349,16 @@ class RetrievalMixin:
                             table_paths.append(path)
         if not self._should_plan_live_probe(question, plan, table_paths):
             return LiveProbePlan(False, "", []), {}
-        default_ops = self._default_live_probe_operations(question, explicit_table_paths or table_paths)
+        default_ops = self._default_live_probe_operations(
+            question, explicit_table_paths or table_paths
+        )
         already_verified_comments = any(
             row.get("row_type") == "live_probe" and row.get("probe_operation") == "column_comments"
             for row in rows
         )
         already_verified_snapshot = any(
-            row.get("row_type") == "live_probe" and row.get("probe_operation") == "table_metadata_snapshot"
+            row.get("row_type") == "live_probe"
+            and row.get("probe_operation") == "table_metadata_snapshot"
             for row in rows
         )
         ops = default_ops
@@ -330,12 +381,17 @@ class RetrievalMixin:
         return (
             LiveProbePlan(
                 needs_live_probe=bool(merged_ops),
-                reason="Deterministic live probe selected for a table-scoped factual metadata question." if merged_ops else "",
+                reason="Deterministic live probe selected for a table-scoped factual metadata question."
+                if merged_ops
+                else "",
                 operations=merged_ops,
             ),
             {},
         )
-    def _execute_live_probe(self, probe_plan: LiveProbePlan) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+
+    def _execute_live_probe(
+        self, probe_plan: LiveProbePlan
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if not probe_plan.needs_live_probe:
             return [], {"executed": False, "reason": probe_plan.reason, "operations": []}
         db = self._inventory_db()
@@ -352,12 +408,24 @@ class RetrievalMixin:
                     else db.table_metadata_probe_query(schema_name, table_name)
                 )
                 snapshot = (
-                    {"columns": [{"name": name, "comment": comment or ""} for name, comment in db.get_column_comments(schema_name, table_name).items()], "table_comment": ""}
+                    {
+                        "columns": [
+                            {"name": name, "comment": comment or ""}
+                            for name, comment in db.get_column_comments(
+                                schema_name, table_name
+                            ).items()
+                        ],
+                        "table_comment": "",
+                    }
                     if operation == "column_comments"
                     else db.get_table_metadata_snapshot(schema_name, table_name)
                 )
                 columns = list(snapshot.get("columns") or [])
-                comments = {str(col.get("name") or ""): str(col.get("comment") or "") for col in columns if str(col.get("name") or "")}
+                comments = {
+                    str(col.get("name") or ""): str(col.get("comment") or "")
+                    for col in columns
+                    if str(col.get("name") or "")
+                }
                 total = len(comments)
                 filled = sum(1 for value in comments.values() if str(value or "").strip())
                 missing = [name for name, value in comments.items() if not str(value or "").strip()]
@@ -367,7 +435,9 @@ class RetrievalMixin:
                         "probe_operation": operation,
                         "schema_name": schema_name,
                         "table_name": table_name,
-                        "metric": "table_metadata_snapshot" if operation == "table_metadata_snapshot" else "column_comment_coverage",
+                        "metric": "table_metadata_snapshot"
+                        if operation == "table_metadata_snapshot"
+                        else "column_comment_coverage",
                         "value": filled,
                         "total_columns": total,
                         "commented_columns": filled,
@@ -406,8 +476,15 @@ class RetrievalMixin:
                         "rationale": op.get("rationale", ""),
                     }
                 )
-        return rows, {"executed": bool(executed), "reason": probe_plan.reason, "operations": executed}
-    def _retrieve(self, question: str, plan: SearchPlan, policy: SearchPolicy) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return rows, {
+            "executed": bool(executed),
+            "reason": probe_plan.reason,
+            "operations": executed,
+        }
+
+    def _retrieve(
+        self, question: str, plan: SearchPlan, policy: SearchPolicy
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         limit = self._candidate_limit(policy.question_class)
         details: dict[str, Any] = {
             "search_mode": plan.search_mode,
@@ -424,8 +501,12 @@ class RetrievalMixin:
             if len(table_paths) < 2:
                 details["ambiguity_flags"] = ["missing_join_table"]
                 return [], details
-            verified = self.catalog.join_candidates(self.db_profile, table_paths[0], table_paths[1], limit=limit)
-            semantic = self.catalog.semantic_join_candidates(self.db_profile, table_paths[0], table_paths[1], limit=limit)
+            verified = self.catalog.join_candidates(
+                self.db_profile, table_paths[0], table_paths[1], limit=limit
+            )
+            semantic = self.catalog.semantic_join_candidates(
+                self.db_profile, table_paths[0], table_paths[1], limit=limit
+            )
             details["evidence_sources"] = ["catalog_relationships", "semantic_join_inference"]
             rows = self._merge_join_rows(verified, semantic, limit)
             return rows, details
@@ -436,10 +517,18 @@ class RetrievalMixin:
                 details["ambiguity_flags"] = ["missing_join_base_table"]
                 return [], details
             live_rows = self._live_joinable_tables(table_paths[0], limit=limit)
-            catalog_rows = self.catalog.joinable_tables(self.db_profile, table_paths[0], limit=limit)
-            semantic_rows = self.catalog.semantic_joinable_tables(self.db_profile, table_paths[0], limit=limit)
+            catalog_rows = self.catalog.joinable_tables(
+                self.db_profile, table_paths[0], limit=limit
+            )
+            semantic_rows = self.catalog.semantic_joinable_tables(
+                self.db_profile, table_paths[0], limit=limit
+            )
             details["display_rows"] = True
-            details["evidence_sources"] = ["live_db", "catalog_relationships", "semantic_join_inference"]
+            details["evidence_sources"] = [
+                "live_db",
+                "catalog_relationships",
+                "semantic_join_inference",
+            ]
             rows = self._merge_joinable_rows(live_rows, catalog_rows, semantic_rows, limit)
             return rows, details
         if plan.search_mode == "table_explain":
@@ -486,7 +575,9 @@ class RetrievalMixin:
             return rows, details
         if plan.search_mode == "list_schemas":
             rows = self._live_schema_rows()
-            details["database_name"] = self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or ""
+            details["database_name"] = (
+                self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or ""
+            )
             details["display_rows"] = False
             details["result_kind"] = "catalog_overview"
             details["evidence_sources"] = ["live_db"]
@@ -494,7 +585,9 @@ class RetrievalMixin:
         if plan.search_mode == "count_tables":
             schema_name = ""
             database_name = ""
-            schema_lookup = {str(item).lower(): str(item) for item in self._inventory_db().list_schemas()}
+            schema_lookup = {
+                str(item).lower(): str(item) for item in self._inventory_db().list_schemas()
+            }
             db_lookup = {
                 str(row.get("database_name") or "").lower(): str(row.get("database_name") or "")
                 for row in self._known_database_rows()
@@ -543,7 +636,9 @@ class RetrievalMixin:
             schema_name = self.cfg.current_schema or ""
             database_name = self.cfg.db.database or self.cfg.db.catalog or self.cfg.db.project or ""
             try:
-                schema_lookup = {str(item).lower(): str(item) for item in self._inventory_db().list_schemas()}
+                schema_lookup = {
+                    str(item).lower(): str(item) for item in self._inventory_db().list_schemas()
+                }
             except Exception:
                 schema_lookup = {}
             normalized_current = str(schema_name).strip().lower()
@@ -571,7 +666,10 @@ class RetrievalMixin:
             details["schema_explorer_summary"] = summary
             details["schema_name"] = str(scope.get("schema_name") or schema_name or "")
             details["database_name"] = str(scope.get("database_name") or database_name or "")
-            details["evidence_sources"] = ["schema_explorer", str(inventory.get("source") or "effective_metadata")]
+            details["evidence_sources"] = [
+                "schema_explorer",
+                str(inventory.get("source") or "effective_metadata"),
+            ]
             details["gap_fill_operations"] = int(summary.get("gap_fill_operations") or 0)
             return rows, details
         if plan.search_mode == "compare_entities":
@@ -589,8 +687,12 @@ class RetrievalMixin:
             merged: list[dict[str, Any]] = []
             seen_ids: set[int] = set()
             for term in self._column_name_lookup_terms(question, plan):
-                candidates = self.catalog.name_search_columns(self.db_profile_filter, term, limit=lookup_limit)
-                strict = [row for row in candidates if term in str(row.get("column_name") or "").lower()]
+                candidates = self.catalog.name_search_columns(
+                    self.db_profile_filter, term, limit=lookup_limit
+                )
+                strict = [
+                    row for row in candidates if term in str(row.get("column_name") or "").lower()
+                ]
                 for row in strict or candidates:
                     entity_id = int(row.get("id") or 0)
                     if entity_id and entity_id in seen_ids:
@@ -613,7 +715,11 @@ class RetrievalMixin:
             )
             details["display_rows"] = True
             details["result_kind"] = "table_matches"
-            details["evidence_sources"] = ["effective_metadata", "aggregated_column_metadata", "vector_support"]
+            details["evidence_sources"] = [
+                "effective_metadata",
+                "aggregated_column_metadata",
+                "vector_support",
+            ]
             return rows, details
         rows = self.catalog.search_columns(
             self.db_profile_filter,
@@ -624,6 +730,7 @@ class RetrievalMixin:
         )
         details["evidence_sources"] = ["effective_metadata", "vector_support"]
         return rows, details
+
     def _merge_join_rows(
         self,
         verified_rows: list[dict[str, Any]],
@@ -642,8 +749,14 @@ class RetrievalMixin:
                 continue
             seen.add(key)
             merged.append(dict(row))
-        merged.sort(key=lambda item: (-float(item.get("score") or 0.0), str(item.get("relationship_type") or "")))
+        merged.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                str(item.get("relationship_type") or ""),
+            )
+        )
         return merged[:limit]
+
     def _merge_joinable_rows(
         self,
         live_rows: list[dict[str, Any]],
@@ -666,11 +779,14 @@ class RetrievalMixin:
             merged.append(dict(row))
         merged.sort(
             key=lambda item: (
-                {"verified": 0, "high_likelihood": 1, "possible": 2, "weak_hypothesis": 3}.get(str(item.get("confidence_band") or ""), 4),
+                {"verified": 0, "high_likelihood": 1, "possible": 2, "weak_hypothesis": 3}.get(
+                    str(item.get("confidence_band") or ""), 4
+                ),
                 -float(item.get("score") or 0.0),
             )
         )
         return merged[:limit]
+
     def _verify_rows(
         self,
         plan: SearchPlan,
@@ -695,21 +811,33 @@ class RetrievalMixin:
             verification["checks"].append("join_relationship_classification")
             verified = False
             for row in rows:
-                if str(row.get("relationship_type") or "") in {"foreign_key", "incoming_foreign_key"}:
-                    row["verified_live"] = bool(row.get("source") == "live_db" or row.get("verified_live"))
+                if str(row.get("relationship_type") or "") in {
+                    "foreign_key",
+                    "incoming_foreign_key",
+                }:
+                    row["verified_live"] = bool(
+                        row.get("source") == "live_db" or row.get("verified_live")
+                    )
                     row["confidence_band"] = "verified"
                     verified = verified or bool(row.get("verified_live"))
                 elif not row.get("confidence_band"):
                     score = float(row.get("score") or 0.0)
                     row["confidence_band"] = (
-                        "high_likelihood" if score >= 8.0 else "possible" if score >= 6.0 else "weak_hypothesis"
+                        "high_likelihood"
+                        if score >= 8.0
+                        else "possible"
+                        if score >= 6.0
+                        else "weak_hypothesis"
                     )
             verification["live_verified"] = verified
             return rows, verification
         if plan.search_mode == "table_explain" and retrieval_details.get("resolved_tables"):
             verification["checks"].append("table_resolution")
         return rows, verification
-    def _rows_for_prompt(self, rows: list[dict[str, Any]], policy: SearchPolicy) -> list[dict[str, Any]]:
+
+    def _rows_for_prompt(
+        self, rows: list[dict[str, Any]], policy: SearchPolicy
+    ) -> list[dict[str, Any]]:
         detail = self._context_detail()
         base_cap = {"minimal": 8, "standard": 16, "rich": 24, "deep": 32}.get(detail, 16)
         cap = min(max(base_cap, len(rows)), 40)
@@ -750,6 +878,7 @@ class RetrievalMixin:
             }
             payload.append(item)
         return payload
+
     def _normalize_rows(self, plan: SearchPlan, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for idx, raw in enumerate(rows):
@@ -764,7 +893,9 @@ class RetrievalMixin:
             elif bool(row.get("verified_live")) or row.get("row_type") == "live_probe":
                 tier = "verified"
                 reason = "live_verified"
-                role = "primary" if idx == 0 or row.get("row_type") == "live_probe" else "supporting"
+                role = (
+                    "primary" if idx == 0 or row.get("row_type") == "live_probe" else "supporting"
+                )
             elif str(row.get("relationship_type") or "") in {"foreign_key", "incoming_foreign_key"}:
                 tier = "verified"
                 reason = "verified_relationship"
@@ -774,10 +905,17 @@ class RetrievalMixin:
                 reason = "vector_only_match"
                 role = "diagnostic"
             elif plan.search_mode == "name_lookup":
-                tier = "strong" if float(row.get("rank_score") or row.get("match_score") or 0.0) >= 8.0 else "weak"
+                tier = (
+                    "strong"
+                    if float(row.get("rank_score") or row.get("match_score") or 0.0) >= 8.0
+                    else "weak"
+                )
                 reason = "lexical_name_match"
                 role = "primary" if idx == 0 else "supporting"
-            elif float(row.get("rank_score") or row.get("match_score") or row.get("score") or 0.0) < 4.5:
+            elif (
+                float(row.get("rank_score") or row.get("match_score") or row.get("score") or 0.0)
+                < 4.5
+            ):
                 tier = "weak"
                 reason = "low_score_match"
                 role = "diagnostic"
@@ -789,7 +927,10 @@ class RetrievalMixin:
             row["match_reason"] = reason
             normalized.append(row)
         return normalized
-    def _suppress_rows(self, plan: SearchPlan, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+
+    def _suppress_rows(
+        self, plan: SearchPlan, rows: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], int]:
         visible: list[dict[str, Any]] = []
         suppressed = 0
         for idx, row in enumerate(rows):
@@ -800,7 +941,10 @@ class RetrievalMixin:
                 visible.append(row)
                 continue
             if row.get("answer_role") == "diagnostic":
-                if row.get("vector_only") and float(row.get("rank_score") or row.get("match_score") or 0.0) < 3.2:
+                if (
+                    row.get("vector_only")
+                    and float(row.get("rank_score") or row.get("match_score") or 0.0) < 3.2
+                ):
                     suppressed += 1
                     continue
                 if idx >= 3:

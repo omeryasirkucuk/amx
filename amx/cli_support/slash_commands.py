@@ -25,7 +25,7 @@ metadata automatically.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,8 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
     SlashCommand("/db", "root", "Enter /db namespace"),
     SlashCommand("/docs", "root", "Enter /docs namespace"),
     SlashCommand(
-        "/metadata", "root",
+        "/metadata",
+        "root",
         "Enter /metadata namespace",
         aliases=("/manual",),
     ),
@@ -95,12 +96,17 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
 _DB_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/db-profiles", "db", "List DB profiles"),
     SlashCommand(
-        "/use-db", "db",
+        "/use-db",
+        "db",
         "Switch DB scope. Single: /use-db prod_pg. Multi (0.11+): /use-db prod_pg analytics_bq → persisted multi-profile scope for /ask /run /sync.",
     ),
     SlashCommand("/add-db-profile", "db", "Add profile — choose engine then connection details"),
     SlashCommand("/remove-db-profile", "db", "Remove DB profile (/remove-db-profile <name>)"),
-    SlashCommand("/profiling", "db", "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])"),
+    SlashCommand(
+        "/profiling",
+        "db",
+        "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])",
+    ),
     SlashCommand("/tls", "db", "Show/set Databricks TLS settings (/tls [on|off] [ca_path|clear])"),
     SlashCommand("/schema", "db", "Set current schema (/schema <name>)"),
     SlashCommand("/table", "db", "Set current table (/table <name>)"),
@@ -108,7 +114,11 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/schemas", "db", "List schemas"),
     SlashCommand("/tables", "db", "List tables (/tables [schema])"),
     SlashCommand("/profile", "db", "Profile table (/profile [schema] [table])"),
-    SlashCommand("/cleanup-placeholders", "db", "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])"),
+    SlashCommand(
+        "/cleanup-placeholders",
+        "db",
+        "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])",
+    ),
 )
 
 _METADATA_COMMANDS: tuple[SlashCommand, ...] = (
@@ -121,12 +131,16 @@ _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/doc-profiles", "docs", "List document profiles"),
     SlashCommand("/use-doc", "docs", "Switch document profile (/use-doc <name>)"),
     SlashCommand("/add-doc-profile", "docs", "Add/update document profile"),
-    SlashCommand("/remove-doc-profile", "docs", "Remove document profile (/remove-doc-profile <name>)"),
+    SlashCommand(
+        "/remove-doc-profile", "docs", "Remove document profile (/remove-doc-profile <name>)"
+    ),
     SlashCommand("/scan", "docs", "Scan documents (/scan [--doc-profile NAME] [paths...])"),
     SlashCommand("/ingest", "docs", "Ingest (/ingest [--doc-profile NAME] [--refresh] [paths...])"),
     SlashCommand("/search-docs", "docs", "Similarity search (/search-docs <text>, no LLM)"),
     SlashCommand("/doc-analyze", "docs", "Run RAG Agent standalone (/doc-analyze [TABLE …])"),
-    SlashCommand("/export-doc-report", "docs", "Export doc RAG summary (/export-doc-report [FILE])"),
+    SlashCommand(
+        "/export-doc-report", "docs", "Export doc RAG summary (/export-doc-report [FILE])"
+    ),
 )
 
 _LLM_COMMANDS: tuple[SlashCommand, ...] = (
@@ -135,50 +149,84 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/add-llm-profile", "llm", "Add/update LLM profile"),
     SlashCommand("/remove-llm-profile", "llm", "Remove LLM profile (/remove-llm-profile <name>)"),
     SlashCommand("/language", "llm", "Show/set metadata generation language (/language [name])"),
-    SlashCommand("/prompt-detail", "llm", "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])"),
-    SlashCommand("/description-verbosity", "llm", "Show/set output description length (/description-verbosity [brief|detailed])"),
-    SlashCommand("/n-alternatives", "llm", "Show/set number of alternatives per column (/n-alternatives [1-5])"),
-    SlashCommand("/llm-batch-size", "llm", "Show/set number of columns per LLM call (/llm-batch-size [N])"),
-    SlashCommand("/batch-context-columns", "llm", "Show/set extra non-batch column names in each batch (/batch-context-columns [off|all|N])"),
-    SlashCommand("/logprob-thresholds", "llm", "Show/set confidence thresholds (/logprob-thresholds [high] [med])"),
+    SlashCommand(
+        "/prompt-detail",
+        "llm",
+        "Show/set prompt detail level (/prompt-detail [minimal|standard|detailed|full])",
+    ),
+    SlashCommand(
+        "/description-verbosity",
+        "llm",
+        "Show/set output description length (/description-verbosity [brief|detailed])",
+    ),
+    SlashCommand(
+        "/n-alternatives",
+        "llm",
+        "Show/set number of alternatives per column (/n-alternatives [1-5])",
+    ),
+    SlashCommand(
+        "/llm-batch-size", "llm", "Show/set number of columns per LLM call (/llm-batch-size [N])"
+    ),
+    SlashCommand(
+        "/batch-context-columns",
+        "llm",
+        "Show/set extra non-batch column names in each batch (/batch-context-columns [off|all|N])",
+    ),
+    SlashCommand(
+        "/logprob-thresholds",
+        "llm",
+        "Show/set confidence thresholds (/logprob-thresholds [high] [med])",
+    ),
 )
 
 _CODE_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/code-profiles", "code", "List codebase profiles"),
     SlashCommand("/use-code", "code", "Switch codebase profile (/use-code <name>)"),
     SlashCommand("/add-code-profile", "code", "Add/update codebase profile"),
-    SlashCommand("/remove-code-profile", "code", "Remove codebase profile (/remove-code-profile <name>)"),
-    SlashCommand("/code-scan", "code", "Scan codebase + save (/code-scan [path] [--code-profile NAME])"),
+    SlashCommand(
+        "/remove-code-profile", "code", "Remove codebase profile (/remove-code-profile <name>)"
+    ),
+    SlashCommand(
+        "/code-scan", "code", "Scan codebase + save (/code-scan [path] [--code-profile NAME])"
+    ),
     SlashCommand("/code-refresh", "code", "Clear cache + semantic code index"),
     SlashCommand("/code-results", "code", "Show last cached scan results"),
     SlashCommand("/code-analyze", "code", "Run Code Agent standalone (/code-analyze [TABLE …])"),
-    SlashCommand("/export-code-report", "code", "Export scan to markdown (/export-code-report [FILE])"),
+    SlashCommand(
+        "/export-code-report", "code", "Export scan to markdown (/export-code-report [FILE])"
+    ),
 )
 
 _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
-        "/run", "analyze",
+        "/run",
+        "analyze",
         "Run all agents — scope: database / schema / asset / column. Add --db-profile NAME (multi) for cross-DB execution (/run [ASSET …] [--schema …] [--apply] [--db-profile NAME …])",
     ),
-    SlashCommand("/run-apply", "analyze", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
+    SlashCommand(
+        "/run-apply", "analyze", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"
+    ),
     SlashCommand("/apply", "analyze", "Write pending comments to the database"),
 )
 
 _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
-        "/ask", "search",
+        "/ask",
+        "search",
         "Ask a metadata question; add --db-profile NAME (multi) for cross-DB scope; --actions for approved follow-up execution",
     ),
     SlashCommand("/status", "search", "Show catalog/index status"),
     SlashCommand("/sources", "search", "Show evidence sources and settings"),
     SlashCommand("/config", "search", "Show/set search config (/config [key] [value])"),
     SlashCommand(
-        "/sync", "search",
+        "/sync",
+        "search",
         "Sync DB structure/comments and code evidence. Add --db-profile NAME (multi) for cross-DB sync (/sync [--db-profile NAME …])",
     ),
     SlashCommand("/rebuild", "search", "Rebuild effective search state and vector index"),
     SlashCommand(
-        "/compare", "search",
+        "/compare",
+        "search",
         "Compare runs side-by-side (descriptions, logprobs, timing, tokens)",
         long_desc=(
             "Pivot history rows so you can see how different LLM profiles, "
@@ -196,15 +244,24 @@ _HISTORY_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/stats", "history", "Aggregate run/event metrics"),
     SlashCommand("/events", "history", "Recent app events (/events -n 30)"),
     SlashCommand("/results", "history", "Show saved LLM alternatives (/results <run_id>)"),
-    SlashCommand("/review", "history", "Re-evaluate alternatives (/review <run_id> [--unevaluated-only] [--apply])"),
+    SlashCommand(
+        "/review",
+        "history",
+        "Re-evaluate alternatives (/review <run_id> [--unevaluated-only] [--apply])",
+    ),
 )
 
 # Search-namespace cross-cuts: extra commands callable from /search even
 # though their handlers live elsewhere. Used by the dispatch chain to
 # accept these without bouncing the user back to root.
-_SEARCH_NAMESPACE_EXTRA_HEADS: frozenset[str] = frozenset({
-    "find-columns", "join-candidates", "explain", "explain-table",
-})
+_SEARCH_NAMESPACE_EXTRA_HEADS: frozenset[str] = frozenset(
+    {
+        "find-columns",
+        "join-candidates",
+        "explain",
+        "explain-table",
+    }
+)
 
 
 # Master tuple — every slash command in AMX. The order here is the

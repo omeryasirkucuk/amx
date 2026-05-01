@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -14,11 +13,22 @@ from rich.text import Text
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search.catalog import SearchCatalog
-from amx.search.confidence import band as _confidence_band, band_style as _confidence_band_style
+from amx.search.confidence import band as _confidence_band
+from amx.search.confidence import band_style as _confidence_band_style
 from amx.search.service import SearchService
 from amx.services.analyze_scope import finalize_scope as _finalize_scope
 from amx.storage.sqlite_store import history_store
-from amx.utils.console import ask_choice, ask_multi_choice, confirm, console, error, info, render_table, success, warn
+from amx.utils.console import (
+    ask_choice,
+    ask_multi_choice,
+    confirm,
+    console,
+    error,
+    info,
+    render_table,
+    success,
+    warn,
+)
 from amx.utils.live_commands import command_display
 from amx.utils.live_display import get_display
 
@@ -60,7 +70,17 @@ def _render_search_rows(
     if first.get("row_type") == "joinable_table" or "target_table_name" in first:
         render_table(
             "Joinable tables",
-            ["Base table", "Target schema", "Target table", "Base columns", "Target columns", "Type", "Band", "Score", "Source"],
+            [
+                "Base table",
+                "Target schema",
+                "Target table",
+                "Base columns",
+                "Target columns",
+                "Type",
+                "Band",
+                "Score",
+                "Source",
+            ],
             [
                 [
                     f"{row.get('schema_name', '')}.{row.get('table_name', '')}",
@@ -190,8 +210,12 @@ def _render_search_rows(
         st = f"{schema_name}.{table_name}".strip(".") or "—"
         rows_value = row.get("row_count")
         cols_value = row.get("column_count")
-        rows_str = str(int(rows_value)) if isinstance(rows_value, (int, float)) and rows_value else "—"
-        cols_str = str(int(cols_value)) if isinstance(cols_value, (int, float)) and cols_value else "—"
+        rows_str = (
+            str(int(rows_value)) if isinstance(rows_value, (int, float)) and rows_value else "—"
+        )
+        cols_str = (
+            str(int(cols_value)) if isinstance(cols_value, (int, float)) and cols_value else "—"
+        )
         desc = str(row.get("effective_description", "") or "")
         cells: list[Any] = []
         if show_profile_col:
@@ -205,11 +229,13 @@ def _render_search_rows(
             Text(desc),
         ]
         if debug:
-            cells.extend([
-                f"{score:.2f}",
-                str(row.get("effective_source_kind", "") or ""),
-                str(row.get("current_confidence", "") or ""),
-            ])
+            cells.extend(
+                [
+                    f"{score:.2f}",
+                    str(row.get("effective_source_kind", "") or ""),
+                    str(row.get("current_confidence", "") or ""),
+                ]
+            )
         table.add_row(*cells)
     console.print(table)
 
@@ -303,7 +329,9 @@ def _sync_cached_code_evidence(
         if report is None or manifest is None:
             warn("No cached code-scan report found. Run `/code scan` first.")
             return False
-        schema_name = str(manifest.get("schema") or next(iter((scope or {}).keys()), cfg.current_schema or ""))
+        schema_name = str(
+            manifest.get("schema") or next(iter((scope or {}).keys()), cfg.current_schema or "")
+        )
         with step_spinner("Refreshing /search code evidence"):
             catalog.sync_code_report(
                 db_profile=cfg.active_db_profile or "default",
@@ -330,10 +358,14 @@ def _run_search_action(
     db_profile = cfg.active_db_profile or "default"
     if action_name == "sync_catalog":
         if not scope:
-            cfg, scope = _interactive_sync_scope(cfg, cfg.current_schema or None, cfg.current_table or None)
+            cfg, scope = _interactive_sync_scope(
+                cfg, cfg.current_schema or None, cfg.current_table or None
+            )
         if not scope:
             return {"action": action_name, "status": "skipped", "reason": "no_scope"}
-        job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope, "trigger": "search_action"})
+        job_id = catalog.start_sync_job(
+            db_profile, "sync", {"scope": scope, "trigger": "search_action"}
+        )
         inserted = 0
         updated = 0
         try:
@@ -346,11 +378,27 @@ def _run_search_action(
             ):
                 inserted, updated = _sync_db_scope(cfg, catalog, scope=scope)
                 _sync_cached_code_evidence(cfg, catalog, scope=scope)
-            catalog.finish_sync_job(job_id, status="success", inserted_count=inserted, updated_count=updated)
-            success(f"Approved search action complete: sync_catalog inserted={inserted}, updated={updated}")
-            return {"action": action_name, "status": "success", "inserted": inserted, "updated": updated, "scope": scope}
+            catalog.finish_sync_job(
+                job_id, status="success", inserted_count=inserted, updated_count=updated
+            )
+            success(
+                f"Approved search action complete: sync_catalog inserted={inserted}, updated={updated}"
+            )
+            return {
+                "action": action_name,
+                "status": "success",
+                "inserted": inserted,
+                "updated": updated,
+                "scope": scope,
+            }
         except Exception as exc:
-            catalog.finish_sync_job(job_id, status="failed", inserted_count=inserted, updated_count=updated, error_text=str(exc))
+            catalog.finish_sync_job(
+                job_id,
+                status="failed",
+                inserted_count=inserted,
+                updated_count=updated,
+                error_text=str(exc),
+            )
             warn(f"Approved search action failed: {exc}")
             return {"action": action_name, "status": "failed", "reason": str(exc), "scope": scope}
     if action_name == "refresh_code_evidence":
@@ -374,17 +422,33 @@ def _run_search_action(
         try:
             from amx.core.inference import infer_table_metadata
 
-            results = infer_table_metadata(cfg, schema_name, table_name, include_rag=True, include_codebase=False)
-            success(f"Approved search action complete: analyze_table produced {len(results)} suggestions for {schema_name}.{table_name}")
-            return {"action": action_name, "status": "success", "table": tables[0], "suggestions": len(results)}
+            results = infer_table_metadata(
+                cfg, schema_name, table_name, include_rag=True, include_codebase=False
+            )
+            success(
+                f"Approved search action complete: analyze_table produced {len(results)} suggestions for {schema_name}.{table_name}"
+            )
+            return {
+                "action": action_name,
+                "status": "success",
+                "table": tables[0],
+                "suggestions": len(results),
+            }
         except Exception as exc:
             warn(f"Approved search action failed: {exc}")
-            return {"action": action_name, "status": "failed", "table": tables[0], "reason": str(exc)}
+            return {
+                "action": action_name,
+                "status": "failed",
+                "table": tables[0],
+                "reason": str(exc),
+            }
     info(f"Action `{action_name}` is advisory and has no automatic executor.")
     return {"action": action_name, "status": "advisory"}
 
 
-def _run_approved_search_actions(cfg: AMXConfig, svc: SearchService, answer: Any) -> list[dict[str, Any]]:
+def _run_approved_search_actions(
+    cfg: AMXConfig, svc: SearchService, answer: Any
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     actions = answer.details.get("actions", []) or []
     if not actions:
@@ -431,8 +495,12 @@ def _run_search_ask(
     )
     try:
         _run_search_ask_body(
-            cfg, svc, question_text,
-            log_event=log_event, take_actions=take_actions, debug=debug,
+            cfg,
+            svc,
+            question_text,
+            log_event=log_event,
+            take_actions=take_actions,
+            debug=debug,
         )
     finally:
         clear_request_id()
@@ -485,9 +553,8 @@ def _run_search_ask_body(
     # uncluttered: a one-line summary plus the focused result panel.
     show_prov = svc.settings.get("show_provenance", "false").lower() == "true"
     show_conf = svc.settings.get("show_confidence", "false").lower() == "true"
-    if debug or show_prov:
-        if answer.provenance:
-            info("Provenance: " + "; ".join(answer.provenance))
+    if (debug or show_prov) and answer.provenance:
+        info("Provenance: " + "; ".join(answer.provenance))
     if debug or show_conf:
         info(f"Confidence: {answer.confidence}")
     trace = answer.details.get("thought_trace", []) or []
@@ -503,7 +570,10 @@ def _run_search_ask_body(
         action_name = str((action or {}).get("action") or "").strip()
         action_reason = str((action or {}).get("reason") or "").strip()
         if action_name:
-            info(f"Suggested next step: {action_name}" + (f" — {action_reason}" if action_reason else ""))
+            info(
+                f"Suggested next step: {action_name}"
+                + (f" — {action_reason}" if action_reason else "")
+            )
     action_results: list[dict[str, Any]] = []
     if take_actions:
         action_results = _run_approved_search_actions(cfg, svc, answer)
@@ -597,20 +667,29 @@ def _sync_db_scope(
             processed += 1
             if activity_idx is not None:
                 display.set_context(schema=schema_name, table=asset_name)
-                display.update_activity(activity_idx, label=f"Search sync {processed}/{total_assets}: {schema_name}.{asset_name}")
+                display.update_activity(
+                    activity_idx,
+                    label=f"Search sync {processed}/{total_assets}: {schema_name}.{asset_name}",
+                )
             asset_kind = db.resolve_asset_kind(schema_name, asset_name)
             try:
                 if activity_idx is None:
                     from amx.utils.console import step_spinner
 
                     with step_spinner(f"Profiling {schema_name}.{asset_name} for /search"):
-                        profile = db.profile_table(schema_name, asset_name, sample_size=0, asset_kind=asset_kind)
+                        profile = db.profile_table(
+                            schema_name, asset_name, sample_size=0, asset_kind=asset_kind
+                        )
                 else:
-                    profile = db.profile_table(schema_name, asset_name, sample_size=0, asset_kind=asset_kind)
+                    profile = db.profile_table(
+                        schema_name, asset_name, sample_size=0, asset_kind=asset_kind
+                    )
             except ProfilingError as exc:
                 failed += 1
                 if activity_idx is not None:
-                    display.add_detail(activity_idx, f"Skipped {schema_name}.{asset_name}: {str(exc)[:220]}")
+                    display.add_detail(
+                        activity_idx, f"Skipped {schema_name}.{asset_name}: {str(exc)[:220]}"
+                    )
                 warn(str(exc))
                 continue
             if activity_idx is None:
@@ -648,18 +727,22 @@ def _interactive_sync_scope(
     schema_name: str | None,
     table_name: str | None,
 ) -> tuple[AMXConfig, dict[str, list[str]] | None]:
-    if not schema_name and not table_name and len(cfg.db_profiles) > 1:
-        if not confirm(
+    if (
+        not schema_name
+        and not table_name
+        and len(cfg.db_profiles) > 1
+        and not confirm(
             f"Continue with current DB profile '{cfg.active_db_profile or 'default'}'?",
             default=True,
-        ):
-            selected = ask_choice(
-                "Select DB profile for /search sync",
-                sorted(cfg.db_profiles.keys()),
-                default=cfg.active_db_profile or sorted(cfg.db_profiles.keys())[0],
-            )
-            cfg.set_active_db_profile(selected)
-            info(f"Active DB: [bold cyan]{selected}[/]")
+        )
+    ):
+        selected = ask_choice(
+            "Select DB profile for /search sync",
+            sorted(cfg.db_profiles.keys()),
+            default=cfg.active_db_profile or sorted(cfg.db_profiles.keys())[0],
+        )
+        cfg.set_active_db_profile(selected)
+        info(f"Active DB: [bold cyan]{selected}[/]")
     db = DatabaseConnector(cfg.db)
     scope = _finalize_scope(
         cfg,
@@ -698,14 +781,22 @@ def register_search_commands(
             )
 
     @search.command("ask")
-    @click.option("--actions", "take_actions", is_flag=True, help="Prompt before running approved follow-up actions.")
     @click.option(
-        "--debug", "--verbose", "debug",
+        "--actions",
+        "take_actions",
+        is_flag=True,
+        help="Prompt before running approved follow-up actions.",
+    )
+    @click.option(
+        "--debug",
+        "--verbose",
+        "debug",
         is_flag=True,
         help="Show the planner's thought trace, raw match scores, and source kind for each result.",
     )
     @click.option(
-        "--db-profile", "db_profile",
+        "--db-profile",
+        "db_profile",
         multiple=True,
         help=(
             "Override the DB profile scope for this question. "
@@ -757,8 +848,12 @@ def register_search_commands(
         # question finishes, preventing FD leaks across REPL turns.
         with svc:
             _run_search_ask(
-                cfg, svc, question_text,
-                log_event=log_event, take_actions=take_actions, debug=debug,
+                cfg,
+                svc,
+                question_text,
+                log_event=log_event,
+                take_actions=take_actions,
+                debug=debug,
             )
 
     @search.command("status")
@@ -798,15 +893,22 @@ def register_search_commands(
                         row.get("inserted_count", 0),
                         row.get("updated_count", 0),
                         f"{float(row.get('started_at') or 0):.0f}",
-                        f"{float(row.get('completed_at') or 0):.0f}" if row.get("completed_at") else "",
+                        f"{float(row.get('completed_at') or 0):.0f}"
+                        if row.get("completed_at")
+                        else "",
                     ]
                     for row in status["jobs"]
                 ],
             )
 
     @search.command("sources")
-    @click.option("--schema-limit", "schema_limit", default=20, show_default=True,
-                  help="How many schemas to list (most-tables first).")
+    @click.option(
+        "--schema-limit",
+        "schema_limit",
+        default=20,
+        show_default=True,
+        help="How many schemas to list (most-tables first).",
+    )
     @pass_config
     def search_sources(cfg: AMXConfig, schema_limit: int) -> None:
         """Show what is included in the search index for the active DB profile.
@@ -830,7 +932,9 @@ def register_search_commands(
                 return "—"
             if ts <= 0:
                 return "—"
-            return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+            return (
+                datetime.fromtimestamp(ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+            )
 
         status = catalog.sync_status(db_profile)
         entities = status.get("entities", {}) or {}
@@ -857,7 +961,10 @@ def register_search_commands(
             render_table(
                 "Databases in scope",
                 ["Database", "Indexed entities"],
-                [[row.get("database_name", "—") or "—", row.get("entity_count", 0)] for row in databases],
+                [
+                    [row.get("database_name", "—") or "—", row.get("entity_count", 0)]
+                    for row in databases
+                ],
             )
         else:
             info("No databases recorded yet — run `/search sync` to populate the index.")
@@ -885,7 +992,9 @@ def register_search_commands(
                 ],
             )
             if hidden > 0:
-                info(f"… {hidden} more schema(s) hidden. Re-run with `--schema-limit {len(schemas_sorted)}` to see all.")
+                info(
+                    f"… {hidden} more schema(s) hidden. Re-run with `--schema-limit {len(schemas_sorted)}` to see all."
+                )
 
         evidence_rows = catalog.sources_status(db_profile)
         if evidence_rows:
@@ -903,7 +1012,9 @@ def register_search_commands(
                 ],
             )
         else:
-            info("No live or cached evidence yet. Run `/search sync` to ingest sample-data and code evidence.")
+            info(
+                "No live or cached evidence yet. Run `/search sync` to ingest sample-data and code evidence."
+            )
 
     @search.command("config")
     @click.argument("key", required=False)
@@ -943,13 +1054,21 @@ def register_search_commands(
             catalog.set_setting(db_profile, "context_detail", normalized)
             success(f"Updated search context detail for {db_profile}: {normalized}")
             return
-        info(f"Current search context detail: {catalog.get_settings(db_profile).get('context_detail', 'standard')}")
+        info(
+            f"Current search context detail: {catalog.get_settings(db_profile).get('context_detail', 'standard')}"
+        )
 
     @search.command("sync")
     @click.option("--schema", "schema_name", default=None, help="Limit sync to one schema.")
-    @click.option("--table", "table_name", default=None, help="Limit sync to one table in the selected schema.")
     @click.option(
-        "--db-profile", "db_profile_override",
+        "--table",
+        "table_name",
+        default=None,
+        help="Limit sync to one table in the selected schema.",
+    )
+    @click.option(
+        "--db-profile",
+        "db_profile_override",
         multiple=True,
         help=(
             "Override the DB profile scope for this sync. Pass multiple "
@@ -991,10 +1110,7 @@ def register_search_commands(
 
         is_multi = len(scope_names) > 1
         if is_multi:
-            info(
-                f"Syncing across {len(scope_names)} DB profiles: "
-                f"{', '.join(scope_names)}"
-            )
+            info(f"Syncing across {len(scope_names)} DB profiles: {', '.join(scope_names)}")
 
         original_active = cfg.active_db_profile
         try:
@@ -1033,16 +1149,11 @@ def register_search_commands(
                     cfg, scope = _interactive_sync_scope(cfg, schema_name, table_name)
                     if not scope:
                         if is_multi:
-                            warn(
-                                f"No scope selected for profile '{profile_name}', "
-                                "skipping."
-                            )
+                            warn(f"No scope selected for profile '{profile_name}', skipping.")
                             continue
                         return
                     db_profile = cfg.active_db_profile or profile_name
-                    job_id = catalog.start_sync_job(
-                        db_profile, "sync", {"scope": scope}
-                    )
+                    job_id = catalog.start_sync_job(db_profile, "sync", {"scope": scope})
                     inserted = 0
                     updated = 0
                     try:
@@ -1101,22 +1212,35 @@ def register_search_commands(
         if catalog is None:
             error("Search catalog is not initialized.")
             return
-        with command_display(mode="search-rebuild", provider=cfg.llm.provider, model=cfg.llm.model) as display:
-            total_entities = int(catalog.sync_status(cfg.active_db_profile or "default")["entities"].get("total_entities", 0) or 0)
+        with command_display(
+            mode="search-rebuild", provider=cfg.llm.provider, model=cfg.llm.model
+        ) as display:
+            total_entities = int(
+                catalog.sync_status(cfg.active_db_profile or "default")["entities"].get(
+                    "total_entities", 0
+                )
+                or 0
+            )
             activity_idx = display.add_activity(f"Search rebuild 0/{total_entities or '?'}")
             display.begin_activity(activity_idx)
 
             def _on_progress(index: int, total: int) -> None:
                 display.update_activity(activity_idx, label=f"Search rebuild {index}/{total}")
 
-            inserted, updated = catalog.rebuild_profile(cfg.active_db_profile or "default", on_progress=_on_progress)
+            inserted, updated = catalog.rebuild_profile(
+                cfg.active_db_profile or "default", on_progress=_on_progress
+            )
             display.complete_activity(activity_idx, f"Rebuilt {updated} catalog entity rows")
         success(f"Search rebuild complete. inserted={inserted}, updated={updated}")
         log_event(
             event_type="search_rebuild",
             status="success",
             command="search.rebuild",
-            details={"inserted": inserted, "updated": updated, "db_profile": cfg.active_db_profile or "default"},
+            details={
+                "inserted": inserted,
+                "updated": updated,
+                "db_profile": cfg.active_db_profile or "default",
+            },
         )
 
     @search.command("find-columns", hidden=True)
@@ -1138,7 +1262,12 @@ def register_search_commands(
         if svc is None:
             return
         with svc:
-            _run_search_ask(cfg, svc, f"Which columns should I join between {left_path} and {right_path}?", log_event=log_event)
+            _run_search_ask(
+                cfg,
+                svc,
+                f"Which columns should I join between {left_path} and {right_path}?",
+                log_event=log_event,
+            )
 
     @search.command("explain", hidden=True)
     @click.argument("question", nargs=-1, required=True)

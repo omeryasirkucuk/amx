@@ -19,7 +19,6 @@ from amx.utils.console import (
     heading,
     info,
     render_table,
-    render_token_summary,
     step_spinner,
     warn,
 )
@@ -30,7 +29,9 @@ from amx.utils.token_tracker import tracker as token_tracker
 log = get_logger("cli.analyze_flow")
 
 FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, list[str]] | None]
-ResolveCodebaseForRun = Callable[[AMXConfig, object, dict[str, list[str]], str | None, bool], object | None]
+ResolveCodebaseForRun = Callable[
+    [AMXConfig, object, dict[str, list[str]], str | None, bool], object | None
+]
 LogEvent = Callable[..., None]
 
 
@@ -55,7 +56,9 @@ def _require_llm_connection(llm: object, *, profile_label: str | None = None) ->
     sys.exit(1)
 
 
-def _maybe_modify_profiles_before_run(cfg: AMXConfig, db: object, llm: object) -> tuple[object, object]:
+def _maybe_modify_profiles_before_run(
+    cfg: AMXConfig, db: object, llm: object
+) -> tuple[object, object]:
     from amx.config import DISABLED_PROFILE
     from amx.db.connector import DatabaseConnector
     from amx.llm.provider import LLMProvider
@@ -235,12 +238,14 @@ def _maybe_run_equivalence_dedup(
         sample_tables = ", ".join(klass.tables(limit=3))
         if klass.size > 3:
             sample_tables += f", … (+{klass.size - 3} more)"
-        preview_rows.append([
-            klass.name,
-            klass.family,
-            str(klass.size),
-            sample_tables,
-        ])
+        preview_rows.append(
+            [
+                klass.name,
+                klass.family,
+                str(klass.size),
+                sample_tables,
+            ]
+        )
     if preview_rows:
         render_table(
             f"Top {len(preview_rows)} classes that will dedup",
@@ -265,9 +270,10 @@ def _maybe_run_equivalence_dedup(
 
 
 def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> bool:
+    from rich.panel import Panel
+
     from amx.llm.batch import supported_providers as batch_supported_providers
     from amx.utils.console import ask_choice as prompt_choice
-    from rich.panel import Panel
 
     batch_capable = llm.supports_batch
     batch_providers_list = batch_supported_providers()
@@ -419,17 +425,14 @@ def execute_analyze_run(
     resolve_codebase_for_run: ResolveCodebaseForRun,
     log_event: LogEvent,
 ) -> None:
-    from amx.agents.orchestrator import Orchestrator
     from amx.cli_support.commands._analyze import (
         handle_keyboard_interrupt,
         render_summary_and_apply,
         run_per_schema_loop,
     )
     from amx.config import DISABLED_PROFILE
-    from amx.db.connector import DatabaseConnector, ProfilingError
     from amx.docs.rag import RAGStore
     from amx.llm.provider import FatalLLMError, LLMProvider
-    from amx.services.analyze_scope import ScopeResult
     from amx.utils.logging import clear_request_id, set_request_id
 
     # Tag every log line emitted during this analyze run with a stable
@@ -458,7 +461,6 @@ def execute_analyze_run(
     # fully commented. Tracked separately from ``skipped_assets`` (which
     # only grows on ProfilingError) so /history can report planned_count
     # = total_assets - <filter skips> accurately.
-    filter_skipped_count = 0
     final_status: str | None = None
     final_error_text = ""
     # Pre-init these so the KeyboardInterrupt / Exception handlers
@@ -500,6 +502,7 @@ def execute_analyze_run(
         # catalog Databricks.
         try:
             from amx.cli_support.catalog_picker import ensure_catalog_selected
+
             ensure_catalog_selected(db)
         except Exception:
             pass
@@ -536,7 +539,9 @@ def execute_analyze_run(
         tables_arg = list(tables_pos) + list(table)
         with command_display(
             schema=schema or cfg.current_schema or "",
-            table=(table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")),
+            table=(
+                table[0] if table else (tables_pos[0] if tables_pos else cfg.current_table or "")
+            ),
             mode="analyze-setup",
             provider=cfg.llm.provider,
             model=cfg.llm.model,
@@ -572,7 +577,9 @@ def execute_analyze_run(
             if missing_only:
                 info("Filter: only assets / columns without an existing comment will be analyzed.")
             else:
-                info("Filter: re-running on ALL selected assets (existing comments will be replaced).")
+                info(
+                    "Filter: re-running on ALL selected assets (existing comments will be replaced)."
+                )
 
             review_strategy = "individual"
             if not use_batch and total_assets > 1:
@@ -724,7 +731,6 @@ def execute_analyze_run(
         all_results = loop_result.all_results
         processed_assets = loop_result.processed_assets
         skipped_assets = loop_result.skipped_assets
-        filter_skipped_count = loop_result.filter_skipped_count
         orch = loop_result.last_orchestrator
 
         # Post-loop summary + apply branch (extracted in v0.9.4).
@@ -822,8 +828,12 @@ def register_analyze_run_command(
     @analyze.command("run")
     @click.argument("tables_pos", nargs=-1, metavar="[ASSET ...]")
     @click.option("--schema", "-s", help="Schema to analyze.")
-    @click.option("--table", "-t", multiple=True, help="Specific asset(s). Omit for interactive selection.")
-    @click.option("--apply/--no-apply", default=False, help="Apply approved metadata to the database.")
+    @click.option(
+        "--table", "-t", multiple=True, help="Specific asset(s). Omit for interactive selection."
+    )
+    @click.option(
+        "--apply/--no-apply", default=False, help="Apply approved metadata to the database."
+    )
     @click.option(
         "--code-refresh",
         is_flag=True,
@@ -845,7 +855,8 @@ def register_analyze_run_command(
         ),
     )
     @click.option(
-        "--db-profile", "db_profile_override",
+        "--db-profile",
+        "db_profile_override",
         multiple=True,
         help=(
             "Override the DB profile scope for this run. Pass multiple "
@@ -894,10 +905,7 @@ def register_analyze_run_command(
 
         is_multi = len(scope_names) > 1
         if is_multi:
-            info(
-                f"Running analyze across {len(scope_names)} DB profiles: "
-                f"{', '.join(scope_names)}"
-            )
+            info(f"Running analyze across {len(scope_names)} DB profiles: {', '.join(scope_names)}")
 
         # Save the persisted active pointer so we can restore it after
         # the loop. The orchestrator reads cfg.db / cfg.active_db_profile
@@ -908,9 +916,7 @@ def register_analyze_run_command(
         try:
             for idx, profile_name in enumerate(scope_names, start=1):
                 if is_multi:
-                    heading(
-                        f"Profile {idx}/{len(scope_names)}: {profile_name}"
-                    )
+                    heading(f"Profile {idx}/{len(scope_names)}: {profile_name}")
                 # Temporarily activate this profile so cfg.db and the
                 # downstream orchestrator see the right DB. We do NOT
                 # call cfg.save() inside the loop — the multi-profile
@@ -927,10 +933,7 @@ def register_analyze_run_command(
                 )
                 with step_spinner(label):
                     if not db_init.test_connection():
-                        error(
-                            f"Cannot connect to database for profile "
-                            f"'{profile_name}'."
-                        )
+                        error(f"Cannot connect to database for profile '{profile_name}'.")
                         if is_multi:
                             warn(
                                 "Skipping this profile and continuing with "
@@ -943,6 +946,7 @@ def register_analyze_run_command(
                 # subsequent listings may be empty.
                 try:
                     from amx.cli_support.catalog_picker import warn_when_database_unpinned
+
                     warn_when_database_unpinned(db_init)
                 except Exception:
                     pass
@@ -965,7 +969,7 @@ def register_analyze_run_command(
             warn("User interrupted process.")
             return
         except Exception as exc:
-            raise click.ClickException(str(exc))
+            raise click.ClickException(str(exc)) from exc
         finally:
             # Restore the original active pointer so subsequent commands
             # still see the user's persisted choice.

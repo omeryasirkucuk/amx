@@ -54,10 +54,10 @@ class SearchPlan:
     # Answer-shape hints. Empty/zero defaults mean "no signal from
     # interpretation" — the policy/derivation step picks a shape based
     # on question_class.
-    aggregation_op: str = ""        # "" | "max" | "min" | "top_k" | "bottom_k" | "count"
-    aggregation_field: str = ""     # "" | "row_count" | "column_count" | "table_count"
-    aggregation_limit: int = 0      # 0 = no aggregation; 1 for superlatives; N for top-K
-    answer_shape: str = ""          # See _ANSWER_SHAPES below; "" = derive from policy.
+    aggregation_op: str = ""  # "" | "max" | "min" | "top_k" | "bottom_k" | "count"
+    aggregation_field: str = ""  # "" | "row_count" | "column_count" | "table_count"
+    aggregation_limit: int = 0  # 0 = no aggregation; 1 for superlatives; N for top-K
+    answer_shape: str = ""  # See _ANSWER_SHAPES below; "" = derive from policy.
 
 
 @dataclass
@@ -114,13 +114,13 @@ class ResolvedTarget:
 # Closed set of presentation shapes the agent + renderer dispatch on.
 # Tests and the renderer share this vocabulary.
 _ANSWER_SHAPES: set[str] = {
-    "single_fact",     # one-sentence headline, no list, no rich table
-    "short_table",     # headline + 2-5 row markdown table inline in summary
-    "full_table",      # broad inventory dump (existing behaviour)
-    "ranked_list",     # headline + rich Search matches table (filtered to non-zero scores)
-    "table_summary",   # headline + key-columns rich table for table_explain
-    "join_candidates", # existing join Rich table dispatch
-    "prose",           # 2-4 sentence explanation, no table
+    "single_fact",  # one-sentence headline, no list, no rich table
+    "short_table",  # headline + 2-5 row markdown table inline in summary
+    "full_table",  # broad inventory dump (existing behaviour)
+    "ranked_list",  # headline + rich Search matches table (filtered to non-zero scores)
+    "table_summary",  # headline + key-columns rich table for table_explain
+    "join_candidates",  # existing join Rich table dispatch
+    "prose",  # 2-4 sentence explanation, no table
 }
 
 
@@ -201,15 +201,26 @@ def _input_token_budget_for(model: str | None) -> int:
     if not model:
         return _DEFAULT_INPUT_TOKEN_BUDGET
     name = model.lower()
-    if any(token in name for token in (
-        "claude-3-5", "claude-sonnet-4", "claude-opus-4", "claude-3-opus",
-        "claude-haiku-4",
-    )):
+    if any(
+        token in name
+        for token in (
+            "claude-3-5",
+            "claude-sonnet-4",
+            "claude-opus-4",
+            "claude-3-opus",
+            "claude-haiku-4",
+        )
+    ):
         return 150_000  # Claude family: 200K context window.
-    if any(token in name for token in (
-        "gemini-1.5-pro", "gemini-2.0-pro", "gemini-2.0-flash",
-        "gemini-1.5-flash",
-    )):
+    if any(
+        token in name
+        for token in (
+            "gemini-1.5-pro",
+            "gemini-2.0-pro",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+        )
+    ):
         return 250_000  # Gemini family: 1M-2M context.
     return _DEFAULT_INPUT_TOKEN_BUDGET
 
@@ -235,9 +246,7 @@ def _trim_rows_to_token_budget(
     if not rows:
         return rows, 0
 
-    sorted_rows = sorted(
-        rows, key=lambda row: float(row.get("match_score") or 0.0), reverse=True
-    )
+    sorted_rows = sorted(rows, key=lambda row: float(row.get("match_score") or 0.0), reverse=True)
 
     full_payload = dict(base_payload, rows=sorted_rows, result_count=len(sorted_rows))
     full_msgs = [

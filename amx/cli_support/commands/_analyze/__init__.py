@@ -16,15 +16,15 @@ class) so each is independently testable: feed in a stub
 counters / pending-review state.
 """
 
+from amx.cli_support.commands._analyze.interrupt import (
+    handle_keyboard_interrupt,
+)
 from amx.cli_support.commands._analyze.run_loop import (
     PerSchemaLoopResult,
     run_per_schema_loop,
 )
 from amx.cli_support.commands._analyze.run_summary import (
     render_summary_and_apply,
-)
-from amx.cli_support.commands._analyze.interrupt import (
-    handle_keyboard_interrupt,
 )
 
 __all__ = [

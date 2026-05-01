@@ -33,7 +33,7 @@ from amx.utils.console import (
 from amx.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from amx.agents.orchestrator import Orchestrator, ReviewResult, apply_review_results_to_db
+    from amx.agents.orchestrator import Orchestrator, ReviewResult
     from amx.db.connector import TableProfile
 
 log = get_logger("agents.orchestrator.table_processor")
@@ -64,7 +64,7 @@ class TableProcessor:
 
     def __init__(
         self,
-        orch: "Orchestrator",
+        orch: Orchestrator,
         schema: str,
         table: str,
         *,
@@ -81,7 +81,7 @@ class TableProcessor:
 
     # ── Public entry point ─────────────────────────────────────────────
 
-    def run(self) -> list["ReviewResult"]:
+    def run(self) -> list[ReviewResult]:
         """Execute the full per-table flow and return review results."""
         kind_label = (
             f" ({self.asset_kind.label})"
@@ -102,25 +102,25 @@ class TableProcessor:
 
     # ── Phase 1: profile fetch ─────────────────────────────────────────
 
-    def _fetch_profile(self) -> "TableProfile":
+    def _fetch_profile(self) -> TableProfile:
         with step_spinner(f"Profiling {self.schema}.{self.table} structure and data"):
             return self.orch.db.profile_table(
-                self.schema, self.table, asset_kind=self.asset_kind,
+                self.schema,
+                self.table,
+                asset_kind=self.asset_kind,
             )
 
     # ── Phase 2: filter chain ──────────────────────────────────────────
 
-    def _apply_filters(self, profile: "TableProfile") -> bool:
+    def _apply_filters(self, profile: TableProfile) -> bool:
         """Run all three filters in order; return False if work is empty."""
         if not self._filter_missing_only(profile):
             return False
         if not self._filter_column_override(profile):
             return False
-        if not self._filter_dedup_skip(profile):
-            return False
-        return True
+        return self._filter_dedup_skip(profile)
 
-    def _filter_missing_only(self, profile: "TableProfile") -> bool:
+    def _filter_missing_only(self, profile: TableProfile) -> bool:
         """Skip already-commented columns when ``missing_only`` is set.
 
         Placeholder comments left over from previous runs (the
@@ -137,7 +137,8 @@ class TableProcessor:
 
         total_cols = len(profile.columns)
         cols_missing = [
-            c for c in profile.columns
+            c
+            for c in profile.columns
             if not (c.existing_comment or "").strip()
             or is_placeholder_description(c.existing_comment)
         ]
@@ -169,7 +170,7 @@ class TableProcessor:
 
         return True
 
-    def _filter_column_override(self, profile: "TableProfile") -> bool:
+    def _filter_column_override(self, profile: TableProfile) -> bool:
         """Restrict to the column-scope override set if present.
 
         When the user picks Column scope, the resolver populates
@@ -182,10 +183,7 @@ class TableProcessor:
             return True
 
         before = len(profile.columns)
-        profile.columns = [
-            col for col in profile.columns
-            if col.name in column_override_set
-        ]
+        profile.columns = [col for col in profile.columns if col.name in column_override_set]
         removed = before - len(profile.columns)
         if removed:
             info(
@@ -202,7 +200,7 @@ class TableProcessor:
             return False
         return True
 
-    def _filter_dedup_skip(self, profile: "TableProfile") -> bool:
+    def _filter_dedup_skip(self, profile: TableProfile) -> bool:
         """Drop columns already handled by the upfront equivalence pass.
 
         The dedup pass already wrote the description to the catalog
@@ -216,7 +214,8 @@ class TableProcessor:
 
         before = len(profile.columns)
         profile.columns = [
-            col for col in profile.columns
+            col
+            for col in profile.columns
             if (self.schema, self.table, col.name) not in self.orch.dedup_skip_set
         ]
         removed = before - len(profile.columns)
@@ -226,8 +225,7 @@ class TableProcessor:
                 f"{self.schema}.{self.table} were already handled by the dedup pass."
             )
         if not profile.columns and not (
-            profile.existing_comment is None
-            or not profile.existing_comment.strip()
+            profile.existing_comment is None or not profile.existing_comment.strip()
         ):
             info(
                 f"{self.schema}.{self.table}: all columns covered by dedup pass and "
@@ -239,7 +237,8 @@ class TableProcessor:
     # ── Phase 3: agent loop + persistence ──────────────────────────────
 
     def _run_agents_and_persist(
-        self, profile: "TableProfile",
+        self,
+        profile: TableProfile,
     ) -> tuple[list[Any] | None, dict[str | None, int] | None]:
         """Run Profile / RAG / Code agents, merge, persist candidates.
 
@@ -252,10 +251,7 @@ class TableProcessor:
         batch_size = self.orch.profile_agent.batch_size
         if num_cols > batch_size:
             n_batches = (num_cols + batch_size - 1) // batch_size
-            info(
-                f"Profile Agent: {num_cols} columns "
-                f"({n_batches} batches of ≤{batch_size})"
-            )
+            info(f"Profile Agent: {num_cols} columns ({n_batches} batches of ≤{batch_size})")
         else:
             info(f"Profile Agent: {num_cols} columns")
         if self.orch.rag_agent:
@@ -285,7 +281,8 @@ class TableProcessor:
         # Persist all alternatives before human review so review picks
         # can link to a concrete run_results row.
         result_id_map = self.orch._save_merged_suggestions(
-            merged, asset_kind=self.asset_kind,
+            merged,
+            asset_kind=self.asset_kind,
         )
         self.orch._sync_search_catalog(profile, merged, result_id_map)
         return merged, result_id_map
@@ -294,10 +291,10 @@ class TableProcessor:
 
     def _dispatch_apply_or_review(
         self,
-        profile: "TableProfile",
+        profile: TableProfile,
         merged: list[Any],
         result_id_map: dict[str | None, int],
-    ) -> list["ReviewResult"]:
+    ) -> list[ReviewResult]:
         ak = profile.asset_kind.value if profile.asset_kind else "table"
         if self.auto_apply:
             return self._auto_apply_branch(merged, result_id_map, ak)
@@ -310,7 +307,7 @@ class TableProcessor:
         merged: list[Any],
         result_id_map: dict[str | None, int],
         ak: str,
-    ) -> list["ReviewResult"]:
+    ) -> list[ReviewResult]:
         """Trust the agents — accept top suggestion, write to live DB.
 
         We still go through ``sync_review_decision`` per pick so the
@@ -331,7 +328,9 @@ class TableProcessor:
                     catalog = SearchCatalog.from_history_store()
                     if catalog is not None:
                         catalog.sync_review_decision(
-                            rid, chosen_description=top, evaluation="accepted",
+                            rid,
+                            chosen_description=top,
+                            evaluation="accepted",
                         )
                 except Exception as exc:
                     log.debug("auto-apply: catalog sync_review_decision failed: %s", exc)
@@ -339,22 +338,26 @@ class TableProcessor:
             if hs is not None and rid is not None and top:
                 try:
                     hs.record_evaluation(
-                        rid, chosen_description=top, evaluation="accepted",
+                        rid,
+                        chosen_description=top,
+                        evaluation="accepted",
                     )
                 except Exception as exc:
                     log.debug("auto-apply: record_evaluation failed: %s", exc)
-            results.append(ReviewResult(
-                schema=s.schema,
-                table=s.table,
-                column=s.column,
-                final_description=top,
-                confidence=s.confidence,
-                source=s.source,
-                applied=True,
-                asset_kind=ak,
-                result_id=rid,
-                logprob_score=s.logprob_score,
-            ))
+            results.append(
+                ReviewResult(
+                    schema=s.schema,
+                    table=s.table,
+                    column=s.column,
+                    final_description=top,
+                    confidence=s.confidence,
+                    source=s.source,
+                    applied=True,
+                    asset_kind=ak,
+                    result_id=rid,
+                    logprob_score=s.logprob_score,
+                )
+            )
 
         self.orch.results.extend(results)
 
@@ -374,12 +377,12 @@ class TableProcessor:
                     f"Auto-applied {written} comment(s) to {self.schema}.{self.table} (live DB)."
                 )
         except Exception as exc:
-            error(
-                f"Failed to auto-apply {self.schema}.{self.table} comments to the live DB: {exc}"
-            )
+            error(f"Failed to auto-apply {self.schema}.{self.table} comments to the live DB: {exc}")
             log.error(
                 "auto-apply DB write failed for %s.%s: %s",
-                self.schema, self.table, exc,
+                self.schema,
+                self.table,
+                exc,
             )
         return results
 
@@ -388,24 +391,26 @@ class TableProcessor:
         merged: list[Any],
         result_id_map: dict[str | None, int],
         ak: str,
-    ) -> list["ReviewResult"]:
+    ) -> list[ReviewResult]:
         """Wrap suggestions as un-applied ReviewResults for batch review."""
         from amx.agents.orchestrator import ReviewResult
 
         results: list[ReviewResult] = []
         for s in merged:
-            results.append(ReviewResult(
-                schema=s.schema,
-                table=s.table,
-                column=s.column,
-                final_description=s.suggestions[0] if s.suggestions else "",
-                confidence=s.confidence,
-                source=s.source,
-                applied=False,
-                asset_kind=ak,
-                result_id=result_id_map.get(s.column),
-                logprob_score=s.logprob_score,
-            ))
+            results.append(
+                ReviewResult(
+                    schema=s.schema,
+                    table=s.table,
+                    column=s.column,
+                    final_description=s.suggestions[0] if s.suggestions else "",
+                    confidence=s.confidence,
+                    source=s.source,
+                    applied=False,
+                    asset_kind=ak,
+                    result_id=result_id_map.get(s.column),
+                    logprob_score=s.logprob_score,
+                )
+            )
         self.orch.results.extend(results)
         return results
 
@@ -414,7 +419,7 @@ class TableProcessor:
         merged: list[Any],
         result_id_map: dict[str | None, int],
         ak: str,
-    ) -> list["ReviewResult"]:
+    ) -> list[ReviewResult]:
         """Run the interactive per-table review picker.
 
         Pauses the live display while the prompt is active so

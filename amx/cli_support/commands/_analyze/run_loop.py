@@ -74,9 +74,7 @@ def run_per_schema_loop(
     display = get_display()
 
     for schema_name, assets in scope.items():
-        asset_kinds = {
-            name: db.resolve_asset_kind(schema_name, name) for name in assets
-        }
+        asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
         orch = Orchestrator(
             db,
             llm,
@@ -100,9 +98,7 @@ def run_per_schema_loop(
 
         result.last_orchestrator = orch
 
-        display_label = (
-            ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
-        )
+        display_label = ", ".join(assets) if len(assets) <= 3 else f"{len(assets)} assets"
         display.start(
             schema=schema_name,
             table=display_label,
@@ -195,12 +191,11 @@ def _process_assets_chat_mode(
                         # as fully-commented).
                         hs.increment_run_processed(run_id, by=1)
                         if review_strategy == "auto-apply":
-                            applied_in_table = sum(
-                                1 for r in results if r.applied
-                            )
+                            applied_in_table = sum(1 for r in results if r.applied)
                             if applied_in_table:
                                 hs.increment_run_applied(
-                                    run_id, by=applied_in_table,
+                                    run_id,
+                                    by=applied_in_table,
                                 )
                     else:
                         # Filter dropped this asset (fully commented).
@@ -216,7 +211,8 @@ def _process_assets_chat_mode(
                 except Exception as exc:
                     log.debug(
                         "Could not update analyze run counters for run_id=%s: %s",
-                        run_id, exc,
+                        run_id,
+                        exc,
                     )
         except ProfilingError as exc:
             result.skipped_assets.append(f"{schema_name}.{asset_name}")

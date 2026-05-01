@@ -6,7 +6,8 @@ Supports multiple backends via the adapter layer in ``amx.db.adapters``.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field, fields as dc_fields
+from dataclasses import dataclass, field
+from dataclasses import fields as dc_fields
 from enum import Enum
 from typing import Any
 
@@ -129,7 +130,7 @@ class TableProfile:
     # ``get_analytics_metadata``. Backends fill what they can; the
     # search agent surfaces only the non-empty fields when answering
     # analytics-aware questions.
-    analytics: "AnalyticsMetadata" = field(default_factory=lambda: AnalyticsMetadata())
+    analytics: AnalyticsMetadata = field(default_factory=lambda: AnalyticsMetadata())
 
 
 @dataclass
@@ -201,6 +202,7 @@ class DatabaseConnector:
         self._engine: Engine | None = None
 
         from amx.db.adapters import get_adapter
+
         self._adapter = get_adapter(cfg)
 
     @property
@@ -236,11 +238,8 @@ class DatabaseConnector:
                 return ConnectionTestResult(ok=True)
             except Exception as exc:
                 last_exc = exc
-                if (
-                    attempt < MAX_CONNECTION_RETRIES
-                    and _is_transient_db_connection_error(exc)
-                ):
-                    wait = CONNECTION_RETRY_BACKOFF_SEC * (2 ** attempt)
+                if attempt < MAX_CONNECTION_RETRIES and _is_transient_db_connection_error(exc):
+                    wait = CONNECTION_RETRY_BACKOFF_SEC * (2**attempt)
                     log.warning(
                         "DB connection failed (attempt %d/%d) — retrying in %.1fs: %s",
                         attempt + 1,
@@ -253,9 +252,8 @@ class DatabaseConnector:
                 break
 
         assert last_exc is not None  # the loop must have raised at least once
-        actionable = (
-            self._adapter.actionable_profile_error(last_exc)
-            or actionable_error_message(last_exc, backend=self.backend)
+        actionable = self._adapter.actionable_profile_error(last_exc) or actionable_error_message(
+            last_exc, backend=self.backend
         )
         log.error("Connection failed: %s", actionable)
         return ConnectionTestResult(ok=False, message=actionable, exception=last_exc)
@@ -309,7 +307,9 @@ class DatabaseConnector:
         catalog = getattr(self.cfg, "catalog", "") or ""
         try:
             adapter_result = self._adapter.list_tables(
-                self.engine, schema, catalog,
+                self.engine,
+                schema,
+                catalog,
             )
         except Exception:
             adapter_result = None
@@ -322,7 +322,9 @@ class DatabaseConnector:
         catalog = getattr(self.cfg, "catalog", "") or ""
         try:
             adapter_result = self._adapter.list_views(
-                self.engine, schema, catalog,
+                self.engine,
+                schema,
+                catalog,
             )
         except Exception:
             adapter_result = None
@@ -447,7 +449,11 @@ class DatabaseConnector:
         max_rows = max(0, int(getattr(self.cfg, "profiling_max_rows", 1_000_000) or 0))
         effective_sample_size = max(
             0,
-            int(sample_size if sample_size is not None else getattr(self.cfg, "profiling_sample_size", 5) or 0),
+            int(
+                sample_size
+                if sample_size is not None
+                else getattr(self.cfg, "profiling_sample_size", 5) or 0
+            ),
         )
         profile = TableProfile(
             schema=schema,
@@ -464,7 +470,9 @@ class DatabaseConnector:
             profile.stats_idx_scan = stats.get("idx_scan", 0)
             profile.stats_n_live_tup = stats.get("n_live_tup", 0)
         except Exception as exc:
-            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                exc, backend=self.backend
+            )
             msg = f"Profiling failed for {schema}.{table}: {actionable}"
             raise ProfilingError(schema, table, msg) from exc
         estimated_rows = int(profile.stats_n_live_tup or 0)
@@ -496,7 +504,10 @@ class DatabaseConnector:
                 log.debug(
                     "Exact row count failed for %s.%s; falling back to "
                     "estimated row count (%d). Detail: %s",
-                    schema, table, estimated_rows, exc,
+                    schema,
+                    table,
+                    estimated_rows,
+                    exc,
                 )
                 profile.row_count = estimated_rows
         else:
@@ -545,7 +556,9 @@ class DatabaseConnector:
         try:
             raw_cols = insp.get_columns(table, schema=schema)
         except Exception as exc:
-            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                exc, backend=self.backend
+            )
             msg = f"Profiling failed for {schema}.{table}: {actionable}"
             raise ProfilingError(schema, table, msg) from exc
 
@@ -583,7 +596,9 @@ class DatabaseConnector:
                             ).fetchall()
                             cp.samples = [r[0] for r in samples_row]
                 except Exception as exc:
-                    actionable = adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+                    actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                        exc, backend=self.backend
+                    )
                     if actionable:
                         log.warning(
                             "Skipping profile stats for %s.%s.%s: %s",
@@ -624,7 +639,9 @@ class DatabaseConnector:
             # profile they asked for.
             log.debug(
                 "Analytics metadata fetch failed for %s.%s: %s",
-                schema, table, exc,
+                schema,
+                table,
+                exc,
             )
 
         return profile
@@ -651,7 +668,9 @@ class DatabaseConnector:
         try:
             return self._adapter.get_incoming_foreign_keys(self.engine, schema, table)
         except Exception as exc:
-            actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(exc, backend=self.backend)
+            actionable = self._adapter.actionable_profile_error(exc) or actionable_error_message(
+                exc, backend=self.backend
+            )
             log.warning(
                 "Incoming foreign key introspection failed for %s.%s via %s: %s",
                 schema,
@@ -724,7 +743,9 @@ class DatabaseConnector:
     ) -> None:
         if asset_kind == AssetKind.SCHEMA:
             if not self.capabilities.schema_comments:
-                raise UnsupportedDatabaseOperation(f"{self.backend} does not support schema comments.")
+                raise UnsupportedDatabaseOperation(
+                    f"{self.backend} does not support schema comments."
+                )
             stmt = self._adapter.set_schema_comment_sql(schema)
             if conn is None:
                 with self.engine.begin() as local_conn:
@@ -736,7 +757,9 @@ class DatabaseConnector:
 
         if asset_kind == AssetKind.DATABASE:
             if not self.capabilities.database_comments:
-                raise UnsupportedDatabaseOperation(f"{self.backend} does not support database comments.")
+                raise UnsupportedDatabaseOperation(
+                    f"{self.backend} does not support database comments."
+                )
             stmt = self._adapter.set_database_comment_sql()
             if conn is None:
                 with self.engine.begin() as local_conn:
@@ -753,11 +776,20 @@ class DatabaseConnector:
                     f"{self.backend} does not support comment write-back for {asset_kind.label} assets."
                 )
             if asset_kind == AssetKind.VIEW and not self.capabilities.view_comments:
-                raise UnsupportedDatabaseOperation(f"{self.backend} does not support view comments.")
-            if asset_kind == AssetKind.MATERIALIZED_VIEW and not self.capabilities.materialized_view_comments:
-                raise UnsupportedDatabaseOperation(f"{self.backend} does not support materialized view comments.")
+                raise UnsupportedDatabaseOperation(
+                    f"{self.backend} does not support view comments."
+                )
+            if (
+                asset_kind == AssetKind.MATERIALIZED_VIEW
+                and not self.capabilities.materialized_view_comments
+            ):
+                raise UnsupportedDatabaseOperation(
+                    f"{self.backend} does not support materialized view comments."
+                )
             if asset_kind == AssetKind.TABLE and not self.capabilities.table_comments:
-                raise UnsupportedDatabaseOperation(f"{self.backend} does not support table comments.")
+                raise UnsupportedDatabaseOperation(
+                    f"{self.backend} does not support table comments."
+                )
             stmt = self._adapter.set_table_comment_sql(schema, table, keyword)
             if conn is None:
                 with self.engine.begin() as local_conn:
@@ -786,9 +818,7 @@ class DatabaseConnector:
     ) -> None:
         self.apply_comment(schema=schema, table=table, comment=comment, asset_kind=asset_kind)
 
-    def set_column_comment(
-        self, schema: str, table: str, column: str, comment: str
-    ) -> None:
+    def set_column_comment(self, schema: str, table: str, column: str, comment: str) -> None:
         self.apply_comment(schema=schema, table=table, column=column, comment=comment)
 
     def set_schema_comment(self, schema: str, comment: str) -> None:

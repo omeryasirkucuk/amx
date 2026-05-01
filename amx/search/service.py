@@ -14,12 +14,13 @@ must use :class:`SearchService`.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
-from amx.search.agent import SearchAgent, SearchPlan, _SESSION_MEMORY
+from amx.search.agent import _SESSION_MEMORY, SearchAgent, SearchPlan
 from amx.search.catalog import SearchAnswer, SearchCatalog
 
 
@@ -81,13 +82,11 @@ class SearchService:
     def close(self) -> None:
         """Dispose the cached live DB connector, if any."""
         if self._live_db is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._live_db.close()
-            except Exception:
-                pass
             self._live_db = None
 
-    def __enter__(self) -> "SearchService":
+    def __enter__(self) -> SearchService:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

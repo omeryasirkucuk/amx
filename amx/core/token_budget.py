@@ -46,6 +46,9 @@ class MaxTokenValidator:
                 + "\n...[context compacted by MaxTokenValidator]...\n"
                 + text[-self.per_chunk_tail_chars :].lstrip()
             )
-        while compacted and estimate_tokens([{"role": "user", "content": "\n\n".join(compacted)}]) > budget:
+        while (
+            compacted
+            and estimate_tokens([{"role": "user", "content": "\n\n".join(compacted)}]) > budget
+        ):
             compacted.pop()
         return compacted

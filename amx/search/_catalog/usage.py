@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from typing import Any
 
 from amx.db.connector import TableProfile
 from amx.utils.logging import get_logger
@@ -61,6 +60,7 @@ class UsageMixin:
                 result_id,
             ),
         )
+
     def _store_query_usage(
         self,
         conn: sqlite3.Connection,
@@ -125,6 +125,7 @@ class UsageMixin:
                     now,
                 ),
             )
+
     def mark_applied(self, result_id: int) -> None:
         with self._connect() as conn:
             desc = conn.execute(
@@ -147,6 +148,7 @@ class UsageMixin:
                 effective_source_kind="reviewed",
                 db_applied_status="applied",
             )
+
     def record_manual_description(
         self,
         *,
@@ -183,6 +185,7 @@ class UsageMixin:
             )
             self._resolve_effective_description(conn, entity_id)
             self._index_entity(conn, entity_id)
+
     def record_dedup_decision(
         self,
         *,
@@ -228,6 +231,7 @@ class UsageMixin:
             )
             self._resolve_effective_description(conn, entity_id)
             self._index_entity(conn, entity_id)
+
     def history_counts(self) -> dict[str, int]:
         with self._connect() as conn:
             row = conn.execute(

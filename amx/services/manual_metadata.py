@@ -124,11 +124,17 @@ def build_inspect_rows(
     """Build table rows for `/manual inspect`."""
     if not schema and not table:
         rows = [
-            ["Database", cfg.db.database or cfg.db.display_summary, display_comment(db.get_database_comment())],
+            [
+                "Database",
+                cfg.db.database or cfg.db.display_summary,
+                display_comment(db.get_database_comment()),
+            ],
         ]
         active_schema = cfg.current_schema
         if active_schema:
-            rows.append(["Schema", active_schema, display_comment(db.get_schema_comment(active_schema))])
+            rows.append(
+                ["Schema", active_schema, display_comment(db.get_schema_comment(active_schema))]
+            )
         return "Manual metadata", rows
 
     resolved_schema = resolve_schema_arg(cfg, schema, error=error)
@@ -136,13 +142,17 @@ def build_inspect_rows(
         return None
 
     if not table:
-        rows = [["Schema", resolved_schema, display_comment(db.get_schema_comment(resolved_schema))]]
+        rows = [
+            ["Schema", resolved_schema, display_comment(db.get_schema_comment(resolved_schema))]
+        ]
         for asset_name, kind in db.list_assets(resolved_schema):
-            rows.append([
-                kind.label,
-                asset_name,
-                display_comment(db.get_table_comment(resolved_schema, asset_name)),
-            ])
+            rows.append(
+                [
+                    kind.label,
+                    asset_name,
+                    display_comment(db.get_table_comment(resolved_schema, asset_name)),
+                ]
+            )
         return f"Manual metadata: {resolved_schema}", rows
 
     asset_kind = db.resolve_asset_kind(resolved_schema, table)  # type: ignore[attr-defined]
@@ -160,19 +170,23 @@ def build_inspect_rows(
 
 def build_monitor_rows(cfg: AMXConfig, db: object, schema: str | None) -> list[list[str]]:
     """Build coverage rows for `/manual monitor`."""
-    schemas = [schema] if schema else ([cfg.current_schema] if cfg.current_schema else db.list_schemas())  # type: ignore[attr-defined]
+    schemas = (
+        [schema] if schema else ([cfg.current_schema] if cfg.current_schema else db.list_schemas())
+    )  # type: ignore[attr-defined]
     rows: list[list[str]] = []
     for sch in schemas:
         if not sch:
             continue
         coverage = collect_metadata_coverage(db, sch)
-        rows.append([
-            coverage.schema,
-            f"{coverage.assets_with_comments}/{coverage.assets}",
-            f"{coverage.asset_percent:.1f}%",
-            f"{coverage.columns_with_comments}/{coverage.columns}",
-            f"{coverage.column_percent:.1f}%",
-        ])
+        rows.append(
+            [
+                coverage.schema,
+                f"{coverage.assets_with_comments}/{coverage.assets}",
+                f"{coverage.asset_percent:.1f}%",
+                f"{coverage.columns_with_comments}/{coverage.columns}",
+                f"{coverage.column_percent:.1f}%",
+            ]
+        )
     return rows
 
 
@@ -189,7 +203,9 @@ def resolve_manual_target(
 
     if normalized_scope == "database":
         if names:
-            error("The active database is edited with /edit database. Switch DB profiles under /db to edit another database.")
+            error(
+                "The active database is edited with /edit database. Switch DB profiles under /db to edit another database."
+            )
             return None
         return "database", lambda comment: db.set_database_comment(comment)  # type: ignore[attr-defined]
 
@@ -271,7 +287,11 @@ def resolve_path_target(
     parts = split_metadata_path(path)
     if len(parts) == 1:
         db_name = parts[0]
-        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+        if (
+            db_name not in cfg.db_profiles
+            and db_name != profile_name
+            and db_name != cfg.db.database
+        ):
             error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
             return None
         return ManualEditTarget(
@@ -282,7 +302,11 @@ def resolve_path_target(
         )
     if len(parts) == 2:
         db_name, schema = parts
-        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+        if (
+            db_name not in cfg.db_profiles
+            and db_name != profile_name
+            and db_name != cfg.db.database
+        ):
             error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
             return None
         return ManualEditTarget(
@@ -293,7 +317,11 @@ def resolve_path_target(
         )
     if len(parts) == 3:
         db_name, schema, table = parts
-        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+        if (
+            db_name not in cfg.db_profiles
+            and db_name != profile_name
+            and db_name != cfg.db.database
+        ):
             error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
             return None
         kind = db.resolve_asset_kind(schema, table)  # type: ignore[attr-defined]
@@ -307,7 +335,11 @@ def resolve_path_target(
         )
     if len(parts) == 4:
         db_name, schema, table, column = parts
-        if db_name not in cfg.db_profiles and db_name != profile_name and db_name != cfg.db.database:
+        if (
+            db_name not in cfg.db_profiles
+            and db_name != profile_name
+            and db_name != cfg.db.database
+        ):
             error(f"Unknown DB profile: {db_name}. Use /db then /db-profiles to list profiles.")
             return None
         return ManualEditTarget(
@@ -316,5 +348,7 @@ def resolve_path_target(
             label=f"column {db_name}.{schema}.{table}.{column}",
             writer=lambda comment: db.set_column_comment(schema, table, column, comment),  # type: ignore[attr-defined]
         )
-    error("Use /edit <db>, <db>.<schema>, <db>.<schema>.<table>, or <db>.<schema>.<table>.<column>.")
+    error(
+        "Use /edit <db>, <db>.<schema>, <db>.<schema>.<table>, or <db>.<schema>.<table>.<column>."
+    )
     return None

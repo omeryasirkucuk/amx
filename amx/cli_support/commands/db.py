@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
-from dataclasses import dataclass, replace
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from amx.config import AMXConfig, DBConfig, PROFILING_MODES, SUPPORTED_BACKENDS
+from amx.config import PROFILING_MODES, SUPPORTED_BACKENDS, AMXConfig, DBConfig
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -235,7 +236,9 @@ def cmd_use(
     """
     available = sorted(cfg.db_profiles.keys())
     if not available:
-        error("No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery).")
+        error(
+            "No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery)."
+        )
         return
 
     # Inline-arg form: /use-db NAME [NAME ...]
@@ -261,10 +264,7 @@ def cmd_use(
             return
     else:
         # Interactive: ask single vs multi, then route to the right picker.
-        descriptions = {
-            n: f"[{p.backend}] {p.display_summary}"
-            for n, p in cfg.db_profiles.items()
-        }
+        descriptions = {n: f"[{p.backend}] {p.display_summary}" for n, p in cfg.db_profiles.items()}
         if len(available) >= 2 and confirm(
             "Pick multiple profiles for the active scope (used by /ask /run /sync)?",
             default=False,
@@ -300,14 +300,10 @@ def cmd_use(
         p = cfg.db
         if len(chosen) == 1:
             success(
-                f"Switched active DB profile to: {chosen[0]} "
-                f"[{p.backend}] - {p.display_summary}"
+                f"Switched active DB profile to: {chosen[0]} [{p.backend}] - {p.display_summary}"
             )
         else:
-            success(
-                f"Active DB scope: {', '.join(chosen)} "
-                f"(default = {chosen[0]} [{p.backend}])"
-            )
+            success(f"Active DB scope: {', '.join(chosen)} (default = {chosen[0]} [{p.backend}])")
         if log_event is not None:
             log_event(
                 event_type="db_profile_switch",
@@ -451,14 +447,18 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             required=True,
             allow_clear=False,
         )
-        user = _ask_update_text("Username (e.g. ANALYST)", defaults.user, required=True, allow_clear=False)
+        user = _ask_update_text(
+            "Username (e.g. ANALYST)", defaults.user, required=True, allow_clear=False
+        )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
         # Optional in 0.11.0 — see note on PostgreSQL above.
         database = _ask_update_text(
             "Database name (optional, e.g. ANALYTICS — leave blank to pick at command time)",
             defaults.database,
         )
-        warehouse = _ask_update_text("Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or "")
+        warehouse = _ask_update_text(
+            "Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or ""
+        )
         role = _ask_update_text("Role (optional, e.g. ANALYST)", defaults.role or "")
         return replace(
             defaults,
@@ -484,7 +484,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             required=True,
             allow_clear=False,
         )
-        access_token = _ask_update_secret("Access token", defaults.access_token or "", required=True)
+        access_token = _ask_update_secret(
+            "Access token", defaults.access_token or "", required=True
+        )
         catalog = _ask_update_text("Unity Catalog name (optional)", defaults.catalog or "")
         database = _ask_update_text("Schema / database (optional)", defaults.database or "")
         tls_trusted_ca_file = _ask_update_text(
@@ -539,10 +541,7 @@ def cmd_add_profile(
     *,
     log_event: LogEvent | None = None,
 ) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        name = ask("Profile name", default="local")
+    name = rest[0] if len(rest) >= 1 else ask("Profile name", default="local")
     existing = cfg.db_profiles.get(name)
     if existing is not None:
         info(f"Editing profile: {name}")
@@ -798,10 +797,7 @@ def cmd_tls(cfg: AMXConfig, rest: list[str]) -> None:
     ca_path = str(getattr(cfg.db, "tls_trusted_ca_file", "") or "").strip()
     if len(rest) >= 2:
         ca_arg = rest[1].strip()
-        if ca_arg.lower() in {"clear", "none", "off", "-"}:
-            ca_path = ""
-        else:
-            ca_path = ca_arg
+        ca_path = "" if ca_arg.lower() in {"clear", "none", "off", "-"} else ca_arg
 
     cfg.db.tls_no_verify = no_verify
     cfg.db.tls_trusted_ca_file = ca_path
@@ -811,9 +807,7 @@ def cmd_tls(cfg: AMXConfig, rest: list[str]) -> None:
     cfg.save()
 
     shown_path = ca_path or "(none)"
-    success(
-        f"Databricks TLS settings saved: tls_no_verify={no_verify}, trusted_ca={shown_path}."
-    )
+    success(f"Databricks TLS settings saved: tls_no_verify={no_verify}, trusted_ca={shown_path}.")
 
 
 def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:
@@ -850,9 +844,7 @@ def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:
         else:
             target_schemas = available
 
-        heading(
-            f"Cleanup: scanning {len(target_schemas)} schema(s) for fallback placeholders"
-        )
+        heading(f"Cleanup: scanning {len(target_schemas)} schema(s) for fallback placeholders")
         cleaned_table = 0
         cleaned_column = 0
         for sch in target_schemas:
@@ -901,9 +893,7 @@ def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:
                             )
                             cleaned_column += 1
                         except Exception as exc:
-                            warn(
-                                f"Could not clear {sch}.{asset_name}.{col_name}: {exc}"
-                            )
+                            warn(f"Could not clear {sch}.{asset_name}.{col_name}: {exc}")
                 if cleaned_column and cleaned_column % 25 == 0:
                     info(f"  cleared {cleaned_column} column placeholders so far …")
         success(
@@ -912,7 +902,5 @@ def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:
             f"missing-only to fill them with real descriptions."
         )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass

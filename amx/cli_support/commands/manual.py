@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 
 import click
@@ -14,8 +15,10 @@ from amx.services.manual_metadata import (
     build_inspect_rows,
     build_monitor_rows,
     resolve_path_target,
-    resolve_manual_target as _resolve_manual_target,
     split_metadata_path,
+)
+from amx.services.manual_metadata import (
+    resolve_manual_target as _resolve_manual_target,
 )
 from amx.utils.console import ask, confirm, console, error, info, render_table, success, warn
 
@@ -76,7 +79,11 @@ def _ask_choice_or_cancel(
         console.print(f"  [info]{question}[/info]")
         for i, choice in enumerate(choices, 1):
             marker = " [dim](default)[/dim]" if default and choice == default else ""
-            desc = f" [dim]{descriptions[choice]}[/dim]" if descriptions and choice in descriptions else ""
+            desc = (
+                f" [dim]{descriptions[choice]}[/dim]"
+                if descriptions and choice in descriptions
+                else ""
+            )
             console.print(f"    {i}. [bold]{choice}[/bold]{desc}{marker}")
         value = _ask_text_or_cancel("Select", default="")
         if value is None:
@@ -154,7 +161,9 @@ def _resolve_explicit_edit_target(
 
     profile = _profile_for_path(cfg, target_parts[0])
     if profile is None:
-        warn("Use /edit <db>, <db>.<schema>, <db>.<schema>.<table>, or <db>.<schema>.<table>.<column>.")
+        warn(
+            "Use /edit <db>, <db>.<schema>, <db>.<schema>.<table>, or <db>.<schema>.<table>.<column>."
+        )
         warn("Tip: run /edit with no target for the guided wizard.")
         return None
 
@@ -219,7 +228,9 @@ def _sync_manual_comment_to_search_catalog(
 def _select_db_profile_for_wizard(cfg: AMXConfig) -> tuple[str, DBConfig] | None:
     active = cfg.active_db_profile or "default"
     current = cfg.db_profiles.get(active, cfg.db)
-    answer = _ask_text_or_cancel(f"Use current active database profile '{active}'? (y/n)", default="y")
+    answer = _ask_text_or_cancel(
+        f"Use current active database profile '{active}'? (y/n)", default="y"
+    )
     if answer is None:
         return None
     if answer.strip().lower() in {"y", "yes"}:
@@ -229,7 +240,9 @@ def _select_db_profile_for_wizard(cfg: AMXConfig) -> tuple[str, DBConfig] | None
         return _select_db_profile_for_wizard(cfg)
 
     names = sorted(cfg.db_profiles.keys())
-    descriptions = {name: f"[{db.backend}] {db.display_summary}" for name, db in cfg.db_profiles.items()}
+    descriptions = {
+        name: f"[{db.backend}] {db.display_summary}" for name, db in cfg.db_profiles.items()
+    }
     selected = _ask_choice_or_cancel(
         "Select database profile",
         names,
@@ -268,7 +281,9 @@ def _select_schema_for_wizard(db: object, default: str = "") -> str | None:
     except Exception:
         schemas = []
     if schemas:
-        return _ask_choice_or_cancel("Select schema", schemas, default=default if default in schemas else "")
+        return _ask_choice_or_cancel(
+            "Select schema", schemas, default=default if default in schemas else ""
+        )
     return _ask_text_or_cancel("Schema", default=default)
 
 
@@ -283,7 +298,12 @@ def _select_table_for_wizard(db: object, schema: str, default: str = "") -> str 
     names = [name for name, _kind in assets]
     if names:
         descriptions = {name: kind.label for name, kind in assets}
-        return _ask_choice_or_cancel("Select table/view", names, default=default if default in names else "", descriptions=descriptions)
+        return _ask_choice_or_cancel(
+            "Select table/view",
+            names,
+            default=default if default in names else "",
+            descriptions=descriptions,
+        )
     return _ask_text_or_cancel("Table/view", default=default)
 
 
@@ -452,7 +472,9 @@ def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
             profile=profile_name,
             kind=ManualTargetKind.TABLE,
             label=f"{asset_kind.label} {profile_name}.{schema}.{table}",
-            writer=lambda comment: db.set_table_comment(schema, table, comment, asset_kind=asset_kind),  # type: ignore[attr-defined]
+            writer=lambda comment: db.set_table_comment(
+                schema, table, comment, asset_kind=asset_kind
+            ),  # type: ignore[attr-defined]
         )
 
     column = _select_column_for_wizard(db, schema, table)
@@ -536,7 +558,9 @@ def _run_bulk_edit_by_name(
     db_profile = cfg.active_db_profile or "default"
     catalog = SearchCatalog.from_history_store()
     if catalog is None:
-        error("Catalog is unavailable; bulk-edit by name needs an indexed catalog. Run /search /sync first.")
+        error(
+            "Catalog is unavailable; bulk-edit by name needs an indexed catalog. Run /search /sync first."
+        )
         return
 
     try:
@@ -561,23 +585,27 @@ def _run_bulk_edit_by_name(
     # Build a unified entity list: each row is one (kind, schema, table, column).
     entries: list[dict[str, str]] = []
     for r in table_rows:
-        entries.append({
-            "kind": "table",
-            "schema": str(r.get("schema_name") or ""),
-            "table": str(r.get("table_name") or ""),
-            "column": "",
-            "dtype": "",
-            "existing": str(r.get("effective_description") or ""),
-        })
+        entries.append(
+            {
+                "kind": "table",
+                "schema": str(r.get("schema_name") or ""),
+                "table": str(r.get("table_name") or ""),
+                "column": "",
+                "dtype": "",
+                "existing": str(r.get("effective_description") or ""),
+            }
+        )
     for r in column_rows:
-        entries.append({
-            "kind": "column",
-            "schema": str(r.get("schema_name") or ""),
-            "table": str(r.get("table_name") or ""),
-            "column": str(r.get("column_name") or ""),
-            "dtype": str(r.get("dtype") or ""),
-            "existing": str(r.get("effective_description") or ""),
-        })
+        entries.append(
+            {
+                "kind": "column",
+                "schema": str(r.get("schema_name") or ""),
+                "table": str(r.get("table_name") or ""),
+                "column": str(r.get("column_name") or ""),
+                "dtype": str(r.get("dtype") or ""),
+                "existing": str(r.get("effective_description") or ""),
+            }
+        )
 
     # Bulk-update analysis header — explicit summary of what AMX is about
     # to do, so the user can see the impact at a glance before any
@@ -586,24 +614,17 @@ def _run_bulk_edit_by_name(
     table_match_count = sum(1 for e in entries if e["kind"] == "table")
     column_match_count = sum(1 for e in entries if e["kind"] == "column")
     distinct_schemas = sorted({e["schema"] for e in entries if e["schema"]})
-    console.print(
-        f"\n  [heading]Bulk-update analysis for '{bare_name}'[/heading]"
-    )
+    console.print(f"\n  [heading]Bulk-update analysis for '{bare_name}'[/heading]")
     summary_bits: list[str] = []
     if table_match_count:
         summary_bits.append(f"{table_match_count} table(s)")
     if column_match_count:
         summary_bits.append(f"{column_match_count} column(s)")
-    schemas_text = (
-        f"{len(distinct_schemas)} schema(s): {', '.join(distinct_schemas[:5])}"
-        + ("…" if len(distinct_schemas) > 5 else "")
+    schemas_text = f"{len(distinct_schemas)} schema(s): {', '.join(distinct_schemas[:5])}" + (
+        "…" if len(distinct_schemas) > 5 else ""
     )
-    info(
-        f"  Found {' + '.join(summary_bits) or 'no matches'} across {schemas_text}."
-    )
-    info(
-        "  Whatever you select below will be updated TOGETHER with the same comment."
-    )
+    info(f"  Found {' + '.join(summary_bits) or 'no matches'} across {schemas_text}.")
+    info("  Whatever you select below will be updated TOGETHER with the same comment.")
     rows_for_render = []
     for idx, e in enumerate(entries, start=1):
         if e["kind"] == "table":
@@ -629,9 +650,8 @@ def _run_bulk_edit_by_name(
     if len(entries) == 1:
         only = entries[0]
         info("Only one match — switching to single-target edit.")
-        target_path = (
-            f"{cfg.active_db_profile or 'default'}.{only['schema']}.{only['table']}"
-            + (f".{only['column']}" if only["column"] else "")
+        target_path = f"{cfg.active_db_profile or 'default'}.{only['schema']}.{only['table']}" + (
+            f".{only['column']}" if only["column"] else ""
         )
         info(f"Path: {target_path}")
         # Fall back to the existing edit flow by emitting the path as if
@@ -757,6 +777,7 @@ def _run_bulk_edit_by_name(
         if applied:
             try:
                 from amx.search.catalog import SearchCatalog as _Catalog
+
                 cat = _Catalog.from_history_store()
                 if cat is not None:
                     db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or ""
@@ -794,19 +815,15 @@ def _run_bulk_edit_by_name(
                 },
             )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
 
 def log_event_if_present(log_event: LogEvent | None, name: str, status: str, details: dict) -> None:
     if log_event is None:
         return
-    try:
+    with contextlib.suppress(Exception):
         log_event(event_type=name, status=status, command="manual edit", details=details)
-    except Exception:
-        pass
 
 
 def _run_individual_edits(
@@ -852,9 +869,7 @@ def _run_individual_edits(
             )
             kind_str = "COLUMN" if is_col else "TABLE"
             existing = (e["existing"] or "").strip() or "(none)"
-            console.print(
-                f"\n  [heading]({idx}/{len(entries)}) {kind_str}: {label}[/heading]"
-            )
+            console.print(f"\n  [heading]({idx}/{len(entries)}) {kind_str}: {label}[/heading]")
             console.print(f"  [dim]Type: {e['dtype'] or '—'} · existing: {existing}[/dim]")
             new_text = _ask_text_or_cancel(
                 "New comment (Enter = skip, 'cancel' = stop the loop)",
@@ -926,10 +941,8 @@ def _run_individual_edits(
                 },
             )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             db.close()
-        except Exception:
-            pass
 
 
 def register_manual_commands(
@@ -965,7 +978,9 @@ def register_manual_commands(
 
     @manual.command("edit")
     @click.argument("target_parts", nargs=-1)
-    @click.option("--comment", "-c", default=None, help="Comment text. If omitted, AMX prompts interactively.")
+    @click.option(
+        "--comment", "-c", default=None, help="Comment text. If omitted, AMX prompts interactively."
+    )
     @click.option("--yes", "-y", is_flag=True, help="Write without confirmation.")
     @pass_config
     def manual_edit(
@@ -1039,7 +1054,11 @@ def register_manual_commands(
                 event_type="manual_metadata_edit",
                 status="success",
                 command="manual edit",
-                details={"target": target_label, "scope": target.kind.value, "db_profile": target.profile},
+                details={
+                    "target": target_label,
+                    "scope": target.kind.value,
+                    "db_profile": target.profile,
+                },
             )
 
     @manual.command("monitor")

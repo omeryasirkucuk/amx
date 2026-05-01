@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from amx.config import AMXConfig, DISABLED_PROFILE, LLMConfig, normalize_llm_model
+from amx.config import DISABLED_PROFILE, AMXConfig, LLMConfig, normalize_llm_model
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -67,7 +67,9 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         "Model: use the provider's natural model id. AMX will add any required provider prefix internally."
     )
     if provider == "openrouter":
-        info("OpenRouter model examples: openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, qwen/qwen3.6-plus")
+        info(
+            "OpenRouter model examples: openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, qwen/qwen3.6-plus"
+        )
     elif provider == "openai":
         info("OpenAI model example: gpt-4o")
     elif provider == "anthropic":
@@ -78,11 +80,15 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         info("DeepSeek model example: deepseek-chat")
     elif provider == "ollama":
         info("Ollama model example: llama3")
-    model = ask("Model name", normalize_llm_model(provider, defaults.model) or default_model(provider))
+    model = ask(
+        "Model name", normalize_llm_model(provider, defaults.model) or default_model(provider)
+    )
     language = ask("Preferred language", defaults.language or "english").strip() or "english"
     api_base = defaults.api_base
     if provider in ("local", "ollama", "kimi", "openrouter"):
-        default_api_base = "http://localhost:11434" if provider == "ollama" else "http://localhost:11434/v1"
+        default_api_base = (
+            "http://localhost:11434" if provider == "ollama" else "http://localhost:11434/v1"
+        )
         if provider == "openrouter":
             default_api_base = "https://openrouter.ai/api/v1"
         api_base = ask("API base URL", api_base or default_api_base)
@@ -121,7 +127,9 @@ def cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         high = getattr(cfg.llm, "logprob_high", 0.85)
         med = getattr(cfg.llm, "logprob_medium", 0.50)
-        info(f"Current logprob thresholds: [bold]HIGH[/] >= {high:.2f} | [bold]MEDIUM[/] >= {med:.2f}")
+        info(
+            f"Current logprob thresholds: [bold]HIGH[/] >= {high:.2f} | [bold]MEDIUM[/] >= {med:.2f}"
+        )
         info("Run [cyan]/logprob-thresholds <high> <med>[/cyan] to change (e.g. 0.9 0.6).")
         return
 
@@ -178,10 +186,7 @@ def cmd_use_llm(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        name = ask("LLM profile name", default="work")
+    name = rest[0] if len(rest) >= 1 else ask("LLM profile name", default="work")
     existing = cfg.llm_profiles.get(name)
     if existing is not None:
         info(f"Editing LLM profile: {name}")
@@ -242,11 +247,12 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
             for level in PROMPT_DETAIL_LEVELS:
                 prompt_detail = prompt_detail_for(level)
                 value = getattr(prompt_detail, attr)
-                if isinstance(value, bool):
-                    mark = "✓" if value else "-"
-                else:
-                    mark = str(value)
-                row.append(f"[{'success' if value else 'dim'}]{mark}[/]" if isinstance(value, bool) else mark)
+                mark = ("✓" if value else "-") if isinstance(value, bool) else str(value)
+                row.append(
+                    f"[{'success' if value else 'dim'}]{mark}[/]"
+                    if isinstance(value, bool)
+                    else mark
+                )
             rows.append(row)
         render_table("Preset comparison", ["Field", *PROMPT_DETAIL_LEVELS], rows)
         info(
@@ -307,10 +313,7 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
 
     level = rest[0].lower().strip()
     if level not in _DESCRIPTION_VERBOSITY_LEVELS:
-        error(
-            f"Unknown verbosity: {level!r}. "
-            f"Valid: {', '.join(_DESCRIPTION_VERBOSITY_LEVELS)}"
-        )
+        error(f"Unknown verbosity: {level!r}. Valid: {', '.join(_DESCRIPTION_VERBOSITY_LEVELS)}")
         return
 
     cfg.llm.description_verbosity = level
@@ -335,7 +338,9 @@ def cmd_language(cfg: AMXConfig, rest: list[str]) -> None:
             f"Current language: [cyan]{cfg.llm.language or 'english'}[/cyan] "
             f"for LLM profile '{cfg.active_llm_profile}'."
         )
-        info("Run [cyan]/language <name>[/cyan] to change metadata generation language (examples: english, turkish, german).")
+        info(
+            "Run [cyan]/language <name>[/cyan] to change metadata generation language (examples: english, turkish, german)."
+        )
         return
 
     value = " ".join(rest).strip()
@@ -416,7 +421,9 @@ def cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
     if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
         cfg.llm_profiles[cfg.active_llm_profile].column_batch_size = value
     cfg.save()
-    success(f"LLM batch size set to {value} columns and saved for LLM profile '{cfg.active_llm_profile}'.")
+    success(
+        f"LLM batch size set to {value} columns and saved for LLM profile '{cfg.active_llm_profile}'."
+    )
 
 
 def cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
@@ -456,11 +463,17 @@ def cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].batch_context_column_names = value
     cfg.save()
     if value == -1:
-        success(f"Batch context columns set to all remaining names and saved for LLM profile '{cfg.active_llm_profile}'.")
+        success(
+            f"Batch context columns set to all remaining names and saved for LLM profile '{cfg.active_llm_profile}'."
+        )
     elif value == 0:
-        success(f"Batch context columns disabled and saved for LLM profile '{cfg.active_llm_profile}'.")
+        success(
+            f"Batch context columns disabled and saved for LLM profile '{cfg.active_llm_profile}'."
+        )
     else:
-        success(f"Batch context columns set to {value} and saved for LLM profile '{cfg.active_llm_profile}'.")
+        success(
+            f"Batch context columns set to {value} and saved for LLM profile '{cfg.active_llm_profile}'."
+        )
 
 
 def cmd_doc_profiles(cfg: AMXConfig) -> None:
@@ -487,7 +500,9 @@ def cmd_use_doc(cfg: AMXConfig, rest: list[str]) -> None:
             error("No document profiles.")
             return
         choices = ["(none)"] + names
-        default_choice = "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else cfg.active_doc_profile
+        default_choice = (
+            "(none)" if cfg.active_doc_profile == DISABLED_PROFILE else cfg.active_doc_profile
+        )
         picked = ask_choice("Select document profile", choices, default=default_choice)
         name = DISABLED_PROFILE if picked == "(none)" else picked
     if name != DISABLED_PROFILE and name not in cfg.doc_profiles:
@@ -502,10 +517,7 @@ def cmd_use_doc(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        name = ask("Document profile name", default="default")
+    name = rest[0] if len(rest) >= 1 else ask("Document profile name", default="default")
     from amx.docs.scanner import test_source_reachable
 
     existing = list(cfg.doc_profiles.get(name, []))
@@ -522,7 +534,10 @@ def cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
             error("No paths added.")
             return
         if path in existing or path in new_paths:
-            if not confirm(f"This path is already in profile {name!r}: {path}. Add duplicate anyway?", default=False):
+            if not confirm(
+                f"This path is already in profile {name!r}: {path}. Add duplicate anyway?",
+                default=False,
+            ):
                 continue
         try:
             test_source_reachable(path)
@@ -538,7 +553,9 @@ def cmd_add_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
         return
     merged = existing + new_paths
     cfg.upsert_doc_profile(name, merged)
-    if not cfg.active_doc_profile or confirm(f"Switch active document profile to {name}?", default=True):
+    if not cfg.active_doc_profile or confirm(
+        f"Switch active document profile to {name}?", default=True
+    ):
         cfg.active_doc_profile = name
     cfg.save()
     success(f"Document profile saved: {name} ({len(merged)} path(s))")
@@ -552,7 +569,9 @@ def warn_no_doc_paths_for_scan_or_ingest(cfg: AMXConfig, *, cmd: str) -> None:
     elif cfg.doc_profiles and not cfg.effective_doc_paths():
         info("Your document profiles look empty. Run /add-doc-profile to add paths.")
     else:
-        info("Pass paths on the command (e.g. /ingest /path/to/docs) or set an active profile with /use-doc.")
+        info(
+            "Pass paths on the command (e.g. /ingest /path/to/docs) or set an active profile with /use-doc."
+        )
 
 
 def cmd_remove_doc_profile(cfg: AMXConfig, rest: list[str]) -> None:
@@ -590,7 +609,9 @@ def cmd_use_code(cfg: AMXConfig, rest: list[str]) -> None:
             error("No codebase profiles.")
             return
         choices = ["(none)"] + names
-        default_choice = "(none)" if cfg.active_code_profile == DISABLED_PROFILE else cfg.active_code_profile
+        default_choice = (
+            "(none)" if cfg.active_code_profile == DISABLED_PROFILE else cfg.active_code_profile
+        )
         picked = ask_choice("Select codebase profile", choices, default=default_choice)
         name = DISABLED_PROFILE if picked == "(none)" else picked
     if name != DISABLED_PROFILE and name not in cfg.code_profiles:
@@ -622,7 +643,11 @@ def cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
     if previous == path:
         success(f"Codebase profile {name!r} already points to this path - nothing to change.")
         return
-    others = [name_ for name_, other_path in cfg.code_profiles.items() if other_path == path and name_ != name]
+    others = [
+        name_
+        for name_, other_path in cfg.code_profiles.items()
+        if other_path == path and name_ != name
+    ]
     if others:
         other_list = ", ".join(sorted(others))
         if not confirm(
@@ -638,7 +663,9 @@ def cmd_add_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
         warn(str(exc))
         return
     cfg.upsert_code_profile(name, path)
-    if not cfg.active_code_profile or confirm(f"Switch active codebase profile to {name}?", default=True):
+    if not cfg.active_code_profile or confirm(
+        f"Switch active codebase profile to {name}?", default=True
+    ):
         cfg.active_code_profile = name
     cfg.save()
     success(f"Codebase profile saved: {name}")

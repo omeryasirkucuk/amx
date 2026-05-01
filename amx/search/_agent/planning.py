@@ -26,14 +26,13 @@ calls back into ``self._llm_provider()`` and resolution helpers
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict
 from typing import Any
 
 from amx.search._agent._types import (
+    _ANSWER_SHAPES,
     SearchPlan,
     SearchPolicy,
-    _ANSWER_SHAPES,
     _json_block,
     _merge_usage,
 )
@@ -45,7 +44,9 @@ log = get_logger("search.agent.planning")
 class PlanningMixin:
     """LLM-based planning + plan-shape alignment methods for ``SearchAgent``."""
 
-    def _plan_with_overrides(self, *, question: str, base: SearchPlan | None, question_language: str) -> SearchPlan:
+    def _plan_with_overrides(
+        self, *, question: str, base: SearchPlan | None, question_language: str
+    ) -> SearchPlan:
         chosen = base or SearchPlan(
             intent="find_columns",
             out_of_domain=False,
@@ -62,12 +63,17 @@ class PlanningMixin:
         )
         chosen = self._align_answer_language(chosen, question_language)
         return self._align_plan_shape(chosen, question)
+
     def _plan_from_payload(self, payload: dict[str, Any], question: str) -> SearchPlan:
         routing_keys = {"intent", "search_mode", "question_class", "target_entity"}
         if not any(key in payload for key in routing_keys):
             raise ValueError("payload does not include routing fields")
-        search_mode = str(payload.get("search_mode") or "semantic_concept").strip() or "semantic_concept"
-        question_class = str(payload.get("question_class") or "").strip() or self._class_from_mode(search_mode)
+        search_mode = (
+            str(payload.get("search_mode") or "semantic_concept").strip() or "semantic_concept"
+        )
+        question_class = str(payload.get("question_class") or "").strip() or self._class_from_mode(
+            search_mode
+        )
         request_type = str(payload.get("request_type") or "").strip().lower()
         if request_type == "coverage_audit":
             search_mode = "check_coverage"
@@ -100,16 +106,29 @@ class PlanningMixin:
         return SearchPlan(
             intent=resolved_intent,
             out_of_domain=bool(payload.get("out_of_domain")),
-            normalized_question=str(payload.get("normalized_question") or question).strip() or question,
+            normalized_question=str(payload.get("normalized_question") or question).strip()
+            or question,
             search_mode=search_mode,
             question_class=question_class,
             target_entity=resolved_target,
-            entity_hints=[str(item).strip() for item in (payload.get("entity_hints") or []) if str(item).strip()],
-            search_queries=[str(item).strip() for item in (payload.get("search_queries") or []) if str(item).strip()]
+            entity_hints=[
+                str(item).strip()
+                for item in (payload.get("entity_hints") or [])
+                if str(item).strip()
+            ],
+            search_queries=[
+                str(item).strip()
+                for item in (payload.get("search_queries") or [])
+                if str(item).strip()
+            ]
             or [str(payload.get("normalized_question") or question).strip() or question],
             needs_typo_recovery=bool(payload.get("needs_typo_recovery")),
             answer_language=str(payload.get("answer_language") or "").strip(),
-            ambiguity_flags=[str(item).strip() for item in (payload.get("ambiguity_flags") or []) if str(item).strip()],
+            ambiguity_flags=[
+                str(item).strip()
+                for item in (payload.get("ambiguity_flags") or [])
+                if str(item).strip()
+            ],
             reason=str(payload.get("reason") or "").strip(),
             decision_confidence=confidence,
             needs_clarification=bool(payload.get("needs_clarification")),
@@ -120,6 +139,7 @@ class PlanningMixin:
             aggregation_limit=aggregation_limit,
             answer_shape=answer_shape,
         )
+
     def _interpret_question_pass1(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
         llm = self._llm_provider()
         memory = self._memory_summary()
@@ -167,17 +187,17 @@ class PlanningMixin:
             "- Set needs_clarification=true only when proceeding without clarification would likely misroute retrieval.\n"
             "- If needs_clarification=true, provide one short clarification_question.\n"
             "Answer shape rules (always emit these fields):\n"
-            "- aggregation_op: \"\" | \"max\" | \"min\" | \"top_k\" | \"bottom_k\" | \"count\". Detect superlatives and rankings in any language: most/least/highest/lowest/biggest/smallest/largest, top N, first/last, leading, bottom; Turkish: en fazla, en az, en buyuk, en kucuk, en yuksek, en dusuk, en cok, en az; Spanish: el mayor, el menor; etc. Use \"count\" only for pure how-many questions.\n"
-            "- aggregation_field: \"\" | \"row_count\" | \"column_count\" | \"table_count\". Pick the numeric facet the user is ranking by (rows/satir = row_count; columns/kolon = column_count; tables/tablo = table_count).\n"
+            '- aggregation_op: "" | "max" | "min" | "top_k" | "bottom_k" | "count". Detect superlatives and rankings in any language: most/least/highest/lowest/biggest/smallest/largest, top N, first/last, leading, bottom; Turkish: en fazla, en az, en buyuk, en kucuk, en yuksek, en dusuk, en cok, en az; Spanish: el mayor, el menor; etc. Use "count" only for pure how-many questions.\n'
+            '- aggregation_field: "" | "row_count" | "column_count" | "table_count". Pick the numeric facet the user is ranking by (rows/satir = row_count; columns/kolon = column_count; tables/tablo = table_count).\n'
             "- aggregation_limit: integer. 1 for superlatives (the X with the most Y); N for top-N/bottom-N; 0 if no aggregation.\n"
-            "- answer_shape: pick one of single_fact, short_table, full_table, ranked_list, table_summary, prose. Or \"\" to let policy derive.\n"
+            '- answer_shape: pick one of single_fact, short_table, full_table, ranked_list, table_summary, prose. Or "" to let policy derive.\n'
             "  * single_fact: user wants ONE answer (a name, a number, a single ranked entity). Examples: superlatives with limit 1, count_tables, exact name lookups, list_databases when likely small.\n"
             "  * short_table: top-K (limit 2-10), small ranked comparisons, side-by-side of <=10 entities.\n"
-            "  * full_table: broad dump-everything inventories (\"list all tables in X\", \"columns per table\", \"show me everything in X\").\n"
-            "  * ranked_list: open-ended semantic_discovery (\"tables about pricing\").\n"
-            "  * table_summary: table_understanding / \"what is table X\".\n"
+            '  * full_table: broad dump-everything inventories ("list all tables in X", "columns per table", "show me everything in X").\n'
+            '  * ranked_list: open-ended semantic_discovery ("tables about pricing").\n'
+            '  * table_summary: table_understanding / "what is table X".\n'
             "  * prose: why/how/explanatory questions, comparative reasoning without an explicit entity list.\n"
-            "  * Leave \"\" if you genuinely cannot tell."
+            '  * Leave "" if you genuinely cannot tell.'
         )
         user = json.dumps(
             {
@@ -205,7 +225,10 @@ class PlanningMixin:
         )
         payload = _json_block(result.content)
         return (self._plan_from_payload(payload, question), result.usage or {})
-    def _review_question_plan_pass2(self, question: str, draft: SearchPlan) -> tuple[SearchPlan, dict[str, Any]]:
+
+    def _review_question_plan_pass2(
+        self, question: str, draft: SearchPlan
+    ) -> tuple[SearchPlan, dict[str, Any]]:
         llm = self._llm_provider()
         system = (
             "You are a strict reviewer for AMX /search routing decisions.\n"
@@ -219,7 +242,7 @@ class PlanningMixin:
             "Infer answer_language from question; keep multilingual behavior without hardcoded language lists.\n"
             "Always re-emit aggregation_op, aggregation_field, aggregation_limit, and answer_shape.\n"
             "Detect superlatives/rankings in any language (most/least/top-N/bottom-N; Turkish en fazla/en az/en cok). Set aggregation_limit=1 for superlatives, N for top-N, 0 if no aggregation.\n"
-            "Pick answer_shape from: single_fact (one specific answer), short_table (top-K <=10), full_table (broad inventory dump), ranked_list (semantic_discovery), table_summary (table_understanding), prose (explanation), or \"\" if uncertain.\n"
+            'Pick answer_shape from: single_fact (one specific answer), short_table (top-K <=10), full_table (broad inventory dump), ranked_list (semantic_discovery), table_summary (table_understanding), prose (explanation), or "" if uncertain.\n'
         )
         user = json.dumps(
             {
@@ -245,6 +268,7 @@ class PlanningMixin:
         payload = _json_block(result.content)
         payload.setdefault("review_notes", "reviewed_by_pass2")
         return (self._plan_from_payload(payload, question), result.usage or {})
+
     def _interpret_question_balanced(self, question: str) -> tuple[SearchPlan, dict[str, Any]]:
         draft, usage_1 = self._interpret_question_pass1(question)
         should_review = (
@@ -260,6 +284,7 @@ class PlanningMixin:
             return reviewed, _merge_usage(usage_1, usage_2)
         except Exception:
             return draft, usage_1
+
     def _class_from_mode(self, search_mode: str) -> str:
         if search_mode in {"list_databases", "list_schemas", "count_tables", "schema_inventory"}:
             return "inventory"
@@ -274,6 +299,7 @@ class PlanningMixin:
         if search_mode == "unsupported":
             return "unsupported"
         return "semantic_discovery"
+
     def _align_answer_language(self, plan: SearchPlan, question_language: str) -> SearchPlan:
         # Trust LLM answer_language unless empty/unknown.
         if plan.answer_language and plan.answer_language.lower() not in {"unknown", ""}:
@@ -302,6 +328,7 @@ class PlanningMixin:
             aggregation_limit=plan.aggregation_limit,
             answer_shape=plan.answer_shape,
         )
+
     def _align_plan_shape(self, plan: SearchPlan, question: str) -> SearchPlan:
         sample = (question or "").strip().lower()
         # Guard: if the user clearly named a table-like subject ("what's the
@@ -329,7 +356,16 @@ class PlanningMixin:
         if catalog_subject and plan.search_mode not in protected_modes:
             asks_join_word = any(
                 token in sample
-                for token in ("join", "link", "relate", "relationship", "bağ", "bag", "ilişk", "iliski")
+                for token in (
+                    "join",
+                    "link",
+                    "relate",
+                    "relationship",
+                    "bağ",
+                    "bag",
+                    "ilişk",
+                    "iliski",
+                )
             )
             if not asks_join_word:
                 hints_with_subjects: list[str] = list(plan.entity_hints)
@@ -354,7 +390,10 @@ class PlanningMixin:
                     needs_typo_recovery=plan.needs_typo_recovery,
                     answer_language=plan.answer_language,
                     ambiguity_flags=list(plan.ambiguity_flags),
-                    reason=(plan.reason + "; rerouted to table_explain because the question names a catalog-confirmed subject").strip("; "),
+                    reason=(
+                        plan.reason
+                        + "; rerouted to table_explain because the question names a catalog-confirmed subject"
+                    ).strip("; "),
                     decision_confidence="high",
                     needs_clarification=False,
                     clarification_question="",
@@ -366,15 +405,66 @@ class PlanningMixin:
                 )
         asks_count = any(token in sample for token in ("kaç", "kac", "how many", "count"))
         asks_table_word = any(token in sample for token in ("tablo", "tablolar", "table", "tables"))
-        asks_column_word = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
-        asks_listing = any(token in sample for token in ("hangi", "tüm", "tum", "list", "show", "söyle", "soyle", "tell", "getir", "listele", "bul"))
-        asks_per_table = any(token in sample for token in ("per table", "by table", "which table", "hangi tabl", "tablo baz", "her tablo"))
-        asks_comment_coverage = any(token in sample for token in ("comment", "comments", "açıklama", "aciklama", "yorum"))
-        asks_relationship = any(token in sample for token in ("join", "link", "relationship", "relate", "connect", "bağ", "bag"))
-        asks_semantic_table_concept = any(
-            token in sample for token in ("içinde", "icinde", "alak", "related", "detail", "detay", "contain", "containing", "with", "olan")
+        asks_column_word = any(
+            token in sample
+            for token in ("kolon", "kolonlar", "column", "columns", "field", "fields")
         )
-        if asks_column_word and asks_table_word and (asks_count or asks_per_table) and not asks_comment_coverage and not asks_relationship:
+        asks_listing = any(
+            token in sample
+            for token in (
+                "hangi",
+                "tüm",
+                "tum",
+                "list",
+                "show",
+                "söyle",
+                "soyle",
+                "tell",
+                "getir",
+                "listele",
+                "bul",
+            )
+        )
+        asks_per_table = any(
+            token in sample
+            for token in (
+                "per table",
+                "by table",
+                "which table",
+                "hangi tabl",
+                "tablo baz",
+                "her tablo",
+            )
+        )
+        asks_comment_coverage = any(
+            token in sample for token in ("comment", "comments", "açıklama", "aciklama", "yorum")
+        )
+        asks_relationship = any(
+            token in sample
+            for token in ("join", "link", "relationship", "relate", "connect", "bağ", "bag")
+        )
+        asks_semantic_table_concept = any(
+            token in sample
+            for token in (
+                "içinde",
+                "icinde",
+                "alak",
+                "related",
+                "detail",
+                "detay",
+                "contain",
+                "containing",
+                "with",
+                "olan",
+            )
+        )
+        if (
+            asks_column_word
+            and asks_table_word
+            and (asks_count or asks_per_table)
+            and not asks_comment_coverage
+            and not asks_relationship
+        ):
             return SearchPlan(
                 intent="schema_inventory",
                 out_of_domain=plan.out_of_domain,
@@ -387,7 +477,9 @@ class PlanningMixin:
                 needs_typo_recovery=plan.needs_typo_recovery,
                 answer_language=plan.answer_language,
                 ambiguity_flags=list(plan.ambiguity_flags),
-                reason=(plan.reason + "; routed to SchemaExplorer structural inventory").strip("; "),
+                reason=(plan.reason + "; routed to SchemaExplorer structural inventory").strip(
+                    "; "
+                ),
                 decision_confidence=plan.decision_confidence,
                 needs_clarification=False,
                 clarification_question="",
@@ -397,7 +489,12 @@ class PlanningMixin:
                 aggregation_limit=plan.aggregation_limit,
                 answer_shape=plan.answer_shape,
             )
-        if asks_column_word and asks_listing and plan.search_mode == "table_explain" and not self._explicit_table_paths_for_question(question):
+        if (
+            asks_column_word
+            and asks_listing
+            and plan.search_mode == "table_explain"
+            and not self._explicit_table_paths_for_question(question)
+        ):
             return SearchPlan(
                 intent="find_columns",
                 out_of_domain=plan.out_of_domain,
@@ -410,13 +507,20 @@ class PlanningMixin:
                 needs_typo_recovery=plan.needs_typo_recovery,
                 answer_language=plan.answer_language,
                 ambiguity_flags=list(plan.ambiguity_flags),
-                reason=(plan.reason + "; rerouted from table explanation to column discovery").strip("; "),
+                reason=(
+                    plan.reason + "; rerouted from table explanation to column discovery"
+                ).strip("; "),
                 decision_confidence=plan.decision_confidence,
                 needs_clarification=plan.needs_clarification,
                 clarification_question=plan.clarification_question,
                 review_notes=plan.review_notes,
             )
-        if plan.search_mode == "count_tables" and asks_table_word and not asks_count and (asks_listing or asks_semantic_table_concept):
+        if (
+            plan.search_mode == "count_tables"
+            and asks_table_word
+            and not asks_count
+            and (asks_listing or asks_semantic_table_concept)
+        ):
             return SearchPlan(
                 intent="find_tables",
                 out_of_domain=plan.out_of_domain,
@@ -436,9 +540,19 @@ class PlanningMixin:
                 review_notes=plan.review_notes,
             )
         normalized_mode = (plan.search_mode or "semantic_concept").strip()
-        normalized_class = (plan.question_class or "").strip() or self._class_from_mode(normalized_mode)
+        normalized_class = (plan.question_class or "").strip() or self._class_from_mode(
+            normalized_mode
+        )
         normalized_target = (plan.target_entity or "unknown").strip() or "unknown"
-        if normalized_target not in {"column", "table", "schema", "database", "aggregate", "join_path", "unknown"}:
+        if normalized_target not in {
+            "column",
+            "table",
+            "schema",
+            "database",
+            "aggregate",
+            "join_path",
+            "unknown",
+        }:
             normalized_target = "unknown"
         if not plan.search_queries:
             search_queries = [plan.normalized_question or question]
@@ -478,14 +592,38 @@ class PlanningMixin:
             aggregation_limit=plan.aggregation_limit,
             answer_shape=plan.answer_shape,
         )
+
     def _policy_for_plan(self, plan: SearchPlan) -> SearchPolicy:
         context_detail = self._context_detail()
-        allow_vector = self.settings.get("allow_vector_support", "true").lower() == "true" and context_detail != "minimal"
+        allow_vector = (
+            self.settings.get("allow_vector_support", "true").lower() == "true"
+            and context_detail != "minimal"
+        )
         allow_code = self.settings.get("allow_code_evidence", "true").lower() == "true"
         if plan.question_class == "inventory":
-            policy = SearchPolicy(plan.question_class, "live_inventory_first", False, True, True, False, False, "aggregate", "disclose_scope")
+            policy = SearchPolicy(
+                plan.question_class,
+                "live_inventory_first",
+                False,
+                True,
+                True,
+                False,
+                False,
+                "aggregate",
+                "disclose_scope",
+            )
         elif plan.question_class == "entity_lookup":
-            policy = SearchPolicy(plan.question_class, "lexical_name_first", True, False, True, False, False, "ranked_matches", "suggest_narrow_scope")
+            policy = SearchPolicy(
+                plan.question_class,
+                "lexical_name_first",
+                True,
+                False,
+                True,
+                False,
+                False,
+                "ranked_matches",
+                "suggest_narrow_scope",
+            )
         elif plan.question_class == "join_discovery":
             policy = SearchPolicy(
                 plan.question_class,
@@ -499,15 +637,56 @@ class PlanningMixin:
                 "return_confidence_bands",
             )
         elif plan.question_class == "table_understanding":
-            policy = SearchPolicy(plan.question_class, "table_context_plus_neighbors", True, False, True, allow_vector, allow_code, "table_summary", "suggest_sync_if_sparse")
+            policy = SearchPolicy(
+                plan.question_class,
+                "table_context_plus_neighbors",
+                True,
+                False,
+                True,
+                allow_vector,
+                allow_code,
+                "table_summary",
+                "suggest_sync_if_sparse",
+            )
         elif plan.question_class == "comparative_reasoning":
-            policy = SearchPolicy(plan.question_class, "semantic_then_structural_compare", True, False, True, allow_vector, allow_code, "comparative", "ask_follow_up")
+            policy = SearchPolicy(
+                plan.question_class,
+                "semantic_then_structural_compare",
+                True,
+                False,
+                True,
+                allow_vector,
+                allow_code,
+                "comparative",
+                "ask_follow_up",
+            )
         elif plan.question_class == "semantic_discovery" and plan.target_entity == "table":
-            policy = SearchPolicy(plan.question_class, "semantic_table_search", True, False, False, allow_vector, allow_code, "table_matches", "suggest_sync_if_sparse")
+            policy = SearchPolicy(
+                plan.question_class,
+                "semantic_table_search",
+                True,
+                False,
+                False,
+                allow_vector,
+                allow_code,
+                "table_matches",
+                "suggest_sync_if_sparse",
+            )
         else:
-            policy = SearchPolicy(plan.question_class, "semantic_catalog_search", True, False, False, allow_vector, allow_code, "ranked_matches", "suggest_sync_if_sparse")
+            policy = SearchPolicy(
+                plan.question_class,
+                "semantic_catalog_search",
+                True,
+                False,
+                False,
+                allow_vector,
+                allow_code,
+                "ranked_matches",
+                "suggest_sync_if_sparse",
+            )
         policy.answer_shape = self._derive_answer_shape(plan, policy)
         return policy
+
     def _derive_answer_shape(self, plan: SearchPlan, policy: SearchPolicy) -> str:
         """Pick a presentation shape for the answer.
 

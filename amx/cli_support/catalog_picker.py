@@ -51,8 +51,6 @@ def ensure_catalog_selected(
         user pressed Enter to keep it). Returns "" when the
         backend doesn't support catalogs or when the user cancelled.
     """
-    from amx.utils.console import step_spinner
-
     # Lazy import to avoid coupling cli_support → commands.manual at
     # import time. The text-prompt helpers come from utils.console
     # via prompt_toolkit; importing them at module load would yank
@@ -60,6 +58,7 @@ def ensure_catalog_selected(
     from amx.cli_support.commands.manual import (
         _ask_choice_or_cancel,
     )
+    from amx.utils.console import step_spinner
 
     if not bool(getattr(db, "supports_catalogs", lambda: False)()):
         return ""
@@ -95,8 +94,7 @@ def ensure_catalog_selected(
         )
     else:
         info(
-            "Databricks Unity Catalog detected. Pick a catalog before "
-            "the schema and table picker."
+            "Databricks Unity Catalog detected. Pick a catalog before the schema and table picker."
         )
 
     default_choice = (
@@ -105,7 +103,9 @@ def ensure_catalog_selected(
         else (catalogs[0] if catalogs else "")
     )
     chosen = _ask_choice_or_cancel(
-        "Select catalog", catalogs, default=default_choice,
+        "Select catalog",
+        catalogs,
+        default=default_choice,
     )
     if chosen and chosen.strip():
         try:

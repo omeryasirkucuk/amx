@@ -61,7 +61,9 @@ class ResolutionMixin:
             if str(mention.get("strength") or "") == "strong":
                 return requested
             try:
-                rows = self.catalog.find_tables_by_exact_name(self.db_profile_filter, requested, limit=2)
+                rows = self.catalog.find_tables_by_exact_name(
+                    self.db_profile_filter, requested, limit=2
+                )
             except Exception:
                 rows = []
             if rows:
@@ -77,6 +79,7 @@ class ResolutionMixin:
                 except Exception:
                     pass
         return None
+
     def _explicit_table_mentions_for_question(self, question: str) -> list[dict[str, str]]:
         mentions: list[dict[str, str]] = []
         seen: set[str] = set()
@@ -145,8 +148,7 @@ class ResolutionMixin:
         )
         for pattern in subject_patterns:
             weak_tokens.extend(
-                item
-                for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
+                item for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
             )
         table_token_stopwords = {
             "nedir",
@@ -288,7 +290,12 @@ class ResolutionMixin:
                         continue
                     seen.add(key)
                     mentions.append(
-                        {"requested": token, "path": path, "source": source_qualified, "strength": strength}
+                        {
+                            "requested": token,
+                            "path": path,
+                            "source": source_qualified,
+                            "strength": strength,
+                        }
                     )
                 else:
                     key = token.lower()
@@ -296,9 +303,15 @@ class ResolutionMixin:
                         continue
                     seen.add(key)
                     mentions.append(
-                        {"requested": token, "path": "", "source": source_unqualified, "strength": strength}
+                        {
+                            "requested": token,
+                            "path": "",
+                            "source": source_unqualified,
+                            "strength": strength,
+                        }
                     )
         return mentions
+
     def _explicit_table_paths_for_question(self, question: str) -> list[str]:
         paths: list[str] = []
         seen: set[str] = set()
@@ -308,13 +321,16 @@ class ResolutionMixin:
                 seen.add(path.lower())
                 paths.append(path)
         return paths
+
     def _live_table_exists(self, schema_name: str, table_name: str) -> bool | None:
         """Return exact live existence when cheap metadata APIs are available."""
         db = self._inventory_db()
         target = table_name.lower()
         try:
             if hasattr(db, "list_assets"):
-                return any(str(name).lower() == target for name, _kind in db.list_assets(schema_name))
+                return any(
+                    str(name).lower() == target for name, _kind in db.list_assets(schema_name)
+                )
         except Exception:
             pass
         checks = ("list_tables", "list_views", "list_materialized_views")
@@ -330,10 +346,13 @@ class ResolutionMixin:
             except Exception:
                 return None
         return False if found_any_api else None
+
     def _table_candidate_paths(self, hint: str, *, limit: int = 5) -> list[str]:
         paths: list[str] = []
         seen: set[str] = set()
-        for candidate in self.catalog.find_table_candidates(self.db_profile_filter, hint, limit=limit):
+        for candidate in self.catalog.find_table_candidates(
+            self.db_profile_filter, hint, limit=limit
+        ):
             schema_name = str(candidate.get("schema_name") or "")
             table_name = str(candidate.get("table_name") or "")
             path = f"{schema_name}.{table_name}" if schema_name and table_name else ""
@@ -341,6 +360,7 @@ class ResolutionMixin:
                 seen.add(path.lower())
                 paths.append(path)
         return paths
+
     def _resolve_table_targets(self, hints: list[str], question: str) -> list[ResolvedTarget]:
         targets: list[ResolvedTarget] = []
         seen: set[str] = set()
@@ -359,9 +379,13 @@ class ResolutionMixin:
                 bare = requested.strip()
                 if not bare:
                     continue
-                exact_rows = self.catalog.find_tables_by_exact_name(self.db_profile_filter, bare, limit=20)
+                exact_rows = self.catalog.find_tables_by_exact_name(
+                    self.db_profile_filter, bare, limit=20
+                )
                 exact_paths = [
-                    f"{str(row.get('schema_name') or '')}.{str(row.get('table_name') or '')}".strip(".")
+                    f"{str(row.get('schema_name') or '')}.{str(row.get('table_name') or '')}".strip(
+                        "."
+                    )
                     for row in exact_rows
                     if str(row.get("schema_name") or "") and str(row.get("table_name") or "")
                 ]
@@ -446,12 +470,19 @@ class ResolutionMixin:
                     source="hint_or_memory",
                     is_exact=exists is not False,
                     confidence="medium" if exists is not False else "low",
-                    warnings=[] if exists is True else ["live_table_existence_unknown" if exists is None else "resolved_table_not_found_live"],
+                    warnings=[]
+                    if exists is True
+                    else [
+                        "live_table_existence_unknown"
+                        if exists is None
+                        else "resolved_table_not_found_live"
+                    ],
                     candidates=[],
                 )
             )
             seen.add(path.lower())
         return targets
+
     def _target_resolution_details(self, targets: list[ResolvedTarget]) -> dict[str, Any]:
         has_resolved = any(bool(target.resolved_path) for target in targets)
         has_unresolved_explicit = any(
@@ -471,6 +502,7 @@ class ResolutionMixin:
             "unresolved_explicit": has_unresolved_explicit and not has_resolved,
             "ambiguous_unqualified": has_ambiguous and not has_resolved,
         }
+
     def _candidate_table_paths_for_question(self, hints: list[str], question: str) -> list[str]:
         candidates = self._explicit_table_paths_for_question(question)
         seen = {item.lower() for item in candidates}
@@ -478,11 +510,7 @@ class ResolutionMixin:
             if path.lower() not in seen:
                 seen.add(path.lower())
                 candidates.append(path)
-        explicit_tokens = {
-            path.split(".", 1)[1].lower()
-            for path in candidates
-            if "." in path
-        }
+        explicit_tokens = {path.split(".", 1)[1].lower() for path in candidates if "." in path}
         tokens = [
             token
             for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{1,127}\b", question or "")
@@ -504,13 +532,16 @@ class ResolutionMixin:
             and token.lower() not in explicit_tokens
         ]
         for token in tokens:
-            for candidate in self.catalog.find_table_candidates(self.db_profile_filter, token, limit=2):
+            for candidate in self.catalog.find_table_candidates(
+                self.db_profile_filter, token, limit=2
+            ):
                 path = f"{candidate.get('schema_name', '')}.{candidate.get('table_name', '')}"
                 if path == "." or path.lower() in seen:
                     continue
                 seen.add(path.lower())
                 candidates.append(path)
         return candidates[:6]
+
     def _resolve_table_paths(self, hints: list[str], question: str) -> list[str]:
         resolved: list[str] = []
         seen: set[str] = set()
@@ -527,7 +558,9 @@ class ResolutionMixin:
                         seen.add(path)
                         resolved.append(path)
                     continue
-            for candidate in self.catalog.find_table_candidates(self.db_profile_filter, value, limit=3):
+            for candidate in self.catalog.find_table_candidates(
+                self.db_profile_filter, value, limit=3
+            ):
                 path = f"{candidate.get('schema_name', '')}.{candidate.get('table_name', '')}"
                 if path == "." or path in seen:
                     continue
@@ -535,8 +568,12 @@ class ResolutionMixin:
                 resolved.append(path)
                 break
         return resolved
+
     def _candidate_limit(self, question_class: str) -> int:
-        configured = str(self.settings.get("max_retrieved_entities", self.settings.get("max_results", "8")) or "8")
+        configured = str(
+            self.settings.get("max_retrieved_entities", self.settings.get("max_results", "8"))
+            or "8"
+        )
         try:
             base = max(1, int(configured))
         except Exception:
@@ -551,12 +588,37 @@ class ResolutionMixin:
         if question_class == "join_discovery":
             return max(base, 10)
         return base
+
     def _asks_column_name_listing(self, question: str, plan: SearchPlan) -> bool:
         sample = (question or "").strip().lower()
-        asks_column = any(token in sample for token in ("kolon", "kolonlar", "column", "columns", "field", "fields"))
-        asks_names = any(token in sample for token in ("isim", "isimleri", "name", "names", "getir", "listele", "list"))
-        asks_comment_coverage = any(token in sample for token in ("comment", "comments", "commentler", "yorum", "yorumlar", "girili", "coverage"))
-        return asks_column and asks_names and not asks_comment_coverage and plan.question_class == "semantic_discovery" and plan.target_entity in {"column", "unknown", ""}
+        asks_column = any(
+            token in sample
+            for token in ("kolon", "kolonlar", "column", "columns", "field", "fields")
+        )
+        asks_names = any(
+            token in sample
+            for token in ("isim", "isimleri", "name", "names", "getir", "listele", "list")
+        )
+        asks_comment_coverage = any(
+            token in sample
+            for token in (
+                "comment",
+                "comments",
+                "commentler",
+                "yorum",
+                "yorumlar",
+                "girili",
+                "coverage",
+            )
+        )
+        return (
+            asks_column
+            and asks_names
+            and not asks_comment_coverage
+            and plan.question_class == "semantic_discovery"
+            and plan.target_entity in {"column", "unknown", ""}
+        )
+
     def _column_name_lookup_terms(self, question: str, plan: SearchPlan) -> list[str]:
         stopwords = {
             "ile",

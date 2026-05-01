@@ -120,9 +120,14 @@ class HistoryMigrationTests(unittest.TestCase):
             with sqlite3.connect(db_path) as conn:
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(analysis_runs)")}
             for new_col in (
-                "llm_profile", "doc_profile", "code_profile",
-                "selected_count", "planned_count", "processed_count",
-                "applied_count", "review_strategy",
+                "llm_profile",
+                "doc_profile",
+                "code_profile",
+                "selected_count",
+                "planned_count",
+                "processed_count",
+                "applied_count",
+                "review_strategy",
             ):
                 self.assertIn(new_col, cols)
 
@@ -149,8 +154,17 @@ class HistoryMigrationTests(unittest.TestCase):
                         llm_provider, llm_model, scope_json
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (1.0, "success", "analyze.run", "batch", "postgres", "pg",
-                     "openai", "gpt-4o", '{"sales": ["orders"]}'),
+                    (
+                        1.0,
+                        "success",
+                        "analyze.run",
+                        "batch",
+                        "postgres",
+                        "pg",
+                        "openai",
+                        "gpt-4o",
+                        '{"sales": ["orders"]}',
+                    ),
                 )
             runs = s.list_recent_runs()
             self.assertEqual(len(runs), 1)
@@ -162,13 +176,14 @@ class FindRunsForScopeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             s = _fresh_store(tmp)
             _seed_run(s, schema="sales", table="orders", command="analyze.run")
-            _seed_run(s, schema="sales", table="orders", command="search.ask",
-                      llm_profile="claude")
+            _seed_run(s, schema="sales", table="orders", command="search.ask", llm_profile="claude")
             _seed_run(s, schema="hr", table="employees", command="analyze.run")
             sales_only = s.find_runs_for_scope(schema="sales", limit=10)
             self.assertEqual(len(sales_only), 2)
             ask_only = s.find_runs_for_scope(
-                schema="sales", command_filter="search.ask", limit=10,
+                schema="sales",
+                command_filter="search.ask",
+                limit=10,
             )
             self.assertEqual(len(ask_only), 1)
             self.assertEqual(ask_only[0]["llm_profile"], "claude")
@@ -184,10 +199,20 @@ class CompareHelpersTests(unittest.TestCase):
 
     def test_detect_by_falls_back_to_run(self) -> None:
         runs = [
-            {"llm_profile": "a", "doc_profile": "x", "code_profile": "k",
-             "llm_model": "gpt", "db_profile": "pg"},
-            {"llm_profile": "a", "doc_profile": "x", "code_profile": "k",
-             "llm_model": "gpt", "db_profile": "pg"},
+            {
+                "llm_profile": "a",
+                "doc_profile": "x",
+                "code_profile": "k",
+                "llm_model": "gpt",
+                "db_profile": "pg",
+            },
+            {
+                "llm_profile": "a",
+                "doc_profile": "x",
+                "code_profile": "k",
+                "llm_model": "gpt",
+                "db_profile": "pg",
+            },
         ]
         self.assertEqual(_detect_by(runs), "run")
 
@@ -247,14 +272,17 @@ class CompareCommandTests(unittest.TestCase):
             }
         ]
         rid1 = _seed_run(
-            s, llm_profile="gpt4o-prof", llm_model="gpt-4o",
+            s,
+            llm_profile="gpt4o-prof",
+            llm_model="gpt-4o",
             suggestions=common_suggestions,
         )
         # Vary the LLM profile so auto-detect should pick "llm_profile".
         rid2 = _seed_run(
-            s, llm_profile="sonnet-prof", llm_model="claude-sonnet-4-6",
-            suggestions=[{**common_suggestions[0], "logprob_score": 0.71,
-                          "confidence": "medium"}],
+            s,
+            llm_profile="sonnet-prof",
+            llm_model="claude-sonnet-4-6",
+            suggestions=[{**common_suggestions[0], "logprob_score": 0.71, "confidence": "medium"}],
         )
         return rid1, rid2
 
@@ -281,8 +309,7 @@ class CompareCommandTests(unittest.TestCase):
             ):
                 result = runner.invoke(
                     main,
-                    ["--config", "test-config.yml", "search", "compare",
-                     str(rid1), str(rid2)],
+                    ["--config", "test-config.yml", "search", "compare", str(rid1), str(rid2)],
                     env={"AMX_SESSION_CHILD": "1"},
                     catch_exceptions=False,
                 )
@@ -416,21 +443,37 @@ class WordDiffTests(unittest.TestCase):
 
 def _seed_two_runs_for_export(s: SQLiteHistoryStore) -> tuple[int, int]:
     base_suggestion = {
-        "schema": "sales", "table": "orders", "column": "id",
-        "asset_kind": "table", "source": "code", "confidence": "high",
-        "logprob_score": 0.91, "raw_logprob": 0.91, "token_count": 28,
-        "model_version": "gpt-4o", "reasoning": "primary key",
+        "schema": "sales",
+        "table": "orders",
+        "column": "id",
+        "asset_kind": "table",
+        "source": "code",
+        "confidence": "high",
+        "logprob_score": 0.91,
+        "raw_logprob": 0.91,
+        "token_count": 28,
+        "model_version": "gpt-4o",
+        "reasoning": "primary key",
         "alternatives": ["Primary key for orders"],
     }
     rid1 = _seed_run(
-        s, llm_profile="gpt4o", llm_model="gpt-4o",
+        s,
+        llm_profile="gpt4o",
+        llm_model="gpt-4o",
         suggestions=[base_suggestion],
     )
     rid2 = _seed_run(
-        s, llm_profile="claude", llm_model="claude-sonnet-4-6",
-        suggestions=[{**base_suggestion, "logprob_score": 0.71,
-                      "confidence": "medium",
-                      "alternatives": ["Order identifier"]}],
+        s,
+        llm_profile="claude",
+        llm_model="claude-sonnet-4-6",
+        suggestions=[
+            {
+                **base_suggestion,
+                "logprob_score": 0.71,
+                "confidence": "medium",
+                "alternatives": ["Order identifier"],
+            }
+        ],
     )
     return rid1, rid2
 
