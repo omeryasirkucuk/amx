@@ -200,6 +200,52 @@ class DatabricksAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "DESCRIBE DETAIL"
 
+    # ── Catalog hierarchy (Unity Catalog) ─────────────────────────────────
+
+    def supports_catalogs(self) -> bool:
+        return True
+
+    def list_catalogs(self, engine: Engine) -> list[str]:
+        """Unity Catalog catalogs visible to the active workspace token.
+
+        Runs ``SHOW CATALOGS`` and returns the catalog names. Filters
+        out the legacy ``hive_metastore`` and ``samples`` reflections
+        only when they're empty / unused — for now we keep them so
+        users on hive-metastore-only workspaces can still see their
+        databases.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(text("SHOW CATALOGS")).fetchall()
+            return [str(r[0]) for r in rows if r and r[0]]
+        except Exception:
+            return []
+
+    def list_schemas(self, engine: Engine, catalog: str = "") -> list[str] | None:
+        """``SHOW SCHEMAS IN <catalog>`` when catalog is set.
+
+        Without an explicit catalog the SQLAlchemy fallback (which
+        runs ``SHOW SCHEMAS`` against whatever the connection's USE
+        CATALOG default is) returns ambiguous / wrong results on
+        Databricks Unity Catalog — that's the bug the v0.10.11
+        catalog picker addresses.
+        """
+        cat = (catalog or "").strip()
+        if not cat:
+            return None  # let connector fall back to SQLAlchemy inspector
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(f"SHOW SCHEMAS IN `{cat}`")
+                ).fetchall()
+            system = self.system_schemas()
+            return [
+                str(r[0]) for r in rows
+                if r and r[0] and str(r[0]).lower() not in system
+            ]
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

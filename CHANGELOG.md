@@ -6,6 +6,37 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.11] - 2026-05-01
+### Fixed
+- **`/edit` wizard on Databricks ran `SHOW SCHEMAS` without USE CATALOG** when the user hadn't pinned a catalog. Reproducer: connect to Databricks Unity Catalog, run `/edit` to update a comment — the schema picker either showed the wrong namespace or returned nothing, and downstream `SHOW TABLES None.dev` failed. Root cause: SQLAlchemy's `inspect(engine).get_schema_names()` is not catalog-aware on Databricks; the connector used it as the only path.
+
+### Added
+- **`AdapterBase.supports_catalogs()` + `AdapterBase.list_catalogs(engine)`** (`amx/db/adapters/base.py`) — generic interface for backends with a 3-level catalog → schema → table hierarchy. Default returns `False` / `[]` so existing adapters stay unchanged.
+- **`AdapterBase.list_schemas(engine, catalog="")`** with a default `None` return — the connector falls back to the SQLAlchemy inspector when the adapter returns `None`. Lets adapters override schema listing for catalog-scoped backends without forcing every adapter to implement it.
+- **`DatabaseConnector.list_catalogs()` + `DatabaseConnector.supports_catalogs()`** convenience wrappers.
+
+### Changed
+- **Databricks adapter overrides `list_catalogs` and `list_schemas`** (`amx/db/adapters/databricks.py`):
+  - `list_catalogs` runs `SHOW CATALOGS` and returns the catalog names.
+  - `list_schemas(engine, catalog)` runs `SHOW SCHEMAS IN \`<catalog>\`` when a catalog is set, filtering system schemas. Returns `None` (fallback to inspector) when no catalog is supplied.
+- **Manual-edit wizard catalog picker** (`amx/cli_support/commands/manual.py`):
+  - New `_select_catalog_for_wizard(db)` helper. Fires at the start of `_select_schema_for_wizard` whenever `db.supports_catalogs()` is True AND `cfg.catalog` is empty.
+  - Lists catalogs via `db.list_catalogs()`, asks the user to pick, persists the pick on the in-memory `cfg.catalog` so subsequent `list_schemas`/`list_assets` calls scope correctly. The pick is per-wizard-session (not written to disk) so users can edit across catalogs without permanent profile changes.
+
+### Why this matters
+Without catalog awareness AMX wasn't usable for `/edit` on Unity Catalog Databricks at all — the user got an empty schema list, then watched logs show `SHOW TABLES None.dev` fail. With v0.10.11 the wizard:
+1. Detects the 3-level hierarchy (`supports_catalogs` returns True).
+2. Lists catalogs via `SHOW CATALOGS`.
+3. Prompts the user to pick.
+4. Scopes every subsequent `SHOW SCHEMAS IN <catalog>` and `SHOW TABLES IN <catalog>.<schema>` correctly.
+
+The same hooks are available for any other 3-level backend; adding BigQuery project switching is now an adapter-level change rather than touching the wizard.
+
+### Followups
+- BigQuery adapter override: implement `list_catalogs` (= `INFORMATION_SCHEMA.SCHEMATA` distinct projects, or accept comma-separated project list from cfg) so cross-project edits also work.
+- `/db` profile creation: when adding a Databricks profile, prompt for the default catalog upfront so this wizard prompt only fires when the user explicitly wants to switch.
+- Other AMX flows (`/run`, `/ask`, `/search sync`) currently skip the catalog picker — they assume `cfg.catalog` is set. The same `_select_catalog_for_wizard` helper should be hoisted to a shared spot so those flows also catch the empty-catalog case before issuing catalog-less queries.
+
 ## [0.10.10] - 2026-05-01
 ### Fixed
 - **"how is X uploaded / loaded / populated / refreshed?" was being routed to `detect_scd_pattern`** (which answers "how is HISTORY kept", a different concern). Reproducer: user asked "how is vbak uploaded?", agent ran the SCD detector, returned the canned "no SCD signals; provide a business_key" recovery message — completely off-topic.
