@@ -190,6 +190,152 @@ class PostgreSQLAdapter(DatabaseAdapter):
             for r in rows
         ]
 
+    # ── Analytics metadata ────────────────────────────────────────────────
+
+    def get_analytics_metadata(
+        self, engine: Engine, schema: str, table: str
+    ) -> dict[str, Any]:
+        """PostgreSQL analytics metadata.
+
+        Pulls partition info from ``pg_partitioned_table`` /
+        ``pg_inherits``, indexes from ``pg_indexes``, on-disk size
+        from ``pg_relation_size`` (including TOAST + indexes), table
+        type from ``pg_class.relkind``, and freshness from
+        ``pg_stat_user_tables.last_*``. Each query is wrapped so a
+        single permission failure doesn't drop the whole result; the
+        affected field is left empty and a warning is recorded.
+        """
+        out: dict[str, Any] = {}
+        warnings: list[str] = []
+
+        with engine.connect() as conn:
+            # ── partition_keys / partition_strategy ──
+            try:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT
+                            pp.partstrat,
+                            (
+                                SELECT array_agg(att.attname ORDER BY ord.idx)
+                                FROM unnest(pp.partattrs) WITH ORDINALITY AS ord(attnum, idx)
+                                JOIN pg_attribute att
+                                  ON att.attrelid = pp.partrelid
+                                 AND att.attnum   = ord.attnum
+                            ) AS partition_columns
+                        FROM pg_partitioned_table pp
+                        JOIN pg_class c ON c.oid = pp.partrelid
+                        JOIN pg_namespace ns ON ns.oid = c.relnamespace
+                        WHERE ns.nspname = :schema AND c.relname = :table
+                        """
+                    ),
+                    {"schema": schema, "table": table},
+                ).fetchone()
+                if row and row[0]:
+                    strat_map = {"r": "range", "l": "list", "h": "hash"}
+                    out["partition_strategy"] = strat_map.get(str(row[0]), str(row[0]))
+                    out["partition_keys"] = [str(c) for c in (row[1] or []) if c]
+            except Exception as exc:
+                warnings.append(f"partition info: {exc}")
+
+            # ── indexes ──
+            try:
+                rows = conn.execute(
+                    text(
+                        """
+                        SELECT indexname, indexdef, indisunique
+                        FROM pg_indexes idx
+                        LEFT JOIN pg_class ic ON ic.relname = idx.indexname
+                        LEFT JOIN pg_index pgi ON pgi.indexrelid = ic.oid
+                        WHERE idx.schemaname = :schema AND idx.tablename = :table
+                        ORDER BY indexname
+                        """
+                    ),
+                    {"schema": schema, "table": table},
+                ).fetchall()
+                indexes: list[dict[str, Any]] = []
+                for r in rows:
+                    name = str(r[0] or "")
+                    indexdef = str(r[1] or "")
+                    unique = bool(r[2]) if r[2] is not None else "UNIQUE" in indexdef.upper()
+                    # Extract column list from the indexdef tail (... USING btree (col1, col2)).
+                    cols: list[str] = []
+                    if "(" in indexdef and indexdef.rstrip().endswith(")"):
+                        col_str = indexdef.rsplit("(", 1)[1].rstrip(")")
+                        cols = [c.strip().strip('"').split()[0] for c in col_str.split(",") if c.strip()]
+                    indexes.append({"name": name, "columns": cols, "unique": unique})
+                out["indexes"] = indexes
+            except Exception as exc:
+                warnings.append(f"indexes: {exc}")
+
+            # ── storage_bytes (table + TOAST + indexes) ──
+            try:
+                fqn = self.fully_qualified_name(schema, table)
+                size_bytes = conn.execute(
+                    text(f"SELECT pg_total_relation_size('{fqn}'::regclass)")
+                ).scalar()
+                if size_bytes is not None:
+                    out["storage_bytes"] = int(size_bytes)
+            except Exception as exc:
+                warnings.append(f"storage size: {exc}")
+
+            # ── last_modified (best-effort: max of last_analyze / vacuum / autoanalyze) ──
+            try:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT GREATEST(
+                            COALESCE(last_analyze, '1970-01-01'::timestamptz),
+                            COALESCE(last_autoanalyze, '1970-01-01'::timestamptz),
+                            COALESCE(last_vacuum, '1970-01-01'::timestamptz),
+                            COALESCE(last_autovacuum, '1970-01-01'::timestamptz)
+                        ) AS lm
+                        FROM pg_stat_user_tables
+                        WHERE schemaname = :schema AND relname = :table
+                        """
+                    ),
+                    {"schema": schema, "table": table},
+                ).fetchone()
+                if row and row[0] is not None and str(row[0]) != "1970-01-01 00:00:00+00:00":
+                    out["last_modified"] = str(row[0])
+            except Exception as exc:
+                warnings.append(f"last_modified: {exc}")
+
+            # ── table_type from pg_class.relkind ──
+            try:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT c.relkind
+                        FROM pg_class c
+                        JOIN pg_namespace ns ON ns.oid = c.relnamespace
+                        WHERE ns.nspname = :schema AND c.relname = :table
+                        LIMIT 1
+                        """
+                    ),
+                    {"schema": schema, "table": table},
+                ).fetchone()
+                if row:
+                    kind_map = {
+                        "r": "managed",
+                        "v": "view",
+                        "m": "materialized_view",
+                        "f": "foreign",
+                        "t": "toast",
+                        "p": "partitioned",
+                    }
+                    out["table_type"] = kind_map.get(str(row[0]), str(row[0]))
+            except Exception as exc:
+                warnings.append(f"table_type: {exc}")
+
+        # PostgreSQL is always native heap storage (or partitioned heap);
+        # no Parquet / Delta / Iceberg.
+        out.setdefault("storage_format", "native")
+
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
     # ── Comment writing ───────────────────────────────────────────────────
 
     def set_table_comment_sql(

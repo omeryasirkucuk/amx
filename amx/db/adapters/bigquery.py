@@ -176,6 +176,123 @@ class BigQueryAdapter(DatabaseAdapter):
             actionable = self.actionable_profile_error(exc)
             raise RuntimeError(actionable or str(exc)) from exc
 
+    # ── Analytics metadata ────────────────────────────────────────────────
+
+    def get_analytics_metadata(
+        self, engine: Engine, schema: str, table: str
+    ) -> dict[str, Any]:
+        """BigQuery analytics metadata.
+
+        Pulls partition / cluster / size / freshness / type from
+        ``INFORMATION_SCHEMA.TABLES`` (and ``COLUMNS`` for partition
+        column type). Each query is wrapped so a single permission
+        denied or unsupported-region failure leaves the affected
+        field empty and records a warning.
+
+        BigQuery storage format is always ``native`` for managed
+        tables; external tables are flagged via ``table_type``.
+        """
+        out: dict[str, Any] = {}
+        warnings: list[str] = []
+
+        with engine.connect() as conn:
+            # Partition + cluster + last_modified + type from INFORMATION_SCHEMA.TABLES.
+            try:
+                row = conn.execute(
+                    text(
+                        f"""
+                        SELECT
+                            table_type,
+                            ddl,
+                            CAST(creation_time AS STRING) AS creation_time
+                        FROM `{schema}`.INFORMATION_SCHEMA.TABLES
+                        WHERE table_name = @tname
+                        LIMIT 1
+                        """
+                    ).bindparams(tname=table),
+                ).fetchone()
+                if row:
+                    raw_type = str(row[0] or "").lower()
+                    type_map = {
+                        "base table": "managed",
+                        "view": "view",
+                        "materialized view": "materialized_view",
+                        "external": "external",
+                    }
+                    out["table_type"] = type_map.get(raw_type, raw_type)
+                    if "external" in raw_type:
+                        out["storage_format"] = "external"
+                    else:
+                        out["storage_format"] = "native"
+                    # Parse partition + cluster from the DDL — INFORMATION_SCHEMA
+                    # doesn't expose them as structured columns in standard SQL.
+                    ddl = str(row[1] or "")
+                    if "PARTITION BY" in ddl.upper():
+                        # Extract whatever's between "PARTITION BY" and the next clause.
+                        upper = ddl.upper()
+                        start = upper.index("PARTITION BY") + len("PARTITION BY")
+                        end_candidates = [
+                            upper.find("CLUSTER BY", start),
+                            upper.find("OPTIONS(", start),
+                            upper.find(" AS ", start),
+                            len(ddl),
+                        ]
+                        end = min((e for e in end_candidates if e > 0), default=len(ddl))
+                        partition_expr = ddl[start:end].strip().rstrip(",")
+                        out["partition_keys"] = [partition_expr]
+                        if "_PARTITIONDATE" in partition_expr.upper() or "DATE(" in partition_expr.upper() or "_PARTITIONTIME" in partition_expr.upper():
+                            out["partition_strategy"] = "time"
+                        elif "RANGE_BUCKET" in partition_expr.upper():
+                            out["partition_strategy"] = "range"
+                        else:
+                            out["partition_strategy"] = "time"
+                    if "CLUSTER BY" in ddl.upper():
+                        upper = ddl.upper()
+                        start = upper.index("CLUSTER BY") + len("CLUSTER BY")
+                        end_candidates = [
+                            upper.find("OPTIONS(", start),
+                            upper.find(" AS ", start),
+                            len(ddl),
+                        ]
+                        end = min((e for e in end_candidates if e > 0), default=len(ddl))
+                        cluster_expr = ddl[start:end].strip().rstrip(",")
+                        out["clustering_keys"] = [c.strip() for c in cluster_expr.split(",") if c.strip()]
+                    if row[2]:
+                        out["last_modified"] = str(row[2])
+            except Exception as exc:
+                warnings.append(f"INFORMATION_SCHEMA.TABLES: {exc}")
+
+            # storage_bytes from __TABLES__ (legacy SQL — may require permissions).
+            try:
+                row = conn.execute(
+                    text(
+                        f"""
+                        SELECT size_bytes, last_modified_time
+                        FROM `{schema}.__TABLES__`
+                        WHERE table_id = @tname
+                        LIMIT 1
+                        """
+                    ).bindparams(tname=table),
+                ).fetchone()
+                if row:
+                    if row[0] is not None:
+                        out["storage_bytes"] = int(row[0])
+                    if row[1] is not None and not out.get("last_modified"):
+                        # last_modified_time is unix millis in __TABLES__.
+                        try:
+                            from datetime import datetime, timezone
+
+                            ts = datetime.fromtimestamp(int(row[1]) / 1000.0, tz=timezone.utc)
+                            out["last_modified"] = ts.isoformat()
+                        except Exception:
+                            pass
+            except Exception as exc:
+                warnings.append(f"__TABLES__: {exc}")
+
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
     # ── Comment writing ───────────────────────────────────────────────────
 
     def set_table_comment_sql(
