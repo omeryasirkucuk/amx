@@ -6,6 +6,28 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-05-01
+### Fixed
+- **`detect_dimensional_role` returned "unknown"** for FK-free schemas with opaque table names. Reproducer: SAP `vbrk` (billing-document header, archetypal fact table) had no `fact_*` naming, no declared FK constraints, no partitioning, and `erdat` is stored as `varchar(8)` rather than the native `date` type — so neither the naming nor the structural FK signals fired. Pre-v0.10.8 the agent surfaced "unknown / low confidence" with the truthful but unhelpful note "no signals fired".
+
+### Changed
+- **New column-shape signal** (`amx/search/agent_tools.py`). The classifier now also counts:
+  - **Measure-like columns** — numeric dtype + name matches money/quantity patterns (`_amt`, `_amount`, `_value`, `_qty`, `_quantity`, `_total`, `_sum`, `_price`, `_cost`, `_fee`, `_rate`, `_tax`, `_brutto`, `_netto`, `_revenue`, `_profit`, `_margin`, `_balance`) PLUS SAP-specific currency / quantity columns (`netwr`, `brtwr`, `mwsbp`, `mwsbk`, `kbetr`, `kwert`, `fkimg`, `fklmg`, `kpein`, `kzwi`, `wavwr`).
+  - **ID / key columns** — name matches key patterns (`_id`, `_key`, `_no`, `_num`, `_code`) PLUS SAP-specific keys (`mandt`, `vbeln`, `vgbel`, `kunag`, `kunrg`, `kunwe`, `lifnr`, `vkorg`, `vtweg`, `spart`, `matnr`, `werks`, `lgort`, `bukrs`, `gjahr`, `belnr`, `buzei`, `fkart`, `auart`).
+  - **Descriptive columns** — string dtype + name matches description patterns (`_name`, `_desc`, `_label`, `_text`, `_title`, `_remark`, `_addr`) PLUS SAP-specific descriptive columns (`name1`, `name2`, `ktokd`).
+- **Two new structural-fact rules** based on column shape:
+  - `≥3 measures + ≥4 ids + (has_temporal OR row_count ≥ 10K)` → fact (medium confidence). This is the SAP/legacy escape hatch: when naming is opaque and FKs aren't declared, the column mix itself screams "transactional with measures and application-level foreign keys".
+  - `≥5 descriptives + 0 measures + row_count ≤ 100K` → dimension (medium confidence).
+
+For `vbrk` specifically: ≥5 SAP currency columns + ≥6 SAP key columns + 89K rows now classify as `fact` with medium confidence and an evidence line stating exactly which signals fired.
+
+### Why this matters
+Same `evidence + confidence + indicators` design pattern from earlier interpretive-answering releases, applied to dimensional-role detection. The previous pure-naming + pure-FK approach worked for clean dbt / Kimball schemas but failed on SAP, Oracle eBusiness, peoplesoft, and many enterprise schemas where FK constraints aren't declared in the database. Column shape is a third independent signal that's available even when the first two are silent.
+
+### Followups
+- The SAP-name pattern lists are still narrow (covers vbrk / vbap / kna1 territory). A `column_role_inference_packs` namespace where users can add their own org-specific name patterns would let in-house data-warehouse teams steer the classifier without forking AMX.
+- Numeric measure detection currently relies on name patterns; a richer signal would also probe value distributions (continuous distribution → likely measure; bounded category set → likely flag/code) but that requires a sample query per column. Marked as a v0.11 followup since it's only worth the cost when the cheaper signals are inconclusive.
+
 ## [0.10.7] - 2026-05-01
 ### Added — `detect_dimensional_role` tool
 
