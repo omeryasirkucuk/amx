@@ -474,6 +474,35 @@ def execute_analyze_run(
         _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
+        # ── Equivalence-class dedup choice (FIRST run-mode question) ─────────
+        # Mirrors /metadata edit's binary mode-selector pattern: ask the
+        # high-impact yes/no decision BEFORE any drill-down. In /run that
+        # means dedup comes ahead of scope picker, coverage filter, and
+        # review strategy — those are the analogue of /edit's "drill
+        # down DB → schema → table → column" steps and follow the
+        # mode-decision. Profile/LLM test/completion mode above are
+        # infrastructure questions, not run-mode questions, so they
+        # stay where they are.
+        use_dedup_choice = ask_choice(
+            "Equivalence-class deduplication?",
+            ["dedup", "per-column"],
+            default="dedup",
+            descriptions={
+                "dedup": (
+                    "Group identical columns by (name + dtype family) across "
+                    "tables; one LLM call per group, applied to every member. "
+                    "Saves tokens on repeated columns (mandt, customer_id, "
+                    "created_at, …). Recommended for wide schemas."
+                ),
+                "per-column": (
+                    "Send each column to the LLM individually. Fine-grained, "
+                    "but slow + expensive on SAP-style schemas where the same "
+                    "column appears in dozens of tables."
+                ),
+            },
+        )
+        use_dedup = use_dedup_choice == "dedup"
+
         tables_arg = list(tables_pos) + list(table)
         with command_display(
             schema=schema or cfg.current_schema or "",
@@ -487,33 +516,6 @@ def execute_analyze_run(
                 return
 
             total_assets = sum(len(v) for v in scope.values())
-
-            # ── Equivalence-class dedup choice (FIRST runtime question) ──
-            # This MUST be the first runtime question — same pattern as
-            # /metadata edit, which asks Single-vs-Bulk before any
-            # downstream prompt. Putting it here lets users on huge
-            # schemas opt out before AMX does any pre-LLM work, and
-            # mirrors the high-impact-yes/no rule from /metadata edit
-            # (the binary mode-selector always comes first).
-            use_dedup_choice = ask_choice(
-                "Equivalence-class deduplication?",
-                ["dedup", "per-column"],
-                default="dedup",
-                descriptions={
-                    "dedup": (
-                        "Group identical columns by (name + dtype family) across "
-                        "tables; one LLM call per group, applied to every member. "
-                        "Saves tokens on repeated columns (mandt, customer_id, "
-                        "created_at, …). Recommended for wide schemas."
-                    ),
-                    "per-column": (
-                        "Send each column to the LLM individually. Fine-grained, "
-                        "but slow + expensive on SAP-style schemas where the same "
-                        "column appears in dozens of tables."
-                    ),
-                },
-            )
-            use_dedup = use_dedup_choice == "dedup"
 
             # ── Comment-coverage filter ──────────────────────────────────
             # When the user picks Database / Schema / Asset scope on a DB
