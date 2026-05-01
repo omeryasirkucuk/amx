@@ -6,6 +6,32 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-05-01
+### Fixed
+- **Cascading mixin import gaps** that v0.9.5 missed: 16 more module-level names referenced from mixin method bodies but not imported into their respective files. Reproducer surfaced after v0.9.5: `/ask` failed with `name 're' is not defined`.
+
+  Full audit + fixes (15 stdlib/typing/project imports added across 12 files):
+  - **`_agent/short_circuits.py`** — added `re`, `SearchAnswer`, `step_spinner`.
+  - **`_agent/planning.py`** — added `json`.
+  - **`_agent/resolution.py`** — added `asdict`.
+  - **`_agent/retrieval.py`** — added `DatabaseConnector`.
+  - **`_agent/session_memory.py`** — added `LLMProvider`.
+  - **`_catalog/entity_crud.py`** — added `sqlite3`.
+  - **`_catalog/sync.py`** — added `sqlite3`, `Callable`, `CodebaseReport`, `TableProfile`, `MetadataSuggestion`.
+  - **`_catalog/search.py`** — added `sqlite3`, `SequenceMatcher`.
+  - **`_catalog/usage.py`** — added `json`, `sqlite3`, `TableProfile`.
+  - **`_catalog/join.py`** — added `CodeReference`.
+  - **`_catalog/settings.py`** — added `time`.
+
+  **Verification:** new full-scope name-resolution audit (every `ast.Name` in `Load` context across all 13 mixin files vs imports + locals + parameters + comprehension targets + tuple-unpacks + builtins) now returns **0 unresolved references**, up from 23 before this fix.
+
+### Why this matters
+v0.9.5 fixed the dataclasses (`SearchPlan` etc.) but skipped the long tail of bare-name references — stdlib modules (`re`, `json`, `time`, `sqlite3`), typing helpers (`Callable`, `asdict`), and project-level type names (`DatabaseConnector`, `LLMProvider`, `TableProfile`, `CodebaseReport`, `MetadataSuggestion`, `CodeReference`, `SearchAnswer`, `SequenceMatcher`, `step_spinner`). Each was originally a top-level import in `agent.py` / `catalog.py`; the mixin split lost them. A full-scope audit (not just keyword spot-checks) would have caught them at refactor time. The new audit script lives in this commit's notes — adding it to CI is the v0.10 followup.
+
+### Followups
+- Adopt the audit script as a `pre-commit` hook so any future mixin extraction can't ship with this class of regression.
+- The original v0.9.0 / v0.9.1 commits' AST-only verification was insufficient; future refactor releases should run runtime-equivalent name-resolution audits before tagging.
+
 ## [0.9.5] - 2026-05-01
 ### Fixed
 - **Mixin regression: `name 'DEFAULT_SETTINGS' is not defined` (and 16 sibling errors)**. Reproducer: `/ask` would crash with `Ask failed: name 'DEFAULT_SETTINGS' is not defined` after running v0.9.0–v0.9.4. Root cause: when v0.9.0 split `SearchAgent` and v0.9.1 split `SearchCatalog`, the moved method bodies still referenced module-level names (`SearchPlan(...)`, `_input_token_budget_for(...)`, `DEFAULT_SETTINGS`, `SOURCE_PRIORITY`, etc.) by bare name — but each mixin was now its own Python module, so those names weren't in scope. The bugs only fired on first invocation of the affected code paths (synthesizer, catalog `get_settings`, etc.), not at import time, so the AST-only verification I ran during the splits missed them.

@@ -15,9 +15,12 @@ manual/dedup decisions:
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 from typing import Any
 
+from amx.db.connector import TableProfile
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.usage")

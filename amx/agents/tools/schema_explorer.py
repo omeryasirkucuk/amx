@@ -103,11 +103,22 @@ class SchemaExplorer:
         limit: int,
     ) -> tuple[list[dict[str, Any]], int]:
         db = self._db_factory()
-        schemas = [schema_name] if schema_name else list(db.list_schemas())
+        available_schemas = list(db.list_schemas())
+        schema_lookup = {str(item).lower(): str(item) for item in available_schemas}
+        if schema_name:
+            normalized = str(schema_name).strip().lower()
+            resolved = schema_lookup.get(normalized)
+            schemas = [resolved] if resolved else available_schemas
+        else:
+            schemas = available_schemas
         rows: list[dict[str, Any]] = []
         gap_fills = 0
         for schema in schemas:
-            for table in db.list_tables(schema):
+            try:
+                tables = db.list_tables(schema)
+            except Exception:
+                continue
+            for table in tables:
                 if len(rows) >= limit:
                     return rows, gap_fills
                 column_count = 0

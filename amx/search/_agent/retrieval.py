@@ -31,7 +31,7 @@ from dataclasses import asdict
 from typing import Any
 
 from amx.agents.tools import SchemaExplorer
-from amx.db.connector import ProfilingError
+from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search._agent._types import LiveProbePlan, SearchPlan, SearchPolicy
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
