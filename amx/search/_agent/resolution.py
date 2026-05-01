@@ -61,7 +61,7 @@ class ResolutionMixin:
             if str(mention.get("strength") or "") == "strong":
                 return requested
             try:
-                rows = self.catalog.find_tables_by_exact_name(self.db_profile, requested, limit=2)
+                rows = self.catalog.find_tables_by_exact_name(self.db_profile_filter, requested, limit=2)
             except Exception:
                 rows = []
             if rows:
@@ -333,7 +333,7 @@ class ResolutionMixin:
     def _table_candidate_paths(self, hint: str, *, limit: int = 5) -> list[str]:
         paths: list[str] = []
         seen: set[str] = set()
-        for candidate in self.catalog.find_table_candidates(self.db_profile, hint, limit=limit):
+        for candidate in self.catalog.find_table_candidates(self.db_profile_filter, hint, limit=limit):
             schema_name = str(candidate.get("schema_name") or "")
             table_name = str(candidate.get("table_name") or "")
             path = f"{schema_name}.{table_name}" if schema_name and table_name else ""
@@ -359,7 +359,7 @@ class ResolutionMixin:
                 bare = requested.strip()
                 if not bare:
                     continue
-                exact_rows = self.catalog.find_tables_by_exact_name(self.db_profile, bare, limit=20)
+                exact_rows = self.catalog.find_tables_by_exact_name(self.db_profile_filter, bare, limit=20)
                 exact_paths = [
                     f"{str(row.get('schema_name') or '')}.{str(row.get('table_name') or '')}".strip(".")
                     for row in exact_rows
@@ -504,7 +504,7 @@ class ResolutionMixin:
             and token.lower() not in explicit_tokens
         ]
         for token in tokens:
-            for candidate in self.catalog.find_table_candidates(self.db_profile, token, limit=2):
+            for candidate in self.catalog.find_table_candidates(self.db_profile_filter, token, limit=2):
                 path = f"{candidate.get('schema_name', '')}.{candidate.get('table_name', '')}"
                 if path == "." or path.lower() in seen:
                     continue
@@ -527,7 +527,7 @@ class ResolutionMixin:
                         seen.add(path)
                         resolved.append(path)
                     continue
-            for candidate in self.catalog.find_table_candidates(self.db_profile, value, limit=3):
+            for candidate in self.catalog.find_table_candidates(self.db_profile_filter, value, limit=3):
                 path = f"{candidate.get('schema_name', '')}.{candidate.get('table_name', '')}"
                 if path == "." or path in seen:
                     continue
