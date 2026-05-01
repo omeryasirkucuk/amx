@@ -447,6 +447,45 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "sample_column_values",
+                    "description": (
+                        "Return a few non-null example values from a single column "
+                        "via a direct ``SELECT col FROM schema.table WHERE col IS "
+                        "NOT NULL LIMIT N``. Cheap (no profile, no full-table scan, "
+                        "no catalog round-trip) and ground-truth (live DB). "
+                        "Use this for 'give me a sample / example value', 'what "
+                        "does column X look like', 'show me a value from aedat', "
+                        "'date format YYYYMMDD mı, bir örnek görelim', 'kolon "
+                        "değerleri nasıl'. ALWAYS resolve the table via "
+                        "find_table_by_name first if the user didn't qualify the "
+                        "schema — running this tool with the wrong schema will "
+                        "fail with a misleading 'table not found' error. The "
+                        "result includes 'samples' (list of distinct non-null "
+                        "values, up to ``limit``) and 'distinct_count' so the "
+                        "LLM can say 'here are 5 of 12 distinct values'."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {"type": "string", "description": "Schema name."},
+                            "table": {"type": "string", "description": "Table name."},
+                            "column": {
+                                "type": "string",
+                                "description": "Column to pull example values from.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max distinct values to return (default 5).",
+                                "default": 5,
+                            },
+                        },
+                        "required": ["schema", "table", "column"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "inspect_data_quality",
                     "description": (
                         "Per-column data-quality probe against the live DB. "
@@ -1589,5 +1628,86 @@ class ToolBox:
             "row_count": total_rows,
             "column_count": len(profile.columns),
             "columns": per_col,
+        }
+
+    def _tool_sample_column_values(
+        self, schema: str, table: str, column: str, limit: int = 5,
+    ) -> dict[str, Any]:
+        """Pull a few distinct non-null example values from a single column.
+
+        Direct ``SELECT DISTINCT col FROM schema.table WHERE col IS NOT
+        NULL LIMIT N`` against the live DB — bypasses ``profile_table``
+        (which scans every column + foreign keys + stats) so a "give
+        me an example" question doesn't pay for a full table profile.
+        """
+        from sqlalchemy import text as _text
+
+        schema_name = (schema or "").strip()
+        table_name = (table or "").strip()
+        column_name = (column or "").strip()
+        if not schema_name or not table_name or not column_name:
+            raise _ToolError(
+                "All of 'schema', 'table', 'column' are required.",
+            )
+        n = max(1, min(int(limit or 5), 50))
+
+        db = self._live_db()
+        adapter = db._adapter  # noqa: SLF001
+        fqn = adapter.fully_qualified_name(schema_name, table_name)
+        col_q = adapter.quote_identifier(column_name)
+
+        try:
+            with db.engine.connect() as conn:
+                # DISTINCT keeps the prompt small when the column has
+                # repeated values (boolean flags, status codes, etc.).
+                rows = conn.execute(
+                    _text(
+                        f"SELECT DISTINCT {col_q} AS v "
+                        f"FROM {fqn} "
+                        f"WHERE {col_q} IS NOT NULL "
+                        f"LIMIT :n"
+                    ),
+                    {"n": n},
+                ).fetchall()
+                samples = [
+                    str(r[0]) for r in rows if r and r[0] is not None
+                ]
+                # Also fetch distinct count when cheap (single-column
+                # COUNT(DISTINCT) is fast on indexed tables; soft-fails
+                # on big un-indexed columns where the planner gives up).
+                try:
+                    distinct_row = conn.execute(
+                        _text(
+                            f"SELECT COUNT(DISTINCT {col_q}) FROM {fqn}"
+                        ),
+                    ).fetchone()
+                    distinct_count = (
+                        int(distinct_row[0]) if distinct_row and distinct_row[0] is not None else None
+                    )
+                except Exception:
+                    distinct_count = None
+        except Exception as exc:
+            return {
+                "schema": schema_name,
+                "table": table_name,
+                "column": column_name,
+                "found": False,
+                "error": str(exc),
+                "hint": (
+                    "If the schema/table didn't resolve, call "
+                    "find_table_by_name first — the user may have "
+                    "given a bare table name and the agent picked the "
+                    "wrong schema."
+                ),
+            }
+
+        return {
+            "schema": schema_name,
+            "table": table_name,
+            "column": column_name,
+            "found": True,
+            "samples": samples,
+            "sample_count": len(samples),
+            "distinct_count": distinct_count,
         }
 
