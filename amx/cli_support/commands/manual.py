@@ -351,6 +351,263 @@ def _prompt_for_comment(target_label: str, comment: str | None) -> str | None:
     return _ask_text_or_cancel("New comment", default="")
 
 
+def _parse_multiselect(raw: str, total: int) -> list[int]:
+    """Parse '1,3,5' / 'all' / '1-4' into 0-based indices.
+
+    Returns an empty list when input is empty / 'cancel' / nothing valid.
+    """
+    raw = (raw or "").strip().lower()
+    if not raw or raw in {"cancel", "exit", "q", "quit"}:
+        return []
+    if raw == "all":
+        return list(range(total))
+    indices: set[int] = set()
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            try:
+                lo_s, hi_s = token.split("-", 1)
+                lo = int(lo_s)
+                hi = int(hi_s)
+            except ValueError:
+                continue
+            for i in range(min(lo, hi), max(lo, hi) + 1):
+                if 1 <= i <= total:
+                    indices.add(i - 1)
+            continue
+        try:
+            i = int(token)
+        except ValueError:
+            continue
+        if 1 <= i <= total:
+            indices.add(i - 1)
+    return sorted(indices)
+
+
+def _run_bulk_edit_by_name(
+    cfg: AMXConfig,
+    *,
+    bare_name: str,
+    comment: str | None,
+    skip_confirm: bool,
+    log_event: LogEvent | None,
+) -> None:
+    """Bulk-edit comment by bare entity name.
+
+    Searches the catalog for tables and columns matching the name, then
+    offers a multi-select picker. The same comment text is applied to
+    every selected entity via the live DB ``COMMENT ON …`` SQL. Catalog
+    state is then refreshed so the new comments are immediately visible
+    to ``/ask``.
+    """
+    from amx.db.connector import DatabaseConnector
+    from amx.search.catalog import SearchCatalog
+
+    db_profile = cfg.active_db_profile or "default"
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        error("Catalog is unavailable; bulk-edit by name needs an indexed catalog. Run /search /sync first.")
+        return
+
+    try:
+        table_rows = catalog.find_tables_by_exact_name(db_profile, bare_name, limit=200)
+    except Exception as exc:
+        error(f"Catalog lookup for tables failed: {exc}")
+        table_rows = []
+    try:
+        column_rows = catalog.find_columns_by_exact_name(db_profile, bare_name, limit=500)
+    except Exception as exc:
+        error(f"Catalog lookup for columns failed: {exc}")
+        column_rows = []
+
+    if not table_rows and not column_rows:
+        error(
+            f"No tables or columns named '{bare_name}' in the catalog for profile "
+            f"'{db_profile}'. If you just sync'd /run-apply or recently added a table, "
+            "run `/search sync` to refresh the catalog index, then retry."
+        )
+        return
+
+    # Build a unified entity list: each row is one (kind, schema, table, column).
+    entries: list[dict[str, str]] = []
+    for r in table_rows:
+        entries.append({
+            "kind": "table",
+            "schema": str(r.get("schema_name") or ""),
+            "table": str(r.get("table_name") or ""),
+            "column": "",
+            "dtype": "",
+            "existing": str(r.get("effective_description") or ""),
+        })
+    for r in column_rows:
+        entries.append({
+            "kind": "column",
+            "schema": str(r.get("schema_name") or ""),
+            "table": str(r.get("table_name") or ""),
+            "column": str(r.get("column_name") or ""),
+            "dtype": str(r.get("dtype") or ""),
+            "existing": str(r.get("effective_description") or ""),
+        })
+
+    console.print(
+        f"\n  [heading]Found {len(entries)} match(es) for '{bare_name}'[/heading]"
+    )
+    rows_for_render = []
+    for idx, e in enumerate(entries, start=1):
+        if e["kind"] == "table":
+            label = f"{e['schema']}.{e['table']}"
+            kind_str = "TABLE"
+            dtype = "—"
+        else:
+            label = f"{e['schema']}.{e['table']}.{e['column']}"
+            kind_str = "COL"
+            dtype = e["dtype"] or "—"
+        existing = (e["existing"] or "").strip()
+        existing_display = (existing[:50] + "…") if len(existing) > 50 else existing or "(none)"
+        rows_for_render.append([str(idx), kind_str, label, dtype, existing_display])
+    render_table(
+        f"Matches for '{bare_name}'",
+        ["#", "Kind", "Schema.Table[.Column]", "Type", "Existing comment"],
+        rows_for_render,
+    )
+
+    selection_raw = _ask_text_or_cancel(
+        "Pick rows (e.g. 1,3,5 or 1-4 or all; empty/cancel to abort)",
+        default="all",
+    )
+    if selection_raw is None:
+        warn("Bulk edit cancelled.")
+        return
+    indices = _parse_multiselect(selection_raw, total=len(entries))
+    if not indices:
+        warn("No rows selected — bulk edit cancelled.")
+        return
+
+    selected = [entries[i] for i in indices]
+    info(f"{len(selected)} entity(ies) will receive the same comment.")
+    new_comment = _prompt_for_comment(
+        f"{len(selected)} entity(ies) named '{bare_name}'",
+        comment,
+    )
+    if new_comment is None:
+        return
+    if not new_comment.strip():
+        warn("Empty comment — bulk edit cancelled. Use a non-empty value.")
+        return
+
+    if not skip_confirm:
+        try:
+            confirmed = confirm(
+                f"Write the same comment to {len(selected)} entity(ies)?",
+                default=True,
+            )
+        except (EOFError, KeyboardInterrupt):
+            warn("Bulk edit cancelled.")
+            return
+        if not confirmed:
+            warn("Bulk edit cancelled.")
+            return
+
+    db = DatabaseConnector(cfg.db)
+    try:
+        applied = 0
+        failed: list[tuple[str, str]] = []
+        for e in selected:
+            label = (
+                f"{e['schema']}.{e['table']}.{e['column']}"
+                if e["kind"] == "column"
+                else f"{e['schema']}.{e['table']}"
+            )
+            try:
+                # Resolve the actual live-DB asset kind for the
+                # (schema, table) pair so VIEWs and MATERIALIZED VIEWs
+                # get the right COMMENT ON keyword. Column-level edits
+                # bypass this — they always use COMMENT ON COLUMN.
+                ak = AssetKind.TABLE
+                if not e["column"]:
+                    try:
+                        ak = db.resolve_asset_kind(e["schema"], e["table"])
+                    except Exception:
+                        ak = AssetKind.TABLE
+                db.apply_comment(
+                    schema=e["schema"],
+                    table=e["table"],
+                    column=e["column"] or None,
+                    comment=new_comment,
+                    asset_kind=ak,
+                )
+                applied += 1
+            except Exception as exc:
+                failed.append((label, str(exc)))
+        success(f"Applied comment to {applied}/{len(selected)} entity(ies).")
+        if failed:
+            warn(f"{len(failed)} write(s) failed:")
+            for label, msg in failed[:5]:
+                warn(f"  {label}: {msg[:120]}")
+            if len(failed) > 5:
+                warn(f"  … and {len(failed) - 5} more — see ~/.amx/logs/amx.log")
+
+        # Sync the new comments back to the catalog so /ask and the search
+        # tools see them immediately. Without this step, ``find_columns_by_
+        # exact_name`` would still show stale descriptions on the next
+        # invocation.
+        if applied:
+            try:
+                from amx.search.catalog import SearchCatalog as _Catalog
+                cat = _Catalog.from_history_store()
+                if cat is not None:
+                    db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or ""
+                    for e in selected:
+                        is_col = bool(e["column"])
+                        cat.record_manual_description(
+                            db_profile=db_profile,
+                            db_backend=cfg.db.backend or "",
+                            database_name=db_name,
+                            schema_name=e["schema"],
+                            table_name=e["table"],
+                            column_name=e["column"] or None,
+                            entity_kind="column" if is_col else "table",
+                            asset_kind="column" if is_col else "table",
+                            description=new_comment,
+                        )
+            except Exception as exc:
+                log_event_if_present(
+                    log_event,
+                    "manual_metadata_bulk_catalog_sync_failed",
+                    "warning",
+                    {"error": str(exc)},
+                )
+
+        if log_event is not None:
+            log_event(
+                event_type="manual_metadata_bulk_edit",
+                status="success" if not failed else "partial",
+                command="manual edit (bulk-by-name)",
+                details={
+                    "name": bare_name,
+                    "applied": applied,
+                    "failed": len(failed),
+                    "db_profile": db_profile,
+                },
+            )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def log_event_if_present(log_event: LogEvent | None, name: str, status: str, details: dict) -> None:
+    if log_event is None:
+        return
+    try:
+        log_event(event_type=name, status=status, command="manual edit", details=details)
+    except Exception:
+        pass
+
+
 def register_manual_commands(
     main: click.Group,
     *,
@@ -393,7 +650,30 @@ def register_manual_commands(
         comment: str | None,
         yes: bool,
     ) -> None:
-        """Edit one database/schema/table/column comment manually."""
+        """Edit one database/schema/table/column comment manually.
+
+        Bulk mode: when ``target_parts`` is a single bare name (no dots,
+        no scope keyword), AMX searches the catalog for ALL tables and
+        columns matching that name across every schema, then offers a
+        multi-select picker so you can apply one comment to many
+        (schema, table) or (schema, table, column) pairs at once. The
+        most common case: a column like ``customer_id`` appears in 50
+        tables and you want the same description on all of them.
+        """
+        # Bulk-by-name mode: bare single token, no dots, not a scope keyword.
+        if (
+            len(target_parts) == 1
+            and "." not in target_parts[0]
+            and target_parts[0].lower() not in {"database", "db", "schema", "table", "column"}
+        ):
+            _run_bulk_edit_by_name(
+                cfg,
+                bare_name=target_parts[0],
+                comment=comment,
+                skip_confirm=yes,
+                log_event=log_event,
+            )
+            return
         try:
             target = _resolve_explicit_edit_target(cfg, target_parts)
             if target is None:

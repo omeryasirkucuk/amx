@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-30
+### Added — `/metadata edit <name>` bulk-edit by bare name
+- **`/metadata edit customer_id` (any bare token, no dots, no scope keyword)** now triggers a NEW bulk-edit flow (`amx/cli_support/commands/manual.py:_run_bulk_edit_by_name`) instead of falling into the wizard. AMX searches the catalog for every table whose name matches AND every column whose name matches across all schemas, prints a numbered table (kind / Schema.Table[.Column] / dtype / existing comment), then asks for a multi-select picker (`1,3,5 / 1-4 / all`). The user types ONE comment and AMX writes it via batched `COMMENT ON …` SQL to every selected entity, then re-syncs the catalog so `/ask` sees the new descriptions immediately.
+- **`SearchCatalog.find_columns_by_exact_name`** (`amx/search/catalog.py`): mirror of `find_tables_by_exact_name` but for column-level lookups. Used by the bulk-edit flow + future deduplication features.
+
+### Why this matters
+Wide SAP-style schemas have repeated column names (`mandt`, `client`, `created_at`, `customer_id`) in dozens or hundreds of tables. Until now the user had to type `/metadata edit <db>.<schema>.<table>.<column>` once per occurrence — typically 50+ commands for a single concept. The bulk-by-name flow turns that into one command + one comment + one multi-select. Per the user's preference, the picker is user-curated (no auto-apply to all) so semantically-different tables sharing a column name aren't accidentally given the same description.
+
+### Followup
+A separate Phase-2 task ([#57]) plans equivalence-class deduplication BEFORE the LLM call inside `/run`: when ProfileAgent encounters identical (column_name, dtype, fk-pattern) tuples across a run scope, it would send ONE prompt and apply the resulting description to every member, saving tokens. Deferred to a follow-up release; this release ships only the manual-side bulk edit.
+
 ## [0.6.4] - 2026-04-30
 ### Changed
 - **Tool-agent system prompt now demands relevance filtering and proper push-back handling** (`amx/search/tool_agent.py`): user reported asking "which tables have phone-number columns" and getting `addrnumber`, `consnumber`, `persnumber`, `roomnumber` (and `tel_number`/`fax_number`) — the raw `search_columns_by_concept` candidate set, not actually-phone-number columns. When pushed back ("I guess some are not correct"), the agent just thanked the user and repeated the same list. Two prompt-level fixes: (a) explicit "Result validation" rule telling the model that `search_*_by_concept` returns a candidate set with FALSE POSITIVES and that it MUST drop rows whose description doesn't fit before composing the final answer; (b) "Push-back handling" rule listing concrete actions the model should take when the user pushes back (re-call with refined query, drill into descriptions, or admit the limitation) — explicitly forbids "Thank you for your patience!" + same list.

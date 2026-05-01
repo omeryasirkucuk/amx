@@ -1405,6 +1405,40 @@ class SearchCatalog:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def find_columns_by_exact_name(
+        self,
+        db_profile: str,
+        name: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return every catalog column whose ``column_name`` matches ``name`` exactly.
+
+        Used by ``/metadata edit <bare_name>`` bulk-edit flow: surface every
+        (schema, table, column) where the column appears so the user can
+        multi-select and apply one comment to all of them. Limit defaults to
+        200 because wide tables can have hundreds of columns named e.g.
+        ``client`` or ``mandt`` in SAP-style schemas.
+        """
+        needle = (name or "").strip().lower()
+        if not needle:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ce.*, cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ?
+                  AND ce.entity_kind = 'column'
+                  AND LOWER(ce.column_name) = ?
+                ORDER BY ce.schema_name, ce.table_name, ce.column_name
+                LIMIT ?
+                """,
+                (db_profile, needle, int(limit)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
