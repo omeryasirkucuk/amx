@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-01
+### Changed
+- **Equivalence dedup question is asked UPFRONT** (`amx/cli_support/commands/analyze_flow.py`): user said "ask this first, like the /metadata edit pattern". Previously v0.8.0 walked the scope, computed classes, showed a summary, AND THEN asked Y/N — too much work happened before the user had a chance to opt out. Now the dedup choice is a regular `ask_choice("Equivalence-class deduplication?", ["dedup", "per-column"])` asked alongside coverage (missing-only / all) and review strategy (individual / deferred / auto-apply), BEFORE any scope walking. When the user picks `dedup`, AMX walks the scope and runs the pass; the post-walk summary still prints (so the user sees what was analyzed) but no longer asks for re-confirmation. When the user picks `per-column`, AMX skips the pre-walk entirely and goes straight to the legacy per-table flow.
+
+### Why this matters
+The previous flow violated AMX's UX rule that high-impact yes/no decisions are asked before any compute work. Users on huge SAP-style schemas (47+ tables, 500+ columns) had to wait through the full pre-walk just to see the dedup question — even if they intended to say no. The new ordering puts dedup at the same level as the other run-mode decisions, which is also where users expect it (mirrors `/metadata edit` Single-vs-Bulk first prompt).
+
 ## [0.8.0] - 2026-05-01
 ### Added — Equivalence-class deduplication for `/run` & `/run-apply` (Phase 2)
 

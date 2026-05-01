@@ -206,18 +206,10 @@ def _maybe_run_equivalence_dedup(
         + largest_note
     )
     info(
-        f"Estimated LLM-call saving if you opt in: "
+        f"Estimated LLM-call saving: "
         f"{summary.llm_call_savings_pct:.1f}% "
         f"({summary.total_members - summary.total_classes} fewer column-level prompts)."
     )
-
-    if not confirm(
-        "Use equivalence-class deduplication for this run? "
-        "(One LLM call per class, applied to every member.)",
-        default=True,
-    ):
-        info("Equivalence dedup declined; falling back to per-column profiling.")
-        return None
 
     multi_classes = [c for c in classes.values() if not c.is_singleton]
     outcome = run_equivalence_pass(
@@ -517,6 +509,34 @@ def execute_analyze_run(
                         "Existing comments inside the chosen scope will be replaced."
                     )
 
+            # ── Equivalence-class dedup choice ───────────────────────────
+            # Asked UPFRONT — alongside coverage and review strategy — so
+            # the user can opt in/out before AMX walks the scope. When
+            # opted in, AMX groups identical columns (same name + dtype
+            # family) across tables and sends ONE LLM call per group
+            # instead of one per column; saves a lot of tokens on wide
+            # SAP-style schemas. Opt out for fine per-column control.
+            # Following the /metadata edit pattern: ask once, run.
+            use_dedup_choice = ask_choice(
+                "Equivalence-class deduplication?",
+                ["dedup", "per-column"],
+                default="dedup",
+                descriptions={
+                    "dedup": (
+                        "Group identical columns by (name + dtype family) across "
+                        "tables; one LLM call per group, applied to every member. "
+                        "Saves tokens on repeated columns (mandt, customer_id, "
+                        "created_at, …). Recommended for wide schemas."
+                    ),
+                    "per-column": (
+                        "Send each column to the LLM individually. Fine-grained, "
+                        "but slow + expensive on SAP-style schemas where the same "
+                        "column appears in dozens of tables."
+                    ),
+                },
+            )
+            use_dedup = use_dedup_choice == "dedup"
+
             hs = history_store()
             if hs is not None:
                 try:
@@ -549,29 +569,33 @@ def execute_analyze_run(
             info(f"Scope: {scope_summary}")
 
         # ── Equivalence-class deduplication pass (Phase 2) ─────────────────
-        # Pre-walk the scope, compute equivalence classes by (column
-        # name, dtype family), present the savings to the user, and —
-        # if they accept — run ONE LLM call per multi-member class with
-        # all member tables in context. Members that are dedup'd are
-        # added to ``dedup_outcome.skip_set`` so the per-table flow
-        # below can filter them out of the ProfileAgent batch.
-        # Singletons and DIVERGES classes are left alone and flow
-        # through normally.
+        # The dedup choice was made upfront (see ``use_dedup`` above,
+        # asked alongside coverage + review_strategy). When opted in,
+        # AMX pre-walks the scope, computes equivalence classes by
+        # (column name, dtype family), and runs ONE LLM call per
+        # multi-member class with all member tables in context.
+        # Members that are dedup'd are added to
+        # ``dedup_outcome.skip_set`` so the per-table flow below can
+        # filter them out of the ProfileAgent batch. Singletons and
+        # DIVERGES classes are left alone and flow through normally.
         dedup_outcome: Any | None = None
-        try:
-            dedup_outcome = _maybe_run_equivalence_dedup(
-                cfg,
-                db,
-                llm,
-                scope=scope,
-                missing_only=missing_only,
-                apply=apply,
-                run_id=run_id,
-            )
-        except Exception as exc:
-            warn(f"Equivalence dedup pass failed; continuing without dedup: {exc}")
-            log.warning("Equivalence dedup pass failed: %s", exc, exc_info=True)
-            dedup_outcome = None
+        if use_dedup:
+            try:
+                dedup_outcome = _maybe_run_equivalence_dedup(
+                    cfg,
+                    db,
+                    llm,
+                    scope=scope,
+                    missing_only=missing_only,
+                    apply=apply,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                warn(f"Equivalence dedup pass failed; continuing without dedup: {exc}")
+                log.warning("Equivalence dedup pass failed: %s", exc, exc_info=True)
+                dedup_outcome = None
+        else:
+            info("Equivalence dedup: opted out — every column will be profiled individually.")
 
         rag_store = None
         try:
