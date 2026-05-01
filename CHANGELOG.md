@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-05-01
+### Changed
+- **Banner footer no longer duplicates the version** (`amx/utils/console.py:show_banner`): the v0.8.6 footer line was `v0.8.6  •  AI-inferred database descriptions`, but the version is also shown in the "AMX Interactive Session" info block right below the banner alongside Config / Database / LLM context. Two visible "0.8.6" stamps in adjacent panels were noise. The footer is now just the tagline `AI-inferred database descriptions`; version stays in the session info block where it groups naturally with the rest of the runtime state.
+
+### Why this matters
+Banner = identity (what is this tool); session info block = runtime state (what version + which profiles are active). Mixing the two produces redundancy and dilutes both.
+
 ## [0.8.6] - 2026-05-01
 ### Changed
 - **Startup banner cleanup** (`amx/utils/console.py:show_banner`):
