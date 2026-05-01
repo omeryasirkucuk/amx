@@ -231,7 +231,13 @@ Commands:
   6) /edit <db>.<schema>.<table>   Edit a table/view comment
   7) /edit <db>.<schema>.<table>.<column>
                                   Edit a column comment
-  8) /monitor [schema]             Show table/view and column comment coverage
+  8) /edit <name>                  BULK by bare name: AMX searches for every
+                                   table AND column matching <name> across all
+                                   schemas, then offers a multi-select picker.
+                                   You type ONE comment, AMX writes it to every
+                                   selected entity (e.g. customer_id in 50 tables).
+                                   Range syntax: 1,3,5 / 1-4 / all.
+  9) /monitor [schema]             Show table/view and column comment coverage
 
 Options:
   /edit ... --comment "text"       Provide the new comment non-interactively
