@@ -1004,45 +1004,45 @@ class ProfilingGuardrailTests(unittest.TestCase):
         original = DBConfig(backend="postgresql", host="localhost", database="SAP")
         updated = DBConfig(
             backend="databricks",
-            host="adb-4217046554757008.8.azuredatabricks.net",
-            http_path="/sql/1.0/warehouses/2a2df99633118da9",
+            host="adb-1234567890123456.7.azuredatabricks.net",
+            http_path="/sql/1.0/warehouses/1234567890abcdef",
             access_token="token",
-            catalog="dap_eu_60_prod",
+            catalog="my_catalog",
             database="dev",
             tls_no_verify=True,
         )
         cfg.db = original
-        cfg.db_profiles = {"pg-dbr": original}
-        cfg.active_db_profile = "pg-dbr"
+        cfg.db_profiles = {"databricks-default": original}
+        cfg.active_db_profile = "databricks-default"
 
-        cfg.upsert_db_profile("pg-dbr", updated)
+        cfg.upsert_db_profile("databricks-default", updated)
 
         self.assertIs(cfg.db, updated)
         self.assertEqual(cfg.db.backend, "databricks")
-        self.assertEqual(cfg.db_profiles["pg-dbr"].backend, "databricks")
+        self.assertEqual(cfg.db_profiles["databricks-default"].backend, "databricks")
 
     def test_cmd_add_profile_overwrites_active_profile_atomically(self) -> None:
         cfg = AMXConfig()
         original = DBConfig(backend="postgresql", host="localhost", database="SAP")
         updated = DBConfig(
             backend="databricks",
-            host="adb-4217046554757008.8.azuredatabricks.net",
-            http_path="/sql/1.0/warehouses/2a2df99633118da9",
+            host="adb-1234567890123456.7.azuredatabricks.net",
+            http_path="/sql/1.0/warehouses/1234567890abcdef",
             access_token="token",
-            catalog="dap_eu_60_prod",
+            catalog="my_catalog",
             database="dev",
             tls_no_verify=True,
         )
         cfg.db = original
-        cfg.db_profiles = {"pg-dbr": original}
-        cfg.active_db_profile = "pg-dbr"
+        cfg.db_profiles = {"databricks-default": original}
+        cfg.active_db_profile = "databricks-default"
 
         with patch("amx.cli_support.commands.db.interactive_db_block", return_value=updated):
-            cmd_add_profile(cfg, ["pg-dbr"])
+            cmd_add_profile(cfg, ["databricks-default"])
 
         self.assertIs(cfg.db, updated)
         self.assertEqual(cfg.db.backend, "databricks")
-        self.assertEqual(cfg.db_profiles["pg-dbr"].backend, "databricks")
+        self.assertEqual(cfg.db_profiles["databricks-default"].backend, "databricks")
 
     def test_databricks_connect_recovery_persists_env_ca_bundle(self) -> None:
         cfg = AMXConfig()
@@ -2203,17 +2203,17 @@ class ProfileCreationLeakageTests(unittest.TestCase):
             # Use the proper public API so write-through saves do not
             # overwrite our seeded profile with the initial cfg.db.
             cfg.upsert_db_profile(
-                "pg-dbr",
+                "databricks-default",
                 DBConfig(
                     backend="databricks",
-                    host="adb-4217046554757008.8.azuredatabricks.net",
+                    host="adb-1234567890123456.7.azuredatabricks.net",
                     http_path="/sql/1.0/warehouses/abc1234",
                     access_token="dapi-real-token-do-not-leak",
-                    catalog="dap_eu_60_prod",
+                    catalog="my_catalog",
                     database="default",
                 ),
             )
-            cfg.set_active_db_profile("pg-dbr")
+            cfg.set_active_db_profile("databricks-default")
 
             captured: dict[str, object] = {"defaults": "MISSING"}
 
@@ -2289,10 +2289,10 @@ class ProfileCreationLeakageTests(unittest.TestCase):
 
         databricks_defaults = DBConfig(
             backend="databricks",
-            host="adb-4217046554757008.8.azuredatabricks.net",
+            host="adb-1234567890123456.7.azuredatabricks.net",
             http_path="/sql/1.0/warehouses/abc",
             access_token="dapi-leaks",
-            catalog="dap_eu_60_prod",
+            catalog="my_catalog",
         )
 
         # Mock all the prompts: pick PostgreSQL, capture what default
@@ -2539,7 +2539,7 @@ class ProfilePersistenceRaceTests(unittest.TestCase):
 
     def test_create_profile_when_existing_profile_is_active_keeps_both(self) -> None:
         """Closer to the user's reported scenario: the disk already has a
-        profile (`pg-dbr`) which becomes the active mirror at load. Creating
+        profile (`databricks-default`) which becomes the active mirror at load. Creating
         a new profile then activating it must NOT lose either profile's data
         — the bug used to wipe whichever one the activation touched second."""
         from amx.cli_support.commands.db import cmd_add_profile
@@ -2549,7 +2549,7 @@ class ProfilePersistenceRaceTests(unittest.TestCase):
             cfg_path = Path(td) / "config.yml"
             seed = AMXConfig.load(str(cfg_path))
             seed.upsert_db_profile(
-                "pg-dbr",
+                "databricks-default",
                 DBConfig(
                     backend="databricks",
                     host="adb-existing.azuredatabricks.net",
@@ -2559,11 +2559,11 @@ class ProfilePersistenceRaceTests(unittest.TestCase):
                     database="dev",
                 ),
             )
-            seed.set_active_db_profile("pg-dbr")
+            seed.set_active_db_profile("databricks-default")
             del seed
 
             cfg = AMXConfig.load(str(cfg_path))
-            self.assertEqual(cfg.active_db_profile, "pg-dbr")
+            self.assertEqual(cfg.active_db_profile, "databricks-default")
             new_db = DBConfig(
                 backend="postgresql",
                 host="prod.db",
@@ -2591,7 +2591,7 @@ class ProfilePersistenceRaceTests(unittest.TestCase):
 
             cfg2 = AMXConfig.load(str(cfg_path))
             # Both the seeded profile AND the new one must be present.
-            self.assertIn("pg-dbr", cfg2.db_profiles)
+            self.assertIn("databricks-default", cfg2.db_profiles)
             self.assertIn("prod_pg", cfg2.db_profiles)
             self.assertIn("work", cfg2.llm_profiles)
             # New profiles must have their data, not be blank shells.
@@ -4893,7 +4893,7 @@ class FirstRunConfigTests(unittest.TestCase):
 
     def test_load_does_not_inject_phantom_default_when_other_profiles_exist(self) -> None:
         """The user reported seeing two rows in /db-profiles — `default` and
-        `pg-dbr` — both pointing at the same Databricks workspace. This was
+        `databricks-default` — both pointing at the same Databricks workspace. This was
         the loader synthesizing `default = cfg.db` whenever the user's saved
         profiles didn't include a name called `default`. Verify that doesn't
         happen anymore: only profiles actually present in the YAML survive
@@ -4907,11 +4907,11 @@ class FirstRunConfigTests(unittest.TestCase):
                 "  host: adb-1234.azuredatabricks.net\n"
                 "  catalog: prod\n"
                 "db_profiles:\n"
-                "  pg-dbr:\n"
+                "  databricks-default:\n"
                 "    backend: databricks\n"
                 "    host: adb-1234.azuredatabricks.net\n"
                 "    catalog: prod\n"
-                "active_db_profile: pg-dbr\n"
+                "active_db_profile: databricks-default\n"
                 "llm_profiles:\n"
                 "  openai-gpt4:\n"
                 "    provider: openai\n"
@@ -4919,8 +4919,8 @@ class FirstRunConfigTests(unittest.TestCase):
                 "active_llm_profile: openai-gpt4\n"
             )
             cfg = AMXConfig.load(str(cfg_path))
-            self.assertEqual(set(cfg.db_profiles.keys()), {"pg-dbr"})
-            self.assertEqual(cfg.active_db_profile, "pg-dbr")
+            self.assertEqual(set(cfg.db_profiles.keys()), {"databricks-default"})
+            self.assertEqual(cfg.active_db_profile, "databricks-default")
             self.assertEqual(set(cfg.llm_profiles.keys()), {"openai-gpt4"})
             self.assertEqual(cfg.active_llm_profile, "openai-gpt4")
 
