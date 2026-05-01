@@ -116,4 +116,40 @@ def ensure_catalog_selected(
     return existing_catalog
 
 
-__all__ = ["ensure_catalog_selected"]
+def warn_when_database_unpinned(db: Any) -> None:
+    """Emit a one-line hint when a 2-level backend has no database pinned.
+
+    0.11.0 made the ``database`` field optional on DBConfig (Phase 1).
+    For Databricks / BigQuery the catalog picker handles the
+    "pick at command time" UX. PostgreSQL and Snowflake don't have a
+    runtime database picker yet, so connection / listing operations
+    against a profile with ``database=""`` will fail with a confusing
+    error. This helper surfaces a clear hint up front so the user
+    knows exactly what to do (``/edit`` the profile or run with
+    ``--database``).
+
+    Called from /run and /sync after the catalog picker. Silent
+    no-op for 3-level backends and for profiles that have a
+    database pinned.
+    """
+    if bool(getattr(db, "supports_catalogs", lambda: False)()):
+        # 3-level backend — catalog picker already covered the case.
+        return
+    cfg = getattr(db, "cfg", None)
+    if cfg is None:
+        return
+    backend = str(getattr(cfg, "backend", "") or "")
+    database = str(getattr(cfg, "database", "") or "")
+    if database:
+        return
+    if backend not in {"postgresql", "snowflake"}:
+        return
+    warn(
+        f"Profile has no database pinned for {backend}. The connection "
+        "will use the server's default — table listings may be empty. "
+        "Run `/edit` to pin a database, or set the per-profile default "
+        "with `/add-db-profile`."
+    )
+
+
+__all__ = ["ensure_catalog_selected", "warn_when_database_unpinned"]

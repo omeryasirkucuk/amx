@@ -71,6 +71,36 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
             f"Database: profile '{cfg.active_db_profile}' → "
             f"[{cfg.db.backend}] {cfg.db.display_summary}"
         )
+        # 0.11.0 multi-pick scope: when the user has opted in via
+        # ``/use-db a b c`` show the full scope so they don't lose
+        # track of which DBs /ask, /run, /sync will run against.
+        scope = cfg.effective_db_profiles()
+        if len(scope) > 1:
+            others = [n for n in scope if n != cfg.active_db_profile]
+            info(
+                f"  Active scope ({len(scope)} profiles): "
+                f"{', '.join(scope)}. Default = '{cfg.active_db_profile}'. "
+                f"Multi-DB execution is on for /ask, /run, /sync."
+            )
+            del others  # noqa: F841 — informational only
+        # 0.11.0: database is optional per profile. When the active profile
+        # has no DB pinned, give the user a one-line nudge so they know
+        # they'll be prompted at command time (catalog picker, etc.).
+        if not cfg.db.is_database_pinned():
+            info(
+                "  No database pinned — you'll be prompted to pick one when "
+                "running /run, /sync, or /ask."
+            )
+        # Suggest-don't-mutate: surface profiles still carrying the legacy
+        # demo default ``database='SAP'``. We never edit YAML automatically.
+        from amx.config import has_legacy_database_default
+        legacy_active = has_legacy_database_default(cfg.db)
+        if legacy_active:
+            warn(
+                f"Profile '{cfg.active_db_profile}' still uses the legacy "
+                f"demo default database='SAP'. Run `/edit` to clear it if "
+                f"this is not your real database."
+            )
 
     if not cfg.active_llm_profile or not cfg.llm_profiles or not cfg.llm.is_configured():
         info("LLM: (not configured — run /setup or /add-llm-profile)")

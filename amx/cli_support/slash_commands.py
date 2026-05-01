@@ -94,7 +94,10 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
 
 _DB_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/db-profiles", "db", "List DB profiles"),
-    SlashCommand("/use-db", "db", "Switch DB profile (lists PostgreSQL, BigQuery, … per profile)"),
+    SlashCommand(
+        "/use-db", "db",
+        "Switch DB scope. Single: /use-db prod_pg. Multi (0.11+): /use-db prod_pg analytics_bq → persisted multi-profile scope for /ask /run /sync.",
+    ),
     SlashCommand("/add-db-profile", "db", "Add profile — choose engine then connection details"),
     SlashCommand("/remove-db-profile", "db", "Remove DB profile (/remove-db-profile <name>)"),
     SlashCommand("/profiling", "db", "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])"),
@@ -153,17 +156,26 @@ _CODE_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
-    SlashCommand("/run", "analyze", "Run all agents — scope: database / schema / asset / column (/run [ASSET …] [--schema …] [--apply])"),
+    SlashCommand(
+        "/run", "analyze",
+        "Run all agents — scope: database / schema / asset / column. Add --db-profile NAME (multi) for cross-DB execution (/run [ASSET …] [--schema …] [--apply] [--db-profile NAME …])",
+    ),
     SlashCommand("/run-apply", "analyze", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"),
     SlashCommand("/apply", "analyze", "Write pending comments to the database"),
 )
 
 _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
-    SlashCommand("/ask", "search", "Ask a metadata question; add --actions for approved follow-up execution"),
+    SlashCommand(
+        "/ask", "search",
+        "Ask a metadata question; add --db-profile NAME (multi) for cross-DB scope; --actions for approved follow-up execution",
+    ),
     SlashCommand("/status", "search", "Show catalog/index status"),
     SlashCommand("/sources", "search", "Show evidence sources and settings"),
     SlashCommand("/config", "search", "Show/set search config (/config [key] [value])"),
-    SlashCommand("/sync", "search", "Sync DB structure/comments and code evidence"),
+    SlashCommand(
+        "/sync", "search",
+        "Sync DB structure/comments and code evidence. Add --db-profile NAME (multi) for cross-DB sync (/sync [--db-profile NAME …])",
+    ),
     SlashCommand("/rebuild", "search", "Rebuild effective search state and vector index"),
 )
 

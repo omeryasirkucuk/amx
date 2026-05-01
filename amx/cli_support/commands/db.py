@@ -11,7 +11,9 @@ from amx.config import AMXConfig, DBConfig, PROFILING_MODES, SUPPORTED_BACKENDS
 from amx.utils.console import (
     ask,
     ask_choice,
+    ask_multi_choice,
     ask_password,
+    confirm,
     error,
     heading,
     info,
@@ -184,15 +186,35 @@ def print_db_namespace_hint() -> None:
 
 
 def cmd_profiles(cfg: AMXConfig) -> None:
+    from amx.config import has_legacy_database_default
+
     rows = []
+    legacy_profiles: list[str] = []
     for name, db in sorted(cfg.db_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_db_profile else " "
-        rows.append([f"{mark} {name}", db.backend, db.display_summary])
+        # 0.11.0: surface unpinned-database state (database is now optional).
+        # The display_summary already includes ``(no DB pinned)`` so we just
+        # add a small ``?`` next to the backend so the table glance is
+        # still clean.
+        backend_label = db.backend if db.is_database_pinned() else f"{db.backend} ?"
+        rows.append([f"{mark} {name}", backend_label, db.display_summary])
+        if has_legacy_database_default(db):
+            legacy_profiles.append(name)
     render_table(
-        "DB profiles (* = active)",
+        "DB profiles (* = active, ? = no DB pinned)",
         ["Profile", "Backend", "Connection"],
         rows,
     )
+    # Suggest-don't-mutate: the historical demo default ``database='SAP'``
+    # leaks into UIs as a phantom localhost connection. We never edit the
+    # user's YAML — just hint once per ``/db-profiles`` view.
+    if legacy_profiles:
+        warn(
+            "Profile(s) "
+            + ", ".join(sorted(legacy_profiles))
+            + " still carry the legacy demo default database='SAP'. "
+            "Run `/edit` (and clear the database field) if this isn't your real DB."
+        )
 
 
 def cmd_use(
@@ -201,37 +223,102 @@ def cmd_use(
     *,
     log_event: LogEvent | None = None,
 ) -> None:
-    if len(rest) >= 1:
-        name = rest[0]
-    else:
-        names = sorted(cfg.db_profiles.keys())
-        if not names:
-            error("No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery).")
+    """Switch the active DB scope.
+
+    0.11.0 multi-pick:
+        /use-db prod_pg                 → single-profile (legacy behaviour)
+        /use-db prod_pg analytics_bq    → persisted multi-profile scope used
+                                          by /ask, /run, /sync.
+
+    Interactive form (no args): prompts whether the user wants single
+    or multi-pick, then runs the appropriate selector.
+    """
+    available = sorted(cfg.db_profiles.keys())
+    if not available:
+        error("No profiles configured. Use /add-db-profile to create one (pick PostgreSQL, Snowflake, Databricks, or BigQuery).")
+        return
+
+    # Inline-arg form: /use-db NAME [NAME ...]
+    if rest:
+        chosen: list[str] = []
+        unknown: list[str] = []
+        for raw in rest:
+            n = (raw or "").strip()
+            if not n:
+                continue
+            if n in cfg.db_profiles and n not in chosen:
+                chosen.append(n)
+            else:
+                unknown.append(n)
+        if unknown:
+            error(
+                f"Unknown profile(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(available) or '(none)'}."
+            )
             return
+        if not chosen:
+            error("No profile selected.")
+            return
+    else:
+        # Interactive: ask single vs multi, then route to the right picker.
         descriptions = {
             n: f"[{p.backend}] {p.display_summary}"
             for n, p in cfg.db_profiles.items()
         }
-        name = ask_choice(
-            "Select DB profile (by name or number)",
-            names,
-            default=cfg.active_db_profile or names[0],
-            descriptions=descriptions,
-        )
-        if not name:
-            error("No profile selected.")
-            return
+        if len(available) >= 2 and confirm(
+            "Pick multiple profiles for the active scope (used by /ask /run /sync)?",
+            default=False,
+        ):
+            display = [
+                f"{n}  -  [{cfg.db_profiles[n].backend}] {cfg.db_profiles[n].display_summary}"
+                for n in available
+            ]
+            picked = ask_multi_choice("Select DB profiles (comma-separated)", display)
+            chosen = [s.split("  -  ", 1)[0].strip() for s in picked]
+            chosen = [n for n in chosen if n in cfg.db_profiles]
+            if not chosen:
+                error("No profile selected.")
+                return
+        else:
+            single = ask_choice(
+                "Select DB profile (by name or number)",
+                available,
+                default=cfg.active_db_profile or available[0],
+                descriptions=descriptions,
+            )
+            if not single:
+                error("No profile selected.")
+                return
+            chosen = [single]
+
     try:
-        cfg.set_active_db_profile(name)
+        if len(chosen) == 1:
+            cfg.set_active_db_profile(chosen[0])
+        else:
+            cfg.set_active_db_profiles(chosen)
         cfg.save()
         p = cfg.db
-        success(f"Switched active DB profile to: {name} [{p.backend}] - {p.display_summary}")
+        if len(chosen) == 1:
+            success(
+                f"Switched active DB profile to: {chosen[0]} "
+                f"[{p.backend}] - {p.display_summary}"
+            )
+        else:
+            success(
+                f"Active DB scope: {', '.join(chosen)} "
+                f"(default = {chosen[0]} [{p.backend}])"
+            )
         if log_event is not None:
             log_event(
                 event_type="db_profile_switch",
                 status="success",
                 command="use-db",
-                details={"profile": name, "backend": p.backend},
+                details={
+                    "profile": chosen[0],
+                    "profiles": chosen,
+                    "backend": p.backend,
+                    "multi": len(chosen) > 1,
+                },
             )
     except Exception as exc:
         if log_event is not None:
@@ -239,7 +326,7 @@ def cmd_use(
                 event_type="db_profile_switch",
                 status="failed",
                 command="use-db",
-                details={"profile": name, "error": str(exc)},
+                details={"profiles": chosen, "error": str(exc)},
             )
         error(str(exc))
 
@@ -338,11 +425,14 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             allow_clear=False,
         )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
+        # Pinning a default database is now OPTIONAL (0.11.0). When the
+        # user leaves it blank we connect to the server and they can pick
+        # the database at /run / /sync / /ask time. Encourage filling it
+        # in for single-DB workflows by keeping the prompt example and
+        # using ``allow_clear=True`` so an explicit blank is accepted.
         database = _ask_update_text(
-            "Database name (e.g. postgres)",
+            "Database name (optional, e.g. postgres — leave blank to pick at command time)",
             defaults.database or "",
-            required=True,
-            allow_clear=False,
         )
         return replace(
             defaults,
@@ -363,11 +453,10 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
         user = _ask_update_text("Username (e.g. ANALYST)", defaults.user, required=True, allow_clear=False)
         password = _ask_update_secret("Password", defaults.password or "", required=True)
+        # Optional in 0.11.0 — see note on PostgreSQL above.
         database = _ask_update_text(
-            "Database name (e.g. ANALYTICS)",
+            "Database name (optional, e.g. ANALYTICS — leave blank to pick at command time)",
             defaults.database,
-            required=True,
-            allow_clear=False,
         )
         warehouse = _ask_update_text("Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or "")
         role = _ask_update_text("Role (optional, e.g. ANALYST)", defaults.role or "")

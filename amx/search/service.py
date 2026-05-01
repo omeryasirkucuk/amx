@@ -35,10 +35,31 @@ class SearchService:
     ``OSError: [Errno 24] Too many open files``).
     """
 
-    def __init__(self, cfg: AMXConfig, catalog: SearchCatalog):
+    def __init__(
+        self,
+        cfg: AMXConfig,
+        catalog: SearchCatalog,
+        *,
+        db_profiles: list[str] | tuple[str, ...] | None = None,
+    ):
+        """Construct a /search service.
+
+        ``db_profiles`` is the 0.11.0 multi-DB scope override. When
+        omitted the service uses ``cfg.active_db_profiles`` (set by
+        ``/use-db a b c``), which collapses to a single profile in
+        the legacy single-DB workflow. Callers that want a per-call
+        scope (e.g. ``/ask --db-profile A --db-profile B``) pass an
+        explicit list and the underlying SearchAgent unions retrieval
+        across those profiles.
+        """
         self.cfg = cfg
         self.catalog = catalog
-        self.db_profile = cfg.active_db_profile or "default"
+        scope = list(db_profiles) if db_profiles else cfg.effective_db_profiles()
+        if not scope:
+            scope = [cfg.active_db_profile or "default"]
+        self.db_profiles: list[str] = scope
+        # Legacy scalar — anchor profile, used for settings + write-back.
+        self.db_profile = scope[0]
         self.settings = catalog.get_settings(self.db_profile)
         # Cache exactly one live connector across the SearchService lifespan
         # — every previous call site spawned a new one per ``_inventory_db``
@@ -49,6 +70,7 @@ class SearchService:
             catalog,
             llm_factory=LLMProvider,
             inventory_db_factory=self._inventory_db,
+            db_profiles=self.db_profiles,
         )
 
     def _inventory_db(self) -> DatabaseConnector:
