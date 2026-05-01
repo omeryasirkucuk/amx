@@ -192,26 +192,52 @@ def _maybe_run_equivalence_dedup(
         )
         return None
 
-    # User-facing summary. Numbers are computed pre-LLM so the user can
-    # decide based on actual savings, not a guess.
-    largest_note = (
-        f" (largest: '{summary.largest_class_name}' with "
-        f"{summary.largest_class_size} members)"
-    )
+    # ── Equivalence analysis panel ───────────────────────────────────
+    # Mirrors the /metadata edit "Bulk-update analysis for 'X'" header
+    # so the user gets a consistent before-action summary across run
+    # commands and bulk-edit. Heading line + key numbers + a small
+    # table of the top classes that will dedup.
+    heading("Equivalence analysis")
     info(
-        f"Equivalence analysis: {summary.total_members} columns → "
+        f"  {summary.total_members} column(s) → "
         f"{summary.total_classes} class(es) "
         f"({summary.multi_member_classes} multi-member, "
         f"{summary.singleton_classes} singleton)."
-        + largest_note
     )
     info(
-        f"Estimated LLM-call saving: "
-        f"{summary.llm_call_savings_pct:.1f}% "
+        f"  Largest class: '{summary.largest_class_name}' with "
+        f"{summary.largest_class_size} members."
+    )
+    info(
+        f"  Estimated LLM-call saving: {summary.llm_call_savings_pct:.1f}% "
         f"({summary.total_members - summary.total_classes} fewer column-level prompts)."
     )
 
+    # Top-N preview: the largest classes by member count, so the user
+    # can sanity-check what's about to be deduplicated.
     multi_classes = [c for c in classes.values() if not c.is_singleton]
+    preview_classes = sorted(multi_classes, key=lambda c: c.size, reverse=True)[:10]
+    preview_rows = []
+    for klass in preview_classes:
+        sample_tables = ", ".join(klass.tables(limit=3))
+        if klass.size > 3:
+            sample_tables += f", … (+{klass.size - 3} more)"
+        preview_rows.append([
+            klass.name,
+            klass.family,
+            str(klass.size),
+            sample_tables,
+        ])
+    if preview_rows:
+        render_table(
+            f"Top {len(preview_rows)} classes that will dedup",
+            ["Column", "Type family", "Members", "Tables (sample)"],
+            preview_rows,
+        )
+    info(
+        "  One LLM call per multi-member class will run; the description "
+        "is then applied to every member."
+    )
     outcome = run_equivalence_pass(
         multi_classes,
         llm=llm,
@@ -453,6 +479,33 @@ def execute_analyze_run(
 
             total_assets = sum(len(v) for v in scope.values())
 
+            # ── Equivalence-class dedup choice (FIRST runtime question) ──
+            # This MUST be the first runtime question — same pattern as
+            # /metadata edit, which asks Single-vs-Bulk before any
+            # downstream prompt. Putting it here lets users on huge
+            # schemas opt out before AMX does any pre-LLM work, and
+            # mirrors the high-impact-yes/no rule from /metadata edit
+            # (the binary mode-selector always comes first).
+            use_dedup_choice = ask_choice(
+                "Equivalence-class deduplication?",
+                ["dedup", "per-column"],
+                default="dedup",
+                descriptions={
+                    "dedup": (
+                        "Group identical columns by (name + dtype family) across "
+                        "tables; one LLM call per group, applied to every member. "
+                        "Saves tokens on repeated columns (mandt, customer_id, "
+                        "created_at, …). Recommended for wide schemas."
+                    ),
+                    "per-column": (
+                        "Send each column to the LLM individually. Fine-grained, "
+                        "but slow + expensive on SAP-style schemas where the same "
+                        "column appears in dozens of tables."
+                    ),
+                },
+            )
+            use_dedup = use_dedup_choice == "dedup"
+
             # ── Comment-coverage filter ──────────────────────────────────
             # When the user picks Database / Schema / Asset scope on a DB
             # that already has SOME comments, they almost never want to
@@ -508,34 +561,6 @@ def execute_analyze_run(
                         "auto-apply: every top suggestion will be written to the database without review. "
                         "Existing comments inside the chosen scope will be replaced."
                     )
-
-            # ── Equivalence-class dedup choice ───────────────────────────
-            # Asked UPFRONT — alongside coverage and review strategy — so
-            # the user can opt in/out before AMX walks the scope. When
-            # opted in, AMX groups identical columns (same name + dtype
-            # family) across tables and sends ONE LLM call per group
-            # instead of one per column; saves a lot of tokens on wide
-            # SAP-style schemas. Opt out for fine per-column control.
-            # Following the /metadata edit pattern: ask once, run.
-            use_dedup_choice = ask_choice(
-                "Equivalence-class deduplication?",
-                ["dedup", "per-column"],
-                default="dedup",
-                descriptions={
-                    "dedup": (
-                        "Group identical columns by (name + dtype family) across "
-                        "tables; one LLM call per group, applied to every member. "
-                        "Saves tokens on repeated columns (mandt, customer_id, "
-                        "created_at, …). Recommended for wide schemas."
-                    ),
-                    "per-column": (
-                        "Send each column to the LLM individually. Fine-grained, "
-                        "but slow + expensive on SAP-style schemas where the same "
-                        "column appears in dozens of tables."
-                    ),
-                },
-            )
-            use_dedup = use_dedup_choice == "dedup"
 
             hs = history_store()
             if hs is not None:
