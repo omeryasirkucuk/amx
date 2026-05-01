@@ -153,17 +153,22 @@ class ToolBox:
                 "function": {
                     "name": "describe_table",
                     "description": (
-                        "Return the table comment, column count, and column metadata "
-                        "(name + dtype + comment) for a fully-qualified table. Use this to "
-                        "answer 'what's the vbrk table?', 'describe sap_s6p.adrc', "
-                        "'X tablosunda hangi kolonlar var?'. Also use this when the user "
-                        "asks 'is there any boolean / flag / Y-N column in TABLE' — call "
-                        "describe_table(TABLE) and scan the column list yourself. Native "
-                        "boolean dtypes are 'bool'/'boolean'; in SAP / legacy schemas "
-                        "boolean SEMANTICS are stored as 'char(1)'/'varchar(1)' flag "
-                        "columns ('X'/'' or 'Y'/'N'). When answering: list BOTH the native "
-                        "booleans (if any) AND the char(1)/varchar(1) flag candidates "
-                        "instead of saying 'no boolean columns'."
+                        "Return the table comment, column count, dtype_summary (per-family "
+                        "counts across ALL columns), and column metadata (name + dtype + "
+                        "comment) for a fully-qualified table. The columns list is sorted "
+                        "by 'interestingness' (commented columns first, then rare dtypes) "
+                        "and TRUNCATED to 60 entries on wide tables — ALWAYS read the "
+                        "dtype_summary field to get the complete dtype picture instead of "
+                        "relying on the truncated columns list. Use this for 'what's the "
+                        "vbrk table?', 'describe sap_s6p.adrc', 'X tablosunda hangi kolonlar "
+                        "var?'. Also use this for 'is there any boolean / flag / Y-N column "
+                        "in TABLE' — check dtype_summary['bool'] for native booleans and "
+                        "dtype_summary['string'] for char(1)/varchar(1) flag candidates. "
+                        "Native boolean dtypes are 'bool'/'boolean'; in SAP / legacy schemas "
+                        "boolean SEMANTICS are stored as 'char(1)'/'varchar(1)' flag columns "
+                        "('X'/'' or 'Y'/'N'). When answering: cite dtype_summary counts and "
+                        "list BOTH the native booleans (if any) AND the char(1)/varchar(1) "
+                        "flag candidates instead of saying 'no boolean columns'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -518,7 +523,7 @@ class ToolBox:
                 "found": False,
                 "error": str(exc),
             }
-        cols = [
+        all_cols = [
             {
                 "name": c.name,
                 "type": c.dtype,
@@ -527,15 +532,92 @@ class ToolBox:
             }
             for c in profile.columns
         ]
+
+        # ── Per-dtype family summary ──
+        # On wide SAP tables (vbak has 155+ columns) the column list
+        # gets truncated below to keep the prompt within a reasonable
+        # budget. Without this summary the LLM would not know that
+        # there's e.g. ONE ``bool`` column on a table dominated by 100
+        # ``float8`` columns — it would just see the truncated head and
+        # honestly say "no boolean columns". The summary travels with
+        # the truncated list so the LLM has a complete dtype picture
+        # for the table even when it can't see every column.
+        dtype_summary: dict[str, int] = {}
+        for c in all_cols:
+            family = self._dtype_family_label(c["type"])
+            dtype_summary[family] = dtype_summary.get(family, 0) + 1
+
+        # ── Smart truncation order ──
+        # When wide tables get capped, the truncation should leave the
+        # MOST INTERESTING columns visible: rare dtypes (bool / date /
+        # uuid / json — usually one or two per table) and columns that
+        # already have a comment (someone curated them, so they're
+        # worth seeing). Numeric / varchar columns without comments
+        # cluster at the bottom because there are many of them and
+        # they're typically interchangeable.
+        rarity = {family: count for family, count in dtype_summary.items()}
+        def _sort_key(col: dict[str, Any]) -> tuple[int, int, str]:
+            family = self._dtype_family_label(col["type"])
+            commented = 1 if col.get("comment") else 0
+            # rarity rank — fewer columns of this dtype family => earlier
+            return (
+                -commented,                # comments first
+                rarity.get(family, 999),   # rare dtypes next (lower count first)
+                col["name"],               # alphabetical tiebreak
+            )
+        sorted_cols = sorted(all_cols, key=_sort_key)
+
         return {
             "schema": schema_name,
             "table": table_name,
             "found": True,
             "table_comment": str(profile.existing_comment or ""),
             "row_count": int(profile.row_count or 0),
-            "column_count": len(cols),
-            "columns": cols[:60],  # cap so the prompt doesn't explode on wide tables
+            "column_count": len(all_cols),
+            "dtype_summary": dtype_summary,
+            "columns_truncated": len(all_cols) > 60,
+            "columns": sorted_cols[:60],
         }
+
+    @staticmethod
+    def _dtype_family_label(dtype: str) -> str:
+        """Coarse dtype family label used in ``dtype_summary``.
+
+        Mirrors the agent_tools dtype-family map but compresses to one
+        label per column (``bool`` / ``int`` / ``float`` / ``string`` /
+        ``date`` / ``timestamp`` / ``json`` / ``uuid`` / etc.). Returns
+        the lowered raw dtype when no family matches so exotic types
+        still appear in the summary instead of silently merging into
+        a generic bucket.
+        """
+        raw = (dtype or "").strip().lower()
+        if not raw:
+            return "unknown"
+        # Strip array suffix and length/precision parens.
+        base = raw.rstrip("[]")
+        base = base.split("(", 1)[0].strip()
+        head = base.split()[0] if base else raw
+        if head in {"bool", "boolean"}:
+            return "bool"
+        if head in {"int", "integer", "int4", "int8", "int2", "bigint", "smallint", "serial", "bigserial"}:
+            return "int"
+        if head in {"float", "float4", "float8", "double", "real", "numeric", "decimal", "money"}:
+            return "float"
+        if head in {"char", "varchar", "text", "string", "nchar", "nvarchar", "character", "bpchar"}:
+            return "string"
+        if head in {"date"}:
+            return "date"
+        if head in {"timestamp", "timestamptz", "datetime", "datetime2", "smalldatetime"}:
+            return "timestamp"
+        if head in {"time", "timetz"}:
+            return "time"
+        if head in {"json", "jsonb"}:
+            return "json"
+        if head in {"uuid"}:
+            return "uuid"
+        if head in {"bytea", "blob", "binary", "varbinary"}:
+            return "binary"
+        return head
 
     def _tool_search_tables_by_concept(self, concept: str, limit: int = 10) -> dict[str, Any]:
         rows = self.catalog.search_tables(self.db_profile, concept or "", limit=int(limit))
