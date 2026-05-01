@@ -576,13 +576,17 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for the complete release history, or the [G
 Run AMX inference without entering the interactive CLI shell:
 
 ```python
-from amx.config import AMXConfig
+import amx
 from amx.core import infer_table_metadata
 
-cfg = AMXConfig.load()
-results = infer_table_metadata(cfg, schema="sap_test", table="adr6")
+app = amx.init()                       # loads ~/.amx/config.yml by default
+results = infer_table_metadata(
+    app.config, schema="sap_test", table="adr6"
+)
 print(results[0])
 ```
+
+The full stable surface — every name guaranteed to keep working across minor versions — is documented in [`docs/PUBLIC_API.md`](./docs/PUBLIC_API.md). Anything not listed there (including most of `amx.config`, `amx.cli_support`, `amx.agents`, `amx.search`, etc.) is internal and may move or change in any release.
 
 ## License
 

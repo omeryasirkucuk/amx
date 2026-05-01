@@ -1,4 +1,10 @@
-"""Tool-based ask agent primitives for headless AMX usage."""
+"""Tool-based ask agent primitives for headless AMX usage.
+
+Part of the **public API** — see ``docs/PUBLIC_API.md`` for the
+stability contract. ``ToolResult`` and ``ReasoningTraceStep`` are
+part of the ``ToolAskResponse`` shape and therefore implicitly
+public (additive field changes only across minor versions).
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,14 @@ from amx.agents.tools import SchemaExplorer
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
 from amx.search.catalog import SearchCatalog
+
+__all__ = [
+    "AskToolbox",
+    "LoopBasedAskAgent",
+    "ReasoningTraceStep",
+    "ToolAskResponse",
+    "ToolResult",
+]
 
 
 @dataclass(frozen=True)

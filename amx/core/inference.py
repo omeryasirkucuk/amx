@@ -1,4 +1,8 @@
-"""Programmatic metadata inference entrypoints."""
+"""Programmatic metadata inference entrypoints.
+
+Part of the **public API** — see ``docs/PUBLIC_API.md`` for the
+stability contract.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,8 @@ from amx.agents.orchestrator import Orchestrator
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
+
+__all__ = ["infer_table_metadata"]
 
 
 def infer_table_metadata(
