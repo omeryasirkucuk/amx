@@ -6,6 +6,21 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.12] - 2026-05-01
+### Fixed
+- **`SHOW TABLES FROM None.dev`** still failed after v0.10.11. The catalog picker correctly populated `cfg.catalog` and `list_schemas` switched to `SHOW SCHEMAS IN <catalog>` — but `list_tables` and `list_views` were still using SQLAlchemy's `inspect().get_table_names(schema=schema)`, which on Databricks issues `SHOW TABLES FROM <schema>` (no catalog context) and resolves catalog as whatever the connection's default is — `None` when the user hadn't run `USE CATALOG`.
+
+### Changed
+- **Adapter-level overrides for `list_tables` and `list_views`** (`amx/db/adapters/base.py`). Default returns `None` (fall back to SQLAlchemy inspector); Databricks override runs `SHOW TABLES IN \`<catalog>\`.\`<schema>\`` and `SHOW VIEWS IN \`<catalog>\`.\`<schema>\`` so the catalog explicitly travels with each query. Same contract / fallback pattern as the v0.10.11 `list_schemas` override.
+- **`DatabaseConnector.list_tables` / `list_views`** consult the adapter override before falling back to the inspector. Reads `cfg.catalog` so the v0.10.11 wizard pick propagates without needing a `USE CATALOG` round-trip on the engine.
+
+### Why this matters
+v0.10.11 fixed half the path (schemas) but stopped before the table layer. The user's reproducer ("aynı hata, catalog seçtirdi ama None.dev'e SHOW TABLES FROM atıyo") was exactly that gap. With both layers now catalog-aware, the `/edit` wizard on Databricks Unity Catalog should walk catalog → schema → table without falling through to the inspector.
+
+### Followups
+- The same override should extend to `list_materialized_views` and to `list_column_profiles` / `get_column_comments` — the SQLAlchemy `inspect().get_columns(table, schema=schema)` path may still issue catalog-less SQL when the user opens `/edit`'s column picker. Tracked but not yet hit because the user got blocked at the table layer first.
+- A USE CATALOG hook on the engine connection would let SQLAlchemy's inspector inherit the catalog implicitly — that's the long-term cleaner path. Until then, per-method overrides are the surgical fix.
+
 ## [0.10.11] - 2026-05-01
 ### Fixed
 - **`/edit` wizard on Databricks ran `SHOW SCHEMAS` without USE CATALOG** when the user hadn't pinned a catalog. Reproducer: connect to Databricks Unity Catalog, run `/edit` to update a comment — the schema picker either showed the wrong namespace or returned nothing, and downstream `SHOW TABLES None.dev` failed. Root cause: SQLAlchemy's `inspect(engine).get_schema_names()` is not catalog-aware on Databricks; the connector used it as the only path.

@@ -195,6 +195,25 @@ class DatabaseAdapter(ABC):
         """
         return None
 
+    def list_tables(
+        self, engine: Engine, schema: str, catalog: str = "",
+    ) -> list[str] | None:
+        """Backend-specific table listing.
+
+        Returning ``None`` tells the connector to fall back to the
+        SQLAlchemy ``inspect().get_table_names(schema=...)`` path.
+        Override on backends where the table list is
+        catalog-and-schema-scoped (Databricks
+        ``SHOW TABLES IN <catalog>.<schema>``).
+        """
+        return None
+
+    def list_views(
+        self, engine: Engine, schema: str, catalog: str = "",
+    ) -> list[str] | None:
+        """Backend-specific view listing. ``None`` → SQLAlchemy fallback."""
+        return None
+
     # ── Analytics metadata ────────────────────────────────────────────────
 
     def get_analytics_metadata(

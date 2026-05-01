@@ -302,10 +302,32 @@ class DatabaseConnector:
         return [s for s in insp.get_schema_names() if s not in system]
 
     def list_tables(self, schema: str) -> list[str]:
+        # Adapter override path for catalog-scoped backends (Databricks
+        # Unity Catalog ``SHOW TABLES IN <catalog>.<schema>``). When
+        # the override returns None we fall back to the SQLAlchemy
+        # inspector — same contract as ``list_schemas``.
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        try:
+            adapter_result = self._adapter.list_tables(
+                self.engine, schema, catalog,
+            )
+        except Exception:
+            adapter_result = None
+        if adapter_result is not None:
+            return list(adapter_result)
         insp = inspect(self.engine)
         return insp.get_table_names(schema=schema)
 
     def list_views(self, schema: str) -> list[str]:
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        try:
+            adapter_result = self._adapter.list_views(
+                self.engine, schema, catalog,
+            )
+        except Exception:
+            adapter_result = None
+        if adapter_result is not None:
+            return list(adapter_result)
         insp = inspect(self.engine)
         return insp.get_view_names(schema=schema)
 

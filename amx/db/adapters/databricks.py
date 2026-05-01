@@ -246,6 +246,60 @@ class DatabricksAdapter(DatabaseAdapter):
         except Exception:
             return None
 
+    def list_tables(
+        self, engine: Engine, schema: str, catalog: str = "",
+    ) -> list[str] | None:
+        """``SHOW TABLES IN <catalog>.<schema>`` — catalog-aware.
+
+        SQLAlchemy's ``inspect().get_table_names(schema=schema)`` on
+        Databricks issues ``SHOW TABLES FROM <schema>`` without
+        catalog context, which fails as ``SHOW TABLES FROM None.dev``
+        when no USE CATALOG was issued — the v0.10.11 catalog picker
+        sets ``cfg.catalog`` but doesn't run USE CATALOG on the
+        engine, so this override carries the catalog explicitly.
+        Returns ``None`` (fallback) when no catalog is available so
+        legacy hive_metastore-only workspaces keep working.
+        """
+        cat = (catalog or "").strip()
+        sch = (schema or "").strip()
+        if not cat or not sch:
+            return None
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(f"SHOW TABLES IN `{cat}`.`{sch}`")
+                ).fetchall()
+            # SHOW TABLES in Databricks returns at least:
+            # (database, tableName, isTemporary, [information])
+            # tableName is column index 1.
+            return [
+                str(r[1]) for r in rows
+                if r and len(r) >= 2 and r[1]
+            ]
+        except Exception:
+            return None
+
+    def list_views(
+        self, engine: Engine, schema: str, catalog: str = "",
+    ) -> list[str] | None:
+        """``SHOW VIEWS IN <catalog>.<schema>`` — same pattern as list_tables."""
+        cat = (catalog or "").strip()
+        sch = (schema or "").strip()
+        if not cat or not sch:
+            return None
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(f"SHOW VIEWS IN `{cat}`.`{sch}`")
+                ).fetchall()
+            # SHOW VIEWS rows: (namespace, viewName, isTemporary)
+            return [
+                str(r[1]) for r in rows
+                if r and len(r) >= 2 and r[1]
+            ]
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:
