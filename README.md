@@ -349,13 +349,13 @@ Example profile fields in `~/.amx/config.yml`:
 
 ```yaml
 db_profiles:
-  company-databricks:
+  databricks-prod:
     backend: databricks
-    host: adb-4217046554757008.8.azuredatabricks.net
-    http_path: /sql/1.0/warehouses/cdda8fcb11f4c83b
-    catalog: dap_eu_60_prod
-    database: dev
-    tls_trusted_ca_file: ~/certs/company-root-ca.pem
+    host: adb-1234567890123456.7.azuredatabricks.net
+    http_path: /sql/1.0/warehouses/abcd1234ef567890
+    catalog: my_catalog
+    database: my_schema
+    tls_trusted_ca_file: ~/certs/internal-ca.pem
     tls_no_verify: false
 ```
 
