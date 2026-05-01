@@ -6,6 +6,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Documentation — README hero, 5-minute quickstart, and screenshot slots
+
+The README's first 130 lines were a feature list; new readers had to scroll past architecture diagrams and prerequisite tables to see what AMX actually produces. Restructured so the value proposition + a concrete before/after example + the 30-second quickstart all live above the fold.
+
+- **Hero block** with a one-line value prop and the supported backends / LLM providers.
+- **"What it produces"** mini-example: cryptic `T0001.AUDAT NUMBER(8)` in, reviewed description with confidence + logprob + sources out. Synthetic identifier (no real connection details), so safe to reproduce in talks / posts.
+- **5-minute quickstart** with the four commands that get a new user from `pip install amx` to a reviewed run, plus `amx doctor` for when something looks wrong.
+- The original "Quick Start" section is preserved as **"Detailed setup"** for users who want full control over each step.
+- HTML-comment placeholders (`<!-- TODO: screenshot — ... -->`) at four natural drop-in spots: setup wizard, run review, db-profiles table, /compare diff view. Future PR will fill them in.
+
 ### Added — `/compare --json` for thesis / notebook workflows
 
 Direct continuation of the `/compare --csv` and `--md` flags from the previous PR. The JSON document is shaped specifically for pandas / Jupyter consumption — long-format `per_column` and `aggregate_metrics` arrays so notebooks can `pd.DataFrame(payload["per_column"]).pivot(...)` without reshaping.

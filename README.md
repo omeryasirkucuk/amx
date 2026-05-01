@@ -1,6 +1,46 @@
 # AMX — Agentic Metadata Extractor
 
-AI-powered CLI application that automatically infers, reviews, and applies metadata (descriptions, tags) to database assets — tables, views, and materialized views — using a multi-agent system with human-in-the-loop validation.
+> **Stop staring at `T0001.AUDAT NUMBER(8)` wondering what it means.**
+
+AMX walks your database, reads your documentation and codebase, then emits a complete description for every table and column — with confidence scores and a human-in-the-loop review before anything lands in the live DB. Multi-agent (Profile + RAG + Code), supports PostgreSQL / Snowflake / Databricks / BigQuery, talks to OpenAI / Anthropic / Gemini / DeepSeek / OpenRouter / vLLM / Ollama / LM Studio.
+
+<!-- TODO: hero screenshot — paste the AMX banner + first /run wizard here -->
+
+### What it produces
+
+Cryptic identifier in:
+
+```
+sap_s6p.t001.audat   NUMBER(8) NULL
+```
+
+Reviewed description out (after one `/run`):
+
+```
+sap_s6p.t001.audat — Document date. The calendar date the source business event
+was recorded, distinct from posting date (BUDAT) which controls the accounting
+period the transaction lands in.
+
+  confidence: high · logprob: 0.91 · sources: code (3 refs), docs, db profile
+```
+
+The same multi-agent pipeline runs against tables, views, materialized views, and schema-level descriptions.
+
+## Quick start (5 minutes)
+
+```bash
+pip install amx                  # installs all four DB drivers and the LLM SDKs
+amx                              # opens the interactive session
+/setup                           # walks you through DB + LLM profiles
+/run                             # picks scope, runs the agents, opens review
+amx doctor                       # if anything looks weird — diagnoses install + config
+```
+
+That's the happy path. Read on for what each agent does, supported backends, and the full slash-command reference.
+
+<!-- TODO: screenshot — `/setup` wizard prompt sequence -->
+
+<!-- TODO: screenshot — `/run` review screen with Accept / Alternatives / Skip choices -->
 
 ## Problem
 
@@ -48,7 +88,9 @@ For release notes see [CHANGELOG.md](./CHANGELOG.md) and the [GitHub Releases pa
 └────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## Detailed setup
+
+The 5-minute quick start at the top covers the happy path. This section spells out prerequisites, installation options, and the explicit slash-command sequence for users who want full control.
 
 ### Prerequisites
 
@@ -128,6 +170,16 @@ amx
 /run-apply t001 vbak
 /apply
 ```
+
+<!-- TODO: screenshot — `/db-profiles` table showing one or two profiles with backend column -->
+
+<!-- TODO: screenshot — `/run` mid-flight: agent activity panel + per-column progress -->
+
+<!-- TODO: screenshot — `/run` review wizard: top description, alternatives list, accept/skip prompts -->
+
+<!-- TODO: screenshot — `/history list` after several runs, then `/compare --last 3 --diff` showing the per-column pivot -->
+
+If anything goes wrong — profiles missing, can't connect, multiple `amx` on PATH — run `amx doctor` from any shell. It diagnoses install, config, and connectivity and prints actionable hints next to each ✗.
 
 ## Interactive Commands (inside `amx` session)
 
