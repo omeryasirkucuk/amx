@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-04-30
+### Fixed
+- **Auto-inference fallback placeholders no longer reach the live database** (`amx/agents/orchestrator.py`): user reported their DB had `Column rewrt in table bseg. Auto-inference missed a reliable description; please review manually.` written as the actual `COMMENT ON COLUMN` for several columns. The placeholder was meant as a UI hint for human review (`_ensure_complete_table_coverage` injects it when the LLM misses a column in its response), but it flowed through `apply_review_results_to_db` and got persisted as real metadata. New `is_placeholder_description` predicate + filter at the top of `apply_review_results_to_db` block these out before any SQL hits the DB. Existing rows produced by older `/run-apply` invocations stay polluted; use the new cleanup command (below) to remove them.
+- **`missing-only` filter now treats placeholder comments as "still missing"** (`amx/agents/orchestrator.py`): legacy DBs polluted with placeholder strings are organically cleaned up — re-running `/run-apply` with the missing-only filter (the default) will detect the placeholder via `is_placeholder_description` and re-analyse those columns. Real metadata replaces fallback text.
+
+### Added
+- **`/db cleanup-placeholders [schema]` slash command** (`amx/cli_support/commands/db.py`): one-shot cleanup that scans every table and column comment in the active DB profile, NULLs out anything matching the auto-inference fallback string, and reports counts. Use this once when upgrading from pre-0.6.3 to scrub legacy pollution; v0.6.3+ never writes the placeholder in the first place. Wired through all four discovery paths (`db_cmd_heads`, dispatch handler, `/db` namespace help, autocomplete catalog).
+
+### Why this matters for open source
+A user that ran `/run-apply` with auto-apply on a flaky model could end up with thousands of columns whose `COMMENT ON COLUMN` reads "Auto-inference missed a reliable description; please review manually." That's not a hint — it's pollution that misleads anyone querying the DB metadata directly (BI tools, schema explorers, future AMX runs). Two fixes plus a cleanup tool ensure the placeholder never escapes AMX's review UI.
+
 ## [0.6.2] - 2026-04-30
 ### Fixed
 - **`/ask "tables without description"` no longer surfaces system / extension assets** (`amx/search/agent_tools.py`): user reported `pg_stat_statements` and `pg_stat_statements_info` (PostgreSQL extension views) showing up as "tables without descriptions". These aren't user data — they're statistics views AMX never describes, and the `/run` flow has been filtering them out for releases via `services.analyze_scope.is_non_business_asset`. The `find_assets_missing_comment` agent tool now reuses the same filter so coverage queries don't surface these as gaps. New `include_system: bool` parameter (default false) lets the LLM opt back in only when the user explicitly asks about system tables (e.g. "tables including system views?"). Result payload now reports `system_assets_skipped` + count so the LLM can mention the filter in the answer.

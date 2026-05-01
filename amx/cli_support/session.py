@@ -18,6 +18,7 @@ from prompt_toolkit.styles import Style
 from amx.config import AMXConfig, SUPPORTED_BACKENDS
 from amx.cli_support.commands.db import (
     cmd_add_profile as _cmd_add_profile,
+    cmd_cleanup_placeholders as _cmd_cleanup_placeholders,
     cmd_inspect as _cmd_inspect,
     cmd_profiles as _cmd_profiles,
     cmd_profiling as _cmd_profiling,
@@ -177,6 +178,12 @@ Commands (in order):
  14) /profile [schema] [table]    Profile a table (defaults to current context)
  15) /inspect [profile]           Diagnose a profile: backend, capabilities, connection
                                    test, visible schemas, table counts. Read-only.
+ 16) /cleanup-placeholders [schema]
+                                  Remove auto-inference fallback placeholder strings
+                                  ("Auto-inference missed a reliable description; please
+                                  review manually.") from the live DB. Use this once when
+                                  upgrading from pre-0.6.3 — newer versions never write
+                                  these in the first place.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -473,6 +480,7 @@ def _slash_command_catalog(namespace: str, cfg: AMXConfig) -> list[tuple[str, st
         ("/schemas", "List schemas"),
         ("/tables", "List tables (/tables [schema])"),
         ("/profile", "Profile table (/profile [schema] [table])"),
+        ("/cleanup-placeholders", "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])"),
     ]
     docs_cmds = [
         ("/back", "Return to root namespace"),
@@ -814,6 +822,15 @@ def _handle_session_builtin(
             return True
         _cmd_inspect(cfg, parts[1:])
         return True
+    if head == "cleanup-placeholders":
+        # /db cleanup-placeholders [schema] — one-shot cleanup of legacy
+        # ``Auto-inference missed a reliable description; please review
+        # manually.`` placeholder strings written to the live DB by older
+        # /run-apply runs. v0.6.3+ no longer writes them in the first place.
+        if not _require_namespace(head, namespace, "db", "cleanup-placeholders"):
+            return True
+        _cmd_cleanup_placeholders(cfg, parts[1:])
+        return True
     if head == "save":
         path = cfg.save()
         success(f"Saved configuration to {path}")
@@ -978,6 +995,7 @@ def run_interactive_session(
             "schemas",
             "tables",
             "profile",
+            "cleanup-placeholders",
         }
     )
     metadata_cmd_heads = frozenset({"inspect", "edit", "monitor"})
