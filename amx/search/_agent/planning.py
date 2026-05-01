@@ -25,6 +25,7 @@ calls back into ``self._llm_provider()`` and resolution helpers
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict
 from typing import Any

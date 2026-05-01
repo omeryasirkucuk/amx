@@ -23,6 +23,7 @@ import json
 import math
 from typing import Any
 
+from amx.codebase.analyzer import CodeReference
 from amx.search._catalog._constants import _json_loads
 from amx.utils.logging import get_logger
 

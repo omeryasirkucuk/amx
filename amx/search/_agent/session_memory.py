@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from amx.llm.provider import LLMProvider
 from amx.search.session_store import ChatSessionStore
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger

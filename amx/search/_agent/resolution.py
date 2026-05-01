@@ -25,6 +25,7 @@ Reads from ``self.catalog``, ``self.db``, ``self.cfg``,
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from typing import Any
 
 from amx.search._agent._types import ResolvedTarget, SearchPlan
