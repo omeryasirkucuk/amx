@@ -6,6 +6,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-04-30
+### Changed
+- **`/metadata edit <name>` now asks bulk-vs-individual before locking the user into bulk** (`amx/cli_support/commands/manual.py`): v0.7.0 went straight to the multi-select picker after finding matches, but a user might want to handle each entity separately when entities just happen to share a name (e.g. `code` in `country.code` vs `currency.code`). New three-way prompt: `bulk` (one comment for selected rows — original 0.7.0 behavior), `individual` (walk through each match one at a time, type a different comment per row, Enter to skip), `cancel`. Single-match cases auto-switch to single-target edit and skip the prompt entirely.
+
+### Added
+- **`_run_individual_edits` flow** (`amx/cli_support/commands/manual.py`): per-row edit loop that prints each match's full path + dtype + existing comment, accepts a NEW comment (Enter to skip, `cancel` to stop the loop), writes via `apply_comment` with the right `AssetKind`, and re-syncs each result to the catalog via `record_manual_description`. Reports `applied / skipped / failed` counts at the end.
+
 ## [0.7.0] - 2026-04-30
 ### Added — `/metadata edit <name>` bulk-edit by bare name
 - **`/metadata edit customer_id` (any bare token, no dots, no scope keyword)** now triggers a NEW bulk-edit flow (`amx/cli_support/commands/manual.py:_run_bulk_edit_by_name`) instead of falling into the wizard. AMX searches the catalog for every table whose name matches AND every column whose name matches across all schemas, prints a numbered table (kind / Schema.Table[.Column] / dtype / existing comment), then asks for a multi-select picker (`1,3,5 / 1-4 / all`). The user types ONE comment and AMX writes it via batched `COMMENT ON …` SQL to every selected entity, then re-syncs the catalog so `/ask` sees the new descriptions immediately.
