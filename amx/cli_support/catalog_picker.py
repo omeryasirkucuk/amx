@@ -117,20 +117,15 @@ def ensure_catalog_selected(
 
 
 def warn_when_database_unpinned(db: Any) -> None:
-    """Emit a one-line hint when a 2-level backend has no database pinned.
+    """One-line hint when a 2-level backend has no database pinned AND
+    no runtime picker is wired up for it.
 
-    0.11.0 made the ``database`` field optional on DBConfig (Phase 1).
-    For Databricks / BigQuery the catalog picker handles the
-    "pick at command time" UX. PostgreSQL and Snowflake don't have a
-    runtime database picker yet, so connection / listing operations
-    against a profile with ``database=""`` will fail with a confusing
-    error. This helper surfaces a clear hint up front so the user
-    knows exactly what to do (``/edit`` the profile or run with
-    ``--database``).
-
-    Called from /run and /sync after the catalog picker. Silent
-    no-op for 3-level backends and for profiles that have a
-    database pinned.
+    For PostgreSQL the runtime picker (:func:`ensure_database_selected`)
+    now resolves the unpinned case interactively, so this warning only
+    fires for backends we haven't built a picker for yet (Snowflake at
+    time of writing). When a picker IS available the caller should
+    invoke :func:`ensure_database_selected` first; if the user picks
+    one, this warning becomes a silent no-op.
     """
     if bool(getattr(db, "supports_catalogs", lambda: False)()):
         # 3-level backend — catalog picker already covered the case.
@@ -144,12 +139,98 @@ def warn_when_database_unpinned(db: Any) -> None:
         return
     if backend not in {"postgresql", "snowflake"}:
         return
-    warn(
-        f"Profile has no database pinned for {backend}. The connection "
-        "will use the server's default — table listings may be empty. "
-        "Run `/edit` to pin a database, or set the per-profile default "
-        "with `/add-db-profile`."
+    # Postgres now has the runtime picker. If we still got here without
+    # a database it means the picker was offered and the user
+    # cancelled, OR we're on a backend (snowflake) where the picker
+    # isn't wired yet. Either way the user needs to pin one.
+    warn(f"No {backend} database selected — listings will be empty. Use /edit to pin one.")
+
+
+def ensure_database_selected(db: Any) -> str:
+    """Prompt the user to pick a database when a 2-level backend has none pinned.
+
+    Mirrors :func:`ensure_catalog_selected` but for the
+    PostgreSQL / Snowflake server-with-multiple-databases case (the
+    user-reported "system can't see my databases" flow on 2026-05-02).
+    The flow is:
+
+    1. Connect to whatever database the profile resolved to (the
+       ``postgres`` system fallback when blank).
+    2. ``SELECT datname FROM pg_database WHERE datistemplate = false``
+       (or the snowflake equivalent — adapter decides).
+    3. Render a numbered picker; the user picks one.
+    4. Update ``db.cfg.database`` in-memory and call
+       ``db.reconnect()`` so subsequent listing queries target the
+       chosen database.
+
+    The pick is **not** persisted to ``~/.amx/config.yml`` — it's
+    session-scoped, exactly like the catalog picker. Run ``/edit`` to
+    pin a default permanently.
+
+    Returns the chosen database name, or ``""`` when the backend
+    doesn't support the picker, no databases were enumerated, or the
+    user cancelled.
+    """
+    from amx.cli_support.commands.manual import _ask_choice_or_cancel
+    from amx.utils.console import step_spinner
+
+    cfg = getattr(db, "cfg", None)
+    if cfg is None:
+        return ""
+    backend = str(getattr(cfg, "backend", "") or "")
+    if backend not in {"postgresql", "snowflake"}:
+        return ""
+    existing = str(getattr(cfg, "database", "") or "").strip()
+    if existing:
+        # Already pinned. The picker is for the unpinned case only —
+        # don't pester users who already chose a database.
+        return existing
+    if bool(getattr(db, "supports_catalogs", lambda: False)()):
+        # 3-level backend — catalog picker handles this.
+        return ""
+
+    try:
+        with step_spinner("Listing databases on this server"):
+            databases = list(db.list_databases())  # type: ignore[attr-defined]
+    except Exception as exc:
+        log.debug("list_databases failed: %s", exc)
+        databases = []
+
+    # Filter out template databases that some servers may still surface
+    # (the adapter does this too, defence-in-depth).
+    databases = [d for d in databases if d and not d.startswith("template")]
+
+    if not databases:
+        warn(
+            "No databases visible on this server. Either the role lacks "
+            "CONNECT on every database, or the server is empty. Use /edit "
+            "to pin a database name explicitly."
+        )
+        return ""
+
+    info(
+        f"Profile has no {backend} database pinned. Pick one for this "
+        "session (use /edit to pin permanently)."
     )
+    chosen = _ask_choice_or_cancel(
+        "Select database",
+        databases,
+        default=databases[0],
+    )
+    if not chosen or not chosen.strip():
+        return ""
+    chosen = chosen.strip()
+    try:
+        db.cfg.database = chosen  # type: ignore[attr-defined]
+        db.reconnect()
+    except Exception as exc:
+        log.debug("Failed to apply chosen database: %s", exc)
+        return ""
+    return chosen
 
 
-__all__ = ["ensure_catalog_selected", "warn_when_database_unpinned"]
+__all__ = [
+    "ensure_catalog_selected",
+    "ensure_database_selected",
+    "warn_when_database_unpinned",
+]

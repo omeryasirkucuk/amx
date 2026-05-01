@@ -183,6 +183,19 @@ class DatabaseAdapter(ABC):
         """
         return []
 
+    def list_databases(self, engine: Engine) -> list[str]:
+        """User-visible databases on this server (2-level backends only).
+
+        Default returns an empty list. Override on backends where the
+        same server hosts multiple databases and switching between them
+        requires reconnecting with a different ``database`` field
+        (PostgreSQL ``pg_database``, Snowflake ``SHOW DATABASES``).
+        Used by the runtime database picker in ``cli_support`` so the
+        user can choose at ``/run`` / ``/sync`` time when their profile
+        has no ``database`` pinned.
+        """
+        return []
+
     def list_schemas(self, engine: Engine, catalog: str = "") -> list[str] | None:
         """Backend-specific schema listing.
 
