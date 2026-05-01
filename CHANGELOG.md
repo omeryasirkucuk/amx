@@ -6,6 +6,51 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-05-01
+### Changed — `Orchestrator.process_table` god-method extracted into `TableProcessor` (S3 refactor)
+
+The 281-line `Orchestrator.process_table` method had grown four overlapping filter chains (missing-only, column-scope, dedup-skip), an agent loop, and three apply branches (auto-apply, deferred, interactive-review). Every recent feature (Phase 2 dedup, Column scope) added another filter at the top, pushing the method up to 281 LOC. v0.9.2 extracts that flow into `amx/agents/_orchestrator/table_processor.py` as a stateful helper class with one method per phase.
+
+**File layout (before → after):**
+
+```
+amx/agents/orchestrator.py        1719 → 1463   (-256 LOC out of process_table)
+amx/agents/_orchestrator/
+  __init__.py                       -   →   12   (TableProcessor re-export)
+  table_processor.py                -   →  447   (12 phase methods, none over 77 LOC)
+```
+
+**`Orchestrator.process_table` is now 25 lines** — a thin delegator that constructs a `TableProcessor` and calls `.run()`. Public signature is unchanged (`schema`, `table`, `asset_kind`, `interactive_review`, `auto_apply`).
+
+**TableProcessor phase methods:**
+
+```
+run                            18 LOC   public entry point
+_fetch_profile                  5 LOC   db.profile_table(...)
+_apply_filters                  9 LOC   chain of 3 filters; bails on first 'False'
+  _filter_missing_only         48 LOC   skip already-commented columns
+  _filter_column_override      32 LOC   restrict to Column-scope picks
+  _filter_dedup_skip           33 LOC   drop columns handled by upfront dedup pass
+_run_agents_and_persist        51 LOC   Profile / RAG / Code agents + merge + save
+_dispatch_apply_or_review      12 LOC   pick branch by run-mode
+  _auto_apply_branch           77 LOC   accept top suggestion + write live DB
+  _deferred_branch             25 LOC   wrap as un-applied for batch review
+  _interactive_review_branch   33 LOC   prompt-toolkit picker w/ live-display pause
+```
+
+### Why this matters
+
+`process_table` was the architectural pain point named in the v0.9 codebase analysis: every new analyze-flow feature landed in this single method, and every feature pushed it 30-40 LOC larger. After this refactor:
+
+- **Each filter is unit-testable in isolation.** `_filter_missing_only` no longer needs a full agent stack to test — give it a `TableProfile` and `orch.missing_only=True`, assert the column list shrinks correctly.
+- **New filters land beside their siblings, not on top.** Adding e.g. a `_filter_pinned_columns` (next-release request) becomes a 30-LOC method next to the existing three; the chain method `_apply_filters` adds one line.
+- **The three apply branches stop competing for context.** `_auto_apply_branch` (77 LOC) is the only one that touches the live DB; `_deferred_branch` (25 LOC) is a pure data wrap; `_interactive_review_branch` (33 LOC) only handles display+prompt. Previously they were interleaved in one method body.
+
+### Followups
+
+- The codebase analysis ranked `execute_analyze_run` (600 LOC, single function) as the next refactor target. Same technique applies — extract `RunBuilder` / `RunExecutor` from the procedural script.
+- `_auto_apply_branch` at 77 LOC is the largest TableProcessor method; could be split further into `_persist_decisions` + `_writeback_to_db` if needed.
+
 ## [0.9.1] - 2026-05-01
 ### Changed — SearchCatalog god-class split into 6 mixin modules (S2 refactor)
 
