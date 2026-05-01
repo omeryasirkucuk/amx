@@ -29,6 +29,7 @@ import json
 import time
 from typing import Any
 
+from amx.search._catalog._constants import SOURCE_PRIORITY, _json_loads
 from amx.utils.logging import get_logger
 
 log = get_logger("search.catalog.entity_crud")

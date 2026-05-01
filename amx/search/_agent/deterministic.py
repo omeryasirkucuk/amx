@@ -34,41 +34,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from amx.search._agent._types import (
+    SearchActionSuggestion,
+    SearchPlan,
+    SearchPolicy,
+    _question_language_hint,
+)
 from amx.utils.logging import get_logger
 
-# Forward references for type hints only — these dataclasses are
-# defined in ``amx.search.agent``. Importing them at runtime would
-# create a circular dependency since ``agent.py`` imports this mixin.
-SearchPlan = Any
-SearchPolicy = Any
-SearchActionSuggestion = Any
-
 log = get_logger("search.agent.deterministic")
-
-
-def _question_language_hint(text: str) -> str:
-    """Light-weight language detector used by deterministic ranked answers.
-
-    Mirrors the helper in ``agent.py``; redefined here so the mixin
-    has no import-time dependency on the parent module.
-    """
-    import re
-
-    sample = (text or "").strip()
-    if not sample:
-        return "english"
-    lower = sample.lower()
-    if re.search(r"[؀-ۿ]", sample):
-        return "arabic"
-    if re.search(r"[぀-ヿ一-鿿]", sample):
-        return "japanese"
-    if re.search(r"[가-힯]", sample):
-        return "korean"
-    if re.search(r"[Ѐ-ӿ]", sample):
-        return "russian"
-    if any(ch in lower for ch in "çğıöşü"):
-        return "turkish"
-    return "english"
 
 
 class DeterministicAnswersMixin:

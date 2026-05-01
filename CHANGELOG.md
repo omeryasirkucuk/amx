@@ -6,6 +6,25 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-05-01
+### Fixed
+- **Mixin regression: `name 'DEFAULT_SETTINGS' is not defined` (and 16 sibling errors)**. Reproducer: `/ask` would crash with `Ask failed: name 'DEFAULT_SETTINGS' is not defined` after running v0.9.0–v0.9.4. Root cause: when v0.9.0 split `SearchAgent` and v0.9.1 split `SearchCatalog`, the moved method bodies still referenced module-level names (`SearchPlan(...)`, `_input_token_budget_for(...)`, `DEFAULT_SETTINGS`, `SOURCE_PRIORITY`, etc.) by bare name — but each mixin was now its own Python module, so those names weren't in scope. The bugs only fired on first invocation of the affected code paths (synthesizer, catalog `get_settings`, etc.), not at import time, so the AST-only verification I ran during the splits missed them.
+
+  **Fix:** create two new shared modules — `amx/search/_agent/_types.py` and `amx/search/_catalog/_constants.py` — that own the dataclasses + helpers + constants. Both `agent.py` / `catalog.py` and every mixin file import from these shared modules. No circular imports because `_types.py` and `_constants.py` import nothing from their dependents. Public API preserved — `from amx.search.agent import SearchPlan` still works (re-exported).
+
+  **Affected files this release fixes:**
+  - `_agent/_types.py` (new) — `SearchPlan`, `SearchPolicy`, `SearchActionSuggestion`, `LiveProbePlan`, `ResolvedTarget`, `_ANSWER_SHAPES`, `_DEFAULT_INPUT_TOKEN_BUDGET`, `_input_token_budget_for`, `_json_block`, `_merge_usage`, `_question_language_hint`, `_trim_rows_to_token_budget`.
+  - `_catalog/_constants.py` (new) — `DEFAULT_SETTINGS`, `SOURCE_PRIORITY`, `_PROVIDER_SCORE_FLOOR`, `_DEFAULT_SCORE_FLOOR`, `_vector_score_floor`, `_active_embedding_kind`, `_json_loads`, `_database_name`.
+  - `agent.py` and `catalog.py` re-export from these shared modules (no inline duplicates).
+  - 6 `_agent/*.py` mixins + 4 `_catalog/*.py` mixins now import what they reference from the shared modules.
+  - `_agent/deterministic.py` — dropped its locally-redefined `_question_language_hint` (and the `SearchPlan = Any` forward-ref alias) in favour of the shared canonical version.
+
+### Why this matters
+The v0.9.0 / v0.9.1 splits demonstrated the limitation of AST-only verification when refactoring across module boundaries. Splitting a god-class into mixin modules requires every name a mixin method references to either be (a) a `self.*` attribute, (b) imported into the mixin file, or (c) a Python builtin. Bare module-level names that worked in the original god-class file silently break at runtime. v0.9.5 closes that gap by introducing the shared `_types.py` / `_constants.py` modules; future splits should follow this pattern (do the AST analysis, then run a name-resolution audit against each mixin) before shipping.
+
+### Followups
+- Add a CI-time check that imports each mixin module standalone and instantiates the parent class against a stub to catch this class of bug pre-release.
+
 ## [0.9.4] - 2026-05-01
 ### Changed — `execute_analyze_run` extracted into 3 phase helpers (S4 refactor)
 
