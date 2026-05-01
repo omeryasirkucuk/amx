@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-05-01
+### Fixed — interpretive answering for "duplication" + "update soon"
+Two more cases where the agent fell back to literal "I don't know" / "give me columns" instead of using the data it actually had access to. Both followed v0.9.11's interpretive-answering principle: surface what's available, be explicit about limits.
+
+- **"is there any duplication in vbak"** — pre-v0.10.3 the agent called `check_uniqueness` without columns, hit the no-PK branch, got a useless `error: "pass columns explicitly"` payload, and bounced the question back to the user. Fix: when `check_uniqueness` is called with no columns AND the table has no declared PK, the tool now **runs `inspect_data_quality` itself** and returns:
+  - `duplicate_summary` (full inspect_data_quality payload)
+  - `likely_unique_columns` (every column whose `distinct_ratio` ≥ 0.99)
+  - a `hint` field telling the LLM to propose a candidate composite key from `likely_unique_columns` and offer to verify it with a follow-up `check_uniqueness` call.
+  
+  The LLM now has data to work with on the first round. The system prompt was updated with a matching routing rule: "user asks 'is there duplication' WITHOUT naming a candidate key → call inspect_data_quality first, propose the most likely composite key, offer to verify; NEVER bounce back asking for columns".
+
+- **"is there any update on vbak tables soon?"** — pre-v0.10.3 the agent answered "I don't have access to information about upcoming updates", which is technically true but useless. AMX *does* know when the table was LAST modified (via `analytics.last_modified` from v0.10.0), and *does not* yet have an ETL/orchestrator tap. The honest answer is both halves of that, not one or the other. New system prompt rule:
+  > User asks 'when was X last updated' / 'is there an update soon' / 'son güncelleme' / 'next refresh' / 'ETL ne zaman çalıştı' → call describe_table and read `analytics.last_modified`. NEVER answer "I don't know about future updates" as a flat response — instead surface the LAST known modification time AND state explicitly: "AMX can see vbak was last modified at `<ts>` (from `<backend's freshness signal>`). Scheduled future updates require an ETL / orchestrator tap that AMX doesn't currently expose — that's a planned v0.11 feature."
+
+### Why this matters
+Both bugs were the same shape as v0.9.7-v0.9.11: tool returned a thin/empty primary result and the LLM treated that as the answer. The fix pattern is the same too: enrich the tool response with a wider-net field (here: auto-derived `duplicate_summary`) and teach the system prompt to surface what's available + name the limit explicitly. That's the v0.9.11 "interpretive answering" rule applied to two new question shapes.
+
+### Followups
+- ETL / orchestrator tap (the actual answer to "next refresh" — Airflow / Dagster / dbt Cloud) is the v0.11 lineage feature; currently we only know "last_modified", not "next_run_at".
+- A column-rarity heuristic: when `inspect_data_quality` finds many columns with `distinct_ratio = 1.0`, the tool could also recommend the SHORTEST tuple that uniquely identifies rows (instead of returning every candidate).
+
 ## [0.10.2] - 2026-05-01
 ### Added — Data-quality + uniqueness probes
 
