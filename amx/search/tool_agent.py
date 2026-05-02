@@ -20,12 +20,15 @@ against — so it doesn't have to hallucinate.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from amx.config import AMXConfig
 from amx.llm.provider import LLMProvider
 from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
+
+if TYPE_CHECKING:
+    from amx.utils.live_display import LiveDisplay
 
 # Maximum number of tool-call iterations before we force the LLM to answer.
 # A typical question takes 1–3 tool calls; 6 gives headroom for chained
@@ -316,6 +319,7 @@ def run_tool_agent(
     question: str,
     answer_language: str,
     session_memory: list[dict[str, Any]] | None = None,
+    display: LiveDisplay | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -323,6 +327,10 @@ def run_tool_agent(
     builds in ``SearchAgent._memory_summary``. We forward it as a prelude
     user/assistant exchange so the model can resolve "it" / "that table" /
     "bu tablo" without re-asking the user.
+
+    ``display`` is forwarded to the LLM call so reasoning models can stream
+    their thinking text into the live thinking panel; for models that don't
+    expose reasoning, it's a no-op.
     """
     # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
     # pool) is disposed at the end of every question. Without this, each
@@ -336,6 +344,7 @@ def run_tool_agent(
             question=question,
             answer_language=answer_language,
             session_memory=session_memory,
+            display=display,
         )
 
 
@@ -347,6 +356,7 @@ def _run_tool_loop(
     question: str,
     answer_language: str,
     session_memory: list[dict[str, Any]] | None,
+    display: LiveDisplay | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
     # system prompt so the LLM doesn't have to spend a tool call discovering
@@ -375,6 +385,10 @@ def _run_tool_loop(
     iterations = 0
     tools_schema = ToolBox.schemas()
 
+    # Single closure shared across iterations so the thinking panel keeps
+    # streaming continuously even as we hop between LLM calls + tool calls.
+    on_thinking = (lambda text: display.update_thinking(text)) if display is not None else None
+
     for iteration in range(_MAX_ITERATIONS):
         iterations = iteration + 1
         result = llm.chat(
@@ -384,6 +398,7 @@ def _run_tool_loop(
             use_logprobs=False,
             tools=tools_schema,
             tool_choice="auto",
+            on_thinking=on_thinking,
         )
         # Aggregate usage across iterations.
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -437,6 +452,7 @@ def _run_tool_loop(
             temperature=0.0,
             max_tokens=_AGENT_MAX_TOKENS,
             use_logprobs=False,
+            on_thinking=on_thinking,
         )
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             aggregated_usage[key] += int((result.usage or {}).get(key, 0) or 0)
