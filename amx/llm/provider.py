@@ -7,6 +7,7 @@ import math
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
@@ -137,6 +138,11 @@ class ChatResult:
     finish_reason: str | None = None
     confidence_score: float | None = None
     tool_calls: list[ToolCall] | None = None
+    # Visible reasoning text produced by the model when extended thinking /
+    # reasoning is enabled (Anthropic ``thinking`` blocks, DeepSeek-reasoner
+    # ``reasoning_content``, etc.). Empty for the default non-streaming path.
+    thinking_content: str = ""
+    thinking_tokens: int = 0
 
     def __str__(self) -> str:  # noqa: D105
         return self.content
@@ -515,6 +521,199 @@ def _is_openai_reasoning_style_model(model: str) -> bool:
     )
 
 
+def _supports_thinking(provider: str, model: str) -> bool:
+    """Whether this provider/model emits a stream of reasoning content.
+
+    True for Anthropic Claude with extended thinking (Sonnet 3.7+, Sonnet/Opus
+    4+), DeepSeek-reasoner, and OpenAI reasoning models. OpenRouter routes
+    these too, so we sniff the model substring there as well.
+    """
+    p = (provider or "").lower()
+    m = (model or "").lower()
+    if p == "anthropic":
+        return any(
+            tag in m
+            for tag in (
+                "claude-sonnet-4",
+                "claude-opus-4",
+                "claude-3-7-sonnet",
+                "claude-3.7-sonnet",
+            )
+        )
+    if p == "deepseek":
+        return "reasoner" in m
+    if p == "openai":
+        return _is_openai_reasoning_style_model(model)
+    if p == "openrouter":
+        return any(
+            tag in m
+            for tag in (
+                "claude-sonnet-4",
+                "claude-opus-4",
+                "claude-3-7-sonnet",
+                "deepseek-reasoner",
+                "/o1",
+                "/o3",
+                "gpt-5",
+            )
+        )
+    return False
+
+
+# ── Streamed-response shim ──────────────────────────────────────────────────
+#
+# When ``chat()`` runs in streaming mode (``on_thinking`` callback supplied
+# AND model supports reasoning), we consume the LiteLLM stream inline and
+# repackage the final state as a non-streamed-shape object so the rest of
+# the response-parsing path (logprobs, tool_calls, finish_reason, usage)
+# stays unchanged. These minimal classes mirror the attribute access
+# pattern LiteLLM uses on its own response objects.
+
+
+class _StreamedFunction:
+    def __init__(self, name: str, arguments: str) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _StreamedToolCall:
+    def __init__(self, id_: str, name: str, arguments: str) -> None:
+        self.id = id_
+        self.function = _StreamedFunction(name, arguments)
+
+
+class _StreamedMessage:
+    def __init__(self, content: str, tool_calls: list[_StreamedToolCall]) -> None:
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _StreamedChoice:
+    def __init__(
+        self,
+        content: str,
+        tool_calls: list[_StreamedToolCall],
+        finish_reason: str | None,
+    ) -> None:
+        self.message = _StreamedMessage(content, tool_calls)
+        self.finish_reason = finish_reason
+        self.logprobs = None
+
+
+class _StreamedUsage:
+    def __init__(self, prompt: int, completion: int, total: int, thinking: int) -> None:
+        self.prompt_tokens = prompt
+        self.completion_tokens = completion
+        self.total_tokens = total
+        self.thinking_tokens = thinking
+
+
+class _StreamedResponse:
+    def __init__(
+        self,
+        content: str,
+        thinking_content: str,
+        tool_calls: list[_StreamedToolCall],
+        finish_reason: str | None,
+        usage: _StreamedUsage | None,
+    ) -> None:
+        self.choices = [_StreamedChoice(content, tool_calls, finish_reason)]
+        self.usage = usage
+        self.thinking_content = thinking_content
+        self.thinking_tokens = usage.thinking_tokens if usage else 0
+
+
+def _consume_thinking_stream(
+    iterator: Any, on_thinking: Callable[[str], None]
+) -> _StreamedResponse:
+    """Drain a LiteLLM stream, fire ``on_thinking`` deltas, and rebuild a response.
+
+    Reasoning text arrives as ``delta.reasoning_content`` chunks (LiteLLM
+    normalizes this across Anthropic ``thinking_blocks`` and DeepSeek/OpenAI
+    ``reasoning_content``). Tool calls arrive split by ``index`` and we
+    reassemble each by id/name/arguments-suffix. Usage typically arrives in a
+    trailing chunk with no choices.
+    """
+    content_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_slots: dict[int, dict[str, str]] = {}
+    finish_reason: str | None = None
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    thinking_tokens = 0
+
+    for chunk in iterator:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or prompt_tokens)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or completion_tokens)
+            total_tokens = int(getattr(usage, "total_tokens", 0) or total_tokens)
+            details = getattr(usage, "completion_tokens_details", None)
+            if details is not None:
+                thinking_tokens = int(getattr(details, "reasoning_tokens", 0) or thinking_tokens)
+
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        choice0 = choices[0]
+        delta = getattr(choice0, "delta", None)
+        if delta is not None:
+            rc = getattr(delta, "reasoning_content", None) or ""
+            if rc:
+                thinking_parts.append(rc)
+                try:
+                    on_thinking("".join(thinking_parts))
+                except Exception as cb_exc:
+                    log.debug("on_thinking callback raised: %s", cb_exc)
+
+            cc = getattr(delta, "content", None) or ""
+            if cc:
+                content_parts.append(cc)
+
+            raw_tcs = getattr(delta, "tool_calls", None) or []
+            for tc in raw_tcs:
+                idx = int(getattr(tc, "index", 0) or 0)
+                slot = tool_slots.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                tid = getattr(tc, "id", None)
+                if tid:
+                    slot["id"] = str(tid)
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    nm = getattr(fn, "name", None)
+                    if nm:
+                        slot["name"] = str(nm)
+                    args_chunk = getattr(fn, "arguments", None)
+                    if args_chunk:
+                        slot["arguments"] += str(args_chunk)
+
+        fr = getattr(choice0, "finish_reason", None)
+        if fr:
+            finish_reason = str(fr)
+
+    tool_calls_list: list[_StreamedToolCall] = [
+        _StreamedToolCall(
+            slot["id"] or f"tool_stream_{idx}",
+            slot["name"],
+            slot["arguments"] or "{}",
+        )
+        for idx, slot in sorted(tool_slots.items())
+        if slot["name"]
+    ]
+
+    usage_obj: _StreamedUsage | None = None
+    if prompt_tokens or completion_tokens or total_tokens or thinking_tokens:
+        usage_obj = _StreamedUsage(prompt_tokens, completion_tokens, total_tokens, thinking_tokens)
+
+    return _StreamedResponse(
+        content="".join(content_parts),
+        thinking_content="".join(thinking_parts),
+        tool_calls=tool_calls_list,
+        finish_reason=finish_reason,
+        usage=usage_obj,
+    )
+
+
 def _normalized_api_base(provider: str, api_base: str | None) -> str | None:
     """Normalize provider-specific base URLs to avoid common endpoint mismatches."""
     if not api_base:
@@ -711,11 +910,34 @@ class LLMProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         use_logprobs: bool = True,
+        on_thinking: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         model = self.model_name
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
+        # Engage streaming + reasoning when the caller wants live thinking
+        # AND the model actually emits reasoning. Other models silently fall
+        # through to the existing non-streaming path with no behavior change.
+        use_streaming = on_thinking is not None and _supports_thinking(self.cfg.provider, model)
+        if use_streaming:
+            if self.cfg.provider == "anthropic":
+                budget = max(1024, int(getattr(self.cfg, "thinking_budget", 1024)))
+                extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                # Anthropic requires ``max_tokens > thinking.budget_tokens``;
+                # leave headroom so the model has room for visible output.
+                if mt < budget + 512:
+                    mt = budget + 512
+                # Anthropic's extended-thinking API rejects temperature != 1
+                # and is incompatible with logprobs. Override both rather
+                # than letting the request fail.
+                temperature = 1.0
+                use_logprobs = False
+                for k in ("logprobs", "top_logprobs"):
+                    extra.pop(k, None)
+            # Ask the provider to emit a final usage chunk so we can capture
+            # reasoning_tokens for telemetry.
+            extra.setdefault("stream_options", {"include_usage": True})
 
         # Honor a runtime-discovered disable flag — set lower in the
         # exception path when a provider returns
@@ -764,15 +986,26 @@ class LLMProvider:
 
         def _do_completion(api_base_override: str | None) -> Any:
             explicit_api_key = self.cfg.api_key if self.cfg.provider == "openrouter" else None
-            return _litellm().completion(
+            kwargs_for_call = dict(extra)
+            if use_streaming:
+                kwargs_for_call["stream"] = True
+            raw = _litellm().completion(
                 model=model,
                 messages=messages,
                 temperature=temperature or self.cfg.temperature,
                 max_tokens=mt,
                 api_key=explicit_api_key,
                 api_base=api_base_override,
-                **extra,
+                **kwargs_for_call,
             )
+            if use_streaming:
+                # Consume the stream inside the retry context: any mid-stream
+                # error surfaces as the same exception class as a non-streamed
+                # failure, so the existing transient-retry / fatal-error
+                # classification keeps working.
+                assert on_thinking is not None  # guarded by ``use_streaming``
+                return _consume_thinking_stream(raw, on_thinking)
+            return raw
 
         t0 = time.perf_counter()
         resp = None
@@ -901,6 +1134,9 @@ class LLMProvider:
                 "total_tokens": getattr(raw_usage, "total_tokens", 0) or 0,
                 "model_processing_sec": elapsed_sec,
             }
+            tt = int(getattr(raw_usage, "thinking_tokens", 0) or 0)
+            if tt:
+                usage_dict["thinking_tokens"] = tt
         else:
             usage_dict = {"model_processing_sec": elapsed_sec}
 
@@ -1041,6 +1277,8 @@ class LLMProvider:
             finish_reason=finish,
             confidence_score=confidence_score,
             tool_calls=parsed_tool_calls,
+            thinking_content=str(getattr(resp, "thinking_content", "") or ""),
+            thinking_tokens=int(getattr(resp, "thinking_tokens", 0) or 0),
         )
 
     def test_result(self) -> LLMTestResult:

@@ -277,7 +277,14 @@ class ShortCircuitsMixin:
             if assistant_summary:
                 prior_turns.append({"role": "assistant", "content": assistant_summary})
         try:
+            from amx.utils.live_display import get_display
+
+            display = get_display()
             t0 = time.monotonic()
+            # ``step_spinner`` opens the thinking panel; the tool agent then
+            # streams the model's reasoning text into it via ``display`` so
+            # the user sees real thinking content rather than a blank
+            # spinner. The panel clears the moment the loop returns.
             with step_spinner("Search Agent: thinking with tools"):
                 result = run_tool_agent(
                     cfg=self.cfg,
@@ -286,6 +293,7 @@ class ShortCircuitsMixin:
                     question=clean_question,
                     answer_language=question_language,
                     session_memory=prior_turns,
+                    display=display if display.is_active else None,
                 )
             elapsed = round(time.monotonic() - t0, 4)
         except Exception as exc:
