@@ -997,6 +997,82 @@ class AskHistoryToolsTests(unittest.TestCase):
         self.assertIn("presentation_hint", payload)
         self.assertIn("compact table", payload["presentation_hint"].lower())
 
+    def test_history_list_runs_wizard_when_no_flags_passed(self) -> None:
+        """User feedback 2026-05-02: /history list should ask the user
+        (like /run) when there are options to choose from, instead of
+        forcing flag syntax. Bare ``/history list`` now prompts for
+        limit + include-asks; explicit flags skip the matching prompt.
+        """
+        from amx.cli import main
+
+        prompts: list[tuple[str, str]] = []
+
+        def fake_ask(question: str, default: str = "") -> str:
+            prompts.append(("ask", question))
+            return default
+
+        def fake_choice(question, choices, default="", descriptions=None):
+            prompts.append(("choice", question))
+            return default
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = CliRunner()
+
+            # Bare /history list — both prompts must fire.
+            with (
+                patch("amx.utils.console.ask", side_effect=fake_ask),
+                patch("amx.utils.console.ask_choice", side_effect=fake_choice),
+            ):
+                runner.invoke(
+                    main,
+                    ["--config", str(Path(tmp) / "noconfig.yml"), "history", "list"],
+                    env={"AMX_SESSION_CHILD": "1"},
+                    catch_exceptions=False,
+                )
+            self.assertEqual(
+                [k for k, _ in prompts],
+                ["ask", "choice"],
+                "Bare /list must ask 'how many runs' THEN 'include /ask sessions'.",
+            )
+
+            # -n 5 explicit → only the asks prompt fires.
+            prompts.clear()
+            with (
+                patch("amx.utils.console.ask", side_effect=fake_ask),
+                patch("amx.utils.console.ask_choice", side_effect=fake_choice),
+            ):
+                runner.invoke(
+                    main,
+                    ["--config", str(Path(tmp) / "noconfig.yml"), "history", "list", "-n", "5"],
+                    env={"AMX_SESSION_CHILD": "1"},
+                    catch_exceptions=False,
+                )
+            self.assertEqual([k for k, _ in prompts], ["choice"])
+
+            # Both flags explicit → zero prompts (power user / scripts).
+            prompts.clear()
+            with (
+                patch("amx.utils.console.ask", side_effect=fake_ask),
+                patch("amx.utils.console.ask_choice", side_effect=fake_choice),
+            ):
+                runner.invoke(
+                    main,
+                    [
+                        "--config",
+                        str(Path(tmp) / "noconfig.yml"),
+                        "history",
+                        "list",
+                        "-n",
+                        "5",
+                        "--include-asks",
+                    ],
+                    env={"AMX_SESSION_CHILD": "1"},
+                    catch_exceptions=False,
+                )
+            self.assertEqual(
+                prompts, [], "Power-user invocation with both flags must skip the wizard."
+            )
+
     def test_list_chat_sessions_returns_resumable_threads(self) -> None:
         """``/ask`` chat sessions live in chat_sessions / chat_turns and
         are resumable via ``/session resume <id>`` — surface them via
