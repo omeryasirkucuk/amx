@@ -52,19 +52,73 @@ def register_history_commands(
         """Inspect local SQLite history (runs, tokens, results, events, comparisons)."""
 
     @history.command("list")
-    @click.option("-n", "--limit", default=20, help="Number of runs to show.")
+    @click.option("-n", "--limit", type=int, default=None, help="Number of runs to show.")
     @click.option(
-        "--include-asks",
-        is_flag=True,
-        default=False,
+        "--include-asks/--no-include-asks",
+        "include_asks",
+        default=None,
         help=(
             "Also include /ask invocations (search.ask) in the listing. "
             "By default the list shows only /run invocations because /ask "
             "chat sessions belong in /session list (with resume support)."
         ),
     )
-    def history_list(limit: int, include_asks: bool) -> None:
+    @click.pass_context
+    def history_list(ctx: click.Context, limit: int | None, include_asks: bool | None) -> None:
+        """List recent runs.
+
+        Bare ``/list`` runs a short wizard (matches ``/run``'s pattern):
+        the user picks how many rows to show and whether to include
+        ``/ask`` chat sessions. Power users skip the wizard with
+        explicit flags (``/list -n 5``, ``/list --include-asks``).
+        """
         from datetime import datetime as _dt
+
+        from amx.utils.console import ask, ask_choice
+
+        # Wizard for any value the user didn't pin via a flag. Click's
+        # parameter-source check tells us whether ``--limit`` /
+        # ``--include-asks`` were typed on the command line.
+        # ParameterSource.DEFAULT means we're free to ask; .COMMANDLINE
+        # means the user gave an explicit value (scripts, power users).
+        try:
+            from click.core import ParameterSource
+
+            limit_src = ctx.get_parameter_source("limit")
+            asks_src = ctx.get_parameter_source("include_asks")
+            limit_from_user = limit_src == ParameterSource.COMMANDLINE
+            asks_from_user = asks_src == ParameterSource.COMMANDLINE
+        except Exception:
+            limit_from_user = limit is not None
+            asks_from_user = include_asks is not None
+
+        if not limit_from_user:
+            raw = ask("How many runs to show?", default="20").strip()
+            try:
+                limit = max(1, int(raw))
+            except ValueError:
+                warn(f"Could not parse '{raw}' as a number; using 20.")
+                limit = 20
+        else:
+            limit = int(limit) if limit else 20
+
+        if not asks_from_user:
+            choice = ask_choice(
+                "Which runs to list?",
+                ["only /run invocations", "include /ask sessions too"],
+                default="only /run invocations",
+                descriptions={
+                    "only /run invocations": (
+                        "/ask chat sessions are resumable threads — see /session list."
+                    ),
+                    "include /ask sessions too": (
+                        "Show every command in history; useful for debugging."
+                    ),
+                },
+            )
+            include_asks = choice == "include /ask sessions too"
+        else:
+            include_asks = bool(include_asks)
 
         hs = history_store()
         if hs is None:

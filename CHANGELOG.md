@@ -6,6 +6,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/history list` runs a wizard like `/run`
+
+User feedback: "I don't like `/list --some-flag` style. If we serve options, ask the user — like `/run` does."
+
+`/history list` with no flags now runs a short interactive wizard that matches `/run`'s pattern:
+
+```
+> /list
+  How many runs to show?: 20
+  Which runs to list?
+    1. only /run invocations  /ask chat sessions are resumable threads —
+       see /session list. — default (Enter)
+    2. include /ask sessions too  Show every command in history; useful for debugging.
+  > 1
+                       Recent /run invocations
+  ┏━━━━┳──────────────────┳━━━━━━━━━┳…
+```
+
+- Both flags become optional; **power users keep them** for scripting (`/list -n 5 --include-asks` skips the wizard entirely; `/list -n 5` skips only the limit prompt).
+- Detection uses Click's `ParameterSource` — if the user typed the flag, `ParameterSource.COMMANDLINE`; if it was filled by the default, `ParameterSource.DEFAULT`. The wizard fires only for params still at default.
+- Falls back to a manual `is None` check on Click versions that don't expose `ParameterSource` (defensive — doesn't crash if the introspection import fails).
+
+**1 new test** in `AskHistoryToolsTests` covers the three paths: bare `/list` (both prompts), `/list -n 5` (only asks prompt), `/list -n 5 --include-asks` (zero prompts).
+
 ### Changed — Run history vs ask sessions split + readable timestamps
 
 User reports two issues with `/ask` history responses:
