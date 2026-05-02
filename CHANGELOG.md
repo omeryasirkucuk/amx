@@ -6,6 +6,64 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — six new database backends + extended object model
+
+AMX now ships adapters for **MySQL, Oracle, SQL Server, Redshift, ClickHouse,
+and DuckDB**, bringing the supported backend count to 10. Each adapter exposes
+the object types its backend treats as first-class — not just tables and views.
+
+* **DuckDB**: tables, views, sequences, functions, **macros** (DuckDB's
+  parameterised SQL primitive). Single-file or `:memory:` connection.
+* **MySQL/MariaDB**: stored procedures, functions, triggers, **events**
+  (MySQL's scheduled jobs), partition strategy, storage engine.
+* **Oracle**: materialized views, procedures, functions, **packages** (PL/SQL
+  bundles, Oracle-distinctive), triggers, sequences, synonyms, user-defined
+  types. Service-name-first connection with SID fallback.
+* **SQL Server**: procedures, functions (FN/TF/IF subtypes), triggers,
+  sequences, synonyms. Comments via `sp_addextendedproperty` /
+  `sp_updateextendedproperty` (the IF EXISTS branch handles add-vs-update
+  in a single block).
+* **Redshift**: materialized views, stored procedures, UDFs, **datashares**
+  (Redshift's cross-cluster sharing primitive), **external tables** (Spectrum).
+  Analytics metadata exposes the Redshift-specific `diststyle` / `sortkey1` /
+  encoding signals that drive performance tuning.
+* **ClickHouse**: materialized views, user-defined functions, **dictionaries**
+  (ClickHouse's external lookup primitive), skipping indices, MergeTree engine
+  metadata.
+
+The **existing 4 adapters were back-filled** with the same extended object
+surface where applicable: PostgreSQL gets procedures/functions/sequences/
+triggers/UDTs; Snowflake gets procedures/functions/sequences/tasks/stages
+(volumes)/shares (datashares)/external tables; Databricks gets user
+functions, **volumes** (Unity Catalog file storage), and external tables;
+BigQuery gets routines and external tables.
+
+Under the hood: `BackendCapabilities` grew 13 new flags, `DatabaseAdapter`
+gained matching `list_*` methods (default `[]`), and `DatabaseConnector`
+surfaces them through capability-gated wrappers. Comment write-back works
+on every backend whose dialect supports it — including SQL Server's
+extended-properties mechanism and ClickHouse's `ALTER … MODIFY COMMENT`.
+
+### Changed — database drivers now ship as optional extras (BREAKING for installs)
+
+Database driver dependencies (psycopg2, snowflake-*, databricks-*,
+sqlalchemy-bigquery, google-cloud-bigquery, pymysql, oracledb, pyodbc,
+redshift_connector, clickhouse-connect, duckdb-engine) have moved out of
+`[project.dependencies]` into `[project.optional-dependencies]` extras.
+This trims the default install by ~50MB+ and keeps users who only target
+one or two backends from carrying the rest.
+
+**Migration**: existing users must reinstall with the extras they need:
+
+```bash
+pip install amx[postgresql,snowflake]   # multiple backends
+pip install amx[all]                    # everything (matches old behaviour)
+```
+
+`get_adapter()` now raises `MissingDriverError` (a subclass of `ImportError`)
+with the exact `pip install amx[<extra>]` hint when a backend is selected
+without its driver — no more bare `ModuleNotFoundError`.
+
 ### Fixed — OpenRouter reasoning request rejected by API (400) + token-budget exhaustion
 
 Real-run report after the previous OpenRouter fix landed:

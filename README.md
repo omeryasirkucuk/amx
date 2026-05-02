@@ -325,14 +325,25 @@ AMX scans/ingests these extensions:
 
 ## Supported database backends
 
-| Backend | Config (`backend` in `~/.amx/config.yml`) | Notes |
-|---------|-------------------------------------------|--------|
-| PostgreSQL | `postgresql` | Default; `COMMENT ON TABLE/COLUMN` |
-| Snowflake | `snowflake` | Account, warehouse, role; Snowflake `COMMENT` syntax |
-| Databricks | `databricks` | SQL warehouse HTTP path + personal access token; Unity Catalog optional |
-| BigQuery | `bigquery` | GCP project, dataset; table/schema/column descriptions via `ALTER … SET OPTIONS`; project-level descriptions are not supported through SQL write-back |
+| Backend | Config (`backend`) | Install | Notes |
+|---------|--------------------|---------|-------|
+| PostgreSQL | `postgresql` | `pip install amx[postgresql]` | `COMMENT ON TABLE/COLUMN/SCHEMA/DATABASE`; back-fills procedures, functions, sequences, triggers, UDTs |
+| Snowflake | `snowflake` | `pip install amx[snowflake]` | Account, warehouse, role; Snowflake `COMMENT`; back-fills procedures, functions, sequences, tasks, stages, shares, external tables |
+| Databricks | `databricks` | `pip install amx[databricks]` | SQL warehouse HTTP path + PAT; Unity Catalog; back-fills user functions, **volumes**, external tables |
+| BigQuery | `bigquery` | `pip install amx[bigquery]` | GCP project + dataset; descriptions via `ALTER … SET OPTIONS`; back-fills routines (procedures + functions), external tables |
+| MySQL / MariaDB | `mysql` | `pip install amx[mysql]` | `ALTER TABLE … COMMENT`; surfaces stored procedures, functions, triggers, **events** (scheduled jobs), partition strategy, storage engine |
+| Oracle | `oracle` | `pip install amx[oracle]` | `service_name` (preferred) or SID; surfaces materialized views, procedures, functions, **packages** (Oracle-distinctive), triggers, sequences, synonyms, UDTs |
+| SQL Server | `mssql` | `pip install amx[mssql]` (requires ODBC Driver 18) | Comments via `sp_addextendedproperty` / `sp_updateextendedproperty`; surfaces procedures, functions (FN/TF/IF), triggers, sequences, synonyms, partitions |
+| Redshift | `redshift` | `pip install amx[redshift]` | PG-compatible `COMMENT ON`; surfaces materialized views, procedures, UDFs, **datashares**, **external tables** (Spectrum); analytics metadata includes diststyle/sortkey/encoding |
+| ClickHouse | `clickhouse` | `pip install amx[clickhouse]` | `ALTER TABLE … MODIFY COMMENT` (21.x+); surfaces materialized views, UDFs, **dictionaries** (ClickHouse-distinctive), skipping indices, MergeTree engine info |
+| DuckDB | `duckdb` | `pip install amx[duckdb]` | Single-file or `:memory:`; surfaces sequences, functions, **macros** (DuckDB-distinctive), attached databases (Parquet/S3/Postgres scanner) |
 
-Introspection and profiling use backend-specific SQL where needed; metadata write-back uses each platform’s supported description/comment mechanism. Each adapter advertises its capabilities so unsupported operations fail clearly instead of being counted as applied. For example, BigQuery project-level descriptions are blocked before connection, and Databricks catalog comments require a configured Unity Catalog name.
+> Each backend driver is now an optional extra. Pick what you use:
+> `pip install amx[postgresql,duckdb]` — or grab everything with `pip install amx[all]`.
+
+Introspection and profiling use backend-specific SQL where needed; metadata write-back uses each platform's supported description/comment mechanism. Each adapter advertises its capabilities so unsupported operations fail clearly instead of being counted as applied. For example, BigQuery project-level descriptions are blocked before connection, MySQL has no `COMMENT ON SCHEMA` so schema comments raise rather than silently no-op, and DuckDB schema-level comments are unsupported in DuckDB 1.x.
+
+Beyond tables and views, each adapter exposes the object types that are first-class on its backend: stored procedures, user functions, sequences, triggers, scheduled jobs/tasks/events, packages (Oracle), synonyms (Oracle / SQL Server), user-defined types, dictionaries (ClickHouse), macros (DuckDB), volumes (Databricks Unity Catalog), datashares (Snowflake / Redshift), and external tables (Snowflake / Databricks / BigQuery / Redshift Spectrum / DuckDB Parquet). Capability flags on `BackendCapabilities` gate which list operations the connector even attempts, so unsupported types short-circuit cleanly.
 
 ## Supported LLM Providers
 
