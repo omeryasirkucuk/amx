@@ -19,6 +19,9 @@ class BigQueryAdapter(DatabaseAdapter):
         relationships=True,
         row_count_stats=True,
         full_scan_when_row_count_unknown=False,
+        stored_procedures=True,
+        functions=True,
+        external_tables=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -170,6 +173,101 @@ class BigQueryAdapter(DatabaseAdapter):
         except Exception as exc:
             actionable = self.actionable_profile_error(exc)
             raise RuntimeError(actionable or str(exc)) from exc
+
+    # ── Extended object types ─────────────────────────────────────────────
+
+    def _routine_query(self, schema: str, kind: str) -> str:
+        # ``kind`` is BigQuery's ROUTINE_TYPE: 'PROCEDURE' or 'FUNCTION'
+        # (the latter covers SQL UDFs and JS UDFs both).
+        return (
+            f"SELECT routine_name, routine_definition, ddl, language, "
+            f"data_type, last_altered "
+            f"FROM `{getattr(self.cfg, 'project', '')}`.`{schema}`.INFORMATION_SCHEMA.ROUTINES "
+            f"WHERE routine_type = '{kind}' "
+            f"ORDER BY routine_name"
+        )
+
+    def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(self._routine_query(schema, "PROCEDURE"))).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "procedure",
+                "definition": str(r[2] or r[1]) if (r[2] or r[1]) else None,
+                "comment": None,
+                "metadata": {
+                    "language": str(r[3]) if r[3] else None,
+                    "last_altered": str(r[5]) if r[5] else None,
+                },
+            }
+            for r in rows
+        ]
+
+    def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(self._routine_query(schema, "FUNCTION"))).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "function",
+                "definition": str(r[2] or r[1]) if (r[2] or r[1]) else None,
+                "comment": None,
+                "metadata": {
+                    "language": str(r[3]) if r[3] else None,
+                    "return_type": str(r[4]) if r[4] else None,
+                    "last_altered": str(r[5]) if r[5] else None,
+                },
+            }
+            for r in rows
+        ]
+
+    def list_external_tables(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        # BigQuery external tables (EXTERNAL) and BigLake tables both
+        # show table_type='EXTERNAL'. Storage URIs / format come from
+        # INFORMATION_SCHEMA.EXTERNAL_TABLE_OPTIONS as JSON-ish strings.
+        project = getattr(self.cfg, "project", "")
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        f"SELECT table_name "
+                        f"FROM `{project}`.`{schema}`.INFORMATION_SCHEMA.TABLES "
+                        f"WHERE table_type = 'EXTERNAL' "
+                        f"ORDER BY table_name"
+                    )
+                ).fetchall()
+            except Exception:
+                return []
+            opts_by_table: dict[str, dict[str, str]] = {}
+            try:
+                opt_rows = conn.execute(
+                    text(
+                        f"SELECT table_name, option_name, option_value "
+                        f"FROM `{project}`.`{schema}`.INFORMATION_SCHEMA.EXTERNAL_TABLE_OPTIONS"
+                    )
+                ).fetchall()
+                for orow in opt_rows:
+                    bucket = opts_by_table.setdefault(str(orow[0]), {})
+                    bucket[str(orow[1])] = str(orow[2])
+            except Exception:
+                pass
+        return [
+            {
+                "name": str(r[0]),
+                "type": "external_table",
+                "definition": None,
+                "comment": None,
+                "metadata": opts_by_table.get(str(r[0]), {}),
+            }
+            for r in rows
+        ]
 
     # ── Analytics metadata ────────────────────────────────────────────────
 

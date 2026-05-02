@@ -18,6 +18,13 @@ class SnowflakeAdapter(DatabaseAdapter):
         relationships=True,
         row_count_stats=True,
         full_scan_when_row_count_unknown=False,
+        stored_procedures=True,
+        functions=True,
+        sequences=True,
+        events=True,  # SHOW TASKS — Snowflake's scheduled jobs
+        volumes=True,  # SHOW STAGES — Snowflake's file-storage primitive
+        datashares=True,
+        external_tables=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -194,6 +201,106 @@ class SnowflakeAdapter(DatabaseAdapter):
         except Exception as exc:
             actionable = self.actionable_profile_error(exc)
             raise RuntimeError(actionable or str(exc)) from exc
+
+    # ── Extended object types ─────────────────────────────────────────────
+
+    def _show_to_dicts(
+        self,
+        engine: Engine,
+        sql: str,
+        type_label: str,
+        name_keys: tuple[str, ...] = ("name", "NAME"),
+        comment_keys: tuple[str, ...] = ("comment", "COMMENT"),
+        extra_keys: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        """Run a Snowflake ``SHOW`` statement and reshape the rows into the
+        adapter's uniform list-result dict shape. ``SHOW`` returns rows
+        with mixed-case column names that depend on the object type;
+        we look at both upper- and lower-case variants to be safe.
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            mapping = row._mapping if hasattr(row, "_mapping") else {}
+
+            def _pick(keys: tuple[str, ...]) -> Any:
+                for k in keys:
+                    if k in mapping and mapping[k] is not None:
+                        return mapping[k]
+                return None
+
+            name = _pick(name_keys)
+            if name is None:
+                continue
+            extras: dict[str, Any] = {}
+            for k in extra_keys:
+                v = mapping.get(k)
+                if v is None:
+                    v = mapping.get(k.upper())
+                if v is not None:
+                    extras[k.lower()] = v if isinstance(v, (str, int, float, bool)) else str(v)
+            out.append(
+                {
+                    "name": str(name),
+                    "type": type_label,
+                    "definition": None,
+                    "comment": str(_pick(comment_keys)) if _pick(comment_keys) else None,
+                    "metadata": extras,
+                }
+            )
+        return out
+
+    def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        sql = f"SHOW PROCEDURES IN SCHEMA {self.quote_identifier(schema)}"
+        return self._show_to_dicts(
+            engine, sql, "procedure", extra_keys=("arguments", "language")
+        )
+
+    def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        sql = f"SHOW USER FUNCTIONS IN SCHEMA {self.quote_identifier(schema)}"
+        return self._show_to_dicts(
+            engine, sql, "function", extra_keys=("arguments", "language")
+        )
+
+    def list_sequences(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        sql = f"SHOW SEQUENCES IN SCHEMA {self.quote_identifier(schema)}"
+        return self._show_to_dicts(
+            engine, sql, "sequence", extra_keys=("interval", "next_value")
+        )
+
+    def list_events(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        # Snowflake "tasks" are scheduled SQL statements — the closest
+        # analogue to MySQL events / SQL Server Agent jobs.
+        sql = f"SHOW TASKS IN SCHEMA {self.quote_identifier(schema)}"
+        return self._show_to_dicts(
+            engine, sql, "task", extra_keys=("schedule", "state", "warehouse", "definition")
+        )
+
+    def list_volumes(
+        self, engine: Engine, catalog: str, schema: str
+    ) -> list[dict[str, Any]]:
+        # Snowflake stages — internal or external file-storage. ``catalog``
+        # arg is unused (Snowflake stages are schema-scoped).
+        sql = f"SHOW STAGES IN SCHEMA {self.quote_identifier(schema)}"
+        return self._show_to_dicts(
+            engine, sql, "stage", extra_keys=("type", "url", "cloud", "region")
+        )
+
+    def list_datashares(self, engine: Engine) -> list[dict[str, Any]]:
+        # SHOW SHARES is account-level. Listing both inbound and
+        # outbound shares; the ``kind`` column distinguishes.
+        return self._show_to_dicts(
+            engine, "SHOW SHARES", "share", name_keys=("name", "NAME"),
+            extra_keys=("kind", "owner_account", "to_accounts", "listing_global_name"),
+        )
+
+    def list_external_tables(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        sql = f"SHOW EXTERNAL TABLES IN SCHEMA {self.quote_identifier(schema)}"
+        return self._show_to_dicts(
+            engine, sql, "external_table",
+            extra_keys=("location", "file_format_name", "auto_refresh"),
+        )
 
     # ── Analytics metadata ────────────────────────────────────────────────
 

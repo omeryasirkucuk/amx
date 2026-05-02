@@ -17,6 +17,11 @@ class PostgreSQLAdapter(DatabaseAdapter):
         materialized_views=True,
         relationships=True,
         row_count_stats=True,
+        stored_procedures=True,
+        functions=True,
+        sequences=True,
+        triggers=True,
+        user_defined_types=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 
@@ -223,6 +228,172 @@ class PostgreSQLAdapter(DatabaseAdapter):
                 "source_table": str(r[1]),
                 "source_column": str(r[2]),
                 "target_column": str(r[3]),
+            }
+            for r in rows
+        ]
+
+    # ── Extended object types ─────────────────────────────────────────────
+
+    def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        # PG 11+ distinguishes procedures (prokind='p') from functions
+        # ('f') and aggregates ('a'). Older PG only has functions, so
+        # this returns [] there — capability flag is True regardless.
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT p.proname, pg_get_functiondef(p.oid), "
+                        "obj_description(p.oid, 'pg_proc') "
+                        "FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = :schema AND p.prokind = 'p' "
+                        "ORDER BY p.proname"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                return []
+        return [
+            {
+                "name": str(r[0]),
+                "type": "procedure",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
+            }
+            for r in rows
+        ]
+
+    def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(
+                    text(
+                        "SELECT p.proname, pg_get_functiondef(p.oid), "
+                        "obj_description(p.oid, 'pg_proc'), l.lanname "
+                        "FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "JOIN pg_language l ON l.oid = p.prolang "
+                        "WHERE n.nspname = :schema AND p.prokind = 'f' "
+                        "ORDER BY p.proname"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            except Exception:
+                # Pre-PG 11: prokind doesn't exist; fall back to all
+                # functions in the schema.
+                rows = conn.execute(
+                    text(
+                        "SELECT p.proname, NULL, obj_description(p.oid, 'pg_proc'), 'sql' "
+                        "FROM pg_proc p "
+                        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname = :schema "
+                        "ORDER BY p.proname"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+        return [
+            {
+                "name": str(r[0]),
+                "type": "function",
+                "definition": str(r[1]) if r[1] else None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {"language": str(r[3]) if r[3] else None},
+            }
+            for r in rows
+        ]
+
+    def list_sequences(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT c.relname, "
+                    "  obj_description(c.oid, 'pg_class') AS comment, "
+                    "  s.seqstart, s.seqincrement, s.seqmin, s.seqmax, s.seqcycle "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "LEFT JOIN pg_sequence s ON s.seqrelid = c.oid "
+                    "WHERE n.nspname = :schema AND c.relkind = 'S' "
+                    "ORDER BY c.relname"
+                ),
+                {"schema": schema},
+            ).fetchall()
+        return [
+            {
+                "name": str(r[0]),
+                "type": "sequence",
+                "definition": None,
+                "comment": str(r[1]) if r[1] else None,
+                "metadata": {
+                    "start": int(r[2]) if r[2] is not None else None,
+                    "increment": int(r[3]) if r[3] is not None else None,
+                    "min": int(r[4]) if r[4] is not None else None,
+                    "max": int(r[5]) if r[5] is not None else None,
+                    "cycle": bool(r[6]) if r[6] is not None else False,
+                },
+            }
+            for r in rows
+        ]
+
+    def list_triggers(
+        self, engine: Engine, schema: str, table: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT t.tgname, c.relname AS table_name, "
+            "  pg_get_triggerdef(t.oid) AS def, t.tgenabled "
+            "FROM pg_trigger t "
+            "JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = :schema AND NOT t.tgisinternal"
+        )
+        params: dict[str, Any] = {"schema": schema}
+        if table:
+            sql += " AND c.relname = :table"
+            params["table"] = table
+        sql += " ORDER BY t.tgname"
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        return [
+            {
+                "name": str(r[0]),
+                "type": "trigger",
+                "definition": str(r[2]) if r[2] else None,
+                "comment": None,
+                "metadata": {
+                    "table": str(r[1]),
+                    "enabled": str(r[3]) != "D",  # 'D' = disabled
+                },
+            }
+            for r in rows
+        ]
+
+    def list_user_defined_types(
+        self, engine: Engine, schema: str
+    ) -> list[dict[str, Any]]:
+        # typtype: 'c'=composite, 'd'=domain, 'e'=enum, 'r'=range,
+        # 'm'=multirange. Skip table-row composites by filtering on
+        # typrelid=0 OR the relation isn't a table.
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT t.typname, t.typtype, obj_description(t.oid, 'pg_type') "
+                    "FROM pg_type t "
+                    "JOIN pg_namespace n ON n.oid = t.typnamespace "
+                    "WHERE n.nspname = :schema "
+                    "AND t.typtype IN ('c','d','e','r','m') "
+                    "AND (t.typrelid = 0 OR (SELECT relkind FROM pg_class WHERE oid = t.typrelid) != 'r') "
+                    "ORDER BY t.typname"
+                ),
+                {"schema": schema},
+            ).fetchall()
+        type_map = {"c": "composite", "d": "domain", "e": "enum", "r": "range", "m": "multirange"}
+        return [
+            {
+                "name": str(r[0]),
+                "type": type_map.get(str(r[1]), str(r[1])),
+                "definition": None,
+                "comment": str(r[2]) if r[2] else None,
+                "metadata": {},
             }
             for r in rows
         ]

@@ -25,6 +25,9 @@ class DatabricksAdapter(DatabaseAdapter):
         relationships=False,
         row_count_stats=True,
         full_scan_when_row_count_unknown=False,
+        functions=True,
+        volumes=True,  # ★ Unity Catalog volumes — distinctively Databricks
+        external_tables=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
     )
     trusted_ca_env_vars = (
@@ -388,6 +391,114 @@ class DatabricksAdapter(DatabaseAdapter):
 
         if warnings:
             out["warnings"] = warnings
+        return out
+
+    # ── Extended object types ─────────────────────────────────────────────
+
+    def _qualify(self, catalog: str, schema: str) -> str:
+        # Build a Unity Catalog 3-level reference for SHOW commands.
+        cat = catalog or getattr(self.cfg, "catalog", "") or ""
+        if cat:
+            return f"`{cat}`.`{schema}`"
+        return f"`{schema}`"
+
+    def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        sql = f"SHOW USER FUNCTIONS IN {self._qualify(catalog, schema)}"
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(sql)).fetchall()
+            except Exception:
+                return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            mapping = row._mapping if hasattr(row, "_mapping") else {}
+            # SHOW USER FUNCTIONS returns a single-column ``function`` field
+            # carrying the fully-qualified name.
+            full = mapping.get("function") or (row[0] if len(row) else None)
+            if not full:
+                continue
+            name = str(full).split(".")[-1]
+            out.append(
+                {
+                    "name": name,
+                    "type": "function",
+                    "definition": None,
+                    "comment": None,
+                    "metadata": {"qualified_name": str(full)},
+                }
+            )
+        return out
+
+    def list_volumes(
+        self, engine: Engine, catalog: str, schema: str
+    ) -> list[dict[str, Any]]:
+        # ★ Unity Catalog volumes — managed or external file storage,
+        # the headline Databricks-distinctive object type.
+        sql = f"SHOW VOLUMES IN {self._qualify(catalog, schema)}"
+        with engine.connect() as conn:
+            try:
+                rows = conn.execute(text(sql)).fetchall()
+            except Exception:
+                return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            mapping = row._mapping if hasattr(row, "_mapping") else {}
+            name = mapping.get("volume_name") or mapping.get("name")
+            if name is None and len(row):
+                name = row[0]
+            if name is None:
+                continue
+            out.append(
+                {
+                    "name": str(name),
+                    "type": str(mapping.get("volume_type") or "volume").lower(),
+                    "definition": None,
+                    "comment": str(mapping.get("comment")) if mapping.get("comment") else None,
+                    "metadata": {
+                        k: str(v)
+                        for k, v in mapping.items()
+                        if k not in ("volume_name", "name", "comment") and v is not None
+                    },
+                }
+            )
+        return out
+
+    def list_external_tables(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        # No clean per-schema "show external tables" — we filter the
+        # standard SHOW TABLES output by DESCRIBE TABLE EXTENDED Type.
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        out: list[dict[str, Any]] = []
+        try:
+            tables = self.list_tables(engine, schema, catalog) or []
+        except Exception:
+            return []
+        for t in tables:
+            try:
+                fqn = self.fully_qualified_name(schema, t)
+                with engine.connect() as conn:
+                    rows = conn.execute(text(f"DESCRIBE TABLE EXTENDED {fqn}")).fetchall()
+                location = None
+                kind = None
+                for r in rows:
+                    rd = dict(r._mapping) if hasattr(r, "_mapping") else dict(r)
+                    name = str(rd.get("col_name") or "").strip()
+                    if name == "Type":
+                        kind = str(rd.get("data_type") or "").lower()
+                    elif name == "Location":
+                        location = str(rd.get("data_type") or "")
+                if kind == "external":
+                    out.append(
+                        {
+                            "name": t,
+                            "type": "external_table",
+                            "definition": None,
+                            "comment": None,
+                            "metadata": {"location": location},
+                        }
+                    )
+            except Exception:
+                continue
         return out
 
     # ── Comment writing ───────────────────────────────────────────────────
