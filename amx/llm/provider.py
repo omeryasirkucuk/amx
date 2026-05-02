@@ -545,6 +545,11 @@ def _supports_thinking(provider: str, model: str) -> bool:
     if p == "openai":
         return _is_openai_reasoning_style_model(model)
     if p == "openrouter":
+        # Reuse the OpenAI sniffer for o-series / gpt-5 routes (covers o1,
+        # o3, o4, gpt-5 in any vendor-prefixed form). Then add named
+        # routes for non-OpenAI reasoning models OpenRouter fronts.
+        if _is_openai_reasoning_style_model(model):
+            return True
         return any(
             tag in m
             for tag in (
@@ -552,9 +557,7 @@ def _supports_thinking(provider: str, model: str) -> bool:
                 "claude-opus-4",
                 "claude-3-7-sonnet",
                 "deepseek-reasoner",
-                "/o1",
-                "/o3",
-                "gpt-5",
+                "kimi-k2-thinking",
             )
         )
     return False
@@ -921,8 +924,8 @@ class LLMProvider:
         # through to the existing non-streaming path with no behavior change.
         use_streaming = on_thinking is not None and _supports_thinking(self.cfg.provider, model)
         if use_streaming:
+            budget = max(1024, int(getattr(self.cfg, "thinking_budget", 1024)))
             if self.cfg.provider == "anthropic":
-                budget = max(1024, int(getattr(self.cfg, "thinking_budget", 1024)))
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 # Anthropic requires ``max_tokens > thinking.budget_tokens``;
                 # leave headroom so the model has room for visible output.
@@ -932,6 +935,34 @@ class LLMProvider:
                 # and is incompatible with logprobs. Override both rather
                 # than letting the request fail.
                 temperature = 1.0
+                use_logprobs = False
+                for k in ("logprobs", "top_logprobs"):
+                    extra.pop(k, None)
+            elif self.cfg.provider == "openrouter":
+                # OpenRouter omits reasoning tokens from responses by default —
+                # without this opt-in the stream contains content but no
+                # ``reasoning_content`` deltas, so the thinking panel stays
+                # empty even though everything else is wired up. ``effort``
+                # covers OpenAI-style routes (o-series, gpt-5); ``max_tokens``
+                # covers Anthropic-style budget routes (Claude). OpenRouter
+                # accepts both in the same request and applies whichever the
+                # downstream provider expects. See:
+                # https://openrouter.ai/docs/use-cases/reasoning-tokens
+                effort = os.getenv("AMX_REASONING_EFFORT", "medium").strip().lower()
+                if effort not in ("low", "medium", "high"):
+                    effort = "medium"
+                extra.setdefault(
+                    "reasoning",
+                    {"effort": effort, "max_tokens": budget, "exclude": False},
+                )
+                # logprobs are unsupported on most reasoning routes; drop to
+                # avoid 400s before the streamed call goes out.
+                use_logprobs = False
+                for k in ("logprobs", "top_logprobs"):
+                    extra.pop(k, None)
+            elif self.cfg.provider == "deepseek":
+                # DeepSeek-reasoner returns reasoning_content natively in the
+                # stream; just drop logprobs which the route doesn't accept.
                 use_logprobs = False
                 for k in ("logprobs", "top_logprobs"):
                     extra.pop(k, None)
