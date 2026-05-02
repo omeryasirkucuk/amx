@@ -7,9 +7,10 @@ import math
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any
 
 from amx.config import LLMConfig, normalize_llm_model
 from amx.utils.logging import get_logger
@@ -600,9 +601,7 @@ class _StreamedChoice:
 
 
 class _StreamedUsage:
-    def __init__(
-        self, prompt: int, completion: int, total: int, thinking: int
-    ) -> None:
+    def __init__(self, prompt: int, completion: int, total: int, thinking: int) -> None:
         self.prompt_tokens = prompt
         self.completion_tokens = completion
         self.total_tokens = total
@@ -648,15 +647,11 @@ def _consume_thinking_stream(
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or prompt_tokens)
-            completion_tokens = int(
-                getattr(usage, "completion_tokens", 0) or completion_tokens
-            )
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or completion_tokens)
             total_tokens = int(getattr(usage, "total_tokens", 0) or total_tokens)
             details = getattr(usage, "completion_tokens_details", None)
             if details is not None:
-                thinking_tokens = int(
-                    getattr(details, "reasoning_tokens", 0) or thinking_tokens
-                )
+                thinking_tokens = int(getattr(details, "reasoning_tokens", 0) or thinking_tokens)
 
         choices = getattr(chunk, "choices", None) or []
         if not choices:
@@ -679,9 +674,7 @@ def _consume_thinking_stream(
             raw_tcs = getattr(delta, "tool_calls", None) or []
             for tc in raw_tcs:
                 idx = int(getattr(tc, "index", 0) or 0)
-                slot = tool_slots.setdefault(
-                    idx, {"id": "", "name": "", "arguments": ""}
-                )
+                slot = tool_slots.setdefault(idx, {"id": "", "name": "", "arguments": ""})
                 tid = getattr(tc, "id", None)
                 if tid:
                     slot["id"] = str(tid)
@@ -710,9 +703,7 @@ def _consume_thinking_stream(
 
     usage_obj: _StreamedUsage | None = None
     if prompt_tokens or completion_tokens or total_tokens or thinking_tokens:
-        usage_obj = _StreamedUsage(
-            prompt_tokens, completion_tokens, total_tokens, thinking_tokens
-        )
+        usage_obj = _StreamedUsage(prompt_tokens, completion_tokens, total_tokens, thinking_tokens)
 
     return _StreamedResponse(
         content="".join(content_parts),
@@ -928,9 +919,7 @@ class LLMProvider:
         # Engage streaming + reasoning when the caller wants live thinking
         # AND the model actually emits reasoning. Other models silently fall
         # through to the existing non-streaming path with no behavior change.
-        use_streaming = on_thinking is not None and _supports_thinking(
-            self.cfg.provider, model
-        )
+        use_streaming = on_thinking is not None and _supports_thinking(self.cfg.provider, model)
         if use_streaming:
             if self.cfg.provider == "anthropic":
                 budget = max(1024, int(getattr(self.cfg, "thinking_budget", 1024)))

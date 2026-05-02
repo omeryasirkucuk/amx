@@ -319,7 +319,7 @@ def run_tool_agent(
     question: str,
     answer_language: str,
     session_memory: list[dict[str, Any]] | None = None,
-    display: "LiveDisplay | None" = None,
+    display: LiveDisplay | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -356,7 +356,7 @@ def _run_tool_loop(
     question: str,
     answer_language: str,
     session_memory: list[dict[str, Any]] | None,
-    display: "LiveDisplay | None" = None,
+    display: LiveDisplay | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
     # system prompt so the LLM doesn't have to spend a tool call discovering
@@ -387,9 +387,7 @@ def _run_tool_loop(
 
     # Single closure shared across iterations so the thinking panel keeps
     # streaming continuously even as we hop between LLM calls + tool calls.
-    on_thinking = (
-        (lambda text: display.update_thinking(text)) if display is not None else None
-    )
+    on_thinking = (lambda text: display.update_thinking(text)) if display is not None else None
 
     for iteration in range(_MAX_ITERATIONS):
         iterations = iteration + 1
