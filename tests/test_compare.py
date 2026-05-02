@@ -755,5 +755,181 @@ class RunSettingsSnapshotTests(unittest.TestCase):
         self.assertEqual(_settings_for_run({"settings_json": "{not json"}), {})
 
 
+class AskHistoryToolsTests(unittest.TestCase):
+    """User report 2026-05-02: /ask said "I don't have access to your past
+    runs". Wired ``list_past_runs`` and ``describe_run`` into the search
+    agent's tool registry so the LLM can introspect the same data
+    ``/history compare`` reads. These tests exercise the tool-handler
+    layer directly — mocking the LLM is out of scope here, but verifying
+    the tools return the right shape catches every regression that
+    matters."""
+
+    def _build_toolbox(self, store: SQLiteHistoryStore):
+        from unittest.mock import MagicMock
+
+        from amx.search.agent_tools import ToolBox
+
+        cfg = AMXConfig()
+        catalog = MagicMock()
+        # The toolbox lazily creates a DatabaseConnector via db_factory;
+        # past-runs tools don't touch the live DB so any factory works.
+        toolbox = ToolBox(cfg, catalog, db_factory=lambda: MagicMock())
+        # Replace the global history_store accessor for the duration of
+        # the test so the tool sees our seeded store.
+        return toolbox
+
+    def test_list_past_runs_returns_compact_settings_aware_payload(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid_a = store.create_run(
+                command="analyze.run",
+                mode="chat",
+                db_backend="postgresql",
+                db_profile="pg",
+                llm_provider="openai",
+                llm_model="gpt-4o",
+                scope={"sales": ["orders"]},
+                llm_profile="default",
+                doc_profile="docs-prod",
+                code_profile="code-main",
+                settings={
+                    "prompt_detail": "detailed",
+                    "n_alternatives": 5,
+                    "column_batch_size": 10,
+                    "dedup_used": True,
+                },
+            )
+            rid_b = store.create_run(
+                command="analyze.run",
+                mode="chat",
+                db_backend="postgresql",
+                db_profile="pg",
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                scope={"sales": ["orders"]},
+                llm_profile="claude",
+                settings={
+                    "prompt_detail": "minimal",
+                    "n_alternatives": 3,
+                    "column_batch_size": 8,
+                    "dedup_used": False,
+                },
+            )
+
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                payload = toolbox._tool_list_past_runs(schema="sales", limit=10)
+
+            self.assertEqual(payload["count"], 2)
+            self.assertEqual(payload["filter"]["schema"], "sales")
+            run_ids = {r["run_id"] for r in payload["runs"]}
+            self.assertEqual(run_ids, {rid_a, rid_b})
+            # Settings ride along so the LLM can compare profiles directly.
+            for run in payload["runs"]:
+                self.assertIn("settings", run)
+                self.assertIn("prompt_detail", run["settings"])
+                self.assertIn("n_alternatives", run["settings"])
+
+    def test_list_past_runs_command_filter_validates(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                bogus = toolbox._tool_list_past_runs(command="bogus")
+            self.assertIn("error", bogus)
+            self.assertIn("Invalid 'command'", bogus["error"])
+
+    def test_list_past_runs_handles_missing_store(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=None):
+                payload = toolbox._tool_list_past_runs(limit=5)
+            self.assertEqual(payload["count"], 0)
+            self.assertIn("note", payload)
+            self.assertIn("history store is initialised", payload["note"])
+
+    def test_describe_run_returns_settings_metrics_and_results(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid = store.create_run(
+                command="analyze.run",
+                mode="chat",
+                db_backend="postgresql",
+                db_profile="pg",
+                llm_provider="openai",
+                llm_model="gpt-4o",
+                scope={"sales": ["orders"]},
+                llm_profile="default",
+                settings={"prompt_detail": "standard"},
+            )
+            store.save_run_results(
+                rid,
+                [
+                    {
+                        "schema": "sales",
+                        "table": "orders",
+                        "column": "id",
+                        "asset_kind": "table",
+                        "source": "code",
+                        "confidence": "high",
+                        "logprob_score": 0.92,
+                        "raw_logprob": 0.92,
+                        "token_count": 28,
+                        "model_version": "gpt-4o",
+                        "reasoning": "primary key",
+                        "alternatives": ["Primary key for orders"],
+                    }
+                ],
+            )
+
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                row = toolbox._tool_describe_run(run_id=rid, include_results=True)
+
+            self.assertEqual(row["run_id"], rid)
+            self.assertEqual(row["settings"], {"prompt_detail": "standard"})
+            self.assertEqual(row["llm_model"], "gpt-4o")
+            self.assertEqual(row["results_count"], 1)
+            self.assertEqual(row["results"][0]["column"], "id")
+            self.assertEqual(row["results"][0]["confidence"], "high")
+            self.assertAlmostEqual(row["results"][0]["logprob_score"] or 0, 0.92, places=4)
+
+    def test_describe_run_invalid_id_returns_error(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                row = toolbox._tool_describe_run(run_id="not-a-number")  # type: ignore[arg-type]
+            self.assertIn("error", row)
+            self.assertIn("Invalid run_id", row["error"])
+
+    def test_past_runs_tools_are_in_the_llm_tool_schema(self) -> None:
+        """The new tools must show up in ``ToolBox.schemas()`` so LiteLLM
+        forwards them to the LLM. Otherwise the system prompt's
+        instruction to "call list_past_runs" produces a hallucinated
+        function-call name the agent loop can't dispatch."""
+        from amx.search.agent_tools import ToolBox
+
+        names = {entry["function"]["name"] for entry in ToolBox.schemas()}
+        self.assertIn("list_past_runs", names)
+        self.assertIn("describe_run", names)
+
+
 if __name__ == "__main__":
     unittest.main()
