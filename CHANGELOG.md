@@ -6,6 +6,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — typo'd slash commands in /search no longer silently feed the search agent
+
+Inside the `/search` namespace, any unknown slash command was rewritten to
+`["search", "ask", <head>]` and dispatched to the search agent as a
+question — so `/asl` (a typo of `/ask`) silently became a 30-second LLM
+call about the literal string "asl". Bare-text questions are already
+auto-prefixed with `/ask` upstream, so anything still landing in the
+unknown-command branch was an explicit slash command from the user.
+Return `None` so the dispatcher prints `Unknown command: /asl. Type
+/help.` instead of swallowing typos. Real `/search` subcommands,
+shortcut-map entries (`/run`, `/scan`, `/doctor`, …), and namespace
+switches all keep working unchanged.
+
 ### Fixed — reasoning models on OpenRouter no longer truncate in CHAT mode
 
 Non-streamed calls to OpenRouter reasoning routes (kimi-k2-thinking,
