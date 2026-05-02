@@ -681,6 +681,12 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
 class LLMConfig(_ObservableConfig):
     provider: str = ""  # openai | openrouter | anthropic | gemini | local | deepseek | …
     model: str = ""
+    # Deprecated since PR #61: AMX is English-only. The field stays so that
+    # call sites reading ``cfg.llm.language`` (legacy display strings, the
+    # search-agent system prompt's "metadata language" line, etc.) keep
+    # working without per-line null guards. New code must NOT branch on it
+    # — all prompts and outputs are English. The /language slash command,
+    # wizard prompt, and the routing entry are removed.
     language: str = "english"
     api_key: str = ""
     api_base: str | None = None
@@ -717,6 +723,10 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     n_alt = int(m.get("n_alternatives", 3))
     provider = str(m.get("provider", ""))
     model = normalize_llm_model(provider, str(m.get("model", "")))
+    # ``language`` is deprecated since PR #61 (AMX is English-only)
+    # but the field stays on LLMConfig for back-compat. Existing
+    # configs with ``language: turkish`` round-trip without crashing
+    # — the value is read in but never used to branch any prompt.
     return LLMConfig(
         provider=provider,
         model=model,
@@ -741,6 +751,8 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
     return {
         "provider": llm.provider,
         "model": normalize_llm_model(llm.provider, llm.model),
+        # Deprecated (AMX is English-only since PR #61) — kept in the
+        # YAML for back-compat and to round-trip cleanly.
         "language": llm.language,
         "api_key": llm.api_key,
         "api_base": llm.api_base,

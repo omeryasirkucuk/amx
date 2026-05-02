@@ -159,7 +159,6 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/use-llm", "llm", "Switch LLM profile (/use-llm <name>)"),
     SlashCommand("/add-llm-profile", "llm", "Add/update LLM profile"),
     SlashCommand("/remove-llm-profile", "llm", "Remove LLM profile (/remove-llm-profile <name>)"),
-    SlashCommand("/language", "llm", "Show/set metadata generation language (/language [name])"),
     SlashCommand(
         "/prompt-detail",
         "llm",
