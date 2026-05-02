@@ -6,6 +6,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/ask` can introspect past runs
+
+User report: `/ask "Can you see my past runs to create metadata"` returned "I don't have access to your past runs or any previous interactions." That's wrong now.
+
+Two new tools registered with the search agent's tool registry — visible to the LLM the moment it sees the next prompt:
+
+- **`list_past_runs(schema?, table?, command?, limit?)`** — queries `~/.amx/history.db` via the same `find_runs_for_scope` path `/history compare` uses. Returns a compact dict per run: `run_id`, `started_at_epoch`, `duration_sec`, `model_processing_sec`, `status`, `command`, `scope`, `db_profile`, `llm_profile`, `llm_model`, `doc_profile`, `code_profile`, `settings` (the full snapshot from PR #59), `selected_count` / `processed_count` / `applied_count`, `total_tokens`. Lightweight enough to land 10–50 rows in the LLM context without blowing the budget.
+- **`describe_run(run_id, include_results=true)`** — full record for one run: settings, metrics, tokens, plus every saved per-column suggestion (top description, alternatives list, confidence band, logprob_score, token_count, model_version, chosen_description, evaluation). Used after `list_past_runs` narrows the candidate set.
+
+Plus the planner system prompt grew a routing rule: ANY question about the user's own history (`compare my last 3 runs`, `which settings did I use yesterday`, `has this table been analyzed before`, multilingual variants like `son 3 koşumu karşılaştır`) routes to `list_past_runs` first, then `describe_run`. The "I don't have access to your past runs" response is explicitly forbidden — the access exists.
+
+**6 new tests** lock the tool surface: compact payload shape with settings, command-filter validation, missing-store fallback (graceful note instead of crash), describe_run round-trip with results + alternatives, invalid run_id error path, and a registry test that fails the build if either tool drops out of `ToolBox.schemas()`.
+
 ### Changed — `/compare` moves to `/history`, captures full settings snapshot
 
 User feedback: "current compare is not good. Don't need a /search compare; the most important thing to compare is past runs — settings, model time, tokens, etc." — comparison is fundamentally an audit operation, not a search one.

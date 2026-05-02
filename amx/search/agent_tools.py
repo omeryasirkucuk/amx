@@ -646,6 +646,82 @@ class ToolBox:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_past_runs",
+                    "description": (
+                        "List the user's past ``/run`` and ``/ask`` invocations from the local "
+                        "SQLite history (``~/.amx/history.db``). Each row carries the captured "
+                        "settings snapshot (LLM model, prompt detail, batch size, dedup, etc.), "
+                        "scope (which schema/tables it touched), timing, and token usage. "
+                        "Use this when the user asks ANY question about their own history — "
+                        "'what runs have I done on sales.orders?', 'compare my last 3 runs', "
+                        "'which settings did I use yesterday?', 'has this table been analyzed "
+                        "before?', 'son 3 koşumu karşılaştır'. ALWAYS prefer this tool over "
+                        "telling the user 'I don't have access to your past runs' — that "
+                        "answer is wrong now: you DO have access via this tool."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {
+                                "type": "string",
+                                "description": "Optional: limit to runs that touched this schema.",
+                            },
+                            "table": {
+                                "type": "string",
+                                "description": "Optional: limit to runs that touched this table.",
+                            },
+                            "command": {
+                                "type": "string",
+                                "description": (
+                                    "Optional filter: 'analyze.run' for /run history, "
+                                    "'search.ask' for /ask history. Omit to include both."
+                                ),
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max runs to return (default 10, max 50).",
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "describe_run",
+                    "description": (
+                        "Return the full record for one past run by ID — settings snapshot, "
+                        "every per-column suggestion the LLM produced (top description + "
+                        "alternatives, confidence band, logprob_score, token_count), and the "
+                        "review decisions the user made. Use this AFTER list_past_runs has "
+                        "narrowed the candidate set, when the user wants details on a specific "
+                        "run ('show me run 42', 'what did the LLM suggest for adr6 in run 17', "
+                        "'why is run 13's avg logprob higher than run 12's')."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "run_id": {
+                                "type": "integer",
+                                "description": "The numeric run id from list_past_runs.",
+                            },
+                            "include_results": {
+                                "type": "boolean",
+                                "description": (
+                                    "When true (default), include every saved per-column "
+                                    "result. Set false for a lightweight settings + scope "
+                                    "view when results aren't needed."
+                                ),
+                            },
+                        },
+                        "required": ["run_id"],
+                    },
+                },
+            },
         ]
 
     # ------------------------------------------------------------------ invoke
@@ -2828,3 +2904,188 @@ class ToolBox:
             "unknown_tables": role_to_paths.get("unknown", []),
             "classifications": classifications,
         }
+
+    # ── Past-runs introspection (the /history compare data, but for /ask) ─
+
+    def _tool_list_past_runs(
+        self,
+        schema: str = "",
+        table: str = "",
+        command: str = "",
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """List the user's past runs from the local SQLite history.
+
+        Returns the same shape ``/history compare`` consumes — settings
+        snapshot, scope, timing, token usage — so the LLM can compose
+        comparison answers without going through the CLI command.
+        Sourced via ``find_runs_for_scope`` so the schema/table filter
+        and the per-row deserialisation match exactly.
+        """
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None:
+            return {
+                "runs": [],
+                "count": 0,
+                "note": (
+                    "No local history store is initialised in this process. "
+                    "This usually means /ask was invoked outside the standard CLI; "
+                    "tell the user we can't introspect past runs in that context."
+                ),
+            }
+        clamped_limit = max(1, min(int(limit) if limit else 10, 50))
+        cmd = command.strip() if command and command.strip() != "all" else None
+        if cmd and cmd not in ("analyze.run", "search.ask"):
+            return {
+                "error": (
+                    f"Invalid 'command' filter {cmd!r} — must be 'analyze.run' or "
+                    "'search.ask'. Omit the parameter to include both."
+                )
+            }
+
+        try:
+            rows = hs.find_runs_for_scope(
+                schema=(schema.strip() or None) if schema else None,
+                table=(table.strip() or None) if table else None,
+                command_filter=cmd,
+                limit=clamped_limit,
+            )
+        except Exception as exc:
+            return {"error": f"Could not query history: {exc}"}
+
+        # Lighten the payload so the LLM context isn't blown up by
+        # full per-run JSON every call. The fat fields (alternatives_json,
+        # raw token records) live in describe_run for follow-up drilldown.
+        compact: list[dict[str, Any]] = []
+        for r in rows:
+            metrics = r.get("metrics_json") if isinstance(r, dict) else None
+            if not isinstance(metrics, dict):
+                metrics = {}
+            tokens = r.get("tokens_json") if isinstance(r, dict) else None
+            total_tokens = 0
+            if isinstance(tokens, dict):
+                try:
+                    total_tokens = int(tokens.get("total_tokens") or 0)
+                except (TypeError, ValueError):
+                    total_tokens = 0
+            compact.append(
+                {
+                    "run_id": int(r.get("id") or 0),
+                    "started_at_epoch": float(r.get("started_at") or 0.0),
+                    "duration_sec": float(r.get("duration_sec") or 0.0),
+                    "model_processing_sec": float(metrics.get("model_processing_sec") or 0.0),
+                    "status": r.get("status") or "",
+                    "command": r.get("command") or "",
+                    "scope": r.get("scope_json") or {},
+                    "db_profile": r.get("db_profile") or "",
+                    "llm_profile": r.get("llm_profile") or "",
+                    "llm_model": r.get("llm_model") or "",
+                    "doc_profile": r.get("doc_profile") or "",
+                    "code_profile": r.get("code_profile") or "",
+                    "settings": r.get("settings_json") or {},
+                    "selected_count": int(r.get("selected_count") or 0),
+                    "processed_count": int(r.get("processed_count") or 0),
+                    "applied_count": int(r.get("applied_count") or 0),
+                    "total_tokens": total_tokens,
+                }
+            )
+
+        return {
+            "runs": compact,
+            "count": len(compact),
+            "filter": {
+                "schema": schema or "",
+                "table": table or "",
+                "command": cmd or "any",
+                "limit": clamped_limit,
+            },
+        }
+
+    def _tool_describe_run(
+        self,
+        run_id: int,
+        include_results: bool = True,
+    ) -> dict[str, Any]:
+        """Return the full record for one past run, optionally with results."""
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None:
+            return {
+                "error": (
+                    "No local history store is initialised in this process. "
+                    "Cannot describe past runs."
+                )
+            }
+        try:
+            rid = int(run_id)
+        except (TypeError, ValueError):
+            return {"error": f"Invalid run_id {run_id!r} — must be an integer."}
+
+        try:
+            row = hs.get_run(rid)
+        except Exception as exc:
+            return {"error": f"Failed to load run #{rid}: {exc}"}
+        if row is None:
+            return {"error": f"Run #{rid} not found in history.db."}
+
+        out: dict[str, Any] = {
+            "run_id": rid,
+            "started_at_epoch": float(row.get("started_at") or 0.0),
+            "ended_at_epoch": float(row.get("ended_at") or 0.0),
+            "duration_sec": float(row.get("duration_sec") or 0.0),
+            "status": row.get("status") or "",
+            "command": row.get("command") or "",
+            "mode": row.get("mode") or "",
+            "scope": row.get("scope_json") or {},
+            "db_profile": row.get("db_profile") or "",
+            "db_backend": row.get("db_backend") or "",
+            "llm_profile": row.get("llm_profile") or "",
+            "llm_provider": row.get("llm_provider") or "",
+            "llm_model": row.get("llm_model") or "",
+            "doc_profile": row.get("doc_profile") or "",
+            "code_profile": row.get("code_profile") or "",
+            "settings": row.get("settings_json") or {},
+            "metrics": row.get("metrics_json") or {},
+            "tokens": row.get("tokens_json") or {},
+            "selected_count": int(row.get("selected_count") or 0),
+            "planned_count": int(row.get("planned_count") or 0),
+            "processed_count": int(row.get("processed_count") or 0),
+            "applied_count": int(row.get("applied_count") or 0),
+            "review_strategy": row.get("review_strategy") or "",
+            "error_text": row.get("error_text") or "",
+        }
+
+        if include_results:
+            try:
+                results = hs.get_run_results(rid)
+            except Exception as exc:
+                results = []
+                out["results_warning"] = f"Could not load run_results: {exc}"
+            # Compact the results for LLM consumption — drop heavy raw
+            # fields the model rarely needs.
+            out["results"] = [
+                {
+                    "schema": r.get("schema_name") or "",
+                    "table": r.get("table_name") or "",
+                    "column": r.get("column_name") or "",
+                    "asset_kind": r.get("asset_kind") or "table",
+                    "source": r.get("source") or "",
+                    "confidence": r.get("confidence") or "",
+                    "logprob_score": r.get("logprob_score"),
+                    "token_count": r.get("token_count"),
+                    "model_version": r.get("model_version") or "",
+                    "chosen_description": r.get("chosen_description") or "",
+                    "evaluation": r.get("evaluation") or "",
+                    "alternatives": (
+                        r.get("alternatives_json")
+                        if isinstance(r.get("alternatives_json"), list)
+                        else []
+                    ),
+                }
+                for r in results
+            ]
+            out["results_count"] = len(out["results"])
+        return out
