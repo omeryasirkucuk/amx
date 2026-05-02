@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Live thinking now actually works for OpenRouter routes
+
+User report: "I tested with `kimi-k2-thinking` and `o4-mini`, neither showed me thinking. provider is openrouter for all."
+
+Two compounding bugs in the original ship:
+
+1. **`_supports_thinking` over-narrow on OpenRouter** — only matched `/o1`, `/o3`, `gpt-5`. Both `openrouter/openai/o4-mini` and `openrouter/moonshotai/kimi-k2-thinking` failed the substring check, so the streaming path never engaged and `/ask` showed only the existing static spinner.
+2. **OpenRouter excludes reasoning by default** — even with detection fixed, OpenRouter doesn't return `reasoning_content` deltas unless the request explicitly asks via `reasoning: { effort: ..., max_tokens: ..., exclude: false }`. Anthropic and DeepSeek emit reasoning natively, so they "just worked" — OpenRouter does not.
+
+Fix:
+- OpenRouter detection now reuses `_is_openai_reasoning_style_model(model)` so any o-series / gpt-5 route (including `/o4`, `/o4-mini`, future `/o5`) engages automatically. Adds `kimi-k2-thinking` to the named-route list.
+- For OpenRouter streaming calls, set `reasoning={"effort": effort, "max_tokens": cfg.thinking_budget, "exclude": False}`. `effort` defaults to `medium` and is overridable via `AMX_REASONING_EFFORT` (`low|medium|high`). Logprobs are dropped on this path since most reasoning routes reject them.
+- For DeepSeek streaming, also drop logprobs (the reasoner route rejects them) — content + reasoning still stream natively.
+
+**Tested combinations** that should now show streaming thinking text in the panel:
+- `openrouter/openai/o4-mini`, `openrouter/openai/o3-mini`, `openrouter/openai/o1-preview`, `openrouter/openai/gpt-5`
+- `openrouter/moonshotai/kimi-k2-thinking`
+- `openrouter/anthropic/claude-sonnet-4-5`, `openrouter/deepseek/deepseek-reasoner` (already worked, still work)
+
+Non-reasoning OpenRouter routes (e.g. `openrouter/openai/gpt-4o-mini`, `openrouter/anthropic/claude-3-5-haiku`) continue to fall through to the existing static spinner with no behavior change.
+
 ### Added — Live model thinking in `/ask`
 
 User feedback: "We don't serve model's thinking here but we can. If we show true parts of model's thinkings it really looks well. But we don't keep them in screen after thinkings completed because it can increase crowded in chat."
