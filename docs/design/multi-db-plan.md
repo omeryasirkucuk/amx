@@ -408,3 +408,65 @@ Each phase is its own PR, merged into the umbrella branch
    detects the historical default value, emit a single-line warn
    in `/db-profiles` and the startup summary suggesting the user
    run `/edit` to clear it. We never touch their YAML.
+
+---
+
+## 9. Phase 2 — six new backends + extended object model (2026-05)
+
+After 0.11 stabilised the 4-backend matrix, Phase 2 added MySQL, Oracle,
+SQL Server, Redshift, ClickHouse, and DuckDB **and** extended the adapter
+contract to model object types beyond tables/views.
+
+### 9.1 Per-backend object inventory
+
+What each backend exposes that AMX consumes. ✓ = supported, ★ = backend-distinctive.
+
+| Object              | PG | SF | DBX | BQ | MySQL | Oracle | MSSQL | Redshift | ClickHouse | DuckDB |
+|---------------------|----|----|-----|----|-------|--------|-------|----------|------------|--------|
+| Tables              | ✓  | ✓  | ✓   | ✓  | ✓     | ✓      | ✓     | ✓        | ✓          | ✓      |
+| Views               | ✓  | ✓  | ✓   | ✓  | ✓     | ✓      | ✓     | ✓        | ✓          | ✓      |
+| Materialized views  | ✓  | ✓  | –   | ✓  | –     | ✓      | –     | ✓        | ✓          | –      |
+| External tables     | –  | ✓  | ✓   | ✓  | –     | –      | –     | ✓ (Spectrum) ★ | – | ✓ (Parquet/S3) |
+| Stored procedures   | ✓  | ✓  | –   | ✓  | ✓     | ✓      | ✓     | ✓        | –          | –      |
+| Functions / UDFs    | ✓  | ✓  | ✓   | ✓  | ✓     | ✓      | ✓     | ✓        | ✓          | ✓      |
+| Sequences           | ✓  | ✓  | –   | –  | –     | ✓      | ✓     | –        | –          | ✓      |
+| Triggers            | ✓  | –  | –   | –  | ✓     | ✓      | ✓     | –        | –          | –      |
+| Events / scheduled  | –  | ✓ (tasks) | – | –  | ✓ ★ (events) | – | – | – | – | – |
+| Packages            | –  | –  | –   | –  | –     | ✓ ★    | –     | –        | –          | –      |
+| Synonyms            | –  | –  | –   | –  | –     | ✓      | ✓     | –        | –          | –      |
+| User-defined types  | ✓  | –  | –   | –  | –     | ✓      | –     | –        | –          | –      |
+| Dictionaries        | –  | –  | –   | –  | –     | –      | –     | –        | ✓ ★        | –      |
+| Macros              | –  | –  | –   | –  | –     | –      | –     | –        | –          | ✓ ★    |
+| Volumes / stages    | –  | ✓ (stages) | ✓ ★ | – | – | – | – | – | – | – |
+| Datashares          | –  | ✓  | –   | –  | –     | –      | –     | ✓        | –          | –      |
+| Dist/Sort keys      | –  | –  | –   | –  | –     | –      | –     | ✓ ★      | –          | –      |
+| Storage engine      | –  | –  | –   | –  | ✓ ★ (InnoDB/MyISAM) | – | – | – | ✓ ★ (MergeTree) | – |
+
+### 9.2 Contract extension
+
+* `BackendCapabilities` gained 13 new flags (`stored_procedures`, `functions`,
+  `sequences`, `triggers`, `events`, `packages`, `synonyms`,
+  `user_defined_types`, `dictionaries`, `macros`, `volumes`, `datashares`,
+  `external_tables`).
+* `DatabaseAdapter` gained matching `list_<object>()` methods. Each defaults
+  to `[]` so existing adapters stay untouched until they opt in.
+* Each method returns a list of dicts shaped
+  `{name, type, definition, comment, metadata}` — uniform enough that
+  search/index can treat them generically, loose enough that backend-specific
+  fields (Snowflake task schedule, ClickHouse dictionary layout, Oracle
+  package members) fit in `metadata`.
+* `DatabaseConnector` exposes capability-gated wrappers for each method.
+  Adapter exceptions degrade to `[]` with a debug-level log entry, mirroring
+  the `list_databases` resilience pattern.
+
+### 9.3 Driver packaging
+
+Database driver dependencies migrated from `[project.dependencies]` to
+`[project.optional-dependencies]` extras — one extra per backend, plus an
+`all` extra for "give me everything" (~100MB+ of drivers). `get_adapter()`
+catches the first-use `ImportError` and raises `MissingDriverError` with
+the concrete `pip install amx[<extra>]` hint.
+
+This is a breaking install-time change; existing users must reinstall with
+the relevant extras. The migration is documented in CHANGELOG and surfaces
+on first use of an unconfigured backend.

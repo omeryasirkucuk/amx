@@ -352,6 +352,12 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "snowflake": "Account, warehouse, role - Snowflake COMMENT",
             "databricks": "SQL warehouse HTTP path + token - Unity Catalog",
             "bigquery": "GCP project + dataset - table/column descriptions via OPTIONS",
+            "mysql": "Host/port user/password - MySQL/MariaDB; ALTER TABLE COMMENT",
+            "oracle": "Host/port user/password + service_name - Oracle DB; ALL_* catalogs",
+            "mssql": "Host/port user/password + ODBC driver - SQL Server / Azure SQL",
+            "redshift": "Host/port user/password - Amazon Redshift; PG-compatible + Spectrum",
+            "clickhouse": "Host/port user/password - ClickHouse; system.* catalogs, MergeTree engines",
+            "duckdb": "Single-file or in-memory; no host/auth (analytical, embedded)",
         },
     )
 
@@ -379,6 +385,12 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             project="",
             dataset="",
             credentials_path="",
+            service_name="",
+            driver="",
+            encrypt=True,
+            trust_server_certificate=False,
+            cluster_identifier="",
+            secure=False,
         )
 
     # If the user picked a backend different from what ``defaults``
@@ -532,6 +544,237 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             credentials_path=creds,
         )
 
+    if backend == "mysql":
+        host = _ask_update_text(
+            "Database host (e.g. db.example.com)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        port_raw = _ask_update_text(
+            "Port (e.g. 3306)",
+            str(defaults.port) if defaults.port and defaults.port != 5432 else "3306",
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                "Port (e.g. 3306)", "3306", required=True, allow_clear=False
+            )
+        user = _ask_update_text(
+            "Username (e.g. analyst)", defaults.user or "", required=True, allow_clear=False
+        )
+        password = _ask_update_secret("Password", defaults.password or "", required=True)
+        database = _ask_update_text(
+            "Database name (optional — leave blank to pick at command time)",
+            defaults.database or "",
+        )
+        return replace(
+            defaults,
+            backend="mysql",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database=database,
+        )
+
+    if backend == "oracle":
+        host = _ask_update_text(
+            "Database host (e.g. ora.example.com)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        port_raw = _ask_update_text(
+            "Port (e.g. 1521)",
+            str(defaults.port) if defaults.port and defaults.port != 5432 else "1521",
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                "Port (e.g. 1521)", "1521", required=True, allow_clear=False
+            )
+        user = _ask_update_text(
+            "Username (e.g. APP_USER)", defaults.user or "", required=True, allow_clear=False
+        )
+        password = _ask_update_secret("Password", defaults.password or "", required=True)
+        service_name = _ask_update_text(
+            "Service name (preferred for Oracle Cloud / RAC, e.g. XEPDB1) — "
+            "leave blank to use SID instead",
+            defaults.service_name or "",
+        )
+        database = ""
+        if not service_name:
+            database = _ask_update_text(
+                "SID (used when service_name is blank, e.g. XE)",
+                defaults.database or "",
+                required=True,
+                allow_clear=False,
+            )
+        return replace(
+            defaults,
+            backend="oracle",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            service_name=service_name,
+            database=database,
+        )
+
+    if backend == "mssql":
+        host = _ask_update_text(
+            "Database host (e.g. mssql.example.com)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        port_raw = _ask_update_text(
+            "Port (e.g. 1433)",
+            str(defaults.port) if defaults.port and defaults.port != 5432 else "1433",
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                "Port (e.g. 1433)", "1433", required=True, allow_clear=False
+            )
+        user = _ask_update_text(
+            "Username (e.g. sa)", defaults.user or "", required=True, allow_clear=False
+        )
+        password = _ask_update_secret("Password", defaults.password or "", required=True)
+        database = _ask_update_text(
+            "Database name (optional — leave blank to pick at command time)",
+            defaults.database or "",
+        )
+        driver = _ask_update_text(
+            "ODBC driver name (default: 'ODBC Driver 18 for SQL Server')",
+            defaults.driver or "",
+        )
+        encrypt = _ask_update_bool(
+            "Encrypt the connection? (set False only for legacy on-prem servers without TLS)",
+            bool(defaults.encrypt),
+        )
+        trust = _ask_update_bool(
+            "Trust the server certificate? (use True only with self-signed certs)",
+            bool(defaults.trust_server_certificate),
+        )
+        return replace(
+            defaults,
+            backend="mssql",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database=database,
+            driver=driver,
+            encrypt=encrypt,
+            trust_server_certificate=trust,
+        )
+
+    if backend == "redshift":
+        host = _ask_update_text(
+            "Cluster endpoint (e.g. my-cluster.xxx.eu-west-1.redshift.amazonaws.com)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        port_raw = _ask_update_text(
+            "Port (e.g. 5439)",
+            str(defaults.port) if defaults.port and defaults.port != 5432 else "5439",
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                "Port (e.g. 5439)", "5439", required=True, allow_clear=False
+            )
+        user = _ask_update_text(
+            "Username (e.g. admin)", defaults.user or "", required=True, allow_clear=False
+        )
+        password = _ask_update_secret("Password", defaults.password or "", required=True)
+        database = _ask_update_text(
+            "Database name (e.g. dev — leave blank to pick at command time)",
+            defaults.database or "",
+        )
+        cluster = _ask_update_text(
+            "Cluster identifier (optional, only needed for IAM auth)",
+            defaults.cluster_identifier or "",
+        )
+        return replace(
+            defaults,
+            backend="redshift",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database=database,
+            cluster_identifier=cluster,
+        )
+
+    if backend == "clickhouse":
+        host = _ask_update_text(
+            "ClickHouse host (e.g. ch.example.com)",
+            defaults.host or "",
+            required=True,
+            allow_clear=False,
+        )
+        secure = _ask_update_bool(
+            "Use HTTPS? (8443 / cloud) — answer No for plain HTTP (8123 / on-prem)",
+            bool(defaults.secure),
+        )
+        default_port = "8443" if secure else "8123"
+        port_raw = _ask_update_text(
+            f"Port (default {default_port})",
+            str(defaults.port) if defaults.port and defaults.port != 5432 else default_port,
+            required=True,
+            allow_clear=False,
+        )
+        while not port_raw.isdigit():
+            warn("Port must be a number.")
+            port_raw = _ask_update_text(
+                f"Port (default {default_port})", default_port, required=True, allow_clear=False
+            )
+        user = _ask_update_text("Username (default: 'default')", defaults.user or "default")
+        password = _ask_update_secret(
+            "Password (blank for the default 'no password' user)",
+            defaults.password or "",
+            required=False,
+        )
+        database = _ask_update_text(
+            "Database (e.g. analytics — leave blank to pick at command time)",
+            defaults.database or "",
+        )
+        return replace(
+            defaults,
+            backend="clickhouse",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database=database,
+            secure=secure,
+        )
+
+    if backend == "duckdb":
+        database = _ask_update_text(
+            "Path to .duckdb file (or ':memory:' for an ephemeral database)",
+            defaults.database or ":memory:",
+            required=True,
+            allow_clear=False,
+        )
+        return replace(
+            defaults,
+            backend="duckdb",
+            database=database,
+        )
+
     return defaults
 
 
@@ -643,6 +886,40 @@ def cmd_inspect(cfg: AMXConfig, rest: list[str]) -> None:
             f"  Project: {profile.project}, dataset: {profile.dataset or '(any)'}, "
             f"credentials: {profile.credentials_path or '(ADC)'}"
         )
+    elif profile.backend == "mysql":
+        info(
+            f"  Host: {profile.host}:{profile.port}, user: {profile.user}, "
+            f"db: {profile.database or '(unpinned)'}"
+        )
+    elif profile.backend == "oracle":
+        target = (
+            f"service_name={profile.service_name}"
+            if profile.service_name
+            else f"SID={profile.database or '(unpinned)'}"
+        )
+        info(f"  Host: {profile.host}:{profile.port}, user: {profile.user}, {target}")
+    elif profile.backend == "mssql":
+        info(
+            f"  Host: {profile.host}:{profile.port}, user: {profile.user}, "
+            f"db: {profile.database or '(unpinned)'}, "
+            f"driver: {profile.driver or '(default ODBC 18)'}, "
+            f"encrypt: {profile.encrypt}, trust_server_cert: {profile.trust_server_certificate}"
+        )
+    elif profile.backend == "redshift":
+        info(
+            f"  Host: {profile.host}:{profile.port}, user: {profile.user}, "
+            f"db: {profile.database or '(unpinned)'}"
+            + (f", cluster_id: {profile.cluster_identifier}" if profile.cluster_identifier else "")
+        )
+    elif profile.backend == "clickhouse":
+        scheme = "https" if profile.secure else "http"
+        info(
+            f"  Host: {profile.host}:{profile.port} ({scheme}), "
+            f"user: {profile.user or 'default'}, "
+            f"db: {profile.database or '(unpinned)'}"
+        )
+    elif profile.backend == "duckdb":
+        info(f"  File: {profile.database or ':memory:'}")
 
     # Connection test using the existing typed result so categorised
     # error hints from amx.core.errors flow through unchanged.

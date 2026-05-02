@@ -30,6 +30,23 @@ class BackendCapabilities:
     full_profiling: bool = True
     sampled_profiling: bool = True
     full_scan_when_row_count_unknown: bool = True
+    # Extended object-type capabilities. Each flag gates a corresponding
+    # ``list_<object>()`` call on :class:`DatabaseAdapter`. Defaulting to
+    # False keeps existing adapters intact — they opt in by setting the
+    # flags True after implementing the matching list method.
+    stored_procedures: bool = False
+    functions: bool = False
+    sequences: bool = False
+    triggers: bool = False
+    events: bool = False
+    packages: bool = False
+    synonyms: bool = False
+    user_defined_types: bool = False
+    dictionaries: bool = False
+    macros: bool = False
+    volumes: bool = False
+    datashares: bool = False
+    external_tables: bool = False
     comment_asset_keywords: frozenset[str] = field(
         default_factory=lambda: frozenset({"TABLE", "VIEW"})
     )
@@ -230,6 +247,74 @@ class DatabaseAdapter(ABC):
     ) -> list[str] | None:
         """Backend-specific view listing. ``None`` → SQLAlchemy fallback."""
         return None
+
+    # ── Extended object types ─────────────────────────────────────────────
+    #
+    # Each ``list_<object>()`` returns an empty list by default. Adapters
+    # that support the object type override the method AND set the
+    # matching ``BackendCapabilities`` flag to True. The connector layer
+    # gates calls on the flag so unsupported backends never run a query.
+    #
+    # All return shapes are uniform: a list of dicts with the keys
+    # ``name`` (required), ``type``, ``definition``, ``comment``, and
+    # ``metadata``. Adapters fill what they can — extra keys in
+    # ``metadata`` are passed through to downstream search/indexing.
+
+    def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """Stored procedures in *schema*. Override when the backend supports them."""
+        return []
+
+    def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """User-defined functions / UDFs in *schema*."""
+        return []
+
+    def list_sequences(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """Sequences in *schema*. (Most warehouses skip this; OLTP backends use it heavily.)"""
+        return []
+
+    def list_triggers(
+        self, engine: Engine, schema: str, table: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Triggers in *schema*. Pass *table* to scope to one table."""
+        return []
+
+    def list_events(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """Scheduled events / tasks / jobs (MySQL events, Snowflake tasks, BigQuery
+        scheduled queries, SQL Server Agent jobs).
+        """
+        return []
+
+    def list_packages(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """PL/SQL packages — Oracle-specific."""
+        return []
+
+    def list_synonyms(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """Synonyms — Oracle and SQL Server expose these as object aliases."""
+        return []
+
+    def list_user_defined_types(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """Composite / domain / enum types declared in *schema*."""
+        return []
+
+    def list_dictionaries(self, engine: Engine, database: str) -> list[dict[str, Any]]:
+        """ClickHouse dictionaries — external lookup tables refreshed from a source."""
+        return []
+
+    def list_macros(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """DuckDB macros — parameterized SQL or table-returning functions."""
+        return []
+
+    def list_volumes(self, engine: Engine, catalog: str, schema: str) -> list[dict[str, Any]]:
+        """Unity Catalog volumes (Databricks) or stages (Snowflake) — file-storage assets."""
+        return []
+
+    def list_datashares(self, engine: Engine) -> list[dict[str, Any]]:
+        """Datashares (Redshift) / shares (Snowflake) / Delta Sharing recipients (Databricks)."""
+        return []
+
+    def list_external_tables(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
+        """External tables — Redshift Spectrum, BigQuery external tables, DuckDB Parquet/S3."""
+        return []
 
     # ── Analytics metadata ────────────────────────────────────────────────
 
