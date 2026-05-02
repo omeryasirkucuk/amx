@@ -187,6 +187,11 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "llm",
         "Show/set confidence thresholds (/logprob-thresholds [high] [med])",
     ),
+    SlashCommand(
+        "/temperature",
+        "llm",
+        "Show/set LLM sampling temperature (/temperature [0.0-2.0])",
+    ),
 )
 
 _CODE_COMMANDS: tuple[SlashCommand, ...] = (

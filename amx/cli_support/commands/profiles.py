@@ -100,6 +100,12 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     info("Generation settings:")
     n_alt = ask("  Alternatives (1-5)", default=str(getattr(defaults, "n_alternatives", 3)))
     batch = ask("  Column batch size", default=str(getattr(defaults, "column_batch_size", 10)))
+    temp_raw = ask("  Temperature (0.0-2.0)", default=str(getattr(defaults, "temperature", 0.2)))
+    try:
+        temperature = float(temp_raw)
+    except ValueError:
+        temperature = defaults.temperature
+    temperature = max(0.0, min(2.0, temperature))
 
     info("Confidence thresholds (token probability 0.0-1.0):")
     high = ask("  High threshold", default=str(getattr(defaults, "logprob_high", 0.85)))
@@ -110,7 +116,7 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         model=normalize_llm_model(provider, model),
         api_key=api_key,
         api_base=api_base,
-        temperature=defaults.temperature,
+        temperature=temperature,
         max_tokens=defaults.max_tokens,
         n_alternatives=int(n_alt),
         column_batch_size=int(batch),
@@ -155,6 +161,33 @@ def cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
     success(
         f"Logprob thresholds saved for LLM profile '{cfg.active_llm_profile}': "
         f"HIGH >= {high:.2f}, MEDIUM >= {medium:.2f}"
+    )
+
+
+def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the LLM sampling temperature for the active profile."""
+    if not rest:
+        current = getattr(cfg.llm, "temperature", 0.2)
+        info(f"Current LLM temperature: [bold]{current:.2f}[/]")
+        info("Run [cyan]/temperature <value>[/cyan] to change (e.g. 0.7). Range: 0.0-2.0.")
+        return
+
+    try:
+        value = float(rest[0])
+    except ValueError:
+        error(f"Expected a numeric value, got: {rest[0]}")
+        return
+
+    clamped = max(0.0, min(2.0, value))
+    if clamped != value:
+        warn(f"Temperature {value} clamped to {clamped:.2f} (allowed range 0.0-2.0).")
+
+    cfg.llm.temperature = clamped
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].temperature = clamped
+    cfg.save()
+    success(
+        f"Temperature saved for LLM profile '{cfg.active_llm_profile}': {clamped:.2f}"
     )
 
 
