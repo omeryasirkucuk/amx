@@ -559,7 +559,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
         while not port_raw.isdigit():
             warn("Port must be a number.")
-            port_raw = _ask_update_text("Port (e.g. 3306)", "3306", required=True, allow_clear=False)
+            port_raw = _ask_update_text(
+                "Port (e.g. 3306)", "3306", required=True, allow_clear=False
+            )
         user = _ask_update_text(
             "Username (e.g. analyst)", defaults.user or "", required=True, allow_clear=False
         )
@@ -593,7 +595,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
         while not port_raw.isdigit():
             warn("Port must be a number.")
-            port_raw = _ask_update_text("Port (e.g. 1521)", "1521", required=True, allow_clear=False)
+            port_raw = _ask_update_text(
+                "Port (e.g. 1521)", "1521", required=True, allow_clear=False
+            )
         user = _ask_update_text(
             "Username (e.g. APP_USER)", defaults.user or "", required=True, allow_clear=False
         )
@@ -637,7 +641,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
         while not port_raw.isdigit():
             warn("Port must be a number.")
-            port_raw = _ask_update_text("Port (e.g. 1433)", "1433", required=True, allow_clear=False)
+            port_raw = _ask_update_text(
+                "Port (e.g. 1433)", "1433", required=True, allow_clear=False
+            )
         user = _ask_update_text(
             "Username (e.g. sa)", defaults.user or "", required=True, allow_clear=False
         )
@@ -686,7 +692,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         )
         while not port_raw.isdigit():
             warn("Port must be a number.")
-            port_raw = _ask_update_text("Port (e.g. 5439)", "5439", required=True, allow_clear=False)
+            port_raw = _ask_update_text(
+                "Port (e.g. 5439)", "5439", required=True, allow_clear=False
+            )
         user = _ask_update_text(
             "Username (e.g. admin)", defaults.user or "", required=True, allow_clear=False
         )
@@ -733,9 +741,7 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             port_raw = _ask_update_text(
                 f"Port (default {default_port})", default_port, required=True, allow_clear=False
             )
-        user = _ask_update_text(
-            "Username (default: 'default')", defaults.user or "default"
-        )
+        user = _ask_update_text("Username (default: 'default')", defaults.user or "default")
         password = _ask_update_secret(
             "Password (blank for the default 'no password' user)",
             defaults.password or "",

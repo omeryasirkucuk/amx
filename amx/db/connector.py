@@ -401,9 +401,7 @@ class DatabaseConnector:
     def list_sequences(self, schema: str) -> list[dict[str, Any]]:
         return self._list_extended("sequences", "list_sequences", schema)
 
-    def list_triggers(
-        self, schema: str, table: str | None = None
-    ) -> list[dict[str, Any]]:
+    def list_triggers(self, schema: str, table: str | None = None) -> list[dict[str, Any]]:
         return self._list_extended("triggers", "list_triggers", schema, table)
 
     def list_events(self, schema: str) -> list[dict[str, Any]]:
@@ -427,9 +425,7 @@ class DatabaseConnector:
     def list_macros(self, schema: str) -> list[dict[str, Any]]:
         return self._list_extended("macros", "list_macros", schema)
 
-    def list_volumes(
-        self, schema: str, catalog: str | None = None
-    ) -> list[dict[str, Any]]:
+    def list_volumes(self, schema: str, catalog: str | None = None) -> list[dict[str, Any]]:
         cat = catalog if catalog is not None else getattr(self.cfg, "catalog", "") or ""
         return self._list_extended("volumes", "list_volumes", cat, schema)
 

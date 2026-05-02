@@ -594,6 +594,4 @@ class MSSQLAdapter(DatabaseAdapter):
 
     def set_database_comment_sql(self) -> str:
         # Database-level extended properties have no level filters.
-        return self._build_extended_property_sql(
-            level0type=None, level0name=None
-        )
+        return self._build_extended_property_sql(level0type=None, level0name=None)

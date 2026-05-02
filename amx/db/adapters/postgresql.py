@@ -367,9 +367,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
             for r in rows
         ]
 
-    def list_user_defined_types(
-        self, engine: Engine, schema: str
-    ) -> list[dict[str, Any]]:
+    def list_user_defined_types(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # typtype: 'c'=composite, 'd'=domain, 'e'=enum, 'r'=range,
         # 'm'=multirange. Skip table-row composites by filtering on
         # typrelid=0 OR the relation isn't a table.

@@ -220,17 +220,17 @@ class SnowflakeAdapter(DatabaseAdapter):
         """
         with engine.connect() as conn:
             rows = conn.execute(text(sql)).fetchall()
+
+        def _pick(mapping: Any, keys: tuple[str, ...]) -> Any:
+            for k in keys:
+                if k in mapping and mapping[k] is not None:
+                    return mapping[k]
+            return None
+
         out: list[dict[str, Any]] = []
         for row in rows:
             mapping = row._mapping if hasattr(row, "_mapping") else {}
-
-            def _pick(keys: tuple[str, ...]) -> Any:
-                for k in keys:
-                    if k in mapping and mapping[k] is not None:
-                        return mapping[k]
-                return None
-
-            name = _pick(name_keys)
+            name = _pick(mapping, name_keys)
             if name is None:
                 continue
             extras: dict[str, Any] = {}
@@ -240,12 +240,13 @@ class SnowflakeAdapter(DatabaseAdapter):
                     v = mapping.get(k.upper())
                 if v is not None:
                     extras[k.lower()] = v if isinstance(v, (str, int, float, bool)) else str(v)
+            comment = _pick(mapping, comment_keys)
             out.append(
                 {
                     "name": str(name),
                     "type": type_label,
                     "definition": None,
-                    "comment": str(_pick(comment_keys)) if _pick(comment_keys) else None,
+                    "comment": str(comment) if comment else None,
                     "metadata": extras,
                 }
             )
@@ -253,21 +254,15 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     def list_stored_procedures(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         sql = f"SHOW PROCEDURES IN SCHEMA {self.quote_identifier(schema)}"
-        return self._show_to_dicts(
-            engine, sql, "procedure", extra_keys=("arguments", "language")
-        )
+        return self._show_to_dicts(engine, sql, "procedure", extra_keys=("arguments", "language"))
 
     def list_functions(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         sql = f"SHOW USER FUNCTIONS IN SCHEMA {self.quote_identifier(schema)}"
-        return self._show_to_dicts(
-            engine, sql, "function", extra_keys=("arguments", "language")
-        )
+        return self._show_to_dicts(engine, sql, "function", extra_keys=("arguments", "language"))
 
     def list_sequences(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         sql = f"SHOW SEQUENCES IN SCHEMA {self.quote_identifier(schema)}"
-        return self._show_to_dicts(
-            engine, sql, "sequence", extra_keys=("interval", "next_value")
-        )
+        return self._show_to_dicts(engine, sql, "sequence", extra_keys=("interval", "next_value"))
 
     def list_events(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         # Snowflake "tasks" are scheduled SQL statements — the closest
@@ -277,9 +272,7 @@ class SnowflakeAdapter(DatabaseAdapter):
             engine, sql, "task", extra_keys=("schedule", "state", "warehouse", "definition")
         )
 
-    def list_volumes(
-        self, engine: Engine, catalog: str, schema: str
-    ) -> list[dict[str, Any]]:
+    def list_volumes(self, engine: Engine, catalog: str, schema: str) -> list[dict[str, Any]]:
         # Snowflake stages — internal or external file-storage. ``catalog``
         # arg is unused (Snowflake stages are schema-scoped).
         sql = f"SHOW STAGES IN SCHEMA {self.quote_identifier(schema)}"
@@ -291,14 +284,19 @@ class SnowflakeAdapter(DatabaseAdapter):
         # SHOW SHARES is account-level. Listing both inbound and
         # outbound shares; the ``kind`` column distinguishes.
         return self._show_to_dicts(
-            engine, "SHOW SHARES", "share", name_keys=("name", "NAME"),
+            engine,
+            "SHOW SHARES",
+            "share",
+            name_keys=("name", "NAME"),
             extra_keys=("kind", "owner_account", "to_accounts", "listing_global_name"),
         )
 
     def list_external_tables(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         sql = f"SHOW EXTERNAL TABLES IN SCHEMA {self.quote_identifier(schema)}"
         return self._show_to_dicts(
-            engine, sql, "external_table",
+            engine,
+            sql,
+            "external_table",
             extra_keys=("location", "file_format_name", "auto_refresh"),
         )
 

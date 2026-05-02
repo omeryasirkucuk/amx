@@ -137,9 +137,7 @@ class DuckDBAdapter(DatabaseAdapter):
         try:
             with engine.connect() as conn:
                 row = conn.execute(
-                    text(
-                        f"SELECT COUNT(*) FROM {self.fully_qualified_name(schema, table)}"
-                    )
+                    text(f"SELECT COUNT(*) FROM {self.fully_qualified_name(schema, table)}")
                 ).fetchone()
             n = int(row[0]) if row else 0
         except Exception:
@@ -154,9 +152,7 @@ class DuckDBAdapter(DatabaseAdapter):
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:
         with engine.connect() as conn:
             row = conn.execute(
-                text(
-                    "SELECT comment FROM duckdb_schemas() WHERE schema_name = :schema"
-                ),
+                text("SELECT comment FROM duckdb_schemas() WHERE schema_name = :schema"),
                 {"schema": schema},
             ).fetchone()
         return str(row[0]) if row and row[0] else None

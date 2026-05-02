@@ -304,9 +304,7 @@ class DatabaseAdapter(ABC):
         """DuckDB macros — parameterized SQL or table-returning functions."""
         return []
 
-    def list_volumes(
-        self, engine: Engine, catalog: str, schema: str
-    ) -> list[dict[str, Any]]:
+    def list_volumes(self, engine: Engine, catalog: str, schema: str) -> list[dict[str, Any]]:
         """Unity Catalog volumes (Databricks) or stages (Snowflake) — file-storage assets."""
         return []
 

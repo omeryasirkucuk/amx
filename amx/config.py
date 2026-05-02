@@ -708,11 +708,11 @@ class DBConfig(_ObservableConfig):
             # ClickHouse defaults the user to ``default`` if blank, so a
             # bare host is enough to attempt a connection.
             return bool(self.host)
-        if self.backend == "duckdb":
-            # File path or ``:memory:`` is enough; an empty ``database``
-            # field is interpreted as in-memory by ``DBConfig.url``.
-            return True
-        return False
+        # DuckDB: file path or ``:memory:`` is enough; an empty ``database``
+        # field is interpreted as in-memory by ``DBConfig.url``. Every other
+        # backend has been handled above, so a non-duckdb fallthrough means
+        # "not configured".
+        return self.backend == "duckdb"
 
     def is_database_pinned(self) -> bool:
         """True when the profile pins a specific database / catalog / dataset.
@@ -740,13 +740,12 @@ class DBConfig(_ObservableConfig):
             return bool(self.database)
         if self.backend == "clickhouse":
             return bool(self.database)
-        if self.backend == "duckdb":
-            # The ``database`` field IS the file path; ``:memory:`` and
-            # any explicit path both count as "pinned" because the user
-            # made an active choice (vs. PG where blank means "pick
-            # later").
-            return True
-        return False
+        # DuckDB: the ``database`` field IS the file path; ``:memory:`` and
+        # any explicit path both count as "pinned" because the user made an
+        # active choice (vs. PG where blank means "pick later"). Every other
+        # backend has been handled above, so non-duckdb fallthrough means
+        # "not pinned".
+        return self.backend == "duckdb"
 
     def is_configured(self) -> bool:
         """Back-compat: True when the profile is connection-ready.

@@ -430,9 +430,7 @@ class DatabricksAdapter(DatabaseAdapter):
             )
         return out
 
-    def list_volumes(
-        self, engine: Engine, catalog: str, schema: str
-    ) -> list[dict[str, Any]]:
+    def list_volumes(self, engine: Engine, catalog: str, schema: str) -> list[dict[str, Any]]:
         # ★ Unity Catalog volumes — managed or external file storage,
         # the headline Databricks-distinctive object type.
         sql = f"SHOW VOLUMES IN {self._qualify(catalog, schema)}"

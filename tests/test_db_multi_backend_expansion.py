@@ -25,21 +25,26 @@ from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 def _fixture(backend: str) -> dict[str, object]:
     """Minimal DBConfig kwargs that satisfy is_connection_configured for *backend*."""
     return {
-        "postgresql": dict(host="db.example.com", user="alice"),
-        "snowflake": dict(account="acc.example", user="alice"),
-        "databricks": dict(host="adb.example.com", access_token="tok"),
-        "bigquery": dict(project="my-project"),
-        "mysql": dict(host="mysql.example.com", user="alice", password="x"),
-        "oracle": dict(host="ora.example.com", user="APP", password="x", service_name="XEPDB1"),
-        "mssql": dict(host="mssql.example.com", user="sa", password="x"),
-        "redshift": dict(
-            host="cluster.xyz.eu-west-1.redshift.amazonaws.com",
-            user="admin",
-            password="x",
-            database="dev",
-        ),
-        "clickhouse": dict(host="ch.example.com", user="default"),
-        "duckdb": dict(database="/tmp/x.duckdb"),
+        "postgresql": {"host": "db.example.com", "user": "alice"},
+        "snowflake": {"account": "acc.example", "user": "alice"},
+        "databricks": {"host": "adb.example.com", "access_token": "tok"},
+        "bigquery": {"project": "my-project"},
+        "mysql": {"host": "mysql.example.com", "user": "alice", "password": "x"},
+        "oracle": {
+            "host": "ora.example.com",
+            "user": "APP",
+            "password": "x",
+            "service_name": "XEPDB1",
+        },
+        "mssql": {"host": "mssql.example.com", "user": "sa", "password": "x"},
+        "redshift": {
+            "host": "cluster.xyz.eu-west-1.redshift.amazonaws.com",
+            "user": "admin",
+            "password": "x",
+            "database": "dev",
+        },
+        "clickhouse": {"host": "ch.example.com", "user": "default"},
+        "duckdb": {"database": "/tmp/x.duckdb"},
     }[backend]
 
 

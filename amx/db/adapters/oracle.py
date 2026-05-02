@@ -33,7 +33,6 @@ from sqlalchemy.engine import Engine
 
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
-
 # Oracle ships with a long list of system schemas. Filtering them out
 # of the schema picker is the difference between "12 user schemas" and
 # "120 schemas, 90% of which are XDB / APEX / OLAP support".
@@ -188,8 +187,7 @@ class OracleAdapter(DatabaseAdapter):
         with engine.connect() as conn:
             row = conn.execute(
                 text(
-                    "SELECT NUM_ROWS FROM ALL_TABLES "
-                    "WHERE OWNER = :owner AND TABLE_NAME = :tname"
+                    "SELECT NUM_ROWS FROM ALL_TABLES WHERE OWNER = :owner AND TABLE_NAME = :tname"
                 ),
                 {"owner": schema.upper(), "tname": table.upper()},
             ).fetchone()
@@ -204,10 +202,7 @@ class OracleAdapter(DatabaseAdapter):
     def list_materialized_views(self, engine: Engine, schema: str) -> list[str]:
         with engine.connect() as conn:
             rows = conn.execute(
-                text(
-                    "SELECT MVIEW_NAME FROM ALL_MVIEWS "
-                    "WHERE OWNER = :owner ORDER BY MVIEW_NAME"
-                ),
+                text("SELECT MVIEW_NAME FROM ALL_MVIEWS WHERE OWNER = :owner ORDER BY MVIEW_NAME"),
                 {"owner": schema.upper()},
             ).fetchall()
         return [str(r[0]) for r in rows]
@@ -333,9 +328,7 @@ class OracleAdapter(DatabaseAdapter):
                         ),
                         {"owner": schema.upper(), "pkg": pkg_name},
                     ).fetchall()
-                    members_by_pkg[pkg_name] = [
-                        {"name": str(m[0])} for m in member_rows
-                    ]
+                    members_by_pkg[pkg_name] = [{"name": str(m[0])} for m in member_rows]
         return [
             {
                 "name": str(r[0]),
@@ -438,9 +431,7 @@ class OracleAdapter(DatabaseAdapter):
             for r in rows
         ]
 
-    def list_user_defined_types(
-        self, engine: Engine, schema: str
-    ) -> list[dict[str, Any]]:
+    def list_user_defined_types(self, engine: Engine, schema: str) -> list[dict[str, Any]]:
         with engine.connect() as conn:
             rows = conn.execute(
                 text(

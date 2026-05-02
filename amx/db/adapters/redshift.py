@@ -82,10 +82,7 @@ class RedshiftAdapter(DatabaseAdapter):
         with engine.connect() as conn:
             try:
                 rows = conn.execute(
-                    text(
-                        "SELECT database_name FROM SVV_REDSHIFT_DATABASES "
-                        "ORDER BY database_name"
-                    )
+                    text("SELECT database_name FROM SVV_REDSHIFT_DATABASES ORDER BY database_name")
                 ).fetchall()
             except Exception:
                 rows = conn.execute(
@@ -123,7 +120,7 @@ class RedshiftAdapter(DatabaseAdapter):
             row = conn.execute(
                 text(
                     "SELECT COALESCE(tbl_rows, 0) FROM SVV_TABLE_INFO "
-                    "WHERE schema = :schema AND \"table\" = :table"
+                    'WHERE schema = :schema AND "table" = :table'
                 ),
                 {"schema": schema, "table": table},
             ).fetchone()
@@ -136,10 +133,7 @@ class RedshiftAdapter(DatabaseAdapter):
     def list_materialized_views(self, engine: Engine, schema: str) -> list[str]:
         with engine.connect() as conn:
             rows = conn.execute(
-                text(
-                    "SELECT name FROM STV_MV_INFO "
-                    "WHERE schema = :schema ORDER BY name"
-                ),
+                text("SELECT name FROM STV_MV_INFO WHERE schema = :schema ORDER BY name"),
                 {"schema": schema},
             ).fetchall()
         return [str(r[0]) for r in rows]
@@ -351,7 +345,7 @@ class RedshiftAdapter(DatabaseAdapter):
                         "size, tbl_rows, unsorted, stats_off, "
                         "vacuum_sort_benefit "
                         "FROM SVV_TABLE_INFO "
-                        "WHERE schema = :schema AND \"table\" = :table"
+                        'WHERE schema = :schema AND "table" = :table'
                     ),
                     {"schema": schema, "table": table},
                 ).fetchone()
@@ -394,9 +388,7 @@ class RedshiftAdapter(DatabaseAdapter):
                     {"schema": schema, "table": table},
                 ).fetchall()
                 if rows:
-                    out["column_encodings"] = {
-                        str(r[0]): str(r[1]) for r in rows if r[1]
-                    }
+                    out["column_encodings"] = {str(r[0]): str(r[1]) for r in rows if r[1]}
             except Exception as exc:
                 warnings.append(f"column encodings: {exc}")
 

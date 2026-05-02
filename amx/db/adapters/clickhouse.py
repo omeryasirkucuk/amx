@@ -113,9 +113,7 @@ class ClickHouseAdapter(DatabaseAdapter):
         # special case.
         return self.list_databases(engine)
 
-    def list_tables(
-        self, engine: Engine, schema: str, catalog: str = ""
-    ) -> list[str] | None:
+    def list_tables(self, engine: Engine, schema: str, catalog: str = "") -> list[str] | None:
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
@@ -128,9 +126,7 @@ class ClickHouseAdapter(DatabaseAdapter):
             ).fetchall()
         return [str(r[0]) for r in rows]
 
-    def list_views(
-        self, engine: Engine, schema: str, catalog: str = ""
-    ) -> list[str] | None:
+    def list_views(self, engine: Engine, schema: str, catalog: str = "") -> list[str] | None:
         # ``View`` engine is a non-materialized view; the materialized
         # variants are ``MaterializedView`` and ``WindowView`` — picked
         # up separately by ``list_materialized_views``.
@@ -382,9 +378,7 @@ class ClickHouseAdapter(DatabaseAdapter):
 
     def set_column_comment_sql(self, schema: str, table: str, column: str) -> str:
         fqn = self.fully_qualified_name(schema, table)
-        return (
-            f"ALTER TABLE {fqn} COMMENT COLUMN {self.quote_identifier(column)} :cmt"
-        )
+        return f"ALTER TABLE {fqn} COMMENT COLUMN {self.quote_identifier(column)} :cmt"
 
     def set_schema_comment_sql(self, schema: str) -> str:
         # CH conflates schema and database; capability flag is False.
