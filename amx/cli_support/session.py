@@ -904,7 +904,14 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
             if head == "manual":
                 return ["metadata"] + parts[1:]
             return parts
-        return ["search", "ask"] + parts
+        # Unknown slash command typed inside /search. Bare-text questions are
+        # already rewritten to ``/ask <text>`` upstream (see the input loop's
+        # ``not raw.startswith("/")`` branch), so anything still landing here
+        # has an explicit leading slash from the user — i.e. they meant a
+        # command, not a question. Return ``None`` so the caller surfaces
+        # "Unknown command: /<x>" instead of silently routing the typo into
+        # the search agent (e.g. ``/asl`` → ``search ask asl``).
+        return None
     if head in {
         "db",
         "metadata",
