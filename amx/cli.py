@@ -97,17 +97,6 @@ def _print_interactive_startup_summary(cfg: AMXConfig) -> None:
                 "  No database pinned — you'll be prompted to pick one when "
                 "running /run, /sync, or /ask."
             )
-        # Suggest-don't-mutate: surface profiles still carrying the legacy
-        # demo default ``database='SAP'``. We never edit YAML automatically.
-        from amx.config import has_legacy_database_default
-
-        legacy_active = has_legacy_database_default(cfg.db)
-        if legacy_active:
-            warn(
-                f"Profile '{cfg.active_db_profile}' still uses the legacy "
-                f"demo default database='SAP'. Run `/edit` to clear it if "
-                f"this is not your real database."
-            )
 
     if not cfg.active_llm_profile or not cfg.llm_profiles or not cfg.llm.is_configured():
         info("LLM: (not configured — run /setup or /add-llm-profile)")
