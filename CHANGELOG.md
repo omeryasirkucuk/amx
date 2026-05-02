@@ -64,6 +64,17 @@ pip install amx[all]                    # everything (matches old behaviour)
 with the exact `pip install amx[<extra>]` hint when a backend is selected
 without its driver — no more bare `ModuleNotFoundError`.
 
+### Changed — Relicensed from MIT to Apache-2.0
+
+AMX now ships under the Apache License, Version 2.0. The `LICENSE` file, the
+`pyproject.toml` `license` field and trove classifier, and the README License
+section have all been updated to match. Apache-2.0 layers an explicit patent
+grant on top of the permissive redistribution terms users had under MIT — a
+better fit for a tool that integrates with managed warehouses (Databricks,
+Snowflake, BigQuery, Redshift) where downstream redistributors care about
+patent posture. No source-file headers were added; the license is declared
+in `LICENSE` and `pyproject.toml` only.
+
 ### Fixed — OpenRouter reasoning request rejected by API (400) + token-budget exhaustion
 
 Real-run report after the previous OpenRouter fix landed:
