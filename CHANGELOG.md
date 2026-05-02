@@ -6,6 +6,22 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — reasoning models on OpenRouter no longer truncate in CHAT mode
+
+Non-streamed calls to OpenRouter reasoning routes (kimi-k2-thinking,
+deepseek-reasoner, claude-sonnet-4 / opus-4 / 3.7-sonnet, and any
+o-series / gpt-5 route) kept the regular `max_tokens=4096` budget, so
+agents in CHAT mode (Profile, Code, RAG) routinely failed with
+`finish_reason=length` and "0 visible characters" — the model burned
+the whole budget on internal thinking. The auto-raise floor at the
+bottom of `LLMProvider.chat` previously fired only for OpenAI direct;
+it now applies whenever `_supports_thinking()` is true, so every
+provider/model the streaming path already recognises as a reasoning
+route gets the same `AMX_LLM_MIN_MAX_TOKENS` floor (default 16384).
+The OpenAI-shaped `reasoning_effort` kwarg stays gated to
+`provider == "openai"` to avoid leaking it into routes that use a
+different parameter shape.
+
 ### Added — `/temperature` slash command and wizard prompt
 
 The LLM sampling temperature is now user-configurable from the interactive

@@ -1006,7 +1006,12 @@ class LLMProvider:
                 extra.setdefault("num_probs", 5)
 
         # Reasoning models: raise floor so visible content can appear after thinking tokens.
-        if self.cfg.provider == "openai" and _is_openai_reasoning_style_model(model):
+        # Applies to every provider/model the streaming path treats as a reasoning route
+        # (OpenRouter's kimi-k2-thinking, Anthropic extended-thinking, deepseek-reasoner,
+        # OpenAI o-series / gpt-5). Without this, non-streamed callers (profile / code /
+        # rag agents in CHAT mode) keep the regular 4096 budget and routinely truncate
+        # with finish_reason=length once the model has spent it on internal thinking.
+        if _supports_thinking(self.cfg.provider, model):
             floor = int(os.getenv("AMX_LLM_MIN_MAX_TOKENS", str(_DEFAULT_REASONING_FLOOR)))
             if mt < floor:
                 log.debug(
@@ -1016,9 +1021,14 @@ class LLMProvider:
                     model,
                 )
                 mt = floor
-            effort = os.getenv("AMX_REASONING_EFFORT", "low").strip().lower()
-            if effort in ("none", "minimal", "low", "medium", "high"):
-                extra.setdefault("reasoning_effort", effort)
+            # ``reasoning_effort`` is OpenAI's parameter shape; OpenRouter uses
+            # ``reasoning: {effort: ...}`` (set in the streaming branch above).
+            # Other providers manage it via their own thinking budgets, so only
+            # forward this kwarg for OpenAI direct.
+            if self.cfg.provider == "openai":
+                effort = os.getenv("AMX_REASONING_EFFORT", "low").strip().lower()
+                if effort in ("none", "minimal", "low", "medium", "high"):
+                    extra.setdefault("reasoning_effort", effort)
 
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
         call_api_base = (
