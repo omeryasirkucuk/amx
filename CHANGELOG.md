@@ -6,6 +6,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — OpenRouter reasoning request rejected by API (400) + token-budget exhaustion
+
+Real-run report after the previous OpenRouter fix landed:
+
+```
+litellm.BadRequestError: OpenrouterException — {"error":{"message":"Only one of
+\"reasoning.effort\" and \"reasoning.max_tokens\" can be specified","code":400}}
+```
+
+…followed by the existing fatal-empty-content guard:
+
+```
+Model `openrouter/moonshotai/kimi-k2-thinking` returned 0 visible characters and
+used all 900 output tokens — this almost always means a reasoning model burnt
+the budget on internal thinking.
+```
+
+Two issues:
+
+1. The previous fix sent both `reasoning.effort` and `reasoning.max_tokens` together. OpenRouter's API rejects that combination — they're mutually exclusive at the request layer, despite the docs implying otherwise. Now sends `effort` only (works across every reasoning route OpenRouter currently fronts: o-series, gpt-5, kimi-k2-thinking, Claude extended thinking, deepseek-reasoner).
+2. The OpenAI-direct path raises `max_tokens` to `_DEFAULT_REASONING_FLOOR` (16384) before reasoning calls so the model doesn't burn its whole output budget on internal thinking. OpenRouter routes never hit that branch, so kimi-k2-thinking with the agent's default `_AGENT_MAX_TOKENS=1500` exhausted itself thinking before producing visible output. The OpenRouter streaming branch now applies the same floor.
+
+Default `AMX_REASONING_EFFORT` for the OpenRouter path drops from `medium` → `low` so token burn stays bounded by default. Users who want more thinking depth can set `AMX_REASONING_EFFORT=high`.
+
 ### Fixed — Live thinking now actually works for OpenRouter routes
 
 User report: "I tested with `kimi-k2-thinking` and `o4-mini`, neither showed me thinking. provider is openrouter for all."
