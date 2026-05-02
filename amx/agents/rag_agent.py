@@ -31,11 +31,14 @@ You are given:
 
 Based on the documentation, infer a concise description for EACH column listed.
 
-Write descriptions and reasoning in {target_language}. Keep the response labels
-(`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+Output rules:
+- Write every description and reasoning string in **clear, business-friendly American English**.
+- Use complete sentences ending with a period.
+- Be concise — aim for ≤ 25 words per description.
+- Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`) verbatim.
 
-Write descriptions assertively and directly (e.g. "Telephone extension number").
-Do NOT start descriptions with "This column likely represents" or "This column is". Be concise.
+Write descriptions assertively and directly (e.g. "Telephone extension number.").
+Do NOT start descriptions with "This column likely represents" or "This column is".
 Only use claims supported by the retrieved excerpts. Documentation can be stale or generic, so do not over-claim.
 Prefer excerpt-specific terminology over guesses from column names alone.
 If the excerpts describe the table but not a particular column, keep the column description broad and lower confidence.
@@ -62,15 +65,12 @@ REASONING: The retrieved excerpts describe monetary amounts and refer to a compa
 """
 
 
-def _build_system_prompt(n_alternatives: int, target_language: str) -> str:
+def _build_system_prompt(n_alternatives: int) -> str:
     n = max(1, min(5, n_alternatives))
     desc_lines = (
         "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
     )
-    return (
-        _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines, target_language=target_language).strip()
-        + "\n"
-    )
+    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines).strip() + "\n"
 
 
 class RAGAgent(BaseAgent):
@@ -139,9 +139,7 @@ class RAGAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Relevant documentation:\n{doc_text}"
         )
-        system = _build_system_prompt(
-            self._n_alternatives, getattr(self.llm.cfg, "language", "english") or "english"
-        )
+        system = _build_system_prompt(self._n_alternatives)
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

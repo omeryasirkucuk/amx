@@ -37,18 +37,27 @@ log = get_logger("agents.orchestrator")
 MERGE_PROMPT = """\
 You are merging metadata suggestions from multiple sources for database columns.
 Produce one best description per column using evidence discipline, not averaging.
-Write descriptions and reasoning in {target_language}. Keep the response labels
-(`COLUMN`, `BEST_DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+
+Output rules:
+- Write every description and reasoning string in **clear, business-friendly American English**.
+- Use complete sentences. End every description with a period.
+- Aim for one tight sentence (≤ 25 words) unless the user's verbosity preset asks for more.
+- No hedging language ("might", "possibly", "could be") unless the evidence really is ambiguous —
+  in which case lower CONFIDENCE rather than soften the description.
+- Never start a description with the column name or "This column" — describe the *meaning*, not the row.
+- Keep the response labels (`COLUMN`, `BEST_DESCRIPTION`, `CONFIDENCE`, `REASONING`) verbatim.
 
 Source precedence:
 - Prefer descriptions supported by explicit code behavior or strong database/profile evidence.
 - Use documentation when it clearly matches the asset, but do not let generic docs override stronger direct evidence.
 - If sources disagree, choose the narrower description that is directly supported.
 - If no source proves a specific business meaning, prefer a broader neutral description rather than hallucinating a precise one.
+
 Confidence rules:
 - HIGH: multiple strong sources agree or one source is highly explicit.
 - MEDIUM: one reasonable interpretation dominates but some ambiguity remains.
 - LOW: evidence is sparse, conflicting, or generic.
+
 Reasoning must mention which source types won and why.
 
 {columns_text}
@@ -66,11 +75,13 @@ You are a data architect. Propose a concise description for the database SCHEMA:
 Based on the following tables and their primary purposes:
 {tables_summary}
 
-Write the description and reasoning in {target_language}. Keep the response labels
-(`DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+Output rules:
+- Write the description and reasoning in **clear, business-friendly American English**.
+- One compact sentence. End with a period.
+- Keep the response labels (`DESCRIPTION`, `CONFIDENCE`, `REASONING`) verbatim.
+
 Summarize only the shared business or technical domain visible across the provided tables.
 Do not invent organizational ownership, compliance scope, or process stages that are not evident from the summaries.
-Prefer one compact description sentence.
 
 Respond in this exact format:
 DESCRIPTION: <concise schema description>
@@ -83,11 +94,13 @@ You are a data architect. Propose a concise description for this DATABASE.
 The following schemas and their purposes were identified:
 {schemas_summary}
 
-Write the description and reasoning in {target_language}. Keep the response labels
-(`DESCRIPTION`, `CONFIDENCE`, `REASONING`) in English exactly as shown.
+Output rules:
+- Write the description and reasoning in **clear, business-friendly American English**.
+- One compact sentence. End with a period.
+- Keep the response labels (`DESCRIPTION`, `CONFIDENCE`, `REASONING`) verbatim.
+
 Summarize only the common platform or business landscape implied by the schema summaries.
 Do not invent enterprise-wide claims or implementation details that are not visible in the provided summaries.
-Prefer one compact description sentence.
 
 Respond in this exact format:
 DESCRIPTION: <concise database description>
@@ -447,7 +460,6 @@ class Orchestrator:
         prompt = SCHEMA_META_PROMPT.format(
             schema=schema,
             tables_summary=tables_text,
-            target_language=getattr(self.llm.cfg, "language", "english") or "english",
         )
 
         with step_spinner(f"Generating description for schema {schema}"):
@@ -523,7 +535,6 @@ class Orchestrator:
         schemas_text = "\n\n".join(schema_summaries)
         prompt = DATABASE_META_PROMPT.format(
             schemas_summary=schemas_text,
-            target_language=getattr(self.llm.cfg, "language", "english") or "english",
         )
 
         with step_spinner("Generating description for database"):
@@ -806,10 +817,7 @@ class Orchestrator:
             {"role": "system", "content": MERGE_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": MERGE_PROMPT.format(
-                    columns_text=columns_text,
-                    target_language=getattr(self.llm.cfg, "language", "english") or "english",
-                ),
+                "content": MERGE_PROMPT.format(columns_text=columns_text),
             },
         ]
         est = estimate_tokens(messages)

@@ -83,7 +83,6 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     model = ask(
         "Model name", normalize_llm_model(provider, defaults.model) or default_model(provider)
     )
-    language = ask("Preferred language", defaults.language or "english").strip() or "english"
     api_base = defaults.api_base
     if provider in ("local", "ollama", "kimi", "openrouter"):
         default_api_base = (
@@ -109,7 +108,6 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     return LLMConfig(
         provider=provider,
         model=normalize_llm_model(provider, model),
-        language=language,
         api_key=api_key,
         api_base=api_base,
         temperature=defaults.temperature,
@@ -164,8 +162,8 @@ def cmd_llm_profiles(cfg: AMXConfig) -> None:
     rows = []
     for name, llm in sorted(cfg.llm_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_llm_profile else " "
-        rows.append([f"{mark} {name}", llm.provider, llm.model, llm.language or "english"])
-    render_table("LLM profiles (* = active)", ["Profile", "Provider", "Model", "Language"], rows)
+        rows.append([f"{mark} {name}", llm.provider, llm.model])
+    render_table("LLM profiles (* = active)", ["Profile", "Provider", "Model"], rows)
 
 
 def cmd_use_llm(cfg: AMXConfig, rest: list[str]) -> None:
@@ -257,7 +255,7 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
         render_table("Preset comparison", ["Field", *PROMPT_DETAIL_LEVELS], rows)
         info(
             f"Current level: [cyan]{current}[/cyan]  "
-            f"(n_alternatives={cfg.llm.n_alternatives}, language={cfg.llm.language or 'english'})  "
+            f"(n_alternatives={cfg.llm.n_alternatives})  "
             "- run [cyan]/prompt-detail <level>[/cyan] to change."
         )
         return
@@ -329,33 +327,6 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
             "Detailed mode: per-column output tokens roughly double. "
             "Tune AMX_LLM_TIMEOUT_SEC / column_batch_size if you hit timeouts."
         )
-
-
-def cmd_language(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show or set the preferred metadata generation language for the active LLM profile."""
-    if not rest:
-        info(
-            f"Current language: [cyan]{cfg.llm.language or 'english'}[/cyan] "
-            f"for LLM profile '{cfg.active_llm_profile}'."
-        )
-        info(
-            "Run [cyan]/language <name>[/cyan] to change metadata generation language (examples: english, turkish, german)."
-        )
-        return
-
-    value = " ".join(rest).strip()
-    if not value:
-        error("Usage: /language <name>")
-        return
-
-    cfg.llm.language = value
-    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
-        cfg.llm_profiles[cfg.active_llm_profile].language = value
-    cfg.save()
-    success(
-        f"Language set to [cyan]{value}[/cyan] and saved "
-        f"for LLM profile '{cfg.active_llm_profile}'."
-    )
 
 
 def cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
