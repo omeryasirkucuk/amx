@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/temperature` slash command and wizard prompt
+
+The LLM sampling temperature is now user-configurable from the interactive
+CLI instead of being locked at the `0.2` default. The `/add-llm-profile`
+wizard prompts for it alongside the existing generation settings, and a
+new `/temperature` slash command shows or sets the value on the active
+profile (e.g. `/temperature 0.7`). Values are clamped to `[0.0, 2.0]` and
+persist to `~/.amx/config.yml` so every downstream call — both
+`chat_completions` and OpenAI Batch — picks up the new value automatically.
+The default stays `0.2`; existing profiles are unaffected.
+
 ### Added — six new database backends + extended object model
 
 AMX now ships adapters for **MySQL, Oracle, SQL Server, Redshift, ClickHouse,

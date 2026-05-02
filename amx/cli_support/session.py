@@ -74,6 +74,9 @@ from amx.cli_support.commands.profiles import (
     cmd_prompt_detail as _cmd_prompt_detail,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_temperature as _cmd_temperature,
+)
+from amx.cli_support.commands.profiles import (
     cmd_remove_code_profile as _cmd_remove_code_profile,
 )
 from amx.cli_support.commands.profiles import (
@@ -686,6 +689,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "logprob-thresholds"):
             return True
         _cmd_logprob_thresholds(cfg, parts[1:])
+        return True
+    if head == "temperature":
+        if not _require_namespace(head, namespace, "llm", "temperature"):
+            return True
+        _cmd_temperature(cfg, parts[1:])
         return True
     if head == "doc-profiles":
         if not _require_namespace(head, namespace, "docs", "doc-profiles"):
