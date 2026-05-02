@@ -34,7 +34,18 @@ from amx.storage.secrets import (
     parse_reference,
 )
 
-SUPPORTED_BACKENDS = ("postgresql", "snowflake", "databricks", "bigquery")
+SUPPORTED_BACKENDS = (
+    "postgresql",
+    "snowflake",
+    "databricks",
+    "bigquery",
+    "mysql",
+    "oracle",
+    "mssql",
+    "redshift",
+    "clickhouse",
+    "duckdb",
+)
 DISABLED_PROFILE = "__none__"
 PROFILING_MODES = ("full", "sampled", "metadata")
 SUPPORTED_EMBEDDING_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
@@ -445,10 +456,43 @@ class DBConfig(_ObservableConfig):
     dataset: str = ""
     credentials_path: str = ""
 
+    # Oracle — service name vs SID is exposed explicitly so users can
+    # match what their DBA provided. ``database`` field is reused for SID
+    # when ``service_name`` is blank.
+    service_name: str = ""
+
+    # SQL Server — ``driver`` is the ODBC driver name (e.g. "ODBC Driver
+    # 18 for SQL Server"), required by pyodbc. ``encrypt`` /
+    # ``trust_server_certificate`` cover the most-asked TLS knobs.
+    driver: str = ""
+    encrypt: bool = True
+    trust_server_certificate: bool = False
+
+    # Redshift — optional; only used by IAM-auth code paths. Standard
+    # username/password auth uses the inherited ``host``/``user`` fields.
+    cluster_identifier: str = ""
+
+    # ClickHouse — HTTPS toggle. HTTP port is 8123, HTTPS is 8443.
+    secure: bool = False
+
     # Profiling guardrails
     profiling_mode: str = "full"  # full | sampled | metadata
     profiling_max_rows: int = 1_000_000  # skip full column scans above this row estimate (0=off)
     profiling_sample_size: int = 5
+
+    def _effective_port(self, default: int) -> int:
+        """Resolve the port for a non-PostgreSQL backend.
+
+        ``port`` defaults to 5432 at the dataclass level for PostgreSQL
+        back-compat. For every other backend, treat that legacy value
+        as "no port set" and substitute the canonical default (3306 for
+        MySQL, 1521 for Oracle, 1433 for SQL Server, …). Users who
+        actively picked a port via the wizard get their value through
+        unchanged.
+        """
+        if self.port and self.port != 5432:
+            return self.port
+        return default
 
     @property
     def url(self) -> str:
@@ -490,6 +534,90 @@ class DBConfig(_ObservableConfig):
                 url += f"?credentials_path={quote_plus(self.credentials_path)}"
             return url
 
+        if self.backend == "mysql":
+            # PyMySQL dialect. ``database`` is optional — same "leave
+            # blank to pick at command time" pattern as PG.
+            port = self._effective_port(3306)
+            url = (
+                f"mysql+pymysql://{quote_plus(self.user)}:{quote_plus(self.password)}"
+                f"@{self.host}:{port}"
+            )
+            if self.database:
+                url += f"/{quote_plus(self.database)}"
+            return url
+
+        if self.backend == "oracle":
+            # python-oracledb (thin mode by default). Service name is
+            # preferred over SID for modern Oracle Cloud / RAC setups; we
+            # fall back to ``database`` (treated as SID) when blank.
+            port = self._effective_port(1521)
+            base = (
+                f"oracle+oracledb://{quote_plus(self.user)}:{quote_plus(self.password)}"
+                f"@{self.host}:{port}"
+            )
+            if self.service_name:
+                return f"{base}/?service_name={quote_plus(self.service_name)}"
+            if self.database:
+                return f"{base}/{quote_plus(self.database)}"
+            return base
+
+        if self.backend == "mssql":
+            # pyodbc dialect. The ODBC driver name is mandatory at the
+            # SQLAlchemy URL level — fall back to a sensible default
+            # so a fresh profile can connect without the user having to
+            # know the exact driver string up front.
+            driver = self.driver or "ODBC Driver 18 for SQL Server"
+            port = self._effective_port(1433)
+            params: list[str] = [f"driver={quote_plus(driver)}"]
+            if self.encrypt:
+                params.append("Encrypt=yes")
+            else:
+                params.append("Encrypt=no")
+            if self.trust_server_certificate:
+                params.append("TrustServerCertificate=yes")
+            url = (
+                f"mssql+pyodbc://{quote_plus(self.user)}:{quote_plus(self.password)}"
+                f"@{self.host}:{port}"
+            )
+            if self.database:
+                url += f"/{quote_plus(self.database)}"
+            return f"{url}?{'&'.join(params)}"
+
+        if self.backend == "redshift":
+            # Uses the redshift_connector SQLAlchemy dialect. URL shape
+            # mirrors PG; cluster_identifier is appended when set so IAM
+            # auth code paths can pick it up.
+            port = self._effective_port(5439)
+            url = (
+                f"redshift+redshift_connector://{quote_plus(self.user)}:"
+                f"{quote_plus(self.password)}@{self.host}:{port}"
+            )
+            if self.database:
+                url += f"/{quote_plus(self.database)}"
+            if self.cluster_identifier:
+                url += f"?cluster_identifier={quote_plus(self.cluster_identifier)}"
+            return url
+
+        if self.backend == "clickhouse":
+            # clickhouse-sqlalchemy with the HTTP transport — works
+            # against ClickHouse Cloud and on-prem deployments. Port
+            # defaults differ for HTTPS vs HTTP.
+            scheme = "clickhouse+https" if self.secure else "clickhouse+http"
+            port = self._effective_port(8443 if self.secure else 8123)
+            url = (
+                f"{scheme}://{quote_plus(self.user or 'default')}:"
+                f"{quote_plus(self.password)}@{self.host}:{port}"
+            )
+            if self.database:
+                url += f"/{quote_plus(self.database)}"
+            return url
+
+        if self.backend == "duckdb":
+            # File-based or in-memory. ``database`` carries the path
+            # (or ``:memory:``). No host/port/user/password.
+            target = self.database or ":memory:"
+            return f"duckdb:///{target}"
+
         # Default: PostgreSQL. When the user leaves ``database`` blank
         # (the ``/add-db-profile`` wizard advertises it as optional —
         # "leave blank to pick at command time"), fall back to the
@@ -526,6 +654,29 @@ class DBConfig(_ObservableConfig):
         if self.backend == "bigquery":
             ds = f".{self.dataset}" if self.dataset else f" {unpinned_label}"
             return f"{self.project}{ds}"
+        if self.backend == "oracle":
+            target = self.service_name or self.database or unpinned_label
+            port = self._effective_port(1521)
+            return f"{target} @ {self.host}:{port} (user {self.user})"
+        if self.backend == "mssql":
+            db = self.database or unpinned_label
+            port = self._effective_port(1433)
+            return f"{db} @ {self.host}:{port} (user {self.user})"
+        if self.backend == "mysql":
+            db = self.database or unpinned_label
+            port = self._effective_port(3306)
+            return f"{db} @ {self.host}:{port} (user {self.user})"
+        if self.backend == "redshift":
+            db = self.database or unpinned_label
+            port = self._effective_port(5439)
+            return f"{db} @ {self.host}:{port} (user {self.user})"
+        if self.backend == "clickhouse":
+            db = self.database or unpinned_label
+            scheme = "https" if self.secure else "http"
+            port = self._effective_port(8443 if self.secure else 8123)
+            return f"{db} @ {self.host}:{port} ({scheme}, user {self.user or 'default'})"
+        if self.backend == "duckdb":
+            return f"DuckDB file: {self.database or ':memory:'}"
         db = self.database or unpinned_label
         return f"{db} @ {self.host}:{self.port} (user {self.user})"
 
@@ -545,6 +696,22 @@ class DBConfig(_ObservableConfig):
             return bool(self.host and (self.access_token or self.password))
         if self.backend == "bigquery":
             return bool(self.project)
+        if self.backend == "mysql":
+            return bool(self.host and self.user)
+        if self.backend == "oracle":
+            return bool(self.host and self.user and (self.service_name or self.database))
+        if self.backend == "mssql":
+            return bool(self.host and self.user)
+        if self.backend == "redshift":
+            return bool(self.host and self.user)
+        if self.backend == "clickhouse":
+            # ClickHouse defaults the user to ``default`` if blank, so a
+            # bare host is enough to attempt a connection.
+            return bool(self.host)
+        if self.backend == "duckdb":
+            # File path or ``:memory:`` is enough; an empty ``database``
+            # field is interpreted as in-memory by ``DBConfig.url``.
+            return True
         return False
 
     def is_database_pinned(self) -> bool:
@@ -563,6 +730,22 @@ class DBConfig(_ObservableConfig):
             return bool(self.catalog)
         if self.backend == "bigquery":
             return bool(self.dataset)
+        if self.backend == "mysql":
+            return bool(self.database)
+        if self.backend == "oracle":
+            return bool(self.service_name or self.database)
+        if self.backend == "mssql":
+            return bool(self.database)
+        if self.backend == "redshift":
+            return bool(self.database)
+        if self.backend == "clickhouse":
+            return bool(self.database)
+        if self.backend == "duckdb":
+            # The ``database`` field IS the file path; ``:memory:`` and
+            # any explicit path both count as "pinned" because the user
+            # made an active choice (vs. PG where blank means "pick
+            # later").
+            return True
         return False
 
     def is_configured(self) -> bool:
@@ -607,6 +790,12 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         project=str(m.get("project", "")),
         dataset=str(m.get("dataset", "")),
         credentials_path=str(m.get("credentials_path", "")),
+        service_name=str(m.get("service_name", "")),
+        driver=str(m.get("driver", "")),
+        encrypt=bool(m.get("encrypt", True)),
+        trust_server_certificate=bool(m.get("trust_server_certificate", False)),
+        cluster_identifier=str(m.get("cluster_identifier", "")),
+        secure=bool(m.get("secure", False)),
         profiling_mode=str(m.get("profiling_mode", "full")),
         profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
         profiling_sample_size=int(m.get("profiling_sample_size", 5)),
@@ -655,6 +844,68 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "project": db.project,
                 "dataset": db.dataset,
                 "credentials_path": db.credentials_path,
+            }
+        )
+    elif db.backend == "mysql":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or 3306,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+            }
+        )
+    elif db.backend == "oracle":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or 1521,
+                "user": db.user,
+                "password": db.password,
+                "service_name": db.service_name,
+                "database": db.database,
+            }
+        )
+    elif db.backend == "mssql":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or 1433,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+                "driver": db.driver,
+                "encrypt": db.encrypt,
+                "trust_server_certificate": db.trust_server_certificate,
+            }
+        )
+    elif db.backend == "redshift":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or 5439,
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+                "cluster_identifier": db.cluster_identifier,
+            }
+        )
+    elif db.backend == "clickhouse":
+        base.update(
+            {
+                "host": db.host,
+                "port": db.port or (8443 if db.secure else 8123),
+                "user": db.user,
+                "password": db.password,
+                "database": db.database,
+                "secure": db.secure,
+            }
+        )
+    elif db.backend == "duckdb":
+        base.update(
+            {
+                "database": db.database,
             }
         )
     else:

@@ -43,7 +43,6 @@ dependencies = [
     "rich>=13.0",
     "prompt_toolkit>=3.0.40",
     "sqlalchemy>=2.0",
-    "psycopg2-binary>=2.9",
     "pandas>=2.0",
     "chromadb>=0.5",
     "langchain>=0.3",
@@ -68,12 +67,6 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "msal>=1.24",
-    "snowflake-sqlalchemy>=1.6",
-    "snowflake-connector-python>=3.6",
-    "databricks-sqlalchemy>=1.0",
-    "databricks-sql-connector>=3.0",
-    "sqlalchemy-bigquery>=1.9",
-    "google-cloud-bigquery>=3.13",
     "keyring>=24.0",
 ]
 
@@ -89,6 +82,53 @@ code-intel = [
 ]
 local-embeddings = [
     "sentence-transformers>=3.0",
+]
+# ── Database backend extras ───────────────────────────────────────────────
+# Each backend's drivers live in their own extra so the default install
+# stays lean. Pick what you use:
+#   pip install amx[postgresql]      # one backend
+#   pip install amx[postgresql,mysql,duckdb]  # several
+#   pip install amx[all]             # every backend (~100MB+ of drivers)
+postgresql = ["psycopg2-binary>=2.9"]
+snowflake = [
+    "snowflake-sqlalchemy>=1.6",
+    "snowflake-connector-python>=3.6",
+]
+databricks = [
+    "databricks-sqlalchemy>=1.0",
+    "databricks-sql-connector>=3.0",
+]
+bigquery = [
+    "sqlalchemy-bigquery>=1.9",
+    "google-cloud-bigquery>=3.13",
+]
+mysql = ["pymysql>=1.1", "cryptography>=42.0"]
+oracle = ["oracledb>=2.0"]
+mssql = ["pyodbc>=5.0"]
+redshift = ["redshift_connector>=2.1", "sqlalchemy-redshift>=0.8"]
+clickhouse = [
+    "clickhouse-connect>=0.7",
+    "clickhouse-sqlalchemy>=0.3",
+]
+duckdb = ["duckdb-engine>=0.13", "duckdb>=1.0"]
+all = [
+    "psycopg2-binary>=2.9",
+    "snowflake-sqlalchemy>=1.6",
+    "snowflake-connector-python>=3.6",
+    "databricks-sqlalchemy>=1.0",
+    "databricks-sql-connector>=3.0",
+    "sqlalchemy-bigquery>=1.9",
+    "google-cloud-bigquery>=3.13",
+    "pymysql>=1.1",
+    "cryptography>=42.0",
+    "oracledb>=2.0",
+    "pyodbc>=5.0",
+    "redshift_connector>=2.1",
+    "sqlalchemy-redshift>=0.8",
+    "clickhouse-connect>=0.7",
+    "clickhouse-sqlalchemy>=0.3",
+    "duckdb-engine>=0.13",
+    "duckdb>=1.0",
 ]
 dev = [
     "pytest>=8.0",

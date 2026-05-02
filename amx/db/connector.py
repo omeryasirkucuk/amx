@@ -370,6 +370,83 @@ class DatabaseConnector:
             return []
         return self._adapter.list_materialized_views(self.engine, schema)
 
+    # ── Extended object types ─────────────────────────────────────────────
+    #
+    # Each accessor is gated by the matching ``BackendCapabilities`` flag
+    # so unsupported backends short-circuit without firing a query.
+    # Adapter exceptions degrade to ``[]`` with a debug-level log entry,
+    # mirroring the ``list_databases`` resilience pattern — a single
+    # permission failure should never tank a wider listing operation.
+
+    def _list_extended(
+        self,
+        flag_name: str,
+        method_name: str,
+        *args: Any,
+    ) -> list[dict[str, Any]]:
+        if not getattr(self.capabilities, flag_name, False):
+            return []
+        try:
+            return list(getattr(self._adapter, method_name)(self.engine, *args))
+        except Exception as exc:
+            log.debug("%s failed: %s", method_name, exc)
+            return []
+
+    def list_stored_procedures(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("stored_procedures", "list_stored_procedures", schema)
+
+    def list_functions(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("functions", "list_functions", schema)
+
+    def list_sequences(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("sequences", "list_sequences", schema)
+
+    def list_triggers(
+        self, schema: str, table: str | None = None
+    ) -> list[dict[str, Any]]:
+        return self._list_extended("triggers", "list_triggers", schema, table)
+
+    def list_events(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("events", "list_events", schema)
+
+    def list_packages(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("packages", "list_packages", schema)
+
+    def list_synonyms(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("synonyms", "list_synonyms", schema)
+
+    def list_user_defined_types(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("user_defined_types", "list_user_defined_types", schema)
+
+    def list_dictionaries(self, database: str | None = None) -> list[dict[str, Any]]:
+        # ClickHouse exposes dictionaries by *database* — defaults to the
+        # connection's current database when not passed.
+        db = database if database is not None else getattr(self.cfg, "database", "") or ""
+        return self._list_extended("dictionaries", "list_dictionaries", db)
+
+    def list_macros(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("macros", "list_macros", schema)
+
+    def list_volumes(
+        self, schema: str, catalog: str | None = None
+    ) -> list[dict[str, Any]]:
+        cat = catalog if catalog is not None else getattr(self.cfg, "catalog", "") or ""
+        return self._list_extended("volumes", "list_volumes", cat, schema)
+
+    def list_datashares(self) -> list[dict[str, Any]]:
+        # No schema / catalog argument — datashares live at the cluster /
+        # account level on every backend that supports them.
+        if not self.capabilities.datashares:
+            return []
+        try:
+            return list(self._adapter.list_datashares(self.engine))
+        except Exception as exc:
+            log.debug("list_datashares failed: %s", exc)
+            return []
+
+    def list_external_tables(self, schema: str) -> list[dict[str, Any]]:
+        return self._list_extended("external_tables", "list_external_tables", schema)
+
     def list_assets(self, schema: str) -> list[tuple[str, AssetKind]]:
         """All analyzable assets (tables, views, materialized views) in a schema."""
         assets: list[tuple[str, AssetKind]] = []
