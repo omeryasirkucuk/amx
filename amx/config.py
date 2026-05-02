@@ -708,6 +708,10 @@ class LLMConfig(_ObservableConfig):
     logprob_high: float = 0.85
     logprob_medium: float = 0.50
     force_logprobs: bool = True
+    # Token budget for the model's internal reasoning (Anthropic extended
+    # thinking). Only consumed when the model supports reasoning AND a caller
+    # passes ``on_thinking`` to ``LLMProvider.chat``; otherwise ignored.
+    thinking_budget: int = 1024
 
     @property
     def prompt_detail_cfg(self) -> PromptDetail:
@@ -744,6 +748,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         logprob_high=float(m.get("logprob_high", 0.85)),
         logprob_medium=float(m.get("logprob_medium", 0.50)),
         force_logprobs=bool(m.get("force_logprobs", True)),
+        thinking_budget=int(m.get("thinking_budget", 1024)),
     )
 
 
@@ -767,6 +772,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "logprob_high": llm.logprob_high,
         "logprob_medium": llm.logprob_medium,
         "force_logprobs": llm.force_logprobs,
+        "thinking_budget": llm.thinking_budget,
     }
 
 

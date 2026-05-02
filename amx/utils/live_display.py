@@ -82,6 +82,12 @@ class LiveDisplay:
         self._thinking: bool = False
         self._thinking_label: str = ""
         self._thinking_start: float = 0.0
+        # Streaming reasoning text from the model. Populated by
+        # ``update_thinking`` while a chat call streams reasoning deltas;
+        # cleared on ``stop_thinking`` and ``start`` so it never leaks
+        # between turns. Capped to the most recent slice so the panel
+        # height stays bounded.
+        self._thinking_text: str = ""
         self._collapsed: bool = False
         self._session_start: float = 0.0
 
@@ -117,6 +123,7 @@ class LiveDisplay:
         self._context_model = model
         self._activities.clear()
         self._thinking = False
+        self._thinking_text = ""
         self._collapsed = False
         self._session_start = time.monotonic()
         self._total_tokens_in = 0
@@ -316,10 +323,28 @@ class LiveDisplay:
         self._thinking = True
         self._thinking_label = label
         self._thinking_start = time.monotonic()
+        self._thinking_text = ""
+        self._refresh()
+
+    def update_thinking(self, text: str) -> None:
+        """Replace the streaming reasoning snippet shown under the spinner.
+
+        Callers pass the full accumulated reasoning so far; we keep only the
+        tail (~600 chars) so the panel never grows unbounded as the model
+        continues to think.
+        """
+        if not text:
+            return
+        with self._lock:
+            tail = text[-600:] if len(text) > 600 else text
+            if tail == self._thinking_text:
+                return
+            self._thinking_text = tail
         self._refresh()
 
     def stop_thinking(self) -> None:
         self._thinking = False
+        self._thinking_text = ""
         self._refresh()
 
     def toggle_collapse(self) -> None:
@@ -374,14 +399,25 @@ class LiveDisplay:
         header_text = Text.from_markup(f"  {left}  {right}  {time_str}  {tok_str}")
         return Panel(header_text, box=box.HEAVY, style="dim", height=3)
 
-    def _render_thinking(self) -> Text:
+    def _render_thinking(self) -> Group | Text:
         elapsed = time.monotonic() - self._thinking_start
         dots = "." * (int(elapsed * 2) % 4)
         collapsed_hint = "[dim](Tab to expand)[/dim]" if self._collapsed else ""
-        return Text.from_markup(
+        header = Text.from_markup(
             f"  [bold yellow]⟳[/bold yellow] {self._thinking_label}{dots} "
             f"[dim]({elapsed:.0f}s)[/dim] {collapsed_hint}"
         )
+        if not self._thinking_text:
+            return header
+        # Show the last few lines of streamed reasoning, dim-italic and
+        # indented so it reads as ambient model chatter rather than answer
+        # text. ``transient=True`` on the Live wipes it on stop().
+        snippet = self._thinking_text.replace("\r", "")
+        lines = [ln for ln in snippet.split("\n") if ln.strip()]
+        tail_lines = lines[-3:] if len(lines) > 3 else lines
+        body = Text("\n".join(f"    {ln}" for ln in tail_lines), style="dim italic")
+        body.overflow = "fold"
+        return Group(header, body)
 
     def _render_activity_tree(self) -> Tree:
         tree = Tree("[bold]Pipeline[/bold]", guide_style="dim")

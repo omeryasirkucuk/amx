@@ -6,6 +6,32 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — Live model thinking in `/ask`
+
+User feedback: "We don't serve model's thinking here but we can. If we show true parts of model's thinkings it really looks well. But we don't keep them in screen after thinkings completed because it can increase crowded in chat."
+
+`/ask` now streams the model's real reasoning into the existing transient thinking panel while the answer is being composed, then wipes the panel the moment the answer prints — so the chat scrollback stays uncluttered but the user sees the model actually thinking.
+
+**Engagement is automatic**: when the active LLM is a reasoning-capable model — Anthropic Claude with extended thinking (Sonnet 3.7+, Sonnet/Opus 4+), DeepSeek-reasoner, or OpenAI o-series — the agent calls switch to streaming and pipe `delta.reasoning_content` chunks into the panel. For other models the call path is unchanged: the existing static "Search Agent: thinking with tools" spinner shows, no errors, no empty panel.
+
+**Provider layer (`amx/llm/provider.py`)**:
+- `LLMProvider.chat()` accepts a new `on_thinking: Callable[[str], None] | None` callback. When supplied AND the model emits reasoning, the call switches to `stream=True` and the callback fires with the running accumulated reasoning text.
+- For Anthropic, the streamed call adds `thinking={"type": "enabled", "budget_tokens": cfg.llm.thinking_budget}`, forces `temperature=1` (Anthropic API requirement), drops `logprobs` (incompatible with extended thinking), and bumps `max_tokens` if needed so visible output has headroom above the thinking budget.
+- Streamed chunks are reassembled (content, tool calls split by index, finish_reason, usage) into a response-shaped object so the existing parsing path — fatal-empty-content guard, tool-call extraction, usage dict — works unchanged. `ChatResult` gains `thinking_content: str` and `thinking_tokens: int` fields.
+- New `_supports_thinking(provider, model)` helper sniffs Anthropic Claude 3.7/4 Sonnet, Claude 4 Opus, DeepSeek-reasoner, OpenAI reasoning models, and OpenRouter routes for those.
+
+**Display layer (`amx/utils/live_display.py`)**:
+- `LiveDisplay.update_thinking(text)` is the new public entry point. It stores the most recent ~600 chars of reasoning and refreshes the panel. `_render_thinking()` now returns a `Group` of the existing one-line spinner + a dim-italic, indented snippet of the last few lines of streamed reasoning.
+- The text is cleared on `stop_thinking()` and on `start()` so it never leaks between turns. `transient=True` on the underlying `Live` continues to wipe the whole region when the run ends.
+
+**Wiring (`amx/search/tool_agent.py`, `amx/search/_agent/short_circuits.py`)**:
+- `run_tool_agent` and `_run_tool_loop` accept an optional `display` kwarg. The loop builds a single `on_thinking` closure and threads it through both `llm.chat` calls (the iterative tool-call rounds AND the budget-cap closing call), so the panel keeps streaming continuously across iterations instead of flickering between tool calls.
+- `short_circuits` resolves `get_display()` next to the existing `step_spinner("Search Agent: thinking with tools")` block and forwards it into the agent. `step_spinner` continues to manage `set_thinking`/`stop_thinking` lifecycle — the new code only feeds text into a panel that's already open.
+
+**Config**: one new field on `LLMConfig` — `thinking_budget: int = 1024` — round-trips through `_llm_to_mapping`/`_llm_from_mapping`. No new flag, no `--show-thinking`; the feature is on whenever the model emits reasoning.
+
+**Not persisted**: thinking content and `thinking_tokens` are intentionally NOT written to the SQLite history. Persisting would defeat the "uncluttered chat" goal that motivated the feature in the first place. They live in `ChatResult` for the duration of the call, render to the live panel, and are gone.
+
 ### Changed — `/history list` runs a wizard like `/run`
 
 User feedback: "I don't like `/list --some-flag` style. If we serve options, ask the user — like `/run` does."
