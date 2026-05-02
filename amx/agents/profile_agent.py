@@ -24,11 +24,13 @@ _BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert. Given database profile information for a table
 and its columns, infer what each column likely represents.
 
-Write descriptions and reasoning in {target_language}. Keep the response labels
-(`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, `TABLE_DESCRIPTION_1`, etc.)
-in English exactly as shown.
+Output rules:
+- Write every description and reasoning string in **clear, business-friendly American English**.
+- Use complete sentences ending with a period.
+- Be concise — aim for ≤ 25 words per description (the verbosity preset may relax this).
+- Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, `TABLE_DESCRIPTION_1`, etc.) verbatim.
 
-Write descriptions assertively and directly (e.g. "Telephone extension number" or "Indicates the fax number").
+Write descriptions assertively and directly (e.g. "Telephone extension number." or "Indicates the fax number.").
 Do NOT start descriptions with "This column likely represents" or "This column likely is".
 Ground every claim in the provided profile, keys, comments, samples, stats, or usage hints.
 If evidence is weak, stay generic but still useful; do not invent business jargon, vendor-specific module names, legal meanings, or workflow claims that are not supported.
@@ -70,7 +72,6 @@ REASONING: The column participates in key relationships, has identifier-like sam
 
 def _build_system_prompt(
     n_alternatives: int,
-    target_language: str,
     description_verbosity: str = "brief",
 ) -> str:
     """Build the system prompt dynamically for the requested number of alternatives.
@@ -107,7 +108,6 @@ def _build_system_prompt(
         description_length_rule = "A concise description (1-2 sentences)."
     return (
         _BASE_SYSTEM_PROMPT.format(
-            target_language=target_language,
             description_length_rule=description_length_rule,
             alt_instruction=alt_instruction,
             extra_items=extra_items,
@@ -354,7 +354,6 @@ class ProfileAgent(BaseAgent):
         user_msg = self._build_prompt(ctx)
         system = _build_system_prompt(
             self._n_alternatives,
-            getattr(self.llm.cfg, "language", "english") or "english",
             description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
         )
         return [

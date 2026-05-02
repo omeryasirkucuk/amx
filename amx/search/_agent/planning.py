@@ -301,6 +301,16 @@ class PlanningMixin:
         return "semantic_discovery"
 
     def _align_answer_language(self, plan: SearchPlan, question_language: str) -> SearchPlan:
+        """Trust the LLM's ``answer_language`` (legacy multilingual support).
+
+        AMX itself is English-only since PR #61 — every prompt explicitly
+        asks for English output and every user-facing surface (CLI,
+        docstrings, prompt examples) is English. The remaining Turkish /
+        Arabic / etc. branches under ``deterministic.py`` are kept as
+        a safety net for the rare case where a model emits
+        ``answer_language: "turkish"`` from session memory built before
+        the refactor — better to render that path than to crash.
+        """
         # Trust LLM answer_language unless empty/unknown.
         if plan.answer_language and plan.answer_language.lower() not in {"unknown", ""}:
             return plan

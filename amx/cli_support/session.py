@@ -59,9 +59,6 @@ from amx.cli_support.commands.profiles import (
     cmd_doc_profiles as _cmd_doc_profiles,
 )
 from amx.cli_support.commands.profiles import (
-    cmd_language as _cmd_language,
-)
-from amx.cli_support.commands.profiles import (
     cmd_llm_batch_size as _cmd_llm_batch_size,
 )
 from amx.cli_support.commands.profiles import (
@@ -327,21 +324,20 @@ Commands (in order):
   3) /use-llm <name>                    Switch active LLM profile
   4) /add-llm-profile [name]            Add/update an LLM profile (interactive)
   5) /remove-llm-profile <name>         Remove an LLM profile
-  6) /language [name]                   Show or set the metadata generation language
-  7) /prompt-detail [level]             Show or set the prompt detail level
+  6) /prompt-detail [level]             Show or set the prompt detail level
                                           Levels: minimal | standard | detailed | full
                                           Controls which DB fields are included in the LLM prompt.
                                           Run without args to show the current level + what each
                                           preset includes.
-  8) /description-verbosity [level]     Show or set the OUTPUT description length
+  7) /description-verbosity [level]     Show or set the OUTPUT description length
                                           Levels: brief (default) | detailed
                                           brief = 1 sentence per column
                                           detailed = 2-4 sentences with purpose, typical values,
                                           and relationships when supported by evidence.
-  9) /n-alternatives [N]                Show or set number of description alternatives per column
- 10) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
+  8) /n-alternatives [N]                Show or set number of description alternatives per column
+  9) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
                                           Range: 1 – 5  (default: 3)
- 11) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
+ 10) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
                                          as context in every profile batch prompt
 
 Model examples (what to type in "Model name"):
@@ -670,11 +666,6 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "description-verbosity"):
             return True
         _cmd_description_verbosity(cfg, parts[1:])
-        return True
-    if head == "language":
-        if not _require_namespace(head, namespace, "llm", "language"):
-            return True
-        _cmd_language(cfg, parts[1:])
         return True
     if head == "n-alternatives":
         if not _require_namespace(head, namespace, "llm", "n-alternatives"):

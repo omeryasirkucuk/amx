@@ -6,6 +6,36 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — English-only prompts, slash command + wizard scaffolding removed
+
+User feedback: "It's enough to support English. We should make the prompts very good for English. Remove the multilingual support in the ask method."
+
+User-facing surface that's gone:
+
+- **`/language` slash command** removed from `_LLM_COMMANDS`. Typing it inside a session now produces "Unknown command" instead of switching language.
+- **Wizard prompt** for "Preferred language" inside `/add-llm-profile` — gone. Fresh profiles inherit the default `"english"`.
+- **`cmd_language` handler** in `profiles.py` — deleted. The session router that used to dispatch `head == "language"` is removed too.
+- **`/llm-profiles` table** drops the Language column (was always `english` for new profiles after this PR; mixed for upgraded ones).
+- **`/prompt-detail` summary** drops the `language=…` annotation.
+
+Prompt polish across all four agents (Profile / RAG / Code / Orchestrator merge + meta) — every system prompt now opens with an explicit English-only style block:
+
+```
+Output rules:
+- Write every description and reasoning string in clear, business-friendly American English.
+- Use complete sentences ending with a period.
+- Be concise — aim for ≤ 25 words per description (the verbosity preset may relax this).
+- Keep the response labels (`COLUMN`, `DESCRIPTION_1`, ...) verbatim.
+```
+
+The `target_language={user_pref}` placeholder that used to thread the language through every prompt is removed; descriptions are always English now.
+
+The `LLMConfig.language` field is **deprecated, not removed** — it stays so configs that still carry `language: turkish` round-trip cleanly and so the three remaining display callers (CLI startup banner, `/llm-profiles` row, search-agent prompt header) don't crash. New code MUST NOT branch on it.
+
+The `_question_language_hint` heuristic (Unicode-block based) and the deterministic short-circuit's per-language branches are preserved untouched — they let the agent render a faithful echo when a user asks in Turkish/Japanese/etc., even though every CLI surface and prompt is now English. This is a UX safety net, not a feature surface.
+
+440 tests pass, 19 deselected. Lint + format clean.
+
 ### Added — `/ask` can introspect past runs
 
 User report: `/ask "Can you see my past runs to create metadata"` returned "I don't have access to your past runs or any previous interactions." That's wrong now.
