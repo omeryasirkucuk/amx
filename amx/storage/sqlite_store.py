@@ -797,19 +797,42 @@ class SQLiteHistoryStore:
                 ),
             )
 
-    def list_recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_recent_runs(
+        self,
+        limit: int = 20,
+        *,
+        command_filter: str | None = "analyze.run",
+    ) -> list[dict[str, Any]]:
+        """Return the most-recent runs, optionally filtered by ``command``.
+
+        ``command_filter`` defaults to ``"analyze.run"`` so ``/history list``
+        shows only ``/run`` invocations — the historical "what data
+        analyses have I executed" question. Pass ``None`` to include
+        ``/ask`` sessions too (which are stored as ``search.ask``
+        rows). Per the 2026-05-02 user feedback: ``/ask`` chat sessions
+        belong in ``/session list`` (with resume), not in the
+        analyze-run history list.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if command_filter:
+            clauses.append("command = ?")
+            params.append(str(command_filter))
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, int(limit)))
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
                        db_backend, db_profile, llm_provider, llm_model,
                        llm_profile, doc_profile, code_profile,
                        scope_json, metrics_json
                 FROM analysis_runs
+                {where_sql}
                 ORDER BY started_at DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
+                tuple(params),
             ).fetchall()
         out: list[dict[str, Any]] = []
         for r in rows:

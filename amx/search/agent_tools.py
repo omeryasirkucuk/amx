@@ -651,16 +651,19 @@ class ToolBox:
                 "function": {
                     "name": "list_past_runs",
                     "description": (
-                        "List the user's past ``/run`` and ``/ask`` invocations from the local "
-                        "SQLite history (``~/.amx/history.db``). Each row carries the captured "
-                        "settings snapshot (LLM model, prompt detail, batch size, dedup, etc.), "
-                        "scope (which schema/tables it touched), timing, and token usage. "
-                        "Use this when the user asks ANY question about their own history — "
-                        "'what runs have I done on sales.orders?', 'compare my last 3 runs', "
-                        "'which settings did I use yesterday?', 'has this table been analyzed "
-                        "before?', 'son 3 koşumu karşılaştır'. ALWAYS prefer this tool over "
-                        "telling the user 'I don't have access to your past runs' — that "
-                        "answer is wrong now: you DO have access via this tool."
+                        "List the user's past ``/run`` invocations (analyze.run) from the "
+                        "local SQLite history (``~/.amx/history.db``). Each row carries the "
+                        "captured settings snapshot (LLM model, prompt detail, batch size, "
+                        "dedup, etc.), scope, timing, and token usage. Defaults to "
+                        "``analyze.run`` only — call ``list_chat_sessions`` for ``/ask`` "
+                        "conversation history (those are resumable threads, not runs). "
+                        "Use this when the user asks 'what runs have I done on sales.orders', "
+                        "'compare my last 3 runs', 'which settings did I use yesterday', "
+                        "'has this table been analyzed before'. NEVER reply 'I don't have "
+                        "access to your past runs' — you DO via this tool. The returned rows "
+                        "include human-readable ``started_at`` and ``duration_human`` "
+                        "fields; use those (not the raw epoch / float) when rendering "
+                        "tables or text answers."
                     ),
                     "parameters": {
                         "type": "object",
@@ -676,8 +679,12 @@ class ToolBox:
                             "command": {
                                 "type": "string",
                                 "description": (
-                                    "Optional filter: 'analyze.run' for /run history, "
-                                    "'search.ask' for /ask history. Omit to include both."
+                                    "Filter mode: omit (or 'analyze.run' / 'run') for /run "
+                                    "history (default — almost always what the user wants). "
+                                    "Pass 'search.ask' / 'ask' to list /ask invocations as "
+                                    "audit-log rows (per-turn). Pass 'all' to include both. "
+                                    "For resumable /ask conversation threads use the "
+                                    "list_chat_sessions tool instead."
                                 ),
                             },
                             "limit": {
@@ -719,6 +726,44 @@ class ToolBox:
                             },
                         },
                         "required": ["run_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_chat_sessions",
+                    "description": (
+                        "List the user's past ``/ask`` chat sessions (resumable conversation "
+                        "threads). Each row carries session id, started/last-active "
+                        "timestamps, whether the session is still open, turn count, total "
+                        "tokens, and the first user question as a preview. Use this — NOT "
+                        "``list_past_runs(command='search.ask')`` — when the user asks "
+                        "'show me my past chats', 'my ask history', 'previous /ask "
+                        "conversations', 'continue our last chat'. The two surfaces store "
+                        "the same conceptual data differently: analysis_runs rows for "
+                        "``search.ask`` are PER-TURN audit log entries; chat_sessions rows "
+                        "are PER-CONVERSATION threads. Users almost always want the latter. "
+                        "Tell the user they can resume any ended session in the CLI via "
+                        "``/session resume <id>``."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max sessions to return (default 20, max 100).",
+                            },
+                            "include_ended": {
+                                "type": "boolean",
+                                "description": (
+                                    "When true (default), include sessions that the user "
+                                    "has /session end-ed. Set false to show only currently-"
+                                    "active threads."
+                                ),
+                            },
+                        },
+                        "required": [],
                     },
                 },
             },
@@ -2914,14 +2959,18 @@ class ToolBox:
         command: str = "",
         limit: int = 10,
     ) -> dict[str, Any]:
-        """List the user's past runs from the local SQLite history.
+        """List the user's past ``/run`` invocations from the local SQLite history.
 
-        Returns the same shape ``/history compare`` consumes — settings
-        snapshot, scope, timing, token usage — so the LLM can compose
-        comparison answers without going through the CLI command.
-        Sourced via ``find_runs_for_scope`` so the schema/table filter
-        and the per-row deserialisation match exactly.
+        Defaults to ``analyze.run`` only — matches the user's mental
+        model where "runs" means data-analysis invocations and "asks"
+        are conversational chats listed by ``list_chat_sessions``.
+        Each row carries human-friendly fields (``started_at`` ISO
+        string, ``duration_human``) plus the raw epoch / float for
+        machine consumption, so the LLM can produce a clean answer
+        without doing arithmetic on ``1777675166.705911``.
         """
+        import datetime as _dt
+
         from amx.storage.sqlite_store import history_store
 
         hs = history_store()
@@ -2936,12 +2985,22 @@ class ToolBox:
                 ),
             }
         clamped_limit = max(1, min(int(limit) if limit else 10, 50))
-        cmd = command.strip() if command and command.strip() != "all" else None
-        if cmd and cmd not in ("analyze.run", "search.ask"):
+        # Default to /run history. The LLM (or the user) must explicitly
+        # ask for ``search.ask`` or ``all`` to widen the filter — see the
+        # tool description and the system prompt's routing rule.
+        raw_cmd = command.strip().lower() if command else ""
+        if raw_cmd in ("", "analyze.run", "run"):
+            cmd: str | None = "analyze.run"
+        elif raw_cmd in ("search.ask", "ask"):
+            cmd = "search.ask"
+        elif raw_cmd == "all":
+            cmd = None
+        else:
             return {
                 "error": (
-                    f"Invalid 'command' filter {cmd!r} — must be 'analyze.run' or "
-                    "'search.ask'. Omit the parameter to include both."
+                    f"Invalid 'command' filter {command!r} — must be 'analyze.run', "
+                    "'search.ask', or 'all'. Omit the parameter for /run history "
+                    "(the most common case)."
                 )
             }
 
@@ -2955,9 +3014,21 @@ class ToolBox:
         except Exception as exc:
             return {"error": f"Could not query history: {exc}"}
 
-        # Lighten the payload so the LLM context isn't blown up by
-        # full per-run JSON every call. The fat fields (alternatives_json,
-        # raw token records) live in describe_run for follow-up drilldown.
+        def _human_duration(sec: float) -> str:
+            if sec is None or sec <= 0:
+                return "—"
+            s = float(sec)
+            if s < 60:
+                return f"{s:.1f}s"
+            m, rem = divmod(s, 60)
+            return f"{int(m)}m {rem:0.0f}s"
+
+        def _iso(epoch: float) -> str:
+            try:
+                return _dt.datetime.fromtimestamp(float(epoch or 0)).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return "—"
+
         compact: list[dict[str, Any]] = []
         for r in rows:
             metrics = r.get("metrics_json") if isinstance(r, dict) else None
@@ -2970,12 +3041,17 @@ class ToolBox:
                     total_tokens = int(tokens.get("total_tokens") or 0)
                 except (TypeError, ValueError):
                     total_tokens = 0
+            duration = float(r.get("duration_sec") or 0.0)
+            model_proc = float(metrics.get("model_processing_sec") or 0.0)
             compact.append(
                 {
                     "run_id": int(r.get("id") or 0),
+                    "started_at": _iso(r.get("started_at")),
                     "started_at_epoch": float(r.get("started_at") or 0.0),
-                    "duration_sec": float(r.get("duration_sec") or 0.0),
-                    "model_processing_sec": float(metrics.get("model_processing_sec") or 0.0),
+                    "duration_human": _human_duration(duration),
+                    "duration_sec": round(duration, 2),
+                    "model_processing_human": _human_duration(model_proc),
+                    "model_processing_sec": round(model_proc, 2),
                     "status": r.get("status") or "",
                     "command": r.get("command") or "",
                     "scope": r.get("scope_json") or {},
@@ -2998,9 +3074,16 @@ class ToolBox:
             "filter": {
                 "schema": schema or "",
                 "table": table or "",
-                "command": cmd or "any",
+                "command": cmd or "all",
                 "limit": clamped_limit,
             },
+            "presentation_hint": (
+                "When the user asks for a table, render a Rich-friendly compact table "
+                "with at most 6 columns: Run ID, Started, Duration, Status, LLM model, "
+                "Total tokens. Use the human-readable fields (started_at, "
+                "duration_human) — never the raw epoch or raw float seconds. Quote "
+                "longer fields (scope, settings) inline as text below the table."
+            ),
         }
 
     def _tool_describe_run(
@@ -3089,3 +3172,84 @@ class ToolBox:
             ]
             out["results_count"] = len(out["results"])
         return out
+
+    def _tool_list_chat_sessions(
+        self,
+        limit: int = 20,
+        include_ended: bool = True,
+    ) -> dict[str, Any]:
+        """List the user's past ``/ask`` chat sessions (resumable conversations).
+
+        ``/ask`` invocations form a stateful conversation thread (the
+        chat_sessions / chat_turns SQLite tables). Each row here
+        carries the session id, when it started, last activity time,
+        whether it's still open, turn count, total tokens, and the
+        first user question as a preview. Tell the user they can
+        resume any ended session via ``/session resume <id>``.
+
+        Use this — NOT ``list_past_runs(command="search.ask")`` —
+        when the user asks "show me my past chats" / "my ask history"
+        / "previous /ask conversations". The two surfaces store the
+        same conceptual data differently: ``analysis_runs`` rows for
+        ``search.ask`` are PER-TURN audit log entries (one per
+        question asked); ``chat_sessions`` rows are PER-CONVERSATION
+        threads. Users almost always want the latter.
+        """
+        import datetime as _dt
+
+        from amx.search.session_store import ChatSessionStore
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is None:
+            return {
+                "sessions": [],
+                "count": 0,
+                "note": "No local history store is initialised in this process.",
+            }
+
+        clamped_limit = max(1, min(int(limit) if limit else 20, 100))
+        try:
+            rows = ChatSessionStore(hs).list_sessions(
+                limit=clamped_limit,
+                include_ended=bool(include_ended),
+            )
+        except Exception as exc:
+            return {"error": f"Could not query chat sessions: {exc}"}
+
+        def _iso(epoch: Any) -> str:
+            try:
+                v = float(epoch or 0)
+                if v <= 0:
+                    return "—"
+                return _dt.datetime.fromtimestamp(v).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return "—"
+
+        sessions: list[dict[str, Any]] = []
+        for row in rows:
+            ended_epoch = row.get("ended_at")
+            sessions.append(
+                {
+                    "session_id": int(row.get("id") or 0),
+                    "db_profile": row.get("db_profile") or "",
+                    "llm_profile": row.get("llm_profile") or "",
+                    "started_at": _iso(row.get("started_at")),
+                    "last_active_at": _iso(row.get("last_active_at")),
+                    "ended_at": _iso(ended_epoch) if ended_epoch else "",
+                    "is_active": ended_epoch is None,
+                    "title": row.get("title") or "",
+                    "turn_count": int(row.get("turn_count") or 0),
+                    "total_tokens": int(row.get("total_tokens") or 0),
+                    "first_question": row.get("first_question") or "",
+                }
+            )
+
+        return {
+            "sessions": sessions,
+            "count": len(sessions),
+            "note": (
+                "Resume any ended session in the CLI with `/session resume <id>`. "
+                "Active sessions (is_active=true) are the currently-open thread."
+            ),
+        }

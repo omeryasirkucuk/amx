@@ -6,6 +6,31 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — Run history vs ask sessions split + readable timestamps
+
+User reports two issues with `/ask` history responses:
+1. The agent rendered Markdown pipe tables with raw epoch timestamps (`1777675166.705911`) and raw float seconds (`60.27061319351196`), which don't render as Rich tables and read like noise.
+2. `list_past_runs` returned `search.ask` rows alongside `analyze.run` rows. `/ask` chat sessions are stateful conversation threads — they belong in `/session list` (which already exists with resume support), not in run history.
+
+**Tool surface**:
+- `_tool_list_past_runs` now defaults to `analyze.run` only (single-source command filter mapping: omit / `"run"` / `"analyze.run"` → /run history; `"ask"` / `"search.ask"` → ask audit log; `"all"` → both). Each returned row gains `started_at` (ISO `YYYY-MM-DD HH:MM`), `duration_human` (`"60.3s"`, `"2m 1s"`), `model_processing_human`, all alongside the raw epoch/float so the LLM has the right shape for any answer format. New `presentation_hint` field tells the LLM to render at most 6 compact columns when the user asks for a table.
+- **New `_tool_list_chat_sessions`** queries `chat_sessions` / `chat_turns`. Returns session id, started/last-active timestamps, ended state, turn count, total tokens, first user question as preview. Tells the LLM to surface `/session resume <id>` for continuation.
+- System prompt's history-routing rule is split into two distinct paths: past `/run` history → `list_past_runs`; past `/ask` chats → `list_chat_sessions`. The "I don't have access" forbidden-reply guard remains.
+
+**CLI**:
+- `/history list` defaults to `command='analyze.run'` (excludes `search.ask`). Add `--include-asks` to widen, or use `/session list` for chat-session continuation.
+- Columns rewritten: `Start (epoch)` → `Started` (ISO), `Duration(s)` / `Model(s)` (raw floats) → `Wall` / `Model time` (human-readable). Title flips to `"Recent /run invocations"` (default) or `"Recent runs (incl. /ask sessions)"` when `--include-asks` set.
+- Empty-state message when no /run rows exist: `"No /run history yet. (For /ask chat sessions: /session list, or pass --include-asks here.)"`
+
+**Storage layer**:
+- `SQLiteHistoryStore.list_recent_runs(...)` accepts `command_filter: str | None = "analyze.run"` so the same default applies wherever the method is called.
+
+**4 new tests** (`test_compare.py::AskHistoryToolsTests`):
+- Default tool filter excludes `search.ask`, `command='all'` includes both, `command='search.ask'` returns only ask rows.
+- Tool rows carry `started_at` / `duration_human` / `presentation_hint`.
+- `list_chat_sessions` returns resumable threads with `/session resume` note.
+- Tool registry guard now checks all three tools (`list_past_runs`, `describe_run`, `list_chat_sessions`).
+
 ### Changed — English-only prompts, slash command + wizard scaffolding removed
 
 User feedback: "It's enough to support English. We should make the prompts very good for English. Remove the multilingual support in the ask method."
