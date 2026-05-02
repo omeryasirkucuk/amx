@@ -940,21 +940,40 @@ class LLMProvider:
                     extra.pop(k, None)
             elif self.cfg.provider == "openrouter":
                 # OpenRouter omits reasoning tokens from responses by default —
-                # without this opt-in the stream contains content but no
+                # without an opt-in the stream contains content but no
                 # ``reasoning_content`` deltas, so the thinking panel stays
-                # empty even though everything else is wired up. ``effort``
-                # covers OpenAI-style routes (o-series, gpt-5); ``max_tokens``
-                # covers Anthropic-style budget routes (Claude). OpenRouter
-                # accepts both in the same request and applies whichever the
-                # downstream provider expects. See:
-                # https://openrouter.ai/docs/use-cases/reasoning-tokens
-                effort = os.getenv("AMX_REASONING_EFFORT", "medium").strip().lower()
+                # empty even though everything else is wired up.
+                #
+                # The OpenRouter API enforces ``effort`` XOR ``max_tokens`` and
+                # 400s if both are sent ("Only one of reasoning.effort and
+                # reasoning.max_tokens can be specified"). We pick ``effort``
+                # because it works across every reasoning route OpenRouter
+                # currently fronts (o-series, gpt-5, kimi-k2-thinking, Claude
+                # extended-thinking, deepseek-reasoner) — the downstream
+                # provider gets the right knob set for it. Users wanting
+                # explicit Anthropic budget control should use the Anthropic
+                # provider directly.
+                effort = os.getenv("AMX_REASONING_EFFORT", "low").strip().lower()
                 if effort not in ("low", "medium", "high"):
-                    effort = "medium"
-                extra.setdefault(
-                    "reasoning",
-                    {"effort": effort, "max_tokens": budget, "exclude": False},
-                )
+                    effort = "low"
+                extra.setdefault("reasoning", {"effort": effort})
+                # Reasoning models burn output tokens on internal thinking
+                # before producing visible content — without a generous
+                # ``max_tokens`` floor the model exhausts its budget mid-
+                # thought and returns empty content with finish_reason=length,
+                # which the existing guard surfaces as a fatal "0 visible
+                # characters" error. Match the OpenAI-direct behaviour at
+                # the bottom of this method so OpenRouter routes get the
+                # same headroom.
+                floor = int(os.getenv("AMX_LLM_MIN_MAX_TOKENS", str(_DEFAULT_REASONING_FLOOR)))
+                if mt < floor:
+                    log.debug(
+                        "Raising max_tokens %d → %d for OpenRouter reasoning model %s",
+                        mt,
+                        floor,
+                        model,
+                    )
+                    mt = floor
                 # logprobs are unsupported on most reasoning routes; drop to
                 # avoid 400s before the streamed call goes out.
                 use_logprobs = False
