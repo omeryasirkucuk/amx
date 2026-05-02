@@ -590,4 +590,4 @@ The full stable surface — every name guaranteed to keep working across minor v
 
 ## License
 
-MIT
+Apache-2.0 — see [`LICENSE`](./LICENSE).
