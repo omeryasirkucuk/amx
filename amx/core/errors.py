@@ -128,6 +128,30 @@ class ErrorMapper:
                 "The SQL warehouse certificate could not be verified by the local trust store.",
                 "Configure a trusted CA bundle in the DB profile, or only as a last resort enable TLS no-verify for that profile.",
             )
+        # ODBC driver-not-found is an install issue, not a config issue —
+        # flag it before the connector even fires actionable_profile_error.
+        if "im002" in lower or (
+            "data source name not found" in lower and "no default driver specified" in lower
+        ):
+            return ActionableError(
+                f"{backend_label} ODBC driver missing",
+                "pyodbc could not locate the ODBC driver named in the profile.",
+                "Install Microsoft's ODBC Driver 18 for SQL Server (`brew install msodbcsql18` on macOS, see Microsoft docs on Linux), or set the `driver` field on the profile to a driver you do have.",
+            )
+        # Oracle ORA-NNNNN / ClickHouse Code: NNN — give the user the
+        # error code to grep for if no specific handler matched.
+        if backend_l == "oracle" and "ora-" in lower:
+            return ActionableError(
+                "Oracle returned an error code",
+                msg.split(".")[0],
+                "Look up the ORA- code in the Oracle Error Messages reference for the exact remedy.",
+            )
+        if backend_l == "clickhouse" and "code:" in lower:
+            return ActionableError(
+                "ClickHouse returned an error code",
+                msg.split("(")[0],
+                "Look up the Code in ClickHouse's docs/en/sql-reference/error-codes for the exact remedy.",
+            )
 
         # Authentication — wrong credentials, expired token, bad role
         if _matches_any(lower, _AUTH_PATTERNS):
@@ -159,7 +183,7 @@ class ErrorMapper:
             return ActionableError(
                 f"{backend_label} database not found",
                 "The driver connected to the host but cannot find the configured database / catalog.",
-                "Check the database name in the active profile (PostgreSQL: database, Snowflake: database, Databricks: catalog, BigQuery: project) and confirm the user has access to it.",
+                "Check the database name in the active profile (PostgreSQL/MySQL/SQL Server/Redshift: database, Snowflake: database, Databricks: catalog, BigQuery: project, Oracle: service_name or SID, ClickHouse: database, DuckDB: file path) and confirm the user has access to it.",
             )
 
         if (
