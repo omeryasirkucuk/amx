@@ -53,15 +53,52 @@ def register_history_commands(
 
     @history.command("list")
     @click.option("-n", "--limit", default=20, help="Number of runs to show.")
-    def history_list(limit: int) -> None:
+    @click.option(
+        "--include-asks",
+        is_flag=True,
+        default=False,
+        help=(
+            "Also include /ask invocations (search.ask) in the listing. "
+            "By default the list shows only /run invocations because /ask "
+            "chat sessions belong in /session list (with resume support)."
+        ),
+    )
+    def history_list(limit: int, include_asks: bool) -> None:
+        from datetime import datetime as _dt
+
         hs = history_store()
         if hs is None:
             error("History store is not initialized.")
             return
-        rows = hs.list_recent_runs(limit=limit)
+        # Default: only /run invocations. /ask sessions live under /session list.
+        rows = hs.list_recent_runs(
+            limit=limit,
+            command_filter=None if include_asks else "analyze.run",
+        )
         if not rows:
-            info("No run history yet.")
+            if include_asks:
+                info("No run or ask history yet.")
+            else:
+                info(
+                    "No /run history yet. (For /ask chat sessions: /session list, "
+                    "or pass --include-asks here.)"
+                )
             return
+
+        def _fmt_started(epoch: float) -> str:
+            try:
+                return _dt.fromtimestamp(float(epoch or 0)).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return "—"
+
+        def _fmt_duration(sec: float) -> str:
+            s = float(sec or 0)
+            if s <= 0:
+                return "—"
+            if s < 60:
+                return f"{s:.1f}s"
+            m, rem = divmod(s, 60)
+            return f"{int(m)}m {rem:0.0f}s"
 
         table_rows = []
         for row in rows:
@@ -84,7 +121,7 @@ def register_history_commands(
             table_rows.append(
                 [
                     str(row.get("id", "")),
-                    f"{float(row.get('started_at') or 0):.0f}",
+                    _fmt_started(row.get("started_at") or 0),
                     {
                         "success": "[bold green]success[/bold green]",
                         "failed": "[bold red]failed[/bold red]",
@@ -97,24 +134,27 @@ def register_history_commands(
                     format_run_scope(row.get("scope_json")),
                     processed_label,
                     f"{row.get('llm_provider', '')}/{row.get('llm_model', '')}",
-                    f"{float(row.get('duration_sec') or 0):.2f}",
-                    f"{float((row.get('metrics_json') or {}).get('model_processing_sec') or 0):.2f}",
+                    _fmt_duration(row.get("duration_sec") or 0),
+                    _fmt_duration((row.get("metrics_json") or {}).get("model_processing_sec") or 0),
                 ]
             )
 
+        title = (
+            "Recent /run invocations" if not include_asks else "Recent runs (incl. /ask sessions)"
+        )
         render_table(
-            "Recent runs",
+            title,
             [
                 "ID",
-                "Start (epoch)",
+                "Started",
                 "Status",
                 "Mode",
                 "Backend",
-                "Target Scope",
+                "Scope",
                 "Processed",
                 "Provider/Model",
-                "Duration(s)",
-                "Model(s)",
+                "Wall",
+                "Model time",
             ],
             table_rows,
         )

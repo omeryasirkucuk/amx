@@ -929,6 +929,102 @@ class AskHistoryToolsTests(unittest.TestCase):
         names = {entry["function"]["name"] for entry in ToolBox.schemas()}
         self.assertIn("list_past_runs", names)
         self.assertIn("describe_run", names)
+        self.assertIn("list_chat_sessions", names)
+
+    def test_list_past_runs_default_filters_to_analyze_run(self) -> None:
+        """User report 2026-05-02 (image 2): /ask sessions polluted the
+        run history listing. Default filter is now ``analyze.run`` so
+        questions like "which amx runs do you see" return /run history,
+        not search.ask audit entries.
+        """
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            _seed_run(store, schema="sales", table="orders", command="analyze.run")
+            _seed_run(store, schema="sales", table="orders", command="search.ask")
+            _seed_run(store, schema="sales", table="orders", command="search.ask")
+
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                default = toolbox._tool_list_past_runs()
+                explicit_all = toolbox._tool_list_past_runs(command="all")
+                ask_only = toolbox._tool_list_past_runs(command="search.ask")
+
+        self.assertEqual(
+            {r["command"] for r in default["runs"]},
+            {"analyze.run"},
+            "Default filter must exclude search.ask — chat sessions belong in "
+            "list_chat_sessions, not list_past_runs.",
+        )
+        self.assertEqual(len(explicit_all["runs"]), 3)
+        self.assertEqual({r["command"] for r in ask_only["runs"]}, {"search.ask"})
+
+    def test_list_past_runs_returns_human_readable_timestamps(self) -> None:
+        """User report 2026-05-02 (image 1): the LLM rendered raw epoch
+        timestamps and raw float seconds (``1777675166.705911``,
+        ``60.27061319351196``) when asked for a table. Tool output now
+        includes formatted ``started_at`` (ISO) and ``duration_human``
+        fields, plus a ``presentation_hint`` telling the LLM how to
+        render compact tables.
+        """
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            _seed_run(store)
+
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                payload = toolbox._tool_list_past_runs()
+
+        self.assertEqual(payload["count"], 1)
+        row = payload["runs"][0]
+        # Both raw + human-readable fields are present so the LLM picks
+        # the right one and the tool stays machine-consumable.
+        self.assertIn("started_at", row)
+        self.assertIn("started_at_epoch", row)
+        self.assertIn("duration_human", row)
+        self.assertIn("duration_sec", row)
+        self.assertIn("model_processing_human", row)
+        # The ISO timestamp doesn't begin with the year 1970 (epoch 0),
+        # so it actually formatted something.
+        self.assertNotEqual(row["started_at"], "—")
+        self.assertNotIn("1970", row["started_at"])
+        # presentation_hint nudges the LLM toward a 6-column compact table.
+        self.assertIn("presentation_hint", payload)
+        self.assertIn("compact table", payload["presentation_hint"].lower())
+
+    def test_list_chat_sessions_returns_resumable_threads(self) -> None:
+        """``/ask`` chat sessions live in chat_sessions / chat_turns and
+        are resumable via ``/session resume <id>`` — surface them via
+        their own tool so the LLM doesn't conflate per-turn audit-log
+        rows with full conversation threads.
+        """
+        from unittest.mock import patch
+
+        from amx.search.session_store import ChatSessionStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            session_store = ChatSessionStore(store)
+            sid = session_store.start_session(
+                db_profile="pg", llm_profile="default", title="Test thread"
+            )
+            session_store.append_user_turn(sid, question="What schemas exist?")
+
+            toolbox = self._build_toolbox(store)
+            with patch("amx.storage.sqlite_store.history_store", return_value=store):
+                payload = toolbox._tool_list_chat_sessions()
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["sessions"][0]["session_id"], sid)
+        self.assertEqual(payload["sessions"][0]["first_question"], "What schemas exist?")
+        self.assertTrue(payload["sessions"][0]["is_active"])
+        self.assertIn("/session resume", payload["note"])
 
 
 if __name__ == "__main__":
