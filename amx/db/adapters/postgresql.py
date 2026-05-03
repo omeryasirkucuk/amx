@@ -69,21 +69,25 @@ class PostgreSQLAdapter(DatabaseAdapter):
         """Return user-visible databases on this PostgreSQL server.
 
         Excludes templates (``datistemplate = false``) and the system
-        ``postgres`` database itself unless the user has nothing else —
-        when a fresh server has only ``postgres``, returning an empty
-        list would be misleading. The default ordering is alphabetical
-        for stable picker UX.
+        ``postgres`` maintenance database itself unless the user has
+        nothing else — when a fresh server has only ``postgres``,
+        returning an empty list would be misleading and block AMX
+        bootstrap. The default ordering is alphabetical for stable
+        picker UX.
         """
         with engine.connect() as conn:
             rows = conn.execute(
                 text("SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname")
             ).fetchall()
         names = [str(r[0]) for r in rows]
-        # When the only thing on the server is the system DB itself, the
-        # picker would offer just ``postgres`` (which has no user data).
-        # Surface it anyway — the picker UI will show "(system DB)" so
-        # the user knows what they're picking.
-        return names
+        # Drop the ``postgres`` maintenance DB when real user databases
+        # exist. It otherwise shows up in the /history-store enable
+        # picker as a tempting but wrong target — users connected to a
+        # data DB (e.g. SAP) sometimes pick it without realising it's
+        # the empty system database. Keep it as the sole option only
+        # when the server has nothing else (fresh install).
+        non_system = [n for n in names if n != "postgres"]
+        return non_system if non_system else names
 
     # ── Materialized views ────────────────────────────────────────────────
 
