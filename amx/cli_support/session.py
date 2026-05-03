@@ -256,6 +256,8 @@ Commands (in order):
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
+  Esc (inside any prompt)          Soft-cancel the prompt (returns no answer);
+                                   does not kill the session like Ctrl-C does
 """
         )
         return

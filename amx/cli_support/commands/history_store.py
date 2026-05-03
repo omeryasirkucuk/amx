@@ -141,6 +141,11 @@ def _action_enable(
             sorted(cfg.db_profiles.keys()),
             default=cfg.active_db_profile or next(iter(cfg.db_profiles)),
         )
+    # Empty string here means the user pressed Esc (or Enter on a
+    # picker without a valid default) — treat as a clean wizard
+    # cancel rather than erroring on "Unknown DB profile: ''".
+    if not profile_name:
+        return
     if profile_name not in cfg.db_profiles:
         error(f"Unknown DB profile: {profile_name!r}")
         return
