@@ -558,6 +558,74 @@ class SQLAlchemyHistoryStore:
             return default
         return row[0]
 
+    # ── Collaboration helpers ─────────────────────────────────────────────
+
+    def find_prior_runs_by_others(
+        self,
+        *,
+        db_profile: str,
+        scope: dict[str, list[str]],
+        exclude_hostname: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return prior shared runs that touched any asset in *scope*.
+
+        Used by ``/run`` and ``/run-apply`` to warn a user that a
+        teammate already analyzed the same scope. ``exclude_hostname``
+        is normally the current machine's hostname so the user only
+        sees OTHER users' work, not their own re-runs.
+
+        Filtering is done in Python after a portable backend query
+        (recent ``analysis_runs`` rows for the same ``db_profile``)
+        because JSON containment syntax differs across PostgreSQL,
+        Snowflake, BigQuery, MSSQL etc. The set is small in practice —
+        we look at the most recent N×6 rows and stop when the limit
+        of overlap matches is reached.
+        """
+        if not scope:
+            return []
+        target_assets: set[tuple[str, str]] = set()
+        for schema, tables in scope.items():
+            for tbl in tables or []:
+                target_assets.add((str(schema), str(tbl)))
+        if not target_assets:
+            return []
+
+        # Pull a generous slice; ``analysis_runs`` is small enough that
+        # this stays cheap, and limiting on the SQL side avoids a
+        # full-table scan on backends with billions of rows over time.
+        stmt = (
+            select(self._t_runs)
+            .where(self._t_runs.c.db_profile == db_profile)
+            .where(self._t_runs.c.command.in_(["analyze.run", "search.ask"]))
+            .order_by(self._t_runs.c.started_at.desc())
+            .limit(max(50, int(limit) * 6))
+        )
+        with self.engine.begin() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            host = row.get("hostname") or ""
+            if exclude_hostname and host == exclude_hostname:
+                continue
+            row_scope = row.get("scope_json") or {}
+            if not isinstance(row_scope, dict):
+                continue
+            row_assets: set[tuple[str, str]] = set()
+            for schema, tables in row_scope.items():
+                for tbl in tables or []:
+                    row_assets.add((str(schema), str(tbl)))
+            overlap = target_assets & row_assets
+            if not overlap:
+                continue
+            d = dict(row)
+            d["overlap_assets"] = sorted(overlap)
+            out.append(d)
+            if len(out) >= int(limit):
+                break
+        return out
+
     # ── Dual-write convenience (used by DualWriteHistoryStore) ────────────
 
     def find_run_uuid_by_local_id(self, local_id: int) -> str | None:

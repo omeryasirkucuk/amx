@@ -35,6 +35,81 @@ ResolveCodebaseForRun = Callable[
 LogEvent = Callable[..., None]
 
 
+def _confirm_proceed_when_others_analyzed_scope(
+    shared_store: object,
+    db_profile: str,
+    scope: dict[str, list[str]],
+) -> bool:
+    """In shared mode, surface prior runs by other users with overlapping scope.
+
+    Queries ``AMX.analysis_runs`` on the team backend for runs against
+    the same ``db_profile`` that touched any of the assets the user is
+    about to analyze. If found, prints a compact table (who / when /
+    what) and asks the user whether to proceed. Returns True when the
+    user accepts (or no overlap was found); False to abort.
+
+    Best-effort: if the shared lookup fails (network blip,
+    schema-version mismatch) we log a warn and let the run continue —
+    we never block /run on a flaky team-store query.
+    """
+    import socket
+    from datetime import datetime, timezone
+
+    try:
+        prior = shared_store.find_prior_runs_by_others(  # type: ignore[attr-defined]
+            db_profile=db_profile,
+            scope=scope,
+            exclude_hostname=socket.gethostname(),
+            limit=10,
+        )
+    except Exception as exc:
+        log.debug("Prior-run check skipped (shared lookup failed): %s", exc)
+        return True
+    if not prior:
+        return True
+
+    info("")
+    warn("Other team members have already analyzed assets in this scope:")
+    rows: list[list[str]] = []
+    for r in prior:
+        who = r.get("created_by") or "?"
+        host = r.get("hostname") or "?"
+        started = r.get("started_at")
+        when = "?"
+        if started is not None:
+            try:
+                ts = started
+                if isinstance(ts, datetime) and ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                when = ts.astimezone().strftime("%Y-%m-%d %H:%M")  # type: ignore[union-attr]
+            except Exception:
+                when = str(started)
+        overlap = r.get("overlap_assets") or []
+        # overlap is list[(schema, table)]; render compactly.
+        if len(overlap) > 4:
+            overlap_str = (
+                ", ".join(f"{s}.{t}" for s, t in overlap[:4]) + f" (+{len(overlap) - 4} more)"
+            )
+        else:
+            overlap_str = ", ".join(f"{s}.{t}" for s, t in overlap)
+        status = r.get("status") or "?"
+        rows.append([who, host, when, status, overlap_str])
+    render_table(
+        "Prior team runs in this scope",
+        ["User", "Host", "Started", "Status", "Overlapping assets"],
+        rows,
+    )
+    info(
+        f"You are about to analyze profile [bold]{db_profile}[/bold] with the same scope. "
+        "Comment write-back is last-writer-wins on the warehouse, so a fresh run will "
+        "overwrite descriptions a teammate just published unless you skip /run-apply."
+    )
+    return confirm(
+        "Proceed anyway?",
+        default=False,
+    )
+
+
 def _require_llm_connection(llm: object, *, profile_label: str | None = None) -> None:
     label = f" using profile '{profile_label}'" if profile_label else ""
     cfg = getattr(llm, "cfg", None)
@@ -628,6 +703,18 @@ def execute_analyze_run(
                     )
 
             hs = history_store()
+            # Shared-mode collaboration check: if another user has
+            # already analyzed any of the assets in this scope, surface
+            # who/when before we create a duplicate run. Skip silently
+            # when shared mode is off (hs is a plain SQLiteHistoryStore
+            # without ``shared``) or when the warning has already been
+            # acknowledged for this REPL session via the env var.
+            if hs is not None and hasattr(hs, "shared"):
+                if not _confirm_proceed_when_others_analyzed_scope(
+                    hs.shared, cfg.active_db_profile, scope
+                ):
+                    info("/run cancelled.")
+                    return
             if hs is not None:
                 try:
                     # ``selected_count`` records what the user originally
