@@ -387,10 +387,20 @@ class DatabaseAdapter(ABC):
         schema-creation primitive (Snowflake's ``CREATE SCHEMA "DB"."AMX"``,
         Databricks Unity Catalog ``CREATE SCHEMA catalog.amx``,
         BigQuery's project-qualified DDL, Oracle's CREATE USER) override.
+
+        Also writes :data:`DEFAULT_HISTORY_SCHEMA_COMMENT` to the schema
+        when the backend supports it, so a freshly-created AMX schema
+        carries a description matching the metadata thesis AMX enforces
+        on user data.
         """
+        from amx.storage.shared_schema import DEFAULT_HISTORY_SCHEMA_COMMENT
+
         ddl = self.create_history_schema_ddl(schema_name)
         with engine.begin() as conn:
             conn.execute(text(ddl))
+            if self.capabilities.schema_comments:
+                stmt = self.set_schema_comment_sql(schema_name)
+                conn.execute(text(stmt), {"cmt": DEFAULT_HISTORY_SCHEMA_COMMENT})
 
     def create_history_schema_ddl(self, schema_name: str) -> str:
         """Return the DDL ``/history-store dump-ddl`` shows to a DBA.
@@ -399,8 +409,30 @@ class DatabaseAdapter(ABC):
         so the user can request the SQL without actually executing it —
         useful when the active connection lacks ``CREATE SCHEMA``
         privileges and a DBA needs to provision the schema by hand.
+
+        Single statement, no trailing ``;`` — callers append the
+        terminator. For the schema-comment statement that ships
+        alongside, see :meth:`history_schema_comment_ddl`.
         """
         return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
+
+    def history_schema_comment_ddl(self, schema_name: str) -> str | None:
+        """Return ``COMMENT ON SCHEMA`` DDL for the AMX schema, or None.
+
+        Returns None on backends that do not support schema comments
+        (BigQuery, MySQL pre-8.0). Caller is responsible for appending
+        the trailing ``;``. Embeds the literal comment text so the
+        output of ``/history-store dump-ddl`` is copy-pasteable into a
+        DBA's psql/Snowsight session without parameter binding.
+        """
+        if not self.capabilities.schema_comments:
+            return None
+        from amx.storage.shared_schema import DEFAULT_HISTORY_SCHEMA_COMMENT
+
+        # SQL string literal — single quotes doubled per ANSI rules.
+        comment_lit = DEFAULT_HISTORY_SCHEMA_COMMENT.replace("'", "''")
+        template = self.set_schema_comment_sql(schema_name)
+        return template.replace(":cmt", f"'{comment_lit}'")
 
     def create_history_tables_ddl(self, schema_name: str) -> str:
         """Render full CREATE TABLE DDL for the AMX history schema.
