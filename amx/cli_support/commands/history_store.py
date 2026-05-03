@@ -252,7 +252,7 @@ def _action_dump_ddl(
 
 
 def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> None:
-    """Print current status + show a numbered menu of next actions.
+    """Show a numbered menu of next actions; run the chosen one.
 
     The menu is short on purpose — six actions plus Cancel. Status is
     listed first so picking it (or pressing Enter on the default) is
@@ -260,6 +260,10 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
     Disable / Migrate / Flush only show when shared mode is on; Enable
     only shows when it's off — so the picker never offers an option
     that would error.
+
+    Every menu choice runs its corresponding action and produces
+    visible output (including Status, which always reprints the
+    status panel) so picking a number never feels like a no-op.
     """
     enabled = bool(getattr(cfg, "history_store_enabled", False))
     options: list[str] = [ACTION_STATUS]
@@ -272,16 +276,13 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
     options.append(ACTION_DUMP_DDL)
     options.append(ACTION_CANCEL)
 
-    # Always show status before the menu so the user has context.
-    _action_status(cfg)
-
     picked = ask_choice(
         "What would you like to do?",
         options,
         default=ACTION_STATUS,
     )
     if picked == ACTION_STATUS:
-        # The picker already printed status above; nothing more to do.
+        _action_status(cfg)
         return
     if picked == ACTION_ENABLE:
         _action_enable(cfg, log_event=log_event)
