@@ -79,6 +79,30 @@ namespaces, no routing changes — autocomplete just lists the tabs in
 the new order. The `/history-store` (under `/db`) vs. local
 `/history` (its own tab) split is intentional and unchanged.
 
+### Changed — every tab's command list grouped by purpose
+
+The same per-section grouping treatment that `/db` got in 0.12 is now
+applied to the other seven tabs. `/help` inside each namespace renders
+purpose-based subheaders above the numbered list:
+
+- `/docs` — Profile management / Ingestion / Search & analysis / Export
+- `/llm` — Profile management / Prompt control / Batching / Confidence
+- `/code` — Profile management / Scanning / Analysis / Export
+- `/metadata` — Inspection (read-only) / Editing
+- `/search` — Ask / Status / Configure / Sync & rebuild
+- `/history` — Browse / Audit & replay
+
+Per-tab autocomplete order in `_LLM_COMMANDS`, `_METADATA_COMMANDS`,
+and `_SEARCH_COMMANDS` was reordered to match the new headers (e.g.
+`/temperature` now sits next to `/n-alternatives` under "Prompt
+control" rather than at the bottom; `/monitor` now sits next to
+`/inspect` under "Inspection" rather than after `/edit`).
+
+Four commands that were registered handlers but missing from the help
+text are now listed: `/temperature` and `/logprob-thresholds` in
+`/llm`, `/embeddings` in `/search` (also added to the registry tuple
+so autocomplete shows it), and `/compare` in `/history`.
+
 ### Changed — config schema bumped to v2 (additive)
 
 `config.yml` gains three optional keys (`history_store_enabled`,
