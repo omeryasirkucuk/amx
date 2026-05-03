@@ -560,6 +560,100 @@ class SQLAlchemyHistoryStore:
 
     # ── Collaboration helpers ─────────────────────────────────────────────
 
+    def count_runs_by_other_hosts(
+        self,
+        *,
+        exclude_hostname: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Summarise how many runs each other-machine has written.
+
+        Powers the "this shared store already has 42 runs from
+        alice@laptop-A and 17 from bob@laptop-B — pull them?" prompt
+        triggered by ``/history-store enable`` when the bootstrap
+        finds pre-existing rows.
+
+        Returns ``{hostname: {"count": int, "users": [str], "last_run": datetime|None}}``.
+        Empty dict when no other-host rows exist.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        try:
+            stmt = select(
+                self._t_runs.c.hostname,
+                self._t_runs.c.created_by,
+                self._t_runs.c.started_at,
+            ).order_by(self._t_runs.c.started_at.desc())
+            with self.engine.begin() as conn:
+                rows = conn.execute(stmt).fetchall()
+        except SQLAlchemyError as exc:
+            log.debug("count_runs_by_other_hosts failed: %s", exc)
+            return {}
+        for host, user, started in rows:
+            host = str(host or "")
+            if not host:
+                continue
+            if exclude_hostname and host == exclude_hostname:
+                continue
+            bucket = out.setdefault(
+                host,
+                {"count": 0, "users": [], "last_run": None},
+            )
+            bucket["count"] += 1
+            user_str = str(user or "?")
+            if user_str and user_str not in bucket["users"]:
+                bucket["users"].append(user_str)
+            if started is not None and bucket["last_run"] is None:
+                # Rows are ordered DESC, so the first one we see per
+                # host is the most-recent timestamp.
+                bucket["last_run"] = started
+        return out
+
+    def iter_runs_by_other_hosts(
+        self,
+        *,
+        exclude_hostname: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return every shared run authored on a host other than *exclude_hostname*.
+
+        Used by the pull-from-shared migration. The list is small in
+        practice — bounded by how many runs the team has done — so a
+        single query + Python filter is fine across every backend.
+        """
+        try:
+            with self.engine.begin() as conn:
+                rows = (
+                    conn.execute(select(self._t_runs).order_by(self._t_runs.c.started_at))
+                    .mappings()
+                    .all()
+                )
+        except SQLAlchemyError as exc:
+            log.debug("iter_runs_by_other_hosts failed: %s", exc)
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            host = row.get("hostname") or ""
+            if exclude_hostname and host == exclude_hostname:
+                continue
+            out.append(dict(row))
+        return out
+
+    def get_results_for_runs(self, run_ids: list[str]) -> list[dict[str, Any]]:
+        """Return all run_results rows for *run_ids* (UUID list)."""
+        if not run_ids:
+            return []
+        try:
+            with self.engine.begin() as conn:
+                rows = (
+                    conn.execute(
+                        select(self._t_results).where(self._t_results.c.run_id.in_(run_ids))
+                    )
+                    .mappings()
+                    .all()
+                )
+        except SQLAlchemyError as exc:
+            log.debug("get_results_for_runs failed: %s", exc)
+            return []
+        return [dict(r) for r in rows]
+
     def find_prior_runs_by_others(
         self,
         *,

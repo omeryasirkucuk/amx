@@ -159,9 +159,22 @@ class SQLiteHistoryStore:
                 "ALTER TABLE run_results ADD COLUMN effective_source_kind TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE run_results ADD COLUMN superseded_at REAL",
                 "ALTER TABLE run_results ADD COLUMN rejection_reason TEXT NOT NULL DEFAULT ''",
+                # 0.12.x — attribution + shared-store provenance on
+                # run_results so a row pulled down from the shared
+                # store via /history-store pull-from-shared can carry
+                # the originating user/host through to /history show
+                # and dedupe on re-pull via shared_uuid.
+                "ALTER TABLE run_results ADD COLUMN created_by TEXT",
+                "ALTER TABLE run_results ADD COLUMN hostname TEXT",
+                "ALTER TABLE run_results ADD COLUMN shared_uuid TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_run_results_shared_uuid "
+                    "ON run_results(shared_uuid)"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
@@ -389,6 +402,18 @@ class SQLiteHistoryStore:
             # another schema migration. /history compare surfaces these
             # so users can see exactly which knobs varied between runs.
             ("settings_json", "TEXT"),
+            # 0.12.x — attribution + shared-store provenance. Populated
+            # for runs created on this machine (so /history list can
+            # render "by alice@laptop-A" once shared mode is on) AND
+            # for runs pulled down from the team's shared store via
+            # /history-store pull-from-shared. ``shared_uuid`` is NULL
+            # for runs created locally; for pulled rows it's the UUID
+            # PK of the corresponding shared row, so re-running pull
+            # is idempotent (we look up by shared_uuid before inserting).
+            ("created_by", "TEXT"),
+            ("hostname", "TEXT"),
+            ("client_version", "TEXT"),
+            ("shared_uuid", "TEXT"),
         ):
             if col_name in existing_cols:
                 continue
@@ -406,6 +431,14 @@ class SQLiteHistoryStore:
                     col_name,
                     exc,
                 )
+        # Index for the dedup lookup on pull-from-shared. SQLite skips
+        # creation when it already exists. (run_results indexes live
+        # next to its CREATE TABLE in init().)
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analysis_runs_shared_uuid "
+                "ON analysis_runs(shared_uuid)"
+            )
 
     def create_run(
         self,
@@ -826,7 +859,8 @@ class SQLiteHistoryStore:
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
                        db_backend, db_profile, llm_provider, llm_model,
                        llm_profile, doc_profile, code_profile,
-                       scope_json, metrics_json
+                       scope_json, metrics_json,
+                       created_by, hostname, client_version, shared_uuid
                 FROM analysis_runs
                 {where_sql}
                 ORDER BY started_at DESC
