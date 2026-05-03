@@ -457,41 +457,60 @@ Query it directly in AMX via `/history` namespace:
 
 By default the SQLite history is per-machine — your teammate cannot
 see runs you executed. Enable shared mode to dual-write every
-run/result/event into a backend the team already owns:
+run/result/event into a backend the team already owns.
 
-```bash
-/history-store enable             # interactive picker
-/history-store enable --profile prod_pg --schema AMX
+`/history-store` lives under the `/db` namespace. Type the bare
+command to open an interactive picker — Status comes first, followed
+by context-aware actions (Enable / Disable / Migrate / Flush) based
+on whether shared mode is already on:
+
+```
+/db
+/history-store
 ```
 
-AMX then bootstraps an `AMX` schema (configurable) on the chosen DB
-profile and creates four tables: `analysis_runs`, `run_results`,
+The picker prints the current shared-mode status and then shows a
+numbered menu (Enter accepts the highlighted default, "Status"):
+
+```
+1. Status — show shared-mode state and outbox depth   (default)
+2. Enable — bootstrap an AMX schema on a saved DB profile
+3. Dump DDL — print bootstrap SQL for a DBA to run by hand
+4. Cancel — exit without doing anything
+```
+
+Once shared mode is enabled, the menu shifts to Status / Disable /
+Migrate from local / Flush pending / Dump DDL / Cancel. AMX
+bootstraps an `AMX` schema (configurable) on the chosen DB profile
+and creates four tables: `analysis_runs`, `run_results`,
 `app_events`, `session_state`. Every subsequent write goes to local
 SQLite first (always-on cache, source of truth for `/history list`)
 and best-effort to the shared backend.
 
-| `/history-store …` | Description |
-|---|---|
-| `status` | Show whether shared mode is on, which profile/schema, outbox depth |
-| `enable [--profile P --schema S]` | Bootstrap the AMX schema and start dual-writing |
-| `disable` | Stop dual-writing. Existing shared rows are not deleted |
-| `migrate-from-local` | Idempotent one-shot copy of existing local history rows into the shared store |
-| `flush-pending` | Replay queued shared writes that failed at write time |
-| `dump-ddl [--profile P --schema S]` | Print bootstrap DDL for a DBA to run by hand |
+Power users / scripts can invoke each action directly:
+
+| Picker option | Click subcommand | Description |
+|---|---|---|
+| Status | `amx db history-store status` | Show shared mode state, profile, schema, outbox depth |
+| Enable | `amx db history-store enable [--profile P --schema S]` | Bootstrap the AMX schema and start dual-writing |
+| Disable | `amx db history-store disable` | Stop dual-writing. Existing shared rows are not deleted |
+| Migrate from local | `amx db history-store migrate-from-local` | Idempotent one-shot copy of existing local history rows into the shared store |
+| Flush pending | `amx db history-store flush-pending` | Replay queued shared writes that failed at write time |
+| Dump DDL | `amx db history-store dump-ddl [--profile P --schema S]` | Print bootstrap DDL for a DBA to run by hand |
 
 **Supported backends for shared mode:** PostgreSQL, MySQL, MSSQL,
 Oracle, Snowflake, Databricks, Redshift, BigQuery. DuckDB (local
-file) and ClickHouse (no row UPDATE support) are blocked at `enable`
+file) and ClickHouse (no row UPDATE support) are blocked at Enable
 time with a clear error.
 
 **Failure semantics:** when the shared backend is unreachable, the
 local row still lands and the failed write is queued in
-`pending_shared_writes` for replay via `/history-store flush-pending`.
+`pending_shared_writes` for replay via the Flush pending action.
 Your CLI session is never blocked by team-store outages.
 
 **Reads:** v0.12.0 reads still come from local SQLite — `/history
-list` shows your machine's runs. Cross-machine read views (e.g.
-`/history-store list-team`) are slated for a follow-up minor.
+list` shows your machine's runs. Cross-machine read views are slated
+for a follow-up minor.
 
 **Attribution:** every shared row records `created_by`, `hostname`,
 and `client_version`, plus a `local_id` linking back to the SQLite

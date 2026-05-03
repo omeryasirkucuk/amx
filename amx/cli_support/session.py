@@ -240,6 +240,11 @@ Commands (in order):
                                   review manually.") from the live DB. Use this once when
                                   upgrading from pre-0.6.3 — newer versions never write
                                   these in the first place.
+ 17) /history-store               Configure shared run-history (team collaboration).
+                                  Bare command opens an interactive picker — Status,
+                                  Enable, Disable, Migrate from local, Flush pending,
+                                  Dump DDL. Power-user shortcuts also accept a
+                                  subcommand directly (e.g. /history-store status).
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
@@ -467,7 +472,7 @@ Getting started (in order):
  10) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
-  [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, …
+  [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, /history-store, …
   [bright_white]/docs[/bright_white] → /doc-profiles, /add-doc-profile, /ingest, …
   [bright_white]/metadata[/bright_white] → /inspect, /edit, /monitor
   [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
@@ -873,6 +878,12 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         # an unknown subcommand. The shortcut maps it to the correct
         # namespace from anywhere.
         "compare": ["history", "compare"],
+        # /history-store lives under /db (it manages a database
+        # resource — a saved DB profile that hosts the AMX schema).
+        # When typed from outside /db this shortcut routes it; when
+        # typed from inside /db the namespace+head fallthrough below
+        # already produces ["db", "history-store", ...].
+        "history-store": ["db", "history-store"],
     }
     if head == "search" and len(parts) > 1:
         if parts[1] in {
@@ -922,7 +933,6 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "analyze",
         "search",
         "history",
-        "history-store",
         "session",
         "setup",
         "config",

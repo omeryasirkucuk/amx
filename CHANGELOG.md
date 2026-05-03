@@ -17,24 +17,28 @@ Databricks, Redshift, or BigQuery) under a dedicated `AMX` schema, so
 two engineers running AMX against the same warehouse can finally see
 each other's analyses, results, and review decisions.
 
-Onboarding is one command — `/history-store enable` picks a saved DB
-profile, bootstraps the schema (with `CREATE SCHEMA IF NOT EXISTS`
-DDL adapted per backend), creates the AMX tables via SQLAlchemy
-`MetaData.create_all`, and offers to ferry existing local rows up
-with `/history-store migrate-from-local` (idempotent — safe to
-re-run).
+Onboarding is one command — `/history-store` (under the `/db` tab)
+opens an interactive picker that prints the current shared-mode
+status first, then shows a numbered menu (Enable / Disable / Migrate
+from local / Flush pending / Dump DDL) tailored to whether shared
+mode is already on. Picking Enable bootstraps the schema (with
+`CREATE SCHEMA IF NOT EXISTS` DDL adapted per backend), creates the
+AMX tables via SQLAlchemy `MetaData.create_all`, and offers to ferry
+existing local rows up (idempotent — safe to re-run). Power users
+can still invoke any action directly, e.g. `amx db history-store
+status` or `amx db history-store enable --profile prod_pg --schema AMX`.
 
 Writes go to local SQLite first (always-on cache, source of truth for
 reads in v0.12) and then best-effort to the shared backend. Network
 hiccups never break a CLI session: failed shared writes land in a
-local `pending_shared_writes` outbox and are replayed by
-`/history-store flush-pending`. Reads continue to come from the local
+local `pending_shared_writes` outbox and are replayed by the
+"Flush pending" picker action. Reads continue to come from the local
 SQLite cache so `/history list` stays instant; team-wide read views
 are slated for a follow-up minor.
 
-DuckDB and ClickHouse are explicitly blocked at `enable` time —
-DuckDB is a local file, not shared storage; ClickHouse cannot
-`UPDATE` rows the way `finish_run` requires. The
+DuckDB and ClickHouse are explicitly blocked at Enable time — DuckDB
+is a local file, not shared storage; ClickHouse cannot `UPDATE` rows
+the way `finish_run` requires. The
 `BackendCapabilities.supports_shared_history` flag gates the choice
 and surfaces a clear error listing the supported backends.
 
@@ -44,9 +48,12 @@ SQLite INT id) are recorded on every row, so the team can answer
 "who ran this?" and the dual-write coordinator can find the right
 shared row when later UPDATEs fire.
 
-New CLI surface (under `/history-store`): `status`, `enable`,
-`disable`, `migrate-from-local`, `flush-pending`, `dump-ddl`. All
-six are documented under "Run history storage" in the README.
+New CLI surface lives under `/db history-store` (visual `/db` tab).
+Bare command opens the picker; six explicit Click subcommands —
+`status`, `enable`, `disable`, `migrate-from-local`, `flush-pending`,
+`dump-ddl` — back the picker entries and are also available
+directly for scripting. Documented under "Run history storage" in
+the README.
 
 ### Changed — config schema bumped to v2 (additive)
 

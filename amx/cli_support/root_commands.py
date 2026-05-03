@@ -133,7 +133,11 @@ def register_root_commands(
 
     @main.group()
     def db() -> None:
-        """Database inspection and profiling commands."""
+        """Database inspection, profiling, and shared run-history commands."""
+
+    # Cached on the wrapper so the caller in cli.py can attach more
+    # subcommands (like /history-store) under the same /db group.
+    register_root_commands._db_group = db  # type: ignore[attr-defined]
 
     @db.command("connect")
     @click.pass_obj
