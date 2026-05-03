@@ -6,6 +6,48 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Shared-history bootstrap warning no longer floods the terminal with SQL
+
+User report (against 0.12.4): every slash command in an interactive
+session printed a 70-line wall of `CREATE TABLE` DDL because
+`init_history_store` re-ran on every command and the underlying
+`databricks.sql.exc.ServerOperationError` carried the full statement
+in its `str(exc)`. Sample symptom — running `/edit` printed:
+
+```
+[WARNING] Shared history schema not initialised
+((databricks.sql.exc.ServerOperationError) [SCHEMA_NOT_FOUND] …
+[SQL: CREATE TABLE `AMX`.analysis_runs (
+    id STRING NOT NULL COMMENT 'UUID v4 primary key …',
+    started_at TIMESTAMP_NTZ NOT NULL COMMENT '…',
+    -- 27 more columns —
+) USING DELTA …]
+```
+
+…repeated on every subsequent slash command.
+
+Fix:
+
+1. `_short_error()` strips multi-line SQLAlchemy bodies down to the
+   first line and drops the verbose `(Background on this error at: …)`
+   suffix. The user-visible warning is now ONE LINE.
+2. `_warn_bootstrap_failure_once()` memoises the warning by
+   `(profile, schema)` key in a process-level cache, so an
+   interactive session that re-enters `init_history_store` per slash
+   command stops spamming the same warning. Subsequent calls in the
+   same process route the full traceback to DEBUG only.
+3. The new warning text tells the user how to silence the warning
+   permanently — `run /history-store disable to silence permanently,
+   or /history-store enable to re-bootstrap` — replacing the
+   pre-0.12.5 hint that just said "Run /history-store enable", which
+   re-hit the same wall.
+
+`tests/test_history_store_warning_quiet.py` pins the contract:
+- `_short_error` strips the SQL dump and the SQLAlchemy footer.
+- `_warn_bootstrap_failure_once` fires exactly one WARNING per key,
+  even after three calls.
+- Distinct (profile, schema) keys each get their own one-shot warning.
+
 ### Fixed — Shared-history bootstrap on Databricks no longer crashes the JSON columns
 
 Users with `/history-store enable` pointed at a Databricks workspace
