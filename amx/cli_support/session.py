@@ -472,21 +472,29 @@ Context:
 Getting started (in order):
   1) /setup                        First-time wizard (DB + LLM + sources)
   2) /config                       Show current configuration
+
+  Setup:
   3) /db                           Database introspection + DB profiles
-  4) /docs                         Document roots + RAG (scan/ingest/search-docs)
-  5) /metadata                     Database metadata editing and coverage monitoring
-  6) /llm                          LLM profile management
-  7) /code                         Codebase profile management
+  4) /llm                          LLM profile management
+
+  Evidence:
+  5) /docs                         Document roots + RAG (scan/ingest/search-docs)
+  6) /code                         Codebase profile management
+  7) /metadata                     Database metadata editing and coverage monitoring
+
+  Run analysis:
   8) /analyze                      Metadata inference (/run, /apply, …)
+
+  Review:
   9) /search                       LLM-backed metadata discussion grounded on the search catalog
  10) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
   [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, /history-store, …
-  [bright_white]/docs[/bright_white] → /doc-profiles, /add-doc-profile, /ingest, …
-  [bright_white]/metadata[/bright_white] → /inspect, /edit, /monitor
   [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
+  [bright_white]/docs[/bright_white] → /doc-profiles, /add-doc-profile, /ingest, …
   [bright_white]/code[/bright_white] → /code-profiles, /add-code-profile, …
+  [bright_white]/metadata[/bright_white] → /inspect, /edit, /monitor
   [bright_white]/search[/bright_white] → /ask, /status, /sync, or just type a metadata question
 
 Global shortcuts (work anywhere):
