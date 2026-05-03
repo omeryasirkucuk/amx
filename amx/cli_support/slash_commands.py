@@ -105,6 +105,7 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
 )
 
 _DB_COMMANDS: tuple[SlashCommand, ...] = (
+    # Profile management
     SlashCommand("/db-profiles", "db", "List DB profiles"),
     SlashCommand(
         "/use-db",
@@ -113,23 +114,27 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand("/add-db-profile", "db", "Add profile — choose engine then connection details"),
     SlashCommand("/remove-db-profile", "db", "Remove DB profile (/remove-db-profile <name>)"),
+    # Profile settings
     SlashCommand(
         "/profiling",
         "db",
         "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])",
     ),
     SlashCommand("/tls", "db", "Show/set Databricks TLS settings (/tls [on|off] [ca_path|clear])"),
+    # Active context
     SlashCommand("/schema", "db", "Set current schema (/schema <name>)"),
     SlashCommand("/table", "db", "Set current table (/table <name>)"),
+    # Connection & inspection
     SlashCommand("/connect", "db", "Test DB connectivity"),
     SlashCommand("/schemas", "db", "List schemas"),
     SlashCommand("/tables", "db", "List tables (/tables [schema])"),
     SlashCommand("/profile", "db", "Profile table (/profile [schema] [table])"),
     SlashCommand(
-        "/cleanup-placeholders",
+        "/inspect",
         "db",
-        "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])",
+        "Diagnose a DB profile — backend, capabilities, connection test, visible schemas, table counts (/inspect [profile])",
     ),
+    # Team collaboration
     SlashCommand(
         "/history-store",
         "db",
@@ -142,6 +147,12 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
             "based on whether shared mode is on. Power-user shortcuts "
             "accept a subcommand directly."
         ),
+    ),
+    # Maintenance
+    SlashCommand(
+        "/cleanup-placeholders",
+        "db",
+        "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])",
     ),
 )
 
