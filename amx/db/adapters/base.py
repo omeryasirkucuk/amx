@@ -401,3 +401,29 @@ class DatabaseAdapter(ABC):
         privileges and a DBA needs to provision the schema by hand.
         """
         return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
+
+    def create_history_tables_ddl(self, schema_name: str) -> str:
+        """Render full CREATE TABLE DDL for the AMX history schema.
+
+        Compiles :func:`amx.storage.shared_schema.build_metadata` against
+        a mock engine bound to this backend's dialect, so the output
+        includes dialect-correct ``CREATE TABLE``, ``COMMENT ON``, and
+        ``CREATE INDEX`` statements without needing a live connection.
+        Used by ``/history-store dump-ddl`` so a DBA can hand-provision
+        the schema in environments where AMX lacks privileges.
+        """
+        from io import StringIO
+
+        from sqlalchemy import create_mock_engine
+
+        from amx.storage.shared_schema import build_metadata
+
+        md = build_metadata(schema_name)
+        buf = StringIO()
+
+        def _dump(sql, *args, **kwargs) -> None:
+            buf.write(str(sql.compile(dialect=engine.dialect)).rstrip() + ";\n\n")
+
+        engine = create_mock_engine(f"{self.name}://", _dump)
+        md.create_all(engine, checkfirst=False)
+        return buf.getvalue().rstrip() + "\n"
