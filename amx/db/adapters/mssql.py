@@ -57,7 +57,27 @@ class MSSQLAdapter(DatabaseAdapter):
         triggers=True,
         synonyms=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
+        supports_shared_history=True,
     )
+
+    def create_history_schema(self, engine: Engine, schema_name: str) -> None:
+        # SQL Server does not support ``IF NOT EXISTS`` on ``CREATE SCHEMA``
+        # in older versions, so we use a self-contained EXEC pattern that
+        # works from SQL Server 2008+. Equivalent to ``CREATE SCHEMA IF
+        # NOT EXISTS`` on other backends.
+        check = (
+            "IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = :schema_name) "
+            f"EXEC('CREATE SCHEMA {self.quote_identifier(schema_name)}')"
+        )
+        with engine.begin() as conn:
+            conn.execute(text(check), {"schema_name": schema_name})
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        return (
+            "IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = "
+            f"{self.quote_literal(schema_name)}) "
+            f"EXEC('CREATE SCHEMA {self.quote_identifier(schema_name)}');"
+        )
 
     def create_engine(self) -> Engine:
         return create_engine(self.cfg.url, pool_pre_ping=True)

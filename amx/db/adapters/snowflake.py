@@ -25,8 +25,23 @@ class SnowflakeAdapter(DatabaseAdapter):
         volumes=True,  # SHOW STAGES — Snowflake's file-storage primitive
         datashares=True,
         external_tables=True,
+        supports_shared_history=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        # Snowflake fully-qualifies on a database; if the active profile
+        # has a database pinned we emit a ``"DB"."AMX"`` qualified DDL
+        # so the schema lands in the expected database. Otherwise the
+        # connection's default database is used (the user picked it via
+        # /database) and the unqualified form below works.
+        db = getattr(self.cfg, "database", "") or ""
+        if db:
+            return (
+                f"CREATE SCHEMA IF NOT EXISTS "
+                f"{self.quote_identifier(db)}.{self.quote_identifier(schema_name)}"
+            )
+        return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
 
     def create_engine(self) -> Engine:
         try:

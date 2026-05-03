@@ -23,6 +23,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
         triggers=True,
         user_defined_types=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+        supports_shared_history=True,
     )
 
     def create_engine(self) -> Engine:

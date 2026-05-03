@@ -22,6 +22,7 @@ from amx.cli_support.commands.db import (
 from amx.cli_support.commands.docs import register_docs_commands
 from amx.cli_support.commands.doctor import register_doctor_command
 from amx.cli_support.commands.history import register_history_commands
+from amx.cli_support.commands.history_store import register_history_store_commands
 from amx.cli_support.commands.manual import register_manual_commands
 from amx.cli_support.commands.profiles import (
     interactive_llm_block as _interactive_llm_block,
@@ -37,7 +38,8 @@ from amx.cli_support.commands.run import (
 from amx.cli_support.commands.search import register_search_commands
 from amx.cli_support.root_commands import register_root_commands
 from amx.config import AMXConfig, ConfigSchemaTooNewError
-from amx.storage.sqlite_store import history_store, init_history_store
+from amx.storage.factory import init_history_store
+from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
     error,
     info,
@@ -293,7 +295,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
             "and delete `~/.amx/config.yml` to start fresh."
         )
         sys.exit(2)
-    init_history_store(ctx.obj.CONFIG_DIR)
+    init_history_store(ctx.obj)
     _install_embedding_provider(ctx.obj)
     is_session_child = os.getenv("AMX_SESSION_CHILD") == "1"
     if not is_session_child:
@@ -327,6 +329,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
 
 history_group = register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_compare_command(history_group, pass_config=pass_config, log_event=_log_app_event)
+register_history_store_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_doctor_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_chat_session_commands(main, pass_config=pass_config, log_event=_log_app_event)

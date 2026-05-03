@@ -426,7 +426,7 @@ db_profiles:
 
 AMX stores its configuration at `~/.amx/config.yml`. To use a different file, start the CLI with `amx --config path/to/config.yml`.
 
-## Local SQLite history
+## Run history storage
 
 AMX automatically initializes a local SQLite database at:
 
@@ -452,6 +452,50 @@ Query it directly in AMX via `/history` namespace:
 | `/events [-n N]` | App events |
 | `/results <run_id>` | All saved LLM alternatives for a run |
 | `/review <run_id>` | Re-evaluate alternatives interactively; `--unevaluated-only` / `--apply` |
+
+### Shared mode (team collaboration, optional)
+
+By default the SQLite history is per-machine — your teammate cannot
+see runs you executed. Enable shared mode to dual-write every
+run/result/event into a backend the team already owns:
+
+```bash
+/history-store enable             # interactive picker
+/history-store enable --profile prod_pg --schema AMX
+```
+
+AMX then bootstraps an `AMX` schema (configurable) on the chosen DB
+profile and creates four tables: `analysis_runs`, `run_results`,
+`app_events`, `session_state`. Every subsequent write goes to local
+SQLite first (always-on cache, source of truth for `/history list`)
+and best-effort to the shared backend.
+
+| `/history-store …` | Description |
+|---|---|
+| `status` | Show whether shared mode is on, which profile/schema, outbox depth |
+| `enable [--profile P --schema S]` | Bootstrap the AMX schema and start dual-writing |
+| `disable` | Stop dual-writing. Existing shared rows are not deleted |
+| `migrate-from-local` | Idempotent one-shot copy of existing local history rows into the shared store |
+| `flush-pending` | Replay queued shared writes that failed at write time |
+| `dump-ddl [--profile P --schema S]` | Print bootstrap DDL for a DBA to run by hand |
+
+**Supported backends for shared mode:** PostgreSQL, MySQL, MSSQL,
+Oracle, Snowflake, Databricks, Redshift, BigQuery. DuckDB (local
+file) and ClickHouse (no row UPDATE support) are blocked at `enable`
+time with a clear error.
+
+**Failure semantics:** when the shared backend is unreachable, the
+local row still lands and the failed write is queued in
+`pending_shared_writes` for replay via `/history-store flush-pending`.
+Your CLI session is never blocked by team-store outages.
+
+**Reads:** v0.12.0 reads still come from local SQLite — `/history
+list` shows your machine's runs. Cross-machine read views (e.g.
+`/history-store list-team`) are slated for a follow-up minor.
+
+**Attribution:** every shared row records `created_by`, `hostname`,
+and `client_version`, plus a `local_id` linking back to the SQLite
+INT id on the originating machine.
 
 ## Search Catalog
 

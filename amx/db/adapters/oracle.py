@@ -33,6 +33,20 @@ from sqlalchemy.engine import Engine
 
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
+# Oracle uniquely binds schema = user. ``CREATE SCHEMA`` exists but is
+# only a logical grouping inside the current user; it does NOT create
+# a separate namespace the way every other backend does. The shared-
+# history bootstrap on Oracle therefore expects the AMX user/schema to
+# already exist (provisioned by a DBA) and verifies it via
+# ``ALL_USERS``.
+_ORACLE_AMX_SCHEMA_HINT = (
+    "Oracle binds schema=user. Ask your DBA to run:\n"
+    "    CREATE USER AMX IDENTIFIED BY <strong-password>;\n"
+    "    GRANT CREATE SESSION, RESOURCE, UNLIMITED TABLESPACE TO AMX;\n"
+    "Then connect AMX with that user (or grant the AMX schema to your "
+    "current user) and re-run /history-store enable."
+)
+
 # Oracle ships with a long list of system schemas. Filtering them out
 # of the schema picker is the difference between "12 user schemas" and
 # "120 schemas, 90% of which are XDB / APEX / OLAP support".
@@ -94,7 +108,32 @@ class OracleAdapter(DatabaseAdapter):
         synonyms=True,
         user_defined_types=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
+        supports_shared_history=True,
     )
+
+    def create_history_schema(self, engine: Engine, schema_name: str) -> None:
+        # Oracle ties schema to user. Verify the user exists; if not,
+        # surface the DBA hint instead of attempting a privileged
+        # CREATE USER (which most application accounts cannot do).
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT username FROM all_users WHERE username = :u"),
+                {"u": schema_name.upper()},
+            ).fetchone()
+        if not row:
+            raise PermissionError(
+                f"Oracle user/schema {schema_name!r} does not exist. " + _ORACLE_AMX_SCHEMA_HINT
+            )
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        return (
+            f"-- Oracle: ensure user/schema {schema_name!r} exists.\n"
+            "-- Run as a DBA:\n"
+            f"CREATE USER {self.quote_identifier(schema_name)} "
+            f"IDENTIFIED BY <strong-password>;\n"
+            f"GRANT CREATE SESSION, RESOURCE, UNLIMITED TABLESPACE "
+            f"TO {self.quote_identifier(schema_name)};"
+        )
 
     def create_engine(self) -> Engine:
         return create_engine(self.cfg.url, pool_pre_ping=True)

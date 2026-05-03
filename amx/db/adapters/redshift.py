@@ -37,6 +37,7 @@ class RedshiftAdapter(DatabaseAdapter):
         functions=True,
         external_tables=True,
         datashares=True,
+        supports_shared_history=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
 

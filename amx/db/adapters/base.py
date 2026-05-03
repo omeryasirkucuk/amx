@@ -50,6 +50,13 @@ class BackendCapabilities:
     comment_asset_keywords: frozenset[str] = field(
         default_factory=lambda: frozenset({"TABLE", "VIEW"})
     )
+    # ── Shared-history collaboration (v0.12.0) ───────────────────────────
+    # ``supports_shared_history`` gates ``/history-store enable`` against
+    # this backend. Backends that cannot host AMX's run-history schema
+    # (DuckDB — local file, not shared; ClickHouse — no row UPDATE for
+    # the ``finish_run`` lifecycle) leave this False so the user gets a
+    # clean error instead of a silent half-broken setup.
+    supports_shared_history: bool = False
 
 
 class DatabaseAdapter(ABC):
@@ -369,3 +376,28 @@ class DatabaseAdapter(ABC):
     def set_database_comment_sql(self) -> str:
         """Return a SQL template for comment text write-back."""
         ...
+
+    # ── Shared-history schema bootstrap ───────────────────────────────────
+
+    def create_history_schema(self, engine: Engine, schema_name: str) -> None:
+        """Create AMX's shared-history schema idempotently.
+
+        Default implementation works for every ANSI-SQL-ish backend
+        (PostgreSQL, MySQL, MSSQL, Redshift). Backends with a different
+        schema-creation primitive (Snowflake's ``CREATE SCHEMA "DB"."AMX"``,
+        Databricks Unity Catalog ``CREATE SCHEMA catalog.amx``,
+        BigQuery's project-qualified DDL, Oracle's CREATE USER) override.
+        """
+        ddl = self.create_history_schema_ddl(schema_name)
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        """Return the DDL ``/history-store dump-ddl`` shows to a DBA.
+
+        Kept as a separate method (not inlined in ``create_history_schema``)
+        so the user can request the SQL without actually executing it —
+        useful when the active connection lacks ``CREATE SCHEMA``
+        privileges and a DBA needs to provision the schema by hand.
+        """
+        return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
