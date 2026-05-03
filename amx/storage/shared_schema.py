@@ -33,6 +33,9 @@ Design notes:
 
 from __future__ import annotations
 
+import json as _json
+from typing import Any
+
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -46,6 +49,62 @@ from sqlalchemy import (
     Table,
     Text,
 )
+from sqlalchemy.types import TypeDecorator, TypeEngine
+
+
+class _JSONAsText(TypeDecorator):
+    """JSON stored as TEXT for backends without a native JSON column type.
+
+    ``databricks-sqlalchemy`` does not implement ``visit_JSON``, so the
+    SQLAlchemy generic compiler raises *"can't render element of type
+    JSON"* the moment ``MetaData.create_all`` tries to emit any JSON
+    column on Databricks. The user-visible symptom (reported on
+    2026-05-03 against 0.12.3) was a recurring warning on every
+    ``amx`` startup:
+
+        Shared history schema not initialised ((in table
+        'analysis_runs', column 'scope_json'): Compiler … can't render
+        element of type JSON). Run `/history-store enable` to bootstrap
+        the AMX schema.
+
+    This decorator stores the value as plain TEXT and round-trips it
+    through ``json.dumps`` / ``json.loads`` so callers continue to see
+    Python dicts/lists on read — no backend-aware code anywhere else.
+    """
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value: Any, dialect: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            # Already serialised — just store as-is.
+            return value
+        return _json.dumps(value, default=str)
+
+    def process_result_value(self, value: Any, dialect: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (dict, list)):
+            # Some dialects/drivers might pre-deserialise; trust them.
+            return value
+        try:
+            return _json.loads(value)
+        except (TypeError, ValueError):
+            return value
+
+
+def _portable_json() -> TypeEngine:
+    """Return a JSON column type that compiles on every supported backend.
+
+    Native ``JSON`` (or ``JSONB`` / ``VARIANT``) where the dialect
+    knows how to render it; ``_JSONAsText`` on Databricks where
+    ``databricks-sqlalchemy`` lacks a ``visit_JSON`` implementation.
+    Use this everywhere in this module instead of bare ``JSON`` so a
+    new JSON column added later automatically inherits the fix.
+    """
+    return JSON().with_variant(_JSONAsText(), "databricks")
 
 # Schema name is configurable per-deployment — the user can pick a
 # different name in ``/history-store enable``. Default is ``AMX`` which
@@ -211,7 +270,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "scope_json",
-            JSON,
+            _portable_json(),
             comment=(
                 "JSON describing the analyzed scope: {schemas, tables, columns, "
                 "asset_kinds, profiles}. /compare reads this to find prior runs "
@@ -220,7 +279,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "metrics_json",
-            JSON,
+            _portable_json(),
             comment=(
                 "JSON of run metrics — counts, per-stage timings, retries, "
                 "skipped assets. Free-form so newer agents can add fields "
@@ -229,7 +288,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "tokens_json",
-            JSON,
+            _portable_json(),
             comment=(
                 "JSON of token usage broken down by phase: "
                 "{prompt, completion, cached, reasoning, total}. Drives /stats "
@@ -238,7 +297,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "results_json",
-            JSON,
+            _portable_json(),
             comment=(
                 "JSON summary of run outputs (counts, top-level rollups). "
                 "Per-asset detail lives in run_results joined on run_id."
@@ -326,7 +385,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "settings_json",
-            JSON,
+            _portable_json(),
             comment=(
                 "Snapshot of LLM settings at run time — temperature, "
                 "prompt_detail, n_alternatives, llm_batch_size, "
@@ -470,7 +529,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "alternatives_json",
-            JSON,
+            _portable_json(),
             nullable=False,
             comment=(
                 "Ordered JSON list of alternative description strings the LLM "
@@ -620,7 +679,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "details_json",
-            JSON,
+            _portable_json(),
             comment=(
                 "Free-form JSON payload — varies per event_type. Examples: "
                 "{profile, backend} for db connect, {model, latency_ms} for "
@@ -676,7 +735,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "value_json",
-            JSON,
+            _portable_json(),
             nullable=False,
             comment="JSON-serialized value associated with (namespace, key_name, hostname).",
         ),
