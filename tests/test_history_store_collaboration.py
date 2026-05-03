@@ -153,6 +153,72 @@ def test_find_prior_runs_filters_by_profile(shared: SQLAlchemyHistoryStore) -> N
     assert prior == []
 
 
+def test_apply_history_db_override_postgres() -> None:
+    """PG-style backends route the override to ``database``."""
+    from amx.config import DBConfig
+    from amx.storage.factory import apply_history_db_override
+
+    pg = DBConfig(backend="postgresql", database="prod_db")
+    overridden = apply_history_db_override(pg, "tools_db")
+    assert overridden.database == "tools_db"
+    # Original untouched (we returned a copy, not mutated)
+    assert pg.database == "prod_db"
+
+
+def test_apply_history_db_override_databricks() -> None:
+    """Databricks routes to ``catalog`` (Unity Catalog FQN prefix)."""
+    from amx.config import DBConfig
+    from amx.storage.factory import apply_history_db_override
+
+    db = DBConfig(backend="databricks", catalog="prod_catalog", database="default")
+    overridden = apply_history_db_override(db, "ops_catalog")
+    assert overridden.catalog == "ops_catalog"
+    assert overridden.database == "default"  # database untouched
+    assert db.catalog == "prod_catalog"  # original untouched
+
+
+def test_apply_history_db_override_bigquery() -> None:
+    """BigQuery routes to ``project`` (datasets are scoped to projects)."""
+    from amx.config import DBConfig
+    from amx.storage.factory import apply_history_db_override
+
+    bq = DBConfig(backend="bigquery", project="prod-proj", dataset="warehouse")
+    overridden = apply_history_db_override(bq, "ops-proj")
+    assert overridden.project == "ops-proj"
+    assert overridden.dataset == "warehouse"
+    assert bq.project == "prod-proj"
+
+
+def test_apply_history_db_override_empty_is_noop() -> None:
+    from amx.config import DBConfig
+    from amx.storage.factory import apply_history_db_override
+
+    pg = DBConfig(backend="postgresql", database="prod_db")
+    assert apply_history_db_override(pg, "") is pg
+
+
+def test_history_store_database_round_trips_through_yaml(
+    tmp_path: Path,
+) -> None:
+    """The new field persists across save+load — same shape as the rest of
+    the history-store config."""
+    from amx.config import AMXConfig
+
+    cfg_path = tmp_path / "config.yml"
+    cfg = AMXConfig()
+    cfg._config_path = str(cfg_path)
+    cfg.history_store_enabled = True
+    cfg.history_store_profile = "prod_pg"
+    cfg.history_store_schema = "AMX"
+    cfg.history_store_database = "tools_db"
+    cfg.save(str(cfg_path))
+
+    reloaded = AMXConfig.load(str(cfg_path))
+    assert reloaded.history_store_enabled is True
+    assert reloaded.history_store_profile == "prod_pg"
+    assert reloaded.history_store_database == "tools_db"
+
+
 def test_disable_action_blocks_when_outbox_has_pending() -> None:
     """The Disable action must not silently strand pending shared writes."""
     from amx.cli_support.commands import history_store as hs_module

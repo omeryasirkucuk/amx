@@ -16,6 +16,7 @@ back-compat shim that defaults to local-only.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,9 +25,33 @@ from amx.storage.sqlite_store import SQLiteHistoryStore
 from amx.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from amx.config import AMXConfig
+    from amx.config import AMXConfig, DBConfig
 
 log = get_logger("storage.factory")
+
+
+def apply_history_db_override(db_cfg: DBConfig, override: str) -> DBConfig:
+    """Return a copy of *db_cfg* with *override* applied to the right field.
+
+    Different backends use different fields to identify the container
+    that holds the AMX schema:
+
+    * Databricks Unity Catalog → ``catalog`` (the FQN is
+      ``catalog.schema.table``).
+    * BigQuery → ``project`` (datasets are scoped to a project).
+    * Everything else (PG, MySQL, MSSQL, Oracle, Redshift, Snowflake) →
+      ``database``.
+
+    Empty *override* is a no-op — the profile keeps whatever it had
+    pinned originally.
+    """
+    if not override:
+        return db_cfg
+    if db_cfg.backend == "databricks":
+        return replace(db_cfg, catalog=override)
+    if db_cfg.backend == "bigquery":
+        return replace(db_cfg, project=override)
+    return replace(db_cfg, database=override)
 
 
 class HistoryStoreBootstrapError(RuntimeError):
@@ -68,6 +93,16 @@ def _build_shared_store(cfg: AMXConfig):
         return None
 
     db_cfg = cfg.db_profiles[profile_name]
+
+    # Apply the user's "where do you want the AMX schema?" choice
+    # (set during /history-store enable). For PG/MySQL/MSSQL/Oracle/
+    # Redshift/Snowflake this overrides ``database``; for Databricks
+    # ``catalog``; for BigQuery ``project``. ``replace`` returns a
+    # copy so the user's saved profile in ``cfg.db_profiles`` is
+    # untouched.
+    override = (getattr(cfg, "history_store_database", "") or "").strip()
+    if override:
+        db_cfg = apply_history_db_override(db_cfg, override)
 
     # Local imports keep the SQLAlchemy + adapter surface out of the
     # main amx import path. ``init_history_store`` is hot on every
@@ -162,6 +197,7 @@ def history_store():
 
 __all__ = [
     "HistoryStoreBootstrapError",
+    "apply_history_db_override",
     "history_store",
     "init_history_store",
 ]
