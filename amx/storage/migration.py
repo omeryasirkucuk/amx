@@ -1,15 +1,23 @@
-"""One-shot migration of local SQLite history → shared warehouse store.
+"""Bidirectional migration between local SQLite and the shared store.
 
-Used by ``/history-store migrate-from-local``. Walks every table in
-foreign-key order, converts INT primary keys (local SQLite) into
-UUIDs (shared schema), records the original ``local_id`` + ``hostname``
-on each shared row so the dual-write coordinator can find the right
-shared row when later UPDATEs fire from this machine.
+Two migrations live here, both idempotent:
 
-Idempotent. The shared store rejects rows whose ``(hostname, local_id)``
-already exists for the given table by skipping them — which means
-re-running the migration after a partial failure picks up where it
-left off rather than duplicating data.
+* ``migrate_local_to_shared`` — push: copy this machine's local
+  SQLite rows up to the team's shared warehouse. Used by
+  ``/history-store migrate-from-local`` (and offered automatically
+  the first time a user enables shared mode if they have a local
+  history). UUIDs are minted on the shared side; ``hostname +
+  local_id`` is recorded so future UPDATEs from this machine can
+  find the right shared row.
+
+* ``pull_shared_to_local`` — pull: copy teammates' rows DOWN from
+  the shared warehouse into local SQLite so ``/history list``
+  surfaces team activity, not just this machine's. Triggered by
+  ``/history-store enable`` when bootstrap finds pre-existing rows
+  on the team store, and exposed as a picker action so users can
+  re-sync at any time. Idempotency is keyed on the local
+  ``shared_uuid`` column — re-running the pull only inserts
+  rows whose UUID is not already present locally.
 """
 
 from __future__ import annotations
@@ -273,4 +281,218 @@ def _loads_or_none(value: Any) -> Any:
         return value
 
 
-__all__ = ["migrate_local_to_shared"]
+def pull_shared_to_local(
+    local: SQLiteHistoryStore,
+    shared: SQLAlchemyHistoryStore,
+    *,
+    progress: Any | None = None,
+) -> dict[str, int]:
+    """Pull rows from the shared store down into local SQLite.
+
+    Reverse of :func:`migrate_local_to_shared`. Filters on hostname so
+    only OTHER machines' rows are copied (this machine's runs already
+    exist locally). Idempotent: each pulled row records the source
+    ``shared_uuid`` on the new local row, and re-running skips any
+    UUID already present.
+
+    Returns ``{table: rows_inserted}``. Tables in pull order:
+
+    1. ``analysis_runs`` — assigns a fresh local INT id, records
+       ``shared_uuid`` for dedupe, preserves ``created_by``,
+       ``hostname``, ``client_version`` so ``/history list`` can
+       render team attribution.
+    2. ``run_results`` — looks up the parent run's *new* local INT
+       id from a UUID→INT map built in step 1 and writes results
+       under that.
+    3. ``app_events`` — append-only; dedupes on
+       ``(hostname, command, event_type, created_at)`` because
+       events have no UUID locally.
+    """
+    stats: dict[str, int] = {
+        "analysis_runs": 0,
+        "run_results": 0,
+        "app_events": 0,
+    }
+    host = getattr(shared, "_hostname", None) or _hostname()
+    started = time.time()
+
+    log.info("Pulling shared analysis_runs (excluding host=%r)…", host)
+    runs = shared.iter_runs_by_other_hosts(exclude_hostname=host)
+    if not runs:
+        log.info("No other-host runs found in shared store.")
+        return stats
+
+    # Map shared UUID -> new local INT id for FK rewriting on results.
+    uuid_to_local: dict[str, int] = {}
+
+    with local._lock:
+        for r in runs:
+            shared_uuid = str(r.get("id") or "")
+            if not shared_uuid:
+                continue
+            with local._connect() as conn:
+                # Idempotency: skip rows we've already pulled.
+                existing = conn.execute(
+                    "SELECT id FROM analysis_runs WHERE shared_uuid = ?",
+                    (shared_uuid,),
+                ).fetchone()
+                if existing is not None:
+                    uuid_to_local[shared_uuid] = int(existing[0])
+                    continue
+                started_at = r.get("started_at")
+                started_ts = _dt_to_ts(started_at) or time.time()
+                ended_at = _dt_to_ts(r.get("ended_at"))
+                cur = conn.execute(
+                    """
+                    INSERT INTO analysis_runs (
+                        started_at, ended_at, duration_sec, status, command, mode,
+                        db_backend, db_profile, llm_provider, llm_model,
+                        scope_json, metrics_json, tokens_json, results_json,
+                        error_text, selected_count, planned_count,
+                        processed_count, applied_count, review_strategy,
+                        llm_profile, doc_profile, code_profile, settings_json,
+                        created_by, hostname, client_version, shared_uuid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        started_ts,
+                        ended_at,
+                        r.get("duration_sec"),
+                        str(r.get("status") or ""),
+                        str(r.get("command") or ""),
+                        r.get("mode"),
+                        r.get("db_backend"),
+                        r.get("db_profile"),
+                        r.get("llm_provider"),
+                        r.get("llm_model"),
+                        _dump_or_none(r.get("scope_json")),
+                        _dump_or_none(r.get("metrics_json")),
+                        _dump_or_none(r.get("tokens_json")),
+                        _dump_or_none(r.get("results_json")),
+                        r.get("error_text"),
+                        int(r.get("selected_count") or 0),
+                        int(r.get("planned_count") or 0),
+                        int(r.get("processed_count") or 0),
+                        int(r.get("applied_count") or 0),
+                        r.get("review_strategy"),
+                        r.get("llm_profile"),
+                        r.get("doc_profile"),
+                        r.get("code_profile"),
+                        _dump_or_none(r.get("settings_json")),
+                        r.get("created_by"),
+                        r.get("hostname"),
+                        r.get("client_version"),
+                        shared_uuid,
+                    ),
+                )
+                local_id = int(cur.lastrowid)
+            uuid_to_local[shared_uuid] = local_id
+            stats["analysis_runs"] += 1
+            if progress is not None:
+                with contextlib.suppress(Exception):
+                    progress("analysis_runs", stats["analysis_runs"])
+
+    if not uuid_to_local:
+        log.info("Pull finished (no new analysis_runs to insert).")
+        return stats
+
+    log.info("Pulling shared run_results for %d run(s)…", len(uuid_to_local))
+    results = shared.get_results_for_runs(list(uuid_to_local.keys()))
+    with local._lock:
+        for rr in results:
+            shared_uuid = str(rr.get("id") or "")
+            if not shared_uuid:
+                continue
+            parent_uuid = str(rr.get("run_id") or "")
+            local_run_id = uuid_to_local.get(parent_uuid)
+            if local_run_id is None:
+                continue
+            with local._connect() as conn:
+                existing = conn.execute(
+                    "SELECT id FROM run_results WHERE shared_uuid = ?",
+                    (shared_uuid,),
+                ).fetchone()
+                if existing is not None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO run_results (
+                        run_id, saved_at, schema_name, table_name, column_name,
+                        asset_kind, source, confidence, logprob_score, raw_logprob,
+                        token_count, model_version, reasoning, alternatives_json,
+                        evaluated_at, applied_at, chosen_description, evaluation,
+                        catalog_status, catalog_indexed_at, db_applied_status,
+                        effective_source_kind, superseded_at, rejection_reason,
+                        created_by, hostname, shared_uuid
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        local_run_id,
+                        _dt_to_ts(rr.get("saved_at")) or time.time(),
+                        str(rr.get("schema_name") or ""),
+                        str(rr.get("table_name") or ""),
+                        rr.get("column_name"),
+                        str(rr.get("asset_kind") or "table"),
+                        str(rr.get("source") or "unknown"),
+                        str(rr.get("confidence") or "medium"),
+                        rr.get("logprob_score"),
+                        rr.get("raw_logprob"),
+                        rr.get("token_count"),
+                        str(rr.get("model_version") or ""),
+                        rr.get("reasoning"),
+                        _dump_or_none(rr.get("alternatives_json")) or "[]",
+                        _dt_to_ts(rr.get("evaluated_at")),
+                        _dt_to_ts(rr.get("applied_at")),
+                        rr.get("chosen_description"),
+                        rr.get("evaluation"),
+                        str(rr.get("catalog_status") or ""),
+                        _dt_to_ts(rr.get("catalog_indexed_at")),
+                        str(rr.get("db_applied_status") or ""),
+                        str(rr.get("effective_source_kind") or ""),
+                        _dt_to_ts(rr.get("superseded_at")),
+                        str(rr.get("rejection_reason") or ""),
+                        rr.get("created_by"),
+                        rr.get("hostname"),
+                        shared_uuid,
+                    ),
+                )
+            stats["run_results"] += 1
+            if progress is not None:
+                with contextlib.suppress(Exception):
+                    progress("run_results", stats["run_results"])
+
+    log.info(
+        "Pull finished in %.1fs: %s",
+        time.time() - started,
+        ", ".join(f"{k}={v}" for k, v in stats.items()),
+    )
+    return stats
+
+
+def _dt_to_ts(value: Any) -> float | None:
+    """Convert a tz-aware datetime (the shared store's native time
+    unit) into a float epoch second the local SQLite store expects."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dump_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=True, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
+__all__ = ["migrate_local_to_shared", "pull_shared_to_local"]
