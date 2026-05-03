@@ -147,7 +147,9 @@ def _build_shared_store(cfg: AMXConfig):
     return store
 
 
-def _warn_bootstrap_failure_once(cache_key: tuple[str, str], short: str, exc: BaseException) -> None:
+def _warn_bootstrap_failure_once(
+    cache_key: tuple[str, str], short: str, exc: BaseException
+) -> None:
     """Emit a single one-line warning per (profile, schema) per process.
 
     The full exception (including the multi-line CREATE TABLE DDL that
