@@ -171,7 +171,7 @@ def _scan_sqlglot_sql_file(
     references: dict[str, list[CodeReference]],
     external_mentions: dict[str, list[CodeReference]],
 ) -> None:
-    """Optional richer SQL table mentions when ``sqlglot`` is installed (``pip install 'amx[code-intel]'``)."""
+    """Optional richer SQL table mentions when ``sqlglot`` is installed (``pip install 'amx-cli[code-intel]'``)."""
     try:
         import sqlglot
         from sqlglot import exp

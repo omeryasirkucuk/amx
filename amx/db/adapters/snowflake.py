@@ -48,14 +48,14 @@ class SnowflakeAdapter(DatabaseAdapter):
             from sqlalchemy import create_engine
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                "SQLAlchemy is required for Snowflake. Install with: pip install 'amx[snowflake]'"
+                "SQLAlchemy is required for Snowflake. Install with: pip install 'amx-cli[snowflake]'"
             ) from exc
         try:
             import snowflake.sqlalchemy  # noqa: F401 — registers dialect
         except ImportError as exc:
             raise ImportError(
                 "snowflake-sqlalchemy is required for the Snowflake backend. "
-                "Reinstall AMX: pip install -U amx"
+                "Install the extra: pip install 'amx-cli[snowflake]'"
             ) from exc
         return create_engine(self.cfg.url, pool_pre_ping=True)
 

@@ -50,19 +50,37 @@ class CheckResult:
 
 
 def _check_amx_on_path() -> CheckResult:
-    """Detect multiple ``amx`` binaries on PATH (the 0.3.1 ghost-profile bug)."""
+    """Detect multiple ``amx`` binaries on PATH (the 0.3.1 ghost-profile bug).
+
+    Cross-platform: on POSIX the file is named ``amx``; on Windows it's
+    ``amx.exe`` (and pip also drops ``amx.cmd`` / ``amx-script.py``).
+    The earlier loop only looked for the bare ``amx`` filename and
+    therefore reported "(not found)" on a perfectly healthy Windows
+    install. Use ``shutil.which`` for the canonical resolution and a
+    cross-platform PATH walk to surface duplicates.
+    """
+    primary = shutil.which("amx")
+    # Windows lookups via PATHEXT also resolve ``amx.exe``/``amx.cmd``;
+    # ``shutil.which("amx")`` already does that for us.
     path_env = os.environ.get("PATH", "")
-    seen: list[str] = []
+    candidates: list[str] = []
+    is_windows = os.name == "nt"
+    suffixes = (".exe", ".cmd", ".bat", "") if is_windows else ("",)
     for directory in path_env.split(os.pathsep):
         if not directory:
             continue
-        candidate = Path(directory) / "amx"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            seen.append(str(candidate))
+        for suffix in suffixes:
+            candidate = Path(directory) / f"amx{suffix}"
+            if candidate.is_file():
+                # On POSIX additionally require the executable bit; on
+                # Windows file extension already gates executability.
+                if is_windows or os.access(candidate, os.X_OK):
+                    candidates.append(str(candidate))
+                    break
     # Dedup while preserving order — the first entry is what `which amx` returns.
     deduped: list[str] = []
     seen_set: set[str] = set()
-    for entry in seen:
+    for entry in candidates:
         # Resolve to absolute physical path to detect symlink shadowing.
         try:
             real = str(Path(entry).resolve())
@@ -71,13 +89,21 @@ def _check_amx_on_path() -> CheckResult:
         if real not in seen_set:
             seen_set.add(real)
             deduped.append(entry)
+    if not deduped and primary:
+        # ``shutil.which`` succeeded but our manual scan missed it
+        # (e.g. PATH entry contains an env var the loop didn't expand).
+        # Trust ``shutil.which`` over our walk so the user doesn't see
+        # a false "(not found)" while the binary they just ran works.
+        deduped = [primary]
     if len(deduped) <= 1:
         location = deduped[0] if deduped else "(not found)"
         return CheckResult(
             name="amx on PATH",
             ok=bool(deduped),
             detail=location,
-            hint="" if deduped else "Reinstall AMX (`pip install amx` or `pipx install amx`).",
+            hint=""
+            if deduped
+            else "Reinstall AMX (`pip install amx-cli` or `pipx install amx-cli`).",
         )
     return CheckResult(
         name="amx on PATH",
@@ -158,45 +184,68 @@ def _check_config_file(cfg: AMXConfig) -> CheckResult:
     )
 
 
-def _check_optional_deps() -> list[CheckResult]:
-    """Probe optional backend deps so users know what's available before they need it."""
-    backends: tuple[tuple[str, str, str], ...] = (
-        # (label, module to import, install hint)
+def _check_optional_deps(active_backend: str | None = None) -> list[CheckResult]:
+    """Probe optional backend deps so users know what's available before they need it.
+
+    When *active_backend* matches one of the database backends the check
+    is promoted from "optional info" to "required" — the active profile
+    cannot work without its driver, so reporting ``✓ not installed
+    (optional)`` for the very thing the user is trying to use is
+    actively misleading.
+    """
+    # (label, backend key, module to import, install hint)
+    backends: tuple[tuple[str, str | None, str, str], ...] = (
         (
             "BigQuery driver",
+            "bigquery",
             "google.cloud.bigquery",
-            "pip install 'amx[bigquery]' (or: pip install google-cloud-bigquery)",
+            "pip install 'amx-cli[bigquery]'",
         ),
         (
             "Snowflake driver",
+            "snowflake",
             "snowflake.connector",
-            "pip install 'amx[snowflake]' (or: pip install snowflake-connector-python)",
+            "pip install 'amx-cli[snowflake]'",
         ),
         (
             "Databricks driver",
+            "databricks",
             "databricks.sql",
-            "pip install 'amx[databricks]' (or: pip install databricks-sql-connector)",
+            "pip install 'amx-cli[databricks]'",
         ),
         (
             "OS keyring",
+            None,
             "keyring",
             "pip install keyring (secrets fall back to plaintext YAML without it)",
         ),
     )
     results: list[CheckResult] = []
-    for label, mod, hint in backends:
+    for label, backend_key, mod, hint in backends:
+        is_required = backend_key is not None and backend_key == active_backend
         try:
             __import__(mod)
-            results.append(CheckResult(name=label, ok=True, detail="installed"))
+            detail = "installed (required for active profile)" if is_required else "installed"
+            results.append(CheckResult(name=label, ok=True, detail=detail))
         except ImportError:
-            results.append(
-                CheckResult(
-                    name=label,
-                    ok=True,  # Optional — surface as info, not error.
-                    detail="not installed (optional)",
-                    hint=hint,
+            if is_required:
+                results.append(
+                    CheckResult(
+                        name=label,
+                        ok=False,
+                        detail=f"not installed — required for active '{active_backend}' profile",
+                        hint=hint,
+                    )
                 )
-            )
+            else:
+                results.append(
+                    CheckResult(
+                        name=label,
+                        ok=True,  # Optional — surface as info, not error.
+                        detail="not installed (optional)",
+                        hint=hint,
+                    )
+                )
     return results
 
 
@@ -314,7 +363,10 @@ def run_doctor(cfg: AMXConfig, *, skip_network: bool = False) -> int:
     results.append(_check_amx_on_path())
     results.append(_check_config_dir(cfg))
     results.append(_check_config_file(cfg))
-    results.extend(_check_optional_deps())
+    active_backend: str | None = None
+    if cfg.active_db_profile and cfg.db_profiles:
+        active_backend = getattr(cfg.db, "backend", None) or None
+    results.extend(_check_optional_deps(active_backend))
     if not skip_network:
         results.append(_check_active_db_profile(cfg))
         results.append(_check_active_llm_profile(cfg))

@@ -85,7 +85,7 @@ def _print_current(cfg: AMXConfig) -> None:
     if emb.kind == "sentence_transformers":
         info("Local sentence-transformers (offline, stronger than MiniLM).")
         info(f"  Model: {emb.model or '(unset — required)'}")
-        info('Requires `pip install "amx[local-embeddings]"`.')
+        info('Requires `pip install "amx-cli[local-embeddings]"`.')
         return
     info(f"Kind: {emb.kind}")
     info(f"Model: {emb.model or '(unset)'}")
@@ -157,7 +157,7 @@ def _set_sentence_transformers(cfg: AMXConfig, rest: list[str]) -> None:
     configure_from_amx_config(cfg, on_warning=warn)
     success(f"Embeddings switched to local sentence-transformers / {model}.")
     info(
-        'Requires `pip install "amx[local-embeddings]"` if you have not '
+        'Requires `pip install "amx-cli[local-embeddings]"` if you have not '
         "already done so. The model will be downloaded on first /search use."
     )
     info("Run /rebuild (inside /search) to re-embed the catalog with the new provider.")
