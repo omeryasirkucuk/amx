@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Stop staring at <code>tx_log.posting NUMBER(8)</code> wondering what it means.</strong>
+  <strong>Stop staring at <code>transactions.posting NUMBER(8)</code> wondering what it means.</strong>
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@ Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.githu
 amx                       # open the interactive session (the AMX REPL)
 /setup                    # one-time wizard: DB profile + LLM profile
 /connect                  # sanity-check the active connection
-/run core.tx_log          # generate suggestions, review, accept
+/run core.transactions          # generate suggestions, review, accept
 /apply                    # write approved descriptions back to the database
 ```
 
@@ -54,7 +54,7 @@ The full guided walkthrough is at the [5-minute quickstart](https://omeryasirkuc
 Cryptic identifier in:
 
 ```
-core.tx_log.posting   NUMBER(8) NULL
+core.transactions.posting   NUMBER(8) NULL
 ```
 
 Reviewed description out:
@@ -81,22 +81,9 @@ OpenAI · Anthropic · Google Gemini · DeepSeek · OpenRouter · Ollama · vLLM
 
 Provider-specific guides (including OpenAI / Anthropic Batch mode and local-model setups) live in the [LLM providers section](https://omeryasirkucuk.github.io/amx-docs/llm-providers/).
 
-## Programmatic use
-
-```python
-from amx.core import AMXApplication, infer_table_metadata
-
-app = AMXApplication.load("~/.amx/config.yml")
-suggestions = infer_table_metadata(
-    app.config, "core", "tx_log", include_rag=True, include_codebase=False
-)
-```
-
-The full stable surface is documented at the [Python API reference](https://omeryasirkucuk.github.io/amx-docs/api/reference/) and in [`docs/PUBLIC_API.md`](./docs/PUBLIC_API.md). Anything not listed there is internal.
-
 ## Documentation
 
-Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the Python API. Release notes are in [`CHANGELOG.md`](./CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
+Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://omeryasirkucuk.github.io/amx-docs/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](./CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
 
 ## Contributing & support
 
