@@ -20,9 +20,6 @@ primary user-facing surface):
 * ``flush-pending`` — drain the dual-write outbox (replay queued
   shared writes that failed at write time).
 * ``dump-ddl`` — print the schema-bootstrap DDL so a DBA can run it.
-* ``apply-comments`` — backfill table + column COMMENTs on an
-  already-bootstrapped AMX schema. Dogfooding: AMX shouldn't ship a
-  metadata-tool schema without metadata. Idempotent.
 """
 
 from __future__ import annotations
@@ -61,7 +58,6 @@ ACTION_MIGRATE = "Migrate from local — copy local SQLite history into the shar
 ACTION_PULL = "Pull from shared — sync teammates' runs into your local SQLite cache"
 ACTION_FLUSH = "Flush pending — retry queued shared writes that failed at write time"
 ACTION_DUMP_DDL = "Dump DDL — print bootstrap SQL for a DBA to run by hand"
-ACTION_APPLY_COMMENTS = "Apply comments — backfill table/column descriptions on the live AMX schema (idempotent)"
 ACTION_CANCEL = "Cancel — exit without doing anything"
 
 
@@ -497,95 +493,15 @@ def _action_dump_ddl(
     click.echo(f"-- Backend: {db_cfg.backend}")
     click.echo(f"-- Schema:  {schema}")
     click.echo(adapter.create_history_schema_ddl(schema) + ";")
+    schema_comment_ddl = adapter.history_schema_comment_ddl(schema)
+    if schema_comment_ddl:
+        click.echo(schema_comment_ddl + ";")
     click.echo("")
     click.echo("-- Tables (CREATE TABLE + COMMENT ON + CREATE INDEX)")
     try:
         click.echo(adapter.create_history_tables_ddl(schema))
     except Exception as exc:
         click.echo(f"-- (table DDL render failed: {exc})")
-
-
-def _action_apply_comments(
-    cfg: AMXConfig,
-    *,
-    profile_name: str | None = None,
-    schema_name: str | None = None,
-) -> None:
-    """Backfill table + column COMMENTs on an already-bootstrapped AMX schema.
-
-    AMX is a metadata-generation tool — its own warehouse artifacts must
-    meet the standard it enforces on user data. The Table/Column
-    annotations in :mod:`amx.storage.shared_schema` ride along on
-    ``MetaData.create_all`` for new installs, but existing AMX schemas
-    were created before those annotations existed. This action walks
-    every table + column in the metadata and issues
-    ``COMMENT ON TABLE``/``COMMENT ON COLUMN`` against the live shared-
-    store DB via the same connector machinery AMX uses to write LLM-
-    approved descriptions to user databases.
-
-    Idempotent: ``COMMENT ON ... IS '...'`` overwrites the existing
-    comment with no error. Safe to re-run after editing comment text in
-    ``shared_schema.py``.
-    """
-    target = profile_name or cfg.history_store_profile or cfg.active_db_profile or ""
-    if not target or target not in cfg.db_profiles:
-        error("No DB profile resolved. Specify --profile or configure one via /db-profiles.")
-        return
-
-    from amx.db.connector import DatabaseConnector
-    from amx.storage.shared_schema import build_metadata
-
-    db_cfg = cfg.db_profiles[target]
-    schema = (schema_name or cfg.history_store_schema or "AMX").strip() or "AMX"
-    md = build_metadata(schema)
-
-    connector = DatabaseConnector(db_cfg)
-    if not connector.capabilities.column_comments:
-        warn(
-            f"Backend {db_cfg.backend!r} does not support column comments — "
-            "nothing to apply. Table comments may also be unsupported."
-        )
-
-    info(f"Applying comments to {db_cfg.backend} schema [cyan]{schema}[/cyan]…")
-
-    table_writes = 0
-    column_writes = 0
-    skipped: list[str] = []
-
-    for table in md.tables.values():
-        # Strip the schema prefix that MetaData(schema=...) bakes into
-        # table.name in some SA versions. The connector takes (schema,
-        # table) separately.
-        bare_name = table.name
-        try:
-            if table.comment and connector.capabilities.table_comments:
-                connector.set_table_comment(schema, bare_name, table.comment)
-                table_writes += 1
-        except Exception as exc:
-            skipped.append(f"table {schema}.{bare_name}: {exc}")
-            continue
-
-        if not connector.capabilities.column_comments:
-            continue
-        for col in table.columns:
-            if not col.comment:
-                continue
-            try:
-                connector.set_column_comment(schema, bare_name, col.name, col.comment)
-                column_writes += 1
-            except Exception as exc:
-                skipped.append(f"column {schema}.{bare_name}.{col.name}: {exc}")
-
-    success(
-        f"Wrote {table_writes} table comment(s) and {column_writes} column comment(s) "
-        f"on {schema}. Idempotent — safe to re-run."
-    )
-    if skipped:
-        warn(f"{len(skipped)} write(s) skipped:")
-        for line in skipped[:10]:
-            warn(f"  • {line}")
-        if len(skipped) > 10:
-            warn(f"  … and {len(skipped) - 10} more.")
 
 
 # ── Picker (the main user-facing surface) ─────────────────────────────────
@@ -622,7 +538,6 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
         options.append(ACTION_PULL)
         options.append(ACTION_MIGRATE)
         options.append(ACTION_FLUSH)
-        options.append(ACTION_APPLY_COMMENTS)
         options.append(ACTION_DUMP_DDL)
         options.append(ACTION_DISABLE)
     else:
@@ -655,9 +570,6 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
         return
     if picked == ACTION_DUMP_DDL:
         _action_dump_ddl(cfg)
-        return
-    if picked == ACTION_APPLY_COMMENTS:
-        _action_apply_comments(cfg)
         return
     # ACTION_CANCEL or anything else — exit silently.
 
@@ -778,27 +690,6 @@ def register_history_store_commands(
     def hs_dump_ddl(cfg: AMXConfig, profile_name: str | None, schema_name: str | None) -> None:
         """Print the schema-bootstrap DDL so a DBA can run it by hand."""
         _action_dump_ddl(cfg, profile_name=profile_name, schema_name=schema_name)
-
-    @history_store_grp.command("apply-comments")
-    @click.option(
-        "--profile",
-        "profile_name",
-        default=None,
-        help="DB profile hosting the AMX schema (defaults to the configured "
-        "history-store profile, or the active analysis profile).",
-    )
-    @click.option(
-        "--schema",
-        "schema_name",
-        default=None,
-        help="Schema name to apply comments to (default 'AMX').",
-    )
-    @pass_config
-    def hs_apply_comments(
-        cfg: AMXConfig, profile_name: str | None, schema_name: str | None
-    ) -> None:
-        """Backfill table/column descriptions on the live AMX schema (idempotent)."""
-        _action_apply_comments(cfg, profile_name=profile_name, schema_name=schema_name)
 
     return history_store_grp
 
