@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from amx.config import DBConfig, _db_from_mapping, _db_to_mapping
+from amx.config import DBConfig, _db_from_mapping, _db_to_mapping, _normalize_db_host
 from amx.db.adapters import SUPPORTED_BACKENDS, get_adapter
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
 
@@ -205,6 +205,35 @@ def test_clickhouse_url_secure_picks_https_and_8443():
 def test_clickhouse_url_insecure_picks_http_and_8123():
     db = DBConfig(backend="clickhouse", host="ch.example.com", user="default")
     assert db.url.startswith("clickhouse+http://default:@ch.example.com:8123")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("dbc-xxx.cloud.databricks.com", "dbc-xxx.cloud.databricks.com"),
+        ("https://dbc-xxx.cloud.databricks.com", "dbc-xxx.cloud.databricks.com"),
+        ("https://dbc-xxx.cloud.databricks.com/", "dbc-xxx.cloud.databricks.com"),
+        ("http://dbc-xxx.cloud.databricks.com/sql/", "dbc-xxx.cloud.databricks.com"),
+        ("  dbc-xxx.cloud.databricks.com  ", "dbc-xxx.cloud.databricks.com"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_normalize_db_host_strips_scheme_and_trailing_slash(raw, expected):
+    assert _normalize_db_host(raw) == expected
+
+
+def test_databricks_url_normalizes_host_with_trailing_slash():
+    """Regression: pasting the full workspace URL with a trailing slash
+    used to crash schema listing with ``invalid literal for int() with
+    base 10: ''`` because ``host:443`` became ``host/:443``."""
+    db = DBConfig(
+        backend="databricks",
+        host="https://dbc-xxx.cloud.databricks.com/",
+        access_token="tok",
+    )
+    assert "@dbc-xxx.cloud.databricks.com:443" in db.url
+    assert "https://" not in db.url.split("@", 1)[1]
 
 
 def test_duckdb_url_uses_path():

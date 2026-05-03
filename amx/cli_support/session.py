@@ -1076,7 +1076,12 @@ def run_interactive_session(
     search_cmd_heads = _registry_cmd_heads("search") | frozenset({"embeddings", "embedding"})
     history_cmd_heads = _registry_cmd_heads("history")
 
-    prev_sigwinch = signal.getsignal(signal.SIGWINCH)
+    # SIGWINCH (terminal resize) is POSIX-only — Windows raises
+    # AttributeError on signal.SIGWINCH. Guard so the interactive session
+    # starts on Windows; the save/restore is purely defensive against
+    # prompt_toolkit installing its own handler.
+    _sigwinch = getattr(signal, "SIGWINCH", None)
+    prev_sigwinch = signal.getsignal(_sigwinch) if _sigwinch is not None else None
 
     def _toolbar() -> HTML:
         ns = namespace or "root"
@@ -1314,4 +1319,5 @@ def run_interactive_session(
                 else:
                     os.environ["AMX_SESSION_CHILD"] = previous
     finally:
-        signal.signal(signal.SIGWINCH, prev_sigwinch)
+        if _sigwinch is not None and prev_sigwinch is not None:
+            signal.signal(_sigwinch, prev_sigwinch)
