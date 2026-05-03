@@ -31,9 +31,7 @@ def test_every_column_has_comment() -> None:
         for col in table.columns:
             if not (col.comment or "").strip():
                 missing.append(f"{table.name}.{col.name}")
-    assert not missing, (
-        f"{len(missing)} columns missing COMMENT (first 10): {missing[:10]}"
-    )
+    assert not missing, f"{len(missing)} columns missing COMMENT (first 10): {missing[:10]}"
 
 
 def test_create_history_tables_ddl_emits_comments_on_postgres() -> None:
