@@ -247,10 +247,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
         Column(
             "error_text",
             Text,
-            comment=(
-                "Stack trace or error message when status='failed'. NULL on "
-                "successful runs."
-            ),
+            comment=("Stack trace or error message when status='failed'. NULL on successful runs."),
         ),
         Column(
             "selected_count",
