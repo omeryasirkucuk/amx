@@ -41,6 +41,9 @@ from amx.utils.console import (
     success,
     warn,
 )
+from amx.utils.logging import get_logger
+
+log = get_logger("cli.history_store")
 
 LogEvent = Callable[..., None]
 
@@ -52,6 +55,7 @@ ACTION_STATUS = "Status — show shared-mode state and outbox depth"
 ACTION_ENABLE = "Enable — bootstrap an AMX schema on a saved DB profile"
 ACTION_DISABLE = "Disable — stop dual-writing (existing shared rows are kept)"
 ACTION_MIGRATE = "Migrate from local — copy local SQLite history into the shared store"
+ACTION_PULL = "Pull from shared — sync teammates' runs into your local SQLite cache"
 ACTION_FLUSH = "Flush pending — retry queued shared writes that failed at write time"
 ACTION_DUMP_DDL = "Dump DDL — print bootstrap SQL for a DBA to run by hand"
 ACTION_CANCEL = "Cancel — exit without doing anything"
@@ -210,12 +214,96 @@ def _action_enable(
         "All future runs will be dual-written to local SQLite AND the "
         "shared backend. Reads still come from local SQLite."
     )
+
+    # Detection: did a teammate already populate this shared store?
+    # When yes, surface a compact summary of who wrote what and offer
+    # to pull those runs down into the local cache so /history list
+    # immediately shows team activity, not just this machine's.
+    _maybe_offer_pull_on_enable(store)
+
     if confirm(
-        "Migrate existing local runs into the shared store now? (Idempotent — safe to skip.)",
+        "Migrate existing local runs UP into the shared store now? (Idempotent — safe to skip.)",
         default=True,
     ):
         _run_migration(cfg, store)
     log_event(event_type="history_store.enable", status="ok", command="/history-store enable")
+
+
+def _maybe_offer_pull_on_enable(shared_store) -> None:
+    """If the shared store already has rows from other hosts, prompt
+    the user to pull them into local SQLite.
+
+    Best-effort: any error walking the shared store is logged and the
+    enable flow continues — we never block the user on this nicety.
+    """
+    import socket
+
+    try:
+        summary = shared_store.count_runs_by_other_hosts(exclude_hostname=socket.gethostname())
+    except Exception as exc:
+        log.debug("count_runs_by_other_hosts failed in enable detection: %s", exc)
+        return
+    if not summary:
+        return
+
+    info("")
+    warn("This shared store already has runs from other team members:")
+    rows: list[list[str]] = []
+    for host, bucket in sorted(summary.items(), key=lambda kv: -kv[1]["count"]):
+        users = ", ".join(bucket["users"]) if bucket["users"] else "?"
+        last = bucket["last_run"]
+        last_str = "?"
+        if last is not None:
+            try:
+                ts = last
+                if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+                    from datetime import timezone
+
+                    ts = ts.replace(tzinfo=timezone.utc)
+                last_str = ts.astimezone().strftime("%Y-%m-%d %H:%M")  # type: ignore[union-attr]
+            except Exception:
+                last_str = str(last)
+        rows.append([host, users, str(bucket["count"]), last_str])
+    render_table(
+        "Existing runs in shared store",
+        ["Host", "Users", "Runs", "Last activity"],
+        rows,
+    )
+    if confirm(
+        "Pull these runs into your local SQLite cache so /history list shows "
+        "team activity? (Idempotent — safe to skip and re-run later.)",
+        default=True,
+    ):
+        _run_pull_from_shared(shared_store)
+
+
+def _run_pull_from_shared(shared_store) -> None:
+    """Execute pull_shared_to_local with progress + result table."""
+    from amx.storage.migration import pull_shared_to_local
+    from amx.storage.sqlite_store import SQLiteHistoryStore
+
+    store = history_store()
+    if store is None:
+        error("History store not initialised — cannot pull.")
+        return
+    local_path = (
+        store.local.db_path  # type: ignore[union-attr]
+        if hasattr(store, "local")
+        else store.db_path  # type: ignore[union-attr]
+    )
+    local = SQLiteHistoryStore(local_path)
+    info("Pulling teammates' runs into local SQLite cache…")
+    try:
+        stats = pull_shared_to_local(local=local, shared=shared_store)
+    except Exception as exc:
+        error(f"Pull failed: {exc}")
+        return
+    rows = [[table, str(count)] for table, count in stats.items()]
+    render_table("Pull result", ["Table", "Rows pulled"], rows)
+    if any(stats.values()):
+        success("Pull complete. /history list will now include teammates' runs alongside your own.")
+    else:
+        info("Nothing new to pull (already in sync).")
 
 
 def _pick_history_database(cfg: AMXConfig, db_cfg, adapter) -> str:
@@ -349,6 +437,24 @@ def _action_migrate(cfg: AMXConfig) -> None:
     _run_migration(cfg, store.shared)
 
 
+def _action_pull(cfg: AMXConfig) -> None:
+    """Pull teammates' runs from the shared store into local SQLite.
+
+    The mirror of _action_migrate (which pushes UP). Reads come from
+    local SQLite in v0.12, so pulling is what makes ``/history list``
+    surface team activity. Idempotent — re-running only inserts rows
+    whose ``shared_uuid`` is not already present locally.
+    """
+    if not getattr(cfg, "history_store_enabled", False):
+        error("Shared mode is disabled. Pick Enable first.")
+        return
+    store = _resolve_history_dual_store()
+    if store is None:
+        error("Shared store is not active. Pick Enable first.")
+        return
+    _run_pull_from_shared(store.shared)
+
+
 def _action_flush(cfg: AMXConfig) -> None:
     store = _resolve_history_dual_store()
     if store is None:
@@ -405,6 +511,7 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
     options: list[str] = [ACTION_STATUS]
     if enabled:
         options.append(ACTION_DISABLE)
+        options.append(ACTION_PULL)
         options.append(ACTION_MIGRATE)
         options.append(ACTION_FLUSH)
     else:
@@ -425,6 +532,9 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
         return
     if picked == ACTION_DISABLE:
         _action_disable(cfg, log_event=log_event)
+        return
+    if picked == ACTION_PULL:
+        _action_pull(cfg)
         return
     if picked == ACTION_MIGRATE:
         _action_migrate(cfg)
@@ -523,6 +633,12 @@ def register_history_store_commands(
     def hs_migrate(cfg: AMXConfig) -> None:
         """Copy local SQLite history into the shared store (idempotent)."""
         _action_migrate(cfg)
+
+    @history_store_grp.command("pull-from-shared")
+    @pass_config
+    def hs_pull(cfg: AMXConfig) -> None:
+        """Pull teammates' runs from the shared store into local SQLite (idempotent)."""
+        _action_pull(cfg)
 
     @history_store_grp.command("flush-pending")
     @pass_config
