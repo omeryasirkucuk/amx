@@ -6,6 +6,46 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Shared-history bootstrap on Databricks no longer crashes the JSON columns
+
+Users with `/history-store enable` pointed at a Databricks workspace
+saw this on every `amx` startup:
+
+```
+[WARNING] amx.storage.factory — Shared history schema not initialised
+((in table 'analysis_runs', column 'scope_json'): Compiler … can't
+render element of type JSON). Run `/history-store enable` to bootstrap
+the AMX schema.
+```
+
+Root cause: `databricks-sqlalchemy` does not implement `visit_JSON`,
+so SQLAlchemy's `GenericTypeCompiler` raises the moment
+`MetaData.create_all` tries to emit the eight `JSON` columns in our
+shared schema. The bootstrap failed every time, the warning fired
+every command — but no remediation worked because `/history-store
+enable` re-ran the same broken `create_all`.
+
+Fix: new `_portable_json()` helper in `amx/storage/shared_schema.py`
+uses `JSON().with_variant(_JSONAsText(), "databricks")`. `_JSONAsText`
+is a `TypeDecorator` over `Text` that round-trips Python dicts/lists
+through `json.dumps`/`json.loads` so the read paths in
+`amx/storage/sqlalchemy_store.py` continue to receive deserialised
+Python objects regardless of which backend the row came from.
+
+Postgres still gets native `JSON`, MySQL still gets `JSON`, SQLite
+still gets `JSON` — only Databricks switches to `STRING`. Verified
+end-to-end: the same `MetaData` now compiles cleanly on the Databricks
+dialect (`scope_json STRING COMMENT '…'`) and produces identical DDL
+to before on every other dialect.
+
+`tests/test_shared_schema_comments.py` adds:
+- `test_jsonastext_round_trips_dict_through_text_storage` —
+  TypeDecorator round-trip contract.
+- `test_databricks_create_table_ddl_compiles_for_every_table` —
+  every table compiles on Databricks AND every JSON column renders as
+  `STRING`. Future JSON columns added without `_portable_json()` would
+  fail this test loudly.
+
 ### Fixed — Console helpers no longer eat `[databricks]`-style substrings (the bug-class kill)
 
 `warn("pip install 'amx-cli[databricks]'")` rendered as
