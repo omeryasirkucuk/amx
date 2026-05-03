@@ -108,15 +108,13 @@ def test_databricks_create_table_ddl_compiles_for_every_table() -> None:
     the shared schema renders to DDL on Databricks AND the JSON
     columns end up as ``STRING`` instead of failing.
     """
-    pytest_skip = None
     try:
         import databricks.sqlalchemy  # noqa: F401 — registers dialect
         from databricks.sqlalchemy import DatabricksDialect
     except ImportError as exc:
         import pytest
 
-        pytest_skip = pytest.skip(f"databricks-sqlalchemy not installed: {exc}")
-        return  # pragma: no cover
+        pytest.skip(f"databricks-sqlalchemy not installed: {exc}")
     from sqlalchemy.schema import CreateTable
 
     md = build_metadata("AMX")
@@ -140,8 +138,7 @@ def test_databricks_create_table_ddl_compiles_for_every_table() -> None:
                 seen_json_columns.add(col.name)
                 # Column must render as Databricks STRING, never JSON.
                 assert f"{col.name} STRING" in ddl, (
-                    f"{table.name}.{col.name} did not compile as STRING on Databricks: "
-                    f"{ddl!r}"
+                    f"{table.name}.{col.name} did not compile as STRING on Databricks: {ddl!r}"
                 )
     # Defence in depth: confirm we actually exercised every JSON
     # column the schema declares — a future column added without the

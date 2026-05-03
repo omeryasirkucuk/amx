@@ -106,6 +106,7 @@ def _portable_json() -> TypeEngine:
     """
     return JSON().with_variant(_JSONAsText(), "databricks")
 
+
 # Schema name is configurable per-deployment — the user can pick a
 # different name in ``/history-store enable``. Default is ``AMX`` which
 # matches the user-facing nomenclature in docs/CLI prompts.
