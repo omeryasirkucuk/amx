@@ -6,6 +6,83 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Console helpers no longer eat `[databricks]`-style substrings (the bug-class kill)
+
+`warn("pip install 'amx-cli[databricks]'")` rendered as
+`⚠ pip install 'amx-cli'`. Reason: `warn` (and `info`/`error`/
+`success`/`heading`) wrapped its arg in `[warning]…[/warning]` and
+handed the whole string to Rich, which then parsed the inner
+`[databricks]` as another (unknown) style tag and silently dropped it.
+Users copy-pasted the wrong command and concluded the package was
+broken.
+
+Fix: `amx/utils/console.py` now calls `rich.markup.escape` on the
+text body of every helper before splicing it into a Rich style. Every
+existing `pip install 'amx-cli[<extra>]'` hint, `[code-intel]`,
+`[local-embeddings]` line, etc., starts rendering correctly without
+any callsite needing to change.
+
+`tests/test_console_markup_safety.py` pins the contract for `warn`,
+`info`, `success`, `error`, `heading` — both the literal databricks
+wording from the user's bug report and the broader bug-class
+(intentional-looking `[bold]` / `[red]` substrings).
+
+### Added — Wizard auto-installs the missing backend driver
+
+When the user picks a backend in `/add-db-profile` whose optional
+extra isn't installed, AMX now asks one question:
+
+```
+ℹ  The 'databricks' backend driver isn't installed yet.
+?  Install it now via pip? [Y/n]: ▮
+```
+
+Default is **Y**. On Enter, AMX runs
+`sys.executable -m pip install 'amx-cli[<extra>]'` inline (pip's
+normal output streams to the user's terminal) and continues the
+wizard once the driver loads. The user never has to drop out of the
+wizard, look up the extras name, type the install command, and
+restart from scratch — the loop the 0.12.2 user reported as
+"şaka mı yapıyorsun?".
+
+`sys.executable -m pip` is always used (not bare `pip`) so the
+install lands in the same interpreter that's running AMX — the
+typical pip-on-PATH confusion (system pip vs venv pip) cannot bite.
+On non-zero exit, missing pip, or a still-failing import after the
+install, AMX falls back to the air-gapped path: print the manual
+command, continue the wizard, never strand the user.
+
+### Added — Universal runtime hierarchy picker for every 2-level backend
+
+Pre-0.12.3 only Databricks (catalog) and PostgreSQL (database) had a
+runtime picker. Snowflake, MySQL, Oracle, MSSQL, Redshift, and
+ClickHouse users with a profile that left `database` blank silently
+got empty listings with no clear way to choose at runtime.
+
+Three changes wire the picker universally:
+
+1. `ensure_database_selected` (`amx/cli_support/catalog_picker.py`)
+   drops its `{postgresql, snowflake}` whitelist. Any backend whose
+   adapter's `list_databases()` returns ≥1 entry now gets the picker.
+2. New `SnowflakeAdapter.list_databases` runs `SHOW DATABASES` and
+   filters Snowflake-managed DBs (`SNOWFLAKE`, `SNOWFLAKE_SAMPLE_DATA`)
+   when other DBs are visible — sandbox accounts that only have those
+   still see them.
+3. New `ensure_hierarchy_resolved` unified helper: catalog picker for
+   3-level backends (Databricks), database picker for 2-level
+   backends. `/edit`, `/run`, `/sync`, `/connect` all call this
+   single helper instead of branching themselves.
+
+`Connector.list_databases` also propagates `ImportError` (mirroring
+the `list_catalogs` fix from 0.12.2 PR #96), so the missing-driver
+case surfaces the actionable extras hint instead of being swallowed
+into "no databases visible".
+
+`tests/test_runtime_pickers.py` covers all 7 2-level backends, the
+already-pinned-skip case, the empty-list-silent case, the
+ImportError-surfaces-the-hint case, and the unified helper's
+catalog/database dispatch.
+
 ### Fixed — Install hints now reference the correct PyPI distribution name (`amx-cli`)
 
 The package was renamed to `amx-cli` on PyPI in 0.12.0 (PR #93), but a

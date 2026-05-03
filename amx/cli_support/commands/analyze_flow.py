@@ -567,25 +567,16 @@ def execute_analyze_run(
         _require_llm_connection(llm, profile_label=cfg.active_llm_profile)
         use_batch = _resolve_completion_mode(cfg, llm, mode)
 
-        # Catalog picker for 3-level backends (Databricks Unity
-        # Catalog, BigQuery projects). Fires BEFORE scope finalization
-        # so list_schemas / list_tables downstream are already
-        # catalog-aware. Silent no-op for PG / Snowflake / single-
-        # catalog Databricks.
+        # Unified hierarchy picker. Catalog picker for 3-level backends
+        # (Databricks Unity Catalog), database picker for every 2-level
+        # backend (Postgres, Snowflake, MySQL, Oracle, MSSQL, Redshift,
+        # ClickHouse). Fires BEFORE scope finalization so list_schemas /
+        # list_tables downstream target the right database/catalog
+        # instead of falling back to the system DB.
         try:
-            from amx.cli_support.catalog_picker import (
-                ensure_catalog_selected,
-                ensure_database_selected,
-            )
+            from amx.cli_support.catalog_picker import ensure_hierarchy_resolved
 
-            ensure_catalog_selected(db)
-            # Database picker for 2-level backends (PostgreSQL /
-            # Snowflake). Fires when the profile has ``database=""``
-            # so list_schemas / list_tables target the user's actual
-            # data instead of the ``postgres`` system DB fallback.
-            # Silent no-op when a database is already pinned or the
-            # backend uses catalogs.
-            ensure_database_selected(db)
+            ensure_hierarchy_resolved(db)
         except Exception:
             pass
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -56,13 +58,21 @@ _BACKEND_DRIVER_PROBES: dict[str, tuple[str, str]] = {
 }
 
 
-def _warn_if_backend_driver_missing(backend: str) -> None:
-    """Emit an actionable warning if *backend*'s optional extra is missing.
+def _offer_to_install_backend_driver(backend: str) -> None:
+    """Probe *backend*'s optional driver and offer to auto-install it.
 
-    Non-fatal: the user can still complete the wizard (helpful for an
-    air-gapped environment where you want to capture the profile now
-    and install the driver later). The same hint shows up later in
-    /doctor and at engine-creation time.
+    The whole point: a user picking ``databricks`` in the wizard on a
+    fresh ``pip install amx-cli`` should never have to drop out, look up
+    the extras name, type ``pip install -U 'amx-cli[databricks]'``, and
+    rerun the wizard. Instead AMX prints a single Y/n prompt; on Y it
+    runs ``sys.executable -m pip install 'amx-cli[<extra>]'`` inline so
+    the user sees pip's normal output. On success the wizard continues
+    with the driver loaded; on N (or pip failure) it falls through to
+    the air-gapped path with the install hint visible.
+
+    Always uses ``sys.executable -m pip`` so the install lands in the
+    same interpreter that's running AMX — the typical pip-on-PATH
+    confusion (system pip vs venv pip) cannot bite.
     """
     probe = _BACKEND_DRIVER_PROBES.get(backend)
     if not probe:
@@ -70,11 +80,41 @@ def _warn_if_backend_driver_missing(backend: str) -> None:
     extra, module = probe
     try:
         __import__(module)
+        return
     except ImportError:
-        warn(
-            f"The {backend!r} driver is not installed. To use this profile, run: "
-            f"pip install 'amx-cli[{extra}]'"
+        pass
+
+    info(f"The {backend!r} backend driver isn't installed yet.")
+    if not confirm("Install it now via pip?", default=True):
+        warn(f"Skipping. Run later: pip install 'amx-cli[{extra}]'")
+        return
+
+    target = f"amx-cli[{extra}]"
+    info(f"Running: {sys.executable} -m pip install {target}")
+    try:
+        # No capture_output: let pip's progress stream straight to the
+        # user's terminal — the user wants to see it work.
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", target],
+            check=False,
         )
+    except OSError as exc:
+        error(f"Could not invoke pip: {exc}")
+        warn(f"Run manually: pip install 'amx-cli[{extra}]'")
+        return
+
+    if result.returncode != 0:
+        error(f"pip install exited with code {result.returncode}.")
+        warn(f"Run manually: pip install 'amx-cli[{extra}]'")
+        return
+
+    try:
+        __import__(module)
+    except ImportError as exc:
+        error(f"Driver still not importable after install: {exc}")
+        warn(f"Run manually: pip install 'amx-cli[{extra}]'")
+        return
+    success(f"Installed amx-cli[{extra}].")
 
 
 def _ask_update_text(
@@ -404,14 +444,13 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "duckdb": "Single-file or in-memory; no host/auth (analytical, embedded)",
         },
     )
-    # Probe for the chosen backend's optional driver up front. The
-    # wizard saving a Databricks profile on a fresh `pip install
-    # amx-cli` (no extras) used to succeed silently — the user only
-    # discovered the missing driver on first /edit, with the not-very-
-    # actionable message "databricks-sqlalchemy is required". Surfacing
-    # the install hint here means they can ^C, install the extra, and
-    # rerun before bothering to type credentials.
-    _warn_if_backend_driver_missing(backend)
+    # Probe the chosen backend's optional driver up front and offer
+    # to ``pip install`` it inline. The 0.12.2 version of this hook
+    # only printed a hint and continued — but the hint itself was
+    # eaten by Rich markup, so the user typed the wrong command (or
+    # gave up). 0.12.3: actually run the install for them when they
+    # say Y.
+    _offer_to_install_backend_driver(backend)
 
     # Truly-blank defaults for a brand-new profile or after a cross-
     # backend reset. ``DBConfig()`` carries the dataclass-level

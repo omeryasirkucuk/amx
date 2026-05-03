@@ -177,10 +177,10 @@ def register_root_commands(
                 # to lock the catalog for the rest of the session;
                 # /run, /ask, /edit and friends inherit it.
                 try:
-                    from amx.cli_support.catalog_picker import ensure_catalog_selected
+                    from amx.cli_support.catalog_picker import ensure_hierarchy_resolved
 
                     db_for_pick = DatabaseConnector(cfg.db)
-                    ensure_catalog_selected(db_for_pick)
+                    ensure_hierarchy_resolved(db_for_pick)
                 except Exception as _exc:
                     pass
                 if getattr(cfg.db, "tls_no_verify", False):
