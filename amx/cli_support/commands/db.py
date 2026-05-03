@@ -8,7 +8,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from amx.config import PROFILING_MODES, SUPPORTED_BACKENDS, AMXConfig, DBConfig
+from amx.config import (
+    PROFILING_MODES,
+    SUPPORTED_BACKENDS,
+    AMXConfig,
+    DBConfig,
+    _normalize_db_host,
+)
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -490,6 +496,10 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             required=True,
             allow_clear=False,
         )
+        # Accept the full workspace URL too — strip scheme + trailing
+        # slash so the SQLAlchemy URL builder doesn't choke on
+        # ``host/:443`` later.
+        host = _normalize_db_host(host)
         http_path = _ask_update_text(
             "SQL warehouse HTTP path (e.g. /sql/1.0/warehouses/abc1234567890)",
             defaults.http_path,

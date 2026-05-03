@@ -67,6 +67,27 @@ _LEGACY_DATABASE_DEFAULTS: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+def _normalize_db_host(raw: str | None) -> str:
+    """Strip URL scheme, surrounding whitespace, and trailing path/slash from a DB host.
+
+    Users routinely paste full workspace URLs like
+    ``https://dbc-xxx.cloud.databricks.com/`` into a "host" prompt. The
+    Databricks SQL connector and SQLAlchemy URL builder both want the
+    bare hostname — anything else turns ``host:443`` into ``host/:443``
+    and the SQLAlchemy URL parser then tries ``int("")`` for the port.
+    """
+    host = (raw or "").strip()
+    if not host:
+        return ""
+    for scheme in ("https://", "http://"):
+        if host.lower().startswith(scheme):
+            host = host[len(scheme) :]
+            break
+    # Drop any path component the user accidentally included.
+    host = host.split("/", 1)[0]
+    return host.strip()
+
+
 def has_legacy_database_default(db: DBConfig) -> bool:
     """Return True when *db* still carries the historical ``database='SAP'`` default.
 
@@ -514,7 +535,15 @@ class DBConfig(_ObservableConfig):
 
         if self.backend == "databricks":
             token = self.access_token or self.password
-            url = f"databricks://token:{quote_plus(token)}@{self.host}:443"
+            # Defensive normalization: users routinely paste the
+            # full workspace URL ("https://dbc-xxx.cloud.databricks.com/")
+            # — without stripping the scheme and trailing slash, the
+            # resulting "databricks://token:xxx@https://host/:443" URL
+            # makes SQLAlchemy try int("") for the port and crash with
+            # "invalid literal for int() with base 10: ''" the moment
+            # you list schemas.
+            host = _normalize_db_host(self.host)
+            url = f"databricks://token:{quote_plus(token)}@{host}:443"
             if self.database:
                 url += f"/{quote_plus(self.database)}"
             params = []

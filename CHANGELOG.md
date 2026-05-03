@@ -6,6 +6,40 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Cross-platform: AMX no longer crashes on first launch on Windows
+
+`amx` crashed immediately on Windows with
+`AttributeError: module 'signal' has no attribute 'SIGWINCH'`. The
+interactive session unconditionally captured `signal.SIGWINCH` to
+defend against `prompt_toolkit` installing its own resize handler, but
+`SIGWINCH` is POSIX-only — Windows raises on attribute access. The
+save/restore is now guarded with `getattr(signal, "SIGWINCH", None)`,
+so the session starts on Linux/macOS/Windows alike. Linux/macOS
+behaviour is unchanged.
+
+### Fixed — Pasting the full Databricks workspace URL no longer crashes schema listing
+
+When a user pasted the full workspace URL into the host prompt
+(`https://dbc-xxx.cloud.databricks.com/`), the SQLAlchemy URL builder
+produced `databricks://token:xxx@host/:443`, which then failed with
+`invalid literal for int() with base 10: ''` the moment the user
+listed schemas — because the URL parser tried to read the empty string
+between `/:` and the rest as a port number.
+
+Fix is layered:
+
+1. `_normalize_db_host()` strips `https://`/`http://`, surrounding
+   whitespace, and any trailing path component down to the bare
+   hostname. Applied at the wizard prompt for immediate feedback.
+2. `DBConfig.url` for the Databricks backend re-normalises the host
+   defensively, so existing configs already on disk with a slash in
+   the host self-heal on the next run without requiring the user to
+   re-enter their workspace URL.
+
+`test_normalize_db_host_strips_scheme_and_trailing_slash` and
+`test_databricks_url_normalizes_host_with_trailing_slash` lock the
+contract.
+
 ### Fixed — /history-store enable no longer offers the empty `postgres` maintenance DB
 
 When bootstrapping AMX onto a PostgreSQL profile, the database picker
