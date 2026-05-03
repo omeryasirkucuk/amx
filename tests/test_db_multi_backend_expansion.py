@@ -223,6 +223,57 @@ def test_normalize_db_host_strips_scheme_and_trailing_slash(raw, expected):
     assert _normalize_db_host(raw) == expected
 
 
+def test_snowflake_list_databases_runs_show_databases_and_filters_managed():
+    """Snowflake adapter exposes a ``list_databases`` override (added in
+    0.12.3) so the unified runtime database picker can present
+    user-visible databases when the profile leaves the database field
+    blank. Verify the override:
+      - issues ``SHOW DATABASES``,
+      - filters Snowflake-managed DBs (``SNOWFLAKE``,
+        ``SNOWFLAKE_SAMPLE_DATA``) when other DBs are visible,
+      - returns the unfiltered list when those are the only DBs visible
+        (sandbox accounts).
+    """
+    from unittest.mock import MagicMock
+
+    from amx.db.adapters.snowflake import SnowflakeAdapter
+
+    cfg = DBConfig(backend="snowflake", account="acc.example", user="alice")
+    adapter = SnowflakeAdapter(cfg)
+
+    def _engine(rows):
+        engine = MagicMock()
+        cm = engine.connect.return_value.__enter__.return_value
+        # rows yielded by SHOW DATABASES: Snowflake returns at least
+        # (created_on, name, ...). The adapter prefers ``mapping['name']``
+        # when available — supply both shapes via MagicMock attrs.
+        result = MagicMock()
+        result.fetchall.return_value = rows
+        cm.execute.return_value = result
+        return engine
+
+    class _Row:
+        def __init__(self, name: str) -> None:
+            self._name = name
+            self._mapping = {"name": name}
+
+        def __getitem__(self, idx):
+            # Snowflake column 1 is ``name``.
+            return [None, self._name][idx]
+
+    # Mixed: managed DBs + user DBs → filter the managed ones.
+    mixed = adapter.list_databases(_engine([_Row("APP"), _Row("SNOWFLAKE"), _Row("METRICS")]))
+    assert "SNOWFLAKE" not in mixed
+    assert "APP" in mixed
+    assert "METRICS" in mixed
+
+    # Only managed DBs visible (fresh sandbox) → return them unfiltered.
+    only_managed = adapter.list_databases(
+        _engine([_Row("SNOWFLAKE"), _Row("SNOWFLAKE_SAMPLE_DATA")])
+    )
+    assert only_managed == ["SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"]
+
+
 def test_databricks_url_normalizes_host_with_trailing_slash():
     """Regression: pasting the full workspace URL with a trailing slash
     used to crash schema listing with ``invalid literal for int() with

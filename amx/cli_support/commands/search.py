@@ -1149,13 +1149,13 @@ def register_search_commands(
                     # front the listings may be empty.
                     try:
                         from amx.cli_support.catalog_picker import (
-                            ensure_catalog_selected,
+                            ensure_hierarchy_resolved,
                             warn_when_database_unpinned,
                         )
                         from amx.db.connector import DatabaseConnector
 
                         _db_for_pick = DatabaseConnector(cfg.db)
-                        ensure_catalog_selected(_db_for_pick)
+                        ensure_hierarchy_resolved(_db_for_pick)
                         warn_when_database_unpinned(_db_for_pick)
                     except Exception:
                         pass

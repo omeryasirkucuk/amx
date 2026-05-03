@@ -15,6 +15,7 @@ from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from rich import box
 from rich.align import Align
 from rich.console import Console
+from rich.markup import escape as _markup_escape
 from rich.panel import Panel
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
@@ -91,24 +92,31 @@ def show_banner(force: bool = False) -> None:
     _BANNER_SHOWN = True
 
 
+# All five helpers escape *text* before splicing it into a Rich markup
+# string. Without escape() a substring like ``[databricks]`` (the kind
+# that appears inside ``pip install 'amx-cli[databricks]'`` install hints)
+# is interpreted by Rich as another style tag and silently dropped, so
+# the user sees ``pip install 'amx-cli'`` and concludes the package is
+# broken. Every existing callsite passes plain text intended for users,
+# so escaping is always the right behaviour.
 def heading(text: str) -> None:
-    console.print(Panel(f"[heading]{text}[/heading]", expand=False))
+    console.print(Panel(f"[heading]{_markup_escape(text)}[/heading]", expand=False))
 
 
 def info(text: str) -> None:
-    console.print(f"[info]ℹ  {text}[/info]")
+    console.print(f"[info]ℹ  {_markup_escape(text)}[/info]")
 
 
 def success(text: str) -> None:
-    console.print(f"[success]✓  {text}[/success]")
+    console.print(f"[success]✓  {_markup_escape(text)}[/success]")
 
 
 def warn(text: str) -> None:
-    console.print(f"[warning]⚠  {text}[/warning]")
+    console.print(f"[warning]⚠  {_markup_escape(text)}[/warning]")
 
 
 def error(text: str) -> None:
-    console.print(f"[error]✗  {text}[/error]")
+    console.print(f"[error]✗  {_markup_escape(text)}[/error]")
 
 
 @contextmanager
