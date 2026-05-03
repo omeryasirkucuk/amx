@@ -11,6 +11,7 @@ from typing import Any
 
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from rich import box
 from rich.align import Align
 from rich.console import Console
@@ -143,18 +144,71 @@ def _live_paused_for_input() -> Generator[None, None, None]:
                 display.resume()
 
 
+class PromptCancelled(Exception):
+    """Raised when the user soft-cancels a prompt with Esc.
+
+    Distinguishes "user explicitly cancelled" (Esc) from "user
+    submitted an empty answer" (Enter on an empty buffer) and from
+    "user killed the whole session" (Ctrl-C → KeyboardInterrupt).
+
+    The prompt helpers below catch this internally, print a one-line
+    "Cancelled." note so the user sees the keystroke landed, and
+    return the appropriate "no answer" sentinel for that helper
+    (empty string / empty list / False). Callers that need to tell
+    cancel apart from empty-Enter can wrap a call in their own
+    try/except — but in practice the same outcome works for both.
+    """
+
+
+# Esc binding shared by every prompt this module dispatches via
+# ``_safe_pt_prompt``. Bound without ``eager=True`` so prompt_toolkit's
+# input parser can still distinguish a bare Esc from Esc-prefixed
+# multi-key sequences (arrow keys, Alt-shortcuts, function keys all
+# start with Esc on most terminals). After the parser's small
+# disambiguation window elapses the bare-Esc branch fires and the
+# prompt closes via the ``PromptCancelled`` exception.
+_ESC_CANCEL_BINDINGS = KeyBindings()
+
+
+@_ESC_CANCEL_BINDINGS.add("escape")
+def _on_escape_cancel(event: Any) -> None:
+    event.app.exit(exception=PromptCancelled())
+
+
 def _safe_pt_prompt(*args: Any, **kwargs: Any) -> str:
-    """``prompt_toolkit.prompt`` wrapper that pauses the live display first."""
+    """``prompt_toolkit.prompt`` wrapper that pauses the live display first.
+
+    Also installs a global Esc-to-cancel binding so users can soft-
+    cancel any prompt without having to fall back to Ctrl-C (which
+    kills the whole session). Callers that pass their own
+    ``key_bindings`` are merged with the cancel binding rather than
+    replaced.
+    """
+    user_bindings = kwargs.pop("key_bindings", None)
+    if user_bindings is None:
+        kwargs["key_bindings"] = _ESC_CANCEL_BINDINGS
+    else:
+        kwargs["key_bindings"] = merge_key_bindings([user_bindings, _ESC_CANCEL_BINDINGS])
     with _live_paused_for_input():
         return pt_prompt(*args, **kwargs)
 
 
 def ask(question: str, default: str = "") -> str:
-    return _safe_pt_prompt(f"  {question}: ", default=default).strip()
+    """Free-text prompt. Esc soft-cancels and returns ''."""
+    try:
+        return _safe_pt_prompt(f"  {question}: ", default=default).strip()
+    except PromptCancelled:
+        info("Cancelled.")
+        return ""
 
 
 def ask_password(question: str) -> str:
-    return _safe_pt_prompt(f"  {question}: ", is_password=True).strip()
+    """Hidden prompt for secrets. Esc soft-cancels and returns ''."""
+    try:
+        return _safe_pt_prompt(f"  {question}: ", is_password=True).strip()
+    except PromptCancelled:
+        info("Cancelled.")
+        return ""
 
 
 def ask_choice(
@@ -178,7 +232,14 @@ def ask_choice(
         console.print(f"    {i}. [bold]{c}[/bold]{desc}[dim]{mark}[/dim]")
     # Keep the prompt minimal: users can press Enter for default without extra hint text.
     # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.
-    answer = _safe_pt_prompt("  > ", completer=completer).strip()
+    try:
+        answer = _safe_pt_prompt("  > ", completer=completer).strip()
+    except PromptCancelled:
+        # Esc → return the empty string so callers detect "no choice
+        # made" the same way they handle invalid input. Print a note
+        # so the keystroke does not feel like a no-op.
+        info("Cancelled.")
+        return ""
     if not answer:
         return default if default in choices else ""
     if answer.isdigit() and 1 <= int(answer) <= len(choices):
@@ -192,11 +253,15 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
     console.print(f"  [info]{question}[/info]")
     console.print(
         "  (comma-separated numbers or names; `all` = everything; "
-        "Enter alone cancels — no accidental 'run on every table')"
+        "Enter alone cancels — no accidental 'run on every table'; Esc cancels too)"
     )
     for i, c in enumerate(choices, 1):
         console.print(f"    {i}. {c}")
-    raw = _safe_pt_prompt("  > ").strip()
+    try:
+        raw = _safe_pt_prompt("  > ").strip()
+    except PromptCancelled:
+        info("Cancelled.")
+        return []
     if not raw:
         return []
     if raw.lower() == "all":
@@ -230,8 +295,19 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
 
 
 def confirm(question: str, default: bool = True) -> bool:
+    """Yes/no prompt. Esc soft-cancels and returns False (treated as 'no').
+
+    The Esc-as-False convention is deliberate: every confirm() call in
+    AMX is a destructive or scoping decision (disable shared mode?
+    apply comments? proceed despite warnings?). False — "do not
+    proceed" — is the safe default for an explicit cancel.
+    """
     suffix = " [Y/n]" if default else " [y/N]"
-    answer = _safe_pt_prompt(f"  {question}{suffix}: ").strip().lower()
+    try:
+        answer = _safe_pt_prompt(f"  {question}{suffix}: ").strip().lower()
+    except PromptCancelled:
+        info("Cancelled.")
+        return False
     if not answer:
         return default
     return answer in ("y", "yes")
