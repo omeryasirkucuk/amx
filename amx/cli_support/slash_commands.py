@@ -130,6 +130,19 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
         "db",
         "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])",
     ),
+    SlashCommand(
+        "/history-store",
+        "db",
+        "Configure shared run-history (/history-store opens picker; /history-store status|enable|disable|migrate-from-local|flush-pending|dump-ddl)",
+        long_desc=(
+            "Configure shared run-history for team collaboration. Bare "
+            "/history-store opens an interactive picker that prints the "
+            "current shared-mode status and offers Status / Enable / "
+            "Disable / Migrate from local / Flush pending / Dump DDL "
+            "based on whether shared mode is on. Power-user shortcuts "
+            "accept a subcommand directly."
+        ),
+    ),
 )
 
 _METADATA_COMMANDS: tuple[SlashCommand, ...] = (
