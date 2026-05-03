@@ -268,15 +268,23 @@ Navigation:
 [heading]Help — /docs namespace[/heading]
 Commands (in order):
   1) /back                         Return to root namespace
+
+  Profile management:
   2) /doc-profiles                 List document profiles (named path lists)
   3) /use-doc <name>               Switch active document profile
   4) /add-doc-profile [name]       Add/update document roots (interactive)
   5) /remove-doc-profile <name>    Remove a document profile
+
+  Ingestion:
   6) /scan [paths...]              Scan (preview); optional `--doc-profile NAME`; else active profile or paths
   7) /ingest [paths...]            Ingest into RAG; `--doc-profile NAME`; `--refresh` replaces chunks for those sources
+
+  Search & analysis:
   8) /search-docs <text>           Vector similarity over ingested docs (Chroma; no LLM answer)
-  9) /doc-analyze [TABLE …]       Run RAG Agent standalone; results saved for next /run
- 10) /export-doc-report [FILE]    Export document RAG summary to a markdown file
+  9) /doc-analyze [TABLE …]        Run RAG Agent standalone; results saved for next /run
+
+  Export:
+ 10) /export-doc-report [FILE]     Export document RAG summary to a markdown file
 
 Tip: configure sources first (steps 2–5), then scan/ingest, then /search-docs.
 
@@ -295,19 +303,24 @@ comments. Document profiles and document search are under /docs.
 
 Commands:
   1) /back                         Return to root namespace
+
+  Inspection (read-only):
   2) /inspect [schema] [table]     Show current database/schema/table/column comments
-  3) /edit                         Interactive edit wizard. FIRST asks
+  3) /monitor [schema]             Show table/view and column comment coverage
+
+  Editing:
+  4) /edit                         Interactive edit wizard. FIRST asks
                                    "Single entity" or "Bulk by name". If bulk,
                                    prompts for the entity name and walks the
                                    bulk-update flow (analysis → multi-select →
                                    one comment to all). If single, walks
                                    database → schema → table → column step by step.
-  4) /edit <db>                    Edit a database/profile comment
-  5) /edit <db>.<schema>           Edit a schema comment
-  6) /edit <db>.<schema>.<table>   Edit a table/view comment
-  7) /edit <db>.<schema>.<table>.<column>
+  5) /edit <db>                    Edit a database/profile comment
+  6) /edit <db>.<schema>           Edit a schema comment
+  7) /edit <db>.<schema>.<table>   Edit a table/view comment
+  8) /edit <db>.<schema>.<table>.<column>
                                   Edit a column comment
-  8) /edit <name>                  Bare-name shortcut: AMX searches every table
+  9) /edit <name>                  Bare-name shortcut: AMX searches every table
                                    AND column matching <name> across all schemas,
                                    prints a bulk-update analysis (counts + match
                                    table), then offers bulk-vs-individual mode.
@@ -317,7 +330,6 @@ Commands:
                                      * individual — walk through each match one at
                                                    a time, different comment per row.
                                      * cancel     — abort.
-  9) /monitor [schema]             Show table/view and column comment coverage
 
 Options:
   /edit ... --comment "text"       Provide the new comment non-interactively
@@ -338,10 +350,14 @@ Navigation:
 [heading]Help — /llm namespace[/heading]
 Commands (in order):
   1) /back                              Return to root namespace
+
+  Profile management:
   2) /llm-profiles                      List LLM profiles
   3) /use-llm <name>                    Switch active LLM profile
   4) /add-llm-profile [name]            Add/update an LLM profile (interactive)
   5) /remove-llm-profile <name>         Remove an LLM profile
+
+  Prompt control (input shape):
   6) /prompt-detail [level]             Show or set the prompt detail level
                                           Levels: minimal | standard | detailed | full
                                           Controls which DB fields are included in the LLM prompt.
@@ -353,10 +369,17 @@ Commands (in order):
                                           detailed = 2-4 sentences with purpose, typical values,
                                           and relationships when supported by evidence.
   8) /n-alternatives [N]                Show or set number of description alternatives per column
-  9) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
+  9) /temperature [0.0-2.0]             Show or set LLM sampling temperature (default 0.2)
+
+  Batching (throughput):
+ 10) /llm-batch-size [N]                Show or set number of columns processed in one LLM call
                                           Range: 1 – 5  (default: 3)
- 10) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
+ 11) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
                                          as context in every profile batch prompt
+
+  Confidence:
+ 12) /logprob-thresholds [high] [med]   Show or set logprob confidence thresholds used to bucket
+                                         per-column results into high / medium / low
 
 Model examples (what to type in "Model name"):
   - openai      -> gpt-4o
@@ -378,18 +401,24 @@ Navigation:
         out.print(
             """
 [heading]Help — /code namespace[/heading]
-Profiles:
+Commands (in order):
   1) /back                         Return to root namespace
+
+  Profile management:
   2) /code-profiles                List codebase profiles
   3) /use-code <name>              Switch active codebase profile
   4) /add-code-profile [name]      Add/update a codebase path (interactive)
   5) /remove-code-profile <name>   Remove a codebase profile
 
-Scanning and analysis:
+  Scanning:
   6) /code-scan [path] [--schema …] [--code-profile NAME]   Scan codebase, save results + semantic index
-  7) /code-refresh [--code-profile NAME]   Clear cache + semantic index
-  8) /code-results [--code-profile NAME]   Show last cached scan results
+  7) /code-refresh [--code-profile NAME]                    Clear cache + semantic index
+  8) /code-results [--code-profile NAME]                    Show last cached scan results
+
+  Analysis:
   9) /code-analyze [TABLE …] [--schema …]  Run Code Agent standalone; results saved for next /run
+
+  Export:
  10) /export-code-report [FILE]    Export scan results to markdown
 
 Navigation:
@@ -427,16 +456,24 @@ Navigation:
 [heading]Help — /search namespace[/heading]
 Commands:
   1) /back                                     Return to root namespace
+
+  Ask:
   2) /ask [--actions] <question>               Ask a metadata question; --actions prompts before running follow-up actions
   3) <question>                                In /search, plain text is treated like /ask
+
+  Status:
   4) /status                                   Catalog health, LLM readiness, and last sync jobs
   5) /sources                                  Enabled sources, settings, and evidence coverage
+
+  Configure:
   6) /config [key] [value]                     Show or update search settings
-  7) /sync [--schema …] [--table …]            Sync DB structure/comments + cached code evidence
-  8) /rebuild                                  Rebuild effective search state and vector index
-  9) /embeddings [kind] [model]                Show or change the search-index embedding provider
+  7) /embeddings [kind] [model]                Show or change the search-index embedding provider
                                                (MiniLM default, OpenAI-compatible, or local sentence-transformers).
                                                Run /rebuild after switching to re-embed the catalog.
+
+  Sync & rebuild:
+  8) /sync [--schema …] [--table …]            Sync DB structure/comments + cached code evidence
+  9) /rebuild                                  Rebuild effective search state and vector index
 """
         )
         return
@@ -447,13 +484,22 @@ Commands:
 [heading]Help — /history namespace[/heading]
 Commands:
   1) /back                                    Return to root namespace
+
+  Browse:
   2) /list [-n N]                             Show recent analyze runs from SQLite
   3) /show <run_id>                           Show full JSON payload for one run
   4) /stats                                   Aggregate run/event stats
   5) /events [-n N]                           Recent app events
+
+  Audit & replay:
   6) /results <run_id>                        Show all saved LLM alternatives for a run
   7) /review <run_id> [--unevaluated-only]    Re-evaluate alternatives for a past run
                          [--apply]            Write approved descriptions to the database
+  8) /compare [run_ids…|--last N|--schema …|--table …|--by KEY]
+                                              Pivot past runs of the same assets to compare
+                                              models, doc/code profiles, prompt-detail levels,
+                                              or batch sizes side-by-side (descriptions,
+                                              confidence, logprob_score, timing, tokens).
 
 SQLite file:
   ~/.amx/history.db
