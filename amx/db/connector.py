@@ -270,9 +270,16 @@ class DatabaseConnector:
         catalog/schema/table hierarchy. Used by the manual-edit
         wizard on Databricks Unity Catalog so the user picks a
         catalog before the schema picker fires.
+
+        ``ImportError`` propagates so the missing-driver case (user
+        ran ``pip install amx-cli`` without ``[databricks]``) reaches
+        the catalog picker as an actionable hint instead of
+        masquerading as "empty workspace".
         """
         try:
             return list(self._adapter.list_catalogs(self.engine))
+        except ImportError:
+            raise
         except Exception:
             return []
 

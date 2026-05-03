@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "amx-cli"
-version = "0.12.1"
+version = "0.12.2"
 description = "Agentic Metadata Extractor — AI-powered CLI to infer and manage database metadata"
 readme = "README.md"
 requires-python = ">=3.10"

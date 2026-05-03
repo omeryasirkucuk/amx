@@ -39,6 +39,44 @@ class DBConnectAttempt:
     detail: str = ""
 
 
+# (label, importable module) — extras whose presence we probe up front
+# in the wizard. Keep in sync with ``[project.optional-dependencies]``
+# entries in ``pyproject.toml``.
+_BACKEND_DRIVER_PROBES: dict[str, tuple[str, str]] = {
+    "postgresql": ("postgresql", "psycopg2"),
+    "snowflake": ("snowflake", "snowflake.connector"),
+    "databricks": ("databricks", "databricks.sql"),
+    "bigquery": ("bigquery", "google.cloud.bigquery"),
+    "mysql": ("mysql", "pymysql"),
+    "oracle": ("oracle", "oracledb"),
+    "mssql": ("mssql", "pyodbc"),
+    "redshift": ("redshift", "redshift_connector"),
+    "clickhouse": ("clickhouse", "clickhouse_connect"),
+    "duckdb": ("duckdb", "duckdb"),
+}
+
+
+def _warn_if_backend_driver_missing(backend: str) -> None:
+    """Emit an actionable warning if *backend*'s optional extra is missing.
+
+    Non-fatal: the user can still complete the wizard (helpful for an
+    air-gapped environment where you want to capture the profile now
+    and install the driver later). The same hint shows up later in
+    /doctor and at engine-creation time.
+    """
+    probe = _BACKEND_DRIVER_PROBES.get(backend)
+    if not probe:
+        return
+    extra, module = probe
+    try:
+        __import__(module)
+    except ImportError:
+        warn(
+            f"The {backend!r} driver is not installed. To use this profile, run: "
+            f"pip install 'amx-cli[{extra}]'"
+        )
+
+
 def _ask_update_text(
     label: str,
     current: str = "",
@@ -366,6 +404,14 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "duckdb": "Single-file or in-memory; no host/auth (analytical, embedded)",
         },
     )
+    # Probe for the chosen backend's optional driver up front. The
+    # wizard saving a Databricks profile on a fresh `pip install
+    # amx-cli` (no extras) used to succeed silently — the user only
+    # discovered the missing driver on first /edit, with the not-very-
+    # actionable message "databricks-sqlalchemy is required". Surfacing
+    # the install hint here means they can ^C, install the extra, and
+    # rerun before bothering to type credentials.
+    _warn_if_backend_driver_missing(backend)
 
     # Truly-blank defaults for a brand-new profile or after a cross-
     # backend reset. ``DBConfig()`` carries the dataclass-level

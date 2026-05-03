@@ -25,6 +25,7 @@ from amx.cli_support.commands.doctor import (
     CheckResult,
     _check_amx_on_path,
     _check_amx_version,
+    _check_optional_deps,
     _check_python_version,
     _render_results,
     run_doctor,
@@ -139,6 +140,58 @@ class DoctorPathConflictTests(unittest.TestCase):
                 result = _check_amx_on_path()
             self.assertFalse(result.ok)
             self.assertIn("Reinstall", result.hint)
+            # The hint must reference the live PyPI distribution name,
+            # not the legacy ``amx`` import name.
+            self.assertIn("amx-cli", result.hint)
+
+    def test_falls_back_to_shutil_which_when_walk_misses(self) -> None:
+        """``shutil.which`` is the canonical PATH resolver; when the
+        manual walk misses a hit (e.g. on Windows where binaries are
+        named ``amx.exe``) the result must still report success
+        instead of the false "(not found)" the pre-0.12.2 doctor
+        printed on a healthy Windows install."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_amx = str(Path(tmp) / "amx.exe")
+            with (
+                patch.dict(os.environ, {"PATH": tmp}, clear=True),
+                patch("amx.cli_support.commands.doctor.shutil.which", return_value=fake_amx),
+            ):
+                result = _check_amx_on_path()
+            self.assertTrue(result.ok, msg=result.detail)
+            self.assertIn("amx.exe", result.detail)
+
+
+class DoctorOptionalDepsActiveBackendGateTests(unittest.TestCase):
+    """The active DB profile's driver must be reported as REQUIRED,
+    not as a green ``optional`` line, so a fresh ``pip install
+    amx-cli`` user who set up Databricks doesn't see ``✓ Databricks
+    driver — not installed (optional)`` while the actual workflow
+    crashes the moment they try to use it."""
+
+    def test_databricks_driver_marked_required_when_active(self) -> None:
+        results = _check_optional_deps(active_backend="databricks")
+        databricks_check = next(r for r in results if r.name == "Databricks driver")
+        try:
+            import databricks.sql  # noqa: F401
+        except ImportError:
+            self.assertFalse(databricks_check.ok)
+            self.assertIn("required for active 'databricks' profile", databricks_check.detail)
+            self.assertIn("amx-cli[databricks]", databricks_check.hint)
+        else:
+            # Driver happens to be installed in the test environment —
+            # the line still gets the "required" tag instead of the
+            # plain "installed" wording.
+            self.assertTrue(databricks_check.ok)
+            self.assertIn("required", databricks_check.detail)
+
+    def test_other_backends_stay_optional(self) -> None:
+        results = _check_optional_deps(active_backend="postgresql")
+        # Postgres isn't in the optional-deps probe list (driver is
+        # plain ``psycopg2``), so the only thing we care about is that
+        # Databricks/Snowflake/BigQuery DON'T get demoted to required.
+        for r in results:
+            if r.name in {"Snowflake driver", "BigQuery driver", "Databricks driver"}:
+                self.assertNotIn("required for active", r.detail)
 
 
 class DoctorVersionAndPythonChecksTests(unittest.TestCase):

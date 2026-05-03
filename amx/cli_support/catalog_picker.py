@@ -69,6 +69,13 @@ def ensure_catalog_selected(
     try:
         with step_spinner("Listing catalogs"):
             catalogs = list(db.list_catalogs())  # type: ignore[attr-defined]
+    except ImportError as exc:
+        # Missing optional driver — surface the actionable install hint
+        # the adapter already attached to the ImportError instead of
+        # falling through to the misleading "SHOW CATALOGS returned
+        # nothing" path.
+        warn(str(exc))
+        return ""
     except Exception as exc:
         log.debug("list_catalogs failed: %s", exc)
         catalogs = []

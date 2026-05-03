@@ -76,7 +76,7 @@ class DatabricksAdapter(DatabaseAdapter):
         except ImportError as exc:
             raise ImportError(
                 "databricks-sqlalchemy is required for the Databricks backend. "
-                "Reinstall AMX: pip install -U amx"
+                "Install the extra: pip install 'amx-cli[databricks]'"
             ) from exc
         connect_args: dict[str, object] = {
             "user_agent_entry": "amx",
@@ -102,7 +102,7 @@ class DatabricksAdapter(DatabaseAdapter):
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
                 "databricks-sql-connector is required for the Databricks backend. "
-                "Reinstall AMX: pip install -U amx"
+                "Install the extra: pip install 'amx-cli[databricks]'"
             ) from exc
 
         connect_args: dict[str, object] = {

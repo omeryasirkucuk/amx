@@ -19,7 +19,7 @@ embedding providers wrapped as Chroma ``EmbeddingFunction`` instances:
 
 The ``sentence-transformers`` dependency is optional and only required
 for :class:`SentenceTransformerEmbedding`. Install via the
-``local-embeddings`` extra (``pip install 'amx[local-embeddings]'``).
+``local-embeddings`` extra (``pip install 'amx-cli[local-embeddings]'``).
 
 Use :func:`make_embedding_function` to build a provider from a config
 dict; it returns ``None`` for the MiniLM default so callers can pass
@@ -220,7 +220,7 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
 
     Requires the ``local-embeddings`` extra::
 
-        pip install "amx[local-embeddings]"
+        pip install "amx-cli[local-embeddings]"
     """
 
     name = "sentence-transformers"
@@ -235,7 +235,7 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
         except ImportError as exc:
             raise RuntimeError(
                 "sentence-transformers is not installed. "
-                'Install via `pip install "amx[local-embeddings]"`.'
+                'Install via `pip install "amx-cli[local-embeddings]"`.'
             ) from exc
         self._model_id = model
         self._st = SentenceTransformer(model)
