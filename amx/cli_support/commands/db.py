@@ -826,6 +826,36 @@ def cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
         error("Usage: /remove-db-profile <name>")
         return
     name = rest[0]
+    # Guard: removing the profile that hosts the shared run-history
+    # schema would orphan the connection on the next AMX startup
+    # (factory falls back to local-only with a warning, but the user
+    # would not necessarily notice). Make the consequence explicit
+    # before dropping the profile.
+    if (
+        getattr(cfg, "history_store_enabled", False)
+        and getattr(cfg, "history_store_profile", "") == name
+    ):
+        schema = cfg.history_store_schema or "AMX"
+        warn(
+            f"Profile {name!r} is the host for shared run-history "
+            f"(schema {schema!r}). Removing it will:\n"
+            "  • Disable shared mode on this machine.\n"
+            "  • Leave the shared schema on the remote untouched (your\n"
+            "    teammates' rows are safe).\n"
+            "  • Strand any pending shared writes still in the local outbox."
+        )
+        if not confirm(
+            f"Remove profile {name!r} AND disable shared run-history?",
+            default=False,
+        ):
+            info("Profile removal cancelled.")
+            return
+        # Auto-disable shared mode so the next session does not try
+        # to bootstrap against the now-deleted profile and surface a
+        # confusing "profile not found" warning at startup.
+        with cfg.transaction():
+            cfg.history_store_enabled = False
+            cfg.history_store_profile = ""
     try:
         cfg.remove_db_profile(name)
         cfg.save()

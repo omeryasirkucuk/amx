@@ -189,16 +189,49 @@ def _action_disable(cfg: AMXConfig, *, log_event: LogEvent) -> None:
     if not getattr(cfg, "history_store_enabled", False):
         info("Shared mode is already disabled.")
         return
+    profile = cfg.history_store_profile or "(unknown)"
+    schema = cfg.history_store_schema or "AMX"
+    # Block disable when the outbox is non-empty so the user does not
+    # silently strand work. Local rows already exist; the queued ops
+    # are *shared* writes that haven't reached the team backend yet.
+    store = _resolve_history_dual_store()
+    if store is not None:
+        try:
+            depth = store.pending_count()
+        except Exception:
+            depth = 0
+        if depth > 0:
+            warn(
+                f"Outbox has {depth} pending shared write(s) that have NOT "
+                "reached the team backend yet."
+            )
+            if not confirm(
+                "Disable anyway? The pending writes stay queued locally; you "
+                "can re-enable and run 'Flush pending' later to deliver them.",
+                default=False,
+            ):
+                info("Disable cancelled. Pick 'Flush pending' to drain first.")
+                return
+    info(
+        "Disconnecting only flips this machine to local-only mode. The "
+        f"shared schema {schema!r} on profile {profile!r} stays untouched — "
+        "every existing shared row remains visible to your teammates, and "
+        "you can re-enable from this same machine later."
+    )
     if not confirm(
-        "Disable shared run-history? Existing shared rows are NOT deleted; "
-        "you can re-enable later from this same machine.",
+        f"Disable shared run-history (profile {profile!r}, schema {schema!r})? "
+        "Existing shared rows will NOT be deleted.",
         default=False,
     ):
         return
     with cfg.transaction():
         cfg.history_store_enabled = False
-    success("Shared run-history disabled.")
-    info("Restart AMX (or run any command) for the change to take effect.")
+    success("Shared run-history disabled (local-only on this machine).")
+    info(
+        "Shared rows untouched. To wipe the shared schema permanently you must "
+        f"DROP SCHEMA {schema} on profile {profile!r} yourself — AMX never "
+        "drops a team-shared schema automatically."
+    )
     log_event(event_type="history_store.disable", status="ok", command="/history-store disable")
 
 
