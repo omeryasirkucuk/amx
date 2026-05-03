@@ -74,9 +74,7 @@ def patch_picker_choice():
     "backend",
     ["postgresql", "snowflake", "mysql", "oracle", "mssql", "redshift", "clickhouse"],
 )
-def test_database_picker_runs_for_every_2level_backend(
-    backend: str, patch_picker_choice
-) -> None:
+def test_database_picker_runs_for_every_2level_backend(backend: str, patch_picker_choice) -> None:
     """The pre-0.12.3 whitelist locked out 5 backends (mysql, oracle,
     mssql, redshift, clickhouse). Verify every 2-level backend now gets
     the picker when ``cfg.database`` is blank and the adapter returns
