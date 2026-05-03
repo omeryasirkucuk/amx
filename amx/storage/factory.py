@@ -30,6 +30,28 @@ if TYPE_CHECKING:
 log = get_logger("storage.factory")
 
 
+# Process-level cache so the bootstrap warning fires AT MOST ONCE per
+# (profile, schema) per process. Without this, every slash command in
+# an interactive session re-enters init_history_store and re-emits a
+# multi-page warning; the user-reported regression on 2026-05-03 made
+# the terminal unusable.
+_BOOTSTRAP_FAILURE_CACHE: set[tuple[str, str]] = set()
+
+
+def _short_error(exc: BaseException) -> str:
+    """Return the first non-empty line of *exc*'s message.
+
+    SQLAlchemy errors include the offending SQL in the body — useful
+    in debug logs but a 70-line wall-of-text in user-facing warnings.
+    """
+    msg = str(exc).strip()
+    if not msg:
+        return exc.__class__.__name__
+    first = msg.split("\n", 1)[0].strip()
+    # Trim verbose SQLAlchemy boilerplate suffixes when present.
+    return first.split("(Background on this error", 1)[0].rstrip(" .")
+
+
 def apply_history_db_override(db_cfg: DBConfig, override: str) -> DBConfig:
     """Return a copy of *db_cfg* with *override* applied to the right field.
 
@@ -125,6 +147,30 @@ def _build_shared_store(cfg: AMXConfig):
     return store
 
 
+def _warn_bootstrap_failure_once(cache_key: tuple[str, str], short: str, exc: BaseException) -> None:
+    """Emit a single one-line warning per (profile, schema) per process.
+
+    The full exception (including the multi-line CREATE TABLE DDL that
+    SQLAlchemy attaches to errors) goes to the debug log only — that
+    multi-page wall-of-text was the user-reported regression on
+    2026-05-03 that turned every slash command into a screenful of SQL.
+    Subsequent calls in the same process for the same target are silent
+    so an interactive session that re-enters ``init_history_store`` per
+    slash command stops spamming the same warning.
+    """
+    if cache_key in _BOOTSTRAP_FAILURE_CACHE:
+        log.debug("Shared history bootstrap retry suppressed for %r: %s", cache_key, short)
+        return
+    _BOOTSTRAP_FAILURE_CACHE.add(cache_key)
+    log.warning(
+        "Shared run-history disabled this session: %s "
+        "(run `/history-store disable` to silence permanently, "
+        "or `/history-store enable` to re-bootstrap).",
+        short,
+    )
+    log.debug("Shared history bootstrap full traceback:", exc_info=exc)
+
+
 def init_history_store(cfg: AMXConfig):
     """Build the singleton history store and attach it to the legacy global.
 
@@ -138,8 +184,10 @@ def init_history_store(cfg: AMXConfig):
 
     On bootstrap failure (network unreachable, schema lacks DDL
     permissions, etc.) we DO NOT raise — we fall back to local-only and
-    log a warning. The user can fix the issue and re-run
-    ``/history-store enable`` without losing the active session.
+    log a single one-line warning per process. The user can fix the
+    issue and re-run ``/history-store enable`` without losing the
+    active session, or run ``/history-store disable`` to stop AMX from
+    even trying.
     """
     config_dir = getattr(cfg, "CONFIG_DIR", str(Path.home() / ".amx"))
     db_path = Path(config_dir) / "history.db"
@@ -149,34 +197,24 @@ def init_history_store(cfg: AMXConfig):
     except Exception as exc:
         log.warning("Could not initialise local SQLite history: %s", exc)
 
+    profile_key = (
+        str(getattr(cfg, "history_store_profile", "") or ""),
+        str(getattr(cfg, "history_store_schema", "") or ""),
+    )
+
     shared = None
     try:
         shared = _build_shared_store(cfg)
     except HistoryStoreBootstrapError as exc:
-        # Surface as a warning + DDL hint; keep going with local-only
-        # so the user's session is never blocked.
-        log.warning(
-            "Shared history bootstrap failed: %s\n"
-            "Falling back to local-only history.\n"
-            "Run `/history-store enable` after fixing.",
-            exc,
-        )
+        _warn_bootstrap_failure_once(profile_key, _short_error(exc), exc)
     except Exception as exc:
-        log.warning(
-            "Could not connect to shared history store; falling back "
-            "to local-only. Underlying error: %s",
-            exc,
-        )
+        _warn_bootstrap_failure_once(profile_key, _short_error(exc), exc)
 
     if shared is not None:
         try:
             shared.init()
         except Exception as exc:
-            log.warning(
-                "Shared history schema not initialised (%s). Run "
-                "`/history-store enable` to bootstrap the AMX schema.",
-                exc,
-            )
+            _warn_bootstrap_failure_once(profile_key, _short_error(exc), exc)
             shared = None
 
     if shared is None:
