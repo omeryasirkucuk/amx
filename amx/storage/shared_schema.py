@@ -21,12 +21,14 @@ Design notes:
   on Snowflake (via dialect adapters), ``STRING`` everywhere else.
 * ``DateTime(timezone=True)`` is used over float epoch seconds because
   warehouse query semantics for "last 7 days" expect actual timestamps.
-* **Every table and column carries a ``comment=`` annotation.** AMX is
-  a metadata-generation tool — its own warehouse artifacts must meet
-  the standard it enforces on user data. ``MetaData.create_all`` emits
-  these as ``COMMENT ON`` statements after ``CREATE TABLE`` on every
-  backend that supports them; ``/history-store apply-comments``
-  backfills them onto already-bootstrapped schemas.
+* **Every table and column carries a ``comment=`` annotation, and the
+  schema itself gets a comment via** :data:`DEFAULT_HISTORY_SCHEMA_COMMENT`.
+  AMX is a metadata-generation tool — its own warehouse artifacts must
+  meet the standard it enforces on user data. ``MetaData.create_all``
+  emits the table/column comments as ``COMMENT ON`` statements after
+  ``CREATE TABLE`` on every backend that supports them;
+  :meth:`DatabaseAdapter.create_history_schema` emits the schema
+  comment alongside ``CREATE SCHEMA`` for the same reason.
 """
 
 from __future__ import annotations
@@ -50,6 +52,19 @@ from sqlalchemy import (
 # matches the user-facing nomenclature in docs/CLI prompts.
 DEFAULT_HISTORY_SCHEMA = "AMX"
 
+# Comment text written to the schema (namespace) itself via
+# ``COMMENT ON SCHEMA``. ``MetaData`` does not carry schema-level
+# annotations natively, so :meth:`DatabaseAdapter.create_history_schema`
+# emits this explicitly after ``CREATE SCHEMA``.
+DEFAULT_HISTORY_SCHEMA_COMMENT = (
+    "AMX shared run-history schema. Created by AMX (Agentic Metadata "
+    "Extractor) via /history-store enable. Holds cross-machine analysis "
+    "history, per-asset LLM alternatives, app events, agent session "
+    "state, and a schema version stamp so multiple AMX clients can "
+    "share run history under one warehouse. See "
+    "https://github.com/omeryasirkucuk/amx for details."
+)
+
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
 # bumped by a newer client (avoids losing columns the new client added).
@@ -57,10 +72,8 @@ SHARED_SCHEMA_VERSION = 1
 
 
 # ── Per-column comment text ───────────────────────────────────────────────
-# Pulled out as constants so /history-store apply-comments can also use
-# them without re-importing the Table objects, and so the same string
-# isn't duplicated between the schema declaration and any future doc
-# generation.
+# Pulled out as constants so the same string isn't duplicated across
+# attribution columns on every table.
 
 _ATTRIBUTION_CREATED_BY = (
     "OS username (or AMX_USER override) of the principal that wrote this row. "
@@ -738,6 +751,7 @@ def build_metadata(schema: str | None = None) -> MetaData:
 
 __all__ = [
     "DEFAULT_HISTORY_SCHEMA",
+    "DEFAULT_HISTORY_SCHEMA_COMMENT",
     "SHARED_SCHEMA_VERSION",
     "build_metadata",
 ]

@@ -6,41 +6,40 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
-### Fixed — AMX shared-history tables now ship with column comments (dogfooding)
+### Fixed — AMX shared-history schema now ships with full comments (dogfooding)
 
 AMX is a metadata-generation tool whose product thesis is "every
-database table and column should have a quality `COMMENT ON ...`
-description." Embarrassingly, when AMX itself bootstrapped its `AMX`
-schema in a user's warehouse via `/history-store enable`, the five
-tables (`analysis_runs`, `run_results`, `app_events`, `session_state`,
-`schema_meta`) and all 75 columns shipped with **no comments** — AMX
+database schema, table, and column should have a quality
+`COMMENT ON ...` description." Embarrassingly, when AMX itself
+bootstrapped its `AMX` schema in a user's warehouse via
+`/history-store enable`, the schema namespace, the five tables
+(`analysis_runs`, `run_results`, `app_events`, `session_state`,
+`schema_meta`), and all 75 columns shipped with **no comments** — AMX
 was violating its own thesis on the artifacts it created.
 
-`amx/storage/shared_schema.py` now carries a `comment="..."`
-annotation on every Table and every Column. SQLAlchemy's
-`MetaData.create_all` emits `COMMENT ON TABLE` and `COMMENT ON COLUMN`
-automatically after `CREATE TABLE` on every supported backend
-(PostgreSQL, MySQL, MSSQL, Oracle, Snowflake, Databricks, Redshift,
-BigQuery), so future `/history-store enable` invocations get the
-comments for free.
+Three fixes:
 
-For users who already have an `AMX` schema bootstrapped (where
-`create_all` is a no-op), the new **`/history-store apply-comments`**
-action backfills the missing comments. It walks the annotated
-metadata and issues `COMMENT ON TABLE`/`COMMENT ON COLUMN` against
-the live shared-store DB via the same `connector.set_table_comment`/
-`set_column_comment` machinery AMX uses to write LLM-approved
-descriptions to user databases — proper dogfooding. Idempotent: re-
-running just rewrites the same comments. Available from the
-`/history-store` interactive picker (between Flush pending and Dump
-DDL) or as `amx db history-store apply-comments [--profile NAME]
-[--schema NAME]`.
+1. **Schema-level comment.** `DatabaseAdapter.create_history_schema`
+   now writes `DEFAULT_HISTORY_SCHEMA_COMMENT` via
+   `COMMENT ON SCHEMA` immediately after `CREATE SCHEMA`, on every
+   backend that advertises `schema_comments=True`.
+2. **Table + column comments.** `amx/storage/shared_schema.py` carries
+   a `comment="..."` annotation on every `Table(...)` and every
+   `Column(...)`. SQLAlchemy's `MetaData.create_all` emits
+   `COMMENT ON TABLE`/`COMMENT ON COLUMN` automatically after
+   `CREATE TABLE` on every supported backend (PostgreSQL, MySQL,
+   MSSQL, Oracle, Snowflake, Databricks, Redshift, BigQuery).
+3. **`/history-store dump-ddl`** now renders the full annotated DDL
+   (CREATE SCHEMA + COMMENT ON SCHEMA + 5× CREATE TABLE with
+   COMMENT clauses + indexes), via SQLAlchemy's offline DDL compiler
+   bound to the target backend's dialect. Previously it emitted only
+   `CREATE SCHEMA IF NOT EXISTS`, leaving DBAs to guess the rest.
 
-`/history-store dump-ddl` now renders the full annotated DDL too
-(CREATE SCHEMA + 5× CREATE TABLE with COMMENT clauses + indexes), via
-SQLAlchemy's offline DDL compiler bound to the target backend's
-dialect. Previously it emitted only `CREATE SCHEMA IF NOT EXISTS`,
-leaving DBAs to guess the rest.
+Future `/history-store enable` invocations get all 81 comments
+(1 schema + 5 tables + 75 columns) for free. Existing schemas were
+backfilled in-place during this release; AMX intentionally does not
+ship a maintenance subcommand for re-applying — comments are emitted
+at bootstrap and that is the only well-defined moment.
 
 A new test (`tests/test_shared_schema_comments.py`) pins the
 contract: every table and every column must carry a non-empty
