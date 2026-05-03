@@ -362,10 +362,19 @@ def _pick_history_database(cfg: AMXConfig, db_cfg, adapter) -> str:
         return current
 
     default = current if current in choices else choices[0]
+    # Annotate well-known maintenance/system targets so a user does not
+    # accidentally pick an empty system DB on a fresh server. Today only
+    # PostgreSQL surfaces such a target (``postgres``) — its adapter
+    # already drops it when other DBs exist, so this label only fires
+    # in the fresh-install fallback.
+    descriptions: dict[str, str] = {}
+    if backend == "postgresql" and "postgres" in choices:
+        descriptions["postgres"] = "(maintenance DB — empty by default)"
     picked = ask_choice(
         f"Where should the AMX schema live? Pick a {label_kind}",
         choices,
         default=default,
+        descriptions=descriptions or None,
     )
     return picked or default
 
