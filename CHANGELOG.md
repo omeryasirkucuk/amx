@@ -55,6 +55,30 @@ Bare command opens the picker; six explicit Click subcommands —
 directly for scripting. Documented under "Run history storage" in
 the README.
 
+### Changed — root tab order grouped by workflow phase
+
+The eight root-level slash command "tabs" used to be listed in a
+historical order (`/db, /docs, /metadata, /llm, /code, /analyze,
+/search, /history`) that buried `/llm` at position 6 even though it's
+a prerequisite for `/docs` (RAG embeddings), `/metadata` (LLM-assisted
+suggestions), and `/analyze` (the agents themselves). Evidence
+namespaces were also scattered. The new order groups tabs by the
+phase a user is in:
+
+- **Setup**: `/db`, `/llm`
+- **Evidence**: `/docs`, `/code`, `/metadata`
+- **Run analysis**: `/analyze`
+- **Review**: `/search`, `/history`
+
+Root `/help` now renders these four group headers above the numbered
+list (matching the per-section grouping the `/db` tab help got in
+0.12). The README "configuration is grouped by namespace" section
+mirrors the same headers and adds the previously-missing `/analyze`
+and `/history` entries. No tabs renamed, no commands moved between
+namespaces, no routing changes — autocomplete just lists the tabs in
+the new order. The `/history-store` (under `/db`) vs. local
+`/history` (its own tab) split is intentional and unchanged.
+
 ### Changed — config schema bumped to v2 (additive)
 
 `config.yml` gains three optional keys (`history_store_enabled`,
