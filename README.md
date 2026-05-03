@@ -2,11 +2,30 @@
   <img src="docs/assets/amx-banner.png" alt="AMX — Agentic Metadata Extractor" width="760">
 </p>
 
-<p align="center"><strong>AI-inferred database descriptions, with a human in the loop.</strong></p>
+<p align="center">
+  <strong>Stop staring at <code>T0001.AUDAT NUMBER(8)</code> wondering what it means.</strong>
+</p>
+
+<p align="center">
+  AI-powered guidance and reference for data analysts, data engineers,<br>
+  and catalog owners working with undocumented database schemas.
+</p>
+
+<p align="center">
+  <a href="https://omeryasirkucuk.github.io/amx-docs/"><strong>Documentation</strong></a>
+  ·
+  <a href="https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/">Quickstart</a>
+  ·
+  <a href="./CHANGELOG.md">Changelog</a>
+  ·
+  <a href="https://github.com/omeryasirkucuk/amx/issues">Issues</a>
+</p>
 
 ---
 
-AMX walks your database, reads your documentation and codebase, and proposes a description for every table, view, and column. Three sub-agents — Profile, RAG, and Code — merge their evidence into ranked suggestions; you review and approve before anything lands as a `COMMENT` on the live database.
+AMX walks your database, reads your documentation and codebase, then **drafts a description for every table, view, and column** — with confidence scores and a human review before anything lands in the live database. Three independent sub-agents (Profile, RAG, Code) gather evidence, an orchestrator merges and ranks them, you accept / edit / skip, and AMX writes approved descriptions back as native `COMMENT` statements on the engine.
+
+Five minutes from `pip install` to your first reviewed description. **Ten supported database backends, seven LLM providers.**
 
 ## Install
 
@@ -14,24 +33,31 @@ AMX walks your database, reads your documentation and codebase, and proposes a d
 pip install amx
 ```
 
-Pick the database backends you actually use, or grab them all at once:
+The default install ships the CLI, the multi-agent runtime, the LLM SDKs, and the RAG / search / codebase machinery. Database drivers are optional extras — pick what you actually use:
 
 ```bash
-pip install "amx[postgresql]"
-pip install "amx[postgresql,snowflake,bigquery]"
-pip install "amx[all]"
+pip install "amx[postgresql]"                       # one backend
+pip install "amx[postgresql,snowflake,bigquery]"    # several
+pip install "amx[all]"                              # every backend (~100MB of drivers)
 ```
+
+Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.github.io/amx-docs/getting-started/installation/) for prerequisites, source builds, and where AMX writes config / history / logs.
 
 ## Quick start
 
 ```bash
-amx              # open the interactive session
-/setup           # configure DB + LLM profiles
-/run             # pick a scope, run the agents, review, apply
-amx doctor       # diagnose install / config / connectivity
+amx                       # open the interactive session (the AMX REPL)
+/setup                    # one-time wizard: DB profile + LLM profile
+/connect                  # sanity-check the active connection
+/run sap_s6p.t001         # generate suggestions, review, accept
+/apply                    # write approved descriptions back to the database
 ```
 
-## Example
+`/run` without an argument opens a scope picker (Database / Schema / Asset). `/run-apply` short-circuits review-and-apply when you already trust the model. If anything misbehaves, `amx doctor` runs from any shell — even when AMX itself can't start — and prints actionable hints next to each ✗.
+
+The full guided walkthrough is at the [5-minute quickstart](https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/) and [first-run walkthrough](https://omeryasirkucuk.github.io/amx-docs/getting-started/first-run/).
+
+## What you get
 
 Cryptic identifier in:
 
@@ -49,35 +75,42 @@ the transaction lands in.
   confidence: high · logprob: 0.91 · sources: code (3 refs), docs, db profile
 ```
 
+Every column gets up to N ranked alternatives, every suggestion is grounded in evidence (db profile, code references, doc snippets), and every approval is recorded in local run history that you can re-evaluate later with `/history review`.
+
 ## Supported database backends
 
 PostgreSQL · Snowflake · Databricks (Unity Catalog) · BigQuery · MySQL / MariaDB · Oracle · SQL Server · Redshift · ClickHouse · DuckDB
+
+Per-backend setup, connection details, and the capability matrix live in the [Backends section](https://omeryasirkucuk.github.io/amx-docs/backends/).
 
 ## Supported LLM providers
 
 OpenAI · Anthropic · Google Gemini · DeepSeek · OpenRouter · Ollama · vLLM / LM Studio · any OpenAI-compatible endpoint
 
+Provider-specific guides (including OpenAI / Anthropic Batch mode and local-model setups) live in the [LLM providers section](https://omeryasirkucuk.github.io/amx-docs/llm-providers/).
+
 ## Programmatic use
 
 ```python
-import amx
-from amx.core import infer_table_metadata
+from amx.core import AMXApplication, infer_table_metadata
 
-app = amx.init()
-results = infer_table_metadata(app.config, schema="sap_test", table="adr6")
+app = AMXApplication.load("~/.amx/config.yml")
+suggestions = infer_table_metadata(
+    app.config, "sap_test", "adr6", include_rag=True, include_codebase=False
+)
 ```
 
-The stable public surface is documented in [`docs/PUBLIC_API.md`](./docs/PUBLIC_API.md).
+The full stable surface is documented at the [Python API reference](https://omeryasirkucuk.github.io/amx-docs/api/reference/) and in [`docs/PUBLIC_API.md`](./docs/PUBLIC_API.md). Anything not listed there is internal.
 
 ## Documentation
 
-Full user and operator documentation is published separately. Release notes live in [`CHANGELOG.md`](./CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
+Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the Python API. Release notes are in [`CHANGELOG.md`](./CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
 
 ## Contributing & support
 
-- [Contributing guide](./CONTRIBUTING.md)
-- [Security policy](./SECURITY.md)
-- [Open an issue](https://github.com/omeryasirkucuk/amx/issues)
+- [Contributing guide](./CONTRIBUTING.md) — development setup, branching, commit format, release process
+- [Security policy](./SECURITY.md) — how to report a vulnerability
+- [Open an issue](https://github.com/omeryasirkucuk/amx/issues) — bugs, questions, feature requests
 
 ## License
 
