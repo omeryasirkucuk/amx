@@ -141,12 +141,25 @@ This interactive wizard walks you through:
 
 In an interactive `amx` session, configuration is grouped by namespace:
 
+**Setup:**
+
 - `/db` — database profiles + introspection. Entering `/db` explains how to list profiles, switch engines with `/use-db` (each option shows `[backend] connection summary`), and add a profile with `/add-db-profile` (engine first, then credentials)
-- `/metadata` — inspect, edit, and monitor database/schema/table/column comments without running LLM agents (`/manual` is a compatibility alias)
-- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/llm` — LLM profiles, metadata generation language, and cost controls (`/llm-profiles`, `/language`, `/add-llm-profile`, …)
+
+**Evidence:**
+
+- `/docs` — document roots + RAG (`/doc-profiles`, `/add-doc-profile`, `/ingest`, `/search-docs`)
 - `/code` — codebase profiles (`/code-profiles`, `/add-code-profile`, …)
+- `/metadata` — inspect, edit, and monitor database/schema/table/column comments without running LLM agents (`/manual` is a compatibility alias)
+
+**Run analysis:**
+
+- `/analyze` — run all configured agents over the active scope with human review (`/run`, `/apply`, …)
+
+**Review:**
+
 - `/search` — LLM-backed metadata discussion grounded on generated/manual metadata, relationships, and code evidence
+- `/history` — local SQLite run history (`/list`, `/show`, `/stats`, `/events`)
 
 AMX may **auto-select** the right namespace when you run an unambiguous command from the root prompt (it will print which namespace it assumed).
 
