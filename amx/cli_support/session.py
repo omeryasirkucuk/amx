@@ -219,32 +219,40 @@ Context:
 
 Commands (in order):
   1) /back                         Return to root namespace
+
+  Profile management:
   2) /db-profiles                  List DB profiles (Backend + connection summary)
   3) /use-db [name]                Switch profile (interactive list shows [engine] per profile)
   4) /add-db-profile [name]        Create/update profile — pick PostgreSQL, Snowflake, Databricks, or BigQuery
   5) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
   6) /profiling [mode] [max] [N]   Show/set profiling guardrails
   7) /tls [on|off] [ca|clear]      Show/set Databricks TLS settings
-  8) /save                         Persist config to disk (~/.amx/config.yml)
-  9) /schema <name>                Set current schema context (used by /tables)
- 10) /table <name>                 Set current table context (used by /profile)
- 11) /connect                      Test DB connectivity
- 12) /schemas                      List schemas
- 13) /tables [schema]             List tables (defaults to current schema)
- 14) /profile [schema] [table]    Profile a table (defaults to current context)
- 15) /inspect [profile]           Diagnose a profile: backend, capabilities, connection
+  8) /history-store                Configure shared run-history (team collaboration).
+                                   Bare command opens an interactive picker — Status,
+                                   Pull from shared, Migrate from local, Flush pending,
+                                   Dump DDL, Disable. Power-user shortcuts also accept
+                                   a subcommand directly (e.g. /history-store status).
+  9) /save                         Persist config to disk (~/.amx/config.yml)
+
+  Active context:
+ 10) /schema <name>                Set current schema context (used by /tables)
+ 11) /table <name>                 Set current table context (used by /profile)
+
+  Connection & inspection:
+ 12) /connect                      Test DB connectivity
+ 13) /schemas                      List schemas
+ 14) /tables [schema]              List tables (defaults to current schema)
+ 15) /profile [schema] [table]     Profile a table (defaults to current context)
+ 16) /inspect [profile]            Diagnose a profile: backend, capabilities, connection
                                    test, visible schemas, table counts. Read-only.
- 16) /cleanup-placeholders [schema]
-                                  Remove auto-inference fallback placeholder strings
-                                  ("Auto-inference missed a reliable description; please
-                                  review manually.") from the live DB. Use this once when
-                                  upgrading from pre-0.6.3 — newer versions never write
-                                  these in the first place.
- 17) /history-store               Configure shared run-history (team collaboration).
-                                  Bare command opens an interactive picker — Status,
-                                  Enable, Disable, Migrate from local, Flush pending,
-                                  Dump DDL. Power-user shortcuts also accept a
-                                  subcommand directly (e.g. /history-store status).
+
+  Maintenance:
+ 17) /cleanup-placeholders [schema]
+                                   Remove auto-inference fallback placeholder strings
+                                   ("Auto-inference missed a reliable description; please
+                                   review manually.") from the live DB. Use this once when
+                                   upgrading from pre-0.6.3 — newer versions never write
+                                   these in the first place.
 
 Navigation:
   Esc (empty line)                 Go back to root namespace
