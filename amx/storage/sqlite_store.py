@@ -988,11 +988,24 @@ class SQLiteHistoryStore:
         return out
 
 
-_store: SQLiteHistoryStore | None = None
+# The singleton is typed as ``Any`` so v0.12.0+ shared-history mode
+# can store a :class:`amx.storage.dual_write.DualWriteHistoryStore`
+# (which implements :class:`amx.storage.protocol.IHistoryStore` but is
+# not a SQLiteHistoryStore subclass). All call sites use Protocol-
+# compatible methods, so the loose typing does not hurt them.
+_store: Any | None = None
 
 
 def init_history_store(config_dir: str) -> SQLiteHistoryStore:
-    """Initialize and return the singleton history store."""
+    """Initialize the local-only history store (legacy entry point).
+
+    .. deprecated:: 0.12.0
+        Prefer :func:`amx.storage.factory.init_history_store(cfg)` —
+        the new entry takes an :class:`AMXConfig` and dispatches to
+        the dual-write store when shared mode is enabled. This shim
+        is kept so the headless application path (which never calls
+        the CLI directly) continues to work.
+    """
     global _store
     if _store is None:
         db_path = Path(config_dir) / "history.db"
@@ -1005,5 +1018,10 @@ def init_history_store(config_dir: str) -> SQLiteHistoryStore:
     return _store
 
 
-def history_store() -> SQLiteHistoryStore | None:
+def history_store() -> Any | None:
+    """Return the active singleton.
+
+    May be ``SQLiteHistoryStore`` (local-only) or ``DualWriteHistoryStore``
+    (shared mode) — both implement the :class:`IHistoryStore` Protocol.
+    """
     return _store

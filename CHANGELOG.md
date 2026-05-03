@@ -6,6 +6,57 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — shared run-history store for team collaboration
+
+AMX has always kept its run history in a single SQLite file at
+`~/.amx/history.db` — fine for one engineer, invisible to teammates.
+0.12.0 introduces an **optional shared mode**: every `/run`,
+`/run-apply`, and `/ask` invocation is dual-written to a backend the
+team already owns (PostgreSQL, MySQL, MSSQL, Oracle, Snowflake,
+Databricks, Redshift, or BigQuery) under a dedicated `AMX` schema, so
+two engineers running AMX against the same warehouse can finally see
+each other's analyses, results, and review decisions.
+
+Onboarding is one command — `/history-store enable` picks a saved DB
+profile, bootstraps the schema (with `CREATE SCHEMA IF NOT EXISTS`
+DDL adapted per backend), creates the AMX tables via SQLAlchemy
+`MetaData.create_all`, and offers to ferry existing local rows up
+with `/history-store migrate-from-local` (idempotent — safe to
+re-run).
+
+Writes go to local SQLite first (always-on cache, source of truth for
+reads in v0.12) and then best-effort to the shared backend. Network
+hiccups never break a CLI session: failed shared writes land in a
+local `pending_shared_writes` outbox and are replayed by
+`/history-store flush-pending`. Reads continue to come from the local
+SQLite cache so `/history list` stays instant; team-wide read views
+are slated for a follow-up minor.
+
+DuckDB and ClickHouse are explicitly blocked at `enable` time —
+DuckDB is a local file, not shared storage; ClickHouse cannot
+`UPDATE` rows the way `finish_run` requires. The
+`BackendCapabilities.supports_shared_history` flag gates the choice
+and surfaces a clear error listing the supported backends.
+
+User attribution (`created_by`, `hostname`, `client_version`) and
+provenance (`local_id` linking each shared row back to the local
+SQLite INT id) are recorded on every row, so the team can answer
+"who ran this?" and the dual-write coordinator can find the right
+shared row when later UPDATEs fire.
+
+New CLI surface (under `/history-store`): `status`, `enable`,
+`disable`, `migrate-from-local`, `flush-pending`, `dump-ddl`. All
+six are documented under "Run history storage" in the README.
+
+### Changed — config schema bumped to v2 (additive)
+
+`config.yml` gains three optional keys (`history_store_enabled`,
+`history_store_profile`, `history_store_schema`). Existing 0.11.x
+configs load unchanged because `schema_version` is still backwards-
+compatible at read time — the bump only matters when an older AMX
+binary tries to read a config written by 0.12+, in which case it
+gets the actionable `ConfigSchemaTooNewError` upgrade prompt.
+
 ### Fixed — typo'd slash commands in /search no longer silently feed the search agent
 
 Inside the `/search` namespace, any unknown slash command was rewritten to

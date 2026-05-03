@@ -16,7 +16,8 @@ from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent, ToolAskResponse
 from amx.core.state import StateManager
 from amx.search.catalog import SearchAnswer, SearchCatalog
 from amx.search.service import SearchService
-from amx.storage.sqlite_store import SQLiteHistoryStore, history_store, init_history_store
+from amx.storage.factory import init_history_store
+from amx.storage.sqlite_store import SQLiteHistoryStore, history_store
 
 __all__ = ["AMXApplication"]
 
@@ -32,7 +33,7 @@ class AMXApplication:
     @classmethod
     def load(cls, config_path: str | None = None) -> AMXApplication:
         cfg = AMXConfig.load(config_path)
-        init_history_store(cfg.CONFIG_DIR)
+        init_history_store(cfg)
         store = history_store()
         catalog = SearchCatalog.from_history_store()
         if catalog is None:
