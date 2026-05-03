@@ -508,15 +508,27 @@ def _run_picker(ctx: click.Context, cfg: AMXConfig, *, log_event: LogEvent) -> N
     status panel) so picking a number never feels like a no-op.
     """
     enabled = bool(getattr(cfg, "history_store_enabled", False))
+    # Picker ordering follows user-task frequency, with destructive
+    # actions placed late so they're not adjacent to the default:
+    #   1. Status (default — most-used, informational)
+    #   2. Pull / Migrate / Flush (sync — the daily team workflow)
+    #   3. Dump DDL (DBA helper — infrequent but read-only)
+    #   4. Disable (administrative — moved away from #2 so it cannot
+    #      be fat-fingered)
+    #   5. Cancel
+    # When shared mode is OFF the only meaningful next step is Enable
+    # (also placed first after Status because the user opened the
+    # picker to do exactly that).
     options: list[str] = [ACTION_STATUS]
     if enabled:
-        options.append(ACTION_DISABLE)
         options.append(ACTION_PULL)
         options.append(ACTION_MIGRATE)
         options.append(ACTION_FLUSH)
+        options.append(ACTION_DUMP_DDL)
+        options.append(ACTION_DISABLE)
     else:
         options.append(ACTION_ENABLE)
-    options.append(ACTION_DUMP_DDL)
+        options.append(ACTION_DUMP_DDL)
     options.append(ACTION_CANCEL)
 
     picked = ask_choice(
