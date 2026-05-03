@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Stop staring at <code>T0001.AUDAT NUMBER(8)</code> wondering what it means.</strong>
+  <strong>Stop staring at <code>tx_log.posting NUMBER(8)</code> wondering what it means.</strong>
 </p>
 
 <p align="center">
@@ -33,14 +33,6 @@ Five minutes from `pip install` to your first reviewed description. **Ten suppor
 pip install amx
 ```
 
-The default install ships the CLI, the multi-agent runtime, the LLM SDKs, and the RAG / search / codebase machinery. Database drivers are optional extras — pick what you actually use:
-
-```bash
-pip install "amx[postgresql]"                       # one backend
-pip install "amx[postgresql,snowflake,bigquery]"    # several
-pip install "amx[all]"                              # every backend (~100MB of drivers)
-```
-
 Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.github.io/amx-docs/getting-started/installation/) for prerequisites, source builds, and where AMX writes config / history / logs.
 
 ## Quick start
@@ -49,7 +41,7 @@ Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.githu
 amx                       # open the interactive session (the AMX REPL)
 /setup                    # one-time wizard: DB profile + LLM profile
 /connect                  # sanity-check the active connection
-/run sap_s6p.t001         # generate suggestions, review, accept
+/run core.tx_log          # generate suggestions, review, accept
 /apply                    # write approved descriptions back to the database
 ```
 
@@ -62,15 +54,15 @@ The full guided walkthrough is at the [5-minute quickstart](https://omeryasirkuc
 Cryptic identifier in:
 
 ```
-sap_s6p.t001.audat   NUMBER(8) NULL
+core.tx_log.posting   NUMBER(8) NULL
 ```
 
 Reviewed description out:
 
 ```
-Document date. The calendar date the source business event was recorded,
-distinct from posting date (BUDAT) which controls the accounting period
-the transaction lands in.
+Posting date. The accounting period this transaction lands in, encoded
+as YYYYMMDD. Distinct from the system-level effective date (eff_dt)
+that records when the row physically arrived in the warehouse.
 
   confidence: high · logprob: 0.91 · sources: code (3 refs), docs, db profile
 ```
@@ -96,7 +88,7 @@ from amx.core import AMXApplication, infer_table_metadata
 
 app = AMXApplication.load("~/.amx/config.yml")
 suggestions = infer_table_metadata(
-    app.config, "sap_test", "adr6", include_rag=True, include_codebase=False
+    app.config, "core", "tx_log", include_rag=True, include_codebase=False
 )
 ```
 
