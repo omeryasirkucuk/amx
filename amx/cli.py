@@ -329,7 +329,6 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
 
 history_group = register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_compare_command(history_group, pass_config=pass_config, log_event=_log_app_event)
-register_history_store_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_doctor_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_chat_session_commands(main, pass_config=pass_config, log_event=_log_app_event)
@@ -351,6 +350,15 @@ register_root_commands(
     main,
     interactive_db_block=_interactive_db_block,
     interactive_llm_block=_interactive_llm_block,
+)
+# Attach /history-store under the /db group so it appears in the visual
+# /db tab next to /db-profiles, /use-db, /add-db-profile, etc. The
+# group object is cached on register_root_commands by name; pulling it
+# here keeps the wiring obvious.
+register_history_store_commands(
+    register_root_commands._db_group,  # type: ignore[attr-defined]
+    pass_config=pass_config,
+    log_event=_log_app_event,
 )
 
 
