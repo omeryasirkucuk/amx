@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/amx-banner.png" alt="AMX — Agentic Metadata Extractor" width="760">
+  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/amx-banner.png" alt="AMX — Agentic Metadata Extractor" width="760">
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
   ·
   <a href="https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/">Quickstart</a>
   ·
-  <a href="./CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md">Changelog</a>
   ·
   <a href="https://github.com/omeryasirkucuk/amx/issues">Issues</a>
 </p>
@@ -30,10 +30,10 @@ Five minutes from `pip install` to your first reviewed description. **Ten suppor
 ## Install
 
 ```bash
-pip install amx
+pip install amx-cli
 ```
 
-Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.github.io/amx-docs/getting-started/installation/) for prerequisites, source builds, and where AMX writes config / history / logs.
+The PyPI distribution is `amx-cli`; the import package is `amx` (`import amx`). Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.github.io/amx-docs/getting-started/installation/) for prerequisites, source builds, and where AMX writes config / history / logs.
 
 ## Quick start
 
@@ -83,14 +83,14 @@ Provider-specific guides (including OpenAI / Anthropic Batch mode and local-mode
 
 ## Documentation
 
-Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://omeryasirkucuk.github.io/amx-docs/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](./CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
+Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://omeryasirkucuk.github.io/amx-docs/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
 
 ## Contributing & support
 
-- [Contributing guide](./CONTRIBUTING.md) — development setup, branching, commit format, release process
-- [Security policy](./SECURITY.md) — how to report a vulnerability
+- [Contributing guide](https://github.com/omeryasirkucuk/amx/blob/main/CONTRIBUTING.md) — development setup, branching, commit format, release process
+- [Security policy](https://github.com/omeryasirkucuk/amx/blob/main/SECURITY.md) — how to report a vulnerability
 - [Open an issue](https://github.com/omeryasirkucuk/amx/issues) — bugs, questions, feature requests
 
 ## License
 
-Apache-2.0 — see [`LICENSE`](./LICENSE).
+Apache-2.0 — see [`LICENSE`](https://github.com/omeryasirkucuk/amx/blob/main/LICENSE).
