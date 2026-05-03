@@ -6,6 +6,29 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — /history-store enable no longer offers the empty `postgres` maintenance DB
+
+When bootstrapping AMX onto a PostgreSQL profile, the database picker
+(`Where should the AMX schema live?`) listed every database the server
+exposed — including the empty `postgres` maintenance DB that ships
+with every PG install. A user connected to a real data DB (e.g.
+`SAP`) could pick `postgres` thinking it meant "the postgres server"
+and end up with the AMX schema in an empty system database that's
+invisible from their main connection.
+
+`PostgreSQLAdapter.list_databases` now drops `postgres` from the
+result when other databases exist, matching the docstring intent that
+was never actually implemented. On a truly fresh server with only
+`postgres`, it remains the sole choice (otherwise bootstrap would
+have nothing to pick) and the picker labels it
+`(maintenance DB — empty by default)` so the user knows what they're
+picking.
+
+Three regression tests pin the contract:
+`test_postgres_dropped_when_other_dbs_exist`,
+`test_postgres_kept_when_it_is_the_only_db`,
+`test_user_dbs_returned_unchanged_when_postgres_absent`.
+
 ### Fixed — AMX shared-history schema now ships with full comments (dogfooding)
 
 AMX is a metadata-generation tool whose product thesis is "every
