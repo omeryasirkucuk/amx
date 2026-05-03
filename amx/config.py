@@ -1146,6 +1146,15 @@ class AMXConfig:
     history_store_enabled: bool = False
     history_store_profile: str = ""
     history_store_schema: str = "AMX"
+    # Overrides the profile's pinned database/catalog when building the
+    # shared-history engine. A single DB profile (e.g. ``prod_pg``)
+    # often points at multiple databases; the user picks where the AMX
+    # schema lives at /history-store enable time. Interpreted per-backend
+    # by ``apply_history_db_override`` — database for PG/MySQL/MSSQL/
+    # Oracle/Redshift/Snowflake, catalog for Databricks, project for
+    # BigQuery. Empty string means "use whatever the profile already
+    # has pinned".
+    history_store_database: str = ""
 
     # Ephemeral, never persisted to YAML. Tracks which chat session the
     # current REPL is appending to. Reset to None on every load.
@@ -1181,6 +1190,7 @@ class AMXConfig:
             "history_store_enabled",
             "history_store_profile",
             "history_store_schema",
+            "history_store_database",
         }
     )
 
@@ -1297,6 +1307,7 @@ class AMXConfig:
             cfg.history_store_enabled = bool(data.get("history_store_enabled", False))
             cfg.history_store_profile = str(data.get("history_store_profile") or "")
             cfg.history_store_schema = str(data.get("history_store_schema") or "AMX")
+            cfg.history_store_database = str(data.get("history_store_database") or "")
 
             embedding_raw = data.get("embedding")
             if isinstance(embedding_raw, dict):
@@ -1432,6 +1443,7 @@ class AMXConfig:
             data["history_store_enabled"] = bool(self.history_store_enabled)
             data["history_store_profile"] = str(self.history_store_profile or "")
             data["history_store_schema"] = str(self.history_store_schema or "AMX")
+            data["history_store_database"] = str(self.history_store_database or "")
             data["embedding"] = _embedding_to_mapping(self.embedding)
             # Move plaintext secrets to the OS keyring; the YAML now stores only
             # opaque "keyring:..." references. No-op when keyring is unavailable.

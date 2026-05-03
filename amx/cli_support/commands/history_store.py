@@ -82,9 +82,21 @@ def _action_status(cfg: AMXConfig) -> None:
         return
     profile = cfg.history_store_profile or "(none)"
     schema = cfg.history_store_schema or "AMX"
+    database = cfg.history_store_database or "(profile default)"
+    # Backend for the chosen profile drives the label — "Catalog" for
+    # Databricks, "Project" for BigQuery, otherwise "Database".
+    db_cfg = cfg.db_profiles.get(profile) if profile in cfg.db_profiles else None
+    backend = getattr(db_cfg, "backend", "") if db_cfg else ""
+    if backend == "databricks":
+        target_label = "Catalog"
+    elif backend == "bigquery":
+        target_label = "Project"
+    else:
+        target_label = "Database"
     info("Shared mode: [bold green]enabled[/bold green]")
-    info(f"  Profile: {profile}")
-    info(f"  Schema:  {schema}")
+    info(f"  Profile:  {profile}")
+    info(f"  {target_label}: {database}")
+    info(f"  Schema:   {schema}")
     store = _resolve_history_dual_store()
     if store is not None:
         try:
@@ -110,6 +122,7 @@ def _action_enable(
     log_event: LogEvent,
     profile_name: str | None = None,
     schema_name: str | None = None,
+    database_name: str | None = None,
 ) -> None:
     if not cfg.db_profiles:
         error(
@@ -132,6 +145,7 @@ def _action_enable(
     # Local imports so this command does not pay the SQLAlchemy adapter
     # cost on the cold path.
     from amx.db.adapters import get_adapter
+    from amx.storage.factory import apply_history_db_override
     from amx.storage.sqlalchemy_store import SQLAlchemyHistoryStore
 
     adapter = get_adapter(db_cfg)
@@ -143,11 +157,29 @@ def _action_enable(
         )
         return
 
+    # Pick the database / catalog / project that will host the AMX
+    # schema. A single profile (e.g. ``prod_pg``) often points at
+    # multiple databases — the user may want AMX in a "tools" DB
+    # rather than alongside production data. We always offer the
+    # picker for backends where it applies; the helper returns the
+    # picked override (empty string = use the profile's default).
+    if database_name is None:
+        database_name = _pick_history_database(cfg, db_cfg, adapter)
+
+    # Apply the override on a copy of the DBConfig so the user's saved
+    # profile is never mutated. The factory does the same at every
+    # session start so subsequent runs reconnect to the same DB.
+    target_cfg = apply_history_db_override(db_cfg, database_name) if database_name else db_cfg
+
     if schema_name is None or not schema_name.strip():
         schema_name = (cfg.history_store_schema or "AMX").strip() or "AMX"
 
-    info(f"Bootstrapping schema {schema_name!r} on profile {profile_name!r} ({db_cfg.backend})…")
-    engine = adapter.create_engine()
+    target_label = _format_db_target(target_cfg, database_name)
+    info(
+        f"Bootstrapping schema {schema_name!r} on profile {profile_name!r} "
+        f"({db_cfg.backend}) → {target_label}…"
+    )
+    engine = get_adapter(target_cfg).create_engine()
     try:
         adapter.create_history_schema(engine, schema_name)
     except Exception as exc:
@@ -168,10 +200,11 @@ def _action_enable(
         cfg.history_store_enabled = True
         cfg.history_store_profile = profile_name
         cfg.history_store_schema = schema_name
+        cfg.history_store_database = database_name or ""
 
     success(
         f"Shared run-history enabled. Profile: {profile_name!r} "
-        f"({db_cfg.backend}). Schema: {schema_name!r}."
+        f"({db_cfg.backend}). Target: {target_label}. Schema: {schema_name!r}."
     )
     info(
         "All future runs will be dual-written to local SQLite AND the "
@@ -183,6 +216,76 @@ def _action_enable(
     ):
         _run_migration(cfg, store)
     log_event(event_type="history_store.enable", status="ok", command="/history-store enable")
+
+
+def _pick_history_database(cfg: AMXConfig, db_cfg, adapter) -> str:
+    """Ask the user which database / catalog should host the AMX schema.
+
+    The picker semantics differ per backend:
+
+    * Databricks Unity Catalog → catalogs (``catalog.schema.table``).
+      Listed via ``adapter.list_catalogs(engine)``.
+    * BigQuery → projects. The project is already pinned on the
+      profile (it has to be set before the engine works), so the
+      picker is skipped and the empty string is returned (which means
+      "use whatever is on the profile").
+    * MySQL → schemas == databases. The schema name itself IS the
+      database, so a separate database picker would be redundant.
+      Skipped.
+    * PostgreSQL / MSSQL / Oracle / Redshift / Snowflake → databases
+      listed via ``adapter.list_databases(engine)``.
+
+    Returns the picked override as a string (empty string to mean
+    "no override"). On any discovery error we surface a warning and
+    let the user proceed with the profile's default — never block.
+    """
+    backend = db_cfg.backend
+    if backend in {"bigquery", "mysql"}:
+        return ""
+
+    is_databricks = backend == "databricks"
+    label_kind = "catalog" if is_databricks else "database"
+    current = (
+        getattr(db_cfg, "catalog", "") if is_databricks else getattr(db_cfg, "database", "")
+    ) or ""
+
+    info(f"Discovering available {label_kind}s on profile (read-only)…")
+    try:
+        engine = adapter.create_engine()
+        choices = adapter.list_catalogs(engine) if is_databricks else adapter.list_databases(engine)
+    except Exception as exc:
+        warn(
+            f"Could not list {label_kind}s ({exc}). Using the profile's "
+            f"current {label_kind}: {current or '(none)'}."
+        )
+        return current
+
+    choices = sorted({str(c) for c in (choices or []) if c})
+    if not choices:
+        warn(
+            f"No {label_kind}s reported by the server. Using the profile's "
+            f"current {label_kind}: {current or '(none)'}."
+        )
+        return current
+
+    default = current if current in choices else choices[0]
+    picked = ask_choice(
+        f"Where should the AMX schema live? Pick a {label_kind}",
+        choices,
+        default=default,
+    )
+    return picked or default
+
+
+def _format_db_target(target_cfg, database_name: str) -> str:
+    """Render the user-facing label for the chosen database/catalog."""
+    if not database_name:
+        if target_cfg.backend == "databricks":
+            return target_cfg.catalog or "(profile default)"
+        if target_cfg.backend == "bigquery":
+            return target_cfg.project or "(profile default)"
+        return target_cfg.database or "(profile default)"
+    return database_name
 
 
 def _action_disable(cfg: AMXConfig, *, log_event: LogEvent) -> None:
@@ -381,14 +484,32 @@ def register_history_store_commands(
         default=None,
         help="Schema/database name where AMX tables live. Default 'AMX'.",
     )
+    @click.option(
+        "--database",
+        "database_name",
+        default=None,
+        help=(
+            "Override which database/catalog inside the profile hosts the "
+            "AMX schema. Defaults to an interactive picker for backends "
+            "that support multi-database listing (PG, MSSQL, Oracle, "
+            "Redshift, Snowflake, Databricks). Skipped on MySQL "
+            "(schema == database) and BigQuery (project pinned on profile)."
+        ),
+    )
     @pass_config
-    def hs_enable(cfg: AMXConfig, profile_name: str | None, schema_name: str | None) -> None:
+    def hs_enable(
+        cfg: AMXConfig,
+        profile_name: str | None,
+        schema_name: str | None,
+        database_name: str | None,
+    ) -> None:
         """Bootstrap the AMX schema in a saved DB profile and enable shared mode."""
         _action_enable(
             cfg,
             log_event=log_event,
             profile_name=profile_name,
             schema_name=schema_name,
+            database_name=database_name,
         )
 
     @history_store_grp.command("disable")
