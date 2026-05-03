@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "amx"
+name = "amx-cli"
 version = "0.12.0"
 description = "Agentic Metadata Extractor — AI-powered CLI to infer and manage database metadata"
 readme = "README.md"
@@ -72,6 +72,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/omeryasirkucuk/amx"
+Documentation = "https://omeryasirkucuk.github.io/amx-docs/"
 Repository = "https://github.com/omeryasirkucuk/amx"
 Issues = "https://github.com/omeryasirkucuk/amx/issues"
 Changelog = "https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md"
