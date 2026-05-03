@@ -74,9 +74,6 @@ from amx.cli_support.commands.profiles import (
     cmd_prompt_detail as _cmd_prompt_detail,
 )
 from amx.cli_support.commands.profiles import (
-    cmd_temperature as _cmd_temperature,
-)
-from amx.cli_support.commands.profiles import (
     cmd_remove_code_profile as _cmd_remove_code_profile,
 )
 from amx.cli_support.commands.profiles import (
@@ -84,6 +81,9 @@ from amx.cli_support.commands.profiles import (
 )
 from amx.cli_support.commands.profiles import (
     cmd_remove_llm_profile as _cmd_remove_llm_profile,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_temperature as _cmd_temperature,
 )
 from amx.cli_support.commands.profiles import (
     cmd_use_code as _cmd_use_code,
@@ -922,6 +922,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "analyze",
         "search",
         "history",
+        "history-store",
         "session",
         "setup",
         "config",

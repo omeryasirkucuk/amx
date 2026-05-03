@@ -28,8 +28,22 @@ class DatabricksAdapter(DatabaseAdapter):
         functions=True,
         volumes=True,  # ★ Unity Catalog volumes — distinctively Databricks
         external_tables=True,
+        supports_shared_history=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
     )
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        # Unity Catalog requires ``catalog.schema``. Fall back to the
+        # connection's default catalog (also implicit in DBConfig.url)
+        # so the DDL is portable across both Hive and UC workspaces.
+        catalog = (getattr(self.cfg, "catalog", "") or "").strip()
+        if catalog:
+            return (
+                f"CREATE SCHEMA IF NOT EXISTS "
+                f"{self.quote_identifier(catalog)}.{self.quote_identifier(schema_name)}"
+            )
+        return f"CREATE SCHEMA IF NOT EXISTS {self.quote_identifier(schema_name)}"
+
     trusted_ca_env_vars = (
         "AMX_DATABRICKS_TRUSTED_CA_FILE",
         "DATABRICKS_TRUSTED_CA_FILE",

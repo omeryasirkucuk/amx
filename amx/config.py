@@ -1078,7 +1078,7 @@ def _embedding_to_mapping(emb: EmbeddingConfig) -> dict[str, Any]:
 # refuses with ``ConfigSchemaTooNewError`` so the user gets a clear
 # upgrade message instead of having profiles silently mangled (the
 # exact bug class that hit the 0.3.1 / 0.11.0 PATH skew on 2026-05-01).
-CONFIG_SCHEMA_VERSION: int = 1
+CONFIG_SCHEMA_VERSION: int = 2
 
 
 class ConfigSchemaTooNewError(RuntimeError):
@@ -1137,6 +1137,16 @@ class AMXConfig:
     active_code_profile: str = ""
     write_through_config: bool = True
 
+    # ── Shared history store (v0.12.0) ───────────────────────────────────
+    # When ``history_store_enabled`` is True, every run/result/event
+    # write is dual-written to a team backend (named DBConfig profile)
+    # under a dedicated schema (``history_store_schema``). Local SQLite
+    # remains the read source for ``/history list`` so single-user
+    # workflows keep their fast path. Configure via ``/history-store``.
+    history_store_enabled: bool = False
+    history_store_profile: str = ""
+    history_store_schema: str = "AMX"
+
     # Ephemeral, never persisted to YAML. Tracks which chat session the
     # current REPL is appending to. Reset to None on every load.
     active_chat_session_id: int | None = field(default=None)
@@ -1168,6 +1178,9 @@ class AMXConfig:
             "code_profiles",
             "active_code_profile",
             "write_through_config",
+            "history_store_enabled",
+            "history_store_profile",
+            "history_store_schema",
         }
     )
 
@@ -1278,6 +1291,12 @@ class AMXConfig:
 
             cfg.active_code_profile = str(data.get("active_code_profile") or "")
             cfg.write_through_config = bool(data.get("write_through_config", True))
+
+            # 0.12.0 — shared run-history store. Defaults preserve
+            # local-only behaviour for users upgrading from 0.11.x.
+            cfg.history_store_enabled = bool(data.get("history_store_enabled", False))
+            cfg.history_store_profile = str(data.get("history_store_profile") or "")
+            cfg.history_store_schema = str(data.get("history_store_schema") or "AMX")
 
             embedding_raw = data.get("embedding")
             if isinstance(embedding_raw, dict):
@@ -1410,6 +1429,9 @@ class AMXConfig:
             data["selected_schemas"] = self.selected_schemas
             data["selected_tables"] = self.selected_tables
             data["write_through_config"] = self.write_through_config
+            data["history_store_enabled"] = bool(self.history_store_enabled)
+            data["history_store_profile"] = str(self.history_store_profile or "")
+            data["history_store_schema"] = str(self.history_store_schema or "AMX")
             data["embedding"] = _embedding_to_mapping(self.embedding)
             # Move plaintext secrets to the OS keyring; the YAML now stores only
             # opaque "keyring:..." references. No-op when keyring is unavailable.

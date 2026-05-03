@@ -22,8 +22,20 @@ class BigQueryAdapter(DatabaseAdapter):
         stored_procedures=True,
         functions=True,
         external_tables=True,
+        supports_shared_history=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW", "MATERIALIZED VIEW"}),
     )
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        # BigQuery uses backtick-quoted ``project.dataset`` identifiers.
+        # The dataset (= "schema" in AMX nomenclature) lives under a
+        # specific project; we use the project pinned on the profile.
+        project = (getattr(self.cfg, "project", "") or "").strip()
+        if not project:
+            raise ValueError(
+                "BigQuery shared-history bootstrap requires `project` to be set on the DB profile."
+            )
+        return f"CREATE SCHEMA IF NOT EXISTS `{project}.{schema_name}`"
 
     def create_engine(self) -> Engine:
         try:

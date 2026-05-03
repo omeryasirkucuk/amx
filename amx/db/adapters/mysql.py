@@ -51,7 +51,18 @@ class MySQLAdapter(DatabaseAdapter):
         triggers=True,
         events=True,
         comment_asset_keywords=frozenset({"TABLE", "VIEW"}),
+        supports_shared_history=True,
     )
+
+    def create_history_schema_ddl(self, schema_name: str) -> str:
+        # In MySQL, ``SCHEMA`` and ``DATABASE`` are synonyms; the DDL
+        # below works on both MySQL 5.7+ and MariaDB 10.x. CHARSET pinning
+        # makes JSON columns and `created_by` text portable across server
+        # default-charset variations.
+        return (
+            f"CREATE DATABASE IF NOT EXISTS {self.quote_identifier(schema_name)} "
+            f"CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        )
 
     def create_engine(self) -> Engine:
         return create_engine(self.cfg.url, pool_pre_ping=True)

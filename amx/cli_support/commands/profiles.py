@@ -186,9 +186,7 @@ def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
     if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
         cfg.llm_profiles[cfg.active_llm_profile].temperature = clamped
     cfg.save()
-    success(
-        f"Temperature saved for LLM profile '{cfg.active_llm_profile}': {clamped:.2f}"
-    )
+    success(f"Temperature saved for LLM profile '{cfg.active_llm_profile}': {clamped:.2f}")
 
 
 def cmd_llm_profiles(cfg: AMXConfig) -> None:
