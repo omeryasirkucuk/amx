@@ -147,8 +147,8 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
 
 _METADATA_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/inspect", "metadata", "Inspect current metadata (/inspect [schema] [table])"),
-    SlashCommand("/edit", "metadata", "Edit wizard or /edit <db>[.<schema>[.<table>[.<column>]]]"),
     SlashCommand("/monitor", "metadata", "Show metadata coverage (/monitor [schema])"),
+    SlashCommand("/edit", "metadata", "Edit wizard or /edit <db>[.<schema>[.<table>[.<column>]]]"),
 )
 
 _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
@@ -168,10 +168,12 @@ _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 _LLM_COMMANDS: tuple[SlashCommand, ...] = (
+    # Profile management
     SlashCommand("/llm-profiles", "llm", "List LLM profiles"),
     SlashCommand("/use-llm", "llm", "Switch LLM profile (/use-llm <name>)"),
     SlashCommand("/add-llm-profile", "llm", "Add/update LLM profile"),
     SlashCommand("/remove-llm-profile", "llm", "Remove LLM profile (/remove-llm-profile <name>)"),
+    # Prompt control (input shape)
     SlashCommand(
         "/prompt-detail",
         "llm",
@@ -188,6 +190,12 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "Show/set number of alternatives per column (/n-alternatives [1-5])",
     ),
     SlashCommand(
+        "/temperature",
+        "llm",
+        "Show/set LLM sampling temperature (/temperature [0.0-2.0])",
+    ),
+    # Batching (throughput)
+    SlashCommand(
         "/llm-batch-size", "llm", "Show/set number of columns per LLM call (/llm-batch-size [N])"
     ),
     SlashCommand(
@@ -195,15 +203,11 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "llm",
         "Show/set extra non-batch column names in each batch (/batch-context-columns [off|all|N])",
     ),
+    # Confidence
     SlashCommand(
         "/logprob-thresholds",
         "llm",
         "Show/set confidence thresholds (/logprob-thresholds [high] [med])",
-    ),
-    SlashCommand(
-        "/temperature",
-        "llm",
-        "Show/set LLM sampling temperature (/temperature [0.0-2.0])",
     ),
 )
 
@@ -238,14 +242,23 @@ _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
 )
 
 _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
+    # Ask
     SlashCommand(
         "/ask",
         "search",
         "Ask a metadata question; add --db-profile NAME (multi) for cross-DB scope; --actions for approved follow-up execution",
     ),
+    # Status
     SlashCommand("/status", "search", "Show catalog/index status"),
     SlashCommand("/sources", "search", "Show evidence sources and settings"),
+    # Configure
     SlashCommand("/config", "search", "Show/set search config (/config [key] [value])"),
+    SlashCommand(
+        "/embeddings",
+        "search",
+        "Show or change the search-index embedding provider (/embeddings [minilm|openai|local] [model])",
+    ),
+    # Sync & rebuild
     SlashCommand(
         "/sync",
         "search",
