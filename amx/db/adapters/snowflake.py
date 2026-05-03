@@ -62,6 +62,40 @@ class SnowflakeAdapter(DatabaseAdapter):
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"INFORMATION_SCHEMA", "information_schema"})
 
+    def list_databases(self, engine: Engine) -> list[str]:
+        """Return user-visible Snowflake databases via ``SHOW DATABASES``.
+
+        Filters Snowflake-managed databases (``SNOWFLAKE``,
+        ``SNOWFLAKE_SAMPLE_DATA``) when the user has any of their own —
+        otherwise the runtime picker would surface nothing but
+        managed metadata DBs. If those *are* the only ones visible the
+        list is returned as-is so the user still gets a non-empty
+        choice (a sandbox account with sample data only is a real
+        case worth supporting).
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(text("SHOW DATABASES")).fetchall()
+        except Exception:
+            return []
+        # SHOW DATABASES exposes ``name`` as column 1 (column 0 is
+        # ``created_on``).
+        names: list[str] = []
+        for r in rows:
+            try:
+                mapping = r._mapping if hasattr(r, "_mapping") else None
+                if mapping is not None and "name" in mapping:
+                    name = str(mapping["name"])
+                else:
+                    name = str(r[1])
+            except Exception:
+                continue
+            if name:
+                names.append(name)
+        managed = {"SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"}
+        user_dbs = [n for n in names if n.upper() not in managed]
+        return user_dbs or names
+
     def actionable_profile_error(self, exc: Exception) -> str | None:
         msg = str(exc).lower()
         if "insufficient privileges" in msg or "not authorized" in msg:

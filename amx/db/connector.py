@@ -293,15 +293,21 @@ class DatabaseConnector:
     def list_databases(self) -> list[str]:
         """User-visible databases on this server (2-level backends only).
 
-        Used by the runtime database picker for PostgreSQL / Snowflake
-        when the profile has ``database=""``. Returns ``[]`` for
-        backends that don't expose a multi-database server (Databricks
-        catalogs, BigQuery datasets — those use ``list_catalogs``).
-        Suppresses adapter exceptions so the picker can degrade
-        gracefully.
+        Used by the runtime database picker when the profile has
+        ``database=""``. Returns ``[]`` for backends that don't expose a
+        multi-database server (Databricks catalogs, BigQuery datasets —
+        those use ``list_catalogs``).
+
+        ``ImportError`` propagates so the missing-driver case (a fresh
+        ``pip install amx-cli`` without the right extra) reaches the
+        runtime database picker as an actionable hint instead of
+        masquerading as "no databases visible". Mirrors the symmetric
+        behaviour of :meth:`list_catalogs`.
         """
         try:
             return list(self._adapter.list_databases(self.engine))
+        except ImportError:
+            raise
         except Exception as exc:
             log.debug("list_databases failed: %s", exc)
             return []

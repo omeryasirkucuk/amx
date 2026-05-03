@@ -255,17 +255,20 @@ def _select_db_profile_for_wizard(cfg: AMXConfig) -> tuple[str, DBConfig] | None
 
 
 def _select_catalog_for_wizard(db: object) -> str:
-    """Shim that delegates to the shared catalog picker.
+    """Shim that delegates to the unified hierarchy picker.
 
-    The actual logic lives in ``amx.cli_support.catalog_picker``
-    so every flow (``/edit``, ``/run``, ``/run-apply``, ``/connect``,
-    ``/search sync``) can call the same helper. Kept as a wrapper
-    for backwards compatibility with existing call sites in this
-    module.
+    Catalog picker for 3-level backends (Databricks Unity Catalog),
+    database picker for 2-level backends (Postgres, Snowflake, MySQL,
+    Oracle, MSSQL, Redshift, ClickHouse). The actual logic lives in
+    ``amx.cli_support.catalog_picker`` so every flow (``/edit``,
+    ``/run``, ``/run-apply``, ``/connect``, ``/search sync``) can call
+    the same helper. Kept as a wrapper for backwards compatibility
+    with existing call sites in this module — the function name is
+    historical (it ran only the catalog branch in 0.12.2 and earlier).
     """
-    from amx.cli_support.catalog_picker import ensure_catalog_selected
+    from amx.cli_support.catalog_picker import ensure_hierarchy_resolved
 
-    return ensure_catalog_selected(db)
+    return ensure_hierarchy_resolved(db)
 
 
 def _select_schema_for_wizard(db: object, default: str = "") -> str | None:

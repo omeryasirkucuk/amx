@@ -125,14 +125,13 @@ def ensure_catalog_selected(
 
 def warn_when_database_unpinned(db: Any) -> None:
     """One-line hint when a 2-level backend has no database pinned AND
-    no runtime picker is wired up for it.
+    the runtime picker found nothing to offer.
 
-    For PostgreSQL the runtime picker (:func:`ensure_database_selected`)
-    now resolves the unpinned case interactively, so this warning only
-    fires for backends we haven't built a picker for yet (Snowflake at
-    time of writing). When a picker IS available the caller should
-    invoke :func:`ensure_database_selected` first; if the user picks
-    one, this warning becomes a silent no-op.
+    Since 0.12.3 :func:`ensure_database_selected` runs for every 2-level
+    backend, so this warning is now a "the picker tried, the picker
+    couldn't help" terminal hint rather than a "we never built the
+    picker" hint. Stays as a safety net for the case where the user
+    cancelled the picker, or no databases are visible to the role.
     """
     if bool(getattr(db, "supports_catalogs", lambda: False)()):
         # 3-level backend — catalog picker already covered the case.
@@ -144,39 +143,40 @@ def warn_when_database_unpinned(db: Any) -> None:
     database = str(getattr(cfg, "database", "") or "")
     if database:
         return
-    if backend not in {"postgresql", "snowflake"}:
-        return
-    # Postgres now has the runtime picker. If we still got here without
-    # a database it means the picker was offered and the user
-    # cancelled, OR we're on a backend (snowflake) where the picker
-    # isn't wired yet. Either way the user needs to pin one.
     warn(f"No {backend} database selected — listings will be empty. Use /edit to pin one.")
 
 
 def ensure_database_selected(db: Any) -> str:
     """Prompt the user to pick a database when a 2-level backend has none pinned.
 
-    Mirrors :func:`ensure_catalog_selected` but for the
-    PostgreSQL / Snowflake server-with-multiple-databases case (the
-    user-reported "system can't see my databases" flow on 2026-05-02).
-    The flow is:
+    Generalised in 0.12.3: the previous version short-circuited for any
+    backend outside ``{postgresql, snowflake}``, which left MySQL,
+    Oracle, MSSQL, Redshift, and ClickHouse users staring at empty
+    listings with no clear way to pick a database at runtime. The new
+    rule is duck-typed: any backend whose adapter overrides
+    :meth:`DatabaseAdapter.list_databases` to return ≥1 entry gets the
+    picker. Backends without a ``list_databases`` override (DuckDB,
+    BigQuery — those use a different concept) silently return ``""``
+    so flows that call this unconditionally don't pay any cost.
 
-    1. Connect to whatever database the profile resolved to (the
-       ``postgres`` system fallback when blank).
-    2. ``SELECT datname FROM pg_database WHERE datistemplate = false``
-       (or the snowflake equivalent — adapter decides).
+    Flow:
+
+    1. Skip when the active profile already has ``cfg.database`` set,
+       or when the backend is 3-level (``supports_catalogs() == True``
+       — that's what :func:`ensure_catalog_selected` covers).
+    2. Call ``db.list_databases()``; surface ``ImportError`` (missing
+       optional driver) as an actionable hint instead of swallowing it.
     3. Render a numbered picker; the user picks one.
-    4. Update ``db.cfg.database`` in-memory and call
-       ``db.reconnect()`` so subsequent listing queries target the
-       chosen database.
+    4. Update ``db.cfg.database`` in-memory and call ``db.reconnect()``
+       so subsequent listing queries target the chosen database.
 
     The pick is **not** persisted to ``~/.amx/config.yml`` — it's
     session-scoped, exactly like the catalog picker. Run ``/edit`` to
     pin a default permanently.
 
     Returns the chosen database name, or ``""`` when the backend
-    doesn't support the picker, no databases were enumerated, or the
-    user cancelled.
+    doesn't expose multiple databases, no databases were enumerated, or
+    the user cancelled.
     """
     from amx.cli_support.commands.manual import _ask_choice_or_cancel
     from amx.utils.console import step_spinner
@@ -185,8 +185,6 @@ def ensure_database_selected(db: Any) -> str:
     if cfg is None:
         return ""
     backend = str(getattr(cfg, "backend", "") or "")
-    if backend not in {"postgresql", "snowflake"}:
-        return ""
     existing = str(getattr(cfg, "database", "") or "").strip()
     if existing:
         # Already pinned. The picker is for the unpinned case only —
@@ -199,6 +197,12 @@ def ensure_database_selected(db: Any) -> str:
     try:
         with step_spinner("Listing databases on this server"):
             databases = list(db.list_databases())  # type: ignore[attr-defined]
+    except ImportError as exc:
+        # Missing optional driver — surface the actionable extras hint
+        # the adapter attached to the ImportError instead of pretending
+        # the server has no databases.
+        warn(str(exc))
+        return ""
     except Exception as exc:
         log.debug("list_databases failed: %s", exc)
         databases = []
@@ -208,11 +212,12 @@ def ensure_database_selected(db: Any) -> str:
     databases = [d for d in databases if d and not d.startswith("template")]
 
     if not databases:
-        warn(
-            "No databases visible on this server. Either the role lacks "
-            "CONNECT on every database, or the server is empty. Use /edit "
-            "to pin a database name explicitly."
-        )
+        # No multi-database server (e.g. MSSQL with one user DB only,
+        # MySQL with a pinned default), or the role has no privileges.
+        # Silent return so flows that always call this helper don't
+        # spam the user with an irrelevant warning. The 2-level
+        # ``warn_when_database_unpinned`` safety net surfaces only when
+        # the rest of the flow actually tries to list and finds nothing.
         return ""
 
     info(
@@ -236,8 +241,30 @@ def ensure_database_selected(db: Any) -> str:
     return chosen
 
 
+def ensure_hierarchy_resolved(db: Any) -> str:
+    """Single entry point that picks the right hierarchy helper per backend.
+
+    3-level backends (Databricks Unity Catalog) get the catalog picker;
+    2-level backends (Postgres, Snowflake, MySQL, Oracle, MSSQL,
+    Redshift, ClickHouse) get the database picker. Callers in
+    ``/edit``, ``/run``, ``/sync``, ``/connect`` invoke this helper
+    instead of branching themselves — that way new backends only need
+    to override the right ``list_*`` method on the adapter and they're
+    automatically covered.
+
+    Returns the chosen value (catalog name or database name) for
+    callers that want it; most callers just want the side-effect of
+    populating ``cfg.catalog`` / ``cfg.database`` so they can ignore
+    the return value.
+    """
+    if bool(getattr(db, "supports_catalogs", lambda: False)()):
+        return ensure_catalog_selected(db)
+    return ensure_database_selected(db)
+
+
 __all__ = [
     "ensure_catalog_selected",
     "ensure_database_selected",
+    "ensure_hierarchy_resolved",
     "warn_when_database_unpinned",
 ]
