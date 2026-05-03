@@ -289,7 +289,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
         # silently drop on the next save (ghost-profile incident).
         error(str(exc))
         info(
-            "Run `pip install --upgrade amx` (or your install path's equivalent), "
+            "Run `pip install --upgrade amx-cli` (or your install path's equivalent), "
             "then re-run. If you must stay on this AMX, restore the previous "
             "config from `~/.amx/config.yml.bak-*` if one exists, or back up "
             "and delete `~/.amx/config.yml` to start fresh."

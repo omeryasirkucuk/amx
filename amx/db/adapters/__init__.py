@@ -44,7 +44,7 @@ _BACKEND_EXTRAS: dict[str, str] = {
 class MissingDriverError(ImportError):
     """Raised when a backend's optional driver dependency is not installed.
 
-    Surfaces the concrete `pip install amx[<extra>]` remediation so the
+    Surfaces the concrete `pip install amx-cli[<extra>]` remediation so the
     user is never left staring at a generic ``ModuleNotFoundError``.
     """
 
@@ -98,7 +98,7 @@ def _import_adapter(backend: str) -> type[DatabaseAdapter]:
         extra = _BACKEND_EXTRAS.get(backend, backend)
         raise MissingDriverError(
             f"The {backend!r} backend requires its optional driver. Install it with:\n"
-            f"    pip install amx[{extra}]\n"
+            f"    pip install 'amx-cli[{extra}]'\n"
             f"(Underlying import error: {exc})"
         ) from exc
     raise ValueError(
@@ -130,7 +130,7 @@ def get_adapter(cfg: DBConfig) -> DatabaseAdapter:
     Imports the adapter module on demand so users only pay the driver
     cost for the backends they actually use. Missing-driver errors are
     translated into :class:`MissingDriverError` with a concrete
-    ``pip install amx[<extra>]`` hint.
+    ``pip install amx-cli[<extra>]`` hint.
     """
     _ensure_registry()
     backend = getattr(cfg, "backend", "postgresql") or "postgresql"

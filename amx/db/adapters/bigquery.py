@@ -47,7 +47,7 @@ class BigQueryAdapter(DatabaseAdapter):
         except ImportError as exc:
             raise ImportError(
                 "sqlalchemy-bigquery is required for the BigQuery backend. "
-                "Reinstall AMX: pip install -U amx"
+                "Install the extra: pip install 'amx-cli[bigquery]'"
             ) from exc
         return create_engine(self.cfg.url, pool_pre_ping=True)
 

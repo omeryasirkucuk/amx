@@ -6,6 +6,64 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Install hints now reference the correct PyPI distribution name (`amx-cli`)
+
+The package was renamed to `amx-cli` on PyPI in 0.12.0 (PR #93), but a
+dozen runtime hints, error messages, and docstrings still told users
+to run `pip install -U amx` or `pip install 'amx[databricks]'`.
+`pip install -U amx` resolves to a *different* package on PyPI — so
+following the hint silently did nothing for `amx-cli` users and could
+even pull a stranger's package onto their machine.
+
+Swept across `amx/cli.py`, `amx/cli_support/commands/doctor.py`,
+`amx/cli_support/commands/embeddings.py`, `amx/db/adapters/__init__.py`,
+`amx/db/adapters/databricks.py`, `amx/db/adapters/snowflake.py`,
+`amx/db/adapters/bigquery.py`, `amx/search/embeddings.py`, and
+`amx/codebase/analyzer.py`. Every install instruction now reads
+`pip install 'amx-cli[<extra>]'`.
+
+### Fixed — Wizard fails fast when an optional database driver is missing
+
+`/add-db-profile` used to let a user save a Databricks (or Snowflake,
+BigQuery, …) profile on a fresh `pip install amx-cli` install with no
+extras, then crash on first `/edit` or `/run` with the not-very-
+actionable message *"databricks-sqlalchemy is required"*. The wizard
+now probes the chosen backend's driver immediately after the user
+picks it and prints a single warning with the exact `pip install
+'amx-cli[<extra>]'` command if the driver is missing — non-fatal, so
+air-gapped users can still capture the profile and install the driver
+later.
+
+### Fixed — `amx doctor` on Windows: detect `amx.exe`, gate driver-required on the active backend
+
+Two doctor regressions surfaced together on the same Windows install:
+
+1. **`amx on PATH — (not found)`** even though the user was running
+   `amx`. The PATH walk only looked for the bare `amx` filename, so
+   Windows installs (which ship `amx.exe` / `amx.cmd`) reported a
+   false negative. The walk now considers `.exe` / `.cmd` / `.bat`
+   suffixes on Windows and falls back to `shutil.which("amx")` when
+   the manual scan misses.
+2. **`✓ Databricks driver — not installed (optional)`** when the
+   active profile was Databricks. Reporting the very driver the
+   active profile depends on as an optional info line is actively
+   misleading. `_check_optional_deps` now consults `cfg.db.backend`
+   and promotes the matching driver line to a hard `✗` failure with
+   a `pip install 'amx-cli[<extra>]'` hint.
+
+### Fixed — Databricks catalog picker surfaces missing-driver as actionable hint
+
+When the Databricks driver wasn't installed, `db.list_catalogs()` —
+which lazy-builds the SQLAlchemy engine — raised an `ImportError`
+that the connector and the catalog picker both swallowed with a bare
+`except Exception: return []`. The user then saw the misleading
+*"`SHOW CATALOGS` returned nothing — set `/db` profile's catalog
+explicitly"* warning even though their workspace had catalogs;
+they were just connecting through a workspace they'd never installed
+the driver for. `Connector.list_catalogs` now re-raises `ImportError`
+specifically; the picker catches it and shows the install hint
+instead of falling through to the legacy schema inspector path.
+
 ### Fixed — Cross-platform: AMX no longer crashes on first launch on Windows
 
 `amx` crashed immediately on Windows with
