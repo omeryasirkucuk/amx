@@ -44,5 +44,10 @@ CHANGELOG.local.md
 # Internal AI-agent rules (not for the public repo)
 .agents/
 
-# Per-user Claude Code permissions (settings.json is shared and IS tracked)
-.claude/settings.local.json
+# Claude Code workspace (per-developer permissions; not for the public repo)
+.claude/
+
+# Local tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
