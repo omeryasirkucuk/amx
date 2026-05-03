@@ -79,6 +79,30 @@ namespaces, no routing changes — autocomplete just lists the tabs in
 the new order. The `/history-store` (under `/db`) vs. local
 `/history` (its own tab) split is intentional and unchanged.
 
+### Changed — /db tab regrouped (split overloaded "Profile management" group)
+
+The `/db` tab help got group headers in 0.12 (commit 9bf5b78), but the
+"Profile management" bucket ended up holding eight items mixing four
+unrelated concerns: profile lifecycle (`/db-profiles`, `/use-db`,
+`/add-db-profile`, `/remove-db-profile`), per-profile settings
+(`/profiling`, `/tls`), a team-collaboration feature (`/history-store`),
+and the global `/save` command. This pass splits them into purpose-
+focused subheaders:
+
+- **Profile management**: `/db-profiles`, `/use-db`, `/add-db-profile`, `/remove-db-profile`
+- **Profile settings**: `/profiling`, `/tls`
+- **Active context**: `/schema`, `/table`
+- **Connection & inspection**: `/connect`, `/schemas`, `/tables`, `/profile`, `/inspect`
+- **Team collaboration**: `/history-store`
+- **Maintenance**: `/cleanup-placeholders`
+
+`/save` is removed from the per-tab numbered list (it's a global,
+already shown under "Global shortcuts"). `_DB_COMMANDS` reordered to
+match — `/history-store` now sits before `/cleanup-placeholders`
+instead of last. `/inspect` is added to `_DB_COMMANDS` so autocomplete
+in `/db` shows it (was dispatcher-only — registered as a `/db` command
+distinct from the `/metadata /inspect` of the same name).
+
 ### Changed — every tab's command list grouped by purpose
 
 The same per-section grouping treatment that `/db` got in 0.12 is now
