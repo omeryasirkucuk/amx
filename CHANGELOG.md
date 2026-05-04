@@ -6,6 +6,36 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` Code scan + History compare (Stage 6)
+
+* **`POST /api/code/scan`** — wraps `analyze_codebase` so the
+  visualizer can drive the same scan the CLI's `/code-scan` runs.
+  Path resolution: explicit `path` > `profile` > active code
+  profile (matches the CLI's fallback chain). The worker enumerates
+  table names from the active DB (and column names when
+  `column_scan=true`), runs the analyzer, and emits
+  `code.summary` over SSE plus the standard `activity.*` and
+  terminal `job.*` events. Cap: first 200 catalog assets + 200
+  external mentions per response so very large repos stay
+  bounded.
+* **`GET /api/code/results/{job_id}`** — read the persisted scan
+  payload after the SSE stream emits `job.done`, so the SPA can
+  render without rebuilding from event history.
+* **Settings → Code rows** grow Scan / +Cols buttons that trigger
+  the worker and stream live progress through the existing
+  `JobProgress` component.
+* **`/runs/compare` route** — pick 2–4 runs from the recent list,
+  hit Compare, and the page renders three tables: Summary (run
+  metadata), Aggregates (per-run metrics pivot), and Per-column
+  descriptions (capped at 50 rows). Backed by the existing
+  `POST /api/history/compare` endpoint that the CLI's
+  `/history compare` already uses, so the two surfaces stay in
+  lock-step. `RunsList` grows a Compare action button.
+
+Tests: 4 new in `tests/web/test_code_ops.py` covering 400 on
+missing path, profile fallback, explicit-path-wins precedence, and
+the `column_scan=true` flag wiring. Full suite: 855 passed.
+
 ### Added — `/visualize` System page: doctor, token usage, catalog status (Stage 5)
 
 Three admin views the visualizer was missing — `amx doctor`,

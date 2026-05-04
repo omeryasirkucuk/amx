@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { History, PlayCircle } from "lucide-react";
+import { GitCompare, History, PlayCircle } from "lucide-react";
 
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
@@ -22,13 +22,22 @@ export default function RunsList() {
         title="Runs"
         description="Every /run, /run-apply, and /ask invocation, newest first."
         actions={
-          <Link
-            to="/runs/new"
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90"
-          >
-            <PlayCircle size={14} />
-            New run
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/runs/compare"
+              className="inline-flex items-center gap-1.5 rounded-md bg-surface-subtle px-3 py-1.5 text-sm text-ink-muted transition hover:bg-surface-border"
+            >
+              <GitCompare size={14} />
+              Compare
+            </Link>
+            <Link
+              to="/runs/new"
+              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90"
+            >
+              <PlayCircle size={14} />
+              New run
+            </Link>
+          </div>
         }
       />
       <Card>
