@@ -995,6 +995,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "session",
         "setup",
         "config",
+        "visualize",
     }:
         if head == "manual":
             return ["metadata"] + parts[1:]
