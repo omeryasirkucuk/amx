@@ -6,6 +6,39 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed / Changed — `/visualize` Home tile + recent-runs polish (UI overhaul, PR 7)
+
+Three Home-page items: a stats bug that made two tiles always show
+"—", a discoverability gap (nothing on the dashboard was actually
+clickable), and a context gap on the recent-runs feed.
+
+* **Total Runs / Success Rate now populated.** The frontend was
+  reading `stats.total` and `stats.success`, but the backend ships
+  `total_runs` / `success_runs` / `ready_for_review_runs` (the
+  short aliases were never sent). `frontend/src/lib/api.ts` updates
+  `StatsResponse` to declare the canonical keys (and keep the
+  legacy aliases for safety), and `Home.tsx` switches to the new
+  `totalRuns()` and updated `successRate()` helpers.
+* **Home tiles + recent-runs rows are clickable.** Each `StatCard`
+  now takes an optional `to` prop and renders as a `<Link>` with a
+  hover state when set. Wired up: Active backend → \`/settings\`,
+  LLM model → \`/settings\`, Total runs → \`/runs\`, Success rate →
+  \`/runs\`. Recent-runs entries lift the inner `#id` link out and
+  wrap the entire row in a `<Link>` to \`/runs/:id\` so anywhere on
+  the row navigates. `InfoHint` icons inside a tile stop click
+  propagation so the tooltip doesn't double as a navigation.
+* **Recent runs say what they ran on.** Each row's secondary line
+  now leads with the DB profile name; the scope label expands from
+  "All schemas" to "All schemas in &lt;profile&gt;" when no schema
+  was pinned. New \`countProcessed\` / \`countSelected\` helpers
+  read the persisted metrics blob and append "X processed" /
+  "X/Y processed" so users can see the real volume the run touched
+  without opening the detail page. \`RunRow\` in
+  `frontend/src/lib/api.ts` gains \`db_profile\`, \`db_backend\`,
+  \`mode\` and \`llm_provider\` to support this.
+
+No backend or API changes.
+
 ### Changed — `/visualize` second-pass feedback (UI overhaul, PR 6)
 
 Seven user-driven follow-ups in one PR.

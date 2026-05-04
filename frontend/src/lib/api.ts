@@ -129,9 +129,16 @@ export interface RunRow {
   status: string;
   started_at: number | string;
   duration_sec: number | null;
-  scope?: Record<string, string[]>;
+  scope?: Record<string, string[]> | null;
+  /** Parsed metrics_json — shape varies by command. */
+  metrics?: Record<string, unknown> | null;
+  /** Active DB profile at the time of the run (e.g. "local-postgres"). */
+  db_profile?: string | null;
+  db_backend?: string | null;
   llm_model?: string | null;
-  metrics?: Record<string, unknown>;
+  llm_profile?: string | null;
+  llm_provider?: string | null;
+  mode?: string | null;
 }
 export interface RecentRunsResponse {
   command_filter: string | null;
@@ -139,13 +146,26 @@ export interface RecentRunsResponse {
   count: number;
 }
 
+/**
+ * Backend returns total_runs / success_runs / failed_runs /
+ * ready_for_review_runs. Older callers in this file used the shorter
+ * `total` / `success` aliases — both shapes are now declared so
+ * consumers can pick whichever is convenient.
+ */
 export interface StatsResponse {
+  total_runs?: number;
+  success_runs?: number;
+  failed_runs?: number;
+  ready_for_review_runs?: number;
+  avg_duration_sec?: number;
+  avg_model_processing_sec?: number;
+  last_started_at?: number | string | null;
+  total_events?: number;
+  // Legacy aliases — kept so older code paths keep compiling.
   total?: number;
   success?: number;
   failed?: number;
   ready_for_review?: number;
-  avg_duration_sec?: number;
-  last_started_at?: number | string | null;
   [key: string]: unknown;
 }
 
