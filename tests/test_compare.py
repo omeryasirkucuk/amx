@@ -1123,25 +1123,72 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
         catalog = MagicMock()
         return ToolBox(cfg, catalog, db_factory=lambda: fake_db)
 
-    def test_list_schemas_returns_catalog_list_when_no_catalog_pinned(self) -> None:
-        """Without a pinned catalog on a 3-level backend, list_schemas
-        must NOT attempt the listing — it must surface the catalog list
-        and a ``needs_catalog`` flag so the LLM can recurse."""
+    def test_list_schemas_returns_catalog_list_when_multiple_user_catalogs(self) -> None:
+        """When a 3-level backend has no catalog pinned and the workspace
+        exposes multiple user catalogs, list_schemas must surface the
+        filtered list (system catalogs dropped) plus a ``needs_catalog``
+        flag so the LLM can recurse with the chosen catalog."""
 
         class FakeDB:
             def supports_catalogs(self) -> bool:
                 return True
 
             def list_catalogs(self) -> list[str]:
-                return ["main", "samples", "workspace"]
+                # Two user catalogs (analytics, sap) plus the standard
+                # Databricks system catalogs that must NOT show up in
+                # the surfaced list.
+                return ["analytics", "sap", "samples", "system", "workspace"]
 
             cfg = type("DBCfg", (), {"catalog": ""})()
 
         toolbox = self._toolbox(FakeDB())
         payload = toolbox._tool_list_schemas()
         self.assertTrue(payload["needs_catalog"])
-        self.assertEqual(payload["catalogs"], ["main", "samples", "workspace"])
+        # System catalogs (samples / system / workspace) filtered out.
+        self.assertEqual(payload["catalogs"], ["analytics", "sap"])
+        # Full list surfaced as a fallback so the LLM can override.
+        self.assertEqual(
+            payload["all_catalogs"], ["analytics", "sap", "samples", "system", "workspace"]
+        )
         self.assertIn("no catalog pinned", payload["message"])
+
+    def test_list_schemas_auto_picks_single_user_catalog(self) -> None:
+        """User report 2026-05-04: kimi-thinking entered a degenerate
+        loop ('I see 4 catalogs, let me check amx_test first…') instead
+        of recursing because the previous behaviour always punted to
+        the LLM. When exactly one non-system catalog is visible we now
+        auto-pick it and return the schemas in a single round-trip,
+        with ``auto_picked_catalog`` set so the LLM can mention it."""
+
+        class FakeDB:
+            def __init__(self) -> None:
+                self.cfg = type("DBCfg", (), {"catalog": ""})()
+                self.observed_catalog: str = ""
+
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                # The user's reported case: one user catalog
+                # (``amx_test``) plus three Databricks system catalogs.
+                return ["amx_test", "samples", "system", "workspace"]
+
+            def list_schemas(self) -> list[str]:
+                self.observed_catalog = self.cfg.catalog
+                return ["sales", "ops"]
+
+        fake = FakeDB()
+        toolbox = self._toolbox(fake)
+        payload = toolbox._tool_list_schemas()
+        # Auto-picked the single user catalog and listed its schemas.
+        self.assertEqual(payload["schemas"], ["sales", "ops"])
+        self.assertEqual(payload["catalog"], "amx_test")
+        self.assertEqual(payload["auto_picked_catalog"], "amx_test")
+        self.assertNotIn("needs_catalog", payload)
+        # Connector saw the auto-pinned catalog while listing.
+        self.assertEqual(fake.observed_catalog, "amx_test")
+        # And the cfg was restored.
+        self.assertEqual(fake.cfg.catalog, "")
 
     def test_list_schemas_with_catalog_argument_scopes_listing(self) -> None:
         """Passing ``catalog=X`` must temporarily pin cfg.catalog so the
