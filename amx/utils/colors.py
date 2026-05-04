@@ -1,0 +1,11 @@
+"""Rich-uyumlu CLI renk sabitleri. Visualize SPA paleti ile aynı."""
+
+ACCENT = "#fb923c"
+ACCENT_INK = "#fed7aa"
+POSITIVE = "#4ade80"
+WARNING = "#eab308"
+CRITICAL = "#f87171"
+INFO = "#22d3ee"
+INK = "#f5f4f2"
+INK_MUTED = "#a8a29e"
+INK_DIM = "#78706c"

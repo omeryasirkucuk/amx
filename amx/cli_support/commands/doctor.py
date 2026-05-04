@@ -330,7 +330,7 @@ def _render_results(results: list[CheckResult]) -> int:
     """Render the report and return an exit code (0 = clean)."""
     fail_count = sum(1 for r in results if not r.ok)
     console.print()
-    console.print("[bold magenta]AMX doctor report[/bold magenta]")
+    console.print("[bold #fb923c]AMX doctor report[/bold #fb923c]")
     console.print()
     for r in results:
         marker = "[bold green]✓[/]" if r.ok else "[bold red]✗[/]"

@@ -184,7 +184,7 @@ def cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
         info(
             f"Current logprob thresholds: [bold]HIGH[/] >= {high:.2f} | [bold]MEDIUM[/] >= {med:.2f}"
         )
-        info("Run [cyan]/logprob-thresholds <high> <med>[/cyan] to change (e.g. 0.9 0.6).")
+        info("Run [#22d3ee]/logprob-thresholds <high> <med>[/#22d3ee] to change (e.g. 0.9 0.6).")
         return
 
     try:
@@ -219,7 +219,7 @@ def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         current = getattr(cfg.llm, "temperature", 0.2)
         info(f"Current LLM temperature: [bold]{current:.2f}[/]")
-        info("Run [cyan]/temperature <value>[/cyan] to change (e.g. 0.7). Range: 0.0-2.0.")
+        info("Run [#22d3ee]/temperature <value>[/#22d3ee] to change (e.g. 0.7). Range: 0.0-2.0.")
         return
 
     try:
@@ -421,9 +421,9 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
             rows.append(row)
         render_table("Preset comparison", ["Field", *PROMPT_DETAIL_LEVELS], rows)
         info(
-            f"Current level: [cyan]{current}[/cyan]  "
+            f"Current level: [#22d3ee]{current}[/#22d3ee]  "
             f"(n_alternatives={cfg.llm.n_alternatives})  "
-            "- run [cyan]/prompt-detail <level>[/cyan] to change."
+            "- run [#22d3ee]/prompt-detail <level>[/#22d3ee] to change."
         )
         return
 
@@ -437,7 +437,7 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].prompt_detail = level
     cfg.save()
     success(
-        f"Prompt detail set to [cyan]{level}[/cyan] and saved "
+        f"Prompt detail set to [#22d3ee]{level}[/#22d3ee] and saved "
         f"for LLM profile '{cfg.active_llm_profile}'."
     )
     prompt_detail = prompt_detail_for(level)
@@ -470,9 +470,9 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
             "  brief    — 1 sentence per column (e.g. 'Sales document number.')\n"
             "  detailed — 2-4 sentences covering purpose, typical values, "
             "and relationships when supported by evidence.\n"
-            f"\nCurrent: [cyan]{current}[/cyan] for LLM profile "
+            f"\nCurrent: [#22d3ee]{current}[/#22d3ee] for LLM profile "
             f"'{cfg.active_llm_profile or 'default'}'.\n"
-            "Run [cyan]/description-verbosity brief|detailed[/cyan] to change."
+            "Run [#22d3ee]/description-verbosity brief|detailed[/#22d3ee] to change."
         )
         return
 
@@ -486,7 +486,7 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].description_verbosity = level
     cfg.save()
     success(
-        f"Description verbosity set to [cyan]{level}[/cyan] and saved "
+        f"Description verbosity set to [#22d3ee]{level}[/#22d3ee] and saved "
         f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
     )
     if level == "detailed":
@@ -501,9 +501,9 @@ def cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         current = getattr(cfg.llm, "n_alternatives", 3)
         info(
-            f"Current n_alternatives: [cyan]{current}[/cyan]  "
+            f"Current n_alternatives: [#22d3ee]{current}[/#22d3ee]  "
             "(1 = cheapest, 5 = maximum alternatives)  "
-            "- run [cyan]/n-alternatives <N>[/cyan] to change."
+            "- run [#22d3ee]/n-alternatives <N>[/#22d3ee] to change."
         )
         return
 
@@ -529,7 +529,7 @@ def cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
         5: "maximum context, highest cost",
     }.get(value, "")
     success(
-        f"n_alternatives set to [cyan]{value}[/cyan] ({cost_note}) and saved "
+        f"n_alternatives set to [#22d3ee]{value}[/#22d3ee] ({cost_note}) and saved "
         f"for LLM profile '{cfg.active_llm_profile}'."
     )
 
@@ -539,9 +539,9 @@ def cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         current = getattr(cfg.llm, "column_batch_size", 10)
         info(
-            f"Current LLM batch size: [cyan]{current}[/cyan] columns  "
+            f"Current LLM batch size: [#22d3ee]{current}[/#22d3ee] columns  "
             "(Small = safer/more precise, Large = faster/cheaper)  "
-            "- run [cyan]/llm-batch-size <N>[/cyan] to change."
+            "- run [#22d3ee]/llm-batch-size <N>[/#22d3ee] to change."
         )
         return
 
@@ -575,9 +575,9 @@ def cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
         else:
             current_label = f"{current} names"
         info(
-            f"Current batch context columns: [cyan]{current_label}[/cyan]. "
-            "Use [cyan]/batch-context-columns off[/cyan], [cyan]all[/cyan], "
-            "or [cyan]/batch-context-columns <N>[/cyan]."
+            f"Current batch context columns: [#22d3ee]{current_label}[/#22d3ee]. "
+            "Use [#22d3ee]/batch-context-columns off[/#22d3ee], [#22d3ee]all[/#22d3ee], "
+            "or [#22d3ee]/batch-context-columns <N>[/#22d3ee]."
         )
         return
 

@@ -152,10 +152,10 @@ _PLACEHOLDER_HTML = """<!doctype html>
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          display: flex; align-items: center; justify-content: center;
-         min-height: 100vh; margin: 0; padding: 2rem; background: #0b1020; color: #e6e7ee; }
+         min-height: 100vh; margin: 0; padding: 2rem; background: #0f0f0e; color: #f5f4f2; }
   .card { max-width: 36rem; padding: 2rem 2.5rem; border-radius: 14px;
-          background: #131836; box-shadow: 0 12px 32px rgba(0,0,0,0.35);
-          border: 1px solid rgba(255,255,255,0.06); }
+          background: #1a1918; box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+          border: 1px solid rgba(245,244,242,0.06); }
   h1 { margin-top: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
   code { background: rgba(255,255,255,0.06); padding: 0.1em 0.35em; border-radius: 4px; }
 </style>
