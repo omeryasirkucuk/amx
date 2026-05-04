@@ -386,6 +386,48 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "list_volumes",
+                    "description": (
+                        "Run ``SHOW VOLUMES`` against a Databricks Unity Catalog schema (or "
+                        "every schema in the active catalog when ``schema`` is omitted) and "
+                        "return the user's managed + external volumes. Volumes are a "
+                        "Databricks-distinctive object type that lives alongside tables in "
+                        "the catalog/schema namespace and points at managed or external file "
+                        "storage; AMX's regular table-listing tools do NOT surface them. Use "
+                        "this when the user asks 'do we have any volumes', 'which volumes "
+                        "exist under <schema>', 'are there external volumes', 'volumelar "
+                        "neler', etc. Returns ``supported=false`` for backends without a "
+                        "volume concept (everything except Databricks). Catalog auto-pick "
+                        "follows the same rule as list_schemas — pinned profile catalog "
+                        "wins, otherwise we auto-pick the single non-system user catalog."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schema": {
+                                "type": "string",
+                                "description": (
+                                    "Optional schema to scope the listing to. Omit to scan "
+                                    "every schema in the active catalog (one SHOW VOLUMES "
+                                    "per schema)."
+                                ),
+                            },
+                            "catalog": {
+                                "type": "string",
+                                "description": (
+                                    "Optional Unity-Catalog catalog. Omit to use whatever "
+                                    "the active profile pins; the tool auto-picks the "
+                                    "single non-system user catalog when nothing is pinned."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "find_columns_by_dtype",
                     "description": (
                         "Return columns whose dtype matches the given SQL data type "
@@ -1182,6 +1224,72 @@ class ToolBox:
             "count": len(databases),
             "active_database": pinned or None,
         }
+
+    def _tool_list_volumes(self, schema: str = "", catalog: str = "") -> dict[str, Any]:
+        db = self._live_db()
+        if not getattr(db.capabilities, "volumes", False):
+            return {
+                "supported": False,
+                "volumes": [],
+                "count": 0,
+                "message": (
+                    "The active backend does not expose Volumes — they're a "
+                    "Databricks-distinctive object type. Reply that volumes don't "
+                    "apply to this backend instead of inventing a query."
+                ),
+            }
+
+        cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(
+            db, (catalog or "").strip()
+        )
+        if not cat_arg:
+            return {
+                "supported": True,
+                "volumes": [],
+                "count": 0,
+                "needs_catalog": True,
+                "message": (
+                    "Multiple user catalogs are visible and the active profile didn't "
+                    "pin one. Call this tool again with `catalog` set to the most "
+                    "likely entry."
+                ),
+            }
+
+        sch_arg = (schema or "").strip()
+        with self._scoped_catalog(db, cat_arg):
+            try:
+                target_schemas = [sch_arg] if sch_arg else [str(s) for s in db.list_schemas()]
+            except Exception as exc:
+                raise _ToolError(f"Could not list schemas in {cat_arg!r}: {exc}") from exc
+
+            rows: list[dict[str, Any]] = []
+            warnings: list[str] = []
+            for sch in target_schemas:
+                try:
+                    for vol in db.list_volumes(sch, cat_arg):
+                        rows.append(
+                            {
+                                "schema": sch,
+                                "name": str(vol.get("name") or ""),
+                                "kind": str(vol.get("type") or "volume"),
+                                "comment": str(vol.get("comment") or ""),
+                            }
+                        )
+                except Exception as exc:
+                    warnings.append(f"{sch}: {exc.__class__.__name__}: {exc}")
+
+        payload: dict[str, Any] = {
+            "supported": True,
+            "catalog": cat_arg,
+            "schemas_scanned": target_schemas,
+            "volumes": rows,
+            "count": len(rows),
+        }
+        if not sch_arg and not str(getattr(self.cfg.db, "catalog", "") or "").strip():
+            payload["auto_picked_catalog"] = cat_arg
+        if warnings:
+            payload["warnings"] = warnings
+        return payload
 
     def _tool_find_table_by_name(self, name: str) -> dict[str, Any]:
         target = (name or "").strip()
