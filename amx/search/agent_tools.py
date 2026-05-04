@@ -1330,9 +1330,7 @@ class ToolBox:
                 target_schemas = "(bulk via information_schema)"
             else:
                 try:
-                    target_schemas = (
-                        [sch_arg] if sch_arg else [str(s) for s in db.list_schemas()]
-                    )
+                    target_schemas = [sch_arg] if sch_arg else [str(s) for s in db.list_schemas()]
                 except Exception as exc:
                     raise _ToolError(f"Could not list schemas in {cat_arg!r}: {exc}") from exc
 
@@ -1391,9 +1389,7 @@ class ToolBox:
             catalog_pin = str(getattr(self.cfg.db, "catalog", "") or "").strip()
             list_assets_bulk = getattr(db, "list_assets_bulk", None)
             bulk_assets = (
-                list_assets_bulk(catalog_pin)
-                if list_assets_bulk and catalog_pin
-                else None
+                list_assets_bulk(catalog_pin) if list_assets_bulk and catalog_pin else None
             )
             if bulk_assets is not None:
                 for sch_name, asset_name, _kind in bulk_assets:

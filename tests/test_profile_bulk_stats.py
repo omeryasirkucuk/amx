@@ -312,8 +312,7 @@ def test_bulk_stats_falls_back_to_per_column_on_failure() -> None:
     conn._engine = Engine()  # type: ignore[assignment]
 
     cps = [
-        ColumnProfile(name=f"col_{i}", dtype="int", nullable=True, row_count=100)
-        for i in range(3)
+        ColumnProfile(name=f"col_{i}", dtype="int", nullable=True, row_count=100) for i in range(3)
     ]
     conn._collect_bulk_stats(
         schema="sch",
