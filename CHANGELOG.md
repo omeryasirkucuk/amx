@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-05-04
+
 ### Fixed — every catalog-scoped `/ask` tool now auto-picks the catalog, not just `list_schemas`
 
 Third-round follow-up. User report 2026-05-04: after the previous
