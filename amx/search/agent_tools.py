@@ -100,9 +100,28 @@ class ToolBox:
                         "Return the list of schema names (namespaces) visible in the active "
                         "database. Use this when the user asks 'which schemas do we have?', "
                         "'what schemas exist?', 'sap_test ne tür bir şema?', or as a discovery "
-                        "step before drilling into one specific schema."
+                        "step before drilling into one specific schema.\n"
+                        "Pass ``catalog`` to scope the listing to a Unity-Catalog catalog or "
+                        "BigQuery project the active profile has not pinned. When the active "
+                        "profile is a 3-level backend (Databricks UC) and no catalog is pinned "
+                        "AND no ``catalog`` argument is given, the tool returns the visible "
+                        "catalog list with a hint instead of failing — call ``list_catalogs`` "
+                        "(or pass ``catalog`` here) to drill in."
                     ),
-                    "parameters": {"type": "object", "properties": {}, "required": []},
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "catalog": {
+                                "type": "string",
+                                "description": (
+                                    "Optional Unity-Catalog catalog (Databricks) or BigQuery "
+                                    "project to scope the listing to. Omit to use whatever the "
+                                    "active profile has pinned."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
                 },
             },
             {
@@ -112,7 +131,9 @@ class ToolBox:
                     "description": (
                         "Return the tables, views, and materialized views inside a given "
                         "schema. Use this when the user asks 'what tables are under sap_test?', "
-                        "'list all tables in sap_s6p', or to disambiguate a bare table name."
+                        "'list all tables in sap_s6p', or to disambiguate a bare table name. "
+                        "Pass ``catalog`` to scope the listing to a Unity-Catalog catalog the "
+                        "active profile has not pinned."
                     ),
                     "parameters": {
                         "type": "object",
@@ -120,6 +141,14 @@ class ToolBox:
                             "schema": {
                                 "type": "string",
                                 "description": "Exact schema name. Case-insensitive.",
+                            },
+                            "catalog": {
+                                "type": "string",
+                                "description": (
+                                    "Optional Unity-Catalog catalog (Databricks) or BigQuery "
+                                    "project. Omit to use whatever the active profile has "
+                                    "pinned."
+                                ),
                             },
                         },
                         "required": ["schema"],
@@ -306,6 +335,41 @@ class ToolBox:
                         "List the databases the agent currently has access to (one per active "
                         "DB profile). Use this only when the user explicitly asks 'which "
                         "databases do we have?' / 'hangi veritabanları var?'."
+                    ),
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_catalogs",
+                    "description": (
+                        "Run ``SHOW CATALOGS`` (or the equivalent) on the active live "
+                        "connection and return every catalog / project visible to the role. "
+                        "Use this on 3-level backends (Databricks Unity Catalog, BigQuery) "
+                        "when the active DB profile has no catalog pinned and the user asks "
+                        "to see tables / schemas — call this first, then pass the chosen "
+                        "catalog to ``list_schemas`` or ``list_tables_in_schema``. Returns "
+                        "``supports_catalogs=false`` for 2-level backends so the LLM can "
+                        "fall back to ``list_server_databases`` instead."
+                    ),
+                    "parameters": {"type": "object", "properties": {}, "required": []},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_server_databases",
+                    "description": (
+                        "Run ``SHOW DATABASES`` (or the equivalent) on the active live "
+                        "connection and return every database visible to the role. Use this "
+                        "on 2-level backends (PostgreSQL, Snowflake, MySQL, MSSQL, Redshift, "
+                        "ClickHouse) when the user asks 'which databases live on this "
+                        "server?' or when the active profile has no database pinned and you "
+                        "need to discover it. Different from ``list_databases`` — that lists "
+                        "AMX DB profiles, this lists databases on the live server. Returns "
+                        "an empty list with a hint for backends that don't expose a multi-"
+                        "database server."
                     ),
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
@@ -790,51 +854,179 @@ class ToolBox:
             return _safe_json({"error": f"Tool {name} failed: {exc}"})
 
     # ------------------------------------------------------------------ implementations
-    def _tool_list_schemas(self) -> dict[str, Any]:
+    @contextlib.contextmanager
+    def _scoped_catalog(self, db: DatabaseConnector, catalog: str | None):
+        """Temporarily pin ``cfg.catalog`` so connector methods route by it.
+
+        Used by ``list_schemas`` / ``list_tables_in_schema`` when the LLM
+        passes a catalog argument to drill into a Unity-Catalog catalog
+        the active profile has not pinned. Empty / None ``catalog`` is a
+        no-op so callers can pass through unconditionally.
+        """
+        cat = (catalog or "").strip()
+        if not cat:
+            yield
+            return
+        cfg = getattr(db, "cfg", None)
+        if cfg is None:
+            yield
+            return
+        previous = getattr(cfg, "catalog", "")
         try:
-            schemas = [str(s) for s in self._live_db().list_schemas()]
+            cfg.catalog = cat
+            yield
+        finally:
+            cfg.catalog = previous
+
+    def _tool_list_schemas(self, catalog: str = "") -> dict[str, Any]:
+        db = self._live_db()
+        cat_arg = (catalog or "").strip()
+        pinned_catalog = str(getattr(self.cfg.db, "catalog", "") or "").strip()
+        supports_catalogs = False
+        try:
+            supports_catalogs = bool(db.supports_catalogs())
+        except Exception:
+            supports_catalogs = False
+        # 3-level backend (Databricks UC, BigQuery): when neither the
+        # active profile nor the LLM has named a catalog, listing schemas
+        # against the SQLAlchemy default surfaces the literal "Catalog
+        # 'none' was not found" error from the warehouse. Surface the
+        # visible catalogs instead so the LLM can pick one and recurse —
+        # the user-reported "/ask which tables do you see" path on a
+        # catalog-less profile.
+        if supports_catalogs and not cat_arg and not pinned_catalog:
+            try:
+                catalogs = [str(c) for c in db.list_catalogs()]
+            except Exception as exc:
+                raise _ToolError(
+                    f"Active DB profile has no catalog pinned and SHOW CATALOGS failed: {exc}. "
+                    "Edit the profile to pin a catalog or pass `catalog` to this tool."
+                ) from exc
+            return {
+                "database": "(no catalog pinned)",
+                "schemas": [],
+                "count": 0,
+                "catalogs": catalogs,
+                "needs_catalog": True,
+                "message": (
+                    "The active DB profile has no catalog pinned. Pick one of the catalogs "
+                    "above and call this tool again with the `catalog` argument, or run "
+                    "`/edit` to pin a catalog permanently."
+                ),
+            }
+
+        try:
+            with self._scoped_catalog(db, cat_arg):
+                schemas = [str(s) for s in db.list_schemas()]
         except Exception as exc:
             raise _ToolError(f"Could not list schemas live: {exc}") from exc
         database = (
-            self.cfg.db.database
+            cat_arg
+            or self.cfg.db.database
             or self.cfg.db.catalog
             or self.cfg.db.project
             or "(active database)"
         )
         return {"database": database, "schemas": schemas, "count": len(schemas)}
 
-    def _tool_list_tables_in_schema(self, schema: str) -> dict[str, Any]:
+    def _tool_list_tables_in_schema(self, schema: str, catalog: str = "") -> dict[str, Any]:
         target = (schema or "").strip()
         if not target:
             raise _ToolError("Argument 'schema' is required.")
         db = self._live_db()
-        # Resolve case-insensitively against the live schema list.
+        cat_arg = (catalog or "").strip()
+        # Resolve case-insensitively against the live schema list within
+        # the chosen catalog (when one was supplied). The same scoping
+        # applies to the listing call below — without it, a Databricks UC
+        # backend without a pinned catalog would issue ``SHOW TABLES FROM
+        # None.<schema>`` and fail with NO_SUCH_CATALOG_EXCEPTION.
+        with self._scoped_catalog(db, cat_arg):
+            try:
+                available = list(db.list_schemas())
+            except Exception as exc:
+                raise _ToolError(f"Could not list schemas: {exc}") from exc
+            match = next((s for s in available if str(s).lower() == target.lower()), None)
+            if match is None:
+                return {
+                    "schema": target,
+                    "catalog": cat_arg or None,
+                    "found": False,
+                    "available_schemas": [str(s) for s in available],
+                    "message": (
+                        f"No schema named '{target}'. Available schemas: "
+                        + ", ".join(str(s) for s in available)
+                    ),
+                }
+            items: list[dict[str, str]] = []
+            try:
+                if hasattr(db, "list_assets"):
+                    for name, kind in db.list_assets(match):
+                        items.append({"name": str(name), "kind": str(kind)})
+                else:
+                    for name in db.list_tables(match):
+                        items.append({"name": str(name), "kind": "table"})
+            except Exception as exc:
+                raise _ToolError(f"Could not list tables in {match}: {exc}") from exc
+        return {
+            "schema": match,
+            "catalog": cat_arg or None,
+            "found": True,
+            "tables": items,
+            "count": len(items),
+        }
+
+    def _tool_list_catalogs(self) -> dict[str, Any]:
+        db = self._live_db()
         try:
-            available = list(db.list_schemas())
-        except Exception as exc:
-            raise _ToolError(f"Could not list schemas: {exc}") from exc
-        match = next((s for s in available if str(s).lower() == target.lower()), None)
-        if match is None:
+            supports = bool(db.supports_catalogs())
+        except Exception:
+            supports = False
+        if not supports:
             return {
-                "schema": target,
-                "found": False,
-                "available_schemas": [str(s) for s in available],
+                "supports_catalogs": False,
+                "catalogs": [],
+                "count": 0,
                 "message": (
-                    f"No schema named '{target}'. Available schemas: "
-                    + ", ".join(str(s) for s in available)
+                    "The active backend does not expose multiple catalogs. Use "
+                    "`list_server_databases` for 2-level backends (PostgreSQL, "
+                    "Snowflake, MySQL, MSSQL, Redshift, ClickHouse)."
                 ),
             }
-        items: list[dict[str, str]] = []
         try:
-            if hasattr(db, "list_assets"):
-                for name, kind in db.list_assets(match):
-                    items.append({"name": str(name), "kind": str(kind)})
-            else:
-                for name in db.list_tables(match):
-                    items.append({"name": str(name), "kind": "table"})
+            catalogs = [str(c) for c in db.list_catalogs()]
         except Exception as exc:
-            raise _ToolError(f"Could not list tables in {match}: {exc}") from exc
-        return {"schema": match, "found": True, "tables": items, "count": len(items)}
+            raise _ToolError(f"SHOW CATALOGS failed: {exc}") from exc
+        pinned = str(getattr(self.cfg.db, "catalog", "") or "").strip()
+        return {
+            "supports_catalogs": True,
+            "catalogs": catalogs,
+            "count": len(catalogs),
+            "active_catalog": pinned or None,
+        }
+
+    def _tool_list_server_databases(self) -> dict[str, Any]:
+        db = self._live_db()
+        try:
+            databases = [str(d) for d in db.list_databases()]
+        except Exception as exc:
+            raise _ToolError(f"Listing databases failed: {exc}") from exc
+        pinned = str(getattr(self.cfg.db, "database", "") or "").strip()
+        if not databases:
+            return {
+                "databases": [],
+                "count": 0,
+                "active_database": pinned or None,
+                "message": (
+                    "The active backend does not expose multiple databases on this server, "
+                    "or the role has no privilege to list them. For 3-level backends "
+                    "(Databricks Unity Catalog, BigQuery) use `list_catalogs`."
+                ),
+            }
+        return {
+            "databases": databases,
+            "count": len(databases),
+            "active_database": pinned or None,
+        }
 
     def _tool_find_table_by_name(self, name: str) -> dict[str, Any]:
         target = (name or "").strip()

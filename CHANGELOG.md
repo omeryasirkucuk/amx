@@ -6,6 +6,44 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/ask` discovers the catalog itself when the active DB profile didn't pin one
+
+User report (2026-05-04): defining a Databricks DB profile without
+filling in a catalog made the very first `/ask` listing call fail with
+`[NO_SUCH_CATALOG_EXCEPTION] Catalog 'none' was not found.` because
+`SHOW SCHEMAS` ran against the SQLAlchemy default catalog (Python
+`None` rendered as the literal string). The wizard told the user the
+catalog was "optional"; in practice it wasn't, and the deferred error
+only surfaced inside `/ask`, which is the worst possible place to find
+out.
+
+The tool-calling agent now has dedicated discovery tools:
+
+* `list_catalogs` — runs `SHOW CATALOGS` (or the equivalent) on the
+  active live connection and returns the role-visible catalogs. Used
+  on Databricks Unity Catalog and BigQuery (project = catalog).
+* `list_server_databases` — runs `SHOW DATABASES` for 2-level backends
+  (PostgreSQL, Snowflake, MySQL, MSSQL, Redshift, ClickHouse). Distinct
+  from `list_databases`, which lists AMX DB profiles.
+
+The existing `list_schemas` and `list_tables_in_schema` tools accept an
+optional `catalog` argument, so the LLM can drill into a chosen
+catalog without the user editing the saved profile. When a 3-level
+backend has no catalog pinned and no `catalog` argument is supplied,
+`list_schemas` returns `needs_catalog=true` plus the visible catalog
+list and a hint instead of letting the warehouse error escape.
+
+The `/ask` system prompt also now warns up-front when the active
+profile has no catalog/database pinned and tells the LLM to call the
+discovery tools before any other listing tool — so the user's exact
+question ("which tables do you see") works on a half-configured
+Databricks profile without a backend error.
+
+`tests/test_compare.py::CatalogDiscoveryToolsTests` covers the new
+behaviour: graceful catalog list on no-catalog profiles, `catalog`-
+scoped listings via temporary `cfg.catalog` pinning (restored after
+the call), and the schema-shape contract for the LLM.
+
 ### Fixed — `/ask` no longer crashes with `Ask failed: _lock` when shared mode is on
 
 Follow-up to the lazy-bootstrap fix below. `ChatSessionStore` (the
