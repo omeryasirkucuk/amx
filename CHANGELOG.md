@@ -6,6 +6,31 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Databricks wizard asks TLS first and gates the catalog probe behind a yes/no
+
+User report 2026-05-04: a corporate Databricks workspace behind a
+self-signed TLS proxy crashed the very first ``SHOW CATALOGS`` round-
+trip with ``SSLCertVerificationError`` because the wizard probed
+*before* asking about TLS — the user had no chance to disable verify
+or point at a CA bundle, the picker silently fell back to free-form
+input, and the cert problem stayed hidden.
+
+Two changes to ``amx db /add-profile`` and ``/edit-db-profile`` for
+the Databricks backend:
+
+1. The TLS trusted-CA path and the ``Disable TLS certificate
+   verification?`` prompts now fire **before** the catalog probe.
+   The probe config carries those values so self-signed setups work
+   on the first try.
+2. A ``List the available Unity Catalog catalogs from the workspace?``
+   yes/no gate sits between TLS and the catalog picker. Users who
+   already know their catalog name skip the round-trip entirely; the
+   listing only happens when the user explicitly opts in.
+
+Tests in ``tests/test_regressions.py::ProfilingGuardrailTests`` are
+updated for the new prompt order and a new test pins the relative
+ordering of TLS vs. catalog-probe prompts.
+
 ## [0.12.6] - 2026-05-04
 
 ### Fixed — every catalog-scoped `/ask` tool now auto-picks the catalog, not just `list_schemas`
