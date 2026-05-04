@@ -6,6 +6,29 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` end-session + maintenance + team history-store status (Stage 7)
+
+The last batch of CLI parity items the visualizer was missing.
+
+* **`POST /api/ask/sessions/{id}/end`** — closes a chat session
+  and clears `cfg.active_chat_session_id` if it pointed there.
+  Mirrors the CLI's `/session end`. Ask sidebar grows a stop icon
+  on every still-open session row.
+* **`GET /api/admin/history-store-status`** — surfaces the team
+  shared run-history flag (enabled?, target profile + schema,
+  outbox pending count). System page renders a Team history
+  store card with a Refresh action; UI is read-only because the
+  enable wizard is interactive (CLI-only for now).
+* **System → Maintenance card** wires the existing
+  `POST /api/comments/cleanup-placeholders` endpoint to a one-click
+  button so the visualizer doesn't need to send the user back to
+  the CLI to strip `[inferred by AMX]` markers from the live DB.
+
+Tests: 5 new (3 in `tests/web/test_ask.py`, 2 in
+`test_system_ops.py`) covering end-session happy path + 404 + the
+active-pointer clear, plus history-store status both branches.
+Full suite: 859 passed.
+
 ### Added — `/visualize` Code scan + History compare (Stage 6)
 
 * **`POST /api/code/scan`** — wraps `analyze_codebase` so the

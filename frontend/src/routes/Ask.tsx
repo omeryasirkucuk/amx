@@ -1,5 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Sparkles } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CircleStop, Plus, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 import PageHeader from "../components/PageHeader";
@@ -95,6 +95,14 @@ export default function Ask() {
     queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
   }
 
+  const endSession = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/api/ask/sessions/${id}/end`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+    },
+  });
+
   return (
     <>
       <PageHeader
@@ -126,18 +134,24 @@ export default function Ask() {
                 {sessions.data.sessions.map((session) => {
                   const isActive = session.id === selectedSessionId;
                   const isLoading = session.id === loadingSessionId;
+                  const isOpen = session.ended_at == null;
                   return (
-                    <li key={session.id}>
+                    <li
+                      key={session.id}
+                      aria-current={isActive ? "true" : undefined}
+                      className={cn(
+                        "group flex items-stretch transition hover:bg-surface-subtle/60",
+                        isActive && "bg-surface-subtle",
+                        isOpen && "border-l-2 border-positive",
+                        isActive && "border-l-2 border-accent",
+                      )}
+                    >
                       <button
                         type="button"
                         onClick={() => openSession(session.id)}
                         disabled={isLoading}
-                        aria-current={isActive ? "true" : undefined}
                         className={cn(
-                          "block w-full px-4 py-3 text-left text-sm transition hover:bg-surface-subtle/60 focus:bg-surface-subtle focus:outline-none",
-                          isActive && "bg-surface-subtle",
-                          session.ended_at == null && "border-l-2 border-positive",
-                          isActive && "border-l-2 border-accent",
+                          "flex-1 px-4 py-3 text-left text-sm focus:outline-none",
                           isLoading && "opacity-60",
                         )}
                       >
@@ -155,6 +169,20 @@ export default function Ask() {
                           </p>
                         )}
                       </button>
+                      {isOpen && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            endSession.mutate(session.id);
+                          }}
+                          disabled={endSession.isPending}
+                          title="End this session — next /ask starts a new one"
+                          className="px-2 text-ink-dim opacity-0 transition hover:bg-warning/10 hover:text-warning group-hover:opacity-100 disabled:opacity-50"
+                        >
+                          <CircleStop size={14} />
+                        </button>
+                      )}
                     </li>
                   );
                 })}

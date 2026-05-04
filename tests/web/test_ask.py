@@ -63,6 +63,29 @@ def test_get_session_404_when_missing(client, auth_headers, stub_session_store) 
     assert response.status_code == 404
 
 
+def test_end_session_marks_ended_and_clears_active_pointer(
+    client, auth_headers, cfg, stub_session_store
+) -> None:
+    """End-session endpoint mirrors the CLI's `/session end`: marks
+    the chat row ended AND clears `cfg.active_chat_session_id` if it
+    pointed at this id, so the next /ask starts a fresh session."""
+    stub_session_store.get_session.return_value = {"id": 7, "title": "x"}
+    stub_session_store.end_session.return_value = None
+    cfg.active_chat_session_id = 7
+
+    response = client.post("/api/ask/sessions/7/end", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["session_id"] == 7
+    stub_session_store.end_session.assert_called_once_with(7)
+    assert cfg.active_chat_session_id == 0
+
+
+def test_end_session_404_when_missing(client, auth_headers, stub_session_store) -> None:
+    stub_session_store.get_session.return_value = None
+    response = client.post("/api/ask/sessions/999/end", headers=auth_headers)
+    assert response.status_code == 404
+
+
 def test_get_session_returns_turns(client, auth_headers, stub_session_store) -> None:
     stub_session_store.get_session.return_value = {"id": 7, "title": "t"}
     stub_session_store.recent_turns = MagicMock(

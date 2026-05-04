@@ -113,6 +113,33 @@ def list_sessions(
     return {"sessions": rows, "count": len(rows)}
 
 
+@router.post("/sessions/{session_id}/end")
+def end_session(session_id: int, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Mark a chat session as ended so the next ``/api/ask`` POST
+    starts a fresh one. Mirrors the CLI's ``/session end`` command."""
+    store = _session_store_or_none()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat history isn't available — initialise the history store first.",
+        )
+    if store.get_session(session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No chat session {session_id}.",
+        )
+    store.end_session(session_id)
+    # Clear the active chat session pointer if it was pointing here so
+    # the CLI REPL also reflects the end.
+    if int(getattr(cfg, "active_chat_session_id", 0) or 0) == int(session_id):
+        cfg.active_chat_session_id = 0
+        try:
+            cfg.save()
+        except Exception:
+            pass
+    return {"ok": True, "session_id": int(session_id)}
+
+
 @router.get("/sessions/{session_id}")
 def get_session(session_id: int) -> dict[str, Any]:
     store = _session_store_or_none()
