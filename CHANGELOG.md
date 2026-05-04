@@ -6,6 +6,64 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `amx` startup is back to <100ms even on a Databricks-backed shared run-history
+
+User report (2026-05-04 against 0.12.5 + the just-shipped lifecycle
+hardening): every `amx` invocation took 3-4 seconds before the
+welcome banner appeared, and surfaced a one-line `SCHEMA_NOT_FOUND`
+warning against the configured Databricks history-store target
+(catalog `<X>`, schema `AMX`).
+
+Root causes:
+
+1. **The startup bootstrap path skipped `CREATE SCHEMA`**.
+   `/history-store enable` calls
+   `adapter.create_history_schema(engine, schema)` (idempotent
+   `CREATE SCHEMA IF NOT EXISTS`) before `MetaData.create_all`. The
+   process-startup path in `_build_shared_store` did not, so any
+   user whose schema disappeared (or was never created on this
+   host) hit `SCHEMA_NOT_FOUND` from `create_all` on every single
+   `amx` invocation.
+
+2. **Shared-history bootstrap ran synchronously at startup**.
+   `init_history_store` opened the SQLAlchemy engine, ran `CREATE
+   SCHEMA`, and then `MetaData.create_all` against the team backend
+   on every `amx` invocation — even for `/help`, `/db-profiles`,
+   and other commands that never touch history. On Databricks that
+   meant a 2-3 second blocker between the user pressing Enter and
+   the welcome banner.
+
+Fixes:
+
+- `_build_shared_store` now calls
+  `adapter.create_history_schema(engine, schema)` before building
+  the SQLAlchemy store. The DDL is `CREATE SCHEMA IF NOT EXISTS`,
+  so it's a no-op when the schema already exists. Permission
+  failures here are downgraded to debug logs (the schema may
+  already exist — `MetaData.create_all` will succeed regardless).
+- New `_LazyDualWriteStore` wraps the local SQLite store eagerly
+  but defers shared-backend bootstrap to the first method call.
+  `init_history_store` returns the lazy wrapper when shared mode is
+  on; the welcome banner is no longer blocked by a Databricks /
+  Postgres / Snowflake round-trip. Bootstrap failures still surface
+  as a one-line warning (cached per profile/schema as before), but
+  only the first time a call actually needs the shared backend.
+- `db_path` and `.local` on the lazy wrapper are zero-cost reads,
+  so existing `hasattr(hs, "shared")` and `hs.db_path` consumers
+  keep working without forcing a build.
+
+Tests added:
+
+- `tests/test_history_store_schema_precreate.py` pins the call
+  order (`create_engine` → `create_history_schema` → store ctor)
+  and that pre-create permission failures are downgraded to debug
+  log instead of aborting the bootstrap.
+- `tests/test_history_store_lazy_bootstrap.py` pins that
+  `init_history_store` returns a lazy wrapper that is NOT built at
+  init time, builds on first method call, does not rebuild on
+  subsequent calls, exposes `db_path`/`.local` without a build, and
+  falls back to local-only on bootstrap failure.
+
 ### Added — `/use-rag-llm` lets the RAG agent run on a different LLM profile
 
 Until now every agent in AMX (Profile, Code, RAG) shared a single
