@@ -130,8 +130,7 @@ def _scan_worker_body(
             db = DatabaseConnector(cfg.db)
         except Exception as exc:
             raise RuntimeError(
-                "Cannot open active DB profile to enumerate tables for scan: "
-                f"{exc}"
+                f"Cannot open active DB profile to enumerate tables for scan: {exc}"
             ) from exc
         try:
             schemas = [schema_filter] if schema_filter else list(db.list_schemas())

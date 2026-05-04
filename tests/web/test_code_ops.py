@@ -48,7 +48,11 @@ def test_scan_resolves_active_profile(client, auth_headers, cfg, monkeypatch) ->
     fake_report = MagicMock(
         total_files=10,
         scanned_files=8,
-        references={"users": [MagicMock(file="a.py", line_no=1, line_text="x", matched_asset="users", context="")]},
+        references={
+            "users": [
+                MagicMock(file="a.py", line_no=1, line_text="x", matched_asset="users", context="")
+            ]
+        },
         external_mentions={},
     )
     monkeypatch.setattr(
@@ -65,9 +69,7 @@ def test_scan_resolves_active_profile(client, auth_headers, cfg, monkeypatch) ->
     assert summary["catalog_assets"] == 1
 
 
-def test_scan_explicit_path_overrides_profile(
-    client, auth_headers, cfg, monkeypatch
-) -> None:
+def test_scan_explicit_path_overrides_profile(client, auth_headers, cfg, monkeypatch) -> None:
     """Explicit path in body wins over the active profile."""
     cfg.code_profiles["main"] = "/wrong/path"
     cfg.active_code_profile = "main"
@@ -105,9 +107,7 @@ def test_scan_explicit_path_overrides_profile(
     assert captured["path"] == "/explicit/path"
 
 
-def test_scan_with_column_scan_collects_columns(
-    client, auth_headers, cfg, monkeypatch
-) -> None:
+def test_scan_with_column_scan_collects_columns(client, auth_headers, cfg, monkeypatch) -> None:
     """When ``column_scan=true`` the worker should also enumerate
     column names and pass them to the analyzer."""
     cfg.code_profiles["repo"] = "/path"
