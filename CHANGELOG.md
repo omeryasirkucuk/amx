@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-05-04
+
 ### Added — first-class `databricks_serving` LLM provider
 
 User report 2026-05-04: connecting Databricks Foundation Model Serving
