@@ -878,6 +878,33 @@ class ToolBox:
         finally:
             cfg.catalog = previous
 
+    # Names that are system / built-in catalogs across the catalog-aware
+    # backends AMX supports. Filtered out before the LLM sees the catalog
+    # list so a Databricks workspace with one user catalog and three
+    # system catalogs auto-routes instead of asking the user to pick.
+    # Lower-cased — we compare case-insensitively.
+    _SYSTEM_CATALOG_NAMES: frozenset[str] = frozenset(
+        {
+            # Databricks Unity Catalog system catalogs.
+            "system",
+            "samples",
+            "workspace",
+            "hive_metastore",
+            "spark_catalog",
+            "__databricks_internal",
+        }
+    )
+
+    @classmethod
+    def _user_catalogs(cls, catalogs: list[str]) -> list[str]:
+        """Drop well-known system / built-in catalogs from a candidate list.
+
+        Used to disambiguate the no-catalog-pinned auto-pick path: if
+        the only non-system catalog is a user catalog, we can route
+        listings to it without asking the LLM to pick.
+        """
+        return [c for c in catalogs if c and c.lower() not in cls._SYSTEM_CATALOG_NAMES]
+
     def _tool_list_schemas(self, catalog: str = "") -> dict[str, Any]:
         db = self._live_db()
         cat_arg = (catalog or "").strip()
@@ -890,30 +917,52 @@ class ToolBox:
         # 3-level backend (Databricks UC, BigQuery): when neither the
         # active profile nor the LLM has named a catalog, listing schemas
         # against the SQLAlchemy default surfaces the literal "Catalog
-        # 'none' was not found" error from the warehouse. Surface the
-        # visible catalogs instead so the LLM can pick one and recurse —
-        # the user-reported "/ask which tables do you see" path on a
-        # catalog-less profile.
+        # 'none' was not found" error from the warehouse. We try to
+        # auto-pick here when the workspace exposes exactly one user
+        # catalog (Databricks samples/system/workspace are filtered out).
+        # When the choice is ambiguous, surface the filtered list so the
+        # LLM can recurse — but the auto-pick path resolves the
+        # user-reported infinite loop where kimi-thinking would compose
+        # an answer like "I see 4 catalogs, let me check amx_test…"
+        # without ever calling list_schemas a second time.
         if supports_catalogs and not cat_arg and not pinned_catalog:
             try:
-                catalogs = [str(c) for c in db.list_catalogs()]
+                all_catalogs = [str(c) for c in db.list_catalogs()]
             except Exception as exc:
                 raise _ToolError(
                     f"Active DB profile has no catalog pinned and SHOW CATALOGS failed: {exc}. "
                     "Edit the profile to pin a catalog or pass `catalog` to this tool."
                 ) from exc
-            return {
-                "database": "(no catalog pinned)",
-                "schemas": [],
-                "count": 0,
-                "catalogs": catalogs,
-                "needs_catalog": True,
-                "message": (
-                    "The active DB profile has no catalog pinned. Pick one of the catalogs "
-                    "above and call this tool again with the `catalog` argument, or run "
-                    "`/edit` to pin a catalog permanently."
-                ),
-            }
+            user_catalogs = self._user_catalogs(all_catalogs)
+            if len(user_catalogs) == 1:
+                # Unambiguous — auto-pick and recurse so the LLM gets
+                # actual schemas instead of having to choose.
+                cat_arg = user_catalogs[0]
+            else:
+                # Ambiguous (multiple user catalogs) or empty (only
+                # system catalogs). Surface the filtered list and the
+                # full list so the LLM can pick the right one. The
+                # ``message`` is phrased as a directive ("pick one
+                # below and recurse") rather than a question to
+                # discourage models from just composing prose at the
+                # user.
+                surface = user_catalogs or all_catalogs
+                return {
+                    "database": "(no catalog pinned)",
+                    "schemas": [],
+                    "count": 0,
+                    "catalogs": surface,
+                    "all_catalogs": all_catalogs,
+                    "needs_catalog": True,
+                    "message": (
+                        "The active DB profile has no catalog pinned and the workspace "
+                        "has multiple user catalogs. Pick the most likely one from the "
+                        "`catalogs` list and IMMEDIATELY call this tool again with the "
+                        "`catalog` argument set — do NOT just narrate the choice to the "
+                        "user. If you genuinely cannot tell which catalog the user means, "
+                        "answer in one short sentence asking them to pick."
+                    ),
+                }
 
         try:
             with self._scoped_catalog(db, cat_arg):
@@ -927,7 +976,20 @@ class ToolBox:
             or self.cfg.db.project
             or "(active database)"
         )
-        return {"database": database, "schemas": schemas, "count": len(schemas)}
+        payload: dict[str, Any] = {
+            "database": database,
+            "schemas": schemas,
+            "count": len(schemas),
+        }
+        if cat_arg:
+            payload["catalog"] = cat_arg
+            if not pinned_catalog:
+                # We auto-resolved the catalog (single user catalog
+                # heuristic). Surface it so the LLM mentions which
+                # catalog the schemas live in instead of pretending
+                # the profile already had one pinned.
+                payload["auto_picked_catalog"] = cat_arg
+        return payload
 
     def _tool_list_tables_in_schema(self, schema: str, catalog: str = "") -> dict[str, Any]:
         target = (schema or "").strip()
