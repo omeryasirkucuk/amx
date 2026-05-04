@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { ChevronRight, ChevronDown, Database, FolderTree, Layers } from "lucide-react";
 
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { cn } from "../lib/cn";
 
 interface Props {
@@ -72,18 +72,33 @@ function ProfileRow({ label, value }: { label: string; value: string }) {
 }
 
 function LiveDbTree() {
-  const { data: schemas } = useQuery({
+  const { data: schemas, error, isLoading } = useQuery({
     queryKey: ["live-schemas"],
     queryFn: () => api.liveSchemas(),
+    retry: false,
   });
-  if (!schemas) {
+  if (isLoading) {
     return (
       <div className="px-2 py-1 text-xs text-ink-dim">
         Loading schemas…
       </div>
     );
   }
-  if (schemas.schemas.length === 0) {
+  if (error instanceof ApiError && error.hint === "select-catalog") {
+    return (
+      <div className="px-2 py-1 text-xs text-warning">
+        Pick a catalog from the top bar to load schemas.
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="px-2 py-1 text-xs text-critical">
+        {(error as Error).message}
+      </div>
+    );
+  }
+  if (!schemas || schemas.schemas.length === 0) {
     return (
       <div className="px-2 py-1 text-xs text-ink-dim">
         No schemas reachable yet — activate a DB profile under Settings.

@@ -153,6 +153,11 @@ export const api = {
   health: () => apiFetch<HealthResponse>("/api/health"),
   context: () => apiFetch<ContextResponse>("/api/context"),
   liveCatalogs: () => apiFetch<CatalogsResponse>("/api/live/catalogs"),
+  activateCatalog: (name: string, persist = true) =>
+    apiFetch<{ catalog: string; profile: string; persisted: boolean }>(
+      `/api/live/catalogs/${encodeURIComponent(name)}/activate`,
+      { method: "POST", body: JSON.stringify({ persist }) },
+    ),
   liveDatabases: () => apiFetch<DatabasesResponse>("/api/live/databases"),
   liveSchemas: (catalog?: string) =>
     apiFetch<SchemasResponse>(

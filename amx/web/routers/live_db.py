@@ -23,12 +23,40 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from amx.config import AMXConfig, DBConfig
 from amx.db.connector import DatabaseConnector
 from amx.web.deps import get_cfg
 
 router = APIRouter(prefix="/api/live", tags=["live-db"])
+
+
+def _require_catalog_for_3level(cfg: AMXConfig, db: DatabaseConnector) -> None:
+    r"""Block schema/table queries when a 3-level backend has no catalog.
+
+    Without this, the connector falls back to the SQLAlchemy inspector
+    which on Databricks issues ``SHOW TABLES FROM \`None\`.<schema>`` —
+    the user sees a confusing ``Catalog 'none' was not found`` error.
+    412 with hint ``select-catalog`` lets the SPA prompt the user to
+    pick one (or auto-pick the first).
+    """
+    try:
+        supports = bool(db.supports_catalogs())
+    except Exception:  # pragma: no cover - defensive
+        supports = False
+    if supports and not (getattr(cfg.db, "catalog", "") or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "message": (
+                    "No catalog selected for this profile. Pick a catalog "
+                    "before browsing schemas."
+                ),
+                "hint": "select-catalog",
+                "profile": cfg.active_db_profile or "",
+            },
+        )
 
 
 #: Per-key connector cache. Keys are tuples derived from
@@ -144,6 +172,9 @@ def list_schemas(
     ``amx/search/agent_tools.py``).
     """
     db = _connector(cfg)
+    effective_catalog = (catalog or getattr(cfg.db, "catalog", "") or "").strip()
+    if not effective_catalog:
+        _require_catalog_for_3level(cfg, db)
     if catalog and catalog != getattr(cfg.db, "catalog", ""):
         previous = cfg.db.catalog
         try:
@@ -163,9 +194,64 @@ def list_assets(schema: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any
     the left tree.
     """
     db = _connector(cfg)
+    _require_catalog_for_3level(cfg, db)
     raw = _coerce_or_500(f"Listing assets in {schema}", lambda: db.list_assets(schema))
     items = [{"name": name, "kind": kind.value} for name, kind in raw]
     return {"schema": schema, "assets": items, "count": len(items)}
+
+
+class _ActivateCatalogRequest(BaseModel):
+    persist: bool = True
+
+
+@router.post("/catalogs/{name}/activate")
+def activate_catalog(
+    name: str,
+    body: _ActivateCatalogRequest | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Set the active catalog for the current DB profile.
+
+    Mirrors the CLI's ``/connect`` catalog picker (see
+    ``amx/cli_support/catalog_picker.py``). Without a catalog set,
+    3-level backends like Databricks fall back to ``SHOW TABLES
+    FROM `None`.<schema>`` and crash. This endpoint persists the
+    pick so subsequent visualizer sessions remember it.
+    """
+    chosen = (name or "").strip()
+    if not chosen:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Catalog name must be non-empty.",
+        )
+    db = _connector(cfg)
+    try:
+        supports = bool(db.supports_catalogs())
+    except Exception:
+        supports = False
+    if not supports:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The active backend does not expose catalogs.",
+        )
+    cfg.db.catalog = chosen
+    persist = True if body is None else bool(body.persist)
+    if persist:
+        # Mirror the CLI flow: writes back to ~/.amx/config.yml so the
+        # picker doesn't have to run on every visualizer launch.
+        try:
+            cfg.save()
+        except Exception:
+            # Don't let a save failure block the in-process state change —
+            # the user can re-pick next session if persistence is broken.
+            pass
+    # Drop the connector cache entry — its key embedded the old catalog.
+    _CONNECTOR_CACHE.clear()
+    return {
+        "catalog": chosen,
+        "profile": cfg.active_db_profile or "",
+        "persisted": persist,
+    }
 
 
 @router.get("/schemas/{schema}/volumes")
@@ -185,6 +271,8 @@ def list_volumes(
             "supports_volumes": False,
             "message": "This backend does not expose volumes.",
         }
+    if not (catalog or "").strip():
+        _require_catalog_for_3level(cfg, db)
     rows = _coerce_or_500(
         f"Listing volumes in {schema}",
         lambda: db.list_volumes(schema, catalog),
@@ -215,6 +303,7 @@ def list_columns(
     user clicks "Profile this table".
     """
     db = _connector(cfg)
+    _require_catalog_for_3level(cfg, db)
     cols = _coerce_or_500(
         f"Listing columns of {schema}.{table}",
         lambda: db.list_column_profiles(schema, table),
@@ -237,6 +326,7 @@ def table_snapshot(
     column names + dtypes + comments + table comment. No profiling.
     """
     db = _connector(cfg)
+    _require_catalog_for_3level(cfg, db)
     return _coerce_or_500(
         f"Reading metadata snapshot of {schema}.{table}",
         lambda: db.get_table_metadata_snapshot(schema, table),

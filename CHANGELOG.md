@@ -6,6 +6,63 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, and dashboard card overflow
+
+Four user-reported issues against the visualizer surface, fixed in
+one PR. None changes the CLI; all live under the FastAPI/React
+layer that `/visualize` boots.
+
+1. **Ask: "thinking" panel no longer prints
+   `TheThe userThe user is…`.** The provider's streaming consumer
+   forwards *cumulative* reasoning text on every callback (the CLI
+   display takes a tail of it), but the SSE event the browser
+   receives is named `thinking.delta` and the React `AskChat`
+   accumulates each event by appending into a buffer. The router's
+   `_on_thinking` now diffs against the previous emit and ships
+   only the new suffix — incremental for the browser, unchanged
+   for the CLI. Pinned with a regression test that drives three
+   cumulative chunks through the worker and asserts the joined
+   deltas equal the final cumulative string exactly once.
+2. **Ask: clicking a prior session loads it.** The sidebar `<li>`
+   rows had no click handler, so the existing
+   `GET /api/ask/sessions/{id}` endpoint was unreachable from the
+   UI, *and* that endpoint itself was already broken — it called
+   the non-existent `get_session_turns` method on the store and
+   silently returned an empty list. The endpoint now uses
+   `recent_turns(include_compacted=True, include_summary=True)`,
+   reshaping each row into a serializable
+   `{role, question, answer_summary, turn_index, created_at}`
+   payload. The frontend lifts session selection into `Ask.tsx`,
+   passes hydrated turns down to `AskChat` via a `seedToken`
+   reseed signal, highlights the active row with `aria-current`,
+   and adds a `+ New` button that clears state to start a fresh
+   thread.
+3. **Browse: "Catalog 'None' was not found" replaced with a clean
+   picker.** For 3-level backends like Databricks, when the user
+   activates a profile through the visualizer we never ran the
+   catalog picker that the CLI's `/connect` does (see
+   `amx/cli_support/catalog_picker.py`), so `cfg.db.catalog`
+   stayed empty. The connector then fell through to the
+   SQLAlchemy inspector, which on Databricks issues
+   ``SHOW TABLES FROM `None`.<schema>`` and crashed. Two-layer
+   fix: the live-DB router now raises `412 Precondition Failed`
+   with a `select-catalog` hint when a 3-level backend has no
+   catalog set (covering `list_schemas`, `list_assets`,
+   `list_columns`, `list_volumes`, `table_snapshot`); the
+   frontend's Schema route renders quick-pick buttons for the
+   visible catalogs, and the top bar gains a Catalog dropdown
+   (`POST /api/live/catalogs/{name}/activate`) that persists the
+   pick to `~/.amx/config.yml`. Two new tests pin the gate and
+   the activate endpoint.
+4. **Dashboard: long LLM model names no longer truncate
+   mid-token.** The `StatCard` component used
+   `truncate font-mono text-lg`, so values like
+   `moonshotai/kimi-k2-instruct` rendered as
+   `moonshotai/kimi-k2-…`. Switched to a 2-line clamp with
+   `break-all`, a fluid type ramp (`text-sm` for long values,
+   `text-lg` for short numerics), and a `title=` tooltip carrying
+   the full string for hover.
+
 ### Fixed — Databricks Serving Claude `/run` no longer 400s on `top_logprobs`; Windows logging cleaned up
 
 User report 2026-05-04 against the just-shipped 0.12.7 +

@@ -6,7 +6,7 @@ import { apiFetch } from "../lib/api";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
 
-interface SubmittedTurn {
+export interface SubmittedTurn {
   role: "user" | "assistant";
   content: string;
   toolCalls?: Array<{ name: string; arguments: string; result_preview: string }>;
@@ -18,16 +18,43 @@ interface SubmitResponse {
   status: string;
 }
 
+interface AskChatProps {
+  // When the parent loads a stored session, it pushes the sessionId +
+  // hydrated turns down. Both null means "fresh session".
+  selectedSessionId: number | null;
+  seedTurns: SubmittedTurn[] | null;
+  // Bumped each time the parent wants to reseed (so identical loads
+  // still trigger the effect). Re-using a number works fine.
+  seedToken: number;
+  // Lets the chat panel notify parent when a brand-new session id is
+  // assigned by the backend, so the sidebar can refresh / highlight.
+  onSessionAssigned?: (sessionId: number | null) => void;
+}
+
 // Self-contained chat panel — owns the question textarea, SSE
 // subscription for the current job, the running thinking ribbon,
 // and the message history.
-export default function AskChat() {
+export default function AskChat({
+  selectedSessionId,
+  seedTurns,
+  seedToken,
+  onSessionAssigned,
+}: AskChatProps) {
   const [turns, setTurns] = useState<SubmittedTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [activeJob, setActiveJob] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Reseed history when the parent picks a different session.
+  useEffect(() => {
+    setSessionId(selectedSessionId);
+    setTurns(seedTurns ?? []);
+    setActiveJob(null);
+    setSubmitError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedToken]);
 
   const { events, closed } = useEventSource({
     path: activeJob ? `/api/ask/${activeJob}/events` : "",
@@ -89,6 +116,7 @@ export default function AskChat() {
       });
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
+      onSessionAssigned?.(result.session_id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Ask failed.";
       setSubmitError(message);

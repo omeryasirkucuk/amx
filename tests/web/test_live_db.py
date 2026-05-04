@@ -85,6 +85,7 @@ def test_list_schemas_uses_active_catalog_default(client, auth_headers, monkeypa
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=False),
             list_schemas=MagicMock(return_value=["public", "sales"]),
         ),
     )
@@ -126,6 +127,7 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=False),
             list_assets=MagicMock(
                 return_value=[
                     ("orders", AssetKind.TABLE),
@@ -159,10 +161,14 @@ def test_list_volumes_returns_empty_for_unsupported_backends(
     assert payload["volumes"] == []
 
 
-def test_list_volumes_returns_rows_for_databricks(client, auth_headers, monkeypatch) -> None:
+def test_list_volumes_returns_rows_for_databricks(
+    client, auth_headers, monkeypatch, cfg
+) -> None:
+    cfg.db.catalog = "main"
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=True),
             capabilities=MagicMock(volumes=True),
             list_volumes=MagicMock(
                 return_value=[
@@ -194,6 +200,7 @@ def test_list_columns_returns_lightweight_metadata(client, auth_headers, monkeyp
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=False),
             list_column_profiles=MagicMock(return_value=[cp1, cp2]),
         ),
     )
@@ -217,7 +224,10 @@ def test_table_snapshot_passes_through_connector_payload(client, auth_headers, m
     }
     _patch_connector(
         monkeypatch,
-        lambda: MagicMock(get_table_metadata_snapshot=MagicMock(return_value=snapshot)),
+        lambda: MagicMock(
+            supports_catalogs=MagicMock(return_value=False),
+            get_table_metadata_snapshot=MagicMock(return_value=snapshot),
+        ),
     )
     response = client.get("/api/live/schemas/sales/tables/customers/snapshot", headers=auth_headers)
     assert response.status_code == 200
@@ -234,3 +244,51 @@ def test_connector_errors_surface_as_500_with_actionable_detail(
     response = client.get("/api/live/databases", headers=auth_headers)
     assert response.status_code == 500
     assert "connect timed out" in response.json()["detail"]
+
+
+def test_list_assets_412_when_3level_backend_has_no_catalog(
+    client, auth_headers, monkeypatch
+) -> None:
+    """Databricks (3-level) without a catalog must return 412 with the
+    select-catalog hint, not crash with ``Catalog 'None' was not found``."""
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),
+    )
+    response = client.get("/api/live/schemas/sales/assets", headers=auth_headers)
+    assert response.status_code == 412
+    detail = response.json()["detail"]
+    assert detail["hint"] == "select-catalog"
+
+
+def test_activate_catalog_writes_to_active_profile(
+    client, auth_headers, monkeypatch, cfg
+) -> None:
+    cfg.db.catalog = ""
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),
+    )
+    response = client.post(
+        "/api/live/catalogs/main/activate",
+        headers=auth_headers,
+        json={"persist": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["catalog"] == "main"
+    assert cfg.db.catalog == "main"
+
+
+def test_activate_catalog_rejects_2level_backend(
+    client, auth_headers, monkeypatch
+) -> None:
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
+    )
+    response = client.post(
+        "/api/live/catalogs/main/activate",
+        headers=auth_headers,
+        json={"persist": False},
+    )
+    assert response.status_code == 400

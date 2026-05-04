@@ -125,7 +125,24 @@ def get_session(session_id: int) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No chat session {session_id}.",
         )
-    turns = store.get_session_turns(session_id) if hasattr(store, "get_session_turns") else []
+    # ``recent_turns`` is the canonical accessor on ChatSessionStore. We
+    # include compacted+summary rows so the browser can show the full
+    # history (the agent itself only sees the live tail in follow-ups).
+    raw_turns = store.recent_turns(
+        session_id,
+        include_compacted=True,
+        include_summary=True,
+    )
+    turns = [
+        {
+            "role": str(t.get("role") or ""),
+            "question": str(t.get("question") or ""),
+            "answer_summary": str(t.get("answer_summary") or ""),
+            "turn_index": int(t.get("turn_index") or 0),
+            "created_at": t.get("created_at"),
+        }
+        for t in raw_turns
+    ]
     return {"session": session, "turns": turns}
 
 
@@ -212,8 +229,23 @@ def _ask_worker(
 
     llm = LLMProvider(cfg.llm)
 
+    # ``on_thinking_delta`` from tool_agent forwards CUMULATIVE reasoning
+    # text (the CLI display takes a tail of it). The browser builds the
+    # panel by appending each event's text, so we must emit only the new
+    # suffix here — otherwise the user sees "TheThe userThe user is…".
+    last_thinking = ""
+
     def _on_thinking(text: str) -> None:
-        emit(job.queue, "thinking.delta", {"text": text})
+        nonlocal last_thinking
+        if not text:
+            return
+        if text.startswith(last_thinking):
+            chunk = text[len(last_thinking):]
+        else:
+            chunk = text
+        last_thinking = text
+        if chunk:
+            emit(job.queue, "thinking.delta", {"text": chunk})
 
     def _on_tool_call(summary: dict[str, Any]) -> None:
         emit(
