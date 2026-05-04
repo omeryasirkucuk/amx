@@ -180,8 +180,8 @@ def register_history_commands(
                         "success": "[bold green]success[/bold green]",
                         "failed": "[bold red]failed[/bold red]",
                         "cancelled": "[bold yellow]cancelled[/bold yellow]",
-                        "ready_for_review": "[bold magenta]ready_for_review[/bold magenta]",
-                        "running": "[bold cyan]running[/bold cyan]",
+                        "ready_for_review": "[bold #fed7aa]ready_for_review[/bold #fed7aa]",
+                        "running": "[bold #fb923c]running[/bold #fb923c]",
                     }.get(str(row.get("status", "")), str(row.get("status", ""))),
                     str(row.get("mode", "")),
                     str(row.get("db_backend", "")),
@@ -377,8 +377,8 @@ def register_history_commands(
                 console.print(
                     Panel(
                         "\n".join(lines),
-                        title=f"[bold cyan]{kind} DESCRIPTION[/bold cyan] - {asset_label}  [dim][{status_label}][/dim]",
-                        border_style="cyan",
+                        title=f"[bold #fb923c]{kind} DESCRIPTION[/bold #fb923c] - {asset_label}  [dim][{status_label}][/dim]",
+                        border_style="#fb923c",
                         expand=False,
                     )
                 )

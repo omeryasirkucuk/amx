@@ -27,7 +27,7 @@ class ActivityState(Enum):
 
 _STATE_GLYPH = {
     ActivityState.PENDING: "[dim]○[/dim]",
-    ActivityState.ACTIVE: "[bold yellow]✦[/bold yellow]",
+    ActivityState.ACTIVE: "[bold #fb923c]✦[/bold #fb923c]",
     ActivityState.DONE: "[green]●[/green]",
     ActivityState.FAILED: "[red]✗[/red]",
 }
@@ -181,7 +181,7 @@ class LiveDisplay:
             mark = {
                 ActivityState.DONE: "[green]✓[/green]",
                 ActivityState.FAILED: "[red]✗[/red]",
-                ActivityState.ACTIVE: "[yellow]…[/yellow]",
+                ActivityState.ACTIVE: "[#fb923c]…[/#fb923c]",
             }.get(act.state, "[dim]·[/dim]")
             tree.add(f"{mark} [dim]{act.label}[/dim] [dim]({elapsed:.1f}s)[/dim]")
         return tree
@@ -374,18 +374,18 @@ class LiveDisplay:
 
     def _render_header(self) -> Panel:
         ver = getattr(amx, "__version__", "?")
-        left = f"[bold cyan]AMX[/bold cyan] [dim]v{ver}[/dim]"
+        left = f"[bold #fb923c]AMX[/bold #fb923c] [dim]v{ver}[/dim]"
 
         ctx_parts: list[str] = []
         if self._context_provider and self._context_model:
-            ctx_parts.append(f"[yellow]{self._context_provider}/{self._context_model}[/yellow]")
+            ctx_parts.append(f"[#fb923c]{self._context_provider}/{self._context_model}[/#fb923c]")
         if self._context_schema:
             schema_str = self._context_schema
             if self._context_table:
                 schema_str += f".{self._context_table}"
-            ctx_parts.append(f"[cyan]{schema_str}[/cyan]")
+            ctx_parts.append(f"[#22d3ee]{schema_str}[/#22d3ee]")
         if self._context_mode:
-            mode_color = "green" if self._context_mode == "batch" else "blue"
+            mode_color = "green" if self._context_mode == "batch" else "#fb923c"
             ctx_parts.append(f"[{mode_color}]{self._context_mode.upper()}[/{mode_color}]")
 
         elapsed_total = time.monotonic() - self._session_start if self._session_start else 0
@@ -404,7 +404,7 @@ class LiveDisplay:
         dots = "." * (int(elapsed * 2) % 4)
         collapsed_hint = "[dim](Tab to expand)[/dim]" if self._collapsed else ""
         header = Text.from_markup(
-            f"  [bold yellow]⟳[/bold yellow] {self._thinking_label}{dots} "
+            f"  [bold #fb923c]⟳[/bold #fb923c] {self._thinking_label}{dots} "
             f"[dim]({elapsed:.0f}s)[/dim] {collapsed_hint}"
         )
         if not self._thinking_text:
@@ -447,7 +447,7 @@ class LiveDisplay:
             if act.state == ActivityState.ACTIVE:
                 idx = int(time.monotonic() * 10) % 8
                 spinner = ["⢹", "⢺", "⢼", "⣸", "⣇", "⡧", "⡏", "⡟"][idx]
-                glyph = f"[bold dodger_blue1]{spinner}[/bold dodger_blue1]"
+                glyph = f"[bold #fb923c]{spinner}[/bold #fb923c]"
             else:
                 glyph = _STATE_GLYPH[act.state]
 
