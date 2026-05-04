@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, PauseCircle, PlayCircle } from "lucide-react";
+import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, Timer } from "lucide-react";
 
 import { apiFetch, api } from "../lib/api";
 import { useEventSource, type SseEvent } from "../lib/sse";
@@ -105,11 +105,21 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   const [activities, setActivities] = useState<ActivityRow[]>([]);
   const [resolvedRunId, setResolvedRunId] = useState<number | null>(null);
   const [scope, setScope] = useState<Record<string, string[]>>({});
+  const [startTime] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
 
   const { events, closed, error } = useEventSource({
     path: `/api/runs/${jobId}/events`,
     enabled: true,
   });
+
+  // 1 Hz wall-clock so the live banner's elapsed timer updates in
+  // real time without re-rendering on every SSE event.
+  useEffect(() => {
+    if (closed) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [closed]);
 
   useEffect(() => {
     for (const event of events) {
@@ -190,6 +200,18 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     ? String(lastEvent.type || "")
     : "";
 
+  // Newest still-running activity is the "current" thing the agent
+  // is doing; falls back to the latest entry overall when nothing
+  // is in flight (e.g. between two tables).
+  const currentActivity = useMemo(() => {
+    for (let i = activities.length - 1; i >= 0; i--) {
+      if (activities[i].status === "running") return activities[i];
+    }
+    return activities[activities.length - 1];
+  }, [activities]);
+  const completedCount = activities.filter((a) => a.status !== "running").length;
+  const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
+
   return (
     <>
       <PageHeader
@@ -212,6 +234,28 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           )
         }
       />
+      {!closed && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-accent/30 bg-accent-soft/40 px-4 py-2.5 text-sm">
+          <span className="inline-flex items-center gap-1.5 font-mono text-accent-ink">
+            <Loader2 size={14} className="animate-spin" />
+            running
+          </span>
+          <span className="inline-flex items-center gap-1.5 font-mono tabular-nums text-ink">
+            <Timer size={13} className="text-ink-muted" />
+            {formatElapsed(elapsedSec)}
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-ink">
+            <ActivityIcon size={13} className="text-ink-muted" />
+            <span className="text-ink-muted">Now:</span>
+            <span className="font-mono">
+              {currentActivity ? currentActivity.label : "Waiting for the worker…"}
+            </span>
+          </span>
+          <span className="ml-auto text-xs text-ink-dim">
+            {completedCount}/{activities.length || "—"} processed
+          </span>
+        </div>
+      )}
       <AlertDialog
         open={confirmCancel}
         onClose={() => setConfirmCancel(false)}
@@ -344,6 +388,17 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
       </div>
     </div>
   );
+}
+
+function formatElapsed(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "0s";
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return `${m}m ${s.toString().padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${rm.toString().padStart(2, "0")}m`;
 }
 
 function normalizeAlternatives(raw: unknown): string[] {
@@ -537,6 +592,24 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
+interface PendingEntry {
+  idx: number;
+  schema: string;
+  table: string;
+  column: string | null;
+  final_description: string;
+  confidence: string;
+  source: string;
+  asset_kind: string;
+  result_id: number | null;
+  alternatives: unknown[];
+  logprob_score: number | null;
+}
+interface PendingResponseLite {
+  pending: PendingEntry[];
+  count: number;
+}
+
 function ResultsTab({
   runId,
   loading,
@@ -549,6 +622,24 @@ function ResultsTab({
   error?: Error;
 }) {
   const queryClient = useQueryClient();
+  const toast = useToast();
+
+  const pending = useQuery({
+    queryKey: ["pending"],
+    queryFn: () => apiFetch<PendingResponseLite>("/api/pending"),
+    retry: false,
+  });
+
+  // Map result_id → pending entry so each run-result row can find
+  // its editable alternatives + the API idx for PATCH/apply calls.
+  const pendingByResultId = useMemo(() => {
+    const m = new Map<number, PendingEntry>();
+    for (const p of pending.data?.pending ?? []) {
+      if (p.result_id != null) m.set(p.result_id, p);
+    }
+    return m;
+  }, [pending.data]);
+
   const queueApply = useMutation({
     mutationFn: () =>
       apiFetch<{ job_id: string; status: string }>("/api/pending/apply", {
@@ -557,11 +648,44 @@ function ResultsTab({
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pending"] });
+      queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
+      toast.push({
+        title: "Apply started",
+        description: "Streaming the queue to the live database…",
+        tone: "info",
+        duration: 2200,
+      });
     },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Apply failed",
+        description: e.message,
+        tone: "error",
+      }),
   });
-  // Group by table — easier to scan than a flat list of column rows.
-  // Computed unconditionally to keep React hook order stable across
-  // renders (loading / error / empty paths still call useMemo).
+
+  const patchPending = useMutation({
+    mutationFn: (vars: { idx: number; description: string }) =>
+      apiFetch(`/api/pending/${vars.idx}`, {
+        method: "PATCH",
+        body: JSON.stringify({ final_description: vars.description }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pending"] });
+      toast.push({
+        title: "Description updated",
+        tone: "info",
+        duration: 1800,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Update failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
   const grouped = useMemo(() => groupByTable(rows), [rows]);
 
   if (loading) {
@@ -588,29 +712,24 @@ function ResultsTab({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-ink-muted">
           Run #{runId} produced <span className="font-mono">{rows.length}</span>{" "}
-          alternative slot{rows.length === 1 ? "" : "s"}. Approve below or open
-          the Pending tab for bulk actions.
+          suggestion{rows.length === 1 ? "" : "s"}. Pick a different alternative
+          (A/B/C…) anytime — your choice is saved to the pending queue and
+          becomes the value Apply writes to the live DB.
         </p>
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="md"
+          leadingIcon={<PlayCircle size={14} />}
+          loading={queueApply.isPending}
           onClick={() => queueApply.mutate()}
-          disabled={queueApply.isPending}
-          className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-50"
         >
-          <PlayCircle size={12} />
-          {queueApply.isPending ? "Applying…" : "Apply pending queue"}
-        </button>
+          Apply pending queue
+        </Button>
       </div>
-      {queueApply.isError && (
-        <div className="rounded-md border border-critical/30 bg-critical/5 px-3 py-2 text-xs text-critical">
-          {queueApply.error instanceof Error
-            ? queueApply.error.message
-            : "Apply failed."}
-        </div>
-      )}
+
       {grouped.map(({ key, rows: tableRows }) => (
         <Card key={key}>
           <CardHeader
@@ -618,43 +737,132 @@ function ResultsTab({
             description={`${tableRows.length} suggestion${tableRows.length === 1 ? "" : "s"}`}
           />
           <CardBody className="p-0">
-            <table className="w-full text-sm">
-              <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
-                <tr>
-                  <th className="px-5 py-2 text-left font-semibold">Column</th>
-                  <th className="px-5 py-2 text-left font-semibold">Confidence</th>
-                  <th className="px-5 py-2 text-left font-semibold">Chosen description</th>
-                  <th className="px-5 py-2 text-left font-semibold">Evaluation</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tableRows.map((r) => (
-                  <tr key={r.id} className="border-t border-surface-border">
-                    <td className="px-5 py-2 font-mono text-xs">
-                      {r.column_name ?? <em className="text-ink-dim">(table)</em>}
-                    </td>
-                    <td className="px-5 py-2">
-                      <ConfidencePill value={r.confidence} score={r.logprob_score} />
-                    </td>
-                    <td className="px-5 py-2 text-ink">
-                      {r.chosen_description ?? (
-                        <span className="text-ink-dim">
-                          {firstAlternative(r.alternatives_json) ?? "—"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-5 py-2 text-xs text-ink-muted">
-                      {r.evaluation || (r.applied_at ? "applied" : "pending")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="divide-y divide-border">
+              {tableRows.map((r) => {
+                const pendingEntry =
+                  r.id != null ? pendingByResultId.get(r.id) : undefined;
+                return (
+                  <ResultRowItem
+                    key={r.id}
+                    row={r}
+                    pendingEntry={pendingEntry}
+                    pickAlternative={(description) => {
+                      if (!pendingEntry) return;
+                      patchPending.mutate({ idx: pendingEntry.idx, description });
+                    }}
+                    isPicking={patchPending.isPending}
+                  />
+                );
+              })}
+            </ul>
           </CardBody>
         </Card>
       ))}
     </div>
   );
+}
+
+function ResultRowItem({
+  row,
+  pendingEntry,
+  pickAlternative,
+  isPicking,
+}: {
+  row: ResultRow;
+  pendingEntry?: PendingEntry;
+  pickAlternative: (description: string) => void;
+  isPicking: boolean;
+}) {
+  const sourceAlts = pendingEntry
+    ? normalizeAlternativeStrings(pendingEntry.alternatives)
+    : normalizeAlternatives(row.alternatives_json);
+  const chosen = pendingEntry?.final_description ?? row.chosen_description ?? "";
+  const visible = chosen && !sourceAlts.includes(chosen)
+    ? [chosen, ...sourceAlts]
+    : sourceAlts;
+  const applied = !!row.applied_at;
+
+  return (
+    <li className="px-5 py-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-mono text-ink">
+          {row.column_name ?? <em className="text-ink-dim">(table)</em>}
+        </span>
+        <ConfidencePill value={row.confidence} score={row.logprob_score} />
+        <StatusPill tone={applied ? "positive" : "neutral"}>
+          {applied ? "applied" : (row.evaluation || "pending")}
+        </StatusPill>
+        {row.source && (
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">
+            {row.source}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 space-y-1">
+        {visible.length === 0 ? (
+          <p className="text-xs text-ink-dim">{chosen || "—"}</p>
+        ) : (
+          visible.map((alt, idx) => {
+            const isChosen = alt === chosen;
+            const canPick = !!pendingEntry && !isChosen && !applied;
+            return (
+              <button
+                key={`${row.id}-${idx}`}
+                type="button"
+                onClick={() => canPick && pickAlternative(alt)}
+                disabled={!canPick || isPicking}
+                title={
+                  applied
+                    ? "Already applied — re-run to change."
+                    : !pendingEntry
+                      ? "This row isn't in the pending queue (re-run or open it for editing)."
+                      : isChosen
+                        ? "Currently chosen alternative"
+                        : "Make this the chosen alternative"
+                }
+                className={cn(
+                  "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-fast",
+                  isChosen
+                    ? "border-accent/40 bg-accent-soft/40 text-ink"
+                    : "border-border text-ink-muted hover:border-accent/40 hover:bg-surface-subtle/50 hover:text-ink",
+                  (!canPick || isPicking) && !isChosen && "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
+                )}
+              >
+                <span
+                  className={cn(
+                    "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold",
+                    isChosen
+                      ? "bg-accent text-white"
+                      : "bg-surface-subtle text-ink-dim",
+                  )}
+                >
+                  {isChosen ? "✓" : String.fromCharCode(65 + idx)}
+                </span>
+                <span className="leading-relaxed">{alt}</span>
+              </button>
+            );
+          })
+        )}
+      </div>
+    </li>
+  );
+}
+
+function normalizeAlternativeStrings(raw: unknown[]): string[] {
+  const out: string[] = [];
+  for (const entry of raw ?? []) {
+    if (typeof entry === "string") out.push(entry);
+    else if (entry && typeof entry === "object") {
+      const desc = (entry as { description?: unknown }).description;
+      if (typeof desc === "string") out.push(desc);
+    }
+  }
+  const seen = new Set<string>();
+  return out.filter((d) => {
+    if (seen.has(d)) return false;
+    seen.add(d);
+    return true;
+  });
 }
 
 function ConfidencePill({
@@ -671,18 +879,6 @@ function ConfidencePill({
       <StatusPill tone={tone}>{value}</StatusPill>
     </span>
   );
-}
-
-function firstAlternative(value: unknown): string | null {
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0];
-    if (typeof first === "string") return first;
-    if (first && typeof first === "object" && "description" in (first as object)) {
-      const d = (first as { description?: unknown }).description;
-      return typeof d === "string" ? d : null;
-    }
-  }
-  return null;
 }
 
 function groupByTable(rows: ResultRow[]) {

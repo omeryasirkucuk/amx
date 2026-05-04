@@ -57,7 +57,7 @@ def test_index_is_not_authenticated(client) -> None:
     without a token."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "AMX Visualizer" in response.text
+    assert "AMX" in response.text and "Agentic Metadata Extractor" in response.text
 
 
 def test_spa_route_falls_back_to_index(client) -> None:
@@ -65,7 +65,7 @@ def test_spa_route_falls_back_to_index(client) -> None:
     not a 404, so the React Router can take over."""
     response = client.get("/runs/42")
     assert response.status_code == 200
-    assert "AMX Visualizer" in response.text
+    assert "AMX" in response.text and "Agentic Metadata Extractor" in response.text
 
 
 def test_generate_token_is_unique() -> None:
