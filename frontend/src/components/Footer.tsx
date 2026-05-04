@@ -14,7 +14,7 @@ export default function Footer() {
         <div className="flex items-center gap-2">
           <Logo size={11} />
           <span>
-            Agentic Metadata Extractor — open source under MIT.
+            Agentic Metadata Extractor — open source under Apache 2.0.
           </span>
         </div>
         <a

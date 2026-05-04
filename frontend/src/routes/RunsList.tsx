@@ -36,7 +36,13 @@ export default function RunsList() {
     retry: false,
   });
 
-  const rows: Row[] = (runs.data?.runs as Row[] | undefined) ?? [];
+  // /runs is the "what AMX did to the database" log — Ask sessions
+  // are conversational queries that don't touch the warehouse, so
+  // they live behind /ask only and are filtered out here.
+  const ASK_COMMANDS = new Set(["ask.run", "search.ask"]);
+  const rows: Row[] = ((runs.data?.runs as Row[] | undefined) ?? []).filter(
+    (r) => !ASK_COMMANDS.has(r.command),
+  );
 
   const columns: DataTableColumn<Row>[] = useMemo(
     () => [
