@@ -6,6 +6,38 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` table page: inline edit + LLM auto-generate (UI overhaul, PR 8)
+
+The table page (`/db/<profile>/<schema>/<table>`) becomes the single
+spot where a user can review, hand-write, or have AMX generate the
+description for a table and every one of its columns — without
+leaving the page.
+
+* **`InlineEditText` primitive.** New
+  `frontend/src/components/ui/InlineEditText.tsx` — view/edit toggle
+  with a hover-revealed pencil, single-line or multi-line, full
+  keyboard support (Enter to save / Esc to cancel; ⌘+Enter on the
+  multi-line variant), inline error display, and a `readOnly` mode
+  for surfaces where editing isn't yet wired up.
+* **Table description and every column comment are inline-editable.**
+  Both call new `api.setTableComment` / `api.setColumnComment`
+  helpers in `frontend/src/lib/api.ts`, which target the existing
+  `PUT /api/comments/schemas/{schema}/tables/{table}` and
+  `.../columns/{column}` endpoints. After each save the live
+  snapshot query is invalidated, so the visible value re-fetches
+  the freshly-written DB COMMENT and a success toast confirms.
+* **"Generate descriptions" auto-fill.** A primary action lives in
+  the table page header. It opens an `AlertDialog` (existing
+  descriptions get overwritten; the warning is explicit), then
+  spawns a normal `/run` job scoped to this single table with
+  `apply: true` so output writes straight back to the live database,
+  and redirects to the run-detail page so the user can watch the
+  worker stream. When they navigate back, every comment field
+  picks up the freshly-written value.
+
+No backend changes — both flows reuse endpoints already exposed by
+the FastAPI app. Bundle rebuilt and vendored.
+
 ### Fixed / Changed — `/visualize` Home tile + recent-runs polish (UI overhaul, PR 7)
 
 Three Home-page items: a stats bug that made two tiles always show
