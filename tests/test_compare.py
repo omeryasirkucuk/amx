@@ -1190,6 +1190,82 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
         # And the cfg was restored.
         self.assertEqual(fake.cfg.catalog, "")
 
+    def test_list_tables_in_schema_auto_picks_catalog_when_unpinned(self) -> None:
+        """User report 2026-05-04 (third loop): list_schemas correctly
+        auto-picked ``amx_test`` and returned the schema list, but
+        list_tables_in_schema(schema='amx_test_schema') did NOT
+        auto-pick — cfg.catalog stayed empty, the inspector emitted
+        ``SHOW TABLES FROM None.amx_test_schema``, and the LLM
+        answered with the warehouse error instead of the table list.
+        Auto-pick now applies at every catalog-scoped tool, not only
+        list_schemas."""
+
+        class FakeDB:
+            def __init__(self) -> None:
+                self.cfg = type("DBCfg", (), {"catalog": ""})()
+                self.observed_catalog: str = ""
+
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                return ["amx_test", "samples", "system", "workspace"]
+
+            def list_schemas(self) -> list[str]:
+                self.observed_catalog = self.cfg.catalog
+                return ["amx_test_schema"]
+
+            def list_tables(self, schema: str) -> list[str]:
+                self.observed_catalog = self.cfg.catalog
+                return ["customers", "orders"]
+
+        fake = FakeDB()
+        toolbox = self._toolbox(fake)
+        payload = toolbox._tool_list_tables_in_schema(schema="amx_test_schema")
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["catalog"], "amx_test")
+        self.assertEqual(payload["auto_picked_catalog"], "amx_test")
+        self.assertEqual([t["name"] for t in payload["tables"]], ["customers", "orders"])
+        # Connector saw the temporary pin while resolving + listing.
+        self.assertEqual(fake.observed_catalog, "amx_test")
+        # And cfg was restored after the call.
+        self.assertEqual(fake.cfg.catalog, "")
+
+    def test_describe_table_auto_picks_catalog_when_unpinned(self) -> None:
+        """describe_table also has to auto-pick — otherwise it emits
+        DESCRIBE None.<schema>.<table> on Databricks UC and returns
+        a confusing 'found=false, catalog 'none' was not found' shape
+        that the LLM then narrates back at the user."""
+
+        class FakeProfile:
+            existing_comment = ""
+            row_count = 42
+            columns: list = []
+            analytics = type("A", (), {})()
+
+        class FakeDB:
+            def __init__(self) -> None:
+                self.cfg = type("DBCfg", (), {"catalog": ""})()
+                self.observed_catalog: str = ""
+
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                return ["amx_test", "samples", "system", "workspace"]
+
+            def profile_table(self, schema: str, table: str, **_kw):
+                self.observed_catalog = self.cfg.catalog
+                return FakeProfile()
+
+        fake = FakeDB()
+        toolbox = self._toolbox(fake)
+        payload = toolbox._tool_describe_table(schema="amx_test_schema", table="customers")
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["catalog"], "amx_test")
+        self.assertEqual(fake.observed_catalog, "amx_test")
+        self.assertEqual(fake.cfg.catalog, "")
+
     def test_list_schemas_with_catalog_argument_scopes_listing(self) -> None:
         """Passing ``catalog=X`` must temporarily pin cfg.catalog so the
         connector emits ``SHOW SCHEMAS IN X`` instead of failing on the
