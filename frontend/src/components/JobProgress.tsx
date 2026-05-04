@@ -6,21 +6,26 @@ import StatusPill from "./StatusPill";
 
 interface Props {
   jobId: string;
-  /** Either "runs" or "apply" — picks the SSE path. */
-  kind: "runs" | "apply";
+  /** Either "runs" / "apply" / "docs/scan" / "docs/ingest" — picks the SSE path. */
+  kind: "runs" | "apply" | "docs/scan" | "docs/ingest";
   /** Called when the user clicks the inline cancel button. */
   onCancel?: () => void;
   /** Called once the stream finishes (any terminal event). */
   onTerminal?: (terminal: SseEvent) => void;
 }
 
-// JobProgress streams progress events for one /run or /apply job
+// JobProgress streams progress events for one /run / /apply / docs op
 // into a Rich-CLI-style activity tree. The component is intentionally
 // presentational — the parent owns the cancel + retry actions.
 export default function JobProgress({ jobId, kind, onCancel, onTerminal }: Props) {
-  const { events, closed, error } = useEventSource({
-    path: `/api/${kind}/${jobId}/events`,
-  });
+  const ssePath =
+    kind === "runs" || kind === "apply"
+      ? `/api/${kind}/${jobId}/events`
+      : // docs/scan + docs/ingest jobs are tailed via the generic /api/runs
+        // SSE endpoint — JobRegistry stores every job kind by id, and the
+        // generator just streams the queue.
+        `/api/runs/${jobId}/events`;
+  const { events, closed, error } = useEventSource({ path: ssePath });
 
   const terminal = useMemo(() => events.find((e) => /^job\./.test(e.type)), [events]);
   if (terminal && onTerminal) onTerminal(terminal);

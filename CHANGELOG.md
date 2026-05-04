@@ -6,6 +6,38 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` runs the doc RAG flow end-to-end (Stage 4)
+
+Settings → Docs no longer needs the CLI for the operational path.
+Three new endpoints, each backed by a quiet (browser-only) worker:
+
+* `POST /api/docs/scan` — spawn a doc-scan job; emits the file
+  inventory (`scan.summary`) over SSE plus `activity.added/complete`.
+  Body accepts `paths=[...]`, `profile=<name>`, or falls back to
+  the active doc profile (same precedence the CLI uses).
+* `POST /api/docs/ingest` — spawn a doc-ingest job that reuses
+  `RAGStore.ingest(...)`. Emits a final `ingest.summary` event with
+  document count + chunks added. `refresh=true` drops existing
+  chunks for each source first.
+* `GET /api/docs/search?q=...&n=...` — synchronous Chroma similarity
+  search (no LLM). Returns up to 25 hits with source + distance +
+  preview.
+
+Frontend: Settings → Docs grows a "Search docs" search box + per-row
+**Scan** / **Ingest** / **Re-ingest** buttons. The same
+`JobProgress` component the run page uses now accepts
+`kind="docs/scan"` and `kind="docs/ingest"` so the streaming feed
+looks identical across surfaces.
+
+The visualizer's `quiet_console()` is reused so the agents' Rich
+prints don't bleed into the parent CLI terminal during a
+web-triggered ingest.
+
+Tests: 6 new in `tests/web/test_docs_ops.py` covering the worker
+dispatch contract, profile-resolution fallback, refresh flag wiring,
+and the search endpoint's empty-store + happy paths. Full suite:
+834 passed.
+
 ### Added — `/visualize` Settings page with full DB / LLM / Docs / Code wizards (Stage 3)
 
 The Settings page used to list profiles read-only and tell the user
