@@ -6,6 +6,7 @@ import Schema from "./routes/Schema";
 import Table from "./routes/Table";
 import RunsList from "./routes/RunsList";
 import RunDetail from "./routes/RunDetail";
+import RunNew from "./routes/RunNew";
 import Ask from "./routes/Ask";
 import Pending from "./routes/Pending";
 import Settings from "./routes/Settings";
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="db/:profile/:schema" element={<Schema />} />
         <Route path="db/:profile/:schema/:table" element={<Table />} />
         <Route path="runs" element={<RunsList />} />
+        <Route path="runs/new" element={<RunNew />} />
         <Route path="runs/:runId" element={<RunDetail />} />
         <Route path="ask" element={<Ask />} />
         <Route path="pending" element={<Pending />} />

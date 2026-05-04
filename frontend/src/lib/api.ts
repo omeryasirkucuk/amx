@@ -184,4 +184,21 @@ export const api = {
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
   },
   stats: () => apiFetch<StatsResponse>("/api/history/stats"),
+  submitRun: (body: {
+    scope: Record<string, string[]>;
+    apply?: boolean;
+    missing_only?: boolean;
+  }) =>
+    apiFetch<{ job_id: string; status: string }>("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        scope: body.scope,
+        apply: !!body.apply,
+        missing_only: !!body.missing_only,
+      }),
+    }),
+  cancelRun: (jobId: string) =>
+    apiFetch<{ ok: boolean; job_id: string }>(`/api/runs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+    }),
 };
