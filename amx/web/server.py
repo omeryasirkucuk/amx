@@ -23,6 +23,7 @@ from amx.web.jobs import JobRegistry
 from amx.web.routers import (
     ask,
     catalog,
+    code_ops,
     comments,
     docs_ops,
     history,
@@ -97,6 +98,7 @@ def create_app(
     app.include_router(pending.router)
     app.include_router(docs_ops.router)
     app.include_router(system_ops.router)
+    app.include_router(code_ops.router)
 
     root = static_root if static_root is not None else _static_root()
     app.state.static_root = root
