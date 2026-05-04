@@ -13,7 +13,7 @@ detail we use elsewhere.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from amx.config import AMXConfig
 from amx.db.connector import AssetKind, DatabaseConnector
@@ -108,3 +108,40 @@ def set_column_comment(
         lambda: db.set_column_comment(schema, table, column, body.comment),
     )
     return {"ok": "true"}
+
+
+class CleanupPlaceholdersBody(BaseModel):
+    """Body for ``POST /api/comments/cleanup-placeholders``.
+
+    Optional ``schema`` scopes the sweep; otherwise every schema the
+    active DB profile can see is processed.
+    """
+
+    schema_: str | None = Field(default=None, alias="schema")
+
+    model_config = {"populate_by_name": True}
+
+
+@router.post("/cleanup-placeholders")
+def cleanup_placeholders(
+    body: CleanupPlaceholdersBody | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, object]:
+    """Remove auto-inference fallback placeholder text from existing
+    COMMENTs. Re-uses ``cleanup_placeholders_core`` from
+    ``amx/cli_support/commands/db.py`` so the CLI command and the
+    web button share one implementation. Returns the same payload
+    shape (``schemas``, ``tables_cleared``, ``columns_cleared``,
+    ``warnings``) the helper produces."""
+    from amx.cli_support.commands.db import cleanup_placeholders_core
+
+    db = _connector(cfg)
+    schema = (body.schema_ if body else None) or None
+    try:
+        result = cleanup_placeholders_core(db, schema=schema)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return result

@@ -6,6 +6,57 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — profile editor + pending review queue + cleanup-placeholders endpoint (PR-E)
+
+Fifth slice of the local AMX web UI. The visualizer manages DB and
+LLM profiles end-to-end (list / view / create / update / delete /
+activate / connection-test), edits and applies the pending review
+queue without dropping into the CLI, and triggers the
+cleanup-placeholders sweep on demand.
+
+What's included:
+
+- **New router** `amx/web/routers/profiles.py`:
+  - DB: `GET /api/profiles/db`, `GET /api/profiles/db/{name}`,
+    `PUT`, `DELETE`, `POST .../activate`, `POST .../test`. Secret
+    fields (`password`, `access_token`) are masked with `********`
+    in every response; PUT bodies treat the placeholder as
+    "leave the existing value alone" so editing one field doesn't
+    blank the secret.
+  - LLM: matching CRUD + activate; `api_key` masked the same way.
+  - Doc + code profile listings (read-only — full editor lands in
+    a follow-up PR).
+- **New router** `amx/web/routers/pending.py`:
+  - `GET /api/pending` — serialised queue with stable `idx`
+    markers.
+  - `PATCH /api/pending/{idx}` — partial updates, validates
+    confidence enum.
+  - `DELETE /api/pending/{idx}` — drop one row.
+  - `POST /api/pending/clear` — wipe the queue.
+  - `POST /api/pending/apply` — spawns the existing
+    `_apply_worker` so the SSE stream is bit-identical to
+    `POST /api/apply`.
+- **`cleanup_placeholders_core` extracted** from
+  `amx/cli_support/commands/db.py` into a pure helper. The CLI
+  command now delegates to it; the new
+  `POST /api/comments/cleanup-placeholders` endpoint exposes the
+  same logic to the web UI with an optional schema scope.
+- **Frontend**:
+  - `/settings` route is no longer a placeholder — renders DB and
+    LLM profile cards with Activate + Test buttons, masked secrets,
+    inline test-result badges.
+  - `/pending` route renders the full queue as an editable table
+    with Apply / Clear / per-row Remove buttons and live SSE
+    progress on Apply.
+- **30 new tests** under `tests/web/`:
+  - `test_profiles.py` (15 tests) — list / get / put / delete /
+    activate / test for DB, LLM round-trip, secret masking and the
+    placeholder-preserves-secret behaviour, doc + code listings.
+  - `test_pending.py` (10 tests) — list/serialise, patch (404 +
+    400 paths), delete, clear, apply (job lifecycle + SSE shape).
+  - `test_cleanup_placeholders.py` (5 tests) — pure helper +
+    endpoint happy path + 400 on unknown schema.
+
 ### Added — `/ask` SSE chat panel + run comparison endpoint (PR-D)
 
 Fourth slice of the local AMX web UI. The visualizer can now hold a
