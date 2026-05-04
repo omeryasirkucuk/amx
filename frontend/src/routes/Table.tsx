@@ -1,14 +1,20 @@
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
-import { Columns, AlignLeft } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { AlignLeft, Columns, Sparkles } from "lucide-react";
 
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import StatusPill from "../components/StatusPill";
 import { useUi } from "../lib/store";
-import { Skeleton } from "../components/ui";
+import {
+  AlertDialog,
+  Button,
+  InlineEditText,
+  Skeleton,
+  useToast,
+} from "../components/ui";
 
 export default function Table() {
   const params = useParams();
@@ -16,6 +22,10 @@ export default function Table() {
   const table = params.table!;
   const profile = params.profile || "active";
   const remember = useUi((s) => s.rememberOpenedTable);
+  const qc = useQueryClient();
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [confirmGenerate, setConfirmGenerate] = useState(false);
 
   useEffect(() => {
     remember(schema, table);
@@ -35,6 +45,60 @@ export default function Table() {
     snapshot.data?.columns?.filter((c) => (c.comment || "").trim().length > 0).length ?? 0;
   const tableComment = snapshot.data?.table_comment ?? "";
 
+  // Inline-edit save handlers — they invalidate the snapshot so the
+  // visible value re-fetches with the freshly written COMMENT.
+  async function saveTableComment(next: string) {
+    await api.setTableComment(schema, table, next);
+    qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+    toast.push({
+      title: "Description saved",
+      tone: "success",
+      duration: 2000,
+    });
+  }
+
+  async function saveColumnComment(column: string, next: string) {
+    await api.setColumnComment(schema, table, column, next);
+    qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+    toast.push({
+      title: `Comment saved`,
+      description: `${schema}.${table}.${column}`,
+      tone: "success",
+      duration: 2000,
+    });
+  }
+
+  // Auto-generate via the existing /run worker. Spawning a job
+  // returns immediately; we redirect to the run-detail page so the
+  // user can watch streaming progress, then come back to this table
+  // once the worker exits.
+  const generate = useMutation({
+    mutationFn: () =>
+      api.submitRun({
+        scope: { [schema]: [table] },
+        apply: true,
+        missing_only: false,
+      }),
+    onSuccess: (result) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Generation started",
+        description: `Streaming activity for ${schema}.${table}…`,
+        tone: "info",
+        duration: 2200,
+      });
+      navigate(`/runs/new-${result.job_id}`);
+    },
+    onError: (e: Error) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Could not start generation",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
   return (
     <>
       <PageHeader
@@ -44,7 +108,25 @@ export default function Table() {
           { label: schema, to: `/db/${profile}/${schema}` },
           { label: table },
         ]}
-        description={tableComment || undefined}
+        description={
+          <InlineEditText
+            value={tableComment}
+            onSave={saveTableComment}
+            multiline
+            italicEmpty
+            emptyLabel="No table description yet — click to add one or use Generate."
+          />
+        }
+        actions={
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Sparkles size={14} />}
+            onClick={() => setConfirmGenerate(true)}
+          >
+            Generate descriptions
+          </Button>
+        }
       />
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -95,7 +177,7 @@ export default function Table() {
                 {columns.data.columns.map((col) => {
                   const snap = snapshot.data?.columns.find((c) => c.name === col.name);
                   return (
-                    <tr key={col.name} className="hover:bg-surface-subtle/40">
+                    <tr key={col.name} className="align-top hover:bg-surface-subtle/40">
                       <td className="px-5 py-2 font-mono text-xs text-ink">{col.name}</td>
                       <td className="px-5 py-2 font-mono text-xs text-ink-muted">
                         {col.dtype}
@@ -106,11 +188,13 @@ export default function Table() {
                         </StatusPill>
                       </td>
                       <td className="px-5 py-2 text-ink-muted">
-                        {snap?.comment ? (
-                          snap.comment
-                        ) : (
-                          <span className="italic text-ink-dim">no comment</span>
-                        )}
+                        <InlineEditText
+                          value={snap?.comment ?? ""}
+                          onSave={(next) => saveColumnComment(col.name, next)}
+                          multiline
+                          italicEmpty
+                          emptyLabel="no comment — click to add"
+                        />
                       </td>
                     </tr>
                   );
@@ -133,6 +217,17 @@ export default function Table() {
           ← Back to schema
         </Link>
       </div>
+
+      <AlertDialog
+        open={confirmGenerate}
+        onClose={() => setConfirmGenerate(false)}
+        onConfirm={() => generate.mutate()}
+        loading={generate.isPending}
+        tone="primary"
+        title={`Generate descriptions for ${schema}.${table}?`}
+        description="A new /run job is started for this table. Existing descriptions are overwritten and the new ones are written straight to the live database. You'll be redirected to the run-detail page to watch the worker stream."
+        confirmLabel="Start generation"
+      />
     </>
   );
 }

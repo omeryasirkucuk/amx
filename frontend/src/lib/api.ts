@@ -203,6 +203,21 @@ export const api = {
     if (command) params.set("command", command);
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
   },
+  setTableComment: (schema: string, table: string, comment: string) =>
+    apiFetch<{ schema: string; table: string; comment: string }>(
+      `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}`,
+      { method: "PUT", body: JSON.stringify({ comment }) },
+    ),
+  setColumnComment: (
+    schema: string,
+    table: string,
+    column: string,
+    comment: string,
+  ) =>
+    apiFetch<{ schema: string; table: string; column: string; comment: string }>(
+      `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`,
+      { method: "PUT", body: JSON.stringify({ comment }) },
+    ),
   stats: () => apiFetch<StatsResponse>("/api/history/stats"),
   submitRun: (body: {
     scope: Record<string, string[]>;
