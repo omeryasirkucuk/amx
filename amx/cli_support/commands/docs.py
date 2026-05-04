@@ -276,6 +276,12 @@ def register_docs_commands(
         token_tracker.reset()
 
         llm = LLMProvider(cfg.llm)
+        # Honour /use-rag-llm: build a separate provider for the RAG
+        # agent when the user has pinned a different LLM profile to
+        # retrieval. Identity check on cfg.llm avoids redundant work
+        # when no override is set.
+        rag_cfg = cfg.effective_rag_llm()
+        rag_llm = LLMProvider(rag_cfg) if rag_cfg is not cfg.llm else llm
         db = DatabaseConnector(cfg.db)
         with command_display(
             schema=schema or cfg.current_schema or "",
@@ -296,7 +302,7 @@ def register_docs_commands(
             schema_name = next(iter(scope))
             tables = scope[schema_name]
 
-            agent = RAGAgent(llm, store)
+            agent = RAGAgent(rag_llm, store)
             all_suggestions = []
             for table_name in tables:
                 with step_spinner(f"Profiling {schema_name}.{table_name}"):

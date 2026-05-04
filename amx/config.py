@@ -1160,6 +1160,12 @@ class AMXConfig:
     current_table: str = ""
     llm_profiles: dict[str, LLMConfig] = field(default_factory=dict)
     active_llm_profile: str = "default"
+    # Per-agent override: when non-empty AND present in ``llm_profiles``,
+    # the RAG agent uses this profile instead of ``active_llm_profile``.
+    # Lets the user pair, e.g., a small-and-cheap retrieval model with a
+    # bigger reasoning model on the global profile (or vice versa).
+    # Empty string ("") = no override, RAG uses the active profile.
+    rag_llm_profile: str = ""
     doc_profiles: dict[str, list[str]] = field(default_factory=dict)
     active_doc_profile: str = ""
     code_profiles: dict[str, str] = field(default_factory=dict)
@@ -1211,6 +1217,7 @@ class AMXConfig:
             "current_table",
             "llm_profiles",
             "active_llm_profile",
+            "rag_llm_profile",
             "doc_profiles",
             "active_doc_profile",
             "code_profiles",
@@ -1311,6 +1318,7 @@ class AMXConfig:
                         cfg.llm_profiles[str(name)] = _llm_from_mapping(m)
 
             cfg.active_llm_profile = str(data.get("active_llm_profile") or "default")
+            cfg.rag_llm_profile = str(data.get("rag_llm_profile") or "")
 
             doc_prof_raw = data.get("doc_profiles") or {}
             if isinstance(doc_prof_raw, dict):
@@ -1370,12 +1378,18 @@ class AMXConfig:
 
         if not cfg.llm_profiles:
             cfg.active_llm_profile = ""
+            cfg.rag_llm_profile = ""
         else:
             try:
                 cfg.apply_active_llm_profile()
             except Exception:
                 cfg.active_llm_profile = next(iter(cfg.llm_profiles.keys()))
                 cfg.llm = replace(cfg.llm_profiles[cfg.active_llm_profile])
+            # Drop the RAG override when it points at a deleted profile so
+            # the orchestrator silently falls back to the active profile
+            # instead of failing later with KeyError on rag_llm_profile.
+            if cfg.rag_llm_profile and cfg.rag_llm_profile not in cfg.llm_profiles:
+                cfg.rag_llm_profile = ""
 
         if not cfg.doc_profiles and cfg.doc_paths:
             cfg.doc_profiles["default"] = list(cfg.doc_paths)
@@ -1460,6 +1474,7 @@ class AMXConfig:
                 data["llm"] = _llm_to_mapping(self.llm)
             data["llm_profiles"] = {k: _llm_to_mapping(v) for k, v in self.llm_profiles.items()}
             data["active_llm_profile"] = self.active_llm_profile
+            data["rag_llm_profile"] = str(self.rag_llm_profile or "")
             data["doc_paths"] = doc_paths_yaml
             data["doc_profiles"] = {k: list(v) for k, v in self.doc_profiles.items()}
             data["active_doc_profile"] = self.active_doc_profile
@@ -1715,7 +1730,24 @@ class AMXConfig:
         if self.active_llm_profile == name:
             self.active_llm_profile = next(iter(self.llm_profiles.keys()))
             self.llm = replace(self.llm_profiles[self.active_llm_profile])
+        if self.rag_llm_profile == name:
+            self.rag_llm_profile = ""
         self._autosave()
+
+    def effective_rag_llm(self) -> LLMConfig:
+        """Return the LLMConfig the RAG agent should use right now.
+
+        Falls back to ``self.llm`` (the active profile) when
+        ``rag_llm_profile`` is empty or names a profile that no longer
+        exists. The fallback is intentionally silent: a stale value is
+        already cleaned up at load time, but a mid-session race (profile
+        deleted while another module holds an old cfg) should still land
+        on the active profile rather than raise.
+        """
+        name = (self.rag_llm_profile or "").strip()
+        if name and name in self.llm_profiles:
+            return self.llm_profiles[name]
+        return self.llm
 
     def upsert_doc_profile(self, name: str, paths: list[str]) -> None:
         self.doc_profiles[name] = list(paths)

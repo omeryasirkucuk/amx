@@ -182,6 +182,11 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
     # Profile management
     SlashCommand("/llm-profiles", "llm", "List LLM profiles"),
     SlashCommand("/use-llm", "llm", "Switch LLM profile (/use-llm <name>)"),
+    SlashCommand(
+        "/use-rag-llm",
+        "llm",
+        "Pin a different LLM profile to the RAG agent (/use-rag-llm [<name>|none])",
+    ),
     SlashCommand("/add-llm-profile", "llm", "Add/update LLM profile"),
     SlashCommand("/remove-llm-profile", "llm", "Remove LLM profile (/remove-llm-profile <name>)"),
     # Prompt control (input shape)

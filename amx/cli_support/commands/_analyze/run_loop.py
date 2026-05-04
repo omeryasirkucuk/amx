@@ -68,10 +68,18 @@ def run_per_schema_loop(
     rendering and the apply step.
     """
     from amx.agents.orchestrator import Orchestrator
+    from amx.llm.provider import LLMProvider
     from amx.utils.live_display import get_display
 
     result = PerSchemaLoopResult()
     display = get_display()
+
+    # Build the RAG-specific provider once per loop. Identity check vs
+    # cfg.llm: effective_rag_llm() returns the same object when there
+    # is no override, in which case we leave rag_llm=None so the
+    # orchestrator falls back to the global llm.
+    rag_cfg = cfg.effective_rag_llm()
+    rag_llm = LLMProvider(rag_cfg) if rag_cfg is not cfg.llm else None
 
     for schema_name, assets in scope.items():
         asset_kinds = {name: db.resolve_asset_kind(schema_name, name) for name in assets}
@@ -83,6 +91,7 @@ def run_per_schema_loop(
             run_id=run_id,
             search_profile=cfg.active_db_profile or "default",
             missing_only=missing_only,
+            rag_llm=rag_llm,
         )
         if dedup_outcome is not None and dedup_outcome.skip_set:
             # Tell the orchestrator which (schema, table, column)

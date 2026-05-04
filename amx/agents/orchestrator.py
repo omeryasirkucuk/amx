@@ -372,6 +372,8 @@ class Orchestrator:
         run_id: int | None = None,
         search_profile: str = "default",
         missing_only: bool = False,
+        *,
+        rag_llm: LLMProvider | None = None,
     ):
         self.db = db
         self.llm = llm
@@ -379,7 +381,11 @@ class Orchestrator:
         self.search_profile = search_profile or "default"
         self.code_report = code_report
         self.profile_agent = ProfileAgent(llm)
-        self.rag_agent = RAGAgent(llm, rag_store) if rag_store else None
+        # ``rag_llm`` lets the caller pin the RAG agent to a different
+        # LLM profile (cfg.rag_llm_profile) than the global one. None
+        # falls back to the global ``llm`` so old call sites keep their
+        # existing behaviour without a code change.
+        self.rag_agent = RAGAgent(rag_llm or llm, rag_store) if rag_store else None
         self.code_agent = CodeAgent(llm, code_report) if code_report else None
         # ``missing_only`` skips tables that already have a table comment AND
         # every column already has a comment, and filters individual columns
