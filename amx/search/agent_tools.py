@@ -47,6 +47,15 @@ def _safe_json(value: Any, *, max_len: int = 6000) -> str:
 class ToolBox:
     """Concrete tool implementations the agent loop dispatches into."""
 
+    # Tools that must never be served from the in-question cache.
+    # Empty by default — every visible tool is a pure read (no DDL, no
+    # side-effecting writes), and the LLM agent loop runs all of them
+    # against the same point-in-time database state for the duration
+    # of a single /ask question. Listed names are skipped at the
+    # ``invoke()`` cache layer; subclasses or future tools that mutate
+    # state should add their name here.
+    _UNCACHED_TOOLS: frozenset[str] = frozenset()
+
     def __init__(
         self,
         cfg: AMXConfig,
@@ -60,6 +69,16 @@ class ToolBox:
         self._db_factory = db_factory or (lambda: DatabaseConnector(cfg.db))
         # Only build the live DB connector lazily — many tools never need it.
         self._db: DatabaseConnector | None = None
+        # In-question tool memoization. The 6-iteration LLM loop can
+        # call ``describe_table(foo)`` three times in one question
+        # (LLM thinks → calls describe_table → reads response → thinks
+        # → forgets it already had it → calls describe_table again).
+        # Caching by (tool_name, args) inside one ToolBox lifetime
+        # collapses the 2nd and 3rd call to a free memory lookup.
+        # ToolBox is instantiated per /ask question so the cache never
+        # outlives a single point-in-time view of the database.
+        self._tool_cache: dict[tuple[str, str], str] = {}
+        self._tool_cache_hits: int = 0
 
     # ------------------------------------------------------------------ helpers
     def _live_db(self) -> DatabaseConnector:
@@ -888,21 +907,53 @@ class ToolBox:
     def invoke(self, name: str, raw_arguments: str) -> str:
         """Dispatch a tool by name; return the result as a JSON string for the
         LLM. All tools return a string for direct embedding in the next
-        ``role=tool`` message."""
+        ``role=tool`` message.
+
+        Within one ToolBox lifetime (one /ask question) the same tool +
+        arguments returns the cached result without re-running the
+        handler — the LLM frequently re-asks for the same data across
+        loop iterations and that's strictly wasteful. Errors are not
+        cached so transient failures (network blip, transient
+        permission denial) can be retried by the next LLM iteration.
+        """
         try:
             args = json.loads(raw_arguments) if raw_arguments else {}
         except json.JSONDecodeError as exc:
             return _safe_json({"error": f"Invalid arguments JSON: {exc}"})
+
+        # Cache lookup. JSON-stringify the args dict with sorted keys
+        # so semantically-equivalent arg permutations
+        # (e.g. {"a":1,"b":2} vs {"b":2,"a":1}) hash to the same key.
+        # Falls through to the handler on TypeError if some arg isn't
+        # JSON-serialisable (no caching, but no crash either).
+        cache_key: tuple[str, str] | None = None
+        if name not in self._UNCACHED_TOOLS:
+            try:
+                cache_key = (name, json.dumps(args, sort_keys=True, default=str))
+                cached = self._tool_cache.get(cache_key)
+                if cached is not None:
+                    self._tool_cache_hits += 1
+                    return cached
+            except (TypeError, ValueError):
+                cache_key = None  # un-cacheable args; just dispatch normally
+
         try:
             handler = getattr(self, f"_tool_{name}", None)
             if handler is None:
                 return _safe_json({"error": f"Unknown tool: {name}"})
             payload = handler(**args)
-            return _safe_json(payload)
+            result = _safe_json(payload)
         except _ToolError as exc:
+            # Errors are not cached — the next iteration may succeed.
             return _safe_json({"error": str(exc)})
         except Exception as exc:  # surface to LLM but don't crash
             return _safe_json({"error": f"Tool {name} failed: {exc}"})
+
+        # Cache the success path only.
+        is_error_payload = isinstance(payload, dict) and "error" in payload
+        if cache_key is not None and not is_error_payload:
+            self._tool_cache[cache_key] = result
+        return result
 
     # ------------------------------------------------------------------ implementations
     @contextlib.contextmanager
