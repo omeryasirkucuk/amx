@@ -6,9 +6,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
-### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, and missing database picker for 2-level backends
+### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, missing database picker for 2-level backends, and one-database-only sidebar
 
-Seven user-reported issues against the visualizer surface, fixed in
+Eight user-reported issues against the visualizer surface, fixed in
 one PR. None changes the CLI; all live under the FastAPI/React
 layer that `/visualize` boots.
 
@@ -98,6 +98,16 @@ layer that `/visualize` boots.
    buttons for the visible databases. Three new tests pin the
    gate, the activate endpoint, and the 3-level vs 2-level
    rejection.
+8. **Sidebar shows the full DB → schema → table tree, with all
+   scopes inline.** The previous build only listed schemas of
+   the active database, forcing the user up to the top-bar
+   dropdown to switch between databases. The sidebar now lists
+   every database (or catalog, on 3-level backends) as a
+   collapsible top-level node: clicking the active one toggles
+   its schemas, clicking an inactive one switches the active
+   scope (calls `activate_database` / `activate_catalog`) and
+   surfaces a "switch" badge while the mutation is pending. The
+   top-bar dropdowns stay as a quick switcher.
 
 ### Fixed — Databricks Serving Claude `/run` no longer 400s on `top_logprobs`; Windows logging cleaned up
 
