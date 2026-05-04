@@ -6,6 +6,42 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — dark-mode toggle, ⌘K command palette, docs/visualize.md (PR-F)
+
+Final slice of the local AMX web UI. Polish + ergonomics + first
+proper docs.
+
+What's included:
+
+- **Theme toggle** (`frontend/src/components/ThemeToggle.tsx` +
+  `frontend/src/lib/theme.ts`) — cycles **System → Light → Dark**.
+  Choice persists in `localStorage`; "System" mode tracks
+  `prefers-color-scheme` live and reacts when the user flips OS
+  settings without reloading. Theme is applied synchronously
+  before React paints so dark-mode users never see the light
+  flash.
+- **Command palette** (`frontend/src/components/CommandPalette.tsx`)
+  — <kbd>⌘K</kbd> / <kbd>Ctrl-K</kbd> opens a fuzzy-search modal
+  with shortcuts to every major route plus context-aware actions
+  (jump back to the last viewed table, hop to settings to switch
+  the active DB profile). Arrow-key navigation, <kbd>Esc</kbd>
+  to close.
+- **`docs/visualize.md`** — first proper user-facing doc for
+  `/visualize`: quick start, page-by-page rundown, keyboard
+  shortcuts, security model, cancellation semantics, dev
+  workflow, and a troubleshooting section covering the common
+  failure modes (port conflict, missing token, empty catalog,
+  empty pending queue, Databricks TLS).
+- **Top-bar polish**: theme toggle + command-palette trigger sit
+  next to the nav so the chrome stops wearing thin once the
+  user has profiles and a chat session loaded.
+- **5 new tests** under `tests/web/test_static_assets.py` —
+  pin the wheel-shipped SPA dist (index.html present, hashed
+  Vite chunks under assets/, favicon.svg, unauthenticated `/`
+  serve). These guard the seam between the Vite output and the
+  Python wheel so a stale build / missing asset surfaces in CI
+  before a user hits a broken visualizer.
+
 ### Added — profile editor + pending review queue + cleanup-placeholders endpoint (PR-E)
 
 Fifth slice of the local AMX web UI. The visualizer manages DB and
