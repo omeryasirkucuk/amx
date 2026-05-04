@@ -150,6 +150,15 @@ class MySQLAdapter(DatabaseAdapter):
         # paths produce identical MIN/MAX values.
         return f"CAST({agg}({quoted_col}) AS CHAR)"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"CAST({quoted_col} AS CHAR)"
+
+    # MySQL has no TABLESAMPLE; bulk_sample_sql relies on bare ``LIMIT``
+    # which scans the first N rows. For perf-sensitive cases the
+    # per-column escalation fallback in the connector still runs on
+    # any column that didn't get enough distinct values from the
+    # sequential sample.
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

@@ -157,6 +157,14 @@ class SnowflakeAdapter(DatabaseAdapter):
     def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
         return f"{agg}({quoted_col}::VARCHAR)"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"{quoted_col}::VARCHAR"
+
+    def _bulk_sample_clause(self) -> str:
+        # Snowflake row sampling: ``SAMPLE (n)`` where n is the percentage.
+        # Same as the per-column path — a 1% slice of the table.
+        return "SAMPLE (1)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

@@ -183,6 +183,25 @@ class MSSQLAdapter(DatabaseAdapter):
         # — mirror it.
         return f"CONVERT(NVARCHAR(MAX), {agg}({quoted_col}))"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"CONVERT(NVARCHAR(MAX), {quoted_col})"
+
+    def bulk_sample_sql(
+        self,
+        fqn: str,
+        quoted_cols: list[str],
+        row_cap: int,
+    ) -> str:
+        # SQL Server has no LIMIT — use ``SELECT TOP (n)`` instead.
+        # ``TABLESAMPLE`` is supported but row-level (each page either
+        # all-in or all-out), and on tables small enough to fit on a few
+        # pages it can return zero rows. For sample collection we want
+        # determinism, so we stick with TOP and skip TABLESAMPLE.
+        if not quoted_cols:
+            raise ValueError("bulk_sample_sql requires at least one column")
+        cols_sql = ", ".join(self._value_text_expr(qc) for qc in quoted_cols)
+        return f"SELECT TOP ({int(row_cap)}) {cols_sql} FROM {fqn}"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

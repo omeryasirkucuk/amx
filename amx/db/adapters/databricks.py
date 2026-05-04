@@ -215,6 +215,15 @@ class DatabricksAdapter(DatabaseAdapter):
         # Databricks uses ``STRING`` rather than ``VARCHAR``.
         return f"{agg}(CAST({quoted_col} AS STRING))"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"CAST({quoted_col} AS STRING)"
+
+    def _bulk_sample_clause(self) -> str:
+        # Spark SQL ``TABLESAMPLE (n PERCENT)``. Mirrors the per-column
+        # sample path which already uses ``TABLESAMPLE (1 PERCENT)`` to
+        # avoid full-table scans on a billion-row Delta table.
+        return "TABLESAMPLE (1 PERCENT)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

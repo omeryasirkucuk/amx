@@ -780,7 +780,7 @@ class DatabaseConnector:
             )
 
         if scan_samples and effective_sample_size > 0:
-            self._collect_per_column_samples(
+            self._collect_bulk_samples(
                 schema=schema,
                 table=table,
                 fqn=fqn,
@@ -884,6 +884,104 @@ class DatabaseConnector:
                     actionable or exc,
                 )
 
+    def _collect_bulk_samples(
+        self,
+        *,
+        schema: str,
+        table: str,
+        fqn: str,
+        adapter: Any,
+        column_profiles: list[ColumnProfile],
+        effective_sample_size: int,
+    ) -> None:
+        """One bulk sample query for all columns; escalate per-column only
+        for columns that didn't get enough distinct values.
+
+        Wide-table win: a 300-column table at the default sample size
+        of 5 distincts/col used to issue 300 separate
+        ``SELECT DISTINCT col FROM big_table TABLESAMPLE … LIMIT 5``
+        queries. We now issue one ``SELECT col1, col2, …, colN FROM
+        big_table TABLESAMPLE … LIMIT row_cap`` and distill per-column
+        distincts in Python. row_cap is adaptive — 1000 baseline plus
+        50 × column_count so very wide tables get a deeper sample.
+
+        Quality safety net: if a column emerged from the bulk sample
+        with fewer than ``min(target, 3)`` distinct values, the
+        connector escalates to a per-column query for *that column
+        only*. This catches the rare case of a billion-row table
+        whose 1000-row TABLESAMPLE happened to land on a near-constant
+        slice for some skewed column.
+        """
+        n_cols = len(column_profiles)
+        row_cap = max(1000, 50 * n_cols)
+        quoted_cols = [adapter.quote_identifier(cp.name) for cp in column_profiles]
+
+        try:
+            bulk_sql = adapter.bulk_sample_sql(fqn, quoted_cols, row_cap)
+            with self.engine.connect() as conn:
+                rows = conn.execute(text(bulk_sql)).fetchall()
+        except Exception as exc:
+            # Bulk failed entirely — fall back to per-column for all
+            # columns so the user still gets samples.
+            actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                exc, backend=self.backend
+            )
+            log.debug(
+                "Bulk sample failed for %s.%s, falling back to per-column: %s",
+                schema,
+                table,
+                actionable or exc,
+            )
+            self._collect_per_column_samples(
+                schema=schema,
+                table=table,
+                fqn=fqn,
+                adapter=adapter,
+                column_profiles=column_profiles,
+                effective_sample_size=effective_sample_size,
+            )
+            return
+
+        # Distill per-column distinct values from the wide row set.
+        # ``rows`` may be empty (very small / heavily filtered table);
+        # in that case every column ends up needing escalation.
+        short_columns: list[ColumnProfile] = []
+        threshold = min(effective_sample_size, 3)
+        for col_idx, cp in enumerate(column_profiles):
+            seen: set[Any] = set()
+            samples: list[Any] = []
+            for row in rows:
+                v = row[col_idx]
+                if v is None or v in seen:
+                    continue
+                seen.add(v)
+                samples.append(v)
+                if len(samples) >= effective_sample_size:
+                    break
+            cp.samples = samples
+            if len(samples) < threshold:
+                short_columns.append(cp)
+
+        if short_columns:
+            log.debug(
+                "Escalating sample collection for %d/%d columns of %s.%s "
+                "(bulk row_cap=%d returned <%d distincts)",
+                len(short_columns),
+                n_cols,
+                schema,
+                table,
+                row_cap,
+                threshold,
+            )
+            self._collect_per_column_samples(
+                schema=schema,
+                table=table,
+                fqn=fqn,
+                adapter=adapter,
+                column_profiles=short_columns,
+                effective_sample_size=effective_sample_size,
+            )
+
     def _collect_per_column_samples(
         self,
         *,
@@ -894,7 +992,10 @@ class DatabaseConnector:
         column_profiles: list[ColumnProfile],
         effective_sample_size: int,
     ) -> None:
-        """Per-column sample fetch. Replaced by bulk path in Phase 2."""
+        """Per-column sample fetch. Used as the fallback path when the
+        bulk query fails or as escalation for columns that didn't get
+        enough distinct values from the bulk sample.
+        """
         for cp in column_profiles:
             quoted_col = adapter.quote_identifier(cp.name)
             try:

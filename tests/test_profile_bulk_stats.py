@@ -132,6 +132,140 @@ def test_bulk_stats_collapses_300_cols_to_6_queries() -> None:
     assert all(cp.distinct_count is not None for cp in cps)
 
 
+@pytest.mark.parametrize("backend", sorted(SUPPORTED_BACKENDS))
+def test_bulk_sample_sql_is_well_formed(backend: str) -> None:
+    """Every adapter produces a single SELECT yielding all columns at once."""
+    cfg = DBConfig(backend=backend, **_fixture(backend))  # type: ignore[arg-type]
+    adapter = get_adapter(cfg)
+
+    sql = adapter.bulk_sample_sql('"sch"."tbl"', ['"a"', '"b"', '"c"'], 1000)
+
+    # Every column must appear in the SELECT list (the connector parses
+    # by index, so missing columns would shift everything).
+    assert sql.count('"a"') >= 1
+    assert sql.count('"b"') >= 1
+    assert sql.count('"c"') >= 1
+    assert "1000" in sql
+
+
+def test_bulk_sample_sql_rejects_empty() -> None:
+    cfg = DBConfig(backend="postgresql", **_fixture("postgresql"))  # type: ignore[arg-type]
+    adapter = get_adapter(cfg)
+    with pytest.raises(ValueError):
+        adapter.bulk_sample_sql('"sch"."tbl"', [], 1000)
+
+
+def test_bulk_samples_collapses_300_cols_to_1_query_when_distincts_are_plentiful() -> None:
+    """The user-reported 300-col case: bulk sample, no per-column escalation."""
+    cfg = DBConfig(backend="postgresql", host="x", user="u")
+    conn = DatabaseConnector(cfg)
+    adapter = get_adapter(cfg)
+    recorded: list[str] = []
+
+    # Simulated rows: 50 rows where each column has a unique value per
+    # row (distinct values are plentiful — escalation should not trigger).
+    fake_rows = [tuple(f"val_{c}_{r}" for c in range(300)) for r in range(50)]
+
+    class RecordingConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, params=None):
+            recorded.append(str(sql))
+
+            class R:
+                def fetchall(self_inner):
+                    return fake_rows
+
+                def fetchone(self_inner):
+                    return None
+
+            return R()
+
+    class RecordingEngine:
+        def connect(self):
+            return RecordingConn()
+
+    conn._engine = RecordingEngine()  # type: ignore[assignment]
+
+    cps = [
+        ColumnProfile(name=f"col_{i}", dtype="text", nullable=True, row_count=1000)
+        for i in range(300)
+    ]
+    conn._collect_bulk_samples(
+        schema="sch",
+        table="tbl",
+        fqn='"sch"."tbl"',
+        adapter=adapter,
+        column_profiles=cps,
+        effective_sample_size=5,
+    )
+
+    # One bulk sample query, no escalation.
+    assert len(recorded) == 1, f"Expected 1 query, got {len(recorded)}"
+    # Every column got 5 distinct samples.
+    assert all(len(cp.samples) == 5 for cp in cps)
+
+
+def test_bulk_samples_escalates_only_short_columns() -> None:
+    """Columns whose bulk sample yielded < threshold distincts get a per-column query."""
+    cfg = DBConfig(backend="postgresql", host="x", user="u")
+    conn = DatabaseConnector(cfg)
+    adapter = get_adapter(cfg)
+    recorded: list[str] = []
+
+    # 5 columns, 100 rows. col_0 and col_1 have plenty of distincts.
+    # col_2..col_4 are constant — only 1 distinct each, below threshold.
+    fake_rows = []
+    for r in range(100):
+        fake_rows.append((f"a_{r}", f"b_{r}", "constant", "constant", "constant"))
+
+    class RecordingConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, params=None):
+            recorded.append(str(sql))
+
+            class R:
+                def fetchall(self_inner):
+                    return fake_rows
+
+                def fetchone(self_inner):
+                    return None
+
+            return R()
+
+    class RecordingEngine:
+        def connect(self):
+            return RecordingConn()
+
+    conn._engine = RecordingEngine()  # type: ignore[assignment]
+
+    cps = [
+        ColumnProfile(name=f"col_{i}", dtype="text", nullable=True, row_count=1000)
+        for i in range(5)
+    ]
+    conn._collect_bulk_samples(
+        schema="sch",
+        table="tbl",
+        fqn='"sch"."tbl"',
+        adapter=adapter,
+        column_profiles=cps,
+        effective_sample_size=5,
+    )
+
+    # 1 bulk + 3 per-column escalations (col_2, col_3, col_4 had 1 distinct
+    # each, below threshold = min(5, 3) = 3).
+    assert len(recorded) == 4, f"Expected 4 queries (1 bulk + 3 escalations), got {len(recorded)}"
+
+
 def test_bulk_stats_falls_back_to_per_column_on_failure() -> None:
     """If the bulk SELECT raises, the connector retries per-column."""
     cfg = DBConfig(backend="postgresql", host="x", user="u")

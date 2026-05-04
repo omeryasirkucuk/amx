@@ -224,6 +224,27 @@ class OracleAdapter(DatabaseAdapter):
         # Oracle's existing path uses ``TO_CHAR(MIN(col))`` outer-cast.
         return f"TO_CHAR({agg}({quoted_col}))"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"TO_CHAR({quoted_col})"
+
+    def bulk_sample_sql(
+        self,
+        fqn: str,
+        quoted_cols: list[str],
+        row_cap: int,
+    ) -> str:
+        # Oracle pre-12c has no LIMIT — use ROWNUM in a subquery wrap.
+        # ``SAMPLE (1)`` is row-level random sampling; pairs cleanly
+        # with the outer ROWNUM cap.
+        if not quoted_cols:
+            raise ValueError("bulk_sample_sql requires at least one column")
+        cols_sql = ", ".join(self._value_text_expr(qc) for qc in quoted_cols)
+        return (
+            f"SELECT * FROM ("
+            f"  SELECT {cols_sql} FROM {fqn} SAMPLE (1)"
+            f") WHERE ROWNUM <= {int(row_cap)}"
+        )
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

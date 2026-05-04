@@ -210,6 +210,53 @@ class DatabaseAdapter(ABC):
             parts.append(f"{self._aggregate_text_expr('MAX', qc)} AS c{i}_max")
         return "SELECT " + ", ".join(parts) + f" FROM {fqn}"
 
+    # ── Bulk sample collection ────────────────────────────────────────────
+    #
+    # Same shape as bulk stats but for column samples: the per-column
+    # sample SQL fired one ``SELECT DISTINCT col FROM big_table
+    # TABLESAMPLE … LIMIT 5`` per column — 300 columns = 300 sample
+    # queries, each sampling the whole table separately. ``bulk_sample_sql``
+    # collapses that into one ``SELECT col1, col2, …, colN FROM big_table
+    # TABLESAMPLE … LIMIT row_cap`` that yields one row set covering
+    # every column. The connector then distills per-column distinct
+    # values in Python — no extra database round-trips for columns that
+    # already have enough variety in the bulk sample.
+    #
+    # Helpers:
+    # - ``_value_text_expr(qc)``: how to cast a single column value to
+    #   text in the SELECT list (mirrors per-adapter ``column_sample_sql``
+    #   cast syntax).
+    # - ``_bulk_sample_clause()``: backend-specific sampling FROM-clause
+    #   addition (``TABLESAMPLE (1 PERCENT)`` on Databricks etc., empty
+    #   on engines without sampling).
+
+    def _value_text_expr(self, quoted_col: str) -> str:
+        """Cast a single column to text for the bulk sample SELECT list."""
+        return f"CAST({quoted_col} AS VARCHAR)"
+
+    def _bulk_sample_clause(self) -> str:
+        """Backend-specific FROM-clause sampling addition. Default empty."""
+        return ""
+
+    def bulk_sample_sql(
+        self,
+        fqn: str,
+        quoted_cols: list[str],
+        row_cap: int,
+    ) -> str:
+        """Build a single query that samples every column at once.
+
+        Returns a SELECT yielding up to ``row_cap`` rows with one
+        text-cast column per ``quoted_cols`` entry. The connector
+        distills per-column distinct values from the result set.
+        """
+        if not quoted_cols:
+            raise ValueError("bulk_sample_sql requires at least one column")
+        cols_sql = ", ".join(self._value_text_expr(qc) for qc in quoted_cols)
+        sample = self._bulk_sample_clause()
+        from_clause = f"{fqn} {sample}".rstrip()
+        return f"SELECT {cols_sql} FROM {from_clause} LIMIT {int(row_cap)}"
+
     # ── Table-level statistics ────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
