@@ -6,6 +6,38 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed / Added — `/visualize` runs context + live progress + evaluation flow (UI overhaul, PR 9)
+
+Four follow-up items in one PR.
+
+* **Browser tab title** updated from "AMX Visualizer" to "AMX —
+  Agentic Metadata Extractor" so the tab favicon + label combo
+  reads as the product, not the surface.
+* **`RunsList` table picks up DB / Model / Started columns.**
+  Previously the only visible run context was the command and the
+  scope; users couldn't tell which database the run touched, which
+  model was used, or when it ran. New columns hide on mobile but
+  stay visible on tablet+. Sort by Started defaults to newest-
+  first when toggled.
+* **`RunDetail` live mode gains a sticky progress banner.** While
+  a run is streaming via SSE, an accent-tinted banner under the
+  header carries (1) a 1 Hz wall-clock elapsed timer, (2) the
+  current activity label (the latest still-running asset), and
+  (3) a "N/total processed" counter. Mirrors the running line a
+  CLI user sees during \`amx /run\`.
+* **`RunDetail` Results tab is now a proper review surface.**
+  Each result row gains the full alternatives carousel (A/B/C…)
+  with the chosen alternative highlighted; clicking another
+  alternative immediately calls \`PATCH /api/pending/{idx}\` so
+  the user's pick is what ends up written to the DB. The
+  long-broken "Apply pending queue" button now emits success /
+  failure toasts instead of silently doing nothing. Already-
+  applied rows show a positive badge and lock their carousel.
+  ResultsTab pulls from \`/api/pending\` so the same queue that
+  drives the Pending page powers the inline editor here.
+
+No backend changes; bundle rebuilt and vendored.
+
 ### Added — `/visualize` table page: inline edit + LLM auto-generate (UI overhaul, PR 8)
 
 The table page (`/db/<profile>/<schema>/<table>`) becomes the single
