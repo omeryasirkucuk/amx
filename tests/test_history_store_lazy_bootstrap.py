@@ -94,6 +94,34 @@ def test_lazy_wrapper_does_not_rebuild_on_subsequent_calls() -> None:
         assert store._wrapped is first_target
 
 
+def test_lazy_wrapper_exposes_lock_and_connect_without_bootstrap() -> None:
+    """``ChatSessionStore`` and the migration helpers reach directly
+    into ``hs._lock`` and ``hs._connect()`` — both are SQLite-level
+    primitives owned by the local store. The lazy wrapper must route
+    them without forcing a shared bootstrap, otherwise ``/ask`` (which
+    builds a ChatSessionStore at session start) raises
+    ``Ask failed: _lock`` before any work happens."""
+    with tempfile.TemporaryDirectory() as td:
+        cfg = _shared_mode_cfg_pointing_at_missing_profile(td)
+        store = init_history_store(cfg)
+        assert store._wrapped is None
+
+        lock = store._lock
+        assert lock is not None
+        # Acquiring + releasing the lock must work — same contract as
+        # ``threading.Lock`` so callers can use ``with hs._lock:``.
+        with lock:
+            pass
+
+        with store._connect() as conn:
+            row = conn.execute("SELECT 1").fetchone()
+        assert row[0] == 1
+
+        # Crucially: neither access triggered the lazy build, because
+        # the chat-session and migration paths are LOCAL-only.
+        assert store._wrapped is None
+
+
 def test_lazy_wrapper_exposes_db_path_without_bootstrap() -> None:
     """``db_path`` is read by IHistoryStore consumers and by tests; it
     must work without forcing a network round-trip. The wrapper mirrors
