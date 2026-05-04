@@ -24,6 +24,7 @@ from amx.web.routers import (
     ask,
     catalog,
     comments,
+    docs_ops,
     history,
     live_db,
     pending,
@@ -93,6 +94,7 @@ def create_app(
     app.include_router(ask.router)
     app.include_router(profiles.router)
     app.include_router(pending.router)
+    app.include_router(docs_ops.router)
 
     root = static_root if static_root is not None else _static_root()
     app.state.static_root = root

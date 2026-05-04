@@ -17,6 +17,7 @@ import { Card, CardBody, CardHeader } from "../components/Card";
 import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
 import Modal from "../components/Modal";
+import JobProgress from "../components/JobProgress";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 
@@ -840,6 +841,7 @@ function LlmProfileWizard({
 function DocProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [activeOp, setActiveOp] = useState<{ jobId: string; label: string } | null>(null);
 
   const profiles = useQuery({
     queryKey: ["profiles", "docs"],
@@ -857,9 +859,40 @@ function DocProfilesSection() {
       apiFetch(`/api/profiles/docs/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profiles", "docs"] }),
   });
+  const scan = useMutation({
+    mutationFn: (profile: string) =>
+      apiFetch<{ job_id: string }>("/api/docs/scan", {
+        method: "POST",
+        body: JSON.stringify({ profile }),
+      }),
+    onSuccess: (r, profile) => setActiveOp({ jobId: r.job_id, label: `Scanning ${profile}` }),
+  });
+  const ingest = useMutation({
+    mutationFn: (vars: { profile: string; refresh: boolean }) =>
+      apiFetch<{ job_id: string }>("/api/docs/ingest", {
+        method: "POST",
+        body: JSON.stringify({ profile: vars.profile, refresh: vars.refresh }),
+      }),
+    onSuccess: (r, vars) =>
+      setActiveOp({
+        jobId: r.job_id,
+        label: `Ingesting ${vars.profile}${vars.refresh ? " (refresh)" : ""}`,
+      }),
+  });
 
   return (
     <>
+      <SearchDocsBox />
+      {activeOp && (
+        <div className="mb-4">
+          <JobProgress
+            jobId={activeOp.jobId}
+            kind="docs/scan"
+            onTerminal={() => setActiveOp(null)}
+          />
+          <p className="mt-1 text-xs text-ink-dim">{activeOp.label}</p>
+        </div>
+      )}
       <Card>
         <CardHeader
           title={`${profiles.data?.profiles?.length ?? 0} doc profile${
@@ -903,6 +936,37 @@ function DocProfilesSection() {
                           Activate
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => scan.mutate(p.name)}
+                        disabled={scan.isPending || !!activeOp}
+                        className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
+                        title="Scan: list what would be ingested"
+                      >
+                        Scan
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          ingest.mutate({ profile: p.name, refresh: false })
+                        }
+                        disabled={ingest.isPending || !!activeOp}
+                        className="rounded-md bg-accent-soft px-2 py-1 text-xs text-accent-ink hover:opacity-90 disabled:opacity-50"
+                        title="Ingest into Chroma RAG store"
+                      >
+                        Ingest
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          ingest.mutate({ profile: p.name, refresh: true })
+                        }
+                        disabled={ingest.isPending || !!activeOp}
+                        className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
+                        title="Refresh: drop existing chunks for these sources before re-ingesting"
+                      >
+                        Re-ingest
+                      </button>
                       <button
                         type="button"
                         onClick={() => setEditing({ name: p.name })}
@@ -1046,6 +1110,107 @@ function DocProfileWizard({
         )}
       </div>
     </Modal>
+  );
+}
+
+interface SearchHit {
+  source: string;
+  distance: number;
+  preview: string;
+}
+
+interface SearchResponse {
+  hits: SearchHit[];
+  count: number;
+  message?: string;
+}
+
+function SearchDocsBox() {
+  const [query, setQuery] = useState("");
+  const [submitted, setSubmitted] = useState("");
+
+  const search = useQuery({
+    queryKey: ["docs-search", submitted],
+    queryFn: () =>
+      apiFetch<SearchResponse>(
+        `/api/docs/search?q=${encodeURIComponent(submitted)}&n=8`,
+      ),
+    enabled: submitted.length > 0,
+    retry: false,
+  });
+
+  return (
+    <Card className="mb-4">
+      <CardHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            <FileText size={14} className="text-accent" />
+            Search docs
+          </span>
+        }
+        description="Embedding-only Chroma similarity over every chunk you've ingested. No LLM call — instant."
+      />
+      <CardBody className="space-y-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setSubmitted(query.trim());
+          }}
+          className="flex gap-2"
+        >
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="e.g. customer master, order pipeline, GDPR…"
+            className="flex-1 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+          />
+          <button
+            type="submit"
+            disabled={!query.trim() || search.isFetching}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+          >
+            {search.isFetching ? "Searching…" : "Search"}
+          </button>
+        </form>
+        {search.error && (
+          <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
+            {(search.error as Error).message}
+          </div>
+        )}
+        {search.data && (
+          <div className="space-y-2">
+            {search.data.message && (
+              <p className="text-xs text-warning">{search.data.message}</p>
+            )}
+            {search.data.hits.length === 0 ? (
+              <p className="text-xs text-ink-dim">No matches.</p>
+            ) : (
+              <ul className="space-y-2">
+                {search.data.hits.map((hit, idx) => (
+                  <li
+                    key={`${hit.source}-${idx}`}
+                    className="rounded-md border border-surface-border bg-surface px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="truncate font-mono text-ink-muted">
+                        {hit.source}
+                      </span>
+                      <span className="font-mono text-ink-dim">
+                        d={hit.distance.toFixed(3)}
+                      </span>
+                    </div>
+                    <p className="mt-1 line-clamp-3 text-xs text-ink-muted">
+                      {hit.preview}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 
