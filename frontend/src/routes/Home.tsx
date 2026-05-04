@@ -14,10 +14,10 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
+import { Button } from "../components/ui";
 
-// Landing dashboard — counts, recent runs, suggested actions.
-// Everything renders read-only data fetched from the existing
-// /api/history/stats and /api/history/runs endpoints.
+// Landing dashboard — counts, recent runs, jump-off into the deeper
+// routes. Reads /api/context, /api/history/stats, /api/history/runs.
 export default function Home() {
   const { data: ctx } = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
   const stats = useQuery({
@@ -34,21 +34,17 @@ export default function Home() {
   return (
     <>
       <PageHeader
-        eyebrow="Dashboard"
-        title={
-          <>
-            Welcome back to AMX
-            {ctx?.active_db_profile ? (
-              <span className="ml-3 align-middle text-base font-medium text-ink-dim">
-                ({ctx.active_db_profile})
-              </span>
-            ) : null}
-          </>
+        title="Overview"
+        actions={
+          <Link to="/runs/new">
+            <Button variant="primary" size="md" leadingIcon={<PlayCircle size={14} />}>
+              New run
+            </Button>
+          </Link>
         }
-        description="A bird's-eye view of your metadata work. Browse the live database from the left, trigger /run jobs, or open Ask in the right rail."
       />
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard
           icon={Database}
           label="Active backend"
@@ -75,13 +71,12 @@ export default function Home() {
         />
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+      <div className="mt-6">
         <Card>
           <CardHeader
             title="Recent runs"
-            description="Last 8 /run invocations across all DB profiles."
             actions={
-              <Link to="/runs" className="text-xs text-accent hover:underline">
+              <Link to="/runs" className="text-xs font-medium text-accent hover:text-accent-ink">
                 View all →
               </Link>
             }
@@ -94,17 +89,33 @@ export default function Home() {
                 {(runs.error as Error).message}
               </div>
             ) : runs.data?.runs?.length ? (
-              <ul className="divide-y divide-surface-border">
+              <ul className="divide-y divide-border">
                 {runs.data.runs.map((row) => (
-                  <li key={row.id} className="flex items-center gap-3 px-5 py-3 text-sm">
-                    <Activity size={14} className="text-ink-dim" />
-                    <span className="font-mono text-xs text-ink-dim">#{row.id}</span>
-                    <span className="font-medium">{row.command}</span>
-                    <span className="text-ink-muted">
+                  <li
+                    key={row.id}
+                    className="flex items-center gap-3 px-5 py-2.5 text-sm hover:bg-surface-subtle/50"
+                  >
+                    <Activity size={13} className="text-ink-dim" />
+                    <Link
+                      to={`/runs/${row.id}`}
+                      className="font-mono text-xs text-ink-dim hover:text-accent"
+                    >
+                      #{row.id}
+                    </Link>
+                    <span className="font-medium text-ink">{row.command}</span>
+                    <span className="truncate text-ink-muted">
                       {Object.keys(row.scope || {}).join(", ") || "(no scope)"}
                     </span>
                     <span className="ml-auto">
-                      <StatusPill tone={row.status === "success" ? "positive" : row.status === "failed" ? "critical" : "neutral"}>
+                      <StatusPill
+                        tone={
+                          row.status === "success"
+                            ? "positive"
+                            : row.status === "failed"
+                              ? "critical"
+                              : "neutral"
+                        }
+                      >
                         {row.status}
                       </StatusPill>
                     </span>
@@ -112,39 +123,15 @@ export default function Home() {
                 ))}
               </ul>
             ) : (
-              <EmptyState
-                icon={Activity}
-                title="No runs yet"
-                description="Run /run from the CLI or trigger one from a table page once PR-C ships."
-              />
+              <div className="px-5 py-5">
+                <EmptyState
+                  icon={Activity}
+                  title="No runs yet"
+                  description="Trigger a /run from the CLI or use the New run button above to get started."
+                  compact
+                />
+              </div>
             )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader
-            title="What's next"
-            description="The visualizer is currently in PR-B (read-only browse)."
-          />
-          <CardBody>
-            <ul className="space-y-3 text-sm text-ink-muted">
-              <li>
-                <span className="font-medium text-ink">Browse</span> — pick a schema in
-                the left tree to drill into tables and columns.
-              </li>
-              <li>
-                <span className="font-medium text-ink">Coming in PR-C</span> — kick off
-                /run + /apply jobs from the table page with live progress.
-              </li>
-              <li>
-                <span className="font-medium text-ink">Coming in PR-D</span> — /ask chat
-                with streaming reasoning lands in the right panel.
-              </li>
-              <li>
-                <span className="font-medium text-ink">Coming in PR-E</span> — profile
-                editor + pending review queue.
-              </li>
-            </ul>
           </CardBody>
         </Card>
       </div>
@@ -163,36 +150,32 @@ function StatCard({
   value: string;
   tone: "neutral" | "accent" | "positive";
 }) {
-  // Long technical identifiers (LLM model slugs, hostnames) are
-  // common here — we never want to truncate mid-token. Use a fluid
-  // type ramp + 2-line clamp + word-break so identifiers wrap, and
-  // surface the full value in a tooltip for very long ones.
   const isLong = value.length > 18;
   return (
     <div
-      className="rounded-xl border border-surface-border bg-surface-raised p-4 shadow-card"
+      className="rounded-xl border border-border bg-surface-raised px-4 py-3.5 shadow-xs"
       title={isLong ? value : undefined}
     >
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
           {label}
         </span>
         <Icon
-          size={16}
+          size={14}
           className={
-            tone === "accent" ? "text-accent" : tone === "positive" ? "text-positive" : "text-ink-dim"
+            tone === "accent"
+              ? "text-accent"
+              : tone === "positive"
+                ? "text-positive"
+                : "text-ink-dim"
           }
         />
       </div>
       <div
         className={cn(
-          "mt-2 font-mono leading-snug tabular-nums text-ink",
-          // Two-line clamp instead of truncate so a value like
-          // "moonshotai/kimi-k2-instruct" wraps cleanly.
+          "mt-1.5 font-mono leading-snug tabular-nums text-ink",
           "line-clamp-2 break-all",
-          // Smaller font when value is long; preserve the visual
-          // weight of short numeric values like "12" or "—".
-          isLong ? "text-sm" : "text-lg",
+          isLong ? "text-sm" : "text-[22px]",
         )}
       >
         {value}

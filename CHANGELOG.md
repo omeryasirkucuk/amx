@@ -6,6 +6,51 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/visualize` shell, brand, and IA pass (UI overhaul, PR 2/4)
+
+Second slice of the visualizer overhaul. PR 2 tightens the chrome
+and removes the loudest "AI-generated dashboard" tells now that the
+PR 1 token foundation is in place.
+
+* **Brand mark.** New `frontend/src/components/brand/Logo.tsx` —
+  three horizontal bars of decreasing width (matrix/data row
+  metaphor), bottom bar in the AMX amber. Used by the TopBar
+  alongside a lowercase `amx` wordmark in JetBrains Mono. The
+  generic indigo "A" square is gone.
+* **TopBar rewrite.** Height drops from 56 px to 48 px. Layout is
+  now `[sidebar toggle][logo + amx][route breadcrumb] ─── [primary
+  nav][divider][DB][LLM][catalog][⌘K][theme]`. Breadcrumb is built
+  from the current pathname so users always know where they are.
+  Catalog/Database picker pills inherit the new soft border + shadow
+  language.
+* **Sidebar polish.** Width tightened from `w-72` to `w-64`,
+  collapsed rail from `w-14` to `w-12`, row vertical padding
+  trimmed. Active scope/schema rows pick up a 2 px amber left border
+  to make the current selection unmissable. Connector borders use
+  the new `border` token instead of the legacy `surface-border`.
+* **AppShell.** Padding standardized to `px-8 py-7` (no more
+  `px-5/px-6/px-8` drift) and `max-w-6xl` widened to
+  `max-w-[1280px]` so 13"+ monitors get more usable canvas. Canvas
+  uses the new `--bg` warm-gray token.
+* **`PageHeader` rewrite.** API gains `breadcrumbs` (list with
+  optional links) and the description is now genuinely opt-in.
+  Existing routes still pass the legacy `eyebrow` prop, which is
+  now marked deprecated and renders as a small uppercase label;
+  per-route cleanup is part of PR 3/4.
+* **`EmptyState` rewrite.** The dashed-border + accent-circle +
+  `py-16` decoration that screamed "AI placeholder" is gone.
+  Replaced by a left-aligned card with a small mono-tone icon, tight
+  vertical rhythm (`px-5 py-6`), and an optional `compact` mode for
+  embedded contexts.
+* **Home cleanup.** "Welcome back to AMX" copy and the
+  "What's next / Coming in PR-C/D/E" card (which exposed the dev
+  roadmap to end users) are gone. The dashboard now opens with a
+  quiet "Overview" title, a primary "New run" action, four stat
+  tiles, and a single-column recent runs feed. PR 3 lands the full
+  DataTable + activity-feed treatment.
+
+No backend or API changes; the bundle was rebuilt and vendored.
+
 ### Changed — `/visualize` design system reset (UI overhaul, PR 1/4)
 
 First slice of a four-PR overhaul to take the visualizer SPA from a
