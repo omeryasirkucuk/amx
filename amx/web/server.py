@@ -31,6 +31,7 @@ from amx.web.routers import (
     profiles,
     runs,
     system,
+    system_ops,
 )
 
 
@@ -95,6 +96,7 @@ def create_app(
     app.include_router(profiles.router)
     app.include_router(pending.router)
     app.include_router(docs_ops.router)
+    app.include_router(system_ops.router)
 
     root = static_root if static_root is not None else _static_root()
     app.state.static_root = root

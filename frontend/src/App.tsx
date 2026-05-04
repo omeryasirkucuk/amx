@@ -10,6 +10,7 @@ import RunNew from "./routes/RunNew";
 import Ask from "./routes/Ask";
 import Pending from "./routes/Pending";
 import Settings from "./routes/Settings";
+import System from "./routes/System";
 
 // Top-level route map. The shell carries the persistent left tree +
 // top bar; each <Route element> renders inside the shell's main
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="ask" element={<Ask />} />
         <Route path="pending" element={<Pending />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="system" element={<System />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
