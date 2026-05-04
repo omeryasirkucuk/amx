@@ -143,6 +143,27 @@ def _build_shared_store(cfg: AMXConfig):
 
     schema_name = (getattr(cfg, "history_store_schema", "") or "AMX").strip() or "AMX"
     engine = adapter.create_engine()
+    # Pre-create the AMX schema before MetaData.create_all reaches for
+    # CREATE TABLE. The DDL is `CREATE SCHEMA IF NOT EXISTS …` so it
+    # is a no-op when the schema already exists; without this call,
+    # users whose schema was dropped (or never created on this host)
+    # see a SCHEMA_NOT_FOUND on every startup because create_all
+    # assumes the parent schema exists. Symmetric with the call that
+    # `/history-store enable` already issues.
+    #
+    # Best-effort: a permission failure here is downgraded to debug
+    # log because in practice the schema may already exist and
+    # create_all will succeed regardless. A genuinely missing schema +
+    # missing CREATE SCHEMA grant still surfaces via the create_all
+    # error, with the original phrasing preserved.
+    try:
+        adapter.create_history_schema(engine, schema_name)
+    except Exception as exc:
+        log.debug(
+            "Pre-create schema %r failed (will let create_all decide): %s",
+            schema_name,
+            exc,
+        )
     store = SQLAlchemyHistoryStore(engine=engine, schema=schema_name)
     return store
 
@@ -173,32 +194,17 @@ def _warn_bootstrap_failure_once(
     log.debug("Shared history bootstrap full traceback:", exc_info=exc)
 
 
-def init_history_store(cfg: AMXConfig):
-    """Build the singleton history store and attach it to the legacy global.
+def _bootstrap_dual_or_local(local: SQLiteHistoryStore, cfg: AMXConfig):
+    """Build the dual-write store, or fall back to *local* on failure.
 
-    The returned object always implements :class:`amx.storage.protocol.IHistoryStore`.
-    When shared mode is enabled, the result is a
-    :class:`amx.storage.dual_write.DualWriteHistoryStore` wrapping local
-    SQLite + the shared SQLAlchemy store; otherwise it is a vanilla
-    :class:`SQLiteHistoryStore`. Both are pin-compatible with every
-    existing call site that uses ``history_store()`` from
-    :mod:`amx.storage.sqlite_store`.
+    Network-bound — runs the SQLAlchemy engine creation, schema bootstrap,
+    and table create_all on the remote backend. Errors are caught and
+    downgraded to a one-line warning (cached per profile/schema so the
+    same failure is not announced twice in one process).
 
-    On bootstrap failure (network unreachable, schema lacks DDL
-    permissions, etc.) we DO NOT raise — we fall back to local-only and
-    log a single one-line warning per process. The user can fix the
-    issue and re-run ``/history-store enable`` without losing the
-    active session, or run ``/history-store disable`` to stop AMX from
-    even trying.
+    Used by :class:`_LazyDualWriteStore` to defer all of the above out
+    of the ``amx`` startup path.
     """
-    config_dir = getattr(cfg, "CONFIG_DIR", str(Path.home() / ".amx"))
-    db_path = Path(config_dir) / "history.db"
-    local = SQLiteHistoryStore(db_path)
-    try:
-        local.init()
-    except Exception as exc:
-        log.warning("Could not initialise local SQLite history: %s", exc)
-
     profile_key = (
         str(getattr(cfg, "history_store_profile", "") or ""),
         str(getattr(cfg, "history_store_schema", "") or ""),
@@ -220,14 +226,123 @@ def init_history_store(cfg: AMXConfig):
             shared = None
 
     if shared is None:
-        sqlite_store._store = local  # type: ignore[assignment]
         return local
 
     from amx.storage.dual_write import DualWriteHistoryStore
 
-    dual = DualWriteHistoryStore(local=local, shared=shared)
-    sqlite_store._store = dual  # type: ignore[assignment]
-    return dual
+    return DualWriteHistoryStore(local=local, shared=shared)
+
+
+class _LazyDualWriteStore:
+    """Defer shared-history bootstrap until first method call.
+
+    Building the shared backend (Databricks, Postgres, Snowflake, …)
+    means an SQLAlchemy engine + a schema-create + a CREATE TABLE
+    round-trip — easily 2-3 seconds on a remote warehouse. Most ``amx``
+    invocations never write to history (they list profiles, run /help,
+    /db-profiles, …) so blocking the welcome banner on that work is
+    pure user-perceived latency.
+
+    This wrapper holds the local SQLite store eagerly (already cheap
+    to build) and constructs the real
+    :class:`~amx.storage.dual_write.DualWriteHistoryStore` on demand —
+    typically the first ``/run`` or any other call that hits a write
+    method. After the first call the wrapper proxies straight through
+    to the real store with no extra overhead.
+
+    On bootstrap failure the wrapper transparently falls back to the
+    local-only :class:`SQLiteHistoryStore`, mirroring the historical
+    eager path but without the startup tax.
+    """
+
+    def __init__(self, local: SQLiteHistoryStore, cfg: AMXConfig) -> None:
+        # Stored under leading-underscore names so __getattr__ can
+        # cleanly distinguish "wrapper internals" (never proxied) from
+        # delegate attributes (always proxied).
+        self._local = local
+        self._cfg = cfg
+        self._wrapped: object | None = None
+        # Public ``db_path`` is read by callers that expect the
+        # IHistoryStore-style local path attribute (notably the outbox
+        # bookkeeping in DualWriteHistoryStore tests). Mirror it from
+        # the local store so it works without forcing a build.
+        self.db_path = local.db_path
+
+    @property
+    def local(self) -> SQLiteHistoryStore:
+        """Always-available local store; reading this never bootstraps."""
+        return self._local
+
+    @property
+    def shared(self):  # noqa: ANN201 — duck-typed for `hasattr(store, "shared")` callers
+        """Real shared store, or ``None`` when bootstrap failed.
+
+        Reading this property triggers the lazy build because every
+        existing ``hasattr(hs, "shared")`` consumer is gating a real
+        write/read against the team backend; that work was always
+        going to be the moment we paid the bootstrap cost anyway.
+        """
+        target = self._ensure_built()
+        return getattr(target, "shared", None)
+
+    def pending_count(self) -> int:
+        target = self._ensure_built()
+        method = getattr(target, "pending_count", None)
+        return int(method()) if callable(method) else 0
+
+    def flush_pending(self) -> tuple[int, int]:
+        target = self._ensure_built()
+        method = getattr(target, "flush_pending", None)
+        return method() if callable(method) else (0, 0)
+
+    def _ensure_built(self) -> object:
+        if self._wrapped is None:
+            self._wrapped = _bootstrap_dual_or_local(self._local, self._cfg)
+        return self._wrapped
+
+    def __getattr__(self, name: str) -> object:
+        # Only fires for attrs not in the instance __dict__ and not
+        # defined on the class above. Keeps wrapper internals
+        # (``_local`` / ``_cfg`` / ``_wrapped``) out of the lazy-proxy
+        # path so reading them never triggers a bootstrap.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        target = self._ensure_built()
+        return getattr(target, name)
+
+
+def init_history_store(cfg: AMXConfig):
+    """Build the singleton history store and attach it to the legacy global.
+
+    The returned object always implements :class:`amx.storage.protocol.IHistoryStore`.
+    When shared mode is enabled, the result is a
+    :class:`_LazyDualWriteStore` that wraps a local SQLite store
+    eagerly and bootstraps the shared SQLAlchemy backend on first use;
+    otherwise it is a plain :class:`SQLiteHistoryStore`. Both are
+    pin-compatible with every existing call site that reads from
+    ``history_store()``.
+
+    The deferred build keeps ``amx`` startup local-only — the welcome
+    banner appears in <100ms even on Databricks/PG-backed shared
+    history. Bootstrap failures are still announced (one-line warning,
+    cached per profile/schema) but only the first time a call actually
+    needs the shared backend.
+    """
+    config_dir = getattr(cfg, "CONFIG_DIR", str(Path.home() / ".amx"))
+    db_path = Path(config_dir) / "history.db"
+    local = SQLiteHistoryStore(db_path)
+    try:
+        local.init()
+    except Exception as exc:
+        log.warning("Could not initialise local SQLite history: %s", exc)
+
+    if not getattr(cfg, "history_store_enabled", False):
+        sqlite_store._store = local  # type: ignore[assignment]
+        return local
+
+    lazy = _LazyDualWriteStore(local, cfg)
+    sqlite_store._store = lazy  # type: ignore[assignment]
+    return lazy
 
 
 def history_store():
@@ -237,6 +352,7 @@ def history_store():
 
 __all__ = [
     "HistoryStoreBootstrapError",
+    "_LazyDualWriteStore",
     "apply_history_db_override",
     "history_store",
     "init_history_store",
