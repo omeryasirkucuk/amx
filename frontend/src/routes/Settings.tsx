@@ -1217,6 +1217,7 @@ function SearchDocsBox() {
 function CodeProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [activeOp, setActiveOp] = useState<{ jobId: string; label: string } | null>(null);
 
   const profiles = useQuery({
     queryKey: ["profiles", "code"],
@@ -1234,9 +1235,31 @@ function CodeProfilesSection() {
       apiFetch(`/api/profiles/code/${encodeURIComponent(name)}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["profiles", "code"] }),
   });
+  const scan = useMutation({
+    mutationFn: (vars: { profile: string; column_scan: boolean }) =>
+      apiFetch<{ job_id: string }>("/api/code/scan", {
+        method: "POST",
+        body: JSON.stringify({ profile: vars.profile, column_scan: vars.column_scan }),
+      }),
+    onSuccess: (r, vars) =>
+      setActiveOp({
+        jobId: r.job_id,
+        label: `Scanning ${vars.profile}${vars.column_scan ? " (incl. columns)" : ""}`,
+      }),
+  });
 
   return (
     <>
+      {activeOp && (
+        <div className="mb-4">
+          <JobProgress
+            jobId={activeOp.jobId}
+            kind="docs/scan"
+            onTerminal={() => setActiveOp(null)}
+          />
+          <p className="mt-1 text-xs text-ink-dim">{activeOp.label}</p>
+        </div>
+      )}
       <Card>
         <CardHeader
           title={`${profiles.data?.profiles?.length ?? 0} code profile${
@@ -1277,6 +1300,24 @@ function CodeProfilesSection() {
                         Activate
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => scan.mutate({ profile: p.name, column_scan: false })}
+                      disabled={scan.isPending || !!activeOp}
+                      className="rounded-md bg-accent-soft px-2 py-1 text-xs text-accent-ink hover:opacity-90 disabled:opacity-50"
+                      title="Scan: walk source files for table references"
+                    >
+                      Scan
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => scan.mutate({ profile: p.name, column_scan: true })}
+                      disabled={scan.isPending || !!activeOp}
+                      className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
+                      title="Scan + columns: also pick up column-name references (slower)"
+                    >
+                      +Cols
+                    </button>
                     <button
                       type="button"
                       onClick={() => setEditing({ name: p.name })}
