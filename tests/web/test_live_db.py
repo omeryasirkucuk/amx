@@ -143,7 +143,7 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
                     ("orders", AssetKind.TABLE),
                     ("orders_view", AssetKind.VIEW),
                 ]
-            )
+            ),
         ),
     )
     response = client.get("/api/live/schemas/sales/assets", headers=auth_headers)
@@ -171,9 +171,7 @@ def test_list_volumes_returns_empty_for_unsupported_backends(
     assert payload["volumes"] == []
 
 
-def test_list_volumes_returns_rows_for_databricks(
-    client, auth_headers, monkeypatch, cfg
-) -> None:
+def test_list_volumes_returns_rows_for_databricks(client, auth_headers, monkeypatch, cfg) -> None:
     cfg.db.catalog = "main"
     _patch_connector(
         monkeypatch,
@@ -271,9 +269,7 @@ def test_list_assets_412_when_3level_backend_has_no_catalog(
     assert detail["hint"] == "select-catalog"
 
 
-def test_activate_catalog_writes_to_active_profile(
-    client, auth_headers, monkeypatch, cfg
-) -> None:
+def test_activate_catalog_writes_to_active_profile(client, auth_headers, monkeypatch, cfg) -> None:
     cfg.db.catalog = ""
     _patch_connector(
         monkeypatch,
@@ -289,9 +285,7 @@ def test_activate_catalog_writes_to_active_profile(
     assert cfg.db.catalog == "main"
 
 
-def test_activate_catalog_rejects_2level_backend(
-    client, auth_headers, monkeypatch
-) -> None:
+def test_activate_catalog_rejects_2level_backend(client, auth_headers, monkeypatch) -> None:
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
@@ -323,9 +317,7 @@ def test_list_assets_412_when_2level_backend_has_no_database(
     assert detail["hint"] == "select-database"
 
 
-def test_activate_database_writes_to_active_profile(
-    client, auth_headers, monkeypatch, cfg
-) -> None:
+def test_activate_database_writes_to_active_profile(client, auth_headers, monkeypatch, cfg) -> None:
     cfg.db.database = ""
     _patch_connector(
         monkeypatch,
@@ -341,9 +333,7 @@ def test_activate_database_writes_to_active_profile(
     assert cfg.db.database == "appdb"
 
 
-def test_activate_database_rejects_3level_backend(
-    client, auth_headers, monkeypatch
-) -> None:
+def test_activate_database_rejects_3level_backend(client, auth_headers, monkeypatch) -> None:
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),

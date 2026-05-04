@@ -241,10 +241,7 @@ def _ask_worker(
         nonlocal last_thinking
         if not text:
             return
-        if text.startswith(last_thinking):
-            chunk = text[len(last_thinking):]
-        else:
-            chunk = text
+        chunk = text[len(last_thinking) :] if text.startswith(last_thinking) else text
         last_thinking = text
         if chunk:
             emit(job.queue, "thinking.delta", {"text": chunk})
