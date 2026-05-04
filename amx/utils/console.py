@@ -24,11 +24,11 @@ from rich.theme import Theme
 
 _theme = Theme(
     {
-        "info": "cyan",
+        "info": "#22d3ee",
         "success": "bold green",
         "warning": "bold yellow",
         "error": "bold red",
-        "heading": "bold magenta",
+        "heading": "bold #fb923c",
     }
 )
 
@@ -127,7 +127,7 @@ def show_banner(force: bool = False) -> None:
     if os.getenv("AMX_NO_BANNER", "").lower() in {"1", "true", "yes"}:
         return
 
-    tagline = Text("┃  Agentic Metadata Extractor  ┃", style="bold cyan")
+    tagline = Text("┃  Agentic Metadata Extractor  ┃", style="bold #fb923c")
     art = Text(
         "\n".join(
             [
@@ -139,9 +139,9 @@ def show_banner(force: bool = False) -> None:
                 "╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝",
             ]
         ),
-        style="bold bright_cyan",
+        style="bold #fb923c",
     )
-    footer = Text("AI-inferred database descriptions", style="cyan")
+    footer = Text("AI-inferred database descriptions", style="#fb923c")
 
     content = Text.assemble(
         tagline,
@@ -154,7 +154,7 @@ def show_banner(force: bool = False) -> None:
     console.print(
         Panel(
             Align.center(content),
-            border_style="bright_cyan",
+            border_style="#fb923c",
             box=box.DOUBLE_EDGE,
             padding=(1, 2),
         )
@@ -402,7 +402,7 @@ def confirm(question: str, default: bool = True) -> bool:
 def render_table(title: str, columns: list[str], rows: list[list[Any]]) -> None:
     table = Table(title=title, show_lines=True)
     for col in columns:
-        table.add_column(col, style="cyan")
+        table.add_column(col, style="#22d3ee")
     for row in rows:
         table.add_row(*[str(v) for v in row])
     console.print(table)
@@ -495,7 +495,7 @@ def render_token_summary(tracker: object) -> None:
         return
     rows = tracker.summary()
     table = Table(title="Token usage", show_lines=True, box=box.SIMPLE_HEAVY)
-    table.add_column("Step", style="cyan")
+    table.add_column("Step", style="#22d3ee")
     table.add_column("Input", justify="right")
     table.add_column("Output", justify="right")
     table.add_column("Total", justify="right", style="bold")
