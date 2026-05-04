@@ -72,6 +72,34 @@ jobs:
         env:
           AMX_NO_NETWORK: "1"
 
+  web-build-freshness:
+    name: Web bundle freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: Build SPA
+        working-directory: frontend
+        run: npm run build
+      - name: Verify amx/web/static is up-to-date
+        run: |
+          # The SPA dist is committed (vendored) so end users don't
+          # need Node. This step blocks PRs that change the frontend
+          # without re-running the build.
+          if ! git diff --quiet amx/web/static; then
+            echo "::error::amx/web/static is stale. Run 'make web-build' and commit the result."
+            git diff amx/web/static | head -200
+            exit 1
+          fi
+
   build:
     name: Build distribution
     runs-on: ubuntu-latest

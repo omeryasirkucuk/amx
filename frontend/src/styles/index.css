@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CSS variables for the dark+light theme. Tailwind's `darkMode: class`
+   strategy reads `.dark` on <html>; PR-F adds the toggle, but we
+   already ship matching tokens for both modes so the SPA looks
+   sensible whichever scheme the OS prefers. */
+:root {
+  color-scheme: light dark;
+  --surface: 248 250 252;
+  --surface-subtle: 241 245 249;
+  --surface-raised: 255 255 255;
+  --surface-border: 226 232 240;
+  --ink: 15 23 42;
+  --ink-muted: 51 65 85;
+  --ink-dim: 100 116 139;
+  --accent: 79 70 229;
+  --accent-soft: 224 231 255;
+  --accent-ink: 55 48 163;
+  --positive: 16 185 129;
+  --warning: 217 119 6;
+  --critical: 220 38 38;
+}
+
+.dark {
+  --surface: 11 16 32;
+  --surface-subtle: 18 24 47;
+  --surface-raised: 23 30 60;
+  --surface-border: 39 47 84;
+  --ink: 226 232 240;
+  --ink-muted: 148 163 184;
+  --ink-dim: 100 116 139;
+  --accent: 129 140 248;
+  --accent-soft: 49 46 129;
+  --accent-ink: 199 210 254;
+  --positive: 52 211 153;
+  --warning: 251 191 36;
+  --critical: 248 113 113;
+}
+
+/* Smooth font rendering on Retina + force the Tailwind-tuned colors
+   on the body so the SPA never flashes the user's default white. */
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: rgb(var(--surface));
+  color: rgb(var(--ink));
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle scrollbar tuning so the asset tree + run lists don't look
+   like a 90s-era admin panel on Windows. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--surface-border));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--ink-dim));
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
