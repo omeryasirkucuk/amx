@@ -1,10 +1,11 @@
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Check,
   ChevronDown,
+  ChevronRight,
   Database,
   PanelLeft,
   Sparkles,
@@ -18,22 +19,31 @@ import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
 import ThemeToggle from "./ThemeToggle";
 import CommandPalette from "./CommandPalette";
+import IconButton from "./ui/IconButton";
+import Tooltip from "./ui/Tooltip";
+import Logo from "./brand/Logo";
 
 const navItems = [
-  { to: "/", label: "Browse", icon: Database, end: true },
-  { to: "/runs", label: "Runs", icon: HistoryIcon },
-  { to: "/ask", label: "Ask", icon: Sparkles },
-  { to: "/pending", label: "Pending", icon: Inbox },
-  { to: "/settings", label: "Settings", icon: SettingsIcon },
-  { to: "/system", label: "System", icon: Activity },
+  { to: "/", label: "Browse", icon: Database, end: true, match: ["/"] },
+  { to: "/runs", label: "Runs", icon: HistoryIcon, match: ["/runs"] },
+  { to: "/ask", label: "Ask", icon: Sparkles, match: ["/ask"] },
+  { to: "/pending", label: "Pending", icon: Inbox, match: ["/pending"] },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
+  { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];
 
-// Persistent top bar. Renders the active DB / LLM "pills" so the
-// user always sees the current scope, plus the primary nav. The
-// catalog pill becomes a dropdown for 3-level backends so the user
-// can pick a catalog without leaving the page.
+/**
+ * Persistent top bar. Three regions, left to right:
+ *   1. Sidebar toggle + brand + breadcrumb (where am I?)
+ *   2. Primary nav (where can I go?)
+ *   3. Context pills (DB / LLM / catalog) + ⌘K + theme toggle
+ *      (what scope am I working in?)
+ */
 export default function TopBar() {
   const toggleSidebar = useUi((s) => s.toggleSidebar);
+  const location = useLocation();
+  const params = useParams();
+
   const { data: ctx } = useQuery({
     queryKey: ["context"],
     queryFn: () => api.context(),
@@ -43,10 +53,6 @@ export default function TopBar() {
     queryFn: () => api.liveCatalogs(),
     retry: false,
   });
-  // Only fetch the database list when the backend is 2-level (no
-  // catalog support). 3-level backends like Databricks expose
-  // `/api/live/databases` as an empty list and we'd just render an
-  // empty dropdown.
   const databases = useQuery({
     queryKey: ["live-databases"],
     queryFn: () => api.liveDatabases(),
@@ -54,27 +60,85 @@ export default function TopBar() {
     enabled: catalogs.data ? !catalogs.data.supports_catalogs : false,
   });
 
+  const crumbs = useMemo(
+    () => buildCrumbs(location.pathname, params),
+    [location.pathname, params],
+  );
+
   return (
-    <header className="border-b border-surface-border bg-surface-raised">
-      <div className="flex items-center gap-4 px-6 py-3">
-        <button
-          type="button"
+    <header className="border-b border-border bg-surface-raised">
+      <div className="flex h-12 items-center gap-3 px-4">
+        <IconButton
+          icon={<PanelLeft size={16} />}
+          label="Toggle sidebar"
+          size="sm"
           onClick={toggleSidebar}
-          aria-label="Toggle sidebar"
-          className="rounded-md p-1.5 text-ink-muted hover:bg-surface-subtle hover:text-ink"
+        />
+        <Link
+          to="/"
+          className="group flex items-center gap-2 rounded-md px-1 -mx-1 hover:bg-surface-subtle"
         >
-          <PanelLeft size={18} />
-        </button>
-        <Link to="/" className="flex items-center gap-2">
-          <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-accent text-accent-soft font-semibold">
-            A
-          </span>
-          <span className="text-sm font-semibold tracking-tight">
-            AMX <span className="text-ink-dim font-normal">Visualizer</span>
+          <Logo size={20} className="text-ink" />
+          <span className="font-mono text-sm font-bold tracking-tight text-ink">
+            amx
           </span>
         </Link>
+        {crumbs.length > 0 && (
+          <nav aria-label="Breadcrumb" className="hidden md:flex">
+            <ol className="flex items-center gap-1 text-xs text-ink-dim">
+              {crumbs.map((c, i) => (
+                <li key={i} className="flex items-center gap-1">
+                  <ChevronRight size={12} className="text-border-strong" />
+                  {c.to && i < crumbs.length - 1 ? (
+                    <Link
+                      to={c.to}
+                      className="rounded text-ink-muted hover:text-ink"
+                    >
+                      {c.label}
+                    </Link>
+                  ) : (
+                    <span
+                      aria-current={i === crumbs.length - 1 ? "page" : undefined}
+                      className={
+                        i === crumbs.length - 1
+                          ? "max-w-[16rem] truncate font-medium text-ink"
+                          : "max-w-[10rem] truncate"
+                      }
+                      title={typeof c.label === "string" ? c.label : undefined}
+                    >
+                      {c.label}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </nav>
+        )}
 
-        <div className="ml-2 flex items-center gap-2 text-xs">
+        <nav className="ml-auto flex items-center gap-0.5">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                cn(
+                  "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors duration-fast",
+                  isActive
+                    ? "bg-accent-soft text-accent-ink"
+                    : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
+                )
+              }
+            >
+              <item.icon size={13} />
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+
+        <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+        <div className="flex items-center gap-1.5">
           <Pill
             label="DB"
             value={ctx?.active_db_profile ?? "—"}
@@ -99,33 +163,55 @@ export default function TopBar() {
               databases={databases.data.databases}
             />
           )}
-        </div>
-
-        <nav className="ml-auto flex items-center gap-1">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition",
-                  isActive
-                    ? "bg-accent-soft text-accent-ink"
-                    : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
-                )
-              }
-            >
-              <item.icon size={15} />
-              {item.label}
-            </NavLink>
-          ))}
           <CommandPalette />
           <ThemeToggle />
-        </nav>
+        </div>
       </div>
     </header>
   );
+}
+
+interface Crumb {
+  label: string;
+  to?: string;
+}
+
+function buildCrumbs(
+  pathname: string,
+  params: Record<string, string | undefined>,
+): Crumb[] {
+  if (pathname === "/" || pathname === "") return [];
+  const segs = pathname.split("/").filter(Boolean);
+  const root = segs[0];
+
+  if (root === "db") {
+    const out: Crumb[] = [{ label: "Browse", to: "/" }];
+    if (params.schema) {
+      out.push({
+        label: params.schema,
+        to: `/db/${params.profile ?? "active"}/${params.schema}`,
+      });
+    }
+    if (params.table) {
+      out.push({ label: params.table });
+    }
+    return out;
+  }
+  if (root === "runs") {
+    const out: Crumb[] = [{ label: "Runs", to: "/runs" }];
+    if (segs[1] === "new") out.push({ label: "New run" });
+    else if (segs[1] === "compare") out.push({ label: "Compare" });
+    else if (params.runId) out.push({ label: `#${params.runId}` });
+    return out;
+  }
+  const labels: Record<string, string> = {
+    ask: "Ask",
+    pending: "Pending",
+    settings: "Settings",
+    system: "System",
+  };
+  if (root && labels[root]) return [{ label: labels[root] }];
+  return [];
 }
 
 function Pill({
@@ -139,22 +225,25 @@ function Pill({
   tone: "accent" | "neutral";
   tooltip?: string;
 }) {
-  return (
+  const node = (
     <span
-      title={tooltip}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-medium",
+        "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-medium",
         tone === "accent"
-          ? "bg-accent-soft text-accent-ink"
-          : "bg-surface-subtle text-ink-dim",
+          ? "border-accent/20 bg-accent-soft text-accent-ink"
+          : "border-border bg-surface-subtle text-ink-dim",
       )}
     >
       <span className="text-[10px] uppercase tracking-wider opacity-70">
         {label}
       </span>
-      <span className="font-mono text-[11px]">{value}</span>
+      <span className="max-w-[8rem] truncate font-mono text-[11px]">
+        {value}
+      </span>
     </span>
   );
+  if (!tooltip) return node;
+  return <Tooltip content={tooltip}>{node}</Tooltip>;
 }
 
 function CatalogPicker({
@@ -171,9 +260,6 @@ function CatalogPicker({
   const activate = useMutation({
     mutationFn: (name: string) => api.activateCatalog(name, true),
     onSuccess: () => {
-      // Selecting a catalog invalidates everything that depended on
-      // the old scope: catalog list (active flag), schemas, assets,
-      // even the dashboard context.
       queryClient.invalidateQueries({ queryKey: ["live-catalogs"] });
       queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
       queryClient.invalidateQueries({ queryKey: ["live-assets"] });
@@ -201,18 +287,20 @@ function CatalogPicker({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition",
+          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
           activeCatalog
-            ? "border-accent/30 bg-accent-soft text-accent-ink"
-            : "border-warning/40 bg-warning/10 text-warning",
+            ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
+            : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
         )}
       >
-        <span className="text-[10px] uppercase tracking-wider opacity-70">Catalog</span>
-        <span className="font-mono text-[11px]">{display}</span>
+        <span className="text-[10px] uppercase tracking-wider opacity-70">
+          Catalog
+        </span>
+        <span className="max-w-[8rem] truncate font-mono">{display}</span>
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-surface-border bg-surface-raised shadow-lg">
+        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
           {empty ? (
             <div className="px-3 py-2 text-xs text-ink-dim">No catalogs visible.</div>
           ) : (
@@ -239,7 +327,7 @@ function CatalogPicker({
             </ul>
           )}
           {activate.isError && (
-            <div className="border-t border-surface-border px-3 py-1.5 text-[11px] text-critical">
+            <div className="border-t border-border px-3 py-1.5 text-[11px] text-critical">
               {activate.error instanceof Error
                 ? activate.error.message
                 : "Activation failed."}
@@ -292,18 +380,20 @@ function DatabasePicker({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition",
+          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
           activeDatabase
-            ? "border-accent/30 bg-accent-soft text-accent-ink"
-            : "border-warning/40 bg-warning/10 text-warning",
+            ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
+            : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
         )}
       >
-        <span className="text-[10px] uppercase tracking-wider opacity-70">Database</span>
-        <span className="font-mono text-[11px]">{display}</span>
+        <span className="text-[10px] uppercase tracking-wider opacity-70">
+          Database
+        </span>
+        <span className="max-w-[8rem] truncate font-mono">{display}</span>
         <ChevronDown size={12} className="opacity-70" />
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-surface-border bg-surface-raised shadow-lg">
+        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
           {empty ? (
             <div className="px-3 py-2 text-xs text-ink-dim">No databases visible.</div>
           ) : (
@@ -330,7 +420,7 @@ function DatabasePicker({
             </ul>
           )}
           {activate.isError && (
-            <div className="border-t border-surface-border px-3 py-1.5 text-[11px] text-critical">
+            <div className="border-t border-border px-3 py-1.5 text-[11px] text-critical">
               {activate.error instanceof Error
                 ? activate.error.message
                 : "Activation failed."}

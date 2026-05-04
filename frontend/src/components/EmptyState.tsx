@@ -1,4 +1,4 @@
-import type { ReactNode, ComponentType, SVGProps } from "react";
+import type { ComponentType, ReactNode, SVGProps } from "react";
 
 import { cn } from "../lib/cn";
 
@@ -8,35 +8,44 @@ interface Props {
   description?: ReactNode;
   actions?: ReactNode;
   className?: string;
+  /** Compact: smaller padding for embedded contexts (table footers etc.). */
+  compact?: boolean;
 }
 
-// A single empty-state component every list view shares so the SPA
-// renders consistent "nothing here yet" panels with explainers and a
-// CTA. The icon, copy and actions vary; the centered layout doesn't.
+/**
+ * Empty state — minimal, left-aligned, low-key. Replaces the old
+ * dashed-border + accent-circle decoration that telegraphed
+ * "AI-generated dashboard" at a glance. Use a thin border to mark
+ * the boundary; let the type carry the message.
+ */
 export default function EmptyState({
   icon: Icon,
   title,
   description,
   actions,
   className,
+  compact,
 }: Props) {
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center rounded-xl border border-dashed border-surface-border bg-surface-subtle/40 px-8 py-16 text-center",
+        "flex items-start gap-3 rounded-lg border border-border bg-surface-subtle/40 text-ink",
+        compact ? "px-4 py-4" : "px-5 py-6",
         className,
       )}
     >
       {Icon && (
-        <div className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-full bg-accent-soft text-accent-ink">
-          <Icon className="h-6 w-6" />
-        </div>
+        <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface-raised text-ink-dim">
+          <Icon className="h-4 w-4" />
+        </span>
       )}
-      <h3 className="text-base font-semibold">{title}</h3>
-      {description && (
-        <p className="mt-1.5 max-w-md text-sm text-ink-muted">{description}</p>
-      )}
-      {actions && <div className="mt-5 flex items-center justify-center gap-2">{actions}</div>}
+      <div className="min-w-0 flex-1">
+        <h3 className="text-sm font-semibold text-ink">{title}</h3>
+        {description && (
+          <p className="mt-1 text-sm text-ink-muted">{description}</p>
+        )}
+        {actions && <div className="mt-3 flex flex-wrap gap-2">{actions}</div>}
+      </div>
     </div>
   );
 }
