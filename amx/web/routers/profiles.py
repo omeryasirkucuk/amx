@@ -45,6 +45,108 @@ _DB_SECRET_FIELDS = frozenset({"password", "access_token"})
 _LLM_SECRET_FIELDS = frozenset({"api_key"})
 
 
+# ── Backend / provider catalogs ────────────────────────────────────────
+
+
+# Same backend list the CLI's ``/add-db-profile`` wizard exposes. Each
+# entry hints at the fields the SPA's wizard should surface; the SPA
+# can still send any DBConfig field via PUT — these are just the
+# defaults that get rendered as labelled inputs.
+_DB_BACKENDS: list[dict[str, Any]] = [
+    {
+        "id": "postgresql",
+        "label": "PostgreSQL",
+        "fields": ["host", "port", "user", "password", "database"],
+        "default_port": 5432,
+    },
+    {
+        "id": "mysql",
+        "label": "MySQL / MariaDB",
+        "fields": ["host", "port", "user", "password", "database"],
+        "default_port": 3306,
+    },
+    {
+        "id": "snowflake",
+        "label": "Snowflake",
+        "fields": ["account", "user", "password", "database", "warehouse", "role"],
+    },
+    {
+        "id": "databricks",
+        "label": "Databricks (Unity Catalog)",
+        "fields": ["host", "http_path", "access_token", "catalog"],
+        "supports_catalog": True,
+    },
+    {
+        "id": "bigquery",
+        "label": "BigQuery",
+        "fields": ["project", "dataset", "credentials_path"],
+    },
+    {
+        "id": "oracle",
+        "label": "Oracle",
+        "fields": ["host", "port", "user", "password", "database", "service_name"],
+        "default_port": 1521,
+    },
+    {
+        "id": "mssql",
+        "label": "SQL Server",
+        "fields": ["host", "port", "user", "password", "database", "driver"],
+        "default_port": 1433,
+    },
+    {
+        "id": "redshift",
+        "label": "Redshift",
+        "fields": ["host", "port", "user", "password", "database", "cluster_identifier"],
+        "default_port": 5439,
+    },
+    {
+        "id": "clickhouse",
+        "label": "ClickHouse",
+        "fields": ["host", "port", "user", "password", "database", "secure"],
+        "default_port": 8123,
+    },
+    {
+        "id": "duckdb",
+        "label": "DuckDB",
+        "fields": ["database"],
+    },
+]
+
+
+_LLM_PROVIDERS: list[dict[str, Any]] = [
+    {"id": "openai", "label": "OpenAI", "needs_key": True, "needs_base": False},
+    {"id": "anthropic", "label": "Anthropic", "needs_key": True, "needs_base": False},
+    {"id": "gemini", "label": "Gemini", "needs_key": True, "needs_base": False},
+    {"id": "deepseek", "label": "DeepSeek", "needs_key": True, "needs_base": False},
+    {"id": "openrouter", "label": "OpenRouter", "needs_key": True, "needs_base": False},
+    {"id": "kimi", "label": "Kimi (Moonshot)", "needs_key": True, "needs_base": False},
+    {
+        "id": "databricks_serving",
+        "label": "Databricks Serving",
+        "needs_key": True,
+        "needs_base": True,
+    },
+    {"id": "ollama", "label": "Ollama (local)", "needs_key": False, "needs_base": True},
+    {"id": "local", "label": "Generic OpenAI-compatible", "needs_key": True, "needs_base": True},
+]
+
+
+@router.get("/db/backends")
+def list_db_backends() -> dict[str, Any]:
+    """Backends the wizard surfaces, with the canonical fields each
+    one needs. Identical to the CLI's ``/add-db-profile`` picker —
+    the SPA renders the right inputs based on the chosen backend."""
+    return {"backends": _DB_BACKENDS}
+
+
+@router.get("/llm/providers")
+def list_llm_providers() -> dict[str, Any]:
+    """Provider list for the LLM wizard. ``needs_base`` flags which
+    providers require an explicit ``api_base`` (Ollama, Databricks
+    serving, generic OpenAI-compatible local servers)."""
+    return {"providers": _LLM_PROVIDERS}
+
+
 # ── DB profiles ────────────────────────────────────────────────────────
 
 
@@ -251,6 +353,111 @@ def list_code(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
         for name, value in sorted(cfg.code_profiles.items())
     ]
     return {"profiles": items, "active": getattr(cfg, "active_code_profile", "") or None}
+
+
+@router.put("/docs/{name}")
+def upsert_docs(
+    name: str,
+    body: dict[str, Any],
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Create / update a doc profile.
+
+    Body shape: ``{"paths": ["/abs/dir1", "https://…", "s3://bucket/key", …]}``.
+    Each path is normalised to a string; empty entries are dropped so
+    accidental blank rows don't survive a save.
+    """
+    raw_paths = body.get("paths") if isinstance(body, dict) else None
+    if not isinstance(raw_paths, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Body must include a 'paths' array of strings.",
+        )
+    cleaned = [str(p).strip() for p in raw_paths if str(p).strip()]
+    cfg.doc_profiles[name] = cleaned
+    cfg.save()
+    return {
+        "name": name,
+        "paths": cleaned,
+        "is_active": name == (getattr(cfg, "active_doc_profile", "") or ""),
+    }
+
+
+@router.delete("/docs/{name}")
+def delete_docs(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    if name not in cfg.doc_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No doc profile named {name!r}.",
+        )
+    if name == (getattr(cfg, "active_doc_profile", "") or ""):
+        cfg.active_doc_profile = ""
+    del cfg.doc_profiles[name]
+    cfg.save()
+    return {"ok": True, "remaining": len(cfg.doc_profiles)}
+
+
+@router.post("/docs/{name}/activate")
+def activate_docs(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    if name not in cfg.doc_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No doc profile named {name!r}.",
+        )
+    cfg.active_doc_profile = name
+    cfg.save()
+    return {"active": name}
+
+
+@router.put("/code/{name}")
+def upsert_code(
+    name: str,
+    body: dict[str, Any],
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Create / update a code profile.
+
+    Body shape: ``{"path": "/abs/dir or https://github.com/org/repo"}``.
+    """
+    raw_path = body.get("path") if isinstance(body, dict) else None
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Body must include a non-empty 'path' string.",
+        )
+    cfg.code_profiles[name] = raw_path.strip()
+    cfg.save()
+    return {
+        "name": name,
+        "path": cfg.code_profiles[name],
+        "is_active": name == (getattr(cfg, "active_code_profile", "") or ""),
+    }
+
+
+@router.delete("/code/{name}")
+def delete_code(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    if name not in cfg.code_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No code profile named {name!r}.",
+        )
+    if name == (getattr(cfg, "active_code_profile", "") or ""):
+        cfg.active_code_profile = ""
+    del cfg.code_profiles[name]
+    cfg.save()
+    return {"ok": True, "remaining": len(cfg.code_profiles)}
+
+
+@router.post("/code/{name}/activate")
+def activate_code(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    if name not in cfg.code_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No code profile named {name!r}.",
+        )
+    cfg.active_code_profile = name
+    cfg.save()
+    return {"active": name}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
