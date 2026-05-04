@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { Loader2, PlayCircle } from "lucide-react";
+import { PlayCircle } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
 import { cn } from "../lib/cn";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
+import { Button, Skeleton, Switch, useToast } from "../components/ui";
 
 interface SchemaPickState {
   schema: string;
@@ -15,6 +16,7 @@ interface SchemaPickState {
 
 export default function RunNew() {
   const navigate = useNavigate();
+  const toast = useToast();
   const [picked, setPicked] = useState<SchemaPickState[]>([]);
   const [missingOnly, setMissingOnly] = useState(true);
   const [autoApply, setAutoApply] = useState(false);
@@ -25,8 +27,6 @@ export default function RunNew() {
     retry: false,
   });
 
-  // 412 here means the user hasn't selected a catalog/database yet —
-  // we can't pick a scope without it, so steer them up to the topbar.
   const scopeUnavailable =
     schemas.error instanceof ApiError &&
     schemas.error.status === 412 &&
@@ -40,10 +40,20 @@ export default function RunNew() {
         missing_only: missingOnly,
       }),
     onSuccess: (result) => {
-      // Pass the job id to RunDetail so it can subscribe to the SSE
-      // stream until the run.created event lands; once we have a real
-      // run_id the URL is rewritten in place by RunDetail itself.
+      toast.push({
+        title: "Run started",
+        description: `${picked.length} ${picked.length === 1 ? "schema" : "schemas"} queued.`,
+        tone: "success",
+        duration: 2200,
+      });
       navigate(`/runs/new-${result.job_id}`);
+    },
+    onError: (err: Error) => {
+      toast.push({
+        title: "Could not start run",
+        description: err.message,
+        tone: "error",
+      });
     },
   });
 
@@ -73,9 +83,8 @@ export default function RunNew() {
   return (
     <>
       <PageHeader
-        eyebrow="Run"
-        title="Start a /run"
-        description="Pick the schemas (and optionally tables) AMX should describe. The agents stream alternatives back into the run detail page; nothing is written to the live database until you Apply."
+        title="New run"
+        breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: "New" }]}
       />
 
       {scopeUnavailable ? (
@@ -88,42 +97,51 @@ export default function RunNew() {
                 : "No database selected."}
             </p>
             <p className="mt-2 text-ink-muted">
-              Pick one from the top bar (or the sidebar tree) before starting a
-              run — without an active catalog/database the agents can't see any
-              schemas.
+              Pick one from the top bar or sidebar before starting a run — without
+              an active catalog/database the agents can&apos;t see any schemas.
             </p>
           </CardBody>
         </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
           <Card>
-            <CardHeader
-              title="Scope"
-              description="Click a schema to include it. Leaving its table list empty means 'every table in that schema'."
-            />
+            <CardHeader title="Scope" />
             <CardBody className="p-0">
               {schemas.isLoading ? (
-                <div className="px-5 py-6 text-sm text-ink-dim">Loading schemas…</div>
+                <ul className="divide-y divide-border">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <li key={i} className="px-5 py-3">
+                      <Skeleton className="h-3 w-1/3" />
+                    </li>
+                  ))}
+                </ul>
               ) : schemas.error ? (
                 <div className="px-5 py-6 text-sm text-critical">
                   {(schemas.error as Error).message}
                 </div>
               ) : !schemas.data?.schemas?.length ? (
-                <div className="px-5 py-6 text-sm text-ink-dim">No schemas reachable.</div>
+                <div className="px-5 py-6 text-sm text-ink-dim">
+                  No schemas reachable.
+                </div>
               ) : (
-                <ul className="divide-y divide-surface-border">
+                <ul className="divide-y divide-border">
                   {schemas.data.schemas.map((name) => (
                     <li key={name}>
                       <button
                         type="button"
                         onClick={() => toggleSchema(name)}
                         className={cn(
-                          "flex w-full items-center justify-between px-5 py-3 text-left text-sm transition hover:bg-surface-subtle/40",
+                          "flex w-full items-center justify-between px-5 py-2.5 text-left text-sm transition-colors duration-fast hover:bg-surface-subtle/50",
                           isPicked(name) && "bg-accent-soft/40",
                         )}
                       >
-                        <span className="font-medium">{name}</span>
-                        <span className="text-[11px] uppercase tracking-wider text-ink-dim">
+                        <span className="font-medium text-ink">{name}</span>
+                        <span
+                          className={cn(
+                            "text-[10.5px] uppercase tracking-wider",
+                            isPicked(name) ? "text-accent-ink" : "text-ink-dim",
+                          )}
+                        >
                           {isPicked(name) ? "selected" : "—"}
                         </span>
                       </button>
@@ -150,59 +168,48 @@ export default function RunNew() {
           </Card>
 
           <Card>
-            <CardHeader title="Settings" description="Tune the run before launch." />
+            <CardHeader title="Options" />
             <CardBody className="space-y-4 text-sm">
-              <Toggle
-                label="Missing-only"
-                description="Skip tables and columns that already have a comment. Recommended for incremental runs."
+              <Switch
                 checked={missingOnly}
-                onChange={setMissingOnly}
+                onChange={(e) => setMissingOnly(e.target.checked)}
+                label="Missing only"
+                description="Skip tables and columns that already have a comment."
               />
-              <Toggle
-                label="Auto-apply on success"
-                description="When the run finishes cleanly, write approved descriptions to the live DB without a separate Apply step. Equivalent to /run-apply."
+              <Switch
                 checked={autoApply}
-                onChange={setAutoApply}
+                onChange={(e) => setAutoApply(e.target.checked)}
+                label="Auto-apply on success"
+                description="Write approved descriptions to the live DB without a separate Apply step."
               />
-              <hr className="border-surface-border" />
-              <div className="text-xs text-ink-muted">
-                <div>
-                  <span className="text-ink-dim">Schemas:</span>{" "}
-                  <span className="font-mono">{picked.length}</span>
-                </div>
-                <div>
-                  <span className="text-ink-dim">Asset slots:</span>{" "}
-                  <span className="font-mono">{totalAssets}</span>
-                </div>
-              </div>
-              {submit.isError && (
-                <div className="rounded-md border border-critical/30 bg-critical/5 px-3 py-2 text-xs text-critical">
-                  {submit.error instanceof Error
-                    ? submit.error.message
-                    : "Submit failed."}
-                </div>
-              )}
-              <button
+              <hr className="border-border" />
+              <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
+                <dt className="text-ink-dim">Schemas</dt>
+                <dd className="text-right font-mono tabular-nums text-ink">
+                  {picked.length}
+                </dd>
+                <dt className="text-ink-dim">Asset slots</dt>
+                <dd className="text-right font-mono tabular-nums text-ink">
+                  {totalAssets}
+                </dd>
+              </dl>
+              <Button
                 type="button"
                 onClick={() => submit.mutate()}
-                disabled={picked.length === 0 || submit.isPending}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={picked.length === 0}
+                loading={submit.isPending}
+                variant="primary"
+                size="lg"
+                fullWidth
+                leadingIcon={<PlayCircle size={14} />}
               >
-                {submit.isPending ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" />
-                    Starting…
-                  </>
-                ) : (
-                  <>
-                    <PlayCircle size={14} />
-                    Start run
-                  </>
-                )}
-              </button>
-              <p className="text-[11px] text-ink-dim">
-                Live progress streams on the next page.
-              </p>
+                {submit.isPending ? "Starting…" : "Start run"}
+              </Button>
+              {picked.length === 0 && (
+                <p className="text-[11px] text-ink-dim">
+                  Pick at least one schema to enable the start button.
+                </p>
+              )}
             </CardBody>
           </Card>
         </div>
@@ -225,7 +232,16 @@ function SchemaTablePicker({
     queryFn: () => api.liveAssets(schema),
   });
   if (assets.isLoading) {
-    return <div className="px-8 pb-3 text-xs text-ink-dim">Loading tables…</div>;
+    return (
+      <div className="space-y-1.5 px-8 pb-3">
+        <Skeleton className="h-3 w-1/4" />
+        <div className="flex flex-wrap gap-1.5">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Skeleton key={i} className="h-5 w-20" />
+          ))}
+        </div>
+      </div>
+    );
   }
   if (assets.error) {
     return (
@@ -255,7 +271,7 @@ function SchemaTablePicker({
         <button
           type="button"
           onClick={selectAll}
-          className="rounded border border-surface-border px-1.5 py-0.5 hover:bg-surface-subtle"
+          className="rounded border border-border px-1.5 py-0.5 hover:bg-surface-subtle"
         >
           all tables
         </button>
@@ -274,10 +290,10 @@ function SchemaTablePicker({
               type="button"
               onClick={() => toggle(asset.name)}
               className={cn(
-                "rounded-md border px-2 py-0.5 font-mono text-[11px]",
+                "rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors duration-fast",
                 on
-                  ? "border-accent/40 bg-accent-soft/30 text-ink"
-                  : "border-surface-border text-ink-dim hover:border-accent/30 hover:text-ink",
+                  ? "border-accent/40 bg-accent-soft/40 text-ink"
+                  : "border-border text-ink-dim hover:border-accent/40 hover:text-ink",
               )}
             >
               {asset.name}
@@ -286,32 +302,5 @@ function SchemaTablePicker({
         })}
       </div>
     </div>
-  );
-}
-
-function Toggle({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <label className="flex cursor-pointer items-start gap-3">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 h-4 w-4 cursor-pointer accent-current"
-      />
-      <span>
-        <span className="block font-medium text-ink">{label}</span>
-        <span className="block text-xs text-ink-muted">{description}</span>
-      </span>
-    </label>
   );
 }

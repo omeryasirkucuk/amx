@@ -7,6 +7,7 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
+import { Skeleton } from "../components/ui";
 
 const ASSET_TONE: Record<string, "accent" | "positive" | "neutral" | "warning"> = {
   table: "accent",
@@ -36,17 +37,8 @@ export default function Schema() {
   return (
     <>
       <PageHeader
-        eyebrow="Schema"
         title={schema}
-        description="Tables, views, and materialized views in this schema. Click any asset to inspect its columns."
-        actions={
-          <Link
-            to="/"
-            className="text-xs text-ink-dim hover:text-ink"
-          >
-            ← Back to dashboard
-          </Link>
-        }
+        breadcrumbs={[{ label: "Browse", to: "/" }, { label: schema }]}
       />
 
       <Card>
@@ -55,12 +47,20 @@ export default function Schema() {
           description={
             assets.data
               ? `${assets.data.count} asset${assets.data.count === 1 ? "" : "s"} reachable.`
-              : "Loading…"
+              : undefined
           }
         />
         <CardBody className="p-0">
           {assets.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading assets…</div>
+            <ul className="divide-y divide-border">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <li key={i} className="flex items-center gap-3 px-5 py-3">
+                  <Skeleton shape="circle" className="h-3.5 w-3.5" />
+                  <Skeleton className="h-3 w-1/3" />
+                  <Skeleton className="ml-auto h-4 w-16" />
+                </li>
+              ))}
+            </ul>
           ) : needsCatalog ? (
             <CatalogPickerInline />
           ) : needsDatabase ? (
@@ -70,15 +70,15 @@ export default function Schema() {
               {(assets.error as Error).message}
             </div>
           ) : assets.data?.assets?.length ? (
-            <ul className="divide-y divide-surface-border">
+            <ul className="divide-y divide-border">
               {assets.data.assets.map((asset) => (
                 <li key={asset.name}>
                   <Link
                     to={`/db/${profile}/${schema}/${asset.name}`}
-                    className="flex items-center gap-3 px-5 py-3 text-sm transition hover:bg-surface-subtle/50"
+                    className="flex items-center gap-3 px-5 py-2.5 text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
                   >
                     <AssetIcon kind={asset.kind} />
-                    <span className="font-medium">{asset.name}</span>
+                    <span className="font-medium text-ink">{asset.name}</span>
                     <span className="ml-auto">
                       <StatusPill tone={ASSET_TONE[asset.kind] ?? "neutral"}>
                         {asset.kind.replace("_", " ")}
@@ -89,11 +89,14 @@ export default function Schema() {
               ))}
             </ul>
           ) : (
-            <EmptyState
-              icon={Database}
-              title="Schema is empty"
-              description="No tables, views, or materialized views in this schema yet."
-            />
+            <div className="px-5 py-5">
+              <EmptyState
+                icon={Database}
+                title="Schema is empty"
+                description="No tables, views, or materialized views in this schema yet."
+                compact
+              />
+            </div>
           )}
         </CardBody>
       </Card>
@@ -132,7 +135,7 @@ function CatalogPickerInline() {
           <p className="text-sm font-medium text-ink">No catalog selected.</p>
           <p className="mt-1 text-xs text-ink-muted">
             This backend exposes multiple catalogs. Pick one below — your choice
-            will be persisted to the active DB profile.
+            is persisted to the active DB profile.
           </p>
         </div>
         {catalogs.isLoading ? (
@@ -149,7 +152,7 @@ function CatalogPickerInline() {
                 type="button"
                 onClick={() => activate.mutate(name)}
                 disabled={activate.isPending}
-                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition hover:border-accent/40 hover:text-ink disabled:opacity-50"
+                className="rounded-md border border-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink disabled:opacity-50"
               >
                 {name}
               </button>
@@ -192,8 +195,8 @@ function DatabasePickerInline() {
         <div>
           <p className="text-sm font-medium text-ink">No database selected.</p>
           <p className="mt-1 text-xs text-ink-muted">
-            The active profile didn't pin a database. Pick one below — your
-            choice will be persisted so you don't have to repeat it.
+            The active profile didn&apos;t pin a database. Pick one below — your
+            choice is persisted so you don&apos;t have to repeat it.
           </p>
         </div>
         {databases.isLoading ? (
@@ -210,7 +213,7 @@ function DatabasePickerInline() {
                 type="button"
                 onClick={() => activate.mutate(name)}
                 disabled={activate.isPending}
-                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition hover:border-accent/40 hover:text-ink disabled:opacity-50"
+                className="rounded-md border border-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink disabled:opacity-50"
               >
                 {name}
               </button>
