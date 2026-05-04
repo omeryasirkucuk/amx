@@ -51,3 +51,15 @@ CHANGELOG.local.md
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Frontend / SPA workspace
+# The Vite project under frontend/ is repo-only; the build output
+# under amx/web/static IS committed (vendored dist) so a developer
+# running ``pip install -e .`` gets a working /visualize without Node.
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# Local build artefacts under the SPA workspace
+*.tsbuildinfo
