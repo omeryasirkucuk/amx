@@ -16,6 +16,8 @@ import StatusPill from "../components/StatusPill";
 import { Button, InfoHint, Skeleton } from "../components/ui";
 import {
   humanizeCommand,
+  relativeTime,
+  shortModel,
   statusLabel,
   statusTone,
   summarizeScope,
@@ -111,25 +113,50 @@ export default function Home() {
                 {runs.data.runs.map((row) => (
                   <li
                     key={row.id}
-                    className="flex items-center gap-3 px-5 py-2.5 text-sm hover:bg-surface-subtle/50"
+                    className="flex items-start gap-3 px-5 py-2.5 text-sm hover:bg-surface-subtle/50"
                   >
-                    <Activity size={13} className="text-ink-dim shrink-0" />
+                    <Activity size={13} className="mt-1 text-ink-dim shrink-0" />
                     <Link
                       to={`/runs/${row.id}`}
-                      className="font-mono text-xs text-ink-dim hover:text-accent"
+                      className="mt-0.5 font-mono text-xs text-ink-dim hover:text-accent"
                     >
                       #{row.id}
                     </Link>
-                    <span className="font-medium text-ink shrink-0">
-                      {humanizeCommand(row.command)}
-                    </span>
-                    <span
-                      className="truncate text-ink-muted"
-                      title={row.command}
-                    >
-                      · {summarizeScope(row.scope)}
-                    </span>
-                    <span className="ml-auto shrink-0">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-medium text-ink truncate" title={row.command}>
+                          {humanizeCommand(row.command)}
+                        </span>
+                        <span className="truncate text-ink-muted text-xs">
+                          · {summarizeScope(row.scope)}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-dim">
+                        {row.llm_model && (
+                          <span
+                            className="truncate font-mono"
+                            title={row.llm_model}
+                          >
+                            {shortModel(row.llm_model)}
+                          </span>
+                        )}
+                        {row.duration_sec != null && (
+                          <>
+                            <span>·</span>
+                            <span className="font-mono tabular-nums">
+                              {row.duration_sec.toFixed(1)}s
+                            </span>
+                          </>
+                        )}
+                        {row.started_at != null && (
+                          <>
+                            <span>·</span>
+                            <span>{relativeTime(row.started_at)}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <span className="mt-0.5 ml-auto shrink-0">
                       <StatusPill tone={statusTone(row.status)}>
                         {statusLabel(row.status)}
                       </StatusPill>
@@ -169,8 +196,8 @@ function StatCard({
 }) {
   return (
     <div
-      className="flex min-h-[88px] flex-col rounded-xl border border-border bg-surface-raised px-4 py-3.5 shadow-xs"
-      title={value.length > 18 ? value : undefined}
+      className="flex min-h-[68px] flex-col rounded-xl border border-border bg-surface-raised px-4 py-3 shadow-xs"
+      title={value}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
@@ -188,7 +215,7 @@ function StatCard({
           }
         />
       </div>
-      <div className="mt-auto pt-2 font-mono text-[18px] leading-snug tabular-nums text-ink line-clamp-2 break-all">
+      <div className="mt-1.5 truncate font-mono text-[14px] leading-tight tabular-nums text-ink">
         {value}
       </div>
     </div>
