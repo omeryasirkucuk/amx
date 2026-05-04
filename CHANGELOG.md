@@ -6,6 +6,55 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — action APIs + cancellation plumbing for `/visualize` (PR-C)
+
+Third slice of the local AMX web UI. The visualizer can now trigger
+the existing `apply_review_results_to_db` flow, stream live progress
+to the SPA via Server-Sent-Events, and cancel mid-flight without
+rolling back already-written COMMENTs.
+
+What's included:
+
+- **Orchestrator patch** (`amx/agents/orchestrator.py`):
+  - New `RunCancelled` exception (subclass of `RuntimeError`).
+  - `apply_review_results_to_db` accepts an optional `cancel_token:
+    threading.Event`. The write loop checks it between rows and
+    bails cleanly — already-applied rows stay committed (matches the
+    CLI's Ctrl-C behaviour).
+- **New routers** under `amx/web/routers/`:
+  - `runs.py` — `POST /api/runs`, `POST /api/apply`,
+    `GET /api/{runs,apply}/{job_id}`,
+    `GET /api/{runs,apply}/{job_id}/events` (SSE), and
+    `POST /api/{runs,apply}/{job_id}/cancel`. The full bulk-run
+    pipeline is queued for a follow-up — `/api/runs` emits a clean
+    `job.failed` so the SPA renders an actionable toast instead of
+    a perpetual spinner.
+  - `comments.py` — `PUT /api/comments/{database, schemas/{schema},
+    schemas/{schema}/tables/{table}, schemas/{schema}/tables/{table}/columns/{column}}`
+    wrapping the existing `DatabaseConnector.set_*_comment` setters.
+- **JobRegistry workers**: each `/apply` job runs in a daemon thread
+  with its own progress queue. SSE events follow the schema in the
+  approved plan (`activity.added/begin/complete`,
+  `writeback.progress`, `job.{done,cancelled,failed}`).
+- **Frontend**:
+  - New `useEventSource` hook (`frontend/src/lib/sse.ts`) that
+    auto-attaches the bearer token via `?t=…` (browsers can't set
+    headers on `EventSource`).
+  - New `JobProgress` component renders the SSE stream as a
+    Rich-CLI-style progress card with cancel button, percentage
+    bar, and terminal-state messaging.
+  - The `/pending` page is no longer a placeholder — clicking
+    "Apply pending queue" submits the on-disk queue, streams
+    writeback progress, and exposes a Cancel button.
+- **15 new tests** under `tests/web/`:
+  - `test_runs_apply.py` — explicit-results body, pending-queue
+    fallback, mid-loop cancel, SSE stream framing, and the stub
+    `/api/runs` failure contract.
+  - `test_comments.py` — every comment level (database, schema,
+    table, column) plus 400 mapping for unsupported backends.
+  - `test_orchestrator_cancellation.py` — the additive cancel-token
+    patch, including pre-set + mid-loop scenarios.
+
 ### Added — read-only browse API + Vite/React/Tailwind SPA (PR-B)
 
 Second slice of the local AMX web UI. `/visualize` now opens a real
