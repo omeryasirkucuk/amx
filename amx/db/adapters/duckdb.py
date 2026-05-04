@@ -133,6 +133,13 @@ class DuckDBAdapter(DatabaseAdapter):
         # mirror to keep bulk and per-column outputs aligned.
         return f"CAST({agg}({quoted_col}) AS VARCHAR)"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"CAST({quoted_col} AS VARCHAR)"
+
+    # DuckDB has ``USING SAMPLE n%`` which requires a separate clause
+    # position; LIMIT alone is fine for sample collection on local /
+    # in-memory analytical workloads.
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

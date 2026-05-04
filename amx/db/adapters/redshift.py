@@ -117,6 +117,9 @@ class RedshiftAdapter(DatabaseAdapter):
         # Redshift mirrors Postgres: ``::text`` is the idiomatic cast.
         return f"{agg}({quoted_col}::text)"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"{quoted_col}::text"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

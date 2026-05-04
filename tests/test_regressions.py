@@ -1402,8 +1402,19 @@ class ProfilingGuardrailTests(unittest.TestCase):
             def column_stats_sql(self, fqn: str, quoted_col: str) -> str:
                 raise AssertionError("sampled mode must not run full column stats")
 
+            def column_stats_bulk_sql(self, fqn: str, quoted_cols):
+                raise AssertionError("sampled mode must not run bulk column stats")
+
             def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
                 return f"SAMPLE_SQL {fqn}.{quoted_col}"
+
+            def bulk_sample_sql(self, fqn: str, quoted_cols, row_cap: int) -> str:
+                # Phase 2 of the perf plan: sample collection is now
+                # one bulk query instead of one per column.
+                return f"BULK_SAMPLE_SQL {fqn} cols={len(quoted_cols)} cap={row_cap}"
+
+            def actionable_profile_error(self, exc):
+                return None
 
             def get_incoming_foreign_keys(self, engine, schema: str, table: str):
                 return []
@@ -1438,7 +1449,10 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(profile.row_count, 42)
         self.assertEqual(profile.columns[0].samples, ["A", "B"])
         self.assertEqual(profile.columns[0].distinct_count, 0)
-        self.assertEqual(executed, ['SAMPLE_SQL "public"."orders"."code"'])
+        # Sampled mode now issues a single bulk sample query (not one
+        # per column) — the FakeEngine doesn't care which SQL it gets.
+        self.assertEqual(len(executed), 1)
+        self.assertTrue(executed[0].startswith("BULK_SAMPLE_SQL"))
 
     def test_full_mode_blocks_column_scans_when_cloud_row_count_unknown(self) -> None:
         class FakeEngine:

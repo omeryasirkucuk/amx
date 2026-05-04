@@ -187,6 +187,14 @@ class ClickHouseAdapter(DatabaseAdapter):
         # CH is case-sensitive: lowercase ``min`` / ``max`` for built-ins.
         return f"toString({agg.lower()}({quoted_col}))"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"toString({quoted_col})"
+
+    # ClickHouse ``SAMPLE`` only works on tables that declare a ``SAMPLE
+    # BY`` clause at CREATE TABLE time. We can't assume that — leave
+    # the bulk sample as a plain LIMIT; the user can opt in to SAMPLE
+    # by overriding _bulk_sample_clause in their own adapter wrapper.
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

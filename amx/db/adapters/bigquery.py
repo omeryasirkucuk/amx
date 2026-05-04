@@ -104,6 +104,14 @@ class BigQueryAdapter(DatabaseAdapter):
     def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
         return f"{agg}(CAST({quoted_col} AS STRING))"
 
+    def _value_text_expr(self, quoted_col: str) -> str:
+        return f"CAST({quoted_col} AS STRING)"
+
+    def _bulk_sample_clause(self) -> str:
+        # BigQuery only supports block sampling (``TABLESAMPLE SYSTEM``)
+        # and the percentage must be at the table-reference level.
+        return "TABLESAMPLE SYSTEM (1 PERCENT)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
