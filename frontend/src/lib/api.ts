@@ -228,7 +228,14 @@ export const api = {
       `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`,
       { method: "PUT", body: JSON.stringify({ comment }) },
     ),
-  stats: () => apiFetch<StatsResponse>("/api/history/stats"),
+  stats: (command: string | null = "analyze.run") => {
+    const params = new URLSearchParams();
+    if (command) params.set("command", command);
+    const qs = params.toString();
+    return apiFetch<StatsResponse>(
+      qs ? `/api/history/stats?${qs}` : "/api/history/stats",
+    );
+  },
   submitRun: (body: {
     scope: Record<string, string[]>;
     apply?: boolean;

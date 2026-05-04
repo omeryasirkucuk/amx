@@ -747,24 +747,42 @@ function ResultsTab({
     );
   }
 
+  // Count rows still waiting in the pending queue — not in the
+  // queue and not already applied = the user skipped them earlier.
+  const queuedCount = rows.reduce(
+    (n, r) =>
+      n + (r.id != null && pendingByResultId.has(r.id) && !r.applied_at ? 1 : 0),
+    0,
+  );
+  const appliedCount = rows.filter((r) => !!r.applied_at).length;
+  const nothingToApply = queuedCount === 0 && !activeApplyJob;
+  const applyLabel = activeApplyJob
+    ? "Apply running…"
+    : queuedCount === 0
+      ? appliedCount > 0
+        ? "Queue empty — all applied"
+        : "Nothing to apply"
+      : `Apply pending queue (${queuedCount})`;
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-ink-muted">
           Run #{runId} produced <span className="font-mono">{rows.length}</span>{" "}
-          suggestion{rows.length === 1 ? "" : "s"}. Edit text inline, pick an
-          alternative, skip a row — your choices are persisted to the pending
-          queue and become the values Apply writes to the live DB.
+          suggestion{rows.length === 1 ? "" : "s"} —{" "}
+          <span className="text-positive">{appliedCount} applied</span>,{" "}
+          <span className="text-ink">{queuedCount} queued</span>. Edit text
+          inline, pick an alternative, or skip a row.
         </p>
         <Button
           variant="primary"
           size="md"
           leadingIcon={<PlayCircle size={14} />}
           loading={queueApply.isPending}
-          disabled={!!activeApplyJob}
+          disabled={!!activeApplyJob || nothingToApply || queueApply.isPending}
           onClick={() => queueApply.mutate()}
         >
-          {activeApplyJob ? "Apply running…" : "Apply pending queue"}
+          {applyLabel}
         </Button>
       </div>
 
@@ -851,7 +869,21 @@ function ResultRowItem({
     ? [chosen, ...sourceAlts]
     : sourceAlts;
   const applied = !!row.applied_at;
-  const editable = !!pendingEntry && !applied;
+  const queued = !applied && !!pendingEntry;
+  const skipped = !applied && !pendingEntry;
+  const editable = queued;
+  const statusTone: "positive" | "neutral" | "warning" = applied
+    ? "positive"
+    : queued
+      ? "neutral"
+      : "warning";
+  const statusLabel = applied
+    ? "applied"
+    : queued
+      ? "queued"
+      : skipped
+        ? "skipped"
+        : (row.evaluation || "pending");
 
   return (
     <li className="px-5 py-3">
@@ -860,9 +892,7 @@ function ResultRowItem({
           {row.column_name ?? <em className="text-ink-dim">(table)</em>}
         </span>
         <ConfidencePill value={row.confidence} score={row.logprob_score} />
-        <StatusPill tone={applied ? "positive" : "neutral"}>
-          {applied ? "applied" : (row.evaluation || "pending")}
-        </StatusPill>
+        <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
         <LogprobBadge score={row.logprob_score} />
         {editable && (
           <span className="ml-auto inline-flex items-center gap-2">
