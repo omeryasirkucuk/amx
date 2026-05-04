@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
 from amx.storage.sqlite_store import history_store
 
@@ -129,3 +130,26 @@ def list_recent_events(
     config edits, profile activations)."""
     rows = _store().list_recent_events(limit=limit)
     return {"events": rows, "count": len(rows)}
+
+
+class CompareRequest(BaseModel):
+    run_ids: list[int] = Field(..., min_length=1, description="Runs to compare side-by-side.")
+
+
+@router.post("/compare")
+def compare(body: CompareRequest) -> dict[str, Any]:
+    """Side-by-side run comparison payload. Mirrors what the CLI's
+    ``/history compare`` command produces; the web UI uses the same
+    helper so both surfaces stay in sync.
+    """
+    # Force the store to be live before the helper queries it.
+    _store()
+    from amx.cli_support.commands.compare import compare_runs
+
+    try:
+        return compare_runs(list(body.run_ids))
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc

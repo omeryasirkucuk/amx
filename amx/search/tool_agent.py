@@ -20,6 +20,8 @@ against — so it doesn't have to hallucinate.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from amx.config import AMXConfig
@@ -366,6 +368,9 @@ def run_tool_agent(
     answer_language: str,
     session_memory: list[dict[str, Any]] | None = None,
     display: LiveDisplay | None = None,
+    on_thinking_delta: Callable[[str], None] | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    cancel_token: threading.Event | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -377,6 +382,25 @@ def run_tool_agent(
     ``display`` is forwarded to the LLM call so reasoning models can stream
     their thinking text into the live thinking panel; for models that don't
     expose reasoning, it's a no-op.
+
+    The remaining kwargs are additive hooks the visualizer's
+    ``/api/ask`` SSE endpoint plugs into:
+
+    * ``on_thinking_delta(text)`` — invoked for every reasoning chunk
+      a thinking-model streams. Non-thinking models simply never call
+      it. The CLI's ``LiveDisplay`` already receives the same chunks
+      via ``display.update_thinking``; this kwarg gives the web layer
+      a parallel hook so the SPA can render a streaming spinner.
+    * ``on_tool_call({"name", "arguments", "result_preview"})`` —
+      fired right after each tool returns. Lets the SPA render a
+      "ran ``list_tables_in_schema``" log row in real time.
+    * ``cancel_token`` — checked at the top of every iteration of the
+      tool loop. When set, the loop bails before the next LLM call,
+      raising :class:`amx.agents.orchestrator.RunCancelled` so the
+      JobRegistry can flip the job to ``cancelled``.
+
+    All three are optional and default to ``None`` so existing
+    callers (CLI ``/ask``, batch scripts) keep working unchanged.
     """
     # Use ``with`` so the live DB connector (SQLAlchemy engine + connection
     # pool) is disposed at the end of every question. Without this, each
@@ -391,6 +415,9 @@ def run_tool_agent(
             answer_language=answer_language,
             session_memory=session_memory,
             display=display,
+            on_thinking_delta=on_thinking_delta,
+            on_tool_call=on_tool_call,
+            cancel_token=cancel_token,
         )
 
 
@@ -403,6 +430,9 @@ def _run_tool_loop(
     answer_language: str,
     session_memory: list[dict[str, Any]] | None,
     display: LiveDisplay | None = None,
+    on_thinking_delta: Callable[[str], None] | None = None,
+    on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    cancel_token: threading.Event | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
     # system prompt so the LLM doesn't have to spend a tool call discovering
@@ -433,10 +463,29 @@ def _run_tool_loop(
 
     # Single closure shared across iterations so the thinking panel keeps
     # streaming continuously even as we hop between LLM calls + tool calls.
-    on_thinking = (lambda text: display.update_thinking(text)) if display is not None else None
+    # The web layer ``on_thinking_delta`` runs alongside the CLI
+    # ``display.update_thinking`` — both fire on the same chunk so /ask
+    # in the terminal and /visualize in the browser stay in sync.
+    def _forward_thinking(text: str) -> None:
+        if display is not None:
+            display.update_thinking(text)
+        if on_thinking_delta is not None:
+            try:
+                on_thinking_delta(text)
+            except Exception:
+                # Never let a UI hook crash the agent loop.
+                pass
+
+    on_thinking = (
+        _forward_thinking if (display is not None or on_thinking_delta is not None) else None
+    )
 
     for iteration in range(_MAX_ITERATIONS):
         iterations = iteration + 1
+        if cancel_token is not None and cancel_token.is_set():
+            from amx.agents.orchestrator import RunCancelled
+
+            raise RunCancelled(f"Cancelled before iteration {iteration}")
         result = llm.chat(
             [_convert_message_for_litellm(m) for m in messages],
             temperature=0.0,
@@ -472,7 +521,13 @@ def _run_tool_loop(
         )
         for tc in result.tool_calls:
             tool_result = toolbox.invoke(tc.name, tc.arguments or "{}")
-            tool_call_log.append(_summarise_tool_call(tc, tool_result))
+            summary = _summarise_tool_call(tc, tool_result)
+            tool_call_log.append(summary)
+            if on_tool_call is not None:
+                try:
+                    on_tool_call(summary)
+                except Exception:
+                    pass
             messages.append(
                 {
                     "role": "tool",
