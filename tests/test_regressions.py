@@ -18,7 +18,6 @@ from amx.agents.code_agent import CodeAgent
 from amx.agents.orchestrator import Orchestrator, ReviewResult, apply_review_results_to_db
 from amx.cli_support import inject_session_defaults, session_to_click_args
 from amx.cli_support.commands.db import (
-    cmd_add_profile,
     cmd_profiling,
     cmd_tls,
     databricks_connect_with_recovery,
@@ -1021,7 +1020,9 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(cfg.db.backend, "databricks")
         self.assertEqual(cfg.db_profiles["databricks-default"].backend, "databricks")
 
-    def test_cmd_add_profile_overwrites_active_profile_atomically(self) -> None:
+    def test_cmd_edit_profile_overwrites_active_profile_atomically(self) -> None:
+        from amx.cli_support.commands.db import cmd_edit_profile
+
         cfg = AMXConfig()
         original = DBConfig(backend="postgresql", host="localhost", database="SAP")
         updated = DBConfig(
@@ -1038,7 +1039,7 @@ class ProfilingGuardrailTests(unittest.TestCase):
         cfg.active_db_profile = "databricks-default"
 
         with patch("amx.cli_support.commands.db.interactive_db_block", return_value=updated):
-            cmd_add_profile(cfg, ["databricks-default"])
+            cmd_edit_profile(cfg, ["databricks-default"])
 
         self.assertIs(cfg.db, updated)
         self.assertEqual(cfg.db.backend, "databricks")
@@ -2242,10 +2243,10 @@ class ProfileCreationLeakageTests(unittest.TestCase):
             self.assertEqual(new_profile.http_path, "")
             self.assertEqual(new_profile.catalog, "")
 
-    def test_db_add_profile_existing_name_passes_existing_as_defaults(self) -> None:
+    def test_db_edit_profile_passes_existing_as_defaults(self) -> None:
         """Editing an existing profile keeps its values as defaults so
         the user can press Enter to skip unchanged fields."""
-        from amx.cli_support.commands.db import cmd_add_profile
+        from amx.cli_support.commands.db import cmd_edit_profile
 
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.yml"
@@ -2276,10 +2277,29 @@ class ProfileCreationLeakageTests(unittest.TestCase):
                 "amx.cli_support.commands.db.interactive_db_block",
                 side_effect=spy,
             ):
-                cmd_add_profile(cfg, ["edit-me"])
+                cmd_edit_profile(cfg, ["edit-me"])
 
             self.assertIsNotNone(captured["defaults"])
             self.assertEqual(captured["defaults"].host, "db.example.com")
+
+    def test_db_add_profile_refuses_existing_name(self) -> None:
+        """Add and edit are two clean, non-overlapping channels —
+        /add-db-profile errors on collision and points the user at
+        /edit-db-profile. Pins the new contract so the silent
+        edit-on-collision shape cannot regress."""
+        from amx.cli_support.commands.db import cmd_add_profile
+
+        cfg = AMXConfig()
+        cfg.db_profiles = {
+            "already-here": DBConfig(backend="postgresql", host="db.example.com"),
+        }
+        cfg.active_db_profile = "already-here"
+
+        with patch("amx.cli_support.commands.db.interactive_db_block") as mock_wizard:
+            cmd_add_profile(cfg, ["already-here"])
+            # Wizard must NOT have been invoked — the command refused
+            # the collision before reaching that code path.
+            mock_wizard.assert_not_called()
 
     def test_interactive_db_block_resets_cross_backend_defaults(self) -> None:
         """If the caller passes a Databricks profile but the user picks

@@ -44,6 +44,59 @@ behaviour: graceful catalog list on no-catalog profiles, `catalog`-
 scoped listings via temporary `cfg.catalog` pinning (restored after
 the call), and the schema-shape contract for the LLM.
 
+### Changed — DB profile mutation surface tightened: `/edit-db-profile`, validating picker, `/schema` and `/table` removed
+
+User report (2026-05-04): nothing prevented saving — and silently
+using — a DB profile that pointed at a catalog/database the live
+backend could not see. Their Databricks profile had a typo'd
+`catalog` value; the catalog did not exist on the workspace, and
+every `amx` startup blew up with `SCHEMA_NOT_FOUND` even after the
+lazy-bootstrap fix landed (deferring the warning ≠ making the
+catalog real). The `/schema` and `/table` commands had the same
+shape: blindly write the typed value, never validate.
+
+Three coordinated changes:
+
+- **New `/edit-db-profile`** under the `/db` namespace. Walks the
+  same wizard as `/add-db-profile` but pre-fills every prompt with
+  the existing value, so the user can press Enter to skip
+  unchanged fields. Editing an inactive profile leaves the active
+  scope alone — touching one profile must never silently move the
+  user's working scope.
+- **`/add-db-profile` refuses name collisions.** It used to switch
+  silently into edit mode when the name matched. It now errors and
+  points the user at `/edit-db-profile X`. Add and edit are two
+  clean, non-overlapping channels.
+- **Inline catalog/database picker in the wizard.** After the user
+  enters host/credentials, the wizard probes the live backend
+  (`DatabaseConnector.list_catalogs` / `list_databases`) and
+  presents the discovered values as an `ask_choice`. A leading
+  `(keep current: <X>)` entry, an optional `(none)` entry, and a
+  trailing `(type custom value)` escape hatch round it out. The
+  custom-value path issues `warn()` + `confirm("Save anyway?",
+  default=False)` if the typed value is NOT in the listing — the
+  exact gate that would have blocked the original typo. Listing
+  failure (no driver, permission denied, network down) falls back
+  to the historical free-form prompt with one warn(). Wired into
+  Databricks (catalog), PostgreSQL, Snowflake, MySQL, MSSQL,
+  Redshift, ClickHouse (database). BigQuery free-form stays for
+  now (no `list_projects`).
+- **`/schema` and `/table` removed.** They wrote
+  `cfg.current_schema` / `cfg.current_table` blindly, with no
+  connectivity check, and were the reason the "olmayan bir şeye
+  bağlan" footgun stayed reachable. The fields stay (tests and
+  `/run`'s default scope still read them) — only the slash
+  commands go. The standard scope path is now positional (`/run
+  <schema> <table>`) or the existing `finalize_scope` interactive
+  picker.
+
+`tests/test_edit_db_profile.py` pins the contract end to end:
+add-on-collision refuses, edit walks the wizard with current values
+as defaults, edit of an inactive profile does not move active
+scope, picker offers listings + falls back gracefully, custom-value
+override is gated by an explicit confirm, and the `/schema` /
+`/table` heads stay gone from the registry.
+
 ### Fixed — `/ask` no longer crashes with `Ask failed: _lock` when shared mode is on
 
 Follow-up to the lazy-bootstrap fix below. `ChatSessionStore` (the
