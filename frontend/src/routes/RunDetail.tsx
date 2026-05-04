@@ -9,6 +9,16 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import StatusPill from "../components/StatusPill";
 import { cn } from "../lib/cn";
+import {
+  AlertDialog,
+  Badge,
+  Button,
+  Tab as TabTrigger,
+  TabPanel,
+  Tabs,
+  TabsList,
+  useToast,
+} from "../components/ui";
 
 interface RunDetailPayload {
   id: number;
@@ -153,8 +163,26 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     }
   }, [closed, resolvedRunId, navigate, queryClient]);
 
+  const toast = useToast();
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const cancel = useMutation({
     mutationFn: () => api.cancelRun(jobId),
+    onSuccess: () => {
+      setConfirmCancel(false);
+      toast.push({
+        title: "Cancellation requested",
+        description: "The worker bails between rows; already-written changes stay.",
+        tone: "warning",
+      });
+    },
+    onError: (e: Error) => {
+      setConfirmCancel(false);
+      toast.push({
+        title: "Cancel failed",
+        description: e.message,
+        tone: "error",
+      });
+    },
   });
 
   const lastEvent = events[events.length - 1] as SseEvent | undefined;
@@ -165,22 +193,33 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   return (
     <>
       <PageHeader
-        eyebrow="Run · live"
-        title={resolvedRunId ? `#${resolvedRunId}` : "Starting…"}
-        description="Streaming alternatives. Stays here until every selected asset is processed."
+        title={resolvedRunId ? `Run #${resolvedRunId}` : "Run · starting…"}
+        breadcrumbs={[
+          { label: "Runs", to: "/runs" },
+          { label: resolvedRunId ? `#${resolvedRunId}` : "live" },
+        ]}
         actions={
           !closed && (
-            <button
-              type="button"
-              onClick={() => cancel.mutate()}
+            <Button
+              variant="danger"
+              size="md"
+              leadingIcon={<PauseCircle size={14} />}
+              onClick={() => setConfirmCancel(true)}
               disabled={cancel.isPending}
-              className="inline-flex items-center gap-1.5 rounded-md bg-critical/10 px-3 py-1.5 text-sm font-medium text-critical hover:bg-critical/20 disabled:opacity-50"
             >
-              <PauseCircle size={14} />
               Cancel
-            </button>
+            </Button>
           )
         }
+      />
+      <AlertDialog
+        open={confirmCancel}
+        onClose={() => setConfirmCancel(false)}
+        onConfirm={() => cancel.mutate()}
+        loading={cancel.isPending}
+        title="Cancel this run?"
+        description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
+        confirmLabel="Cancel run"
       />
       <Card>
         <CardHeader
@@ -346,75 +385,94 @@ function PersistedRunView({ runId }: { runId: number }) {
   return (
     <>
       <PageHeader
-        eyebrow={`Run #${runId}`}
         title={run.data?.command ?? "Loading…"}
+        breadcrumbs={[
+          { label: "Runs", to: "/runs" },
+          { label: `#${runId}` },
+        ]}
         description={
-          run.data
-            ? `${run.data.status.toUpperCase()} · ${
-                run.data.duration_sec != null ? `${run.data.duration_sec.toFixed(1)}s` : "—"
-              } · ${run.data.llm_model ?? "—"}`
-            : ""
+          run.data ? (
+            <span className="inline-flex items-center gap-2 text-xs">
+              <Badge
+                tone={
+                  run.data.status === "success"
+                    ? "positive"
+                    : run.data.status === "failed"
+                      ? "critical"
+                      : run.data.status === "cancelled"
+                        ? "warning"
+                        : "neutral"
+                }
+                dot
+              >
+                {run.data.status}
+              </Badge>
+              <span className="font-mono text-ink-muted tabular-nums">
+                {run.data.duration_sec != null
+                  ? `${run.data.duration_sec.toFixed(1)}s`
+                  : "—"}
+              </span>
+              <span className="font-mono text-ink-muted">
+                {run.data.llm_model ?? "—"}
+              </span>
+            </span>
+          ) : undefined
         }
         actions={
-          <Link
-            to="/runs"
-            className="text-xs text-ink-dim hover:text-ink"
-          >
+          <Link to="/runs" className="text-xs text-ink-dim hover:text-ink">
             ← All runs
           </Link>
         }
       />
-      <div className="mb-4 flex gap-1">
-        {(["summary", "results", "scope", "settings"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition",
-              tab === t
-                ? "bg-accent-soft text-accent-ink"
-                : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
-            )}
-          >
-            {t[0].toUpperCase() + t.slice(1)}
-            {t === "results" && results.data?.count != null && (
-              <span className="ml-1.5 text-[10px] text-ink-dim">{results.data.count}</span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {tab === "summary" && (
-        <SummaryTab run={run.data} />
-      )}
-      {tab === "results" && (
-        <ResultsTab
-          runId={runId}
-          loading={results.isLoading}
-          rows={results.data?.results ?? []}
-          error={results.error as Error | undefined}
-        />
-      )}
-      {tab === "scope" && (
-        <Card>
-          <CardBody>
-            <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-3 font-mono text-xs">
-              {JSON.stringify(run.data?.scope ?? {}, null, 2)}
-            </pre>
-          </CardBody>
-        </Card>
-      )}
-      {tab === "settings" && (
-        <Card>
-          <CardHeader title="Settings snapshot" description="Captured at the moment the run started." />
-          <CardBody>
-            <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-3 font-mono text-xs">
-              {JSON.stringify(run.data?.settings ?? {}, null, 2)}
-            </pre>
-          </CardBody>
-        </Card>
-      )}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList>
+          {(["summary", "results", "scope", "settings"] as Tab[]).map((t) => (
+            <TabTrigger
+              key={t}
+              value={t}
+              badge={
+                t === "results" && results.data?.count != null ? (
+                  <span className="ml-1 rounded bg-surface-subtle px-1 text-[10px] text-ink-dim">
+                    {results.data.count}
+                  </span>
+                ) : undefined
+              }
+            >
+              {t[0].toUpperCase() + t.slice(1)}
+            </TabTrigger>
+          ))}
+        </TabsList>
+        <TabPanel value="summary">
+          <SummaryTab run={run.data} />
+        </TabPanel>
+        <TabPanel value="results">
+          <ResultsTab
+            runId={runId}
+            loading={results.isLoading}
+            rows={results.data?.results ?? []}
+            error={results.error as Error | undefined}
+          />
+        </TabPanel>
+        <TabPanel value="scope">
+          <Card>
+            <CardBody>
+              <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-ink p-3 font-mono text-xs text-bg">
+                {JSON.stringify(run.data?.scope ?? {}, null, 2)}
+              </pre>
+            </CardBody>
+          </Card>
+        </TabPanel>
+        <TabPanel value="settings">
+          <Card>
+            <CardHeader title="Settings snapshot" />
+            <CardBody>
+              <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-ink p-3 font-mono text-xs text-bg">
+                {JSON.stringify(run.data?.settings ?? {}, null, 2)}
+              </pre>
+            </CardBody>
+          </Card>
+        </TabPanel>
+      </Tabs>
     </>
   );
 }

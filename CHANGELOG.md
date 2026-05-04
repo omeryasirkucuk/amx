@@ -6,6 +6,46 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/visualize` monolith breakup + RunDetail/Ask/System polish (UI overhaul, PR 4/4)
+
+Final slice of the visualizer overhaul. Wraps up the four-PR design
+system reset by tackling the longest pages (Settings, System) and
+the activity-heavy ones (RunDetail, Ask), and by wiring the new
+AlertDialog + Toast primitives into the destructive paths.
+
+* **`Settings` migrated to `Tabs` primitive.** The hand-rolled tab
+  bar that the 1471-line monolith used moves to the new `Tabs` /
+  `TabsList` / `TabPanel` / `Tab` primitives (keyboard arrow
+  navigation, ARIA-correct, animated underline). Verbose
+  "Configuration" eyebrow + "Profile management for everything…"
+  description deleted; breadcrumbs replace them.
+* **`System` gains a sticky in-page nav.** Doctor / Token usage /
+  Catalog / Team history / Maintenance now anchor under
+  `#sys-doctor`/`#sys-usage`/etc., and a sticky nav on the left
+  jumps between them. Cleanup placeholders is now guarded by an
+  `AlertDialog` ("strip placeholder markers from the live database")
+  and emits a toast on success/failure instead of an inline panel.
+  Verbose "Admin" eyebrow + the "Diagnostics, token usage + cost…"
+  description are gone.
+* **`RunDetail` polish.** Both views (live SSE stream and persisted
+  run) move to breadcrumbs + `Badge` for status (with pulse for
+  running). The live "Cancel" button is now an `AlertDialog` —
+  cancelling mid-run isn't reversible, so a confirm step matches
+  the destructive nature of the action. Persisted view's tab bar
+  migrated to the new `Tabs` primitive; scope/settings JSON dumps
+  render in a dark inverted code block ("Vercel build log"
+  treatment) instead of the legacy washed-out subtle fill.
+* **`Ask` polish.** Verbose "Conversational" eyebrow + the
+  "Chat with the AMX search agent over your live database…"
+  description are gone. End-session button gets a `Tooltip` (no
+  more `title=` only) and `useToast` feedback. Sessions sidebar
+  loads with shaped skeletons. The chat composer surfaces a
+  `↵ send` keycap hint inside the textarea so newcomers know how
+  to submit (Enter sends, Shift+Enter inserts newline — the
+  existing behaviour).
+
+No backend or API changes. Bundle rebuilt and vendored.
+
 ### Changed — `/visualize` lists, forms, and skeleton loading (UI overhaul, PR 3/4)
 
 Third slice of the visualizer overhaul. Tackles the surfaces that

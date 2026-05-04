@@ -20,6 +20,7 @@ import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
+import { Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 
 type Tab = "db" | "llm" | "docs" | "code";
 
@@ -78,32 +79,34 @@ export default function Settings() {
   return (
     <>
       <PageHeader
-        eyebrow="Configuration"
         title="Settings"
-        description="Profile management for everything AMX connects to. Saves write to ~/.amx/config.yml — the same file the CLI wizards use."
+        breadcrumbs={[{ label: "Settings" }]}
       />
-      <div className="mb-4 flex gap-1">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition",
-              tab === t.id
-                ? "bg-accent-soft text-accent-ink"
-                : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
-            )}
-          >
-            <t.icon size={14} />
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {tab === "db" && <DbProfilesSection />}
-      {tab === "llm" && <LlmProfilesSection />}
-      {tab === "docs" && <DocProfilesSection />}
-      {tab === "code" && <CodeProfilesSection />}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList>
+          {TABS.map((t) => (
+            <TabTrigger
+              key={t.id}
+              value={t.id}
+              icon={<t.icon size={13} />}
+            >
+              {t.label}
+            </TabTrigger>
+          ))}
+        </TabsList>
+        <TabPanel value="db">
+          <DbProfilesSection />
+        </TabPanel>
+        <TabPanel value="llm">
+          <LlmProfilesSection />
+        </TabPanel>
+        <TabPanel value="docs">
+          <DocProfilesSection />
+        </TabPanel>
+        <TabPanel value="code">
+          <CodeProfilesSection />
+        </TabPanel>
+      </Tabs>
     </>
   );
 }
