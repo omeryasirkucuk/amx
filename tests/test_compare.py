@@ -1111,7 +1111,7 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
     listing tools accept an optional ``catalog`` argument so the LLM can
     drill in without mutating the saved profile."""
 
-    def _toolbox(self, fake_db, *, pinned_catalog: str = "", pinned_database: str = "") -> Any:
+    def _toolbox(self, fake_db, *, pinned_catalog: str = "", pinned_database: str = ""):
         from unittest.mock import MagicMock
 
         from amx.search.agent_tools import ToolBox
