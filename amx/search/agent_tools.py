@@ -1308,26 +1308,47 @@ class ToolBox:
 
         sch_arg = (schema or "").strip()
         with self._scoped_catalog(db, cat_arg):
-            try:
-                target_schemas = [sch_arg] if sch_arg else [str(s) for s in db.list_schemas()]
-            except Exception as exc:
-                raise _ToolError(f"Could not list schemas in {cat_arg!r}: {exc}") from exc
-
+            # Phase 4 fast path: bulk INFORMATION_SCHEMA query for every
+            # volume in the catalog. Skips when ``schema`` is set
+            # (per-schema query is already cheap) or when the adapter
+            # didn't implement the bulk variant.
             rows: list[dict[str, Any]] = []
             warnings: list[str] = []
-            for sch in target_schemas:
+            target_schemas: list[str] | str
+            list_volumes_bulk = getattr(db, "list_volumes_bulk", None)
+            bulk = list_volumes_bulk(cat_arg) if list_volumes_bulk and not sch_arg else None
+            if bulk is not None:
+                rows = [
+                    {
+                        "schema": v["schema"],
+                        "name": v["name"],
+                        "kind": v.get("type") or "volume",
+                        "comment": v.get("comment") or "",
+                    }
+                    for v in bulk
+                ]
+                target_schemas = "(bulk via information_schema)"
+            else:
                 try:
-                    for vol in db.list_volumes(sch, cat_arg):
-                        rows.append(
-                            {
-                                "schema": sch,
-                                "name": str(vol.get("name") or ""),
-                                "kind": str(vol.get("type") or "volume"),
-                                "comment": str(vol.get("comment") or ""),
-                            }
-                        )
+                    target_schemas = (
+                        [sch_arg] if sch_arg else [str(s) for s in db.list_schemas()]
+                    )
                 except Exception as exc:
-                    warnings.append(f"{sch}: {exc.__class__.__name__}: {exc}")
+                    raise _ToolError(f"Could not list schemas in {cat_arg!r}: {exc}") from exc
+
+                for sch in target_schemas:
+                    try:
+                        for vol in db.list_volumes(sch, cat_arg):
+                            rows.append(
+                                {
+                                    "schema": sch,
+                                    "name": str(vol.get("name") or ""),
+                                    "kind": str(vol.get("type") or "volume"),
+                                    "comment": str(vol.get("comment") or ""),
+                                }
+                            )
+                    except Exception as exc:
+                        warnings.append(f"{sch}: {exc.__class__.__name__}: {exc}")
 
         payload: dict[str, Any] = {
             "supported": True,
@@ -1361,17 +1382,37 @@ class ToolBox:
         all_live_tables: list[str] = []
         try:
             db = self._live_db()
-            for schema in db.list_schemas():
-                # Prefer ``list_assets`` when available — single round trip per schema.
-                if hasattr(db, "list_assets"):
-                    asset_iter = ((str(n), str(k)) for n, k in db.list_assets(schema))
-                else:
-                    asset_iter = ((str(n), "table") for n in db.list_tables(schema))
-                for asset_name, _kind in asset_iter:
-                    full_path = f"{schema}.{asset_name}"
+            # Phase 4 fast path: a single ``information_schema.tables``
+            # query covers every schema in the catalog. The original
+            # per-schema loop walks 100 schemas × 1 ``SHOW TABLES`` each =
+            # 100 round-trips on Databricks; the bulk path collapses
+            # that to 1 query. Falls through to the loop when the
+            # adapter doesn't implement the bulk variant or returns None.
+            catalog_pin = str(getattr(self.cfg.db, "catalog", "") or "").strip()
+            list_assets_bulk = getattr(db, "list_assets_bulk", None)
+            bulk_assets = (
+                list_assets_bulk(catalog_pin)
+                if list_assets_bulk and catalog_pin
+                else None
+            )
+            if bulk_assets is not None:
+                for sch_name, asset_name, _kind in bulk_assets:
+                    full_path = f"{sch_name}.{asset_name}"
                     all_live_tables.append(full_path)
                     if asset_name.lower() == target.lower():
                         live_paths.append(full_path)
+            else:
+                for schema in db.list_schemas():
+                    # Prefer ``list_assets`` when available — single round trip per schema.
+                    if hasattr(db, "list_assets"):
+                        asset_iter = ((str(n), str(k)) for n, k in db.list_assets(schema))
+                    else:
+                        asset_iter = ((str(n), "table") for n in db.list_tables(schema))
+                    for asset_name, _kind in asset_iter:
+                        full_path = f"{schema}.{asset_name}"
+                        all_live_tables.append(full_path)
+                        if asset_name.lower() == target.lower():
+                            live_paths.append(full_path)
         except Exception:
             # Live discovery is best-effort. Fall back to whatever the catalog had.
             pass

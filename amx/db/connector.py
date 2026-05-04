@@ -442,6 +442,60 @@ class DatabaseConnector:
         cat = catalog if catalog is not None else getattr(self.cfg, "catalog", "") or ""
         return self._list_extended("volumes", "list_volumes", cat, schema)
 
+    def list_volumes_bulk(
+        self,
+        catalog: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """One INFORMATION_SCHEMA query for every volume in the catalog.
+
+        Returns ``None`` when the active backend has no bulk implementation
+        (caller falls back to a per-schema loop) or when the
+        ``volumes`` capability is off. Callers must handle the
+        ``None`` case explicitly.
+        """
+        if not self.capabilities.volumes:
+            return None
+        cat = catalog if catalog is not None else getattr(self.cfg, "catalog", "") or ""
+        if not cat:
+            return None
+        try:
+            return self._adapter.list_volumes_bulk(self.engine, cat)
+        except Exception as exc:
+            log.debug("list_volumes_bulk failed for %s: %s", cat, exc)
+            return None
+
+    def list_assets_bulk(
+        self,
+        catalog: str | None = None,
+    ) -> list[tuple[str, str, AssetKind]] | None:
+        """Bulk asset enumeration across every schema in ``catalog``.
+
+        Returns triples ``(schema, name, AssetKind)`` or ``None`` when the
+        active backend has no bulk implementation.
+        """
+        cat = catalog if catalog is not None else getattr(self.cfg, "catalog", "") or ""
+        if not cat:
+            return None
+        try:
+            raw = self._adapter.list_assets_bulk(self.engine, cat)
+        except Exception as exc:
+            log.debug("list_assets_bulk failed for %s: %s", cat, exc)
+            return None
+        if raw is None:
+            return None
+        # Normalise the backend's raw asset-kind string to AssetKind.
+        out: list[tuple[str, str, AssetKind]] = []
+        for sch, name, raw_kind in raw:
+            kind_norm = (raw_kind or "").strip().upper()
+            if kind_norm == "VIEW":
+                kind = AssetKind.VIEW
+            elif kind_norm in {"MATERIALIZED VIEW", "MATERIALIZED_VIEW"}:
+                kind = AssetKind.MATERIALIZED_VIEW
+            else:
+                kind = AssetKind.TABLE
+            out.append((sch, name, kind))
+        return out
+
     def list_datashares(self) -> list[dict[str, Any]]:
         # No schema / catalog argument — datashares live at the cluster /
         # account level on every backend that supports them.

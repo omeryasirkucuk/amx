@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from amx.db.adapters.base import BackendCapabilities, DatabaseAdapter
+
+log = logging.getLogger(__name__)
 
 
 class DatabricksAdapter(DatabaseAdapter):
@@ -502,6 +505,92 @@ class DatabricksAdapter(DatabaseAdapter):
                     },
                 }
             )
+        return out
+
+    def list_volumes_bulk(
+        self,
+        engine: Engine,
+        catalog: str,
+    ) -> list[dict[str, Any]] | None:
+        """One ``system.information_schema.volumes`` query covers every schema.
+
+        The ``/ask`` ``list_volumes`` tool used to issue one
+        ``SHOW VOLUMES IN cat.schema`` per schema — 50 schemas =
+        50 round-trips. Unity Catalog exposes the same data through
+        a queryable view, so we can fetch everything in one go.
+        Returns ``None`` on permission denial / older runtimes that
+        don't expose this view, and the caller falls back to the
+        per-schema loop.
+        """
+        if not catalog:
+            return None
+        sql = (
+            "SELECT volume_schema, volume_name, volume_type, comment "
+            "FROM system.information_schema.volumes "
+            "WHERE volume_catalog = :cat"
+        )
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(text(sql), {"cat": catalog}).fetchall()
+        except Exception as exc:
+            log.debug("list_volumes_bulk failed for %s: %s", catalog, exc)
+            return None
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            mapping = row._mapping if hasattr(row, "_mapping") else {}
+            sch = mapping.get("volume_schema")
+            name = mapping.get("volume_name")
+            if not sch or not name:
+                continue
+            out.append(
+                {
+                    "schema": str(sch),
+                    "name": str(name),
+                    "type": str(mapping.get("volume_type") or "volume").lower(),
+                    "comment": str(mapping.get("comment")) if mapping.get("comment") else None,
+                }
+            )
+        return out
+
+    def list_assets_bulk(
+        self,
+        engine: Engine,
+        catalog: str,
+    ) -> list[tuple[str, str, str]] | None:
+        """One ``system.information_schema.tables`` query for the whole catalog.
+
+        ``find_table_by_name`` and similar fuzzy-search tools previously
+        called ``list_assets(schema)`` per schema, paying for one
+        ``SHOW TABLES`` per schema. This bulk path returns one row per
+        asset (table / view / materialized view) across every schema in
+        ``catalog`` in a single query. Returns ``None`` when the
+        information_schema view isn't accessible — caller falls back.
+        """
+        if not catalog:
+            return None
+        # Filter out system_schemas at the SQL level so we don't ship
+        # information_schema's own table list back to the tool layer.
+        sys_schemas = self.system_schemas()
+        sql = (
+            "SELECT table_schema, table_name, table_type "
+            "FROM system.information_schema.tables "
+            "WHERE table_catalog = :cat"
+        )
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(text(sql), {"cat": catalog}).fetchall()
+        except Exception as exc:
+            log.debug("list_assets_bulk failed for %s: %s", catalog, exc)
+            return None
+        out: list[tuple[str, str, str]] = []
+        for row in rows:
+            mapping = row._mapping if hasattr(row, "_mapping") else {}
+            sch = str(mapping.get("table_schema") or "")
+            name = str(mapping.get("table_name") or "")
+            kind = str(mapping.get("table_type") or "").upper()
+            if not sch or not name or sch in sys_schemas:
+                continue
+            out.append((sch, name, kind))
         return out
 
     def list_external_tables(self, engine: Engine, schema: str) -> list[dict[str, Any]]:

@@ -423,6 +423,39 @@ class DatabaseAdapter(ABC):
         """Unity Catalog volumes (Databricks) or stages (Snowflake) — file-storage assets."""
         return []
 
+    def list_volumes_bulk(
+        self,
+        engine: Engine,
+        catalog: str,
+    ) -> list[dict[str, Any]] | None:
+        """Bulk variant: every volume in *every* schema of ``catalog`` in one query.
+
+        The ``/ask`` ``list_volumes`` tool used to call ``list_volumes(sch, cat)``
+        once per schema — 50 schemas = 50 ``SHOW VOLUMES`` calls. Backends with
+        a queryable ``INFORMATION_SCHEMA`` for volumes (Databricks Unity
+        Catalog) override this to return everything in one query. Default
+        ``None`` means "not supported, caller should fall back to the
+        per-schema loop".
+
+        Each returned dict carries: ``schema``, ``name``, ``type``, ``comment``.
+        """
+        return None
+
+    def list_assets_bulk(
+        self,
+        engine: Engine,
+        catalog: str,
+    ) -> list[tuple[str, str, str]] | None:
+        """Bulk variant: every table / view / mat-view in ``catalog`` in one query.
+
+        Used by ``find_table_by_name`` to avoid the per-schema enumeration
+        loop. Returns ``(schema, name, kind)`` triples where ``kind`` is the
+        backend's raw asset-kind string (e.g. ``BASE TABLE``, ``VIEW``,
+        ``MATERIALIZED VIEW``); the caller normalises to AssetKind.
+        Default ``None`` means "fall back to the per-schema loop".
+        """
+        return None
+
     def list_datashares(self, engine: Engine) -> list[dict[str, Any]]:
         """Datashares (Redshift) / shares (Snowflake) / Delta Sharing recipients (Databricks)."""
         return []
