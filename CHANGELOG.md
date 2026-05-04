@@ -6,6 +6,47 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/ask` SSE chat panel + run comparison endpoint (PR-D)
+
+Fourth slice of the local AMX web UI. The visualizer can now hold a
+streaming chat conversation with the AMX search agent, watching
+reasoning tokens scroll in live, tool calls expand inline, and the
+final answer arrive without a single page reload.
+
+What's included:
+
+- **Tool-agent callbacks** (`amx/search/tool_agent.py`): three new
+  optional kwargs on `run_tool_agent` — `on_thinking_delta`,
+  `on_tool_call`, and `cancel_token`. All purely additive (default
+  `None`); existing CLI callers are unchanged. The agent loop checks
+  `cancel_token` at the top of every iteration and raises
+  `RunCancelled` so the visualizer's job machinery can flip the
+  status to `cancelled`.
+- **New router** `amx/web/routers/ask.py`:
+  - `POST /api/ask` — spawns an ask worker, returns `{job_id,
+    session_id}`. Persists the user turn to `chat_sessions` so the
+    CLI's `/ask` and the SPA's chat share one history.
+  - `GET /api/ask/{job_id}` — synchronous job snapshot.
+  - `GET /api/ask/{job_id}/events` — SSE stream of
+    `thinking.delta`, `tool.call`, `answer.final`, terminal
+    `job.{done,cancelled,failed}` events.
+  - `POST /api/ask/{job_id}/cancel` — flip the cancel token.
+  - `GET /api/ask/sessions` — recent sessions.
+  - `GET /api/ask/sessions/{id}` — full thread + turns.
+- **History compare endpoint** `POST /api/history/compare`. Reuses
+  the new `compare_runs(run_ids)` pure helper in
+  `amx/cli_support/commands/compare.py` so the CLI's
+  `/history compare` and the web UI render the same payload.
+- **Frontend**:
+  - `frontend/src/components/AskChat.tsx` — full-featured chat
+    panel: streaming thinking ribbon, tool-call disclosure list,
+    cancel button, session-aware turn history.
+  - `frontend/src/routes/Ask.tsx` — sessions sidebar + chat
+    layout; no more placeholder.
+- **17 new tests** under `tests/web/` covering ask sessions, SSE
+  flow, the additive tool-agent callback contract, and the new
+  compare endpoint.
+
 ### Added — action APIs + cancellation plumbing for `/visualize` (PR-C)
 
 Third slice of the local AMX web UI. The visualizer can now trigger

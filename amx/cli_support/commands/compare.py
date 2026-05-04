@@ -797,6 +797,57 @@ def _collect_per_column_long(
     return rows
 
 
+def compare_runs(run_ids: list[int]) -> dict[str, Any]:
+    """Pure helper: assemble a JSON-serializable comparison payload
+    for a list of run ids. Used by both the CLI ``/history compare``
+    command (rendering wrapper) and the ``/api/history/compare``
+    endpoint (web UI).
+
+    Returns ``{"runs": [...], "summary_rows": [...], "per_column": [...],
+    "aggregates": [...], "missing": [...] }`` where:
+
+    * ``runs`` — full run rows for the ones we found.
+    * ``summary_rows`` — per-run roll-up suitable for table rendering.
+    * ``per_column`` — long-form rows suitable for pivoting in the
+      browser.
+    * ``aggregates`` — per-run aggregate metrics.
+    * ``missing`` — run ids the caller asked for but the store didn't
+      have (so the SPA can show a "run #42 was deleted" toast).
+    """
+    hs = history_store()
+    if hs is None:
+        raise RuntimeError("History store is not initialized.")
+
+    found: list[dict[str, Any]] = []
+    missing: list[int] = []
+    for rid in run_ids:
+        try:
+            rid_int = int(rid)
+        except (TypeError, ValueError):
+            continue
+        row = hs.get_run(rid_int)
+        if row is None:
+            missing.append(rid_int)
+        else:
+            found.append(row)
+    found.sort(key=lambda r: float(r.get("started_at") or 0.0), reverse=True)
+
+    results_by_run: dict[int, list[dict[str, Any]]] = {}
+    for row in found:
+        try:
+            results_by_run[int(row["id"])] = list(hs.get_run_results(int(row["id"])))
+        except Exception:
+            results_by_run[int(row["id"])] = []
+
+    return {
+        "runs": found,
+        "summary_rows": _collect_run_summary_rows(found),
+        "per_column": _collect_per_column_long(found, results_by_run),
+        "aggregates": _collect_aggregate_long(found, results_by_run),
+        "missing": missing,
+    }
+
+
 def _collect_aggregate_long(
     runs: list[dict[str, Any]],
     results_by_run: dict[int, list[dict[str, Any]]],
