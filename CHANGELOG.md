@@ -6,6 +6,84 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` can now drive a `/run` end-to-end (Stage 2)
+
+The visualizer's Run lifecycle was previously a 501 stub: clicking
+"trigger run" emitted a `job.failed` event with the message "use the
+CLI for now." That's gone — the SPA can now start, watch, and review
+a `/run` without leaving the browser.
+
+1. **`POST /api/runs` is wired to the real Orchestrator.** New worker
+   in `amx/web/routers/runs.py::_run_worker` mirrors the non-interactive
+   subset of `cli_support/commands/analyze_flow.py`: validates the
+   active LLM profile, creates a history row via
+   `history_store().create_run(...)`, walks every (schema, table) in
+   the requested scope through `Orchestrator.process_table(...,
+   interactive_review=False, auto_apply=False)`, and stashes the
+   deferred ReviewResults in `~/.amx/pending_metadata.json`. SSE
+   events streamed: `run.scope.resolved`, `run.created`,
+   `activity.added` / `activity.complete` / `activity.fail` per
+   table, `pending.saved`, and the terminal `job.done` /
+   `job.failed` / `job.cancelled`. Cancellation is checked between
+   tables so a long multi-schema run aborts cleanly mid-flight.
+   `apply=true` chains an `apply_review_results_to_db` step on a
+   fresh connection after the run finishes successfully.
+
+2. **Run wizard at `/runs/new`.** New React route lets the user pick
+   schemas (and optionally individual tables within each schema),
+   toggle `missing-only` and `auto-apply`, and submit. Submission
+   POSTs `/api/runs` and redirects to the live progress view at
+   `/runs/new-{job_id}`. The `RunsList` page grows a "New run"
+   button.
+
+3. **Run detail tabs (Summary | Results | Scope | Settings).** The
+   old `RunDetail` was three side-by-side JSON dumps. It's now a
+   tabbed view with: a Summary card (status, duration, model), a
+   Results card grouped by table (per-row chosen description,
+   confidence pill with logprob tooltip, evaluation status, "Apply
+   pending queue" button wired to `POST /api/pending/apply`), and
+   the existing Scope / Settings JSON tabs. The same component
+   handles the live-streaming variant: `/runs/new-{job_id}`
+   subscribes to the SSE stream, renders an Activity list, and
+   replaces the URL with the persisted run id when the worker emits
+   `run.created`.
+
+Test coverage: replaced the stubbed
+`test_run_endpoint_emits_failed_for_now` with two fail-fast tests
+covering the new contract (no LLM configured → fails fast; empty
+scope → fails fast). Existing apply tests + 116 web tests stay
+green. Full suite: 820 passed.
+
+Follow-ups (same PR) after the user smoke-tested:
+
+* **CLI terminal stays clean during web-triggered runs.** Previously
+  the agents' Rich `console.print` / `info` / `success` / `warn`
+  output bled into the parent CLI window even though the same
+  events were streaming over SSE — confusing because the run was
+  visibly "happening in CLI" instead of in the browser. New
+  `quiet_console()` context manager in `amx/utils/console.py` flips
+  a per-thread flag that turns the four print helpers into no-ops
+  and wraps the global `console` in a `_ConsoleProxy` that routes
+  to a null sink while the worker thread is active. Other threads
+  (the CLI REPL itself, other tabs) keep their full output.
+* **`activity.complete` now ships every column's full alternatives
+  list, not just a 160-char preview.** The web run worker fetches
+  the just-saved `run_results` rows for the table that finished and
+  attaches the persisted alternatives + chosen description +
+  logprob to the SSE event. The browser's `LiveRunStream`
+  renders a per-column card with all alternatives (lettered A/B/C…)
+  underneath each table activity, so the user sees the same
+  richness the CLI's Rich preview shows.
+* **Pending page surfaces every alternative + lets the user swap
+  the chosen one.** Previously each pending row only displayed the
+  single `final_description` from `~/.amx/pending_metadata.json`.
+  `GET /api/pending` now joins each row to the persisted
+  `run_results.alternatives_json` via `result_id` so the SPA gets
+  the full list. The Pending route renders alternatives as
+  click-to-pick buttons; clicking a different one PATCHes
+  `final_description` and the next Apply writes that variant to
+  the live DB.
+
 ### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, missing database picker for 2-level backends, and one-database-only sidebar
 
 Eight user-reported issues against the visualizer surface, fixed in

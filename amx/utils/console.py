@@ -32,9 +32,79 @@ _theme = Theme(
     }
 )
 
-console = Console(theme=_theme)
+_real_console = Console(theme=_theme)
+# Long-lived /dev/null sink the proxy routes to while a thread is in
+# ``quiet_console()``. Process-lifetime resource — closing it via a
+# ``with`` block would defeat the proxy, so SIM115 is suppressed.
+_devnull_handle = open(os.devnull, "w")  # noqa: SIM115
+_null_console = Console(file=_devnull_handle, theme=_theme, force_terminal=False)
 
 _BANNER_SHOWN = False
+
+# Per-thread "quiet" flag. The visualizer's run worker turns this on
+# before invoking the orchestrator so the rich CLI banners + table
+# previews don't bleed into the user's terminal — they belong on the
+# SSE stream the browser is subscribed to. ``info`` / ``success`` /
+# ``warn`` / ``error`` short-circuit when the flag is set; the
+# original CLI REPL thread leaves it unset and keeps full output.
+_thread_quiet = threading.local()
+
+
+def is_quiet() -> bool:
+    return bool(getattr(_thread_quiet, "value", False))
+
+
+class _ConsoleProxy:
+    """Forward attribute access to the real console, except when the
+    current thread is in quiet mode — then route everything to a
+    null sink so Rich panels / tables / plain prints disappear.
+
+    Dunders that Python looks up on the class (not via ``__getattr__``)
+    have to be forwarded explicitly. Rich's ``Live`` uses
+    ``with self.console:`` so context-manager support is mandatory.
+    """
+
+    def _target(self) -> Console:
+        return _null_console if is_quiet() else _real_console
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target(), name)
+
+    def __enter__(self) -> Any:
+        return self._target().__enter__()
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        return self._target().__exit__(exc_type, exc, tb)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._target()(*args, **kwargs)
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return f"<ConsoleProxy quiet={is_quiet()}>"
+
+
+# Module-level alias preserves every existing ``from amx.utils.console
+# import console`` call. Existing CLI threads see the real console;
+# the visualizer worker sees the null one for the duration of
+# ``quiet_console()``.
+console: Any = _ConsoleProxy()
+
+
+@contextmanager
+def quiet_console() -> Generator[None, None, None]:
+    """Suppress info/success/warn/error printing + Rich console output
+    for the current thread.
+
+    Used by the visualizer's headless run worker to keep the parent
+    CLI's terminal clean while the browser streams the same events
+    over SSE.
+    """
+    previous = getattr(_thread_quiet, "value", False)
+    _thread_quiet.value = True
+    try:
+        yield
+    finally:
+        _thread_quiet.value = previous
 
 
 def show_banner(force: bool = False) -> None:
@@ -104,18 +174,26 @@ def heading(text: str) -> None:
 
 
 def info(text: str) -> None:
+    if is_quiet():
+        return
     console.print(f"[info]ℹ  {_markup_escape(text)}[/info]")
 
 
 def success(text: str) -> None:
+    if is_quiet():
+        return
     console.print(f"[success]✓  {_markup_escape(text)}[/success]")
 
 
 def warn(text: str) -> None:
+    if is_quiet():
+        return
     console.print(f"[warning]⚠  {_markup_escape(text)}[/warning]")
 
 
 def error(text: str) -> None:
+    if is_quiet():
+        return
     console.print(f"[error]✗  {_markup_escape(text)}[/error]")
 
 

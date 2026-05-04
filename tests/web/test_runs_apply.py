@@ -208,16 +208,29 @@ def test_apply_sse_stream_emits_json_events(client, auth_headers, monkeypatch) -
     assert types[-1] == "job.done"
 
 
-def test_run_endpoint_emits_failed_for_now(client, auth_headers) -> None:
-    """``/api/runs`` is a stub in PR-C; it emits a clear job.failed
-    event so the SPA can render an actionable toast instead of a
-    perpetual spinner. Pin the contract here so the eventual real
-    wiring is an obvious diff."""
+def test_run_endpoint_fails_fast_without_llm(client, auth_headers) -> None:
+    """``/api/runs`` is wired to the real Orchestrator now. The fixture
+    cfg has no LLM configured, so the worker must fail with a clear
+    ``No active LLM profile`` error before touching the DB or running
+    any agent. Pin the early-exit contract."""
     response = client.post("/api/runs", headers=auth_headers, json={"scope": {}})
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     body = _wait_for_status(client, job_id, "failed")
-    assert "pending" in (body.get("error") or "").lower()
+    assert "llm" in (body.get("error") or "").lower()
+
+
+def test_run_endpoint_fails_fast_on_empty_scope(client, auth_headers, cfg) -> None:
+    """When LLM is configured but scope is empty, the worker bails
+    with a scope-related error rather than booting Orchestrator."""
+    cfg.llm.provider = "openrouter"
+    cfg.llm.model = "test/model"
+    response = client.post("/api/runs", headers=auth_headers, json={"scope": {}})
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    body = _wait_for_status(client, job_id, "failed")
+    error_lower = (body.get("error") or "").lower()
+    assert "scope" in error_lower or "empty" in error_lower
 
 
 def test_cancel_unknown_job_returns_404(client, auth_headers) -> None:
