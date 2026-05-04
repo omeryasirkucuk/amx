@@ -83,8 +83,108 @@ def _litellm() -> ModuleType:
             except Exception:
                 pass
 
+        _install_structured_content_shim(lm)
         _litellm_module = lm
     return _litellm_module
+
+
+def _flatten_structured_content(content: Any) -> str | None:
+    """Coerce OpenAI-Responses-style structured content into a plain string.
+
+    Some hosted endpoints — Databricks Foundation Models (gpt-oss family),
+    OpenAI's o1 / o3 over the Responses API, certain self-hosted reasoning
+    models — return ``message.content`` as a list of structured items::
+
+        [
+            {"type": "reasoning", "summary": [{"type": "summary_text", ...}]},
+            {"type": "text", "text": "OK"},
+        ]
+
+    LiteLLM's ``Message`` pydantic model declares ``content: str``, so the
+    response normalizer rejects the payload with::
+
+        ValidationError: 1 validation error for Message
+        content: Input should be a valid string
+
+    Without a fix the call retries 3× and ultimately surfaces a confusing
+    ``InternalServerError: Invalid response object`` to the user despite
+    the upstream API having returned a valid (and successful) answer.
+
+    This helper extracts every ``text`` chunk from the list and concatenates
+    them. Reasoning summaries are dropped on the floor — the LLM provider's
+    streaming path already exposes reasoning content separately via
+    ``on_thinking``; embedding it in ``content`` would corrupt downstream
+    parsers (catalog/code agent JSON, deterministic answer extraction, …).
+
+    Returns ``None`` when the input isn't a list — caller should leave the
+    original value untouched.
+    """
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "").lower()
+        if kind in {"text", "output_text"}:
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+    return "".join(parts)
+
+
+def _normalize_response_dict_in_place(response_obj: Any) -> None:
+    """Walk a LiteLLM response dict and flatten any structured ``content`` lists.
+
+    Mutates in place. Safe to call on any value — non-dict / non-list inputs
+    are ignored. Touches both ``message.content`` (chat completions) and
+    ``delta.content`` (streaming chunks).
+    """
+    if not isinstance(response_obj, dict):
+        return
+    choices = response_obj.get("choices")
+    if not isinstance(choices, list):
+        return
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        for slot in ("message", "delta"):
+            payload = choice.get(slot)
+            if not isinstance(payload, dict):
+                continue
+            content = payload.get("content")
+            flattened = _flatten_structured_content(content)
+            if flattened is not None:
+                payload["content"] = flattened
+
+
+def _install_structured_content_shim(lm: ModuleType) -> None:
+    """Wrap ``litellm.litellm_core_utils...convert_to_model_response_object``
+    so it auto-flattens structured ``content`` lists before pydantic
+    validation. Idempotent — safe to call once per LiteLLM import.
+    """
+    try:
+        from litellm.litellm_core_utils.llm_response_utils import (
+            convert_dict_to_response as _conv_mod,
+        )
+    except Exception:  # pragma: no cover - defensive against LiteLLM internals shifting
+        return
+    if getattr(_conv_mod, "_amx_structured_content_shim", False):
+        return
+    original = _conv_mod.convert_to_model_response_object
+
+    def _patched(*args: Any, **kwargs: Any):
+        response_object = kwargs.get("response_object")
+        if response_object is None and args:
+            response_object = args[0]
+        try:
+            _normalize_response_dict_in_place(response_object)
+        except Exception:  # pragma: no cover - never block a real response on a flatten error
+            pass
+        return original(*args, **kwargs)
+
+    _conv_mod.convert_to_model_response_object = _patched
+    _conv_mod._amx_structured_content_shim = True
 
 
 PROVIDER_MODEL_PREFIX = {

@@ -6,6 +6,46 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Databricks gpt-oss / OpenAI Responses-style structured `content` no longer crashes the LLM call
+
+User report 2026-05-04: a Databricks Foundation Model Serving endpoint
+(``gpt-oss-120b``) reached via the ``local`` provider returned
+``message.content`` as an OpenAI Responses-API-style list — a reasoning
+summary followed by the actual text answer:
+
+```
+[
+  {"type": "reasoning", "summary": [...]},
+  {"type": "text", "text": "OK"},
+]
+```
+
+LiteLLM's ``Message`` pydantic model declares ``content: str`` and
+rejected the payload with ``ValidationError: 1 validation error for
+Message — content: Input should be a valid string``. AMX surfaced
+this as a confusing ``InternalServerError: Invalid response object``
+that retried 3× before failing — even though the upstream API had
+returned a perfectly valid (and successful) answer.
+
+The provider now installs a one-shot shim around
+``litellm.litellm_core_utils.llm_response_utils.convert_dict_to_response.convert_to_model_response_object``
+that flattens structured content lists in place before pydantic
+validation runs:
+
+* Recognises both ``{"type": "text", ...}`` (chat-completions) and
+  ``{"type": "output_text", ...}`` (Responses API) chunk shapes.
+* Drops reasoning summaries — they're already exposed via the
+  streaming ``on_thinking`` callback; embedding them in
+  ``message.content`` would corrupt downstream parsers (catalog/code
+  agent JSON, deterministic answer extraction).
+* Patches both ``message.content`` and streaming ``delta.content``.
+* Idempotent — safe to call across repeated LiteLLM imports.
+
+Coverage: ``tests/test_llm_structured_content.py`` (13 tests) covers
+the user's exact failing payload shape, plus the Responses-API
+``output_text`` alias, multi-chunk concatenation, reasoning-only
+responses, streaming deltas, and shim idempotency.
+
 ### Added — `/ask` knows about Databricks Volumes via a new `list_volumes` tool
 
 User report 2026-05-04: `/ask "Is there any volume under schemas?"` answered
