@@ -236,6 +236,15 @@ class ToolBox:
                         "properties": {
                             "schema": {"type": "string", "description": "Schema name."},
                             "table": {"type": "string", "description": "Table name."},
+                            "catalog": {
+                                "type": "string",
+                                "description": (
+                                    "Optional Unity-Catalog catalog (Databricks) or "
+                                    "BigQuery project. Omit to use whatever the active "
+                                    "profile pins; the tool will auto-pick the single "
+                                    "user catalog when no catalog is pinned."
+                                ),
+                            },
                         },
                         "required": ["schema", "table"],
                     },
@@ -905,47 +914,72 @@ class ToolBox:
         """
         return [c for c in catalogs if c and c.lower() not in cls._SYSTEM_CATALOG_NAMES]
 
+    def _resolve_catalog_or_autopick(
+        self,
+        db: DatabaseConnector,
+        explicit: str,
+    ) -> tuple[str, list[str], list[str]]:
+        """Pick a catalog for catalog-scoped operations.
+
+        Returns ``(catalog, user_catalogs, all_catalogs)``:
+        - ``catalog`` — what the caller should scope to, or ``""``.
+        - ``user_catalogs`` — the system-filtered catalog list.
+        - ``all_catalogs`` — the full live list (for surfacing).
+
+        Logic:
+        1. ``explicit`` (the LLM-passed argument) wins.
+        2. The active profile's pinned catalog wins next.
+        3. Otherwise, when the backend supports catalogs and exactly one
+           user catalog is visible, auto-pick it. The user-reported case
+           "/ask which tables do we have" on a profile saved without a
+           catalog used to fail at ``list_tables_in_schema`` because that
+           tool didn't run the auto-pick — the SQL emitted ``None.<schema>``
+           and the warehouse rejected it. Centralising the logic here
+           means every catalog-scoped tool gets the same behaviour.
+        4. Otherwise return ``""`` and let the caller surface the list.
+
+        ``explicit`` and the pinned value are returned verbatim — no
+        membership check against the live catalog list, so "type a
+        custom catalog" still works on a slow / permission-restricted
+        workspace.
+        """
+        explicit = (explicit or "").strip()
+        if explicit:
+            return explicit, [], []
+        pinned = str(getattr(self.cfg.db, "catalog", "") or "").strip()
+        if pinned:
+            return pinned, [], []
+        try:
+            supports = bool(db.supports_catalogs())
+        except Exception:
+            supports = False
+        if not supports:
+            return "", [], []
+        try:
+            all_catalogs = [str(c) for c in db.list_catalogs()]
+        except Exception:
+            return "", [], []
+        user_catalogs = self._user_catalogs(all_catalogs)
+        if len(user_catalogs) == 1:
+            return user_catalogs[0], user_catalogs, all_catalogs
+        return "", user_catalogs, all_catalogs
+
     def _tool_list_schemas(self, catalog: str = "") -> dict[str, Any]:
         db = self._live_db()
-        cat_arg = (catalog or "").strip()
+        explicit = (catalog or "").strip()
         pinned_catalog = str(getattr(self.cfg.db, "catalog", "") or "").strip()
-        supports_catalogs = False
-        try:
-            supports_catalogs = bool(db.supports_catalogs())
-        except Exception:
-            supports_catalogs = False
+        cat_arg, user_catalogs, all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
         # 3-level backend (Databricks UC, BigQuery): when neither the
-        # active profile nor the LLM has named a catalog, listing schemas
-        # against the SQLAlchemy default surfaces the literal "Catalog
-        # 'none' was not found" error from the warehouse. We try to
-        # auto-pick here when the workspace exposes exactly one user
-        # catalog (Databricks samples/system/workspace are filtered out).
-        # When the choice is ambiguous, surface the filtered list so the
-        # LLM can recurse — but the auto-pick path resolves the
-        # user-reported infinite loop where kimi-thinking would compose
-        # an answer like "I see 4 catalogs, let me check amx_test…"
-        # without ever calling list_schemas a second time.
-        if supports_catalogs and not cat_arg and not pinned_catalog:
+        # active profile nor the LLM has named a catalog and no single
+        # user catalog could be auto-picked, surface the candidate list
+        # so the LLM can recurse instead of failing with the warehouse
+        # error "Catalog 'none' was not found".
+        if not cat_arg:
             try:
-                all_catalogs = [str(c) for c in db.list_catalogs()]
-            except Exception as exc:
-                raise _ToolError(
-                    f"Active DB profile has no catalog pinned and SHOW CATALOGS failed: {exc}. "
-                    "Edit the profile to pin a catalog or pass `catalog` to this tool."
-                ) from exc
-            user_catalogs = self._user_catalogs(all_catalogs)
-            if len(user_catalogs) == 1:
-                # Unambiguous — auto-pick and recurse so the LLM gets
-                # actual schemas instead of having to choose.
-                cat_arg = user_catalogs[0]
-            else:
-                # Ambiguous (multiple user catalogs) or empty (only
-                # system catalogs). Surface the filtered list and the
-                # full list so the LLM can pick the right one. The
-                # ``message`` is phrased as a directive ("pick one
-                # below and recurse") rather than a question to
-                # discourage models from just composing prose at the
-                # user.
+                supports = bool(db.supports_catalogs())
+            except Exception:
+                supports = False
+            if supports:
                 surface = user_catalogs or all_catalogs
                 return {
                     "database": "(no catalog pinned)",
@@ -983,7 +1017,7 @@ class ToolBox:
         }
         if cat_arg:
             payload["catalog"] = cat_arg
-            if not pinned_catalog:
+            if not pinned_catalog and not explicit:
                 # We auto-resolved the catalog (single user catalog
                 # heuristic). Surface it so the LLM mentions which
                 # catalog the schemas live in instead of pretending
@@ -996,12 +1030,37 @@ class ToolBox:
         if not target:
             raise _ToolError("Argument 'schema' is required.")
         db = self._live_db()
-        cat_arg = (catalog or "").strip()
-        # Resolve case-insensitively against the live schema list within
-        # the chosen catalog (when one was supplied). The same scoping
-        # applies to the listing call below — without it, a Databricks UC
-        # backend without a pinned catalog would issue ``SHOW TABLES FROM
-        # None.<schema>`` and fail with NO_SUCH_CATALOG_EXCEPTION.
+        # Resolve the catalog: explicit > pinned > single-user-catalog
+        # auto-pick. Without this, a Databricks UC backend without a
+        # pinned catalog would issue ``SHOW TABLES FROM None.<schema>``
+        # and fail with NO_SUCH_CATALOG_EXCEPTION (the user-reported
+        # third loop on /ask).
+        explicit = (catalog or "").strip()
+        cat_arg, user_catalogs, all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
+        if not cat_arg:
+            try:
+                supports = bool(db.supports_catalogs())
+            except Exception:
+                supports = False
+            if supports:
+                # No catalog could be resolved AND we're on a 3-level
+                # backend — surface what we know so the LLM can pick
+                # instead of failing with the cryptic warehouse error.
+                return {
+                    "schema": target,
+                    "catalog": None,
+                    "found": False,
+                    "needs_catalog": True,
+                    "catalogs": user_catalogs or all_catalogs,
+                    "all_catalogs": all_catalogs,
+                    "message": (
+                        "Multiple user catalogs are visible and the active profile "
+                        "didn't pin one. Call this tool again with `catalog` set to "
+                        "the most likely entry from `catalogs`. Do NOT enumerate the "
+                        "list back to the user — pick and recurse."
+                    ),
+                }
+
         with self._scoped_catalog(db, cat_arg):
             try:
                 available = list(db.list_schemas())
@@ -1015,8 +1074,8 @@ class ToolBox:
                     "found": False,
                     "available_schemas": [str(s) for s in available],
                     "message": (
-                        f"No schema named '{target}'. Available schemas: "
-                        + ", ".join(str(s) for s in available)
+                        f"No schema named '{target}' in catalog '{cat_arg}'. "
+                        "Available schemas: " + ", ".join(str(s) for s in available)
                     ),
                 }
             items: list[dict[str, str]] = []
@@ -1029,13 +1088,19 @@ class ToolBox:
                         items.append({"name": str(name), "kind": "table"})
             except Exception as exc:
                 raise _ToolError(f"Could not list tables in {match}: {exc}") from exc
-        return {
+        payload: dict[str, Any] = {
             "schema": match,
-            "catalog": cat_arg or None,
+            "catalog": cat_arg,
             "found": True,
             "tables": items,
             "count": len(items),
         }
+        if not explicit and not str(getattr(self.cfg.db, "catalog", "") or "").strip():
+            # We auto-picked the catalog. Tell the LLM so it can mention
+            # which catalog the tables live in instead of pretending the
+            # profile already had one pinned.
+            payload["auto_picked_catalog"] = cat_arg
+        return payload
 
     def _tool_list_catalogs(self) -> dict[str, Any]:
         db = self._live_db()
@@ -1264,17 +1329,25 @@ class ToolBox:
             "fuzzy_matches": fuzzy_matches,
         }
 
-    def _tool_describe_table(self, schema: str, table: str) -> dict[str, Any]:
+    def _tool_describe_table(self, schema: str, table: str, catalog: str = "") -> dict[str, Any]:
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
         if not schema_name or not table_name:
             raise _ToolError("Both 'schema' and 'table' are required.")
+        db = self._live_db()
+        # Resolve the catalog for 3-level backends so describe_table
+        # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
+        # when the active profile didn't pin a catalog.
+        explicit = (catalog or "").strip()
+        cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
         try:
-            profile = self._live_db().profile_table(schema_name, table_name, sample_size=0)
+            with self._scoped_catalog(db, cat_arg):
+                profile = db.profile_table(schema_name, table_name, sample_size=0)
         except ProfilingError as exc:
             return {
                 "schema": schema_name,
                 "table": table_name,
+                "catalog": cat_arg or None,
                 "found": False,
                 "error": str(exc),
             }
@@ -1282,6 +1355,7 @@ class ToolBox:
             return {
                 "schema": schema_name,
                 "table": table_name,
+                "catalog": cat_arg or None,
                 "found": False,
                 "error": str(exc),
             }
@@ -1362,9 +1436,10 @@ class ToolBox:
                 if value:  # drop empty list / "" / 0 / {}
                     analytics_payload[attr] = value
 
-        return {
+        result = {
             "schema": schema_name,
             "table": table_name,
+            "catalog": cat_arg or None,
             "found": True,
             "table_comment": str(profile.existing_comment or ""),
             "row_count": int(profile.row_count or 0),
@@ -1380,6 +1455,9 @@ class ToolBox:
             # only non-empty fields are included.
             "analytics": analytics_payload,
         }
+        if cat_arg and not explicit and not str(getattr(self.cfg.db, "catalog", "") or "").strip():
+            result["auto_picked_catalog"] = cat_arg
+        return result
 
     @staticmethod
     def _dtype_family_label(dtype: str) -> str:
