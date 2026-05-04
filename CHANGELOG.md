@@ -6,6 +6,31 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — every catalog-scoped `/ask` tool now auto-picks the catalog, not just `list_schemas`
+
+Third-round follow-up. User report 2026-05-04: after the previous
+fix, `list_schemas` correctly auto-picked `amx_test` and returned
+the schema list — but the very next call (`list_tables_in_schema(
+schema='amx_test_schema')`) issued the listing query without any
+catalog context, so SQLAlchemy emitted `SHOW TABLES FROM
+None.amx_test_schema` and Databricks rejected it. The LLM then
+narrated the warehouse error back to the user (`There's a catalog
+configuration issue …`). The auto-pick logic was correct; it just
+hadn't been wired into every catalog-scoped tool.
+
+The single-user-catalog auto-pick is now a shared helper
+(`ToolBox._resolve_catalog_or_autopick`) used by `list_schemas`,
+`list_tables_in_schema`, and `describe_table`. Each of those tools
+now also accepts an explicit `catalog` argument and surfaces
+`auto_picked_catalog` when the value was inferred. The
+`list_tables_in_schema` schema continues to advertise the explicit
+arg; `describe_table` advertises it now too.
+
+`tests/test_compare.py::CatalogDiscoveryToolsTests` adds two new
+cases — `test_list_tables_in_schema_auto_picks_catalog_when_unpinned`
+(the user's exact `amx_test_schema` failure) and
+`test_describe_table_auto_picks_catalog_when_unpinned`.
+
 ### Fixed — `list_catalogs` itself auto-resolves the schemas now, so kimi-thinking can't loop on the catalog list either
 
 Second-round follow-up. After the previous fix landed, the user
