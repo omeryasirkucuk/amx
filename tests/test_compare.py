@@ -1233,6 +1233,39 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
         self.assertEqual(payload["catalogs"], ["main", "samples"])
         self.assertEqual(payload["active_catalog"], "main")
 
+    def test_list_catalogs_tool_auto_resolves_single_user_catalog(self) -> None:
+        """User report 2026-05-04 (second loop): kimi-thinking still
+        looped because the system prompt's no-catalog hint pushed it
+        toward list_catalogs first; then it narrated the 4-entry list
+        instead of calling list_schemas. list_catalogs now eagerly
+        attaches the schemas of the single user catalog when the
+        workspace exposes one — the next agent iteration has no
+        decision to make and no list to enumerate at the user."""
+
+        class FakeDB:
+            def __init__(self) -> None:
+                self.cfg = type("DBCfg", (), {"catalog": ""})()
+
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                return ["amx_test", "samples", "system", "workspace"]
+
+            def list_schemas(self) -> list[str]:
+                return ["sales", "ops"]
+
+        toolbox = self._toolbox(FakeDB())
+        payload = toolbox._tool_list_catalogs()
+        self.assertEqual(payload["catalogs"], ["amx_test", "samples", "system", "workspace"])
+        self.assertEqual(payload["user_catalogs"], ["amx_test"])
+        self.assertEqual(payload["auto_picked_catalog"], "amx_test")
+        self.assertEqual(payload["schemas_in_auto_picked_catalog"], ["sales", "ops"])
+        # Instruction nudges the LLM to answer directly instead of
+        # narrating the catalog list.
+        self.assertIn("schemas_in_auto_picked_catalog", payload["instruction"])
+        self.assertIn("not enumerate", payload["instruction"].lower())
+
     def test_list_catalogs_tool_signals_2_level_backend(self) -> None:
         class FakeDB:
             def supports_catalogs(self) -> bool:

@@ -1059,12 +1059,40 @@ class ToolBox:
         except Exception as exc:
             raise _ToolError(f"SHOW CATALOGS failed: {exc}") from exc
         pinned = str(getattr(self.cfg.db, "catalog", "") or "").strip()
-        return {
+        user_catalogs = self._user_catalogs(catalogs)
+        payload: dict[str, Any] = {
             "supports_catalogs": True,
             "catalogs": catalogs,
+            "user_catalogs": user_catalogs,
             "count": len(catalogs),
             "active_catalog": pinned or None,
         }
+        # When no catalog is pinned and the workspace exposes exactly
+        # one user catalog, eagerly attach its schema list. This breaks
+        # the kimi-thinking loop where the model would call
+        # list_catalogs, see the 4-catalog Databricks listing, and
+        # narrate the obvious choice instead of calling list_schemas.
+        # Embedding the answer in the same response means the next
+        # iteration of the agent loop already has the schemas to work
+        # with — there's nothing left to "decide".
+        if not pinned and len(user_catalogs) == 1:
+            try:
+                with self._scoped_catalog(db, user_catalogs[0]):
+                    schemas = [str(s) for s in db.list_schemas()]
+                payload["auto_picked_catalog"] = user_catalogs[0]
+                payload["schemas_in_auto_picked_catalog"] = schemas
+                payload["instruction"] = (
+                    f"Only one user catalog (`{user_catalogs[0]}`) is visible. "
+                    "Treat it as the active catalog for this turn — the schemas "
+                    "are already in `schemas_in_auto_picked_catalog`. Answer the "
+                    "user's question directly using these schemas; do NOT enumerate "
+                    "the catalog list back to the user."
+                )
+            except Exception as exc:
+                # Don't block the catalog list on a follow-up failure;
+                # the LLM can still pick manually from the list above.
+                payload["auto_pick_failed"] = str(exc)
+        return payload
 
     def _tool_list_server_databases(self) -> dict[str, Any]:
         db = self._live_db()
