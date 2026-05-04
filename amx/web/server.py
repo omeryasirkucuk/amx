@@ -20,7 +20,7 @@ from amx import __version__ as AMX_VERSION
 from amx.config import AMXConfig
 from amx.web.auth import TokenAuthMiddleware, generate_token
 from amx.web.jobs import JobRegistry
-from amx.web.routers import system
+from amx.web.routers import catalog, history, live_db, system
 
 
 def _static_root() -> Path:
@@ -75,6 +75,9 @@ def create_app(
     app.add_middleware(TokenAuthMiddleware)
 
     app.include_router(system.router)
+    app.include_router(live_db.router)
+    app.include_router(catalog.router)
+    app.include_router(history.router)
 
     root = static_root if static_root is not None else _static_root()
     app.state.static_root = root

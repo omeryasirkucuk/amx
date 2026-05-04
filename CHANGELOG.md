@@ -6,6 +6,52 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — read-only browse API + Vite/React/Tailwind SPA (PR-B)
+
+Second slice of the local AMX web UI. `/visualize` now opens a real
+React SPA — left tree of databases / catalogs / schemas / tables,
+center canvas with table-detail drill (Columns tab), top bar with
+active DB / LLM pills, dashboard with stats cards and the last 8
+runs. Everything is read-only; PR-C wires up the action endpoints.
+
+What's included:
+
+- **New routers** under `amx/web/routers/`:
+  - `live_db.py` — `/api/live/{catalogs,databases,schemas,
+    schemas/{schema}/{assets,volumes,tables/{table}/{columns,snapshot}}}`
+    wrapping the existing `DatabaseConnector` + an in-process LRU
+    connector cache so navigation doesn't rebuild the SQLAlchemy
+    engine on every request.
+  - `catalog.py` — `/api/catalog/{databases,schemas,inventory,
+    explain,search/{columns,tables},settings}` wrapping
+    `SearchCatalog`. Returns 503 when the history store hasn't
+    initialised, 400 when the active DB profile is unset.
+  - `history.py` — `/api/history/{runs,runs/{id},runs/{id}/results,
+    runs-by-scope,stats,events}` wrapping the SQLite history store.
+- **Frontend workspace** under `frontend/` (Vite + React 18 + TS +
+  Tailwind + TanStack Query + Zustand + lucide-react). The SPA
+  ships its `vite build` output to `amx/web/static/` (committed
+  vendored dist) so a plain `pip install amx-cli` carries the UI
+  with no Node toolchain required.
+- **Pages**: `/` (dashboard with stats + recent runs),
+  `/db/:profile/:schema` (asset list with comment-coverage
+  status), `/db/:profile/:schema/:table` (Columns table with
+  inline comment column). `/runs`, `/runs/:id`, `/ask`, `/pending`
+  and `/settings` ship as graceful placeholders pointing at the
+  PRs that fill them in.
+- **Theme tokens**: dark + light CSS-variable palette in place;
+  PR-F adds the actual toggle.
+- **Token-aware fetch wrapper** (`frontend/src/lib/api.ts`) plus
+  Authorization-header injection from localStorage so every
+  `/api/*` call is auto-authed.
+- **CI step**: new `web-build-freshness` job runs
+  `npm ci && npm run build` and blocks the PR if `amx/web/static`
+  is stale, so contributors can't ship a frontend change without
+  re-running the build.
+- **Tests**: 29 new tests under `tests/web/` (live-db browse,
+  catalog read, history wrappers — all backed by stub connectors
+  and stub stores so the suite doesn't need a real DB).
+
 ### Added — `/visualize` slash command + local web UI backend skeleton (PR-A)
 
 First slice of the local AMX web UI. Typing `/visualize` from the
