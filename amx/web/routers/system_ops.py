@@ -100,4 +100,29 @@ def catalog_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     return snap
 
 
+@router.get("/admin/history-store-status")
+def history_store_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Surface the team-shared history store state — enabled flag,
+    target profile + schema, outbox depth (failed dual-writes still
+    queued for retry). Same shape ``/history-store status`` prints."""
+    enabled = bool(getattr(cfg, "history_store_enabled", False))
+    profile = str(getattr(cfg, "history_store_profile", "") or "")
+    schema = str(getattr(cfg, "history_store_schema", "") or "")
+    outbox = 0
+    try:
+        from amx.storage.sqlite_store import history_store
+
+        hs = history_store()
+        if hs is not None and hasattr(hs, "shared") and hs.shared is not None:
+            outbox = int(hs.shared.pending_count() or 0)
+    except Exception:
+        outbox = 0
+    return {
+        "enabled": enabled,
+        "profile": profile,
+        "schema": schema,
+        "outbox_pending": outbox,
+    }
+
+
 __all__ = ["router"]
