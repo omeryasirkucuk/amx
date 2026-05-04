@@ -393,11 +393,7 @@ def cmd_use(
         # whichever profile was passed to `/history-store enable` until
         # the user explicitly disables it or removes the host profile.
         host = (getattr(cfg, "history_store_profile", "") or "").strip()
-        if (
-            getattr(cfg, "history_store_enabled", False)
-            and host
-            and host != chosen[0]
-        ):
+        if getattr(cfg, "history_store_enabled", False) and host and host != chosen[0]:
             info(
                 f"Shared run-history is still hosted on profile {host!r} "
                 "(this switch does not detach it). "
