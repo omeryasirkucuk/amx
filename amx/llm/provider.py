@@ -205,6 +205,14 @@ PROVIDER_MODEL_PREFIX = {
     "local": "openai/",
     "kimi": "openai/",
     "ollama": "ollama/",
+    # Databricks Foundation Model Serving + custom serving endpoints expose
+    # an OpenAI-compatible REST surface at
+    # ``<workspace>/serving-endpoints/<endpoint>/invocations`` (and the
+    # chat-completions alias). LiteLLM routes those via the openai client,
+    # so we use the same prefix as ``local`` / ``kimi``. The wizard adds the
+    # ``serving-endpoints`` suffix to the api_base so users only paste the
+    # workspace host.
+    "databricks_serving": "openai/",
 }
 
 PROVIDER_ENV_KEY = {
@@ -213,6 +221,7 @@ PROVIDER_ENV_KEY = {
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "databricks_serving": "DATABRICKS_TOKEN",
 }
 
 # OpenAI "reasoning" models (gpt-5*, o-series) may spend the whole max_tokens budget on
@@ -827,6 +836,29 @@ def _normalized_api_base(provider: str, api_base: str | None) -> str | None:
         lower = base.lower().rstrip("/")
         if lower.endswith("/v1"):
             return base.rstrip("/")[:-3].rstrip("/")
+    if provider == "databricks_serving":
+        # Users routinely paste either:
+        #   * the bare workspace host (``adb-xxxxxxxxxxxxxxxx.0.azuredatabricks.net``)
+        #   * the workspace URL (``https://adb-…/``)
+        #   * the full chat-completions path the wizard built (``…/serving-endpoints``)
+        # Coerce all of them to the Databricks chat-completions root —
+        # ``https://<host>/serving-endpoints`` — which is what LiteLLM's
+        # OpenAI client appends ``/<endpoint>/invocations`` to.
+        stripped = base.rstrip("/")
+        scheme = ""
+        host_path = stripped
+        for candidate in ("https://", "http://"):
+            if host_path.lower().startswith(candidate):
+                scheme = candidate
+                host_path = host_path[len(candidate) :]
+                break
+        if not scheme:
+            scheme = "https://"
+        # Drop any leading double-slash artefact and trim again.
+        host_path = host_path.lstrip("/")
+        if "/serving-endpoints" not in host_path.lower():
+            host_path = host_path.split("/", 1)[0] + "/serving-endpoints"
+        return f"{scheme}{host_path}".rstrip("/")
     return base
 
 
@@ -961,9 +993,12 @@ class LLMProvider:
             )
             self.cfg.api_base = normalized_base
 
-        if self.cfg.provider in ("local", "kimi"):
+        if self.cfg.provider in ("local", "kimi", "databricks_serving"):
             if self.cfg.api_base:
                 os.environ["OPENAI_API_BASE"] = self.cfg.api_base
+            # Databricks Serving rejects an empty bearer; fall back to a
+            # placeholder so LiteLLM doesn't strip the Authorization header,
+            # but the real PAT (when supplied) wins.
             os.environ.setdefault("OPENAI_API_KEY", self.cfg.api_key or "local")
         elif self.cfg.provider == "openrouter":
             if self.cfg.api_base:
@@ -1133,7 +1168,14 @@ class LLMProvider:
         log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
         call_api_base = (
             self.cfg.api_base
-            if self.cfg.provider in ("local", "kimi", "ollama", "openrouter")
+            if self.cfg.provider
+            in (
+                "local",
+                "kimi",
+                "ollama",
+                "openrouter",
+                "databricks_serving",
+            )
             else None
         )
 

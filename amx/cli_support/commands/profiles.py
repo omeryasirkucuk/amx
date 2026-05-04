@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from amx.config import DISABLED_PROFILE, AMXConfig, LLMConfig, normalize_llm_model
+from amx.config import (
+    DISABLED_PROFILE,
+    AMXConfig,
+    LLMConfig,
+    _normalize_db_host,
+    normalize_llm_model,
+)
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -29,6 +35,9 @@ def default_model(provider: str) -> str:
         "local": "llama3",
         "kimi": "kimi",
         "ollama": "llama3",
+        # Databricks Foundation Model Serving — common managed endpoints. The
+        # actual catalog is workspace-specific; users override at the prompt.
+        "databricks_serving": "databricks-meta-llama-3-1-70b-instruct",
     }.get(provider, "gpt-4o")
 
 
@@ -49,7 +58,17 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         defaults = LLMConfig()
     provider = ask_choice(
         "Select AI provider",
-        ["openai", "openrouter", "anthropic", "gemini", "deepseek", "local", "kimi", "ollama"],
+        [
+            "openai",
+            "openrouter",
+            "anthropic",
+            "gemini",
+            "deepseek",
+            "local",
+            "kimi",
+            "ollama",
+            "databricks_serving",
+        ],
         default=defaults.provider or "openai",
     )
 
@@ -80,11 +99,40 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         info("DeepSeek model example: deepseek-chat")
     elif provider == "ollama":
         info("Ollama model example: llama3")
+    elif provider == "databricks_serving":
+        info(
+            "Databricks Serving model = the SERVING ENDPOINT NAME from your "
+            "workspace's 'Serving' tab (Foundation Models or your custom endpoint)."
+        )
+        info(
+            "  Examples: databricks-meta-llama-3-1-70b-instruct, "
+            "databricks-dbrx-instruct, my-custom-mistral-endpoint"
+        )
     model = ask(
-        "Model name", normalize_llm_model(provider, defaults.model) or default_model(provider)
+        "Model name" if provider != "databricks_serving" else "Serving endpoint name",
+        normalize_llm_model(provider, defaults.model) or default_model(provider),
     )
+
     api_base = defaults.api_base
-    if provider in ("local", "ollama", "kimi", "openrouter"):
+    if provider == "databricks_serving":
+        # Ask for the workspace host (the same hostname the DB profile uses for
+        # SQL warehouse connections). The api_base is constructed from it so
+        # users don't have to remember the ``/serving-endpoints`` suffix.
+        existing_host = ""
+        if api_base:
+            stripped = api_base.strip().rstrip("/")
+            for scheme in ("https://", "http://"):
+                if stripped.lower().startswith(scheme):
+                    stripped = stripped[len(scheme) :]
+                    break
+            existing_host = stripped.split("/", 1)[0]
+        host = ask(
+            "Databricks workspace host (e.g. adb-xxxxxxxxxxxxxxxx.0.azuredatabricks.net)",
+            existing_host,
+        )
+        host = _normalize_db_host(host)
+        api_base = f"https://{host}/serving-endpoints" if host else api_base
+    elif provider in ("local", "ollama", "kimi", "openrouter"):
         default_api_base = (
             "http://localhost:11434" if provider == "ollama" else "http://localhost:11434/v1"
         )
@@ -94,6 +142,8 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
 
     if provider in ("local", "ollama"):
         api_key = ask("API key (optional)", defaults.api_key or "")
+    elif provider == "databricks_serving":
+        api_key = ask_password("Databricks personal access token (PAT)") or defaults.api_key
     else:
         api_key = ask_password("API key") or defaults.api_key
 
