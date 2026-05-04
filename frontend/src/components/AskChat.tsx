@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Send, Sparkles, Wrench } from "lucide-react";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
@@ -6,7 +6,7 @@ import { apiFetch } from "../lib/api";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
 
-interface SubmittedTurn {
+export interface SubmittedTurn {
   role: "user" | "assistant";
   content: string;
   toolCalls?: Array<{ name: string; arguments: string; result_preview: string }>;
@@ -18,16 +18,44 @@ interface SubmitResponse {
   status: string;
 }
 
+interface AskChatProps {
+  // When the parent loads a stored session, it pushes the sessionId +
+  // hydrated turns down. Both null means "fresh session".
+  selectedSessionId: number | null;
+  seedTurns: SubmittedTurn[] | null;
+  // Bumped each time the parent wants to reseed (so identical loads
+  // still trigger the effect). Re-using a number works fine.
+  seedToken: number;
+  // Lets the chat panel notify parent when a brand-new session id is
+  // assigned by the backend, so the sidebar can refresh / highlight.
+  onSessionAssigned?: (sessionId: number | null) => void;
+}
+
 // Self-contained chat panel — owns the question textarea, SSE
 // subscription for the current job, the running thinking ribbon,
 // and the message history.
-export default function AskChat() {
+export default function AskChat({
+  selectedSessionId,
+  seedTurns,
+  seedToken,
+  onSessionAssigned,
+}: AskChatProps) {
   const [turns, setTurns] = useState<SubmittedTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [activeJob, setActiveJob] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  // Reseed history when the parent picks a different session.
+  useEffect(() => {
+    setSessionId(selectedSessionId);
+    setTurns(seedTurns ?? []);
+    setActiveJob(null);
+    setSubmitError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedToken]);
 
   const { events, closed } = useEventSource({
     path: activeJob ? `/api/ask/${activeJob}/events` : "",
@@ -89,6 +117,7 @@ export default function AskChat() {
       });
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
+      onSessionAssigned?.(result.session_id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Ask failed.";
       setSubmitError(message);
@@ -104,9 +133,21 @@ export default function AskChat() {
     }
   }
 
+  // Auto-scroll the messages container to the bottom whenever new
+  // history, streaming reasoning, or tool calls arrive — without this
+  // the user has to manually keep scrolling while the LLM thinks.
+  useLayoutEffect(() => {
+    const node = messagesRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [turns, thinking, toolCalls.length, activeJob]);
+
   return (
-    <div className="flex h-full min-h-[60vh] flex-col gap-4">
-      <div className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-surface-border bg-surface-raised p-4">
+    <div className="flex h-[calc(100vh-12rem)] min-h-[28rem] flex-col gap-4">
+      <div
+        ref={messagesRef}
+        className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-surface-border bg-surface-raised p-4"
+      >
         {turns.length === 0 && !activeJob && (
           <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center text-ink-dim">
             <Sparkles size={28} className="mb-3 opacity-60" />
@@ -128,12 +169,7 @@ export default function AskChat() {
         {activeJob && (
           <Bubble role="assistant" pulsing>
             {thinking ? (
-              <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
-                  Thinking
-                </div>
-                <div className="whitespace-pre-wrap text-sm text-ink-muted">{thinking}</div>
-              </div>
+              <ThinkingBlock text={thinking} />
             ) : (
               <span className="text-sm text-ink-dim">Reasoning…</span>
             )}
@@ -206,7 +242,7 @@ function Bubble({
     >
       <div
         className={cn(
-          "max-w-2xl rounded-2xl px-4 py-2.5 text-sm shadow-sm",
+          "max-w-2xl break-words rounded-2xl px-4 py-2.5 text-sm shadow-sm",
           role === "user"
             ? "bg-accent text-accent-soft"
             : "bg-surface-subtle text-ink",
@@ -218,6 +254,32 @@ function Bubble({
         ) : (
           children
         )}
+      </div>
+    </div>
+  );
+}
+
+function ThinkingBlock({ text }: { text: string }) {
+  // Cap the visible reasoning panel so a model that thinks for
+  // thousands of tokens doesn't push the input field below the fold.
+  // The block scrolls internally and auto-pins to the bottom so the
+  // freshest reasoning is always on screen — same UX as a tail -f.
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [text]);
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
+        Thinking
+      </div>
+      <div
+        ref={ref}
+        className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-sm text-ink-muted"
+      >
+        {text}
       </div>
     </div>
   );

@@ -33,11 +33,13 @@ from amx.search.catalog import SearchCatalog
 from amx.search.session_store import ChatSessionStore
 from amx.search.tool_agent import run_tool_agent
 from amx.storage.sqlite_store import history_store
+from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
 from amx.web.progress_bus import emit, emit_terminal
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
+log = get_logger("web.ask")
 
 
 class AskRequest(BaseModel):
@@ -125,7 +127,24 @@ def get_session(session_id: int) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No chat session {session_id}.",
         )
-    turns = store.get_session_turns(session_id) if hasattr(store, "get_session_turns") else []
+    # ``recent_turns`` is the canonical accessor on ChatSessionStore. We
+    # include compacted+summary rows so the browser can show the full
+    # history (the agent itself only sees the live tail in follow-ups).
+    raw_turns = store.recent_turns(
+        session_id,
+        include_compacted=True,
+        include_summary=True,
+    )
+    turns = [
+        {
+            "role": str(t.get("role") or ""),
+            "question": str(t.get("question") or ""),
+            "answer_summary": str(t.get("answer_summary") or ""),
+            "turn_index": int(t.get("turn_index") or 0),
+            "created_at": t.get("created_at"),
+        }
+        for t in raw_turns
+    ]
     return {"session": session, "turns": turns}
 
 
@@ -212,8 +231,20 @@ def _ask_worker(
 
     llm = LLMProvider(cfg.llm)
 
+    # ``on_thinking_delta`` from tool_agent forwards CUMULATIVE reasoning
+    # text (the CLI display takes a tail of it). The browser builds the
+    # panel by appending each event's text, so we must emit only the new
+    # suffix here — otherwise the user sees "TheThe userThe user is…".
+    last_thinking = ""
+
     def _on_thinking(text: str) -> None:
-        emit(job.queue, "thinking.delta", {"text": text})
+        nonlocal last_thinking
+        if not text:
+            return
+        chunk = text[len(last_thinking) :] if text.startswith(last_thinking) else text
+        last_thinking = text
+        if chunk:
+            emit(job.queue, "thinking.delta", {"text": chunk})
 
     def _on_tool_call(summary: dict[str, Any]) -> None:
         emit(
@@ -253,17 +284,26 @@ def _ask_worker(
         emit_terminal(job.queue, "job.failed", {"error": job.error})
         return
 
-    # Persist the assistant's reply (best-effort).
+    # Persist the assistant's reply (best-effort). Note the keyword
+    # argument is ``answer_summary`` (not ``answer``) and ``run_id`` is
+    # required — passing ``answer=`` previously raised a TypeError that
+    # the bare ``except`` swallowed, so visualizer-driven sessions
+    # ended up with user-only history.
     if session_id is not None:
         store = _session_store_or_none()
         if store is not None:
             try:
                 store.append_assistant_turn(
                     int(session_id),
-                    answer=result.answer,
+                    run_id=None,
+                    answer_summary=result.answer or "",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "Failed to persist assistant turn for session %s: %s",
+                    session_id,
+                    exc,
+                )
 
     emit(job.queue, "thinking.stop", {})
     emit(

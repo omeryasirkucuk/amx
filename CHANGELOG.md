@@ -6,6 +6,109 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, missing database picker for 2-level backends, and one-database-only sidebar
+
+Eight user-reported issues against the visualizer surface, fixed in
+one PR. None changes the CLI; all live under the FastAPI/React
+layer that `/visualize` boots.
+
+1. **Ask: "thinking" panel no longer prints
+   `TheThe userThe user is…`.** The provider's streaming consumer
+   forwards *cumulative* reasoning text on every callback (the CLI
+   display takes a tail of it), but the SSE event the browser
+   receives is named `thinking.delta` and the React `AskChat`
+   accumulates each event by appending into a buffer. The router's
+   `_on_thinking` now diffs against the previous emit and ships
+   only the new suffix — incremental for the browser, unchanged
+   for the CLI. Pinned with a regression test that drives three
+   cumulative chunks through the worker and asserts the joined
+   deltas equal the final cumulative string exactly once.
+2. **Ask: clicking a prior session loads it.** The sidebar `<li>`
+   rows had no click handler, so the existing
+   `GET /api/ask/sessions/{id}` endpoint was unreachable from the
+   UI, *and* that endpoint itself was already broken — it called
+   the non-existent `get_session_turns` method on the store and
+   silently returned an empty list. The endpoint now uses
+   `recent_turns(include_compacted=True, include_summary=True)`,
+   reshaping each row into a serializable
+   `{role, question, answer_summary, turn_index, created_at}`
+   payload. The frontend lifts session selection into `Ask.tsx`,
+   passes hydrated turns down to `AskChat` via a `seedToken`
+   reseed signal, highlights the active row with `aria-current`,
+   and adds a `+ New` button that clears state to start a fresh
+   thread.
+3. **Browse: "Catalog 'None' was not found" replaced with a clean
+   picker.** For 3-level backends like Databricks, when the user
+   activates a profile through the visualizer we never ran the
+   catalog picker that the CLI's `/connect` does (see
+   `amx/cli_support/catalog_picker.py`), so `cfg.db.catalog`
+   stayed empty. The connector then fell through to the
+   SQLAlchemy inspector, which on Databricks issues
+   ``SHOW TABLES FROM `None`.<schema>`` and crashed. Two-layer
+   fix: the live-DB router now raises `412 Precondition Failed`
+   with a `select-catalog` hint when a 3-level backend has no
+   catalog set (covering `list_schemas`, `list_assets`,
+   `list_columns`, `list_volumes`, `table_snapshot`); the
+   frontend's Schema route renders quick-pick buttons for the
+   visible catalogs, and the top bar gains a Catalog dropdown
+   (`POST /api/live/catalogs/{name}/activate`) that persists the
+   pick to `~/.amx/config.yml`. Two new tests pin the gate and
+   the activate endpoint.
+4. **Dashboard: long LLM model names no longer truncate
+   mid-token.** The `StatCard` component used
+   `truncate font-mono text-lg`, so values like
+   `moonshotai/kimi-k2-instruct` rendered as
+   `moonshotai/kimi-k2-…`. Switched to a 2-line clamp with
+   `break-all`, a fluid type ramp (`text-sm` for long values,
+   `text-lg` for short numerics), and a `title=` tooltip carrying
+   the full string for hover.
+5. **Ask: assistant turns are persisted, so prior conversations
+   survive a session reload.** The visualizer worker called
+   `store.append_assistant_turn(answer=…)` but the store
+   signature is `append_assistant_turn(*, run_id, answer_summary)`
+   — the `TypeError: unexpected keyword argument 'answer'` was
+   silently swallowed by a bare `except`, so visualizer-driven
+   sessions ended up with user-only history (the session opened
+   showing only the questions, no replies). Worker now passes
+   `run_id=None, answer_summary=result.answer or ""`, with a
+   `log.warning` when persistence still fails. Pinned with a
+   regression test that asserts the kwargs the worker uses.
+6. **Ask: long reasoning no longer pushes the input field below
+   the fold.** `AskChat` used `h-full min-h-[60vh]` on the chat
+   wrapper with no upper bound, so a model that thought for
+   thousands of tokens grew the page indefinitely. Wrapper is now
+   `h-[calc(100vh-12rem)] min-h-[28rem]`, the messages container
+   auto-scrolls to the bottom on new tokens (`useLayoutEffect`),
+   and the thinking block itself is capped to `max-h-48` with its
+   own internal scroll that pins to the latest line — same UX
+   as `tail -f`.
+7. **Browse: Postgres / MySQL profiles without a pinned database
+   now show a picker instead of silently using the server's
+   default.** The CLI's `ensure_hierarchy_resolved` already
+   prompts for a database when `cfg.db.is_database_pinned()` is
+   False, but the visualizer just landed on the connector's
+   default DB and rendered its `public` schema (only) — masking
+   every other database on the server. The 412
+   `select-catalog` gate added in this PR is now a single
+   `_require_scope_for_browse` helper that also covers 2-level
+   backends with `select-database`. New endpoint
+   `POST /api/live/databases/{name}/activate` mirrors the
+   catalog one; the top bar grows a Database dropdown for 2-level
+   backends; the Schema route renders inline quick-pick
+   buttons for the visible databases. Three new tests pin the
+   gate, the activate endpoint, and the 3-level vs 2-level
+   rejection.
+8. **Sidebar shows the full DB → schema → table tree, with all
+   scopes inline.** The previous build only listed schemas of
+   the active database, forcing the user up to the top-bar
+   dropdown to switch between databases. The sidebar now lists
+   every database (or catalog, on 3-level backends) as a
+   collapsible top-level node: clicking the active one toggles
+   its schemas, clicking an inactive one switches the active
+   scope (calls `activate_database` / `activate_catalog`) and
+   surfaces a "switch" badge while the mutation is pending. The
+   top-bar dropdowns stay as a quick switcher.
+
 ### Fixed — Databricks Serving Claude `/run` no longer 400s on `top_logprobs`; Windows logging cleaned up
 
 User report 2026-05-04 against the just-shipped 0.12.7 +
