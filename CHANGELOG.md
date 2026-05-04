@@ -6,9 +6,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
-### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, and dashboard card overflow
+### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, and missing database picker for 2-level backends
 
-Four user-reported issues against the visualizer surface, fixed in
+Seven user-reported issues against the visualizer surface, fixed in
 one PR. None changes the CLI; all live under the FastAPI/React
 layer that `/visualize` boots.
 
@@ -62,6 +62,42 @@ layer that `/visualize` boots.
    `break-all`, a fluid type ramp (`text-sm` for long values,
    `text-lg` for short numerics), and a `title=` tooltip carrying
    the full string for hover.
+5. **Ask: assistant turns are persisted, so prior conversations
+   survive a session reload.** The visualizer worker called
+   `store.append_assistant_turn(answer=…)` but the store
+   signature is `append_assistant_turn(*, run_id, answer_summary)`
+   — the `TypeError: unexpected keyword argument 'answer'` was
+   silently swallowed by a bare `except`, so visualizer-driven
+   sessions ended up with user-only history (the session opened
+   showing only the questions, no replies). Worker now passes
+   `run_id=None, answer_summary=result.answer or ""`, with a
+   `log.warning` when persistence still fails. Pinned with a
+   regression test that asserts the kwargs the worker uses.
+6. **Ask: long reasoning no longer pushes the input field below
+   the fold.** `AskChat` used `h-full min-h-[60vh]` on the chat
+   wrapper with no upper bound, so a model that thought for
+   thousands of tokens grew the page indefinitely. Wrapper is now
+   `h-[calc(100vh-12rem)] min-h-[28rem]`, the messages container
+   auto-scrolls to the bottom on new tokens (`useLayoutEffect`),
+   and the thinking block itself is capped to `max-h-48` with its
+   own internal scroll that pins to the latest line — same UX
+   as `tail -f`.
+7. **Browse: Postgres / MySQL profiles without a pinned database
+   now show a picker instead of silently using the server's
+   default.** The CLI's `ensure_hierarchy_resolved` already
+   prompts for a database when `cfg.db.is_database_pinned()` is
+   False, but the visualizer just landed on the connector's
+   default DB and rendered its `public` schema (only) — masking
+   every other database on the server. The 412
+   `select-catalog` gate added in this PR is now a single
+   `_require_scope_for_browse` helper that also covers 2-level
+   backends with `select-database`. New endpoint
+   `POST /api/live/databases/{name}/activate` mirrors the
+   catalog one; the top bar grows a Database dropdown for 2-level
+   backends; the Schema route renders inline quick-pick
+   buttons for the visible databases. Three new tests pin the
+   gate, the activate endpoint, and the 3-level vs 2-level
+   rejection.
 
 ### Fixed — Databricks Serving Claude `/run` no longer 400s on `top_logprobs`; Windows logging cleaned up
 

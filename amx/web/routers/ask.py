@@ -33,11 +33,13 @@ from amx.search.catalog import SearchCatalog
 from amx.search.session_store import ChatSessionStore
 from amx.search.tool_agent import run_tool_agent
 from amx.storage.sqlite_store import history_store
+from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
 from amx.web.progress_bus import emit, emit_terminal
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
+log = get_logger("web.ask")
 
 
 class AskRequest(BaseModel):
@@ -285,17 +287,26 @@ def _ask_worker(
         emit_terminal(job.queue, "job.failed", {"error": job.error})
         return
 
-    # Persist the assistant's reply (best-effort).
+    # Persist the assistant's reply (best-effort). Note the keyword
+    # argument is ``answer_summary`` (not ``answer``) and ``run_id`` is
+    # required — passing ``answer=`` previously raised a TypeError that
+    # the bare ``except`` swallowed, so visualizer-driven sessions
+    # ended up with user-only history.
     if session_id is not None:
         store = _session_store_or_none()
         if store is not None:
             try:
                 store.append_assistant_turn(
                     int(session_id),
-                    answer=result.answer,
+                    run_id=None,
+                    answer_summary=result.answer or "",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning(
+                    "Failed to persist assistant turn for session %s: %s",
+                    session_id,
+                    exc,
+                )
 
     emit(job.queue, "thinking.stop", {})
     emit(

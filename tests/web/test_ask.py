@@ -196,6 +196,47 @@ def test_ask_worker_streams_thinking_and_answer(
     assert types[-1] == "job.done"
 
 
+def test_ask_worker_persists_assistant_turn_with_correct_kwargs(
+    client, auth_headers, monkeypatch, stub_session_store
+) -> None:
+    """The worker used to call ``append_assistant_turn(answer=…)`` —
+    but the store signature is ``append_assistant_turn(*, run_id,
+    answer_summary)``. The TypeError was swallowed by a bare except
+    and assistant turns silently disappeared. Pin the kwargs."""
+    from amx.search.tool_agent import ToolAgentResult
+
+    stub_session_store.start_session.return_value = 99
+    stub_session_store.append_user_turn.return_value = None
+    stub_session_store.append_assistant_turn.return_value = None
+
+    def fake_run_tool_agent(**kwargs):
+        return ToolAgentResult(
+            answer="hello there",
+            tool_calls=[],
+            iterations=1,
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(ask_router, "run_tool_agent", fake_run_tool_agent)
+    monkeypatch.setattr(ask_router, "_load_catalog", lambda: MagicMock())
+    monkeypatch.setattr(ask_router, "LLMProvider", lambda cfg: MagicMock())
+
+    submit = client.post(
+        "/api/ask",
+        headers=auth_headers,
+        json={"question": "hi"},
+    )
+    job_id = submit.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    stub_session_store.append_assistant_turn.assert_called_once()
+    args, kwargs = stub_session_store.append_assistant_turn.call_args
+    assert args == (99,)
+    assert kwargs["answer_summary"] == "hello there"
+    assert kwargs["run_id"] is None
+
+
 def test_ask_worker_failed_when_catalog_missing(
     client, auth_headers, monkeypatch, stub_session_store
 ) -> None:

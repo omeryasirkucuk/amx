@@ -24,6 +24,16 @@ def _wipe_connector_cache() -> None:
     live_db._CONNECTOR_CACHE.clear()
 
 
+@pytest.fixture(autouse=True)
+def _pin_default_database(cfg) -> None:
+    """Pin a database on the default postgres profile so tests opt
+    INTO the under-scoped path explicitly. The 2-level browse gate
+    (added 2026-05-04) blocks browse endpoints when the active
+    profile leaves ``database`` blank — without this fixture every
+    pre-existing test would hit a 412."""
+    cfg.db.database = cfg.db.database or "appdb"
+
+
 def _patch_connector(monkeypatch, builder) -> MagicMock:
     """Install ``builder()`` as the cached connector for any profile
     key. Returns the mock so the test can assert on call arguments.
@@ -288,6 +298,58 @@ def test_activate_catalog_rejects_2level_backend(
     )
     response = client.post(
         "/api/live/catalogs/main/activate",
+        headers=auth_headers,
+        json={"persist": False},
+    )
+    assert response.status_code == 400
+
+
+def test_list_assets_412_when_2level_backend_has_no_database(
+    client, auth_headers, monkeypatch, cfg
+) -> None:
+    """The Postgres / MySQL counterpart of the 3-level catalog gate.
+    When the active profile leaves ``database`` blank the connector
+    silently lands on the server's default DB and only schemas of
+    that DB are visible — exactly what the user reported. Surface
+    412 with hint=select-database so the SPA can show a picker."""
+    cfg.db.database = ""
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
+    )
+    response = client.get("/api/live/schemas/public/assets", headers=auth_headers)
+    assert response.status_code == 412
+    detail = response.json()["detail"]
+    assert detail["hint"] == "select-database"
+
+
+def test_activate_database_writes_to_active_profile(
+    client, auth_headers, monkeypatch, cfg
+) -> None:
+    cfg.db.database = ""
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
+    )
+    response = client.post(
+        "/api/live/databases/appdb/activate",
+        headers=auth_headers,
+        json={"persist": False},
+    )
+    assert response.status_code == 200
+    assert response.json()["database"] == "appdb"
+    assert cfg.db.database == "appdb"
+
+
+def test_activate_database_rejects_3level_backend(
+    client, auth_headers, monkeypatch
+) -> None:
+    _patch_connector(
+        monkeypatch,
+        lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),
+    )
+    response = client.post(
+        "/api/live/databases/appdb/activate",
         headers=auth_headers,
         json={"persist": False},
     )

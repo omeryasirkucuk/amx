@@ -41,6 +41,16 @@ export default function TopBar() {
     queryFn: () => api.liveCatalogs(),
     retry: false,
   });
+  // Only fetch the database list when the backend is 2-level (no
+  // catalog support). 3-level backends like Databricks expose
+  // `/api/live/databases` as an empty list and we'd just render an
+  // empty dropdown.
+  const databases = useQuery({
+    queryKey: ["live-databases"],
+    queryFn: () => api.liveDatabases(),
+    retry: false,
+    enabled: catalogs.data ? !catalogs.data.supports_catalogs : false,
+  });
 
   return (
     <header className="border-b border-surface-border bg-surface-raised">
@@ -79,6 +89,12 @@ export default function TopBar() {
             <CatalogPicker
               activeCatalog={catalogs.data.active_catalog}
               catalogs={catalogs.data.catalogs}
+            />
+          )}
+          {catalogs.data && !catalogs.data.supports_catalogs && databases.data && (
+            <DatabasePicker
+              activeDatabase={databases.data.active_database}
+              databases={databases.data.databases}
             />
           )}
         </div>
@@ -201,6 +217,97 @@ function CatalogPicker({
             <ul className="max-h-72 overflow-y-auto py-1">
               {catalogs.map((name) => {
                 const isActive = name === activeCatalog;
+                return (
+                  <li key={name}>
+                    <button
+                      type="button"
+                      onClick={() => activate.mutate(name)}
+                      disabled={activate.isPending}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-subtle disabled:opacity-50",
+                        isActive && "bg-surface-subtle/60",
+                      )}
+                    >
+                      <span className="truncate font-mono">{name}</span>
+                      {isActive && <Check size={12} className="text-accent" />}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {activate.isError && (
+            <div className="border-t border-surface-border px-3 py-1.5 text-[11px] text-critical">
+              {activate.error instanceof Error
+                ? activate.error.message
+                : "Activation failed."}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DatabasePicker({
+  activeDatabase,
+  databases,
+}: {
+  activeDatabase: string | null;
+  databases: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const queryClient = useQueryClient();
+
+  const activate = useMutation({
+    mutationFn: (name: string) => api.activateDatabase(name, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["live-databases"] });
+      queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
+      queryClient.invalidateQueries({ queryKey: ["live-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["context"] });
+      setOpen(false);
+    },
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const display = activeDatabase || "Select database";
+  const empty = databases.length === 0;
+
+  return (
+    <div className="relative" ref={wrapperRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium transition",
+          activeDatabase
+            ? "border-accent/30 bg-accent-soft text-accent-ink"
+            : "border-warning/40 bg-warning/10 text-warning",
+        )}
+      >
+        <span className="text-[10px] uppercase tracking-wider opacity-70">Database</span>
+        <span className="font-mono text-[11px]">{display}</span>
+        <ChevronDown size={12} className="opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-surface-border bg-surface-raised shadow-lg">
+          {empty ? (
+            <div className="px-3 py-2 text-xs text-ink-dim">No databases visible.</div>
+          ) : (
+            <ul className="max-h-72 overflow-y-auto py-1">
+              {databases.map((name) => {
+                const isActive = name === activeDatabase;
                 return (
                   <li key={name}>
                     <button

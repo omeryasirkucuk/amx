@@ -28,6 +28,10 @@ export default function Schema() {
     assets.error instanceof ApiError &&
     assets.error.status === 412 &&
     assets.error.hint === "select-catalog";
+  const needsDatabase =
+    assets.error instanceof ApiError &&
+    assets.error.status === 412 &&
+    assets.error.hint === "select-database";
 
   return (
     <>
@@ -59,6 +63,8 @@ export default function Schema() {
             <div className="px-5 py-6 text-sm text-ink-dim">Loading assets…</div>
           ) : needsCatalog ? (
             <CatalogPickerInline />
+          ) : needsDatabase ? (
+            <DatabasePickerInline />
           ) : assets.error ? (
             <div className="px-5 py-6 text-sm text-critical">
               {(assets.error as Error).message}
@@ -134,6 +140,67 @@ function CatalogPickerInline() {
         ) : list.length === 0 ? (
           <div className="text-xs text-critical">
             No catalogs visible. Check your DB profile credentials.
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {list.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => activate.mutate(name)}
+                disabled={activate.isPending}
+                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition hover:border-accent/40 hover:text-ink disabled:opacity-50"
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
+        {activate.isError && (
+          <p className="text-xs text-critical">
+            {activate.error instanceof Error
+              ? activate.error.message
+              : "Activation failed."}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DatabasePickerInline() {
+  const queryClient = useQueryClient();
+  const databases = useQuery({
+    queryKey: ["live-databases"],
+    queryFn: () => api.liveDatabases(),
+    retry: false,
+  });
+  const activate = useMutation({
+    mutationFn: (name: string) => api.activateDatabase(name, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["live-databases"] });
+      queryClient.invalidateQueries({ queryKey: ["live-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
+      queryClient.invalidateQueries({ queryKey: ["context"] });
+    },
+  });
+  const list = databases.data?.databases ?? [];
+
+  return (
+    <div className="px-5 py-6">
+      <div className="flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-medium text-ink">No database selected.</p>
+          <p className="mt-1 text-xs text-ink-muted">
+            The active profile didn't pin a database. Pick one below — your
+            choice will be persisted so you don't have to repeat it.
+          </p>
+        </div>
+        {databases.isLoading ? (
+          <div className="text-xs text-ink-dim">Loading databases…</div>
+        ) : list.length === 0 ? (
+          <div className="text-xs text-critical">
+            No databases visible. Check your DB profile credentials.
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">

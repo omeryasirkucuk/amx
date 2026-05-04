@@ -159,6 +159,11 @@ export const api = {
       { method: "POST", body: JSON.stringify({ persist }) },
     ),
   liveDatabases: () => apiFetch<DatabasesResponse>("/api/live/databases"),
+  activateDatabase: (name: string, persist = true) =>
+    apiFetch<{ database: string; profile: string; persisted: boolean }>(
+      `/api/live/databases/${encodeURIComponent(name)}/activate`,
+      { method: "POST", body: JSON.stringify({ persist }) },
+    ),
   liveSchemas: (catalog?: string) =>
     apiFetch<SchemasResponse>(
       catalog ? `/api/live/schemas?catalog=${encodeURIComponent(catalog)}` : "/api/live/schemas",

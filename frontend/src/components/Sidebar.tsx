@@ -91,6 +91,13 @@ function LiveDbTree() {
       </div>
     );
   }
+  if (error instanceof ApiError && error.hint === "select-database") {
+    return (
+      <div className="px-2 py-1 text-xs text-warning">
+        Pick a database from the top bar to load schemas.
+      </div>
+    );
+  }
   if (error) {
     return (
       <div className="px-2 py-1 text-xs text-critical">
