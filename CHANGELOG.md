@@ -6,6 +6,34 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/ask` no longer crashes with `Ask failed: _lock` when shared mode is on
+
+Follow-up to the lazy-bootstrap fix below. `ChatSessionStore` (the
+backbone of `/ask`) reaches into the history-store singleton via
+`self._history._lock` and `self._history._connect()` — both
+SQLite-level primitives that were never proxied by the dual-write
+facade. Two regressions converged:
+
+1. The lazy wrapper introduced in this changelog rejected every
+   underscore-prefixed name in `__getattr__`, so `_lock` raised
+   `AttributeError("_lock")` → "/ask failed: _lock" before the
+   first message was even composed.
+2. `DualWriteHistoryStore` itself never exposed `_connect()`; the
+   only reason this was not a pre-existing crash for shared-mode
+   `/ask` users is that few of them stress-tested that path.
+
+Both shapes now route directly to the local SQLite store: the lazy
+wrapper exposes `_lock` (property) and `_connect()` (method)
+without forcing a shared bootstrap, and `DualWriteHistoryStore`
+gains a matching `_connect()` delegate. Bootstrap is still deferred;
+chat-session writes were always meant to be local-only, so this
+keeps the welcome banner instant and `/ask` responsive.
+
+`tests/test_history_store_lazy_bootstrap.py` adds
+`test_lazy_wrapper_exposes_lock_and_connect_without_bootstrap` to
+pin the contract: `_lock` and `_connect()` must not trigger the
+lazy build.
+
 ### Fixed — `amx` startup is back to <100ms even on a Databricks-backed shared run-history
 
 User report (2026-05-04 against 0.12.5 + the just-shipped lifecycle

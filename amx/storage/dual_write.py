@@ -76,6 +76,13 @@ class DualWriteHistoryStore:
     def _lock(self) -> Any:  # pragma: no cover - delegate accessor
         return self.local._lock
 
+    def _connect(self) -> Any:  # pragma: no cover - delegate accessor
+        # ``ChatSessionStore`` opens its own transactions via
+        # ``hs._connect()`` — the chat_sessions table is part of the
+        # local SQLite layer, not the shared team backend, so the
+        # delegate just routes through to the local store.
+        return self.local._connect()
+
     # ── Outbox housekeeping ───────────────────────────────────────────────
 
     def _ensure_outbox(self) -> None:

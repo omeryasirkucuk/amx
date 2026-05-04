@@ -273,6 +273,22 @@ class _LazyDualWriteStore:
         """Always-available local store; reading this never bootstraps."""
         return self._local
 
+    # ── Local SQLite delegates (zero-cost; never bootstrap shared) ────────
+    # ``_lock`` and ``_connect`` are part of the SQLite-level API that
+    # ``ChatSessionStore`` and the migration helpers reach into directly
+    # via ``self._history._lock`` / ``self._history._connect()``. They
+    # are inherently LOCAL operations (the chat-session table lives in
+    # ``~/.amx/history.db``, not on the team backend), so we route them
+    # straight to the eager local store. Without this, ``/ask`` raised
+    # ``Ask failed: _lock`` because ``__getattr__`` rejects underscore
+    # names by design.
+    @property
+    def _lock(self):  # noqa: ANN201 — returned object is a threading.Lock
+        return self._local._lock
+
+    def _connect(self):  # noqa: ANN201 — returns sqlite3.Connection ctxmgr
+        return self._local._connect()
+
     @property
     def shared(self):  # noqa: ANN201 — duck-typed for `hasattr(store, "shared")` callers
         """Real shared store, or ``None`` when bootstrap failed.
