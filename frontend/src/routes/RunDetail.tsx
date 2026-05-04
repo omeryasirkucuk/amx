@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, Timer } from "lucide-react";
+import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, SkipForward, Timer } from "lucide-react";
 
 import { apiFetch, api } from "../lib/api";
 import { useEventSource, type SseEvent } from "../lib/sse";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
+import JobProgress from "../components/JobProgress";
 import StatusPill from "../components/StatusPill";
 import { cn } from "../lib/cn";
 import {
   AlertDialog,
   Badge,
   Button,
+  IconButton,
+  InlineEditText,
   Tab as TabTrigger,
   TabPanel,
   Tabs,
@@ -24,6 +27,12 @@ interface RunDetailPayload {
   id: number;
   command: string;
   status: string;
+  /** Backend keys end in `_json` after the parser hydrates them; the
+      legacy aliases are kept for safety. */
+  scope_json?: Record<string, string[]> | null;
+  metrics_json?: Record<string, unknown> | null;
+  settings_json?: Record<string, unknown> | null;
+  tokens_json?: Record<string, unknown> | null;
   scope?: Record<string, string[]>;
   metrics?: Record<string, unknown>;
   settings?: Record<string, unknown>;
@@ -512,7 +521,11 @@ function PersistedRunView({ runId }: { runId: number }) {
           <Card>
             <CardBody>
               <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-ink p-3 font-mono text-xs text-bg">
-                {JSON.stringify(run.data?.scope ?? {}, null, 2)}
+                {JSON.stringify(
+                  run.data?.scope_json ?? run.data?.scope ?? {},
+                  null,
+                  2,
+                )}
               </pre>
             </CardBody>
           </Card>
@@ -522,7 +535,11 @@ function PersistedRunView({ runId }: { runId: number }) {
             <CardHeader title="Settings snapshot" />
             <CardBody>
               <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-ink p-3 font-mono text-xs text-bg">
-                {JSON.stringify(run.data?.settings ?? {}, null, 2)}
+                {JSON.stringify(
+                  run.data?.settings_json ?? run.data?.settings ?? {},
+                  null,
+                  2,
+                )}
               </pre>
             </CardBody>
           </Card>
@@ -623,6 +640,7 @@ function ResultsTab({
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const [activeApplyJob, setActiveApplyJob] = useState<string | null>(null);
 
   const pending = useQuery({
     queryKey: ["pending"],
@@ -646,14 +664,13 @@ function ResultsTab({
         method: "POST",
         body: JSON.stringify({}),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["pending"] });
-      queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
+    onSuccess: (result) => {
+      setActiveApplyJob(result.job_id);
       toast.push({
         title: "Apply started",
-        description: "Streaming the queue to the live database…",
+        description: "Watching the live worker stream below.",
         tone: "info",
-        duration: 2200,
+        duration: 1800,
       });
     },
     onError: (e: Error) =>
@@ -681,6 +698,26 @@ function ResultsTab({
     onError: (e: Error) =>
       toast.push({
         title: "Update failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
+  const skipPending = useMutation({
+    mutationFn: (idx: number) =>
+      apiFetch(`/api/pending/${idx}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pending"] });
+      toast.push({
+        title: "Skipped",
+        description: "Removed from the pending queue.",
+        tone: "info",
+        duration: 1800,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Skip failed",
         description: e.message,
         tone: "error",
       }),
@@ -715,20 +752,47 @@ function ResultsTab({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-ink-muted">
           Run #{runId} produced <span className="font-mono">{rows.length}</span>{" "}
-          suggestion{rows.length === 1 ? "" : "s"}. Pick a different alternative
-          (A/B/C…) anytime — your choice is saved to the pending queue and
-          becomes the value Apply writes to the live DB.
+          suggestion{rows.length === 1 ? "" : "s"}. Edit text inline, pick an
+          alternative, skip a row — your choices are persisted to the pending
+          queue and become the values Apply writes to the live DB.
         </p>
         <Button
           variant="primary"
           size="md"
           leadingIcon={<PlayCircle size={14} />}
           loading={queueApply.isPending}
+          disabled={!!activeApplyJob}
           onClick={() => queueApply.mutate()}
         >
-          Apply pending queue
+          {activeApplyJob ? "Apply running…" : "Apply pending queue"}
         </Button>
       </div>
+
+      {activeApplyJob && (
+        <JobProgress
+          jobId={activeApplyJob}
+          kind="apply"
+          onCancel={async () => {
+            try {
+              await apiFetch(`/api/apply/${activeApplyJob}/cancel`, { method: "POST" });
+            } catch {
+              /* SSE will surface job.cancelled */
+            }
+          }}
+          onTerminal={() => {
+            queryClient.invalidateQueries({ queryKey: ["pending"] });
+            queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
+            queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+            toast.push({
+              title: "Apply finished",
+              description: "Pending queue and applied badges refreshed.",
+              tone: "success",
+              duration: 2400,
+            });
+            setActiveApplyJob(null);
+          }}
+        />
+      )}
 
       {grouped.map(({ key, rows: tableRows }) => (
         <Card key={key}>
@@ -750,7 +814,11 @@ function ResultsTab({
                       if (!pendingEntry) return;
                       patchPending.mutate({ idx: pendingEntry.idx, description });
                     }}
-                    isPicking={patchPending.isPending}
+                    skipRow={() => {
+                      if (!pendingEntry) return;
+                      skipPending.mutate(pendingEntry.idx);
+                    }}
+                    isMutating={patchPending.isPending || skipPending.isPending}
                   />
                 );
               })}
@@ -766,12 +834,14 @@ function ResultRowItem({
   row,
   pendingEntry,
   pickAlternative,
-  isPicking,
+  skipRow,
+  isMutating,
 }: {
   row: ResultRow;
   pendingEntry?: PendingEntry;
   pickAlternative: (description: string) => void;
-  isPicking: boolean;
+  skipRow: () => void;
+  isMutating: boolean;
 }) {
   const sourceAlts = pendingEntry
     ? normalizeAlternativeStrings(pendingEntry.alternatives)
@@ -781,6 +851,7 @@ function ResultRowItem({
     ? [chosen, ...sourceAlts]
     : sourceAlts;
   const applied = !!row.applied_at;
+  const editable = !!pendingEntry && !applied;
 
   return (
     <li className="px-5 py-3">
@@ -792,25 +863,57 @@ function ResultRowItem({
         <StatusPill tone={applied ? "positive" : "neutral"}>
           {applied ? "applied" : (row.evaluation || "pending")}
         </StatusPill>
-        {row.source && (
+        <LogprobBadge score={row.logprob_score} />
+        {editable && (
+          <span className="ml-auto inline-flex items-center gap-2">
+            {row.source && (
+              <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+                {row.source}
+              </span>
+            )}
+            <IconButton
+              icon={<SkipForward size={12} />}
+              label="Skip — remove from pending queue"
+              size="sm"
+              variant="ghost"
+              onClick={skipRow}
+              disabled={isMutating}
+            />
+          </span>
+        )}
+        {!editable && row.source && (
           <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">
             {row.source}
           </span>
         )}
       </div>
+      {editable && (
+        <div className="mt-2 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1.5 text-xs">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-ink-dim">
+            Chosen — edit text directly
+          </div>
+          <InlineEditText
+            value={chosen}
+            onSave={(next) => pickAlternative(next)}
+            multiline
+            italicEmpty
+            emptyLabel="(empty — click to write a custom description)"
+          />
+        </div>
+      )}
       <div className="mt-2 space-y-1">
         {visible.length === 0 ? (
           <p className="text-xs text-ink-dim">{chosen || "—"}</p>
         ) : (
           visible.map((alt, idx) => {
             const isChosen = alt === chosen;
-            const canPick = !!pendingEntry && !isChosen && !applied;
+            const canPick = editable && !isChosen;
             return (
               <button
                 key={`${row.id}-${idx}`}
                 type="button"
                 onClick={() => canPick && pickAlternative(alt)}
-                disabled={!canPick || isPicking}
+                disabled={!canPick || isMutating}
                 title={
                   applied
                     ? "Already applied — re-run to change."
@@ -825,7 +928,7 @@ function ResultRowItem({
                   isChosen
                     ? "border-accent/40 bg-accent-soft/40 text-ink"
                     : "border-border text-ink-muted hover:border-accent/40 hover:bg-surface-subtle/50 hover:text-ink",
-                  (!canPick || isPicking) && !isChosen && "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
+                  (!canPick || isMutating) && !isChosen && "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
                 )}
               >
                 <span
@@ -845,6 +948,27 @@ function ResultRowItem({
         )}
       </div>
     </li>
+  );
+}
+
+function LogprobBadge({ score }: { score: number | null }) {
+  if (score == null) {
+    return (
+      <span
+        className="font-mono text-[10px] text-ink-dim"
+        title="No logprob recorded for this suggestion."
+      >
+        logprob —
+      </span>
+    );
+  }
+  return (
+    <span
+      className="font-mono text-[10px] text-ink-muted"
+      title="Average log-probability — closer to 0 = more confident; very negative = the model was guessing."
+    >
+      logprob {score.toFixed(3)}
+    </span>
   );
 }
 

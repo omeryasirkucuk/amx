@@ -1,13 +1,20 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
-import { Database, FileText, Layers, Table as TableIcon } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Database, FileText, Layers, Sparkles, Table as TableIcon } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
-import { Skeleton } from "../components/ui";
+import {
+  AlertDialog,
+  Button,
+  InlineEditText,
+  Skeleton,
+  useToast,
+} from "../components/ui";
 
 const ASSET_TONE: Record<string, "accent" | "positive" | "neutral" | "warning"> = {
   table: "accent",
@@ -19,6 +26,10 @@ export default function Schema() {
   const params = useParams();
   const schema = params.schema!;
   const profile = params.profile || "active";
+  const toast = useToast();
+  const navigate = useNavigate();
+  const [confirmGenerate, setConfirmGenerate] = useState(false);
+  const [draftDescription, setDraftDescription] = useState("");
 
   const assets = useQuery({
     queryKey: ["live-assets", schema],
@@ -34,11 +45,70 @@ export default function Schema() {
     assets.error.status === 412 &&
     assets.error.hint === "select-database";
 
+  // The live-DB inventory does not currently surface the schema's
+  // own COMMENT, so we hold whatever the user types locally and
+  // PUT it back; the next browse round-trip picks up the new value.
+  async function saveSchemaDescription(next: string) {
+    await api.setSchemaComment(schema, next);
+    setDraftDescription(next);
+    toast.push({
+      title: "Schema description saved",
+      tone: "success",
+      duration: 2000,
+    });
+  }
+
+  const generate = useMutation({
+    mutationFn: () =>
+      api.submitRun({
+        scope: { [schema]: [] },
+        apply: true,
+        missing_only: false,
+      }),
+    onSuccess: (result) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Generation started",
+        description: `Streaming activity for schema ${schema}…`,
+        tone: "info",
+        duration: 2200,
+      });
+      navigate(`/runs/new-${result.job_id}`);
+    },
+    onError: (e: Error) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Could not start generation",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
+
   return (
     <>
       <PageHeader
         title={schema}
         breadcrumbs={[{ label: "Browse", to: "/" }, { label: schema }]}
+        description={
+          <InlineEditText
+            value={draftDescription}
+            onSave={saveSchemaDescription}
+            multiline
+            italicEmpty
+            emptyLabel="No schema description yet — click to add one or use Generate."
+          />
+        }
+        actions={
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Sparkles size={14} />}
+            onClick={() => setConfirmGenerate(true)}
+          >
+            Generate descriptions
+          </Button>
+        }
       />
 
       <Card>
@@ -100,6 +170,17 @@ export default function Schema() {
           )}
         </CardBody>
       </Card>
+
+      <AlertDialog
+        open={confirmGenerate}
+        onClose={() => setConfirmGenerate(false)}
+        onConfirm={() => generate.mutate()}
+        loading={generate.isPending}
+        tone="primary"
+        title={`Generate descriptions for ${schema}?`}
+        description="A new /run job is started covering every reachable table in this schema. Existing descriptions are overwritten and the new ones are written straight to the live database."
+        confirmLabel="Start generation"
+      />
     </>
   );
 }

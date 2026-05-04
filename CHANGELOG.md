@@ -6,6 +6,45 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed / Added — `/visualize` run-detail human-in-the-loop + schema page editing (UI overhaul, PR 10)
+
+Six follow-up items in one PR.
+
+* **Scope / Settings tabs were rendering `{}`.** Backend ships
+  `scope_json` / `settings_json` (parser hydrates the trailing
+  `_json` keys); frontend was reading the legacy `scope` /
+  `settings` aliases. `RunDetailPayload` declares both shapes and
+  the renderers fall back through the canonical key first.
+* **Apply pending queue is now observable.** Clicking Apply
+  switches the button into a disabled "Apply running…" state and
+  mounts a `JobProgress` panel right under the action row that
+  streams the worker's SSE events. On terminal status we
+  invalidate the pending + run-results caches and emit a success
+  toast — applied rows lose their pending badge and pick up the
+  positive `applied` one.
+* **Logprob is always visible.** Each suggestion row prints a
+  `logprob X.XXX` chip next to the confidence pill (or `logprob —`
+  when the model didn't ship a score), with a tooltip explaining
+  what the number means. Previously the value was buried in a
+  hover tooltip on the confidence chip itself.
+* **Per-row Skip + custom edit.** Each editable row gains (1) a
+  "Chosen — edit text directly" multiline `InlineEditText` so the
+  user can type any custom description (calls
+  `PATCH /api/pending/{idx}` with their text), and (2) a small
+  Skip icon-button that drops the row from the queue
+  (`DELETE /api/pending/{idx}`). Mirrors the `accept / skip /
+  edit` choice the CLI's review prompt offers.
+* **Schema page picks up the same surface as Tables.** The Schema
+  route adds an inline-editable description (calls
+  `api.setSchemaComment` → `PUT /api/comments/schemas/{schema}`)
+  and a "Generate descriptions" header action that spawns a
+  schema-scoped `/run` (apply on completion) and redirects to the
+  run-detail page so the worker stream is observable. Database /
+  catalog comment helpers (`api.setDatabaseComment`) ship
+  alongside for the next pass.
+
+No backend changes; bundle rebuilt and vendored.
+
 ### Changed / Added — `/visualize` runs context + live progress + evaluation flow (UI overhaul, PR 9)
 
 Four follow-up items in one PR.
