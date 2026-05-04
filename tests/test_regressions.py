@@ -1133,9 +1133,18 @@ class ProfilingGuardrailTests(unittest.TestCase):
             tls_trusted_ca_file="/tmp/old.pem",
         )
 
-        ask_values = iter(["databricks", "new-host", "/sql/new", "newcat", "-", "-"])
+        # New wizard order (post-2026-05-04 fix): host → http_path → token →
+        # tls_ca → tls_no_verify → probe_catalogs → catalog → database. The
+        # TLS prompts now come BEFORE the catalog probe so corporate
+        # self-signed setups don't blow up on the very first SHOW CATALOGS
+        # before the user has a chance to disable verify or point at a CA
+        # bundle. The probe itself is gated behind an explicit yes/no so
+        # users who already know their catalog name don't pay the round-
+        # trip cost.
+        ask_values = iter(["databricks", "new-host", "/sql/new", "-", "newcat", "-"])
         secret_values = iter(["new-token"])
-        choice_values = iter(["yes"])
+        # Order: tls_no_verify=yes, probe_catalogs=no.
+        choice_values = iter(["yes", "no"])
 
         with (
             patch(
@@ -1177,9 +1186,13 @@ class ProfilingGuardrailTests(unittest.TestCase):
             tls_trusted_ca_file="/tmp/old.pem",
         )
 
+        # Blank inputs → keep existing values for every text field.
+        # Order matches the new wizard: host → http_path → tls_ca →
+        # catalog (free-form because probe_catalogs=no) → database.
         ask_values = iter(["databricks", "", "", "", "", ""])
         secret_values = iter([""])
-        choice_values = iter(["no"])
+        # Order: tls_no_verify=no (toggle off), probe_catalogs=no.
+        choice_values = iter(["no", "no"])
 
         with (
             patch(
@@ -1208,6 +1221,87 @@ class ProfilingGuardrailTests(unittest.TestCase):
         self.assertEqual(updated.database, "olddb")
         self.assertEqual(updated.tls_trusted_ca_file, "/tmp/old.pem")
         self.assertFalse(updated.tls_no_verify)
+
+    def test_databricks_wizard_asks_tls_before_probing_catalogs(self) -> None:
+        """User report 2026-05-04: corporate Databricks behind a self-
+        signed proxy hit ``SSLCertVerificationError`` on the first
+        ``SHOW CATALOGS`` because the wizard probed BEFORE the user
+        had a chance to disable TLS verify or point at a CA bundle.
+        The fix moves the TLS prompts above the catalog probe AND
+        gates the probe behind an explicit yes/no — the picker now
+        forwards the user's TLS selections into the probe config so
+        self-signed setups work, and the probe only fires when the
+        user opts in. The test pins the prompt order by recording
+        every ``ask`` / ``ask_choice`` call in sequence."""
+        defaults = DBConfig(
+            backend="databricks",
+            host="",
+            http_path="",
+            access_token="",
+            catalog="",
+            database="",
+            tls_no_verify=False,
+            tls_trusted_ca_file="",
+        )
+
+        # New wizard order: backend / host / http_path / token / tls_ca /
+        # tls_no_verify / probe_catalogs / catalog (free-form because
+        # probe=no) / database. Capture each label as it fires so we
+        # can assert the relative ordering of TLS vs. catalog probe.
+        ask_values = iter(
+            [
+                "host.example",  # Workspace host
+                "/sql/x",  # SQL warehouse HTTP path
+                "/etc/ca.pem",  # Trusted CA bundle path (TLS)
+                "amx_test",  # Unity Catalog (free-form because probe=no)
+                "",  # Schema / database — clear-by-blank keeps default ""
+            ]
+        )
+        choice_values = iter(
+            [
+                "databricks",  # Select database backend
+                "no",  # Disable TLS certificate verification?
+                "no",  # List the available Unity Catalog catalogs?
+            ]
+        )
+
+        prompts: list[str] = []
+
+        def record_ask(label, *args, **kwargs):
+            prompts.append(label.split("\n")[0])
+            return next(ask_values)
+
+        def record_choice(label, *args, **kwargs):
+            prompts.append(label.split("\n")[0])
+            return next(choice_values)
+
+        with (
+            patch("amx.cli_support.commands.db.ask_choice", side_effect=record_choice),
+            patch("amx.cli_support.commands.db.ask", side_effect=record_ask),
+            patch(
+                "amx.cli_support.commands.db.ask_password",
+                side_effect=lambda *args, **kwargs: "tok",
+            ),
+        ):
+            updated = interactive_db_block(defaults)
+
+        self.assertEqual(updated.tls_trusted_ca_file, "/etc/ca.pem")
+        self.assertFalse(updated.tls_no_verify)
+        self.assertEqual(updated.catalog, "amx_test")
+
+        # The probe-gate prompt MUST land after both TLS prompts AND
+        # before the catalog choice prompt.
+        tls_ca_idx = next(i for i, p in enumerate(prompts) if "Trusted CA bundle path" in p)
+        tls_verify_idx = next(
+            i for i, p in enumerate(prompts) if "Disable TLS certificate verification?" in p
+        )
+        probe_gate_idx = next(
+            i for i, p in enumerate(prompts) if "List the available Unity Catalog catalogs" in p
+        )
+        catalog_idx = next(i for i, p in enumerate(prompts) if "Unity Catalog (optional)" in p)
+        self.assertLess(tls_ca_idx, probe_gate_idx, "TLS CA must precede probe gate")
+        self.assertLess(tls_verify_idx, probe_gate_idx, "TLS verify must precede probe gate")
+        self.assertLess(probe_gate_idx, catalog_idx, "Probe gate must precede catalog")
 
     def test_metadata_mode_does_not_open_data_connection(self) -> None:
         class FakeEngine:
