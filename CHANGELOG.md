@@ -6,6 +6,32 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/ask` knows about Databricks Volumes via a new `list_volumes` tool
+
+User report 2026-05-04: `/ask "Is there any volume under schemas?"` answered
+"AMX metadata tools only expose schemas, tables, columns" because no agent
+tool exposed `SHOW VOLUMES`. The adapter and connector already knew how to
+list volumes (`amx/db/adapters/databricks.py:447`, `amx/db/connector.py:441`)
+— the LLM just couldn't reach them.
+
+A new `list_volumes` tool wraps `db.list_volumes(schema, catalog)`:
+
+- Optional `schema` argument scopes the listing; omit to iterate every
+  schema in the active catalog (one `SHOW VOLUMES IN ...` per schema).
+- Catalog auto-pick reuses the `_resolve_catalog_or_autopick` helper
+  (single-user-catalog Databricks workspaces resolve in one round-trip).
+- Returns `supported=false` for backends without a Volume concept (PG /
+  Snowflake / etc.) so the LLM doesn't invent a SHOW VOLUMES query.
+
+System prompt routing now points the LLM at `list_volumes` for "any
+volumes / managed/external volumes / volumelar var mı / unity catalog
+volume" questions and forbids the previous "I can't see volumes"
+fallback on Databricks.
+
+`tests/test_compare.py::CatalogDiscoveryToolsTests` adds
+`test_list_volumes_iterates_schemas_when_schema_omitted` and
+`test_list_volumes_returns_unsupported_for_non_databricks_backend`.
+
 ### Fixed — Databricks wizard asks TLS first and gates the catalog probe behind a yes/no
 
 User report 2026-05-04: a corporate Databricks workspace behind a
