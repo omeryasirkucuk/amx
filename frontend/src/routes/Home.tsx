@@ -9,12 +9,17 @@ import {
 } from "lucide-react";
 
 import { api } from "../lib/api";
-import { cn } from "../lib/cn";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
-import { Button, Skeleton } from "../components/ui";
+import { Button, InfoHint, Skeleton } from "../components/ui";
+import {
+  humanizeCommand,
+  statusLabel,
+  statusTone,
+  summarizeScope,
+} from "../lib/runDisplay";
 
 // Landing dashboard — counts, recent runs, jump-off into the deeper
 // routes. Reads /api/context, /api/history/stats, /api/history/runs.
@@ -50,24 +55,28 @@ export default function Home() {
           label="Active backend"
           value={ctx?.db_backend ?? "—"}
           tone="neutral"
+          hint="The database engine AMX is currently connected to. Switch via Settings → Database."
         />
         <StatCard
           icon={Sparkles}
           label="LLM model"
           value={ctx?.llm_model ?? "—"}
           tone="neutral"
+          hint="The model that generates descriptions. Configured under Settings → LLM."
         />
         <StatCard
           icon={PlayCircle}
           label="Total runs"
           value={statValue(stats.data?.total)}
           tone="accent"
+          hint="All-time count of /run, /apply, and /ask invocations recorded in the local history store."
         />
         <StatCard
           icon={TrendingUp}
           label="Success rate"
           value={successRate(stats.data)}
           tone="positive"
+          hint="Percentage of runs whose worker exited cleanly. Cancelled and failed runs both count against the total."
         />
       </div>
 
@@ -104,28 +113,25 @@ export default function Home() {
                     key={row.id}
                     className="flex items-center gap-3 px-5 py-2.5 text-sm hover:bg-surface-subtle/50"
                   >
-                    <Activity size={13} className="text-ink-dim" />
+                    <Activity size={13} className="text-ink-dim shrink-0" />
                     <Link
                       to={`/runs/${row.id}`}
                       className="font-mono text-xs text-ink-dim hover:text-accent"
                     >
                       #{row.id}
                     </Link>
-                    <span className="font-medium text-ink">{row.command}</span>
-                    <span className="truncate text-ink-muted">
-                      {Object.keys(row.scope || {}).join(", ") || "(no scope)"}
+                    <span className="font-medium text-ink shrink-0">
+                      {humanizeCommand(row.command)}
                     </span>
-                    <span className="ml-auto">
-                      <StatusPill
-                        tone={
-                          row.status === "success"
-                            ? "positive"
-                            : row.status === "failed"
-                              ? "critical"
-                              : "neutral"
-                        }
-                      >
-                        {row.status}
+                    <span
+                      className="truncate text-ink-muted"
+                      title={row.command}
+                    >
+                      · {summarizeScope(row.scope)}
+                    </span>
+                    <span className="ml-auto shrink-0">
+                      <StatusPill tone={statusTone(row.status)}>
+                        {statusLabel(row.status)}
                       </StatusPill>
                     </span>
                   </li>
@@ -153,21 +159,23 @@ function StatCard({
   label,
   value,
   tone,
+  hint,
 }: {
   icon: typeof Database;
   label: string;
   value: string;
   tone: "neutral" | "accent" | "positive";
+  hint?: string;
 }) {
-  const isLong = value.length > 18;
   return (
     <div
-      className="rounded-xl border border-border bg-surface-raised px-4 py-3.5 shadow-xs"
-      title={isLong ? value : undefined}
+      className="flex min-h-[88px] flex-col rounded-xl border border-border bg-surface-raised px-4 py-3.5 shadow-xs"
+      title={value.length > 18 ? value : undefined}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
           {label}
+          {hint && <InfoHint text={hint} />}
         </span>
         <Icon
           size={14}
@@ -180,13 +188,7 @@ function StatCard({
           }
         />
       </div>
-      <div
-        className={cn(
-          "mt-1.5 font-mono leading-snug tabular-nums text-ink",
-          "line-clamp-2 break-all",
-          isLong ? "text-sm" : "text-[22px]",
-        )}
-      >
+      <div className="mt-auto pt-2 font-mono text-[18px] leading-snug tabular-nums text-ink line-clamp-2 break-all">
         {value}
       </div>
     </div>

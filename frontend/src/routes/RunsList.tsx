@@ -13,6 +13,12 @@ import {
   type DataTableColumn,
   type DataTableFilter,
 } from "../components/ui";
+import {
+  humanizeCommand,
+  statusLabel,
+  statusTone,
+  summarizeScope,
+} from "../lib/runDisplay";
 
 interface Row {
   id: number;
@@ -51,22 +57,22 @@ export default function RunsList() {
       },
       {
         id: "command",
-        header: "Command",
-        sortValue: (r) => r.command,
-        mono: true,
-        cell: (r) => <span className="text-xs text-ink">{r.command}</span>,
+        header: "Type",
+        sortValue: (r) => humanizeCommand(r.command),
+        cell: (r) => (
+          <span className="text-sm font-medium text-ink" title={r.command}>
+            {humanizeCommand(r.command)}
+          </span>
+        ),
       },
       {
         id: "scope",
         header: "Scope",
-        cell: (r) => {
-          const keys = Object.keys(r.scope || {});
-          return (
-            <span className="truncate text-ink-muted">
-              {keys.length ? keys.join(", ") : "—"}
-            </span>
-          );
-        },
+        cell: (r) => (
+          <span className="truncate text-sm text-ink-muted">
+            {summarizeScope(r.scope)}
+          </span>
+        ),
         hideOnMobile: true,
       },
       {
@@ -175,33 +181,11 @@ export default function RunsList() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "success") {
-    return (
-      <Badge tone="positive" dot>
-        success
-      </Badge>
-    );
-  }
-  if (status === "failed") {
-    return (
-      <Badge tone="critical" dot>
-        failed
-      </Badge>
-    );
-  }
-  if (status === "running" || status === "queued") {
-    return (
-      <Badge tone="accent" dot pulse>
-        {status}
-      </Badge>
-    );
-  }
-  if (status === "cancelled") {
-    return (
-      <Badge tone="warning" dot>
-        cancelled
-      </Badge>
-    );
-  }
-  return <Badge tone="neutral">{status}</Badge>;
+  const tone = statusTone(status);
+  const pulse = status === "running" || status === "queued";
+  return (
+    <Badge tone={tone} dot pulse={pulse}>
+      {statusLabel(status)}
+    </Badge>
+  );
 }
