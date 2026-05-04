@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable
+from typing import Any
 
 import click
 
@@ -325,27 +326,38 @@ def _select_column_for_wizard(db: object, schema: str, table: str) -> str | None
     return _ask_text_or_cancel("Column")
 
 
-def _resolve_bulk_target_name(cfg: AMXConfig, bulk_pick_mode: str) -> str | None:
-    """Resolve the bare entity name for a bulk-edit run.
+def _resolve_bulk_target_name(
+    cfg: AMXConfig, bulk_pick_mode: str
+) -> tuple[str, str, dict[str, str] | None] | None:
+    """Resolve the bare entity name + kind for a bulk-edit run.
 
-    There are three paths:
-    * ``Pick a column`` — drill DB → schema → table → column. Uses the
-      picked column's NAME (not the fully qualified path) so that
-      ``_run_bulk_edit_by_name`` can fan out to every other table/schema
-      that has a column with the same name.
-    * ``Pick a table`` — drill DB → schema → table. Uses the table NAME
-      so the bulk-edit picks up the same table name across every schema.
-    * ``Type a name manually`` — keeps the legacy text-entry path for
-      power users who already know the name.
+    Returns a triple ``(bare_name, kind, seed)`` where:
+
+    * ``bare_name`` is the column or table name to fan out on.
+    * ``kind`` is one of ``"table"`` / ``"column"`` / ``"any"``. The
+      first two restrict the catalog lookup so a "Pick a table" run
+      doesn't surface columns named the same thing — that was the user-
+      reported bug where picking ``world.City`` returned 33 column
+      matches for ``city`` and zero tables.
+    * ``seed`` is the (schema, table[, column]) the user actually picked
+      in the live-DB picker. We carry it forward so a stale catalog
+      index can never make the user's own selection vanish from the
+      results — the bulk-edit fans out around the seed, never away
+      from it.
 
     Returns ``None`` if the user cancels at any step.
     """
     mode = (bulk_pick_mode or "").lower()
     if mode.startswith("type"):
-        return _ask_text_or_cancel(
+        typed = _ask_text_or_cancel(
             "Entity name to bulk-edit (column or table; AMX finds every match)",
             default="",
         )
+        if typed is None:
+            return None
+        # ``any`` because a free-form name could be either; the caller
+        # searches both indices.
+        return typed, "any", None
 
     selected = _select_db_profile_for_wizard(cfg)
     if selected is None:
@@ -368,14 +380,14 @@ def _resolve_bulk_target_name(cfg: AMXConfig, bulk_pick_mode: str) -> str | None
             f"  Using column name '{column}' (from {schema}.{table}) as bulk target — "
             "AMX will find every other column that shares this name."
         )
-        return column
+        return column, "column", {"schema": schema, "table": table, "column": column}
 
     # "Pick a table" path
     info(
         f"  Using table name '{table}' (from schema {schema}) as bulk target — "
         "AMX will find every other table that shares this name."
     )
-    return table
+    return table, "table", {"schema": schema, "table": table}
 
 
 def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
@@ -411,8 +423,12 @@ def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
         )
         if bulk_pick_mode is None:
             return None
-        bare_name = _resolve_bulk_target_name(cfg, bulk_pick_mode)
-        if bare_name is None or not bare_name.strip():
+        resolved = _resolve_bulk_target_name(cfg, bulk_pick_mode)
+        if resolved is None:
+            warn("Bulk edit cancelled.")
+            return None
+        bare_name, kind, seed = resolved
+        if not bare_name.strip():
             warn("Bulk edit cancelled.")
             return None
         # The bulk flow runs to completion on its own (writes to DB,
@@ -427,6 +443,8 @@ def _run_edit_wizard(cfg: AMXConfig) -> ManualEditTarget | None:
             skip_confirm=False,
             log_event=None,
             preselected_mode="bulk",
+            kind=kind,
+            seed=seed,
         )
         return None
 
@@ -533,6 +551,42 @@ def _parse_multiselect(raw: str, total: int) -> list[int]:
     return sorted(indices)
 
 
+def _scan_live_db_for_tables_named(cfg: AMXConfig, name: str) -> list[dict[str, Any]]:
+    """Walk every schema in the active DB profile and return tables
+    whose name matches ``name`` exactly (case-insensitive). Used as
+    the live-DB fallback when the catalog has no entry for a table
+    the user explicitly picked from the live picker.
+
+    Row shape mirrors the catalog's ``find_tables_by_exact_name``
+    output so downstream code is uniform.
+    """
+    from amx.db.connector import DatabaseConnector
+
+    needle = (name or "").strip().lower()
+    if not needle:
+        return []
+    db = DatabaseConnector(cfg.db)
+    rows: list[dict[str, Any]] = []
+    try:
+        schemas = list(db.list_schemas())
+    except Exception:
+        return []
+    for schema in schemas:
+        try:
+            for tbl in db.list_tables(schema):
+                if str(tbl).lower() == needle:
+                    rows.append(
+                        {
+                            "schema_name": schema,
+                            "table_name": tbl,
+                            "effective_description": "",
+                        }
+                    )
+        except Exception:
+            continue
+    return rows
+
+
 def _run_bulk_edit_by_name(
     cfg: AMXConfig,
     *,
@@ -541,6 +595,8 @@ def _run_bulk_edit_by_name(
     skip_confirm: bool,
     log_event: LogEvent | None,
     preselected_mode: str | None = None,
+    kind: str = "any",
+    seed: dict[str, str] | None = None,
 ) -> None:
     """Bulk-edit comment by bare entity name.
 
@@ -549,40 +605,134 @@ def _run_bulk_edit_by_name(
     bulk-vs-individual question. Accepted values: ``"bulk"`` ,
     ``"individual"`` , or ``None`` (ask the user as usual).
 
+    ``kind`` (``"table"`` / ``"column"`` / ``"any"``) restricts the
+    catalog lookup so a "Pick a table" wizard run doesn't surface
+    columns named the same thing — that was the user-reported bug
+    where picking ``world.City`` returned 33 column matches and zero
+    tables. ``"any"`` keeps the legacy bare-name search across both
+    indices for power-user CLI invocations.
+
+    ``seed`` is the (schema, table[, column]) the user actually picked
+    in the live-DB picker. We carry it forward so a stale catalog
+    index can never make the user's own selection vanish from the
+    results — the bulk-edit fans out around the seed, never away
+    from it. For the table case we additionally fall back to a live-
+    DB scan so users who haven't run ``/search sync`` recently still
+    see every match.
+
     Searches the catalog for tables and columns matching the name, then
     offers a multi-select picker. The same comment text is applied to
     every selected entity via the live DB ``COMMENT ON …`` SQL. Catalog
     state is then refreshed so the new comments are immediately visible
     to ``/ask``.
     """
-    from amx.db.connector import DatabaseConnector
     from amx.search.catalog import SearchCatalog
 
     db_profile = cfg.active_db_profile or "default"
     catalog = SearchCatalog.from_history_store()
-    if catalog is None:
-        error(
-            "Catalog is unavailable; bulk-edit by name needs an indexed catalog. Run /search /sync first."
-        )
-        return
 
-    try:
-        table_rows = catalog.find_tables_by_exact_name(db_profile, bare_name, limit=200)
-    except Exception as exc:
-        error(f"Catalog lookup for tables failed: {exc}")
-        table_rows = []
-    try:
-        column_rows = catalog.find_columns_by_exact_name(db_profile, bare_name, limit=500)
-    except Exception as exc:
-        error(f"Catalog lookup for columns failed: {exc}")
-        column_rows = []
+    table_rows: list[dict[str, Any]] = []
+    column_rows: list[dict[str, Any]] = []
+
+    if kind in ("table", "any"):
+        if catalog is not None:
+            try:
+                table_rows = catalog.find_tables_by_exact_name(db_profile, bare_name, limit=200)
+            except Exception as exc:
+                error(f"Catalog lookup for tables failed: {exc}")
+                table_rows = []
+        # Catalog miss for an explicitly picked table → live-DB scan.
+        # Scoped to ``kind == "table"`` so the legacy "any" path
+        # (bare-name CLI invocation) preserves its old behaviour.
+        if kind == "table" and not table_rows:
+            if catalog is None:
+                info(
+                    "Catalog isn't initialised yet — scanning the live DB for "
+                    f"tables named '{bare_name}'."
+                )
+            else:
+                info(
+                    f"No catalog entry for '{bare_name}' yet — scanning the live "
+                    "DB for matching tables (run /search sync to populate the "
+                    "index next time)."
+                )
+            table_rows = _scan_live_db_for_tables_named(cfg, bare_name)
+
+    if kind in ("column", "any"):
+        if catalog is None:
+            error(
+                "Catalog is unavailable; bulk-edit by column name needs an "
+                "indexed catalog. Run /search sync first."
+            )
+            return
+        try:
+            column_rows = catalog.find_columns_by_exact_name(db_profile, bare_name, limit=500)
+        except Exception as exc:
+            error(f"Catalog lookup for columns failed: {exc}")
+            column_rows = []
+
+    # Splice in the user's live picker selection if it isn't already
+    # present, so the seed is never silently dropped by a stale index.
+    if seed is not None:
+        seed_schema = seed.get("schema") or ""
+        seed_table = seed.get("table") or ""
+        seed_column = seed.get("column") or ""
+        if seed_column and kind in ("column", "any"):
+            already = any(
+                str(r.get("schema_name") or "") == seed_schema
+                and str(r.get("table_name") or "") == seed_table
+                and str(r.get("column_name") or "") == seed_column
+                for r in column_rows
+            )
+            if not already:
+                column_rows.insert(
+                    0,
+                    {
+                        "schema_name": seed_schema,
+                        "table_name": seed_table,
+                        "column_name": seed_column,
+                        "dtype": "",
+                        "effective_description": "",
+                    },
+                )
+        elif seed_table and not seed_column and kind in ("table", "any"):
+            already = any(
+                str(r.get("schema_name") or "") == seed_schema
+                and str(r.get("table_name") or "") == seed_table
+                for r in table_rows
+            )
+            if not already:
+                table_rows.insert(
+                    0,
+                    {
+                        "schema_name": seed_schema,
+                        "table_name": seed_table,
+                        "effective_description": "",
+                    },
+                )
 
     if not table_rows and not column_rows:
-        error(
-            f"No tables or columns named '{bare_name}' in the catalog for profile "
-            f"'{db_profile}'. If you just sync'd /run-apply or recently added a table, "
-            "run `/search sync` to refresh the catalog index, then retry."
-        )
+        if kind == "column":
+            error(
+                f"No columns named '{bare_name}' in the catalog for profile "
+                f"'{db_profile}'. If you just /run-apply'd or recently added a "
+                "column, run `/search sync` to refresh the catalog index, "
+                "then retry."
+            )
+        elif kind == "table":
+            error(
+                f"No tables named '{bare_name}' visible in profile "
+                f"'{db_profile}' (live DB scanned, catalog checked). Verify the "
+                "DB profile points at the right host and that the role has "
+                "schema visibility."
+            )
+        else:
+            error(
+                f"No tables or columns named '{bare_name}' in the catalog for "
+                f"profile '{db_profile}'. If you just sync'd /run-apply or "
+                "recently added a table, run `/search sync` to refresh the "
+                "catalog index, then retry."
+            )
         return
 
     # Build a unified entity list: each row is one (kind, schema, table, column).
@@ -733,6 +883,8 @@ def _run_bulk_edit_by_name(
         if not confirmed:
             warn("Bulk edit cancelled.")
             return
+
+    from amx.db.connector import DatabaseConnector
 
     db = DatabaseConnector(cfg.db)
     try:
