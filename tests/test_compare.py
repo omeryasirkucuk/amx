@@ -1103,5 +1103,135 @@ class AskHistoryToolsTests(unittest.TestCase):
         self.assertIn("/session resume", payload["note"])
 
 
+class CatalogDiscoveryToolsTests(unittest.TestCase):
+    """User report 2026-05-04: defining a Databricks DB profile without
+    pinning a catalog made ``/ask`` fail with NO_SUCH_CATALOG_EXCEPTION on
+    the first listing call. The agent now has dedicated catalog-discovery
+    tools (``list_catalogs`` / ``list_server_databases``) and the schema-
+    listing tools accept an optional ``catalog`` argument so the LLM can
+    drill in without mutating the saved profile."""
+
+    def _toolbox(self, fake_db, *, pinned_catalog: str = "", pinned_database: str = ""):
+        from unittest.mock import MagicMock
+
+        from amx.search.agent_tools import ToolBox
+
+        cfg = AMXConfig()
+        cfg.db.backend = "databricks"
+        cfg.db.catalog = pinned_catalog
+        cfg.db.database = pinned_database
+        catalog = MagicMock()
+        return ToolBox(cfg, catalog, db_factory=lambda: fake_db)
+
+    def test_list_schemas_returns_catalog_list_when_no_catalog_pinned(self) -> None:
+        """Without a pinned catalog on a 3-level backend, list_schemas
+        must NOT attempt the listing — it must surface the catalog list
+        and a ``needs_catalog`` flag so the LLM can recurse."""
+
+        class FakeDB:
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                return ["main", "samples", "workspace"]
+
+            cfg = type("DBCfg", (), {"catalog": ""})()
+
+        toolbox = self._toolbox(FakeDB())
+        payload = toolbox._tool_list_schemas()
+        self.assertTrue(payload["needs_catalog"])
+        self.assertEqual(payload["catalogs"], ["main", "samples", "workspace"])
+        self.assertIn("no catalog pinned", payload["message"])
+
+    def test_list_schemas_with_catalog_argument_scopes_listing(self) -> None:
+        """Passing ``catalog=X`` must temporarily pin cfg.catalog so the
+        connector emits ``SHOW SCHEMAS IN X`` instead of failing on the
+        SQLAlchemy default. The pin must be restored afterwards."""
+
+        class FakeDB:
+            def __init__(self) -> None:
+                self.cfg = type("DBCfg", (), {"catalog": ""})()
+                self.observed_catalog: str = ""
+
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_schemas(self) -> list[str]:
+                self.observed_catalog = self.cfg.catalog
+                return ["sales", "ops"]
+
+        fake = FakeDB()
+        toolbox = self._toolbox(fake)
+        payload = toolbox._tool_list_schemas(catalog="main")
+        self.assertEqual(payload["schemas"], ["sales", "ops"])
+        self.assertEqual(payload["database"], "main")
+        # Connector saw the temporary pin while listing.
+        self.assertEqual(fake.observed_catalog, "main")
+        # And the pin was restored afterwards (no leak into cfg).
+        self.assertEqual(fake.cfg.catalog, "")
+
+    def test_list_catalogs_tool_returns_show_catalogs_result(self) -> None:
+        class FakeDB:
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                return ["main", "samples"]
+
+            cfg = type("DBCfg", (), {"catalog": "main"})()
+
+        toolbox = self._toolbox(FakeDB(), pinned_catalog="main")
+        payload = toolbox._tool_list_catalogs()
+        self.assertTrue(payload["supports_catalogs"])
+        self.assertEqual(payload["catalogs"], ["main", "samples"])
+        self.assertEqual(payload["active_catalog"], "main")
+
+    def test_list_catalogs_tool_signals_2_level_backend(self) -> None:
+        class FakeDB:
+            def supports_catalogs(self) -> bool:
+                return False
+
+        toolbox = self._toolbox(FakeDB())
+        payload = toolbox._tool_list_catalogs()
+        self.assertFalse(payload["supports_catalogs"])
+        self.assertEqual(payload["catalogs"], [])
+        self.assertIn("list_server_databases", payload["message"])
+
+    def test_list_server_databases_returns_databases_with_active_marker(self) -> None:
+        class FakeDB:
+            def list_databases(self) -> list[str]:
+                return ["app", "analytics"]
+
+            cfg = type("DBCfg", (), {"database": "app"})()
+
+        toolbox = self._toolbox(FakeDB(), pinned_database="app")
+        payload = toolbox._tool_list_server_databases()
+        self.assertEqual(payload["databases"], ["app", "analytics"])
+        self.assertEqual(payload["active_database"], "app")
+
+    def test_new_discovery_tools_appear_in_tool_schemas(self) -> None:
+        """The new tools must show up in ``ToolBox.schemas()`` so LiteLLM
+        forwards them to the LLM. Otherwise the system prompt's
+        instructions to call them produce a hallucinated function-call
+        name the agent loop can't dispatch."""
+        from amx.search.agent_tools import ToolBox
+
+        names = {entry["function"]["name"] for entry in ToolBox.schemas()}
+        self.assertIn("list_catalogs", names)
+        self.assertIn("list_server_databases", names)
+        # list_schemas / list_tables_in_schema both accept the optional
+        # catalog argument now.
+        for entry in ToolBox.schemas():
+            fn = entry["function"]
+            if fn["name"] in {"list_schemas", "list_tables_in_schema"}:
+                self.assertIn(
+                    "catalog",
+                    fn["parameters"]["properties"],
+                    f"{fn['name']} should advertise an optional `catalog` argument so "
+                    "the LLM can drill into a Unity-Catalog catalog without mutating "
+                    "the saved profile.",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
