@@ -18,7 +18,7 @@ import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
-import { AlertDialog, Button, useToast } from "../components/ui";
+import { AlertDialog, Button, InfoHint, useToast } from "../components/ui";
 
 interface DoctorCheck {
   name: string;
@@ -145,9 +145,9 @@ function DoctorCard() {
           <span className="inline-flex items-center gap-2">
             <Stethoscope size={16} className="text-accent" />
             Doctor
+            <InfoHint text="Installation, config, and connectivity checks — same as `amx doctor` from the CLI. Toggle skip-network to bypass live HTTP/SQL probes." />
           </span>
         }
-        description="Installation, config, and connectivity checks. Re-runs every time you toggle the network checks below."
         actions={
           <div className="flex items-center gap-2">
             <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-ink-muted">
@@ -246,9 +246,9 @@ function UsageCard() {
           <span className="inline-flex items-center gap-2">
             <Wallet size={16} className="text-accent" />
             Token usage + cost
+            <InfoHint text="Tokens consumed and approximate cost per (provider, model), aggregated from the local history store. Pricing falls back to $0 for providers without a built-in price table." />
           </span>
         }
-        description="Aggregated from ~/.amx/history.db. Pricing is approximate — set $0 if your provider isn't in the table yet."
         actions={
           <div className="flex items-center gap-1">
             {WINDOWS.map((w) => (
@@ -364,9 +364,9 @@ function CatalogStatusCard() {
           <span className="inline-flex items-center gap-2">
             <Database size={16} className="text-accent" />
             Search catalog
+            <InfoHint text="The vector + lexical index that grounds /ask. Refresh from the CLI with `/search sync` after metadata changes; this card just reads its current state." />
           </span>
         }
-        description="Entity + description counts that the /ask agent grounds its answers against."
         actions={
           <button
             type="button"
@@ -442,9 +442,9 @@ function HistoryStoreCard() {
           <span className="inline-flex items-center gap-2">
             <Users size={16} className="text-accent" />
             Team history store
+            <InfoHint text="When enabled, every /run dual-writes to a shared team database so colleagues can replay each other's runs. Configure from CLI with `/team enable`; this card is read-only." />
           </span>
         }
-        description="Optional shared run-history mode. When enabled, every /run dual-writes to a team database so colleagues can pull each other's runs."
         actions={
           <button
             type="button"
@@ -554,6 +554,7 @@ function MaintenanceCard() {
           <span className="inline-flex items-center gap-2">
             <Wrench size={16} className="text-accent" />
             Maintenance
+            <InfoHint text="One-shot ops that don't fit anywhere else. Currently: strip the [inferred by AMX] markers from every COMMENT in the active database without touching the descriptions themselves." />
           </span>
         }
       />
