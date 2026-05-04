@@ -241,7 +241,7 @@ class DatabaseConnector:
                 if attempt < MAX_CONNECTION_RETRIES and _is_transient_db_connection_error(exc):
                     wait = CONNECTION_RETRY_BACKOFF_SEC * (2**attempt)
                     log.warning(
-                        "DB connection failed (attempt %d/%d) — retrying in %.1fs: %s",
+                        "DB connection failed (attempt %d/%d)  --  retrying in %.1fs: %s",
                         attempt + 1,
                         MAX_CONNECTION_RETRIES + 1,
                         wait,

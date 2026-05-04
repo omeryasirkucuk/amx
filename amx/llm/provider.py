@@ -55,7 +55,7 @@ def _configure_ssl_environment() -> None:
         # Also tell the underlying httpx clients used by openai/anthropic.
         os.environ.setdefault("PYTHONHTTPSVERIFY", "0")
         log.warning(
-            "AMX_INSECURE_SSL=1 — SSL certificate verification is DISABLED. "
+            "AMX_INSECURE_SSL=1  --  SSL certificate verification is DISABLED. "
             "Use only for diagnostics; set AMX_CA_BUNDLE in production."
         )
 
@@ -370,6 +370,13 @@ _LOGPROBS_UNSUPPORTED_PATTERNS: tuple[str, ...] = (
     "logprob is not supported",
     "does not support logprobs",
     "logprobs parameter is not supported",
+    # Databricks Foundation Model Serving's OpenAI shim 400s with this
+    # exact phrase on its Anthropic-backed Claude endpoints. We disable
+    # logprobs pre-emptively for ``databricks_serving`` (see chat()
+    # below), but the runtime fallback covers anyone calling LiteLLM
+    # directly with the same provider shape.
+    "top_logprobs: extra inputs are not permitted",
+    "logprobs: extra inputs are not permitted",
 )
 
 
@@ -1103,7 +1110,7 @@ class LLMProvider:
                 floor = int(os.getenv("AMX_LLM_MIN_MAX_TOKENS", str(_DEFAULT_REASONING_FLOOR)))
                 if mt < floor:
                     log.debug(
-                        "Raising max_tokens %d → %d for OpenRouter reasoning model %s",
+                        "Raising max_tokens %d -> %d for OpenRouter reasoning model %s",
                         mt,
                         floor,
                         model,
@@ -1131,6 +1138,18 @@ class LLMProvider:
         # call in the same session would re-trigger the same 400.
         if use_logprobs and getattr(self, "_logprobs_runtime_disabled", False):
             use_logprobs = False
+        # Providers that NEVER accept ``logprobs`` / ``top_logprobs`` —
+        # disabled unconditionally (streaming + non-streaming) so calls
+        # that don't go through the use_streaming branch above
+        # (``LLMProvider.test_result``, the profile / RAG / code agents
+        # in CHAT mode) don't trip the same 400. Databricks Foundation
+        # Model Serving's OpenAI shim rejects both kwargs outright on
+        # its Anthropic-backed Claude endpoints; the literal error is
+        # ``top_logprobs: Extra inputs are not permitted``.
+        if self.cfg.provider == "databricks_serving":
+            use_logprobs = False
+            for k in ("logprobs", "top_logprobs"):
+                extra.pop(k, None)
         if use_logprobs:
             # Force-request logprobs regardless of provider capability metadata.
             extra["logprobs"] = True
@@ -1150,7 +1169,7 @@ class LLMProvider:
             floor = int(os.getenv("AMX_LLM_MIN_MAX_TOKENS", str(_DEFAULT_REASONING_FLOOR)))
             if mt < floor:
                 log.debug(
-                    "Raising max_tokens %d → %d for reasoning model %s",
+                    "Raising max_tokens %d -> %d for reasoning model %s",
                     mt,
                     floor,
                     model,
@@ -1165,7 +1184,7 @@ class LLMProvider:
                 if effort in ("none", "minimal", "low", "medium", "high"):
                     extra.setdefault("reasoning_effort", effort)
 
-        log.debug("LLM call → model=%s, max_tokens=%d", model, mt)
+        log.debug("LLM call -> model=%s, max_tokens=%d", model, mt)
         call_api_base = (
             self.cfg.api_base
             if self.cfg.provider
@@ -1300,7 +1319,7 @@ class LLMProvider:
                 ):
                     wait = LLM_RETRY_BACKOFF_BASE_SEC * (2**attempt)
                     log.warning(
-                        "LLM transient failure (attempt %d/%d) — retrying in %.1fs: %s",
+                        "LLM transient failure (attempt %d/%d)  --  retrying in %.1fs: %s",
                         attempt + 1,
                         MAX_LLM_RETRIES + 1,
                         wait,

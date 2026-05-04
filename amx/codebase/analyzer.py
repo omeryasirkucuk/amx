@@ -69,7 +69,7 @@ def _codebase_root(path: str) -> Iterator[str]:
 
         clone_url = normalize_github_url(path)
         with tempfile.TemporaryDirectory(prefix="amx_code_") as dest:
-            log.info("Cloning %s → %s", clone_url, dest)
+            log.info("Cloning %s -> %s", clone_url, dest)
             gitpython.Repo.clone_from(clone_url, dest, depth=1)
             yield dest
         return

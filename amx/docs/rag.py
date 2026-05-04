@@ -147,7 +147,7 @@ class RAGStore:
                 ]
                 self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
                 total_chunks += len(chunks)
-                log.info("Ingested %s → %d chunks", doc.path, len(chunks))
+                log.info("Ingested %s -> %d chunks", doc.path, len(chunks))
             except Exception as exc:
                 log.error("Error ingesting %s: %s", doc.path, exc)
         return total_chunks
