@@ -89,7 +89,7 @@ def _resolve_github(url: str, target_dir: str | None = None) -> Iterator[DocInfo
     clone_url = normalize_github_url(url)
     created_temp = target_dir is None
     dest = target_dir or tempfile.mkdtemp(prefix="amx_gh_")
-    log.info("Cloning %s → %s", clone_url, dest)
+    log.info("Cloning %s -> %s", clone_url, dest)
     try:
         gitpython.Repo.clone_from(clone_url, dest, depth=1)
     except Exception:

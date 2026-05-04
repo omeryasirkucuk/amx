@@ -102,13 +102,13 @@ def _build_shared_store(cfg: AMXConfig):
     profile_name = (getattr(cfg, "history_store_profile", "") or "").strip()
     if not profile_name:
         log.warning(
-            "history_store_enabled=True but history_store_profile is empty — "
+            "history_store_enabled=True but history_store_profile is empty  --  "
             "falling back to local-only history."
         )
         return None
     if profile_name not in cfg.db_profiles:
         log.warning(
-            "history_store_profile=%r is not in cfg.db_profiles — "
+            "history_store_profile=%r is not in cfg.db_profiles  --  "
             "falling back to local-only history.",
             profile_name,
         )

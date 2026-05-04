@@ -109,7 +109,7 @@ def migrate_local_to_shared(
     run_id_map: dict[int, str] = {}
 
     # ── analysis_runs ─────────────────────────────────────────────────────
-    log.info("Migrating analysis_runs from %s …", local.db_path)
+    log.info("Migrating analysis_runs from %s ...", local.db_path)
     with local._connect() as conn:
         rows = conn.execute("SELECT * FROM analysis_runs ORDER BY id").fetchall()
 
@@ -163,7 +163,7 @@ def migrate_local_to_shared(
                 progress("analysis_runs", stats["analysis_runs"])
 
     # ── run_results ───────────────────────────────────────────────────────
-    log.info("Migrating run_results …")
+    log.info("Migrating run_results ...")
     with local._connect() as conn:
         rows = conn.execute("SELECT * FROM run_results ORDER BY id").fetchall()
 
@@ -178,7 +178,7 @@ def migrate_local_to_shared(
         run_uuid = run_id_map.get(local_run_id)
         if not run_uuid:
             log.warning(
-                "Skipping run_results.id=%s — its run_id=%s is not in the migrated set.",
+                "Skipping run_results.id=%s  --  its run_id=%s is not in the migrated set.",
                 local_id,
                 local_run_id,
             )
@@ -221,7 +221,7 @@ def migrate_local_to_shared(
                 progress("run_results", stats["run_results"])
 
     # ── app_events ────────────────────────────────────────────────────────
-    log.info("Migrating app_events …")
+    log.info("Migrating app_events ...")
     with local._connect() as conn:
         rows = conn.execute("SELECT * FROM app_events ORDER BY id").fetchall()
 
@@ -316,7 +316,7 @@ def pull_shared_to_local(
     host = getattr(shared, "_hostname", None) or _hostname()
     started = time.time()
 
-    log.info("Pulling shared analysis_runs (excluding host=%r)…", host)
+    log.info("Pulling shared analysis_runs (excluding host=%r)...", host)
     runs = shared.iter_runs_by_other_hosts(exclude_hostname=host)
     if not runs:
         log.info("No other-host runs found in shared store.")
@@ -396,7 +396,7 @@ def pull_shared_to_local(
         log.info("Pull finished (no new analysis_runs to insert).")
         return stats
 
-    log.info("Pulling shared run_results for %d run(s)…", len(uuid_to_local))
+    log.info("Pulling shared run_results for %d run(s)...", len(uuid_to_local))
     results = shared.get_results_for_runs(list(uuid_to_local.keys()))
     with local._lock:
         for rr in results:

@@ -6,6 +6,43 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — Databricks Serving Claude `/run` no longer 400s on `top_logprobs`; Windows logging cleaned up
+
+User report 2026-05-04 against the just-shipped 0.12.7 +
+`databricks_serving` provider: `/run` against
+`databricks-claude-sonnet-4-6` aborted with
+`litellm.BadRequestError: top_logprobs: Extra inputs are not
+permitted`, plus a Python `UnicodeEncodeError` traceback every
+time AMX logged an `LLM call -> model=...` line on a Windows
+console (cp1252).
+
+Two fixes, one PR:
+
+1. **No `logprobs` for `databricks_serving`.** The Databricks
+   Foundation Model Serving OpenAI shim rejects both
+   `logprobs` and `top_logprobs` outright on its Anthropic-backed
+   Claude endpoints. AMX now strips them pre-emptively for that
+   provider on every code path (streaming + non-streaming, agent
+   calls + `LLMProvider.test_result`). The runtime fallback string
+   list also gains the literal Databricks 400 wording so any
+   future shim emitting the same error self-recovers without
+   needing a code change.
+2. **ASCII-only bare-logger format strings.** Every
+   `log.{debug,info,warning,error,exception}` call site under
+   `amx/` is now plain ASCII. Rich-routed UI prompts keep their
+   stylistic Unicode (em-dashes, ellipses, arrows) because Rich
+   forces a UTF-8 console; bare loggers go through stdlib
+   `logging.StreamHandler` which inherits the locale codec on
+   Windows, and any non-ASCII char there crashed Python 3.13's
+   cp1252 encoder. Six files swept (`amx/llm/provider.py`,
+   `amx/db/connector.py`, `amx/storage/{factory,migration,
+   sqlite_store,dual_write}.py`).
+
+A new `tests/test_logger_windows_safe.py` walks every
+bare-logger format string in the package and fails the test suite
+if a non-ASCII character sneaks back in — so this regression class
+can't ship to PyPI again.
+
 ### Added — dark-mode toggle, ⌘K command palette, docs/visualize.md (PR-F)
 
 Final slice of the local AMX web UI. Polish + ergonomics + first

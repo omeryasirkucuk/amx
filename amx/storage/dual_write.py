@@ -122,7 +122,7 @@ class DualWriteHistoryStore:
                 )
         except sqlite3.Error as enq_err:
             log.warning(
-                "Could not enqueue shared-write for retry (op=%s): %s — data is "
+                "Could not enqueue shared-write for retry (op=%s): %s  --  data is "
                 "in local SQLite only.",
                 op_kind,
                 enq_err,
@@ -220,7 +220,7 @@ class DualWriteHistoryStore:
         elif op_kind == OP_SET_SESSION_STATE:
             self.shared.set_session_state(payload["namespace"], payload["key"], payload["value"])
         else:
-            log.warning("Unknown outbox op_kind=%s — leaving queued", op_kind)
+            log.warning("Unknown outbox op_kind=%s  --  leaving queued", op_kind)
             raise ValueError(f"unknown op_kind: {op_kind}")
 
     # ── Helpers ───────────────────────────────────────────────────────────
@@ -231,7 +231,7 @@ class DualWriteHistoryStore:
             call()
         except Exception as exc:
             log.warning(
-                "Shared-history write failed (op=%s): %s — queued for retry.",
+                "Shared-history write failed (op=%s): %s  --  queued for retry.",
                 op_kind,
                 exc,
             )

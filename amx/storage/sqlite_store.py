@@ -426,7 +426,7 @@ class SQLiteHistoryStore:
                 )
             except Exception as exc:
                 log.warning(
-                    "Could not add analysis_runs.%s: %s — partial-progress "
+                    "Could not add analysis_runs.%s: %s  --  partial-progress "
                     "reporting in /history will show '—'.",
                     col_name,
                     exc,
