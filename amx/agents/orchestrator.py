@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -222,6 +223,23 @@ class ReviewResult:
     logprob_score: float | None = None
 
 
+class RunCancelled(RuntimeError):
+    """Signal raised when a run / apply / ask job has been cancelled.
+
+    The visualizer's ``/api/runs/{id}/cancel`` endpoint flips a
+    :class:`threading.Event` plumbed through the orchestrator. Phase
+    boundaries (per-table loop, post-profile, post-merge, write-back
+    iteration) check the event and raise :class:`RunCancelled` so the
+    JobRegistry can surface it as ``job.cancelled`` on the SSE stream.
+
+    Cancellation is best-effort: in-flight LLM HTTP calls and
+    SQLAlchemy transactions don't receive the signal, so latency is
+    "one phase". The ``apply_review_results_to_db`` loop checks the
+    event between rows and commits whatever was already applied —
+    matching the CLI's Ctrl-C behaviour today.
+    """
+
+
 # Substrings that mark a description as a "fallback placeholder" produced
 # by ``_ensure_complete_table_coverage`` when the model failed to give a
 # real description for a column or table. These must NEVER be written to
@@ -255,8 +273,16 @@ def apply_review_results_to_db(
     on_applied: Callable[[ReviewResult], None] | None = None,
     on_failed: Callable[[ReviewResult, Exception], None] | None = None,
     on_progress: Callable[[ReviewResult, str, int, int, str], None] | None = None,
+    cancel_token: threading.Event | None = None,
 ) -> int:
-    """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database."""
+    """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database.
+
+    ``cancel_token`` is checked between rows so the visualizer's
+    "Cancel job" button stops the loop within one row latency. The
+    transaction commits whatever was applied so far — matching the
+    CLI's Ctrl-C behaviour, and avoiding a multi-minute rollback that
+    would discard the user's already-confirmed work.
+    """
     applied = 0
     # Filter out fallback placeholders BEFORE we hit the DB. They're a UI
     # hint for human review (so the user can see which columns the LLM
@@ -274,6 +300,12 @@ def apply_review_results_to_db(
         total = len(pending)
         index = 0
         while index < total:
+            if cancel_token is not None and cancel_token.is_set():
+                # User clicked "Cancel" in the visualizer (or the CLI
+                # job orchestrator set the token). Commit whatever was
+                # already written and let the caller surface the
+                # cancellation as a job.cancelled event.
+                break
             r = pending[index]
             try:
                 kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
