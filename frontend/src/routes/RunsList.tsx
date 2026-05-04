@@ -15,6 +15,8 @@ import {
 } from "../components/ui";
 import {
   humanizeCommand,
+  relativeTime,
+  shortModel,
   statusLabel,
   statusTone,
   summarizeScope,
@@ -26,6 +28,9 @@ interface Row {
   scope: Record<string, unknown> | null;
   status: string;
   duration_sec: number | null;
+  llm_model?: string | null;
+  db_profile?: string | null;
+  started_at?: number | string | null;
 }
 
 export default function RunsList() {
@@ -82,6 +87,31 @@ export default function RunsList() {
         hideOnMobile: true,
       },
       {
+        id: "db",
+        header: "DB",
+        sortValue: (r) => r.db_profile ?? "",
+        cell: (r) => (
+          <span className="truncate font-mono text-xs text-ink-muted" title={r.db_profile ?? ""}>
+            {r.db_profile ?? "—"}
+          </span>
+        ),
+        hideOnMobile: true,
+      },
+      {
+        id: "model",
+        header: "Model",
+        sortValue: (r) => shortModel(r.llm_model),
+        cell: (r) => (
+          <span
+            className="truncate font-mono text-xs text-ink-muted"
+            title={r.llm_model ?? ""}
+          >
+            {shortModel(r.llm_model) || "—"}
+          </span>
+        ),
+        hideOnMobile: true,
+      },
+      {
         id: "status",
         header: "Status",
         width: "w-28",
@@ -91,7 +121,7 @@ export default function RunsList() {
       {
         id: "duration",
         header: "Duration",
-        width: "w-24",
+        width: "w-20",
         align: "right",
         sortValue: (r) => r.duration_sec ?? -1,
         cell: (r) => (
@@ -99,6 +129,27 @@ export default function RunsList() {
             {r.duration_sec != null ? `${r.duration_sec.toFixed(1)}s` : "—"}
           </span>
         ),
+      },
+      {
+        id: "started",
+        header: "Started",
+        width: "w-24",
+        align: "right",
+        sortValue: (r) => {
+          const t =
+            typeof r.started_at === "number"
+              ? r.started_at
+              : r.started_at
+                ? Date.parse(r.started_at)
+                : 0;
+          return Number.isFinite(t) ? -t : 0;
+        },
+        cell: (r) => (
+          <span className="font-mono text-xs text-ink-muted tabular-nums">
+            {r.started_at != null ? relativeTime(r.started_at) : "—"}
+          </span>
+        ),
+        hideOnMobile: true,
       },
     ],
     [],
