@@ -6,6 +6,36 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/ask` no longer loops on Kimi-thinking when a Databricks workspace exposes one obvious user catalog
+
+Follow-up to the catalog-discovery fix below. User report 2026-05-04
+(against the just-shipped fix): kimi-k2-thinking on OpenRouter would
+receive `needs_catalog=true` from `list_schemas`, see four catalogs
+(`amx_test`, `samples`, `system`, `workspace`), and then enter a
+degenerate streaming loop that re-emitted the same paragraph
+("Let me check the schemas in `amx_test`: … **Note:** I can see 4
+catalogs …") without ever calling the tool a second time. The
+agent loop was correct; the model just never recovered from "narrate
+the choice" mode.
+
+`list_schemas` now filters Databricks system catalogs (`system`,
+`samples`, `workspace`, `hive_metastore`, `spark_catalog`,
+`__databricks_internal`) out of the candidate list. When exactly one
+user catalog remains, the tool **auto-picks** it and returns the
+schemas in a single round-trip, plus an `auto_picked_catalog` field
+so the LLM mentions which catalog the schemas live in. When multiple
+user catalogs remain the tool still punts back to the LLM, but the
+message is phrased as a directive ("IMMEDIATELY call this tool again
+with `catalog` set") rather than a question, and the system prompt
+explicitly tells the model not to compose narration prose at the
+user.
+
+`tests/test_compare.py::CatalogDiscoveryToolsTests` adds
+`test_list_schemas_auto_picks_single_user_catalog` for the user's
+exact `[amx_test, samples, system, workspace]` case; the prior
+"surfaces the list" test was rewritten to exercise the
+multiple-user-catalogs branch.
+
 ### Fixed — `/ask` discovers the catalog itself when the active DB profile didn't pin one
 
 User report (2026-05-04): defining a Databricks DB profile without
