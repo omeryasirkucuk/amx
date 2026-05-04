@@ -1375,6 +1375,7 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
         names = {entry["function"]["name"] for entry in ToolBox.schemas()}
         self.assertIn("list_catalogs", names)
         self.assertIn("list_server_databases", names)
+        self.assertIn("list_volumes", names)
         # list_schemas / list_tables_in_schema both accept the optional
         # catalog argument now.
         for entry in ToolBox.schemas():
@@ -1387,6 +1388,72 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
                     "the LLM can drill into a Unity-Catalog catalog without mutating "
                     "the saved profile.",
                 )
+
+    def test_list_volumes_iterates_schemas_when_schema_omitted(self) -> None:
+        """User report 2026-05-04: /ask answered 'I can't see volumes' on
+        Databricks because no tool exposed SHOW VOLUMES. The new
+        list_volumes tool runs SHOW VOLUMES across every schema in the
+        auto-picked catalog when the LLM doesn't name one, surfacing
+        managed and external volumes for the LLM to summarise."""
+
+        class FakeCaps:
+            volumes = True
+
+        class FakeDB:
+            def __init__(self) -> None:
+                self.cfg = type("DBCfg", (), {"catalog": ""})()
+                self.observed_catalog: str = ""
+                self.capabilities = FakeCaps()
+
+            def supports_catalogs(self) -> bool:
+                return True
+
+            def list_catalogs(self) -> list[str]:
+                # Single user catalog — auto-picked.
+                return ["amx_test", "samples", "system", "workspace"]
+
+            def list_schemas(self) -> list[str]:
+                self.observed_catalog = self.cfg.catalog
+                return ["sales", "raw"]
+
+            def list_volumes(self, schema: str, catalog: str):
+                if schema == "sales":
+                    return [
+                        {"name": "raw_files", "type": "managed", "comment": "ETL inbox"},
+                    ]
+                if schema == "raw":
+                    return [
+                        {"name": "uploads", "type": "external", "comment": ""},
+                    ]
+                return []
+
+        toolbox = self._toolbox(FakeDB())
+        payload = toolbox._tool_list_volumes()
+        self.assertTrue(payload["supported"])
+        self.assertEqual(payload["catalog"], "amx_test")
+        self.assertEqual(payload["auto_picked_catalog"], "amx_test")
+        self.assertEqual(payload["count"], 2)
+        names = {row["name"] for row in payload["volumes"]}
+        self.assertEqual(names, {"raw_files", "uploads"})
+        kinds = {row["kind"] for row in payload["volumes"]}
+        self.assertEqual(kinds, {"managed", "external"})
+
+    def test_list_volumes_returns_unsupported_for_non_databricks_backend(self) -> None:
+        """For PG/Snowflake/etc. there is no Volume concept — the tool
+        must surface ``supported=false`` so the LLM doesn't invent a
+        SHOW VOLUMES query against an unsupported backend."""
+
+        class FakeCaps:
+            volumes = False
+
+        class FakeDB:
+            capabilities = FakeCaps()
+
+        toolbox = self._toolbox(FakeDB())
+        payload = toolbox._tool_list_volumes()
+        self.assertFalse(payload["supported"])
+        self.assertEqual(payload["volumes"], [])
+        self.assertIn("Databricks", payload["message"])
 
 
 if __name__ == "__main__":
