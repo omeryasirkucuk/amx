@@ -136,6 +136,34 @@ def test_catalog_status_when_uninitialised(client, auth_headers, monkeypatch) ->
     assert "isn't initialised" in (payload.get("message") or "")
 
 
+def test_history_store_status_when_disabled(client, auth_headers, cfg) -> None:
+    cfg.history_store_enabled = False
+    response = client.get("/api/admin/history-store-status", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is False
+    assert payload["outbox_pending"] == 0
+
+
+def test_history_store_status_when_enabled(client, auth_headers, cfg, monkeypatch) -> None:
+    cfg.history_store_enabled = True
+    cfg.history_store_profile = "team-pg"
+    cfg.history_store_schema = "amx_team"
+
+    fake_shared = MagicMock()
+    fake_shared.pending_count = MagicMock(return_value=4)
+    fake_hs = MagicMock(shared=fake_shared)
+    monkeypatch.setattr("amx.storage.sqlite_store.history_store", lambda: fake_hs)
+
+    response = client.get("/api/admin/history-store-status", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is True
+    assert payload["profile"] == "team-pg"
+    assert payload["schema"] == "amx_team"
+    assert payload["outbox_pending"] == 4
+
+
 def test_catalog_status_when_ready(client, auth_headers, monkeypatch) -> None:
     fake_status = {
         "entities": {"total_entities": 42, "effective_entities": 30, "last_synced_at": 0},

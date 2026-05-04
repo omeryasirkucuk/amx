@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertCircle,
@@ -8,6 +8,8 @@ import {
   Stethoscope,
   Wallet,
   Database,
+  Wrench,
+  Users,
 } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
@@ -85,6 +87,8 @@ export default function System() {
         <DoctorCard />
         <UsageCard />
         <CatalogStatusCard />
+        <HistoryStoreCard />
+        <MaintenanceCard />
       </div>
     </>
   );
@@ -376,6 +380,174 @@ function CatalogStatusCard() {
             )}
           </>
         ) : null}
+      </CardBody>
+    </Card>
+  );
+}
+
+interface HistoryStoreStatus {
+  enabled: boolean;
+  profile: string;
+  schema: string;
+  outbox_pending: number;
+}
+
+function HistoryStoreCard() {
+  const status = useQuery({
+    queryKey: ["history-store-status"],
+    queryFn: () =>
+      apiFetch<HistoryStoreStatus>("/api/admin/history-store-status"),
+    retry: false,
+  });
+
+  return (
+    <Card>
+      <CardHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Users size={16} className="text-accent" />
+            Team history store
+          </span>
+        }
+        description="Optional shared run-history mode. When enabled, every /run dual-writes to a team database so colleagues can pull each other's runs."
+        actions={
+          <button
+            type="button"
+            onClick={() => status.refetch()}
+            className="inline-flex items-center gap-1 rounded-md bg-surface-subtle px-2.5 py-1 text-xs text-ink-muted hover:bg-surface-border"
+          >
+            <RefreshCw size={12} />
+            Refresh
+          </button>
+        }
+      />
+      <CardBody>
+        {status.isLoading ? (
+          <div className="text-sm text-ink-dim">Loading…</div>
+        ) : status.error ? (
+          <div className="text-sm text-critical">
+            {(status.error as Error).message}
+          </div>
+        ) : status.data ? (
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center gap-3">
+              <StatusPill tone={status.data.enabled ? "positive" : "neutral"}>
+                {status.data.enabled ? "Enabled" : "Disabled"}
+              </StatusPill>
+              {status.data.outbox_pending > 0 && (
+                <StatusPill tone="warning">
+                  {status.data.outbox_pending} pending
+                </StatusPill>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3 text-xs text-ink-muted">
+              <div>
+                <span className="text-ink-dim">Profile:</span>{" "}
+                <span className="font-mono text-ink">
+                  {status.data.profile || "—"}
+                </span>
+              </div>
+              <div>
+                <span className="text-ink-dim">Schema:</span>{" "}
+                <span className="font-mono text-ink">
+                  {status.data.schema || "—"}
+                </span>
+              </div>
+            </div>
+            {!status.data.enabled && (
+              <p className="text-xs text-ink-dim">
+                Use the CLI's <code className="font-mono">/history-store enable</code>
+                {" "}command to bootstrap a team schema. The visualizer surfaces the
+                status and outbox depth, but the enable wizard is interactive.
+              </p>
+            )}
+            {status.data.outbox_pending > 0 && (
+              <p className="text-xs text-warning">
+                {status.data.outbox_pending} dual-writes are queued. Run{" "}
+                <code className="font-mono">/history-store flush-pending</code> to
+                retry them.
+              </p>
+            )}
+          </div>
+        ) : null}
+      </CardBody>
+    </Card>
+  );
+}
+
+interface CleanupResult {
+  schemas?: string[];
+  tables_cleared?: number;
+  columns_cleared?: number;
+  warnings?: string[];
+}
+
+function MaintenanceCard() {
+  const [result, setResult] = useState<CleanupResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const cleanup = useMutation({
+    mutationFn: () =>
+      apiFetch<CleanupResult>("/api/comments/cleanup-placeholders", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+    onSuccess: (data) => {
+      setResult(data);
+      setError(null);
+    },
+    onError: (e) => {
+      setError(e instanceof Error ? e.message : "Cleanup failed.");
+      setResult(null);
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Wrench size={16} className="text-accent" />
+            Maintenance
+          </span>
+        }
+        description="One-shot ops that don't fit anywhere else. Right now: strip auto-inference placeholder text from every COMMENT in the active database."
+      />
+      <CardBody className="space-y-3">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => cleanup.mutate()}
+            disabled={cleanup.isPending}
+            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+          >
+            <Wrench size={14} />
+            {cleanup.isPending ? "Cleaning…" : "Cleanup placeholder COMMENTs"}
+          </button>
+          <span className="text-xs text-ink-dim">
+            Removes the <code className="font-mono">[inferred by AMX]</code> markers from
+            the live DB without touching the descriptions themselves.
+          </span>
+        </div>
+        {error && (
+          <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
+            {error}
+          </div>
+        )}
+        {result && (
+          <div className="rounded-md border border-positive/40 bg-positive/5 px-3 py-2 text-xs text-positive">
+            Cleared {result.tables_cleared ?? 0} table(s) and{" "}
+            {result.columns_cleared ?? 0} column(s) across{" "}
+            {(result.schemas ?? []).length} schema(s).
+            {(result.warnings ?? []).length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-warning">
+                {(result.warnings ?? []).map((w, i) => (
+                  <li key={i}>• {w}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </CardBody>
     </Card>
   );
