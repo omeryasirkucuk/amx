@@ -188,6 +188,59 @@ def clear() -> dict[str, Any]:
     return {"ok": True}
 
 
+class RestoreRequest(BaseModel):
+    """Body for ``POST /api/pending/restore`` — re-add a previously
+    skipped row to the pending queue. The SPA already has the full
+    ReviewResult shape locally (the run-detail page rendered it),
+    so we accept it verbatim instead of re-querying the history
+    store."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    result_id: int | None = None
+    schema_: str = Field(..., alias="schema")
+    table: str
+    column: str | None = None
+    final_description: str
+    confidence: str = "medium"
+    source: str = "user_restore"
+    asset_kind: str = "table"
+    alternatives: list[str] = Field(default_factory=list)
+    logprob_score: float | None = None
+
+
+@router.post("/restore")
+def restore(body: RestoreRequest) -> dict[str, Any]:
+    """Re-add a previously-skipped run_result back to the pending
+    queue. Idempotent — if a pending row with the same ``result_id``
+    is already present, the existing idx is returned and no row is
+    appended."""
+    try:
+        confidence = Confidence[body.confidence.upper()]
+    except (KeyError, AttributeError):
+        confidence = Confidence.MEDIUM
+    rows = load_pending()
+    if body.result_id is not None:
+        for i, existing in enumerate(rows):
+            if existing.result_id == body.result_id:
+                return {"ok": True, "idx": i, "count": len(rows), "already_present": True}
+    rr = ReviewResult(
+        schema=body.schema_,
+        table=body.table,
+        column=body.column,
+        final_description=body.final_description,
+        confidence=confidence,
+        source=body.source,
+        asset_kind=body.asset_kind,
+        result_id=body.result_id,
+        alternatives=list(body.alternatives or []),
+        logprob_score=body.logprob_score,
+    )
+    rows.append(rr)
+    save_pending(rows)
+    return {"ok": True, "idx": len(rows) - 1, "count": len(rows), "already_present": False}
+
+
 @router.post("/apply")
 def apply_pending(
     cfg: AMXConfig = Depends(get_cfg),

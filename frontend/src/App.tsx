@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import AppShell from "./components/AppShell";
 import { ToastProvider } from "./components/ui";
 import Home from "./routes/Home";
+import Database from "./routes/Database";
 import Schema from "./routes/Schema";
 import Table from "./routes/Table";
 import RunsList from "./routes/RunsList";
@@ -25,7 +26,7 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route index element={<Home />} />
           <Route path="db" element={<Navigate to="/" replace />} />
-          <Route path="db/:profile" element={<Home />} />
+          <Route path="db/:profile" element={<Database />} />
           <Route path="db/:profile/:schema" element={<Schema />} />
           <Route path="db/:profile/:schema/:table" element={<Table />} />
           <Route path="runs" element={<RunsList />} />

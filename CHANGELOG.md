@@ -6,6 +6,51 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added / Fixed — `/visualize` skip-restore + database page + history-store enable + favicon (UI overhaul, PR 12)
+
+Five follow-up items in one PR (one — schema-only LLM generate —
+deferred to the next pass because it needs an LLM call helper, not a
+trivial UI tweak).
+
+* **Favicon source fixed.** The previous PRs wrote
+  `amx/web/static/favicon.svg` directly, but Vite copies its build
+  source from `frontend/public/favicon.svg` on every build, so the
+  amber pixel-art mark kept reverting. The Vite source is now the
+  pixel-art "AM" wordmark in AMX amber on warm-black.
+* **Skipped run-result rows can be restored.** Previously the only
+  way out of a skip was to re-run the analysis. New backend
+  endpoint \`POST /api/pending/restore\` accepts the row's full
+  shape (schema, table, column, chosen description, alternatives,
+  logprob) and pushes a `ReviewResult` back onto the pending queue;
+  the SPA's run-detail Results tab now renders skipped rows with a
+  warning-tinted alternative carousel — clicking any alternative
+  restores the row to pending with that text as the chosen value.
+* **Apply state actually settles.** After the apply worker emits
+  `job.done`, the SPA invalidates `pending`, `run-results`,
+  `recent-runs`, and `stats` queries twice (once immediately, then
+  again 1.2 s later) so the SQLite write that lands behind the SSE
+  terminal event still gets picked up. Status pills flip from
+  `queued` → `applied` consistently and the "Apply pending queue"
+  button becomes "Queue empty — all applied".
+* **Database / catalog page.** New route at `/db/:profile` (mounted
+  in `App.tsx`). Page header carries an inline `InlineEditText`
+  bound to `PUT /api/comments/database` so the user can write or
+  edit the database/catalog comment without leaving the SPA. The
+  Sidebar's `ScopeNode` now navigates to that page on every click
+  (whether activating a new scope or opening the active one).
+* **History-store enable from the SPA.** New backend endpoints
+  \`POST /api/admin/history-store/enable\` and
+  \`POST /api/admin/history-store/disable\` flip the config flags
+  (`history_store_enabled`, `history_store_profile`,
+  `history_store_schema`). The System page's Team history-store
+  card replaces the CLI-snippet hint with an inline form: pick a
+  DB profile from a dropdown, type the schema name, click Enable.
+  Active mode shows a Disable button. CLI wizard remains for the
+  full guided bootstrap (DB roles, connectivity check); this is
+  the fast path for users who already have a target profile.
+
+Backend test suite unchanged. Bundle rebuilt and vendored.
+
 ### Fixed / Changed — `/visualize` apply state + stats scope + history-store card (UI overhaul, PR 11)
 
 Three follow-up items.

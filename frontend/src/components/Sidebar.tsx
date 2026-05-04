@@ -164,6 +164,7 @@ function ScopeNode({
 }) {
   const [collapsed, setCollapsed] = useState<boolean>(false);
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const activate = useMutation<unknown, Error, string>({
     mutationFn: (chosen: string) =>
@@ -176,6 +177,9 @@ function ScopeNode({
       queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
       queryClient.invalidateQueries({ queryKey: ["live-assets"] });
       queryClient.invalidateQueries({ queryKey: ["context"] });
+      // Land on the catalog/database page so the user can edit its
+      // own description and see the schema list at full width.
+      navigate("/db/active");
     },
   });
 
@@ -186,6 +190,9 @@ function ScopeNode({
       return;
     }
     setCollapsed((v) => !v);
+    // Already-active scope: clicking the row also opens its page so
+    // the user can reach the description editor without expanding.
+    navigate("/db/active");
   }
 
   const expanded = isActive && !collapsed;

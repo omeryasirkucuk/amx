@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, ConfigDict, Field
 
 from amx.cli_support.commands.doctor import collect_doctor_checks
 from amx.config import AMXConfig
@@ -98,6 +99,50 @@ def catalog_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     snap["llm_ready"] = bool(cfg.llm.provider and cfg.llm.model)
     snap["ready"] = bool(int(snap.get("entities", {}).get("total_entities", 0) or 0) > 0)
     return snap
+
+
+class EnableHistoryStoreRequest(BaseModel):
+    """Body for ``POST /api/admin/history-store/enable`` — minimal
+    enable flow: pick the DB profile to dual-write to, name the
+    target schema, flip the config flag. Bootstrap of the schema
+    tables happens lazily on the next /run when the dual-write
+    store first opens its connection."""
+
+    profile: str = Field(..., min_length=1)
+    schema_: str = Field(default="AMX", alias="schema")
+    database: str = Field(default="")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.post("/admin/history-store/enable")
+def enable_history_store(
+    body: EnableHistoryStoreRequest,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Toggle dual-write history-store mode on."""
+    cfg.history_store_enabled = True
+    cfg.history_store_profile = body.profile
+    cfg.history_store_schema = body.schema_ or "AMX"
+    cfg.history_store_database = body.database or ""
+    cfg.save()
+    return {
+        "enabled": True,
+        "profile": cfg.history_store_profile,
+        "schema": cfg.history_store_schema,
+        "database": cfg.history_store_database,
+    }
+
+
+@router.post("/admin/history-store/disable")
+def disable_history_store(
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Toggle dual-write history-store mode off; runs revert to
+    local-only writes immediately."""
+    cfg.history_store_enabled = False
+    cfg.save()
+    return {"enabled": False}
 
 
 @router.get("/admin/history-store-status")
