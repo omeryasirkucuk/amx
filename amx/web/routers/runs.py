@@ -46,6 +46,7 @@ from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
 from amx.pending_review import load_pending, save_pending
 from amx.storage.sqlite_store import history_store
+from amx.utils.console import quiet_console
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import tracker as token_tracker
 from amx.web.deps import get_cfg, get_jobs
@@ -241,6 +242,15 @@ def _run_worker(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     Cancellation: ``job.cancel`` is checked between tables so a long
     multi-schema run can be aborted cleanly mid-flight.
     """
+    # quiet_console() silences the CLI Rich console (info / success /
+    # warn / error + console.print) for this worker thread. Everything
+    # the agents normally print to the parent REPL terminal is now
+    # routed through SSE events to the browser instead.
+    with quiet_console():
+        _run_worker_body(cfg, job, body)
+
+
+def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     job.status = "running"
     run_started = time.monotonic()
     token_tracker.reset()
@@ -366,13 +376,22 @@ def _run_worker(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     )
                     continue
                 processed_assets.append(asset_path)
+                # Pull the persisted alternatives for THIS table so
+                # the live SPA shows the same per-column richness the
+                # CLI's Rich preview does. Cheap one-shot fetch:
+                # filtering by (schema, table) in Python is fine since
+                # run_results.* for a single table is small.
+                column_details = _column_details_for_table(hs, run_id, schema, table)
                 emit(
                     job.queue,
                     "activity.complete",
                     {
                         "idx": idx_global,
                         "detail": f"{len(table_results)} suggestion(s)",
-                        "results": [_review_result_to_event(r) for r in table_results],
+                        "schema": schema,
+                        "table": table,
+                        "results": column_details
+                        or [_review_result_to_event(r) for r in table_results],
                     },
                 )
     except RunCancelled:
@@ -483,6 +502,43 @@ def _fail_job(job: Job, message: str) -> None:
     job.ended_at = time.time()
     emit(job.queue, "activity.fail", {"idx": 0, "detail": message})
     emit_terminal(job.queue, "job.failed", {"error": message})
+
+
+def _column_details_for_table(
+    hs: Any, run_id: int | None, schema: str, table: str
+) -> list[dict[str, Any]]:
+    """Fetch all run_results rows for one table and shape them for SSE.
+
+    Returns empty list when the history store isn't available (fresh
+    CLI session) — caller falls back to a simpler preview-only shape.
+    """
+    if hs is None or run_id is None:
+        return []
+    try:
+        rows = hs.get_run_results(int(run_id))
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("schema_name") != schema or row.get("table_name") != table:
+            continue
+        alt_raw = row.get("alternatives_json")
+        alternatives: list[Any] = alt_raw if isinstance(alt_raw, list) else []
+        out.append(
+            {
+                "result_id": row.get("id"),
+                "schema": row.get("schema_name"),
+                "table": row.get("table_name"),
+                "column": row.get("column_name"),
+                "asset_kind": row.get("asset_kind") or "table",
+                "confidence": row.get("confidence") or "medium",
+                "logprob_score": row.get("logprob_score"),
+                "alternatives": alternatives,
+                "chosen_description": row.get("chosen_description") or "",
+                "source": row.get("source") or "",
+            }
+        )
+    return out
 
 
 def _review_result_to_event(r: ReviewResult) -> dict[str, Any]:

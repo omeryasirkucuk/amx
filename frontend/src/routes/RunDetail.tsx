@@ -68,12 +68,31 @@ export default function RunDetail() {
   );
 }
 
+interface ColumnDetail {
+  result_id: number | null;
+  schema: string;
+  table: string;
+  column: string | null;
+  asset_kind: string;
+  confidence: string;
+  logprob_score: number | null;
+  alternatives: unknown;
+  chosen_description: string;
+  source?: string;
+}
+
+interface ActivityRow {
+  idx: number;
+  label: string;
+  status: "running" | "done" | "failed";
+  detail?: string;
+  results?: ColumnDetail[];
+}
+
 function LiveRunStream({ jobId }: { jobId: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [activities, setActivities] = useState<
-    Array<{ idx: number; label: string; status: "running" | "done" | "failed"; detail?: string }>
-  >([]);
+  const [activities, setActivities] = useState<ActivityRow[]>([]);
   const [resolvedRunId, setResolvedRunId] = useState<number | null>(null);
   const [scope, setScope] = useState<Record<string, string[]>>({});
 
@@ -99,10 +118,17 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           },
         ]);
       } else if (t === "activity.complete") {
+        const rawResults = Array.isArray(event.results) ? event.results : [];
+        const results = rawResults as ColumnDetail[];
         setActivities((curr) =>
           curr.map((a) =>
             a.idx === Number(event.idx)
-              ? { ...a, status: "done", detail: String(event.detail ?? "") }
+              ? {
+                  ...a,
+                  status: "done",
+                  detail: String(event.detail ?? ""),
+                  results,
+                }
               : a,
           ),
         );
@@ -190,14 +216,25 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           ) : (
             <ul className="divide-y divide-surface-border">
               {activities.map((a) => (
-                <li
-                  key={a.idx}
-                  className="flex items-center gap-3 px-5 py-2.5 text-sm"
-                >
-                  <ActivityDot status={a.status} />
-                  <span className="font-mono">{a.label}</span>
-                  {a.detail && (
-                    <span className="ml-auto text-xs text-ink-muted">{a.detail}</span>
+                <li key={a.idx} className="px-5 py-2.5 text-sm">
+                  <div className="flex items-center gap-3">
+                    <ActivityDot status={a.status} />
+                    <span className="font-mono">{a.label}</span>
+                    {a.detail && (
+                      <span className="ml-auto text-xs text-ink-muted">
+                        {a.detail}
+                      </span>
+                    )}
+                  </div>
+                  {a.results && a.results.length > 0 && (
+                    <div className="mt-3 space-y-2 border-l border-surface-border pl-4">
+                      {a.results.map((r, idx) => (
+                        <ColumnSuggestionCard
+                          key={r.result_id ?? `${a.idx}-${idx}`}
+                          detail={r}
+                        />
+                      ))}
+                    </div>
                   )}
                 </li>
               ))}
@@ -212,6 +249,76 @@ function LiveRunStream({ jobId }: { jobId: string }) {
       </Card>
     </>
   );
+}
+
+function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
+  const alts = normalizeAlternatives(detail.alternatives);
+  const tone =
+    detail.confidence === "high"
+      ? "positive"
+      : detail.confidence === "low"
+        ? "warning"
+        : "neutral";
+  return (
+    <div className="rounded-md border border-surface-border bg-surface p-3">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-xs">
+          {detail.column ?? <em className="text-ink-dim">(table)</em>}
+        </span>
+        <StatusPill tone={tone}>{detail.confidence}</StatusPill>
+        {detail.logprob_score != null && (
+          <span className="font-mono text-[10px] text-ink-dim">
+            logprob {detail.logprob_score.toFixed(3)}
+          </span>
+        )}
+        {detail.source && (
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">
+            {detail.source}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 space-y-1">
+        {alts.length === 0 ? (
+          <div className="text-xs text-ink-dim">{detail.chosen_description || "—"}</div>
+        ) : (
+          alts.map((alt, idx) => {
+            const isChosen =
+              alt === detail.chosen_description || (idx === 0 && !detail.chosen_description);
+            return (
+              <div
+                key={idx}
+                className={cn(
+                  "rounded border px-2 py-1 text-xs",
+                  isChosen
+                    ? "border-accent/40 bg-accent-soft/30 text-ink"
+                    : "border-surface-border text-ink-muted",
+                )}
+              >
+                <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
+                  {String.fromCharCode(65 + idx)}
+                </span>
+                {alt}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function normalizeAlternatives(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      out.push(entry);
+    } else if (entry && typeof entry === "object") {
+      const desc = (entry as { description?: unknown }).description;
+      if (typeof desc === "string") out.push(desc);
+    }
+  }
+  return out;
 }
 
 function ActivityDot({ status }: { status: "running" | "done" | "failed" }) {
