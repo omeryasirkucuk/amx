@@ -76,6 +76,22 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
     without us having to regex-classify the question.
     """
     db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or "(active database)"
+    db_unpinned_hint = ""
+    if not (cfg.db.database or cfg.db.catalog or cfg.db.project):
+        backend = (cfg.db.backend or "").lower()
+        if backend in {"databricks", "bigquery"}:
+            db_unpinned_hint = (
+                "  ⚠ No catalog/project is pinned for this profile. Call list_catalogs "
+                "before list_schemas, or pass `catalog` to list_schemas / "
+                "list_tables_in_schema. Listing schemas without a catalog will fail with "
+                "NO_SUCH_CATALOG_EXCEPTION on Databricks Unity Catalog."
+            )
+        elif backend:
+            db_unpinned_hint = (
+                "  ⚠ No database is pinned for this profile. Call list_server_databases "
+                "to discover what's available, then ask the user to switch via /use-db or "
+                "pin one with /edit."
+            )
     schema_line = (
         ", ".join(schema_hint)
         if schema_hint
@@ -105,7 +121,8 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         "You are AMX's metadata-search assistant. Answer the user's question by calling the "
         "tools available to you. NEVER guess; ALWAYS ground every claim in a tool result.\n\n"
         f"Active database: {db_name}\n"
-        f"Schemas in this DB: {schema_line}\n"
+        + (f"{db_unpinned_hint}\n" if db_unpinned_hint else "")
+        + f"Schemas in this DB: {schema_line}\n"
         f"User's pinned schema: {current_schema}\n"
         f"User's pinned table: {current_table}\n"
         f"User's language preference: {metadata_lang}\n"
@@ -120,7 +137,19 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         "  call list_tables_in_schema with that exact schema. The user said 'tables', not\n"
         "  'a table named X'.\n"
         "* User asks 'which schemas / what schemas / how many schemas' → call list_schemas.\n"
+        "  If list_schemas comes back with `needs_catalog=true` (3-level backend whose\n"
+        "  active profile has no catalog pinned), DO NOT report 'no schemas found' — call\n"
+        "  list_catalogs (or pass the most likely catalog into list_schemas as the\n"
+        "  `catalog` argument) and recurse. The `catalogs` field already lists what's\n"
+        "  visible. Same applies for list_tables_in_schema: pass `catalog` to scope the\n"
+        "  listing when the profile is unpinned.\n"
         "* User asks 'which databases / hangi veritabanları' → call list_databases.\n"
+        "* User asks 'which catalogs / hangi cataloglar / show catalogs' → call list_catalogs.\n"
+        "  Same tool also rescues 'show me tables' on a catalog-less Databricks profile.\n"
+        "* User asks 'which databases live on this server / show databases / hangi\n"
+        "  databaseler var bu sunucuda' on a 2-level backend (PostgreSQL, Snowflake,\n"
+        "  MySQL, MSSQL, Redshift, ClickHouse) → call list_server_databases. Different\n"
+        "  from list_databases (which lists AMX DB profiles).\n"
         "* User asks 'tables with boolean columns' / 'date columns' / 'all int columns' → \n"
         "  call find_columns_by_dtype with the type token. NEVER fall back to\n"
         "  search_columns_by_concept for dtype questions; concept search matches NAMES, not types.\n"
