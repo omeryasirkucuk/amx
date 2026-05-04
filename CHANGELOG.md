@@ -6,6 +6,51 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/use-db` and `/remove-db-profile` now make the shared run-history host explicit
+
+The shared run-history is pinned to whichever DB profile the user
+passed to `/history-store enable`, not to the *active* DB profile.
+That distinction was not surfaced anywhere in the CLI, so users who
+switched the active scope with `/use-db` to a different profile
+reasonably worried that history was now writing to the wrong place,
+or worse, that switching had detached the store. It hadn't — but the
+silence was the bug.
+
+Two UX hardenings:
+
+1. **`/use-db` now prints a one-line confirmation** when the chosen
+   active profile differs from `cfg.history_store_profile`:
+
+   ```
+   Shared run-history is still hosted on profile 'A' (this switch
+   does not detach it). Run `/history-store status` to inspect.
+   ```
+
+   Suppressed when host == active (no point restating the obvious).
+   This is text-only — no behavior change to the switch itself.
+
+2. **`/remove-db-profile <host>` now leads with the headline and
+   reassures about local data**, plus offers to drain a non-empty
+   outbox to the remote backend before the profile vanishes:
+
+   - `Heads up — shared run-history is enabled on this profile.`
+     (was buried mid-paragraph)
+   - `Your local run history (~/.amx/history.db) stays intact. Past
+     runs and events created on this machine remain queryable via
+     /history-runs after deletion.` (new — addresses the "did I
+     just lose my data?" reflex)
+   - The shared remote schema reassurance stays.
+   - When `pending_count() > 0`, the prompt asks `Flush them to the
+     remote backend before deleting? (Recommended)` (default Yes)
+     and reuses the existing `_action_flush(cfg)` plumbing. Any rows
+     still queued after flush are reported, but do not block delete.
+   - Final confirm prompt remains default-No, so accidental Enter
+     never destroys a host profile.
+
+No change to `cmd_use` /`set_active_db_profile*`, `init_history_store`,
+or the bootstrap path — switching has always been non-destructive,
+this commit just makes that visible.
+
 ### Fixed — Shared-history bootstrap warning no longer floods the terminal with SQL
 
 User report (against 0.12.4): every slash command in an interactive
