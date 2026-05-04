@@ -55,12 +55,19 @@ def infer_table_metadata(
 
     db = DatabaseConnector(cfg.db)
     llm = LLMProvider(cfg.llm)
+    # When the user has set ``rag_llm_profile`` (via /use-rag-llm) we
+    # build a second provider pinned to that profile so the RAG agent
+    # uses it instead of the global one. Identity check vs cfg.llm —
+    # effective_rag_llm() returns the same object when no override.
+    rag_cfg = cfg.effective_rag_llm()
+    rag_llm = LLMProvider(rag_cfg) if rag_cfg is not cfg.llm else None
     orch = Orchestrator(
         db,
         llm,
         rag_store=rag_store,
         code_report=code_report,
         search_profile=cfg.active_db_profile or "default",
+        rag_llm=rag_llm,
     )
     results = orch.process_table(schema, table, interactive_review=False)
     return [asdict(r) for r in results]

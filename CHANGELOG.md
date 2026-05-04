@@ -6,6 +6,62 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/use-rag-llm` lets the RAG agent run on a different LLM profile
+
+Until now every agent in AMX (Profile, Code, RAG) shared a single
+`active_llm_profile`. Users who wanted to pair a small/cheap model
+for RAG retrieval-grounded summarisation with a larger model for the
+main run had to swap the active profile back and forth. The new
+`rag_llm_profile` config field decouples the RAG agent from the
+global LLM choice.
+
+User-visible:
+
+- `/use-rag-llm` — interactive picker over `cfg.llm_profiles` plus a
+  leading `(none)` entry that means "fall back to the active
+  profile". Inline form: `/use-rag-llm <name>`. Pass any of
+  `none / off / clear / default / -` to clear the override.
+- `/llm-profiles` table now shows two marks: `*` (active) and `R`
+  (RAG override). The header reads
+  `LLM profiles (* = active, R = RAG override)`. A footer line
+  spells out the current state in plain English so the marks alone
+  are never load-bearing.
+
+Behaviour:
+
+- Empty / unset (default): RAG keeps using `cfg.llm` exactly as
+  before — zero behaviour change for existing configs.
+- Set to a real profile: `Orchestrator` and the standalone RAG path
+  (`/doc-analyze`) build a second `LLMProvider` pinned to that
+  profile and wire it into `RAGAgent`. `ProfileAgent` and `CodeAgent`
+  continue to use the global LLM.
+- Set to a deleted profile: silently falls back to the active
+  profile via `cfg.effective_rag_llm()`. The dangling value is also
+  scrubbed at load time so the YAML self-heals on the next save.
+- `/remove-llm-profile <name>` clears `rag_llm_profile` when the
+  removed name matches, so deleting the override target never leaves
+  a ghost reference.
+
+Persistence:
+
+- `rag_llm_profile: str = ""` added to `AMXConfig` next to
+  `active_llm_profile`, included in `_PERSISTED_FIELDS`, written and
+  read by `save()` / `load()`. Old configs missing the field load as
+  empty (no override).
+
+Helper:
+
+- `AMXConfig.effective_rag_llm()` returns the LLMConfig the RAG
+  agent should use right now — single source of truth for callers.
+  Identity-equal to `cfg.llm` when there is no override, so callers
+  gate on `rag_cfg is not cfg.llm` to avoid building a redundant
+  `LLMProvider` in the no-override path.
+
+`tests/test_rag_llm_profile.py` pins the contract: fallback when
+unset, fallback when dangling, removal clears the override, YAML
+round-trip, dangling self-heal on load, and the orchestrator wiring
+itself.
+
 ### Changed — `/use-db` and `/remove-db-profile` now make the shared run-history host explicit
 
 The shared run-history is pinned to whichever DB profile the user
