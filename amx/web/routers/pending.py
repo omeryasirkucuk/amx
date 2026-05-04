@@ -22,6 +22,7 @@ from amx.agents.base import Confidence
 from amx.agents.orchestrator import ReviewResult
 from amx.config import AMXConfig
 from amx.pending_review import clear_pending, load_pending, save_pending
+from amx.storage.sqlite_store import history_store
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import JobRegistry
 from amx.web.routers.runs import ApplyRequest, _apply_worker
@@ -43,7 +44,29 @@ class PendingPatch(BaseModel):
     asset_kind: str | None = None
 
 
-def _serialize(rr: ReviewResult, idx: int) -> dict[str, Any]:
+def _serialize(
+    rr: ReviewResult,
+    idx: int,
+    *,
+    enrichment: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Serialize one ReviewResult for the SPA.
+
+    ``enrichment`` is an optional ``{result_id: run_results_row}`` map
+    that backfills fields ``load_pending()`` can't reconstruct from the
+    flat JSON file (alternatives_json, logprob_score, source). The SPA
+    needs the alternatives so the user can swap which one is the
+    chosen description without leaving the page.
+    """
+    extra = enrichment.get(rr.result_id) if enrichment and rr.result_id is not None else None
+    alternatives = list(rr.alternatives or [])
+    logprob = rr.logprob_score
+    if extra is not None:
+        ext_alts = extra.get("alternatives_json")
+        if isinstance(ext_alts, list) and ext_alts and not alternatives:
+            alternatives = ext_alts
+        if logprob is None and extra.get("logprob_score") is not None:
+            logprob = extra.get("logprob_score")
     return {
         "idx": idx,
         "schema": rr.schema,
@@ -57,9 +80,48 @@ def _serialize(rr: ReviewResult, idx: int) -> dict[str, Any]:
         "applied": bool(rr.applied),
         "asset_kind": rr.asset_kind,
         "result_id": rr.result_id,
-        "alternatives": list(rr.alternatives or []),
-        "logprob_score": rr.logprob_score,
+        "alternatives": alternatives,
+        "logprob_score": logprob,
     }
+
+
+def _build_enrichment_map(rows: list[ReviewResult]) -> dict[int, dict[str, Any]]:
+    """Fetch ``run_results`` rows for every pending entry's ``result_id``.
+
+    The pending JSON file only stores ``final_description`` (the chosen
+    one). Alternatives + logprob live in the run_results SQLite table,
+    keyed by id. We do ONE iteration over the history to build a
+    {result_id: row} index so /api/pending stays a single GET.
+    """
+    needed = {int(r.result_id) for r in rows if r.result_id is not None}
+    if not needed:
+        return {}
+    hs = history_store()
+    if hs is None:
+        return {}
+    out: dict[int, dict[str, Any]] = {}
+    # Walk recent runs until we've covered every needed result_id.
+    # Cheap bound: pending entries always come from a recent run, so
+    # 50 runs is enough headroom; bump if real workloads outgrow it.
+    try:
+        recent = hs.list_recent_runs(limit=50)
+    except Exception:
+        return {}
+    for run in recent:
+        run_id = run.get("id") if isinstance(run, dict) else getattr(run, "id", None)
+        if run_id is None:
+            continue
+        try:
+            run_rows = hs.get_run_results(int(run_id))
+        except Exception:
+            continue
+        for row in run_rows:
+            rid = row.get("id")
+            if isinstance(rid, int) and rid in needed:
+                out[rid] = row
+        if needed.issubset(out.keys()):
+            break
+    return out
 
 
 @router.get("")
@@ -67,8 +129,9 @@ def list_pending() -> dict[str, Any]:
     """Return the on-disk pending queue with stable ``idx`` markers
     so PATCH/DELETE callers can target rows by position."""
     rows = list(load_pending())
+    enrichment = _build_enrichment_map(rows)
     return {
-        "pending": [_serialize(r, i) for i, r in enumerate(rows)],
+        "pending": [_serialize(r, i, enrichment=enrichment) for i, r in enumerate(rows)],
         "count": len(rows),
     }
 

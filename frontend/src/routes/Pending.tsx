@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Inbox, Play, Trash2, X } from "lucide-react";
+import { Check, Inbox, Play, Trash2, X } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
@@ -19,6 +19,9 @@ interface PendingRow {
   confidence: string;
   source: string;
   asset_kind: string;
+  result_id: number | null;
+  alternatives: unknown[];
+  logprob_score: number | null;
 }
 
 interface PendingResponse {
@@ -48,6 +51,15 @@ export default function Pending() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["pending"] }),
   });
 
+  const patchMutation = useMutation({
+    mutationFn: (vars: { idx: number; final_description: string }) =>
+      apiFetch(`/api/pending/${vars.idx}`, {
+        method: "PATCH",
+        body: JSON.stringify({ final_description: vars.final_description }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["pending"] }),
+  });
+
   async function handleApply() {
     setSubmitError(null);
     try {
@@ -66,7 +78,7 @@ export default function Pending() {
       <PageHeader
         eyebrow="Review"
         title="Pending review"
-        description="Approved suggestions awaiting write-back. Edit, reject, or apply the queue."
+        description="Approved suggestions awaiting write-back. Pick a different alternative, drop a row, or apply the whole queue."
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -119,7 +131,7 @@ export default function Pending() {
       <Card>
         <CardHeader
           title={`${pending.data?.count ?? 0} entr${pending.data?.count === 1 ? "y" : "ies"}`}
-          description="Edit a row inline, drop it from the queue with the × button, or apply the whole queue at once."
+          description="Click an alternative letter (A/B/C…) to swap which one becomes the chosen description. The × removes that row from the queue."
         />
         <CardBody className="p-0">
           {pending.isLoading ? (
@@ -129,63 +141,155 @@ export default function Pending() {
               {(pending.error as Error).message}
             </div>
           ) : pending.data?.pending?.length ? (
-            <table className="w-full text-sm">
-              <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
-                <tr>
-                  <th className="px-5 py-2 text-left font-semibold">Asset</th>
-                  <th className="px-5 py-2 text-left font-semibold">Description</th>
-                  <th className="px-5 py-2 text-left font-semibold">Confidence</th>
-                  <th className="px-5 py-2 text-left font-semibold">Source</th>
-                  <th className="w-10 px-5 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {pending.data.pending.map((row) => (
-                  <tr key={row.idx} className={cn(row.idx % 2 ? "bg-surface-subtle/30" : "")}>
-                    <td className="px-5 py-2 font-mono text-xs">
-                      <div>{`${row.schema}.${row.table}`}</div>
-                      {row.column && <div className="text-ink-dim">{row.column}</div>}
-                    </td>
-                    <td className="max-w-md px-5 py-2 text-ink-muted">
-                      {row.final_description}
-                    </td>
-                    <td className="px-5 py-2">
-                      <StatusPill
-                        tone={
-                          row.confidence === "high"
-                            ? "positive"
-                            : row.confidence === "low"
-                              ? "warning"
-                              : "accent"
-                        }
-                      >
-                        {row.confidence}
-                      </StatusPill>
-                    </td>
-                    <td className="px-5 py-2 text-xs text-ink-dim">{row.source}</td>
-                    <td className="px-5 py-2 text-right">
-                      <button
-                        type="button"
-                        onClick={() => removeMutation.mutate(row.idx)}
-                        className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
-                        title="Remove from queue"
-                      >
-                        <X size={14} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ul className="divide-y divide-surface-border">
+              {pending.data.pending.map((row) => (
+                <PendingItem
+                  key={row.idx}
+                  row={row}
+                  onRemove={() => removeMutation.mutate(row.idx)}
+                  onPick={(description) =>
+                    patchMutation.mutate({
+                      idx: row.idx,
+                      final_description: description,
+                    })
+                  }
+                  isPicking={patchMutation.isPending}
+                />
+              ))}
+            </ul>
           ) : (
             <EmptyState
               icon={Inbox}
               title="Queue is empty"
-              description="Approved descriptions land here when /run-apply or /apply marks rows for write-back."
+              description="Approved descriptions land here when /run finishes or /apply marks rows for write-back."
             />
           )}
         </CardBody>
       </Card>
     </>
   );
+}
+
+function PendingItem({
+  row,
+  onRemove,
+  onPick,
+  isPicking,
+}: {
+  row: PendingRow;
+  onRemove: () => void;
+  onPick: (description: string) => void;
+  isPicking: boolean;
+}) {
+  const alternatives = normalizeAlternatives(row.alternatives);
+  // Always include the chosen description in the visible set, even if
+  // it doesn't match any saved alternative (e.g. user typed a custom one).
+  const visible = alternatives.includes(row.final_description)
+    ? alternatives
+    : [row.final_description, ...alternatives];
+
+  return (
+    <li className="px-5 py-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-mono">{`${row.schema}.${row.table}`}</span>
+            {row.column && (
+              <span className="font-mono text-ink-dim">.{row.column}</span>
+            )}
+            <span className="ml-2">
+              <StatusPill
+                tone={
+                  row.confidence === "high"
+                    ? "positive"
+                    : row.confidence === "low"
+                      ? "warning"
+                      : "accent"
+                }
+              >
+                {row.confidence}
+              </StatusPill>
+            </span>
+            {row.logprob_score != null && (
+              <span className="font-mono text-[10px] text-ink-dim">
+                logprob {row.logprob_score.toFixed(3)}
+              </span>
+            )}
+            <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">
+              {row.source || row.asset_kind}
+            </span>
+          </div>
+
+          <div className="mt-2 space-y-1">
+            {visible.map((alt, idx) => {
+              const isChosen = alt === row.final_description;
+              return (
+                <button
+                  key={`${row.idx}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    if (!isChosen && !isPicking) onPick(alt);
+                  }}
+                  disabled={isChosen || isPicking}
+                  className={cn(
+                    "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition",
+                    isChosen
+                      ? "border-accent/40 bg-accent-soft/30 text-ink"
+                      : "border-surface-border text-ink-muted hover:border-accent/30 hover:bg-surface-subtle/40 hover:text-ink",
+                    isPicking && "opacity-60",
+                  )}
+                  title={isChosen ? "This is the chosen alternative" : "Make this the chosen alternative"}
+                >
+                  <span
+                    className={cn(
+                      "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold",
+                      isChosen
+                        ? "bg-accent text-accent-soft"
+                        : "bg-surface text-ink-dim",
+                    )}
+                  >
+                    {isChosen ? <Check size={10} /> : String.fromCharCode(65 + idx)}
+                  </span>
+                  <span className="leading-relaxed">{alt}</span>
+                </button>
+              );
+            })}
+            {visible.length === 1 && (
+              <p className="px-1 text-[10px] text-ink-dim">
+                Only one alternative was saved for this row. Run again with
+                a higher <code>n_alternatives</code> setting to surface more.
+              </p>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
+          title="Remove from queue"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function normalizeAlternatives(raw: unknown[]): string[] {
+  const out: string[] = [];
+  for (const entry of raw ?? []) {
+    if (typeof entry === "string") {
+      out.push(entry);
+    } else if (entry && typeof entry === "object") {
+      const desc = (entry as { description?: unknown }).description;
+      if (typeof desc === "string") out.push(desc);
+    }
+  }
+  // Deduplicate while preserving order.
+  const seen = new Set<string>();
+  return out.filter((d) => {
+    if (seen.has(d)) return false;
+    seen.add(d);
+    return true;
+  });
 }

@@ -54,6 +54,36 @@ covering the new contract (no LLM configured → fails fast; empty
 scope → fails fast). Existing apply tests + 116 web tests stay
 green. Full suite: 820 passed.
 
+Follow-ups (same PR) after the user smoke-tested:
+
+* **CLI terminal stays clean during web-triggered runs.** Previously
+  the agents' Rich `console.print` / `info` / `success` / `warn`
+  output bled into the parent CLI window even though the same
+  events were streaming over SSE — confusing because the run was
+  visibly "happening in CLI" instead of in the browser. New
+  `quiet_console()` context manager in `amx/utils/console.py` flips
+  a per-thread flag that turns the four print helpers into no-ops
+  and wraps the global `console` in a `_ConsoleProxy` that routes
+  to a null sink while the worker thread is active. Other threads
+  (the CLI REPL itself, other tabs) keep their full output.
+* **`activity.complete` now ships every column's full alternatives
+  list, not just a 160-char preview.** The web run worker fetches
+  the just-saved `run_results` rows for the table that finished and
+  attaches the persisted alternatives + chosen description +
+  logprob to the SSE event. The browser's `LiveRunStream`
+  renders a per-column card with all alternatives (lettered A/B/C…)
+  underneath each table activity, so the user sees the same
+  richness the CLI's Rich preview shows.
+* **Pending page surfaces every alternative + lets the user swap
+  the chosen one.** Previously each pending row only displayed the
+  single `final_description` from `~/.amx/pending_metadata.json`.
+  `GET /api/pending` now joins each row to the persisted
+  `run_results.alternatives_json` via `result_id` so the SPA gets
+  the full list. The Pending route renders alternatives as
+  click-to-pick buttons; clicking a different one PATCHes
+  `final_description` and the next Apply writes that variant to
+  the live DB.
+
 ### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, missing database picker for 2-level backends, and one-database-only sidebar
 
 Eight user-reported issues against the visualizer surface, fixed in
