@@ -6,6 +6,45 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` Settings page with full DB / LLM / Docs / Code wizards (Stage 3)
+
+The Settings page used to list profiles read-only and tell the user
+to "run /add-db-profile from the CLI" for everything else. Stage 3
+brings the four CLI wizards (`/add-db-profile`, `/add-llm-profile`,
+`/add-doc-profile`, `/add-code-profile`) into the browser.
+
+* **DB wizard** with backend picker (postgresql / mysql / snowflake /
+  databricks / bigquery / oracle / mssql / redshift / clickhouse /
+  duckdb). Each backend renders the right per-engine fields (HTTP path
+  + access token + catalog for Databricks, account + warehouse + role
+  for Snowflake, project + dataset + credentials path for BigQuery,
+  …). Edit reuses the same modal with secrets masked as `********`
+  and treated as "leave existing alone" on save (same Enter-to-keep
+  idiom the CLI uses). New `GET /api/profiles/db/backends` exposes
+  the catalog + per-backend hints so the SPA stays in sync if a new
+  backend lands.
+* **LLM wizard** with provider picker (openai / anthropic / gemini /
+  deepseek / openrouter / kimi / databricks_serving / ollama /
+  generic OpenAI-compatible) plus the full advanced section the CLI
+  asks separately: temperature, n_alternatives, column_batch_size,
+  prompt_detail, description_verbosity, logprob thresholds. The form
+  conditionally surfaces `api_key` and `api_base` based on each
+  provider's hints (Ollama needs base, no key; Databricks Serving
+  needs both; etc.). New `GET /api/profiles/llm/providers` for the
+  provider catalog.
+* **Docs wizard** (one-textarea-per-line for paths) backed by the new
+  `PUT /api/profiles/docs/{name}` / `DELETE` / `POST {name}/activate`
+  endpoints. Each doc profile groups multiple sources (local dirs,
+  https URLs, s3 / gcs prefixes) that the RAG agent ingests.
+* **Code wizard** (single path or Git URL) backed by
+  `PUT /api/profiles/code/{name}` / `DELETE` / `POST {name}/activate`.
+* **Tabbed Settings page**: Database | LLM | Docs | Code, each with
+  list + Add button + per-row Activate / Edit / Delete. The DB tab
+  retains the existing Test connection flow.
+* New shared `Modal` component so all four wizards feel identical;
+  Escape closes, click-outside closes, body scroll is locked while
+  open.
+
 ### Added — `/visualize` can now drive a `/run` end-to-end (Stage 2)
 
 The visualizer's Run lifecycle was previously a 501 stub: clicking
