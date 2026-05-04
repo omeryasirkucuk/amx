@@ -2,6 +2,7 @@ import { Link, NavLink } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
+  Activity,
   Check,
   ChevronDown,
   Database,
@@ -24,6 +25,7 @@ const navItems = [
   { to: "/ask", label: "Ask", icon: Sparkles },
   { to: "/pending", label: "Pending", icon: Inbox },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
+  { to: "/system", label: "System", icon: Activity },
 ];
 
 // Persistent top bar. Renders the active DB / LLM "pills" so the

@@ -355,8 +355,19 @@ def _render_results(results: list[CheckResult]) -> int:
 # ── Command implementation ──────────────────────────────────────────────────
 
 
-def run_doctor(cfg: AMXConfig, *, skip_network: bool = False) -> int:
-    """Run every diagnostic and render the report. Returns the exit code."""
+def collect_doctor_checks(
+    cfg: AMXConfig,
+    *,
+    skip_network: bool = False,
+) -> list[CheckResult]:
+    """Build the diagnostic check list without rendering it.
+
+    Shared between the CLI's ``run_doctor`` (which renders the list as
+    a Rich report) and the visualizer's ``GET /api/doctor`` endpoint
+    (which JSON-encodes it). Splitting render from collect keeps the
+    two surfaces in lock-step without each pulling in the other's
+    Rich dependency.
+    """
     results: list[CheckResult] = []
     results.append(_check_amx_version())
     results.append(_check_python_version())
@@ -370,7 +381,12 @@ def run_doctor(cfg: AMXConfig, *, skip_network: bool = False) -> int:
     if not skip_network:
         results.append(_check_active_db_profile(cfg))
         results.append(_check_active_llm_profile(cfg))
-    return _render_results(results)
+    return results
+
+
+def run_doctor(cfg: AMXConfig, *, skip_network: bool = False) -> int:
+    """Run every diagnostic and render the report. Returns the exit code."""
+    return _render_results(collect_doctor_checks(cfg, skip_network=skip_network))
 
 
 def register_doctor_command(
@@ -405,7 +421,12 @@ def register_doctor_command(
 
 
 # Re-export for tests / direct invocation.
-__all__ = ["CheckResult", "register_doctor_command", "run_doctor"]
+__all__ = [
+    "CheckResult",
+    "collect_doctor_checks",
+    "register_doctor_command",
+    "run_doctor",
+]
 
 
 # Backwards-compatible alias kept for symmetry with `shutil.which` usage
