@@ -1304,7 +1304,15 @@ def run_interactive_session(
             except SystemExit:
                 pass
             except Exception as exc:  # pragma: no cover
-                error(f"Command failed: {exc}")
+                # Surface the exception type alongside the message so a
+                # bare ``[Errno 2] No such file or directory`` actually
+                # tells the user it's a FileNotFoundError. Set
+                # ``AMX_DEBUG=1`` for the full traceback when triaging.
+                error(f"Command failed: {type(exc).__name__}: {exc}")
+                if os.environ.get("AMX_DEBUG"):
+                    import traceback as _tb
+
+                    _tb.print_exc()
             finally:
                 if previous is None:
                     os.environ.pop("AMX_SESSION_CHILD", None)

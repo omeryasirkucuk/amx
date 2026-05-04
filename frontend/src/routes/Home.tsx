@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { api } from "../lib/api";
+import { cn } from "../lib/cn";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
@@ -162,8 +163,16 @@ function StatCard({
   value: string;
   tone: "neutral" | "accent" | "positive";
 }) {
+  // Long technical identifiers (LLM model slugs, hostnames) are
+  // common here — we never want to truncate mid-token. Use a fluid
+  // type ramp + 2-line clamp + word-break so identifiers wrap, and
+  // surface the full value in a tooltip for very long ones.
+  const isLong = value.length > 18;
   return (
-    <div className="rounded-xl border border-surface-border bg-surface-raised p-4 shadow-card">
+    <div
+      className="rounded-xl border border-surface-border bg-surface-raised p-4 shadow-card"
+      title={isLong ? value : undefined}
+    >
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
           {label}
@@ -175,7 +184,19 @@ function StatCard({
           }
         />
       </div>
-      <div className="mt-2 truncate font-mono text-lg text-ink">{value}</div>
+      <div
+        className={cn(
+          "mt-2 font-mono leading-snug tabular-nums text-ink",
+          // Two-line clamp instead of truncate so a value like
+          // "moonshotai/kimi-k2-instruct" wraps cleanly.
+          "line-clamp-2 break-all",
+          // Smaller font when value is long; preserve the visual
+          // weight of short numeric values like "12" or "—".
+          isLong ? "text-sm" : "text-lg",
+        )}
+      >
+        {value}
+      </div>
     </div>
   );
 }

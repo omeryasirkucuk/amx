@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { Database, FileText, Layers, Table as TableIcon } from "lucide-react";
 
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
@@ -22,7 +22,16 @@ export default function Schema() {
   const assets = useQuery({
     queryKey: ["live-assets", schema],
     queryFn: () => api.liveAssets(schema),
+    retry: false,
   });
+  const needsCatalog =
+    assets.error instanceof ApiError &&
+    assets.error.status === 412 &&
+    assets.error.hint === "select-catalog";
+  const needsDatabase =
+    assets.error instanceof ApiError &&
+    assets.error.status === 412 &&
+    assets.error.hint === "select-database";
 
   return (
     <>
@@ -52,6 +61,10 @@ export default function Schema() {
         <CardBody className="p-0">
           {assets.isLoading ? (
             <div className="px-5 py-6 text-sm text-ink-dim">Loading assets…</div>
+          ) : needsCatalog ? (
+            <CatalogPickerInline />
+          ) : needsDatabase ? (
+            <DatabasePickerInline />
           ) : assets.error ? (
             <div className="px-5 py-6 text-sm text-critical">
               {(assets.error as Error).message}
@@ -92,4 +105,126 @@ function AssetIcon({ kind }: { kind: string }) {
   if (kind === "view") return <FileText size={14} className="text-positive" />;
   if (kind === "materialized_view") return <Layers size={14} className="text-warning" />;
   return <TableIcon size={14} className="text-accent" />;
+}
+
+function CatalogPickerInline() {
+  const queryClient = useQueryClient();
+  const catalogs = useQuery({
+    queryKey: ["live-catalogs"],
+    queryFn: () => api.liveCatalogs(),
+    retry: false,
+  });
+  const activate = useMutation({
+    mutationFn: (name: string) => api.activateCatalog(name, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["live-catalogs"] });
+      queryClient.invalidateQueries({ queryKey: ["live-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
+      queryClient.invalidateQueries({ queryKey: ["context"] });
+    },
+  });
+  const list = catalogs.data?.catalogs ?? [];
+
+  return (
+    <div className="px-5 py-6">
+      <div className="flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-medium text-ink">No catalog selected.</p>
+          <p className="mt-1 text-xs text-ink-muted">
+            This backend exposes multiple catalogs. Pick one below — your choice
+            will be persisted to the active DB profile.
+          </p>
+        </div>
+        {catalogs.isLoading ? (
+          <div className="text-xs text-ink-dim">Loading catalogs…</div>
+        ) : list.length === 0 ? (
+          <div className="text-xs text-critical">
+            No catalogs visible. Check your DB profile credentials.
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {list.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => activate.mutate(name)}
+                disabled={activate.isPending}
+                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition hover:border-accent/40 hover:text-ink disabled:opacity-50"
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
+        {activate.isError && (
+          <p className="text-xs text-critical">
+            {activate.error instanceof Error
+              ? activate.error.message
+              : "Activation failed."}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DatabasePickerInline() {
+  const queryClient = useQueryClient();
+  const databases = useQuery({
+    queryKey: ["live-databases"],
+    queryFn: () => api.liveDatabases(),
+    retry: false,
+  });
+  const activate = useMutation({
+    mutationFn: (name: string) => api.activateDatabase(name, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["live-databases"] });
+      queryClient.invalidateQueries({ queryKey: ["live-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
+      queryClient.invalidateQueries({ queryKey: ["context"] });
+    },
+  });
+  const list = databases.data?.databases ?? [];
+
+  return (
+    <div className="px-5 py-6">
+      <div className="flex flex-col gap-3">
+        <div>
+          <p className="text-sm font-medium text-ink">No database selected.</p>
+          <p className="mt-1 text-xs text-ink-muted">
+            The active profile didn't pin a database. Pick one below — your
+            choice will be persisted so you don't have to repeat it.
+          </p>
+        </div>
+        {databases.isLoading ? (
+          <div className="text-xs text-ink-dim">Loading databases…</div>
+        ) : list.length === 0 ? (
+          <div className="text-xs text-critical">
+            No databases visible. Check your DB profile credentials.
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {list.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => activate.mutate(name)}
+                disabled={activate.isPending}
+                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-xs text-ink-muted transition hover:border-accent/40 hover:text-ink disabled:opacity-50"
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        )}
+        {activate.isError && (
+          <p className="text-xs text-critical">
+            {activate.error instanceof Error
+              ? activate.error.message
+              : "Activation failed."}
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }

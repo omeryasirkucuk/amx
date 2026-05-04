@@ -65,14 +65,33 @@ def test_get_session_404_when_missing(client, auth_headers, stub_session_store) 
 
 def test_get_session_returns_turns(client, auth_headers, stub_session_store) -> None:
     stub_session_store.get_session.return_value = {"id": 7, "title": "t"}
-    stub_session_store.get_session_turns = MagicMock(
-        return_value=[{"role": "user", "content": "hi"}]
+    stub_session_store.recent_turns = MagicMock(
+        return_value=[
+            {
+                "role": "user",
+                "question": "hi",
+                "answer_summary": "",
+                "turn_index": 0,
+                "created_at": 1.0,
+            },
+            {
+                "role": "assistant",
+                "question": "",
+                "answer_summary": "hello!",
+                "turn_index": 1,
+                "created_at": 2.0,
+            },
+        ]
     )
     response = client.get("/api/ask/sessions/7", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["session"]["id"] == 7
-    assert payload["turns"][0]["content"] == "hi"
+    assert len(payload["turns"]) == 2
+    assert payload["turns"][0]["role"] == "user"
+    assert payload["turns"][0]["question"] == "hi"
+    assert payload["turns"][1]["role"] == "assistant"
+    assert payload["turns"][1]["answer_summary"] == "hello!"
 
 
 def test_submit_ask_returns_404_for_unknown_job_after_finish(
@@ -83,6 +102,51 @@ def test_submit_ask_returns_404_for_unknown_job_after_finish(
     JobRegistry refactor can't silently regress it."""
     response = client.post("/api/ask/unknown/cancel", headers=auth_headers)
     assert response.status_code == 404
+
+
+def test_ask_worker_emits_thinking_as_true_deltas(
+    client, auth_headers, monkeypatch, stub_session_store
+) -> None:
+    """The provider streams CUMULATIVE reasoning text on each callback
+    (the CLI display takes a tail of it), but the SSE consumer in the
+    browser appends each event into a buffer. The router must convert
+    the cumulative stream into incremental deltas before emitting,
+    otherwise the user sees ``TheThe userThe user is…``."""
+    from amx.search.tool_agent import ToolAgentResult
+
+    stub_session_store.start_session.return_value = 1
+    stub_session_store.append_user_turn.return_value = None
+
+    def fake_run_tool_agent(**kwargs):
+        cb = kwargs["on_thinking_delta"]
+        cb("The")
+        cb("The user")
+        cb("The user is asking")
+        return ToolAgentResult(
+            answer="ok",
+            tool_calls=[],
+            iterations=1,
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(ask_router, "run_tool_agent", fake_run_tool_agent)
+    monkeypatch.setattr(ask_router, "_load_catalog", lambda: MagicMock())
+    monkeypatch.setattr(ask_router, "LLMProvider", lambda cfg: MagicMock())
+
+    submit = client.post(
+        "/api/ask",
+        headers=auth_headers,
+        json={"question": "test"},
+    )
+    job_id = submit.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+    events = _drain_sse(client, f"/api/ask/{job_id}/events", auth_headers)
+    deltas = [e["text"] for e in events if e.get("type") == "thinking.delta"]
+    # Backend gets cumulative ("The", "The user", "The user is asking")
+    # but emits the new suffix only — joining them must reproduce the
+    # original cumulative text exactly once.
+    assert "".join(deltas) == "The user is asking"
 
 
 def test_ask_worker_streams_thinking_and_answer(
@@ -130,6 +194,47 @@ def test_ask_worker_streams_thinking_and_answer(
     assert "tool.call" in types
     assert "answer.final" in types
     assert types[-1] == "job.done"
+
+
+def test_ask_worker_persists_assistant_turn_with_correct_kwargs(
+    client, auth_headers, monkeypatch, stub_session_store
+) -> None:
+    """The worker used to call ``append_assistant_turn(answer=…)`` —
+    but the store signature is ``append_assistant_turn(*, run_id,
+    answer_summary)``. The TypeError was swallowed by a bare except
+    and assistant turns silently disappeared. Pin the kwargs."""
+    from amx.search.tool_agent import ToolAgentResult
+
+    stub_session_store.start_session.return_value = 99
+    stub_session_store.append_user_turn.return_value = None
+    stub_session_store.append_assistant_turn.return_value = None
+
+    def fake_run_tool_agent(**kwargs):
+        return ToolAgentResult(
+            answer="hello there",
+            tool_calls=[],
+            iterations=1,
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(ask_router, "run_tool_agent", fake_run_tool_agent)
+    monkeypatch.setattr(ask_router, "_load_catalog", lambda: MagicMock())
+    monkeypatch.setattr(ask_router, "LLMProvider", lambda cfg: MagicMock())
+
+    submit = client.post(
+        "/api/ask",
+        headers=auth_headers,
+        json={"question": "hi"},
+    )
+    job_id = submit.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    stub_session_store.append_assistant_turn.assert_called_once()
+    args, kwargs = stub_session_store.append_assistant_turn.call_args
+    assert args == (99,)
+    assert kwargs["answer_summary"] == "hello there"
+    assert kwargs["run_id"] is None
 
 
 def test_ask_worker_failed_when_catalog_missing(
