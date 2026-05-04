@@ -17,7 +17,6 @@ import {
 import { api } from "../lib/api";
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
-import ThemeToggle from "./ThemeToggle";
 import CommandPalette from "./CommandPalette";
 import IconButton from "./ui/IconButton";
 import Tooltip from "./ui/Tooltip";
@@ -76,12 +75,10 @@ export default function TopBar() {
         />
         <Link
           to="/"
-          className="group flex items-center gap-2 rounded-md px-1 -mx-1 hover:bg-surface-subtle"
+          aria-label="AMX home"
+          className="group flex items-center rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
         >
-          <Logo size={20} className="text-ink" />
-          <span className="font-mono text-sm font-bold tracking-tight text-ink">
-            amx
-          </span>
+          <Logo size={16} />
         </Link>
         {crumbs.length > 0 && (
           <nav aria-label="Breadcrumb" className="hidden md:flex">
@@ -164,7 +161,6 @@ export default function TopBar() {
             />
           )}
           <CommandPalette />
-          <ThemeToggle />
         </div>
       </div>
     </header>

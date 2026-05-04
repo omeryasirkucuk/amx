@@ -13,6 +13,7 @@ import {
   AlertDialog,
   Button,
   IconButton,
+  InfoHint,
   Skeleton,
   Tooltip,
   useToast,
@@ -313,8 +314,12 @@ function PendingItem({
               {row.confidence}
             </StatusPill>
             {row.logprob_score != null && (
-              <span className="font-mono text-[10px] text-ink-dim">
+              <span className="inline-flex items-center gap-1 font-mono text-[10px] text-ink-dim">
                 logprob {row.logprob_score.toFixed(3)}
+                <InfoHint
+                  size={10}
+                  text="Average log-probability the model assigned to its chosen description. Higher (closer to 0) = more confident; very negative = the model was guessing."
+                />
               </span>
             )}
             <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">

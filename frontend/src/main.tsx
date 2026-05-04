@@ -5,17 +5,12 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
 import { captureTokenFromUrl } from "./lib/auth";
-import { applyTheme, readStoredTheme } from "./lib/theme";
 import "./styles/index.css";
 
 // Capture the bearer token before the React tree mounts so the very
 // first /api/* fetch already has it. The launcher embeds the token
 // as `?t=<token>` on the URL the browser tab opens.
 captureTokenFromUrl();
-
-// Apply the persisted theme synchronously before React paints so the
-// page never flashes the wrong palette on dark-mode users.
-applyTheme(readStoredTheme());
 
 // Treat /api/* responses as cacheable for 30s — most pages re-render
 // repeatedly while the user is exploring (asset tree expansions,

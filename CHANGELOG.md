@@ -6,6 +6,55 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/visualize` first-pass feedback (UI overhaul, PR 5)
+
+User-driven follow-up batch on top of the four-PR overhaul. Six
+items in one PR, each independently small but together they sand
+the rougher edges that surfaced once the new look was actually in
+use.
+
+* **Classic AMX wordmark restored as a pixel-art logo.** The
+  3-bar monogram + lowercase "amx" wordmark introduced in PR 2 are
+  replaced by a 5×7 pixel-font reconstruction of the original
+  README banner ("AMX" in blocky pixels), painted in the AMX
+  amber via `currentColor`. Lives at
+  `frontend/src/components/brand/Logo.tsx`; the wordmark `<span>`
+  next to it in the TopBar is gone.
+* **`StatCard` typography fixed.** The previous `value.length > 18`
+  branch swung between `text-[22px]` and `text-sm`, making short
+  values like `postgresql` look comically large next to long ones
+  like `moonshotai/kimi-k2-thinking`. Now every tile uses a single
+  `text-[18px]` ramp with a 2-line clamp + `break-all` for long
+  values; cards have a fixed `min-h-[88px]` so the grid stays
+  level.
+* **"Recent runs" rows are humanised.** Raw command identifiers
+  (`analyze.run`) and the meaningless `(no scope)` label are gone.
+  A new `frontend/src/lib/runDisplay.ts` maps commands to readable
+  labels (`Schema description`, `Apply changes`, `Ask query`, …)
+  and turns scope objects into `sales · 12 tables` /
+  `3 schemas · 47 tables` / `All schemas`. Applied in both the
+  Home dashboard feed and the `/runs` DataTable. Status badges
+  also drop `ready_for_review` for the shorter `ready`.
+* **Light theme removed; visualizer is now dark-only.** The
+  light-mode token block, `lib/theme.ts`, and the `ThemeToggle`
+  component are deleted. `:root` carries the dark palette; the
+  TopBar loses the sun/moon icon. Less surface to maintain, no
+  contrast budget to balance, and the dark variant always read
+  better anyway.
+* **Footer pointing at `amxcli.com`.** A new
+  `frontend/src/components/Footer.tsx` sits inside the main
+  canvas (so it scrolls with content, not below the sidebar) with
+  a tiny pixel logo, an MIT/open-source hint, and an external
+  link to the docs site. Mounted by `AppShell`.
+* **`InfoHint` primitive added** at
+  `frontend/src/components/ui/InfoHint.tsx` — an 11px circled
+  "i" wired to the existing `Tooltip` primitive. Placed sparsely
+  (Home stat cards, every System card title, the Pending row's
+  `logprob` chip) so non-obvious technical terms get an
+  explanation on hover/focus without cluttering the UI.
+
+No backend or API changes. Bundle rebuilt and vendored.
+
 ### Changed — `/visualize` monolith breakup + RunDetail/Ask/System polish (UI overhaul, PR 4/4)
 
 Final slice of the visualizer overhaul. Wraps up the four-PR design

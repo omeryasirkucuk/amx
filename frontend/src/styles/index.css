@@ -2,51 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-/* AMX visualizer design tokens.
-   Warm-neutral palette + amber accent. CSS custom properties power
+/* AMX visualizer design tokens — dark-only.
+   Warm-neutral surfaces + amber accent. CSS custom properties power
    both Tailwind classes (theme.extend.colors) and a small set of
-   ad-hoc utilities. The .dark variant ships matching tokens so the
-   theme toggle is a single class swap on <html>. */
+   ad-hoc utilities. The visualizer is intentionally single-theme so
+   the palette can be tuned without juggling two contrast budgets. */
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 
-  /* Warm-gray surfaces (Stone family). Avoids the generic blue-tinted
-     "modern SaaS" feel of the previous slate palette. */
-  --bg: 250 250 249;
-  --surface: 255 255 255;
-  --surface-subtle: 244 244 242;
-  --surface-raised: 255 255 255;
-  --border: 231 229 228;
-  --border-strong: 214 211 209;
-
-  --ink: 28 25 23;
-  --ink-muted: 87 83 78;
-  --ink-dim: 168 162 158;
-
-  /* Amber accent — AMX signature. Replaces indigo. */
-  --accent: 194 65 12;
-  --accent-soft: 255 237 213;
-  --accent-ink: 154 52 18;
-
-  --positive: 21 128 61;
-  --positive-soft: 220 252 231;
-  --warning: 161 98 7;
-  --warning-soft: 254 243 199;
-  --critical: 185 28 28;
-  --critical-soft: 254 226 226;
-  --info: 14 116 144;
-  --info-soft: 207 250 254;
-
-  /* Motion scale — small, purposeful. Sub-200ms for hover/focus,
-     ~200ms for layout transitions. Components honour
-     prefers-reduced-motion via a global utility below. */
-  --motion-fast: 120ms;
-  --motion-base: 180ms;
-  --motion-slow: 240ms;
-  --ease-out: cubic-bezier(0.2, 0, 0, 1);
-}
-
-.dark {
   --bg: 15 15 14;
   --surface: 26 25 24;
   --surface-subtle: 19 17 15;
@@ -70,6 +33,12 @@
   --critical-soft: 69 10 10;
   --info: 34 211 238;
   --info-soft: 8 51 68;
+
+  /* Motion scale — small, purposeful. */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
 }
 
 html, body, #root {
@@ -88,7 +57,6 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Quiet scrollbars — desktop browsers; mobile uses native overlay. */
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -106,7 +74,6 @@ body {
   background-clip: content-box;
 }
 
-/* Reduced-motion users get instant transitions. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -114,7 +81,6 @@ body {
   }
 }
 
-/* Subtle pulse for live status dots (running/queued jobs). */
 @keyframes amx-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
@@ -123,7 +89,6 @@ body {
   animation: amx-pulse 1.6s var(--ease-out) infinite;
 }
 
-/* Skeleton shimmer for loading states. */
 @keyframes amx-shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
