@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { History } from "lucide-react";
+import { History, PlayCircle } from "lucide-react";
 
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
@@ -21,6 +21,15 @@ export default function RunsList() {
         eyebrow="History"
         title="Runs"
         description="Every /run, /run-apply, and /ask invocation, newest first."
+        actions={
+          <Link
+            to="/runs/new"
+            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90"
+          >
+            <PlayCircle size={14} />
+            New run
+          </Link>
+        }
       />
       <Card>
         <CardHeader
