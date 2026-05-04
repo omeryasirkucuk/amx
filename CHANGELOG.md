@@ -6,6 +6,38 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — first-class `databricks_serving` LLM provider
+
+User report 2026-05-04: connecting Databricks Foundation Model Serving
+required users to pick the `local` provider, manually compute
+`https://<workspace>/serving-endpoints` for `api_base`, and stash a
+PAT in `OPENAI_API_KEY` — every step a footgun and the wizard had no
+hint that any of it was needed.
+
+`databricks_serving` is now a first-class entry in the `/llm` wizard's
+provider picker. Picking it changes the prompts to:
+
+* `Serving endpoint name` (e.g. `databricks-meta-llama-3-1-70b-instruct`,
+  `databricks-dbrx-instruct`, or any custom serving endpoint name).
+* `Databricks workspace host` (the same hostname the DB profile uses
+  for the SQL warehouse). The wizard normalises pasted URLs (strips
+  `https://`, trailing slash, accidental path) and auto-builds
+  `api_base = https://<host>/serving-endpoints`.
+* `Databricks personal access token (PAT)` — stored in `api_key` and
+  forwarded via the `DATABRICKS_TOKEN` env var (does not collide with
+  any `OPENAI_API_KEY` already in the shell).
+
+`_normalized_api_base("databricks_serving", …)` is also tolerant when
+the saved profile contains the workspace URL with or without the
+`/serving-endpoints` suffix — it converges to the canonical form on
+every call.
+
+Coverage: `tests/test_databricks_serving_provider.py` (10 tests)
+covers the provider registration, `api_base` normalisation across
+host / URL / pre-suffixed inputs, model-name de-prefixing
+(`openai/<endpoint>` → `<endpoint>`), and the wizard end-to-end with
+mocked prompts.
+
 ### Fixed — Databricks gpt-oss / OpenAI Responses-style structured `content` no longer crashes the LLM call
 
 User report 2026-05-04: a Databricks Foundation Model Serving endpoint
