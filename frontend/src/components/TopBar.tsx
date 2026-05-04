@@ -12,6 +12,8 @@ import {
 import { api } from "../lib/api";
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
+import ThemeToggle from "./ThemeToggle";
+import CommandPalette from "./CommandPalette";
 
 const navItems = [
   { to: "/", label: "Browse", icon: Database, end: true },
@@ -84,6 +86,8 @@ export default function TopBar() {
               {item.label}
             </NavLink>
           ))}
+          <CommandPalette />
+          <ThemeToggle />
         </nav>
       </div>
     </header>
