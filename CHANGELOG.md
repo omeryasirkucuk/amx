@@ -6,6 +6,40 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` System page: doctor, token usage, catalog status (Stage 5)
+
+Three admin views the visualizer was missing — `amx doctor`,
+`/usage`, and `/search status` — now render in the browser.
+
+* **`GET /api/doctor`** runs every check the CLI's `amx doctor`
+  runs (PATH conflicts, Python version, config schema, optional
+  deps, active DB / LLM connectivity) and returns the same
+  `CheckResult` shape as JSON. Refactored
+  `cli_support/commands/doctor.py` to expose
+  `collect_doctor_checks(...)` so render and JSON share the same
+  source of truth — adding a new check shows up on both surfaces
+  simultaneously. `?skip_network=true` mirrors the CLI flag.
+* **`GET /api/usage?window=...`** aggregates token consumption +
+  approximate cost per (provider, model) over today / 24h / 7d /
+  30d / all. Pricing runs through the same `_PRICING_PER_MTOK`
+  lookup the CLI uses, so the two surfaces stay in lock-step.
+* **`GET /api/catalog/status`** surfaces the entity / description
+  counts + last sync timestamp + recent sync jobs that
+  `/search status` prints, plus an `llm_ready` flag.
+* New **`/system` route** with three cards: Doctor (re-run + skip
+  network toggle), Usage (window selector + per-row cost + grand
+  totals footer), Search catalog (status pills + entity /
+  descriptions / settings KV blocks). New System nav item in the
+  top bar.
+* Sync + rebuild are intentionally out of scope here — they need a
+  scope picker UI to pick the right tables. Stage 6 / 7 wires
+  those.
+
+Test coverage: 7 new in `tests/web/test_system_ops.py` covering
+doctor serialisation, the `skip_network` flag, usage aggregation /
+window filtering / empty-store fallback, and the catalog status
+"not initialised" + "ready" branches.
+
 ### Fixed — `/edit` "Bulk by table" no longer surfaces columns and no longer dies on a stale catalog
 
 User report 2026-05-04: picking `world.City` in the `/edit` →
