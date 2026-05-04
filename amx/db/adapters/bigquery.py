@@ -98,6 +98,12 @@ class BigQueryAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _null_count_expr(self, quoted_col: str) -> str:
+        return f"COUNTIF({quoted_col} IS NULL)"
+
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        return f"{agg}(CAST({quoted_col} AS STRING))"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

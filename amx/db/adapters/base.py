@@ -141,13 +141,74 @@ class DatabaseAdapter(ABC):
 
     @abstractmethod
     def column_stats_sql(self, fqn: str, quoted_col: str) -> str:
-        """SQL returning (null_count, distinct_count, min_text, max_text)."""
+        """SQL returning (null_count, distinct_count, min_text, max_text).
+
+        Used as the per-column fallback when ``column_stats_bulk_sql``
+        fails for a given table. Kept for backwards compatibility with
+        existing tests; new code paths prefer the bulk variant.
+        """
         ...
 
     @abstractmethod
     def column_sample_sql(self, fqn: str, quoted_col: str) -> str:
         """SQL returning up to :lim distinct non-null text samples."""
         ...
+
+    # ── Bulk column-stats: helpers + default builder ─────────────────────
+    #
+    # The per-column ``column_stats_sql`` issues one query per column. On
+    # warehouse-billed backends (Databricks/Snowflake/BigQuery) every one
+    # is a full table scan that bills compute, so a 300-column table
+    # racks up 300 scans. ``column_stats_bulk_sql`` builds a single
+    # SELECT that returns the same null/distinct/min/max for every
+    # column, so the warehouse only sees one scan no matter how wide
+    # the table is.
+    #
+    # Aliases follow a positional schema: column ``i`` gets
+    # ``c{i}_null``, ``c{i}_dist``, ``c{i}_min``, ``c{i}_max`` (4
+    # values per column). The connector parses by index, not by name,
+    # so column names with weird characters can't break the result
+    # parsing.
+
+    def _null_count_expr(self, quoted_col: str) -> str:
+        """SQL fragment counting NULLs in a column. Default: ANSI FILTER."""
+        return f"COUNT(*) FILTER (WHERE {quoted_col} IS NULL)"
+
+    def _distinct_count_expr(self, quoted_col: str) -> str:
+        """SQL fragment counting distinct values. Default: COUNT(DISTINCT)."""
+        return f"COUNT(DISTINCT {quoted_col})"
+
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        """SQL fragment for ``MIN(col)`` / ``MAX(col)`` cast to text.
+
+        Default casts the column inside the aggregate
+        (``MIN(col::text)``). Backends like Oracle that prefer the
+        outer-cast form (``TO_CHAR(MIN(col))``) override this.
+        """
+        return f"{agg}(CAST({quoted_col} AS VARCHAR))"
+
+    def column_stats_bulk_sql(self, fqn: str, quoted_cols: list[str]) -> str:
+        """Build a single query that computes stats for many columns.
+
+        Returns a SELECT that, when executed, yields one row of
+        ``len(quoted_cols) * 4`` values: for column at index ``i`` the
+        slice ``[i*4 : i*4 + 4]`` is ``(null_count, distinct_count,
+        min_text, max_text)``.
+
+        The connector chunks ``quoted_cols`` into batches before
+        calling this so that very wide tables don't blow the SQL text
+        cap or stress per-query memory on engines that build a hash
+        per ``COUNT(DISTINCT)``.
+        """
+        if not quoted_cols:
+            raise ValueError("column_stats_bulk_sql requires at least one column")
+        parts: list[str] = []
+        for i, qc in enumerate(quoted_cols):
+            parts.append(f"{self._null_count_expr(qc)} AS c{i}_null")
+            parts.append(f"{self._distinct_count_expr(qc)} AS c{i}_dist")
+            parts.append(f"{self._aggregate_text_expr('MIN', qc)} AS c{i}_min")
+            parts.append(f"{self._aggregate_text_expr('MAX', qc)} AS c{i}_max")
+        return "SELECT " + ", ".join(parts) + f" FROM {fqn}"
 
     # ── Table-level statistics ────────────────────────────────────────────
 

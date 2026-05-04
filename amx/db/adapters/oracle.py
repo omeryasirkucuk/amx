@@ -217,6 +217,13 @@ class OracleAdapter(DatabaseAdapter):
             f") WHERE ROWNUM <= :lim"
         )
 
+    def _null_count_expr(self, quoted_col: str) -> str:
+        return f"SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END)"
+
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        # Oracle's existing path uses ``TO_CHAR(MIN(col))`` outer-cast.
+        return f"TO_CHAR({agg}({quoted_col}))"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

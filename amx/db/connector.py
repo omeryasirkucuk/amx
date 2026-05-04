@@ -680,62 +680,32 @@ class DatabaseConnector:
             msg = f"Profiling failed for {schema}.{table}: {actionable}"
             raise ProfilingError(schema, table, msg) from exc
 
+        # Build the ColumnProfile list first; we need it indexed before
+        # the bulk stats query so we can map result-row positions back
+        # to columns.
         for col_info in raw_cols:
             col_name = col_info["name"]
-            quoted_col = adapter.quote_identifier(col_name)
             cp = ColumnProfile(
                 name=col_name,
                 dtype=str(col_info["type"]),
                 nullable=col_info.get("nullable", True),
                 row_count=profile.row_count,
             )
-
-            if scan_column_stats or scan_samples:
-                try:
-                    with self.engine.connect() as conn:
-                        if scan_column_stats:
-                            stats_sql = adapter.column_stats_sql(fqn, quoted_col)
-                            col_stats = conn.execute(text(stats_sql)).fetchone()
-                            if col_stats:
-                                cp.null_count = col_stats[0] or 0
-                                cp.distinct_count = col_stats[1] or 0
-                                cp.min_val = col_stats[2]
-                                cp.max_val = col_stats[3]
-                                cp.cardinality_ratio = (
-                                    float(cp.distinct_count) / float(cp.row_count)
-                                    if cp.row_count > 0
-                                    else 0.0
-                                )
-
-                        if scan_samples:
-                            sample_sql = adapter.column_sample_sql(fqn, quoted_col)
-                            samples_row = conn.execute(
-                                text(sample_sql), {"lim": effective_sample_size}
-                            ).fetchall()
-                            cp.samples = [r[0] for r in samples_row]
-                except Exception as exc:
-                    actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
-                        exc, backend=self.backend
-                    )
-                    if actionable:
-                        log.warning(
-                            "Skipping profile stats for %s.%s.%s: %s",
-                            schema,
-                            table,
-                            col_name,
-                            actionable,
-                        )
-                    else:
-                        log.warning(
-                            "Skipping profile stats for %s.%s.%s: %s",
-                            schema,
-                            table,
-                            col_name,
-                            exc,
-                        )
-
             cp.existing_comment = col_info.get("comment")
             profile.columns.append(cp)
+
+        if (scan_column_stats or scan_samples) and profile.columns:
+            self._collect_column_stats_and_samples(
+                schema=schema,
+                table=table,
+                fqn=fqn,
+                adapter=adapter,
+                column_profiles=profile.columns,
+                row_count=profile.row_count,
+                scan_column_stats=scan_column_stats,
+                scan_samples=scan_samples,
+                effective_sample_size=effective_sample_size,
+            )
 
         # Analytics metadata — best-effort populate of partition /
         # clustering / size / format / freshness / tags. Each adapter
@@ -763,6 +733,188 @@ class DatabaseConnector:
             )
 
         return profile
+
+    def _collect_column_stats_and_samples(
+        self,
+        *,
+        schema: str,
+        table: str,
+        fqn: str,
+        adapter: Any,
+        column_profiles: list[ColumnProfile],
+        row_count: int,
+        scan_column_stats: bool,
+        scan_samples: bool,
+        effective_sample_size: int,
+    ) -> None:
+        """Populate stats / samples on ``column_profiles`` in place.
+
+        Stats path uses one bulk query (``column_stats_bulk_sql``) per
+        chunk of N columns instead of one query per column — on a
+        300-column table this collapses 300 queries to 6 (at the
+        default batch size of 50). On a warehouse-billed backend
+        (Databricks/Snowflake/BigQuery) every query saved is one fewer
+        full-table scan. If the bulk query fails (rare — usually a
+        single column with a type the bulk cast can't handle),
+        per-column-fallback runs only for the unprofiled columns of
+        that batch, so a single bad column never masks the rest of
+        the table.
+
+        Sample path is still per-column for now — Phase 2 will collapse
+        it the same way (one bounded sample of the table, distill per
+        column in Python).
+        """
+        if scan_column_stats:
+            batch_size = max(
+                1,
+                int(getattr(self.cfg, "profiling_stats_batch_size", 50) or 50),
+            )
+            self._collect_bulk_stats(
+                schema=schema,
+                table=table,
+                fqn=fqn,
+                adapter=adapter,
+                column_profiles=column_profiles,
+                row_count=row_count,
+                batch_size=batch_size,
+            )
+
+        if scan_samples and effective_sample_size > 0:
+            self._collect_per_column_samples(
+                schema=schema,
+                table=table,
+                fqn=fqn,
+                adapter=adapter,
+                column_profiles=column_profiles,
+                effective_sample_size=effective_sample_size,
+            )
+
+    def _collect_bulk_stats(
+        self,
+        *,
+        schema: str,
+        table: str,
+        fqn: str,
+        adapter: Any,
+        column_profiles: list[ColumnProfile],
+        row_count: int,
+        batch_size: int,
+    ) -> None:
+        """Run bulk stats query in chunks; fall back per-column on failure."""
+        for batch_start in range(0, len(column_profiles), batch_size):
+            batch = column_profiles[batch_start : batch_start + batch_size]
+            quoted_cols = [adapter.quote_identifier(cp.name) for cp in batch]
+            try:
+                bulk_sql = adapter.column_stats_bulk_sql(fqn, quoted_cols)
+                with self.engine.connect() as conn:
+                    row = conn.execute(text(bulk_sql)).fetchone()
+                if row is None:
+                    continue
+                for j, cp in enumerate(batch):
+                    base = j * 4
+                    cp.null_count = row[base] or 0
+                    cp.distinct_count = row[base + 1] or 0
+                    cp.min_val = row[base + 2]
+                    cp.max_val = row[base + 3]
+                    cp.cardinality_ratio = (
+                        float(cp.distinct_count) / float(row_count)
+                        if row_count > 0
+                        else 0.0
+                    )
+            except Exception as exc:
+                # Bulk failed — most likely one column in this batch has
+                # a type the cast can't handle. Retry per-column for
+                # this batch only; columns that fail individually get
+                # logged and skipped (the original behavior).
+                actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                    exc, backend=self.backend
+                )
+                log.debug(
+                    "Bulk column stats failed for %s.%s (batch %d-%d), "
+                    "falling back to per-column: %s",
+                    schema,
+                    table,
+                    batch_start,
+                    batch_start + len(batch) - 1,
+                    actionable or exc,
+                )
+                self._collect_per_column_stats_fallback(
+                    schema=schema,
+                    table=table,
+                    fqn=fqn,
+                    adapter=adapter,
+                    batch=batch,
+                    row_count=row_count,
+                )
+
+    def _collect_per_column_stats_fallback(
+        self,
+        *,
+        schema: str,
+        table: str,
+        fqn: str,
+        adapter: Any,
+        batch: list[ColumnProfile],
+        row_count: int,
+    ) -> None:
+        """Original one-query-per-column path. Used only on bulk failure."""
+        for cp in batch:
+            quoted_col = adapter.quote_identifier(cp.name)
+            try:
+                stats_sql = adapter.column_stats_sql(fqn, quoted_col)
+                with self.engine.connect() as conn:
+                    col_stats = conn.execute(text(stats_sql)).fetchone()
+                if col_stats:
+                    cp.null_count = col_stats[0] or 0
+                    cp.distinct_count = col_stats[1] or 0
+                    cp.min_val = col_stats[2]
+                    cp.max_val = col_stats[3]
+                    cp.cardinality_ratio = (
+                        float(cp.distinct_count) / float(row_count) if row_count > 0 else 0.0
+                    )
+            except Exception as exc:
+                actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                    exc, backend=self.backend
+                )
+                log.warning(
+                    "Skipping profile stats for %s.%s.%s: %s",
+                    schema,
+                    table,
+                    cp.name,
+                    actionable or exc,
+                )
+
+    def _collect_per_column_samples(
+        self,
+        *,
+        schema: str,
+        table: str,
+        fqn: str,
+        adapter: Any,
+        column_profiles: list[ColumnProfile],
+        effective_sample_size: int,
+    ) -> None:
+        """Per-column sample fetch. Replaced by bulk path in Phase 2."""
+        for cp in column_profiles:
+            quoted_col = adapter.quote_identifier(cp.name)
+            try:
+                sample_sql = adapter.column_sample_sql(fqn, quoted_col)
+                with self.engine.connect() as conn:
+                    samples_row = conn.execute(
+                        text(sample_sql), {"lim": effective_sample_size}
+                    ).fetchall()
+                cp.samples = [r[0] for r in samples_row]
+            except Exception as exc:
+                actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
+                    exc, backend=self.backend
+                )
+                log.warning(
+                    "Skipping sample collection for %s.%s.%s: %s",
+                    schema,
+                    table,
+                    cp.name,
+                    actionable or exc,
+                )
 
     def profile_entities(
         self,
