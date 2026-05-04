@@ -871,9 +871,7 @@ class DatabaseConnector:
                     cp.min_val = row[base + 2]
                     cp.max_val = row[base + 3]
                     cp.cardinality_ratio = (
-                        float(cp.distinct_count) / float(row_count)
-                        if row_count > 0
-                        else 0.0
+                        float(cp.distinct_count) / float(row_count) if row_count > 0 else 0.0
                     )
             except Exception as exc:
                 # Bulk failed — most likely one column in this batch has
