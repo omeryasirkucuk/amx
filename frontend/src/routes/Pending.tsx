@@ -1,14 +1,22 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Inbox, Play, Trash2, X } from "lucide-react";
+import { Check, Inbox, Play, Search, Trash2, X } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import JobProgress from "../components/JobProgress";
-import { Card, CardBody, CardHeader } from "../components/Card";
+import { Card, CardBody } from "../components/Card";
 import StatusPill from "../components/StatusPill";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
+import {
+  AlertDialog,
+  Button,
+  IconButton,
+  Skeleton,
+  Tooltip,
+  useToast,
+} from "../components/ui";
 
 interface PendingRow {
   idx: number;
@@ -31,8 +39,10 @@ interface PendingResponse {
 
 export default function Pending() {
   const qc = useQueryClient();
+  const toast = useToast();
   const [activeJob, setActiveJob] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [query, setQuery] = useState("");
 
   const pending = useQuery({
     queryKey: ["pending"],
@@ -43,12 +53,30 @@ export default function Pending() {
   const removeMutation = useMutation({
     mutationFn: (idx: number) =>
       apiFetch(`/api/pending/${idx}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["pending"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pending"] });
+      toast.push({ title: "Row removed", tone: "info", duration: 2200 });
+    },
   });
 
   const clearMutation = useMutation({
     mutationFn: () => apiFetch("/api/pending/clear", { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["pending"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pending"] });
+      toast.push({
+        title: "Pending queue cleared",
+        tone: "success",
+        duration: 2500,
+      });
+      setConfirmClear(false);
+    },
+    onError: (err: Error) => {
+      toast.push({
+        title: "Could not clear queue",
+        description: err.message,
+        tone: "error",
+      });
+    },
   });
 
   const patchMutation = useMutation({
@@ -61,44 +89,74 @@ export default function Pending() {
   });
 
   async function handleApply() {
-    setSubmitError(null);
     try {
       const res = await apiFetch<{ job_id: string }>("/api/pending/apply", {
         method: "POST",
         body: JSON.stringify({}),
       });
       setActiveJob(res.job_id);
+      toast.push({
+        title: "Apply started",
+        description: `${pending.data?.count ?? 0} ${pending.data?.count === 1 ? "row" : "rows"} streaming…`,
+        tone: "info",
+        duration: 2200,
+      });
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "Apply failed.");
+      toast.push({
+        title: "Apply failed",
+        description: err instanceof Error ? err.message : "Apply failed.",
+        tone: "error",
+      });
     }
   }
+
+  const filtered = useMemo(() => {
+    const list = pending.data?.pending ?? [];
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((row) => {
+      const haystack = [
+        row.schema,
+        row.table,
+        row.column ?? "",
+        row.final_description,
+        row.confidence,
+        row.asset_kind,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [pending.data?.pending, query]);
+
+  const total = pending.data?.count ?? 0;
+  const visibleCount = filtered.length;
 
   return (
     <>
       <PageHeader
-        eyebrow="Review"
         title="Pending review"
-        description="Approved suggestions awaiting write-back. Pick a different alternative, drop a row, or apply the whole queue."
+        breadcrumbs={[{ label: "Pending" }]}
         actions={
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => clearMutation.mutate()}
-              disabled={!pending.data?.count}
-              className="inline-flex items-center gap-1.5 rounded-md bg-surface-subtle px-3 py-1.5 text-sm text-ink-muted hover:bg-critical/10 hover:text-critical disabled:cursor-not-allowed disabled:opacity-50"
+            <Button
+              variant="subtle"
+              size="md"
+              leadingIcon={<Trash2 size={14} />}
+              disabled={!total}
+              onClick={() => setConfirmClear(true)}
             >
-              <Trash2 size={14} />
               Clear all
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Play size={14} />}
+              disabled={!total || (!!activeJob)}
               onClick={handleApply}
-              disabled={!pending.data?.count || (!!activeJob && !submitError)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Play size={14} />
-              Apply ({pending.data?.count ?? 0})
-            </button>
+              Apply ({total})
+            </Button>
           </div>
         }
       />
@@ -122,27 +180,58 @@ export default function Pending() {
         </div>
       )}
 
-      {submitError && (
-        <div className="mb-4 rounded-md border border-critical/40 bg-critical/5 p-3 text-sm text-critical">
-          {submitError}
-        </div>
-      )}
-
       <Card>
-        <CardHeader
-          title={`${pending.data?.count ?? 0} entr${pending.data?.count === 1 ? "y" : "ies"}`}
-          description="Click an alternative letter (A/B/C…) to swap which one becomes the chosen description. The × removes that row from the queue."
-        />
+        <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
+          <div className="text-sm text-ink-muted">
+            <span className="font-medium text-ink">
+              {pending.isLoading ? "—" : visibleCount}
+            </span>{" "}
+            {visibleCount === 1 ? "entry" : "entries"}
+            {query && total !== visibleCount && (
+              <span className="ml-2 text-xs text-ink-dim">
+                (of {total} total)
+              </span>
+            )}
+          </div>
+          <div className="relative flex h-8 min-w-[16rem] items-center rounded-md border border-border bg-surface-raised pl-2.5 pr-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+            <Search size={13} className="text-ink-dim" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search schema, table, or text…"
+              className="ml-1.5 h-full flex-1 bg-transparent text-sm text-ink placeholder:text-ink-dim focus:outline-none"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+                className="ml-1 rounded p-0.5 text-ink-dim hover:bg-surface-subtle hover:text-ink"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </header>
         <CardBody className="p-0">
           {pending.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
+            <ul className="divide-y divide-border">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <li key={i} className="px-5 py-3">
+                  <Skeleton className="h-3 w-1/3" />
+                  <Skeleton className="mt-2 h-3 w-full" />
+                  <Skeleton className="mt-1 h-3 w-4/5" />
+                </li>
+              ))}
+            </ul>
           ) : pending.error ? (
             <div className="px-5 py-6 text-sm text-critical">
               {(pending.error as Error).message}
             </div>
-          ) : pending.data?.pending?.length ? (
-            <ul className="divide-y divide-surface-border">
-              {pending.data.pending.map((row) => (
+          ) : filtered.length ? (
+            <ul className="divide-y divide-border">
+              {filtered.map((row) => (
                 <PendingItem
                   key={row.idx}
                   row={row}
@@ -157,15 +246,32 @@ export default function Pending() {
                 />
               ))}
             </ul>
+          ) : query ? (
+            <div className="px-5 py-6 text-sm text-ink-dim">
+              No rows match <span className="font-mono">"{query}"</span>.
+            </div>
           ) : (
-            <EmptyState
-              icon={Inbox}
-              title="Queue is empty"
-              description="Approved descriptions land here when /run finishes or /apply marks rows for write-back."
-            />
+            <div className="px-5 py-5">
+              <EmptyState
+                icon={Inbox}
+                title="Queue is empty"
+                description="Approved descriptions land here when /run finishes or /apply marks rows for write-back."
+                compact
+              />
+            </div>
           )}
         </CardBody>
       </Card>
+
+      <AlertDialog
+        open={confirmClear}
+        onClose={() => setConfirmClear(false)}
+        onConfirm={() => clearMutation.mutate()}
+        loading={clearMutation.isPending}
+        title="Clear the entire pending queue?"
+        description={`${total} ${total === 1 ? "row" : "rows"} will be removed without being written to the database. This action cannot be undone.`}
+        confirmLabel="Clear queue"
+      />
     </>
   );
 }
@@ -182,8 +288,6 @@ function PendingItem({
   isPicking: boolean;
 }) {
   const alternatives = normalizeAlternatives(row.alternatives);
-  // Always include the chosen description in the visible set, even if
-  // it doesn't match any saved alternative (e.g. user typed a custom one).
   const visible = alternatives.includes(row.final_description)
     ? alternatives
     : [row.final_description, ...alternatives];
@@ -192,24 +296,22 @@ function PendingItem({
     <li className="px-5 py-3">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="font-mono">{`${row.schema}.${row.table}`}</span>
             {row.column && (
               <span className="font-mono text-ink-dim">.{row.column}</span>
             )}
-            <span className="ml-2">
-              <StatusPill
-                tone={
-                  row.confidence === "high"
-                    ? "positive"
-                    : row.confidence === "low"
-                      ? "warning"
-                      : "accent"
-                }
-              >
-                {row.confidence}
-              </StatusPill>
-            </span>
+            <StatusPill
+              tone={
+                row.confidence === "high"
+                  ? "positive"
+                  : row.confidence === "low"
+                    ? "warning"
+                    : "accent"
+              }
+            >
+              {row.confidence}
+            </StatusPill>
             {row.logprob_score != null && (
               <span className="font-mono text-[10px] text-ink-dim">
                 logprob {row.logprob_score.toFixed(3)}
@@ -232,20 +334,24 @@ function PendingItem({
                   }}
                   disabled={isChosen || isPicking}
                   className={cn(
-                    "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition",
+                    "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-fast",
                     isChosen
-                      ? "border-accent/40 bg-accent-soft/30 text-ink"
-                      : "border-surface-border text-ink-muted hover:border-accent/30 hover:bg-surface-subtle/40 hover:text-ink",
+                      ? "border-accent/40 bg-accent-soft/40 text-ink"
+                      : "border-border text-ink-muted hover:border-accent/40 hover:bg-surface-subtle/50 hover:text-ink",
                     isPicking && "opacity-60",
                   )}
-                  title={isChosen ? "This is the chosen alternative" : "Make this the chosen alternative"}
+                  title={
+                    isChosen
+                      ? "This is the chosen alternative"
+                      : "Make this the chosen alternative"
+                  }
                 >
                   <span
                     className={cn(
                       "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold",
                       isChosen
-                        ? "bg-accent text-accent-soft"
-                        : "bg-surface text-ink-dim",
+                        ? "bg-accent text-white"
+                        : "bg-surface-subtle text-ink-dim",
                     )}
                   >
                     {isChosen ? <Check size={10} /> : String.fromCharCode(65 + idx)}
@@ -254,22 +360,16 @@ function PendingItem({
                 </button>
               );
             })}
-            {visible.length === 1 && (
-              <p className="px-1 text-[10px] text-ink-dim">
-                Only one alternative was saved for this row. Run again with
-                a higher <code>n_alternatives</code> setting to surface more.
-              </p>
-            )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="shrink-0 rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
-          title="Remove from queue"
-        >
-          <X size={14} />
-        </button>
+        <Tooltip content="Remove from queue">
+          <IconButton
+            icon={<X size={13} />}
+            label="Remove from queue"
+            size="sm"
+            onClick={onRemove}
+          />
+        </Tooltip>
       </div>
     </li>
   );
@@ -285,7 +385,6 @@ function normalizeAlternatives(raw: unknown[]): string[] {
       if (typeof desc === "string") out.push(desc);
     }
   }
-  // Deduplicate while preserving order.
   const seen = new Set<string>();
   return out.filter((d) => {
     if (seen.has(d)) return false;

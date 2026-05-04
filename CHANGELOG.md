@@ -6,6 +6,51 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/visualize` lists, forms, and skeleton loading (UI overhaul, PR 3/4)
+
+Third slice of the visualizer overhaul. Tackles the surfaces that
+were lowest-information and highest-friction: list pages that didn't
+scale past their first 50 rows, form submissions that gave no
+feedback, and the "Loading…" text strings that pre-paint every page.
+
+* **`DataTable` primitive.** New
+  `frontend/src/components/ui/DataTable.tsx` — generic over its row
+  type, hand-rolled (no `@tanstack/react-table` dep). Built-ins:
+  search input with clear button, filter chips with row counts,
+  click-to-sort columns (ascending → descending → unsorted), sticky
+  header, pagination footer, skeleton rows during load, and a
+  configurable empty-state slot. ~50 LOC of consumer code per route.
+* **`RunsList` → DataTable.** Search by id, command, or scope; chip
+  filters for `Succeeded` / `Failed` / `Running` / `Cancelled`;
+  sortable columns. Status renders as a colored dot + label
+  (`Badge`), with a soft pulse animation on running/queued runs so
+  in-flight work is visible at a glance. Row click navigates to the
+  run detail.
+* **`Pending` polish.** `Clear all` now opens an `AlertDialog` with
+  the row count + a permanent-action warning instead of firing
+  immediately on click. Search input filters by schema/table/column
+  text. Skeleton rows replace the "Loading…" string. Apply success,
+  apply failure, clear success, and per-row removal each emit a
+  toast. The verbose "Click an alternative letter (A/B/C…)…"
+  description is gone — the UI is self-explanatory once you see it.
+* **`RunNew` form rewrite.** Migrated to the new `Switch` and
+  `Button` primitives. Submit success and failure surface as toasts
+  (success also redirects to the live run); the inline error block
+  is removed. The right-hand sidebar copy was tightened (no more
+  "Tune the run before launch." filler) and a small "Pick at least
+  one schema…" hint replaces the silent disabled state. Loading
+  states use shaped skeletons.
+* **Skeleton sweep.** `Home`, `Table`, `Schema`, `Pending`,
+  `RunNew`, and the new `DataTable` all replace text "Loading…"
+  placeholders with skeleton rows that match the final layout, so
+  pages no longer reflow when data arrives.
+* **Roadmap copy purged.** The "PR-C adds inline column profiling
+  and PR-E adds inline comment editing." text in `Table.tsx` and
+  the "or write one inline once PR-E lands." in its description
+  are deleted — those were dev-roadmap leaks aimed at end users.
+
+No backend or API changes; bundle rebuilt and vendored.
+
 ### Changed — `/visualize` shell, brand, and IA pass (UI overhaul, PR 2/4)
 
 Second slice of the visualizer overhaul. PR 2 tightens the chrome

@@ -1,106 +1,207 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { GitCompare, History, PlayCircle } from "lucide-react";
 
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
-import { Card, CardBody, CardHeader } from "../components/Card";
-import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
+import {
+  Badge,
+  Button,
+  DataTable,
+  type DataTableColumn,
+  type DataTableFilter,
+} from "../components/ui";
+
+interface Row {
+  id: number;
+  command: string;
+  scope: Record<string, unknown> | null;
+  status: string;
+  duration_sec: number | null;
+}
 
 export default function RunsList() {
+  const navigate = useNavigate();
   const runs = useQuery({
     queryKey: ["recent-runs", "all"],
     queryFn: () => api.recentRuns(50, "all"),
     retry: false,
   });
 
+  const rows: Row[] = (runs.data?.runs as Row[] | undefined) ?? [];
+
+  const columns: DataTableColumn<Row>[] = useMemo(
+    () => [
+      {
+        id: "id",
+        header: "ID",
+        width: "w-20",
+        sortValue: (r) => r.id,
+        cell: (r) => (
+          <Link
+            to={`/runs/${r.id}`}
+            onClick={(e) => e.stopPropagation()}
+            className="font-mono text-xs text-ink-dim hover:text-accent"
+          >
+            #{r.id}
+          </Link>
+        ),
+      },
+      {
+        id: "command",
+        header: "Command",
+        sortValue: (r) => r.command,
+        mono: true,
+        cell: (r) => <span className="text-xs text-ink">{r.command}</span>,
+      },
+      {
+        id: "scope",
+        header: "Scope",
+        cell: (r) => {
+          const keys = Object.keys(r.scope || {});
+          return (
+            <span className="truncate text-ink-muted">
+              {keys.length ? keys.join(", ") : "—"}
+            </span>
+          );
+        },
+        hideOnMobile: true,
+      },
+      {
+        id: "status",
+        header: "Status",
+        width: "w-28",
+        sortValue: (r) => r.status,
+        cell: (r) => <StatusBadge status={r.status} />,
+      },
+      {
+        id: "duration",
+        header: "Duration",
+        width: "w-24",
+        align: "right",
+        sortValue: (r) => r.duration_sec ?? -1,
+        cell: (r) => (
+          <span className="font-mono text-xs text-ink-muted tabular-nums">
+            {r.duration_sec != null ? `${r.duration_sec.toFixed(1)}s` : "—"}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
+
+  const filters: DataTableFilter<Row>[] = useMemo(
+    () => [
+      {
+        id: "success",
+        label: "Succeeded",
+        predicate: (r) => r.status === "success",
+        badge: rows.filter((r) => r.status === "success").length,
+      },
+      {
+        id: "failed",
+        label: "Failed",
+        predicate: (r) => r.status === "failed",
+        badge: rows.filter((r) => r.status === "failed").length,
+      },
+      {
+        id: "running",
+        label: "Running",
+        predicate: (r) => r.status === "running" || r.status === "queued",
+        badge: rows.filter((r) => r.status === "running" || r.status === "queued").length,
+      },
+      {
+        id: "cancelled",
+        label: "Cancelled",
+        predicate: (r) => r.status === "cancelled",
+        badge: rows.filter((r) => r.status === "cancelled").length,
+      },
+    ],
+    [rows],
+  );
+
   return (
     <>
       <PageHeader
-        eyebrow="History"
         title="Runs"
-        description="Every /run, /run-apply, and /ask invocation, newest first."
+        breadcrumbs={[{ label: "Runs" }]}
         actions={
           <div className="flex items-center gap-2">
-            <Link
-              to="/runs/compare"
-              className="inline-flex items-center gap-1.5 rounded-md bg-surface-subtle px-3 py-1.5 text-sm text-ink-muted transition hover:bg-surface-border"
-            >
-              <GitCompare size={14} />
-              Compare
+            <Link to="/runs/compare">
+              <Button variant="secondary" size="md" leadingIcon={<GitCompare size={14} />}>
+                Compare
+              </Button>
             </Link>
-            <Link
-              to="/runs/new"
-              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90"
-            >
-              <PlayCircle size={14} />
-              New run
+            <Link to="/runs/new">
+              <Button variant="primary" size="md" leadingIcon={<PlayCircle size={14} />}>
+                New run
+              </Button>
             </Link>
           </div>
         }
       />
-      <Card>
-        <CardHeader
-          title={`${runs.data?.count ?? 0} run${runs.data?.count === 1 ? "" : "s"}`}
-        />
-        <CardBody className="p-0">
-          {runs.isLoading ? (
-            <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
-          ) : runs.error ? (
-            <div className="px-5 py-6 text-sm text-critical">{(runs.error as Error).message}</div>
-          ) : runs.data?.runs?.length ? (
-            <table className="w-full text-sm">
-              <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
-                <tr>
-                  <th className="px-5 py-2 text-left font-semibold">ID</th>
-                  <th className="px-5 py-2 text-left font-semibold">Command</th>
-                  <th className="px-5 py-2 text-left font-semibold">Scope</th>
-                  <th className="px-5 py-2 text-left font-semibold">Status</th>
-                  <th className="px-5 py-2 text-left font-semibold">Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                {runs.data.runs.map((row) => (
-                  <tr key={row.id} className="hover:bg-surface-subtle/40">
-                    <td className="px-5 py-2 font-mono text-xs text-ink-dim">
-                      <Link to={`/runs/${row.id}`} className="hover:text-accent">
-                        #{row.id}
-                      </Link>
-                    </td>
-                    <td className="px-5 py-2 font-mono text-xs">{row.command}</td>
-                    <td className="px-5 py-2 text-ink-muted">
-                      {Object.keys(row.scope || {}).join(", ") || "—"}
-                    </td>
-                    <td className="px-5 py-2">
-                      <StatusPill
-                        tone={
-                          row.status === "success"
-                            ? "positive"
-                            : row.status === "failed"
-                              ? "critical"
-                              : "neutral"
-                        }
-                      >
-                        {row.status}
-                      </StatusPill>
-                    </td>
-                    <td className="px-5 py-2 font-mono text-xs text-ink-muted">
-                      {row.duration_sec != null ? `${row.duration_sec.toFixed(1)}s` : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <EmptyState
-              icon={History}
-              title="No runs yet"
-              description="Run /run from the CLI or trigger one from a table once PR-C ships."
-            />
-          )}
-        </CardBody>
-      </Card>
+      <DataTable<Row>
+        columns={columns}
+        rows={rows}
+        rowKey={(r) => r.id}
+        onRowClick={(r) => navigate(`/runs/${r.id}`)}
+        searchable
+        searchPlaceholder="Search by id, command, or scope…"
+        searchAccessor={(r) =>
+          [
+            String(r.id),
+            r.command,
+            Object.keys(r.scope || {}).join(" "),
+            r.status,
+          ].join(" ")
+        }
+        filters={filters}
+        isLoading={runs.isLoading}
+        error={runs.error ? (runs.error as Error).message : null}
+        initialSort={{ id: "id", direction: "desc" }}
+        emptyState={
+          <EmptyState
+            icon={History}
+            title="No runs yet"
+            description="Trigger /run from the CLI or use the New run button above."
+            compact
+          />
+        }
+      />
     </>
   );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  if (status === "success") {
+    return (
+      <Badge tone="positive" dot>
+        success
+      </Badge>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <Badge tone="critical" dot>
+        failed
+      </Badge>
+    );
+  }
+  if (status === "running" || status === "queued") {
+    return (
+      <Badge tone="accent" dot pulse>
+        {status}
+      </Badge>
+    );
+  }
+  if (status === "cancelled") {
+    return (
+      <Badge tone="warning" dot>
+        cancelled
+      </Badge>
+    );
+  }
+  return <Badge tone="neutral">{status}</Badge>;
 }

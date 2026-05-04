@@ -21,3 +21,5 @@ export { default as AlertDialog } from "./AlertDialog";
 export { ToastProvider, useToast } from "./Toast";
 export type { ToastTone } from "./Toast";
 export { Tabs, TabsList, Tab, TabPanel } from "./Tabs";
+export { default as DataTable } from "./DataTable";
+export type { DataTableColumn, DataTableFilter } from "./DataTable";
