@@ -57,7 +57,11 @@ class SnowflakeAdapter(DatabaseAdapter):
                 "snowflake-sqlalchemy is required for the Snowflake backend. "
                 "Install the extra: pip install 'amx-cli[snowflake]'"
             ) from exc
-        return create_engine(self.cfg.url, pool_pre_ping=True)
+        # No pool_pre_ping — every checkout would issue a `SELECT 1` that
+        # keeps the Snowflake warehouse warm and bills credits. Use
+        # pool_recycle to refresh stale connections on a time basis; the
+        # connector handles real session expiry on the next query.
+        return create_engine(self.cfg.url, pool_recycle=1800)
 
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"INFORMATION_SCHEMA", "information_schema"})
