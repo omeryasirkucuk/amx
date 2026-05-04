@@ -201,3 +201,105 @@ def test_code_profile_listing(client, auth_headers, cfg) -> None:
     payload = response.json()
     assert payload["active"] == "main"
     assert payload["profiles"][0]["path"] == "/src"
+
+
+def test_db_backend_catalog_lists_supported_engines(client, auth_headers) -> None:
+    """The Settings DB wizard fetches this catalog to render the
+    backend dropdown + per-engine field list. Pin the contract so a
+    silent dropout (e.g. Snowflake or Databricks vanishing from the
+    wizard) shows up as a test failure."""
+    response = client.get("/api/profiles/db/backends", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    ids = {b["id"] for b in payload["backends"]}
+    expected = {
+        "postgresql",
+        "mysql",
+        "snowflake",
+        "databricks",
+        "bigquery",
+        "oracle",
+        "mssql",
+        "redshift",
+        "clickhouse",
+        "duckdb",
+    }
+    assert expected.issubset(ids)
+    databricks = next(b for b in payload["backends"] if b["id"] == "databricks")
+    assert databricks.get("supports_catalog") is True
+    assert "http_path" in databricks["fields"]
+    assert "access_token" in databricks["fields"]
+
+
+def test_llm_provider_catalog_marks_needs_base_correctly(client, auth_headers) -> None:
+    response = client.get("/api/profiles/llm/providers", headers=auth_headers)
+    assert response.status_code == 200
+    providers = {p["id"]: p for p in response.json()["providers"]}
+    assert providers["openai"]["needs_key"] is True
+    assert providers["openai"]["needs_base"] is False
+    assert providers["ollama"]["needs_key"] is False
+    assert providers["ollama"]["needs_base"] is True
+    assert providers["databricks_serving"]["needs_key"] is True
+    assert providers["databricks_serving"]["needs_base"] is True
+
+
+def test_doc_profile_upsert_and_delete(client, auth_headers, cfg) -> None:
+    response = client.put(
+        "/api/profiles/docs/handbook",
+        headers=auth_headers,
+        json={"paths": ["/docs/a", " ", "https://example.com/x.pdf"]},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["paths"] == ["/docs/a", "https://example.com/x.pdf"]
+    assert cfg.doc_profiles["handbook"] == ["/docs/a", "https://example.com/x.pdf"]
+
+    response = client.delete("/api/profiles/docs/handbook", headers=auth_headers)
+    assert response.status_code == 200
+    assert "handbook" not in cfg.doc_profiles
+
+
+def test_doc_profile_upsert_rejects_missing_paths(client, auth_headers) -> None:
+    response = client.put(
+        "/api/profiles/docs/x",
+        headers=auth_headers,
+        json={"name": "x"},
+    )
+    assert response.status_code == 400
+
+
+def test_doc_profile_activate(client, auth_headers, cfg) -> None:
+    cfg.doc_profiles["docs-prod"] = ["/d"]
+    response = client.post("/api/profiles/docs/docs-prod/activate", headers=auth_headers)
+    assert response.status_code == 200
+    assert cfg.active_doc_profile == "docs-prod"
+
+
+def test_code_profile_upsert_and_delete(client, auth_headers, cfg) -> None:
+    response = client.put(
+        "/api/profiles/code/main",
+        headers=auth_headers,
+        json={"path": "/src/repo"},
+    )
+    assert response.status_code == 200
+    assert cfg.code_profiles["main"] == "/src/repo"
+
+    response = client.delete("/api/profiles/code/main", headers=auth_headers)
+    assert response.status_code == 200
+    assert "main" not in cfg.code_profiles
+
+
+def test_code_profile_upsert_rejects_empty_path(client, auth_headers) -> None:
+    response = client.put(
+        "/api/profiles/code/main",
+        headers=auth_headers,
+        json={"path": "   "},
+    )
+    assert response.status_code == 400
+
+
+def test_code_profile_activate(client, auth_headers, cfg) -> None:
+    cfg.code_profiles["repo"] = "/src"
+    response = client.post("/api/profiles/code/repo/activate", headers=auth_headers)
+    assert response.status_code == 200
+    assert cfg.active_code_profile == "repo"
