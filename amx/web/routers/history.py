@@ -115,11 +115,18 @@ def find_runs_for_scope(
 
 
 @router.get("/stats")
-def stats() -> dict[str, Any]:
-    """Aggregate counters the SPA renders as dashboard cards: total
-    runs, success / failure split, average duration, last run timestamp,
-    etc."""
-    return _store().stats()
+def stats(
+    command: str | None = Query(default="analyze.run"),
+) -> dict[str, Any]:
+    """Aggregate counters the SPA renders as dashboard cards.
+
+    ``command`` defaults to ``"analyze.run"`` so the visualizer's
+    "Total runs" / "Success rate" tiles match the Recent runs feed
+    (which only shows /run invocations). Pass ``command=all`` to
+    include every kind (analyze + ask + apply + …).
+    """
+    cmd_filter = None if (command or "").strip().lower() in {"", "all"} else command
+    return _store().stats(command_filter=cmd_filter)
 
 
 @router.get("/events")

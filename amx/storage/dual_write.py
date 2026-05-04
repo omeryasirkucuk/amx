@@ -518,8 +518,8 @@ class DualWriteHistoryStore:
 
     # ── SQLite-only conveniences proxied through ──────────────────────────
 
-    def stats(self) -> dict[str, Any]:
-        return self.local.stats()
+    def stats(self, command_filter: str | None = "analyze.run") -> dict[str, Any]:
+        return self.local.stats(command_filter=command_filter)
 
 
 __all__ = ["DualWriteHistoryStore"]

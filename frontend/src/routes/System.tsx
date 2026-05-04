@@ -464,44 +464,87 @@ function HistoryStoreCard() {
             {(status.error as Error).message}
           </div>
         ) : status.data ? (
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center gap-3">
+          <div className="space-y-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
               <StatusPill tone={status.data.enabled ? "positive" : "neutral"}>
-                {status.data.enabled ? "Enabled" : "Disabled"}
+                {status.data.enabled ? "Active" : "Disabled"}
               </StatusPill>
               {status.data.outbox_pending > 0 && (
                 <StatusPill tone="warning">
-                  {status.data.outbox_pending} pending
+                  {status.data.outbox_pending} retry queue
                 </StatusPill>
               )}
+              {status.data.enabled && status.data.outbox_pending === 0 && (
+                <StatusPill tone="positive">in sync</StatusPill>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-3 text-xs text-ink-muted">
-              <div>
-                <span className="text-ink-dim">Profile:</span>{" "}
-                <span className="font-mono text-ink">
+            <p className="text-xs text-ink-muted">
+              When enabled, every <code className="font-mono">/run</code>{" "}
+              dual-writes its history into a Postgres/MySQL schema your
+              teammates also point at, so anyone can replay each other&apos;s
+              runs. Reads stay local; only writes are mirrored.
+            </p>
+            <dl className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+              <div className="rounded-md border border-border bg-surface-subtle/40 px-3 py-2">
+                <dt className="text-[10px] uppercase tracking-wider text-ink-dim">
+                  Target profile
+                </dt>
+                <dd className="mt-0.5 font-mono text-ink">
                   {status.data.profile || "—"}
-                </span>
+                </dd>
               </div>
-              <div>
-                <span className="text-ink-dim">Schema:</span>{" "}
-                <span className="font-mono text-ink">
+              <div className="rounded-md border border-border bg-surface-subtle/40 px-3 py-2">
+                <dt className="text-[10px] uppercase tracking-wider text-ink-dim">
+                  Target schema
+                </dt>
+                <dd className="mt-0.5 font-mono text-ink">
                   {status.data.schema || "—"}
-                </span>
+                </dd>
               </div>
-            </div>
-            {!status.data.enabled && (
-              <p className="text-xs text-ink-dim">
-                Use the CLI's <code className="font-mono">/history-store enable</code>
-                {" "}command to bootstrap a team schema. The visualizer surfaces the
-                status and outbox depth, but the enable wizard is interactive.
-              </p>
-            )}
-            {status.data.outbox_pending > 0 && (
-              <p className="text-xs text-warning">
-                {status.data.outbox_pending} dual-writes are queued. Run{" "}
-                <code className="font-mono">/history-store flush-pending</code> to
-                retry them.
-              </p>
+              <div className="rounded-md border border-border bg-surface-subtle/40 px-3 py-2">
+                <dt className="text-[10px] uppercase tracking-wider text-ink-dim">
+                  Outbox depth
+                </dt>
+                <dd className="mt-0.5 font-mono tabular-nums text-ink">
+                  {status.data.outbox_pending}
+                </dd>
+              </div>
+              <div className="rounded-md border border-border bg-surface-subtle/40 px-3 py-2">
+                <dt className="text-[10px] uppercase tracking-wider text-ink-dim">
+                  Mode
+                </dt>
+                <dd className="mt-0.5 font-mono text-ink">
+                  {status.data.enabled ? "dual-write" : "local-only"}
+                </dd>
+              </div>
+            </dl>
+            {!status.data.enabled ? (
+              <div className="rounded-md border border-border bg-surface-subtle/30 px-3 py-2 text-xs text-ink-muted">
+                <p className="font-medium text-ink">
+                  Enable from the CLI:
+                </p>
+                <pre className="mt-1.5 overflow-x-auto rounded bg-ink px-2 py-1.5 font-mono text-[11px] text-bg">
+$ amx
+/history-store enable
+                </pre>
+                <p className="mt-1.5 text-[11px] text-ink-dim">
+                  The wizard provisions the team schema, registers the dual-
+                  write profile, and toggles the flag this card reads.
+                </p>
+              </div>
+            ) : (
+              status.data.outbox_pending > 0 && (
+                <div className="rounded-md border border-warning/40 bg-warning-soft px-3 py-2 text-xs text-warning">
+                  <span className="font-medium">
+                    {status.data.outbox_pending} dual-writes queued for retry.
+                  </span>{" "}
+                  Run{" "}
+                  <code className="font-mono">
+                    /history-store flush-pending
+                  </code>{" "}
+                  to drain the outbox.
+                </div>
+              )
             )}
           </div>
         ) : null}
