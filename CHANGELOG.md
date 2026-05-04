@@ -6,6 +6,40 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed / Changed — `/visualize` apply state + stats scope + history-store card (UI overhaul, PR 11)
+
+Three follow-up items.
+
+* **Total runs / Success rate now scope to `analyze.run`.** The
+  visualizer's Recent runs feed only lists `/run` invocations, but
+  the dashboard tiles were summing every command (including
+  `/ask`), so users saw "Total runs: 9" against three rows in the
+  feed. `HistoryStore.stats()` gains a `command_filter` parameter
+  (default `"analyze.run"`) and the `/api/history/stats` route
+  exposes it as a query string (`?command=`); pass `command=all`
+  to opt back into the all-kinds counter. SQLite + DualWrite
+  store implementations updated; `api.stats(command="analyze.run")`
+  is the new default.
+* **Apply pending queue button reflects real state.** The Apply
+  button no longer stays "applyable" after a successful flush.
+  When the pending queue is empty it switches to a disabled
+  "Queue empty — all applied" (or "Nothing to apply" when nothing
+  was queued). Run-detail Results header now shows
+  "X applied · Y queued" so the user can see the split at a
+  glance, and each row's status pill picks `applied` / `queued`
+  / `skipped` based on (`applied_at`, presence in pending queue)
+  instead of the static `pending` it used to show after apply.
+* **Team history-store card actually explains itself.** The
+  System page card now leads with what the store does (one-line
+  explanation of dual-write), surfaces target profile + schema +
+  outbox depth + sync mode in a 4-up grid, shows a
+  copy-pasteable `/history-store enable` block when disabled,
+  and an actionable `/history-store flush-pending` callout when
+  the outbox has queued retries.
+
+No frontend bundle dependencies changed; backend test suite
+unchanged.
+
 ### Fixed / Added — `/visualize` run-detail human-in-the-loop + schema page editing (UI overhaul, PR 10)
 
 Six follow-up items in one PR.

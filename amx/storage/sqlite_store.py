@@ -951,27 +951,48 @@ class SQLiteHistoryStore:
                     out[key] = json.loads(raw)
         return out
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self, command_filter: str | None = "analyze.run") -> dict[str, Any]:
+        """Aggregate counters for the dashboard.
+
+        ``command_filter`` defaults to ``"analyze.run"`` so the
+        visualizer's "Total runs" / "Success rate" tiles reflect the
+        same scope the Recent runs feed (which only lists `/run`
+        invocations). Pass ``None`` to include every command kind.
+        """
+        where = "WHERE command = ?" if command_filter else ""
+        params: tuple[Any, ...] = (command_filter,) if command_filter else ()
         with self._connect() as conn:
-            total_runs = conn.execute("SELECT COUNT(*) AS n FROM analysis_runs").fetchone()["n"]
+            total_runs = conn.execute(
+                f"SELECT COUNT(*) AS n FROM analysis_runs {where}", params
+            ).fetchone()["n"]
             ok_runs = conn.execute(
-                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'success'"
+                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'success'"
+                + (" AND command = ?" if command_filter else ""),
+                params,
             ).fetchone()["n"]
             fail_runs = conn.execute(
-                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'failed'"
+                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'failed'"
+                + (" AND command = ?" if command_filter else ""),
+                params,
             ).fetchone()["n"]
             review_runs = conn.execute(
-                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'ready_for_review'"
+                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'ready_for_review'"
+                + (" AND command = ?" if command_filter else ""),
+                params,
             ).fetchone()["n"]
             avg_duration = conn.execute(
-                "SELECT AVG(duration_sec) AS v FROM analysis_runs WHERE duration_sec IS NOT NULL"
+                f"SELECT AVG(duration_sec) AS v FROM analysis_runs WHERE duration_sec IS NOT NULL"
+                + (" AND command = ?" if command_filter else ""),
+                params,
             ).fetchone()["v"]
             last_started = conn.execute(
-                "SELECT MAX(started_at) AS v FROM analysis_runs"
+                f"SELECT MAX(started_at) AS v FROM analysis_runs {where}", params
             ).fetchone()["v"]
             total_events = conn.execute("SELECT COUNT(*) AS n FROM app_events").fetchone()["n"]
             metrics_rows = conn.execute(
-                "SELECT metrics_json FROM analysis_runs WHERE metrics_json IS NOT NULL"
+                f"SELECT metrics_json FROM analysis_runs WHERE metrics_json IS NOT NULL"
+                + (" AND command = ?" if command_filter else ""),
+                params,
             ).fetchall()
 
         model_durations: list[float] = []
