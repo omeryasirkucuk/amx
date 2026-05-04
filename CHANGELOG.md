@@ -6,6 +6,45 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/visualize` design system reset (UI overhaul, PR 1/4)
+
+First slice of a four-PR overhaul to take the visualizer SPA from a
+generic "AI-generated dashboard" look to a calm, dense, branded dev
+tool. PR 1 swaps tokens and lays the primitive foundation; PRs 2–4
+land the shell rewrite, list/form polish, and per-route surgery.
+
+* **Palette swap.** The slate/indigo CSS variables in
+  `frontend/src/styles/index.css` move to a warm Stone-family neutral
+  + an amber accent (light `#C2410C`, dark `#FB923C`). All semantic
+  colors (positive/warning/critical) are tuned to sit harmoniously
+  on the new neutral. New `--bg` token paints the canvas; cards keep
+  using `--surface-raised` so the surface hierarchy stays visible.
+* **Mixed radius scale + soft shadow scale.** `tailwind.config.js`
+  ships `sm/md/lg/xl/2xl` radii so primitives can pick the right
+  curve instead of the previous one-size-fits-all `rounded-xl`. The
+  `xs/sm/md/lg` shadow ramp is calibrated for borders-first design
+  (cards now stand on borders, not glow).
+* **Motion tokens.** `--motion-fast/base/slow` (120/180/240ms) plus a
+  shared cubic-bezier ease so component transitions feel coherent.
+  `prefers-reduced-motion` disables them globally.
+* **Body type bumped to 15px.** Inter at 15/22 across the document
+  body — denser inline UI elements still opt into `text-sm` (14px)
+  or `text-xs` (12px) explicitly.
+* **`frontend/src/components/ui/` primitive library.** Headless,
+  accessible, dependency-light building blocks for the rest of the
+  overhaul: `Button`, `IconButton`, `Input`, `Textarea`, `Select`,
+  `Field`, `Checkbox`, `Switch`, `Badge`, `StatusDot`, `Kbd`,
+  `Skeleton`, `Tooltip`, `Dialog`, `AlertDialog`, `Toast` (+
+  `ToastProvider` mounted in `App.tsx`), and `Tabs`. Each subsumes
+  inline Tailwind class strings repeated across the existing routes
+  so PR 2–4 can migrate page-by-page without re-deriving styles.
+  The legacy `StatusPill` is now a thin shim around `Badge` so
+  existing call sites keep working unchanged.
+
+No backend, route, or API changes — bundle output rebuilt and
+vendored to `amx/web/static/` so the wheel ships the new look on
+the next release.
+
 ### Added — `/visualize` end-session + maintenance + team history-store status (Stage 7)
 
 The last batch of CLI parity items the visualizer was missing.
