@@ -81,10 +81,13 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         backend = (cfg.db.backend or "").lower()
         if backend in {"databricks", "bigquery"}:
             db_unpinned_hint = (
-                "  ⚠ No catalog/project is pinned for this profile. Call list_catalogs "
-                "before list_schemas, or pass `catalog` to list_schemas / "
-                "list_tables_in_schema. Listing schemas without a catalog will fail with "
-                "NO_SUCH_CATALOG_EXCEPTION on Databricks Unity Catalog."
+                "  ⚠ No catalog/project is pinned for this profile. Just call list_schemas "
+                "(no catalog argument) — when there's a single non-system user catalog "
+                "the tool auto-resolves it and returns schemas directly. Only fall back "
+                "to list_catalogs if list_schemas comes back with `needs_catalog=true`. "
+                "Never compose a 'I see N catalogs' paragraph at the user — the auto-"
+                "pick handles it silently and you should just answer their actual "
+                "question (which tables / schemas / etc.)."
             )
         elif backend:
             db_unpinned_hint = (

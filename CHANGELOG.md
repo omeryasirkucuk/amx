@@ -6,6 +6,31 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `list_catalogs` itself auto-resolves the schemas now, so kimi-thinking can't loop on the catalog list either
+
+Second-round follow-up. After the previous fix landed, the user
+reported the loop returned in a slightly different shape: the model
+called `list_catalogs` first (per the no-catalog-pinned hint we'd
+added to the system prompt) and then narrated the 4-entry result
+("1. amx_test - This appears to be the main user catalog 2. samples
+- Sample data …") instead of recursing into `list_schemas`.
+
+Two fixes:
+
+1. `list_catalogs` now eagerly attaches `auto_picked_catalog` plus
+   the schemas of that catalog (`schemas_in_auto_picked_catalog`)
+   when the workspace exposes exactly one non-system user catalog.
+   The next iteration of the agent loop has no decision left to
+   make — there's nothing to enumerate at the user.
+2. The no-catalog-pinned hint in the agent system prompt now points
+   at `list_schemas` first (which already auto-picked) instead of
+   `list_catalogs`, and explicitly forbids "I see N catalogs"
+   narration prose.
+
+`tests/test_compare.py::CatalogDiscoveryToolsTests::test_list_catalogs_tool_auto_resolves_single_user_catalog`
+covers the user's exact `[amx_test, samples, system, workspace]`
+shape from the second loop report.
+
 ### Fixed — `/ask` no longer loops on Kimi-thinking when a Databricks workspace exposes one obvious user catalog
 
 Follow-up to the catalog-discovery fix below. User report 2026-05-04
