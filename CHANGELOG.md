@@ -6,6 +6,45 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — `/visualize` second-pass feedback (UI overhaul, PR 6)
+
+Seven user-driven follow-ups in one PR.
+
+* **`StatCard` is single-line.** Wrapping at `text-[18px]` made
+  long values like `moonshotai/kimi-k2-thinking` span two lines and
+  push the grid uneven. Now a single `text-[14px]` mono cell with
+  truncation and a tooltip carrying the full value; `min-h` drops
+  from 88 px to 68 px so the row sits closer to the header.
+* **Recent runs carry the missing context.** Each row gains a
+  second line under the title: short LLM model name, duration, and
+  a relative timestamp ("2h ago"). New helpers in
+  `frontend/src/lib/runDisplay.ts` (`relativeTime`, `parseStartedAt`,
+  `shortModel`) so the same formatting can be reused elsewhere.
+* **License copy fixed.** Footer now reads "open source under
+  Apache 2.0" instead of MIT.
+* **TopBar pill order regrouped.** Database-related pills now sit
+  next to each other: `[DB] [DATABASE / catalog] [LLM]` instead of
+  `[DB] [LLM] [DATABASE]`. The split made the LLM chip feel like
+  it belonged to the database scope at a glance.
+* **DB and LLM pills are profile pickers.** New
+  `frontend/src/components/topbar/ProfilePicker.tsx` turns the
+  context pill into a dropdown of every saved profile, with a
+  `+ Add profile` row pinned to the top that jumps to Settings.
+  Switching activates via `POST /api/profiles/{kind}/{name}/activate`
+  and invalidates every downstream query (catalogs, schemas,
+  recent runs) so the rest of the SPA reflects the new scope
+  immediately.
+* **Ask sessions removed from `/runs`.** Ask is conversational —
+  it doesn't touch the warehouse — so its rows no longer pollute
+  the activity log. `RunsList` filters out `ask.run` and
+  `search.ask` rows; they remain visible inside `/ask`.
+* **Pending dropped from the primary nav.** The `/pending` route
+  (and its dialog flows) is still reachable via the command
+  palette and from a finished run; the top-bar slot was redundant
+  for users who weren't actively reviewing a queue.
+
+No backend or API changes; bundle rebuilt and vendored.
+
 ### Changed — `/visualize` first-pass feedback (UI overhaul, PR 5)
 
 User-driven follow-up batch on top of the four-PR overhaul. Six

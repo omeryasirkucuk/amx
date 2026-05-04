@@ -10,7 +10,6 @@ import {
   PanelLeft,
   Sparkles,
   History as HistoryIcon,
-  Inbox,
   Settings as SettingsIcon,
 } from "lucide-react";
 
@@ -19,14 +18,13 @@ import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
 import CommandPalette from "./CommandPalette";
 import IconButton from "./ui/IconButton";
-import Tooltip from "./ui/Tooltip";
 import Logo from "./brand/Logo";
+import ProfilePicker from "./topbar/ProfilePicker";
 
 const navItems = [
   { to: "/", label: "Browse", icon: Database, end: true, match: ["/"] },
   { to: "/runs", label: "Runs", icon: HistoryIcon, match: ["/runs"] },
   { to: "/ask", label: "Ask", icon: Sparkles, match: ["/ask"] },
-  { to: "/pending", label: "Pending", icon: Inbox, match: ["/pending"] },
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];
@@ -136,17 +134,11 @@ export default function TopBar() {
         <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
         <div className="flex items-center gap-1.5">
-          <Pill
+          <ProfilePicker
+            kind="db"
             label="DB"
-            value={ctx?.active_db_profile ?? "—"}
-            tone={ctx?.active_db_profile ? "accent" : "neutral"}
+            activeName={ctx?.active_db_profile ?? null}
             tooltip={ctx?.db_backend ?? undefined}
-          />
-          <Pill
-            label="LLM"
-            value={ctx?.active_llm_profile ?? "—"}
-            tone={ctx?.active_llm_profile ? "accent" : "neutral"}
-            tooltip={ctx?.llm_model ?? undefined}
           />
           {catalogs.data?.supports_catalogs && (
             <CatalogPicker
@@ -160,6 +152,12 @@ export default function TopBar() {
               databases={databases.data.databases}
             />
           )}
+          <ProfilePicker
+            kind="llm"
+            label="LLM"
+            activeName={ctx?.active_llm_profile ?? null}
+            tooltip={ctx?.llm_model ?? undefined}
+          />
           <CommandPalette />
         </div>
       </div>
@@ -208,38 +206,6 @@ function buildCrumbs(
   };
   if (root && labels[root]) return [{ label: labels[root] }];
   return [];
-}
-
-function Pill({
-  label,
-  value,
-  tone,
-  tooltip,
-}: {
-  label: string;
-  value: string;
-  tone: "accent" | "neutral";
-  tooltip?: string;
-}) {
-  const node = (
-    <span
-      className={cn(
-        "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-medium",
-        tone === "accent"
-          ? "border-accent/20 bg-accent-soft text-accent-ink"
-          : "border-border bg-surface-subtle text-ink-dim",
-      )}
-    >
-      <span className="text-[10px] uppercase tracking-wider opacity-70">
-        {label}
-      </span>
-      <span className="max-w-[8rem] truncate font-mono text-[11px]">
-        {value}
-      </span>
-    </span>
-  );
-  if (!tooltip) return node;
-  return <Tooltip content={tooltip}>{node}</Tooltip>;
 }
 
 function CatalogPicker({
