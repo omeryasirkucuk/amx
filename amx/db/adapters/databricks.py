@@ -90,9 +90,19 @@ class DatabricksAdapter(DatabaseAdapter):
         trusted_ca = self._trusted_ca_file()
         if trusted_ca:
             connect_args["_tls_trusted_ca_file"] = trusted_ca
+        # Deliberately NOT using pool_pre_ping=True. SQLAlchemy's pre-ping
+        # issues a `SELECT 1` on every connection checkout from the pool —
+        # cheap on a self-hosted PostgreSQL but on a Databricks SQL warehouse
+        # each one keeps the warehouse warm and bills DBUs. A `/run` that
+        # checks out 200 connections paid for 200 extra `SELECT 1`s on top
+        # of the actual introspection workload. Use pool_recycle instead so
+        # SQLAlchemy refreshes connections idle longer than the warehouse's
+        # auto-stop window without issuing any keepalive query; if a stale
+        # connection slips through, the next real query will trigger a
+        # reconnect through SQLAlchemy's native error handling.
         return create_engine(
             self.cfg.url,
-            pool_pre_ping=True,
+            pool_recycle=1800,
             connect_args=connect_args,
         )
 

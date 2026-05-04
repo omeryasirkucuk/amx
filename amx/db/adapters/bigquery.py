@@ -49,7 +49,12 @@ class BigQueryAdapter(DatabaseAdapter):
                 "sqlalchemy-bigquery is required for the BigQuery backend. "
                 "Install the extra: pip install 'amx-cli[bigquery]'"
             ) from exc
-        return create_engine(self.cfg.url, pool_pre_ping=True)
+        # No pool_pre_ping — every checkout would issue a `SELECT 1` against
+        # BigQuery, which is per-query billed (each pre-ping = $0.01-$0.02
+        # if the on-demand minimum applies, multiplied by the checkout count
+        # of a single /run). pool_recycle keeps connections fresh without
+        # any keepalive query.
+        return create_engine(self.cfg.url, pool_recycle=1800)
 
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"INFORMATION_SCHEMA", "information_schema"})
