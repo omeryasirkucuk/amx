@@ -294,7 +294,7 @@ def normalize_llm_model(provider: str, model: str) -> str:
     if provider_norm and lower.startswith(f"{provider_norm}/"):
         raw = raw[len(provider_norm) + 1 :]
         lower = raw.lower()
-    if provider_norm in {"local", "kimi"} and lower.startswith("openai/"):
+    if provider_norm in {"local", "kimi", "databricks_serving"} and lower.startswith("openai/"):
         raw = raw.split("/", 1)[1]
     if provider_norm == "openrouter" and lower.startswith("openrouter/"):
         raw = raw.split("/", 1)[1]
