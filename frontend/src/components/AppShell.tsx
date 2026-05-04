@@ -5,9 +5,12 @@ import Sidebar from "./Sidebar";
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
 
-// 3-pane IDE shell. Left rail (asset tree + nav), center canvas,
-// right panel placeholder (Ask + pending + activity tabs land here in
-// PR-D / PR-E).
+/**
+ * App shell. TopBar carries primary nav and global context; sidebar
+ * is the collapsible asset tree; main canvas hosts the routed page.
+ * Standardized padding + a wider max-width than before so 13"+
+ * monitors get more usable space.
+ */
 export default function AppShell() {
   const sidebarCollapsed = useUi((s) => s.sidebarCollapsed);
   return (
@@ -16,14 +19,14 @@ export default function AppShell() {
       <div className="flex flex-1 min-h-0">
         <aside
           className={cn(
-            "border-r border-surface-border bg-surface-subtle/60 transition-all duration-150 ease-out",
-            sidebarCollapsed ? "w-14" : "w-72",
+            "border-r border-border bg-surface-subtle/50 transition-all duration-fast",
+            sidebarCollapsed ? "w-12" : "w-64",
           )}
         >
           <Sidebar collapsed={sidebarCollapsed} />
         </aside>
         <main className="flex-1 min-w-0 overflow-y-auto">
-          <div className="mx-auto w-full max-w-6xl px-8 py-8">
+          <div className="mx-auto w-full max-w-[1280px] px-8 py-7">
             <Outlet />
           </div>
         </main>
