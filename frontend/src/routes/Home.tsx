@@ -57,6 +57,7 @@ export default function Home() {
           label="Active backend"
           value={ctx?.db_backend ?? "—"}
           tone="neutral"
+          to="/settings"
           hint="The database engine AMX is currently connected to. Switch via Settings → Database."
         />
         <StatCard
@@ -64,13 +65,15 @@ export default function Home() {
           label="LLM model"
           value={ctx?.llm_model ?? "—"}
           tone="neutral"
+          to="/settings"
           hint="The model that generates descriptions. Configured under Settings → LLM."
         />
         <StatCard
           icon={PlayCircle}
           label="Total runs"
-          value={statValue(stats.data?.total)}
+          value={totalRuns(stats.data)}
           tone="accent"
+          to="/runs"
           hint="All-time count of /run, /apply, and /ask invocations recorded in the local history store."
         />
         <StatCard
@@ -78,6 +81,7 @@ export default function Home() {
           label="Success rate"
           value={successRate(stats.data)}
           tone="positive"
+          to="/runs"
           hint="Percentage of runs whose worker exited cleanly. Cancelled and failed runs both count against the total."
         />
       </div>
@@ -110,59 +114,74 @@ export default function Home() {
               </div>
             ) : runs.data?.runs?.length ? (
               <ul className="divide-y divide-border">
-                {runs.data.runs.map((row) => (
-                  <li
-                    key={row.id}
-                    className="flex items-start gap-3 px-5 py-2.5 text-sm hover:bg-surface-subtle/50"
-                  >
-                    <Activity size={13} className="mt-1 text-ink-dim shrink-0" />
-                    <Link
-                      to={`/runs/${row.id}`}
-                      className="mt-0.5 font-mono text-xs text-ink-dim hover:text-accent"
-                    >
-                      #{row.id}
-                    </Link>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-medium text-ink truncate" title={row.command}>
-                          {humanizeCommand(row.command)}
+                {runs.data.runs.map((row) => {
+                  const processed = countProcessed(row.metrics);
+                  const total = countSelected(row.metrics);
+                  return (
+                    <li key={row.id}>
+                      <Link
+                        to={`/runs/${row.id}`}
+                        className="flex items-start gap-3 px-5 py-2.5 text-sm transition-colors duration-fast hover:bg-surface-subtle/60 focus-visible:bg-surface-subtle/60 focus-visible:outline-none"
+                      >
+                        <Activity size={13} className="mt-1 text-ink-dim shrink-0" />
+                        <span className="mt-0.5 font-mono text-xs text-ink-dim">
+                          #{row.id}
                         </span>
-                        <span className="truncate text-ink-muted text-xs">
-                          · {summarizeScope(row.scope)}
-                        </span>
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-dim">
-                        {row.llm_model && (
-                          <span
-                            className="truncate font-mono"
-                            title={row.llm_model}
-                          >
-                            {shortModel(row.llm_model)}
-                          </span>
-                        )}
-                        {row.duration_sec != null && (
-                          <>
-                            <span>·</span>
-                            <span className="font-mono tabular-nums">
-                              {row.duration_sec.toFixed(1)}s
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline gap-2">
+                            <span className="font-medium text-ink truncate" title={row.command}>
+                              {humanizeCommand(row.command)}
                             </span>
-                          </>
-                        )}
-                        {row.started_at != null && (
-                          <>
-                            <span>·</span>
-                            <span>{relativeTime(row.started_at)}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <span className="mt-0.5 ml-auto shrink-0">
-                      <StatusPill tone={statusTone(row.status)}>
-                        {statusLabel(row.status)}
-                      </StatusPill>
-                    </span>
-                  </li>
-                ))}
+                            <span className="truncate text-ink-muted text-xs">
+                              · {describeScope(row.scope, row.db_profile)}
+                              {processed != null && (
+                                <span className="ml-2 text-ink-dim">
+                                  {processed}
+                                  {total != null && total !== processed ? `/${total}` : ""}{" "}
+                                  processed
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-ink-dim">
+                            {row.db_profile && (
+                              <span className="font-mono" title={`DB profile: ${row.db_profile}`}>
+                                {row.db_profile}
+                              </span>
+                            )}
+                            {row.llm_model && (
+                              <>
+                                {row.db_profile && <span>·</span>}
+                                <span className="truncate font-mono" title={row.llm_model}>
+                                  {shortModel(row.llm_model)}
+                                </span>
+                              </>
+                            )}
+                            {row.duration_sec != null && (
+                              <>
+                                <span>·</span>
+                                <span className="font-mono tabular-nums">
+                                  {row.duration_sec.toFixed(1)}s
+                                </span>
+                              </>
+                            )}
+                            {row.started_at != null && (
+                              <>
+                                <span>·</span>
+                                <span>{relativeTime(row.started_at)}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <span className="mt-0.5 ml-auto shrink-0">
+                          <StatusPill tone={statusTone(row.status)}>
+                            {statusLabel(row.status)}
+                          </StatusPill>
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <div className="px-5 py-5">
@@ -187,22 +206,29 @@ function StatCard({
   value,
   tone,
   hint,
+  to,
 }: {
   icon: typeof Database;
   label: string;
   value: string;
   tone: "neutral" | "accent" | "positive";
   hint?: string;
+  /** When set the whole card becomes a navigation target. */
+  to?: string;
 }) {
-  return (
-    <div
-      className="flex min-h-[68px] flex-col rounded-xl border border-border bg-surface-raised px-4 py-3 shadow-xs"
-      title={value}
-    >
+  const inner = (
+    <>
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-dim">
           {label}
-          {hint && <InfoHint text={hint} />}
+          {hint && (
+            <span
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <InfoHint text={hint} />
+            </span>
+          )}
         </span>
         <Icon
           size={14}
@@ -218,21 +244,98 @@ function StatCard({
       <div className="mt-1.5 truncate font-mono text-[14px] leading-tight tabular-nums text-ink">
         {value}
       </div>
+    </>
+  );
+
+  const baseClass =
+    "flex min-h-[68px] flex-col rounded-xl border border-border bg-surface-raised px-4 py-3 shadow-xs";
+
+  if (to) {
+    return (
+      <Link
+        to={to}
+        title={value}
+        className={`${baseClass} transition-colors duration-fast hover:border-accent/40 hover:bg-surface-subtle/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent`}
+      >
+        {inner}
+      </Link>
+    );
+  }
+
+  return (
+    <div title={value} className={baseClass}>
+      {inner}
     </div>
   );
 }
 
-function statValue(n: unknown): string {
-  if (typeof n === "number") return String(n);
-  return "—";
-}
-
+/**
+ * Compute success rate from the stats payload. Backend ships
+ * `total_runs` / `success_runs` (canonical) — falls back to the
+ * legacy `total` / `success` aliases if those ever come back.
+ * Ready-for-review and cancelled runs both count against success.
+ */
 function successRate(stats: unknown): string {
   if (!stats || typeof stats !== "object") return "—";
-  const total = (stats as Record<string, unknown>).total;
-  const success = (stats as Record<string, unknown>).success;
-  if (typeof total === "number" && typeof success === "number" && total > 0) {
+  const s = stats as Record<string, unknown>;
+  const totalRaw = s.total_runs ?? s.total;
+  const successRaw = s.success_runs ?? s.success;
+  const total = typeof totalRaw === "number" ? totalRaw : Number(totalRaw);
+  const success = typeof successRaw === "number" ? successRaw : Number(successRaw);
+  if (Number.isFinite(total) && Number.isFinite(success) && total > 0) {
     return `${Math.round((success / total) * 100)}%`;
   }
   return "—";
+}
+
+function totalRuns(stats: unknown): string {
+  if (!stats || typeof stats !== "object") return "—";
+  const s = stats as Record<string, unknown>;
+  const raw = s.total_runs ?? s.total;
+  return typeof raw === "number" ? String(raw) : "—";
+}
+
+/**
+ * "All schemas" alone says nothing about which database the run
+ * touched. When the scope is empty (full-database run) we tack on
+ * the DB profile name so a row reads e.g. "All schemas in
+ * local-postgres" instead of just "All schemas".
+ */
+function describeScope(
+  scope: Record<string, string[]> | null | undefined,
+  dbProfile: string | null | undefined,
+): string {
+  const base = summarizeScope(scope);
+  if (base === "All schemas" && dbProfile) {
+    return `All schemas in ${dbProfile}`;
+  }
+  return base;
+}
+
+/**
+ * Pull the most useful processed-asset count out of a run's metrics
+ * payload. Different commands write different keys, so we scan a
+ * short list of candidates and return the first numeric hit.
+ */
+function countProcessed(metrics: Record<string, unknown> | null | undefined): number | null {
+  if (!metrics) return null;
+  for (const key of [
+    "processed_count",
+    "tables_processed",
+    "columns_processed",
+    "applied_count",
+  ]) {
+    const v = metrics[key];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
+}
+
+function countSelected(metrics: Record<string, unknown> | null | undefined): number | null {
+  if (!metrics) return null;
+  for (const key of ["selected_count", "planned_count", "tables_selected"]) {
+    const v = metrics[key];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
 }
