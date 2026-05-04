@@ -190,11 +190,28 @@ def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
 
 
 def cmd_llm_profiles(cfg: AMXConfig) -> None:
+    rag_override = (cfg.rag_llm_profile or "").strip()
     rows = []
     for name, llm in sorted(cfg.llm_profiles.items(), key=lambda x: x[0]):
-        mark = "*" if name == cfg.active_llm_profile else " "
-        rows.append([f"{mark} {name}", llm.provider, llm.model])
-    render_table("LLM profiles (* = active)", ["Profile", "Provider", "Model"], rows)
+        marks = ""
+        marks += "*" if name == cfg.active_llm_profile else " "
+        marks += "R" if rag_override and name == rag_override else " "
+        rows.append([f"{marks} {name}", llm.provider, llm.model])
+    render_table(
+        "LLM profiles (* = active, R = RAG override)",
+        ["Profile", "Provider", "Model"],
+        rows,
+    )
+    if rag_override and rag_override in cfg.llm_profiles:
+        if rag_override == cfg.active_llm_profile:
+            info(
+                f"RAG override set to {rag_override!r} — same as the active profile, "
+                "so it has no effect. Run /use-rag-llm to pick a different profile."
+            )
+        else:
+            info(f"RAG agent uses {rag_override!r} (override). Run `/use-rag-llm none` to clear.")
+    else:
+        info("RAG agent uses the active profile. Run `/use-rag-llm` to override.")
 
 
 def cmd_use_llm(cfg: AMXConfig, rest: list[str]) -> None:
@@ -212,6 +229,75 @@ def cmd_use_llm(cfg: AMXConfig, rest: list[str]) -> None:
         success(f"Switched active LLM profile to: {name}")
     except Exception as exc:
         error(str(exc))
+
+
+_RAG_LLM_CLEAR_TOKENS = {"none", "(none)", "off", "clear", "default", "-"}
+
+
+def cmd_use_rag_llm(cfg: AMXConfig, rest: list[str]) -> None:
+    """Pin a different LLM profile to the RAG agent, or clear that pin.
+
+    Without args, opens an interactive picker that lists every LLM
+    profile plus a leading ``(none)`` entry meaning "RAG falls back to
+    the active profile". With a name, switches directly. Pass any of
+    ``none / off / clear / default / -`` to clear the override
+    non-interactively.
+
+    The override is stored in ``cfg.rag_llm_profile``; it has no effect
+    when empty.
+    """
+    names = sorted(cfg.llm_profiles.keys())
+    if not names:
+        error("No LLM profiles configured. Use /add-llm-profile first.")
+        return
+
+    if len(rest) >= 1:
+        raw = rest[0].strip()
+        if raw.lower() in _RAG_LLM_CLEAR_TOKENS:
+            cfg.rag_llm_profile = ""
+            cfg.save()
+            success(
+                f"RAG override cleared. RAG agent now uses the active LLM "
+                f"profile {cfg.active_llm_profile!r}."
+            )
+            return
+        if raw not in cfg.llm_profiles:
+            error(f"Unknown LLM profile: {raw}. Available: {', '.join(names)}")
+            return
+        name = raw
+    else:
+        choices = ["(none)"] + names
+        default_choice = (
+            cfg.rag_llm_profile if cfg.rag_llm_profile in cfg.llm_profiles else "(none)"
+        )
+        picked = ask_choice(
+            "Select LLM profile for the RAG agent",
+            choices,
+            default=default_choice,
+        )
+        if picked == "(none)" or not picked:
+            cfg.rag_llm_profile = ""
+            cfg.save()
+            success(
+                f"RAG override cleared. RAG agent now uses the active LLM "
+                f"profile {cfg.active_llm_profile!r}."
+            )
+            return
+        name = picked
+
+    cfg.rag_llm_profile = name
+    cfg.save()
+    if name == cfg.active_llm_profile:
+        info(
+            f"RAG override set to {name!r} — same as the active profile, "
+            "so behaviour is unchanged. Pick a different profile to actually "
+            "split RAG from the rest."
+        )
+    else:
+        success(
+            f"RAG agent now uses LLM profile {name!r} "
+            f"(active profile for everything else: {cfg.active_llm_profile!r})."
+        )
 
 
 def cmd_add_llm_profile(cfg: AMXConfig, rest: list[str]) -> None:

@@ -94,6 +94,9 @@ from amx.cli_support.commands.profiles import (
 from amx.cli_support.commands.profiles import (
     cmd_use_llm as _cmd_use_llm,
 )
+from amx.cli_support.commands.profiles import (
+    cmd_use_rag_llm as _cmd_use_rag_llm,
+)
 from amx.cli_support.commands.usage import cmd_usage as _cmd_usage
 from amx.cli_support.slash_commands import (
     cmd_heads_for_namespace as _registry_cmd_heads,
@@ -722,6 +725,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "use-llm"):
             return True
         _cmd_use_llm(cfg, parts[1:])
+        return True
+    if head == "use-rag-llm":
+        if not _require_namespace(head, namespace, "llm", "use-rag-llm"):
+            return True
+        _cmd_use_rag_llm(cfg, parts[1:])
         return True
     if head == "add-llm-profile":
         if not _require_namespace(head, namespace, "llm", "add-llm-profile"):
