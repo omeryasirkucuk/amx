@@ -122,6 +122,12 @@ class PostgreSQLAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        # PG-idiomatic ``col::text`` rather than ``CAST(col AS VARCHAR)``.
+        # Behaviour identical, but matches existing column_stats_sql so
+        # the bulk and per-column paths produce the same MIN/MAX values.
+        return f"{agg}({quoted_col}::text)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

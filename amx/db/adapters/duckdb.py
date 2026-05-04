@@ -128,6 +128,11 @@ class DuckDBAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        # DuckDB per-column path uses outer-cast ``CAST(MIN(col) AS VARCHAR)``;
+        # mirror to keep bulk and per-column outputs aligned.
+        return f"CAST({agg}({quoted_col}) AS VARCHAR)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

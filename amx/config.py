@@ -500,6 +500,14 @@ class DBConfig(_ObservableConfig):
     profiling_mode: str = "full"  # full | sampled | metadata
     profiling_max_rows: int = 1_000_000  # skip full column scans above this row estimate (0=off)
     profiling_sample_size: int = 5
+    # How many columns to compute null/distinct/min/max for in a single
+    # bulk query. The connector chunks wide tables into batches of this
+    # size — fewer queries on warehouse-billed backends, less memory
+    # pressure on engines that build a separate hash per
+    # ``COUNT(DISTINCT)``. 50 is the safe default; raise on
+    # Databricks/Snowflake (Bloom filters), drop on MSSQL/MySQL with
+    # very wide tables.
+    profiling_stats_batch_size: int = 50
 
     def _effective_port(self, default: int) -> int:
         """Resolve the port for a non-PostgreSQL backend.
@@ -827,6 +835,7 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         profiling_mode=str(m.get("profiling_mode", "full")),
         profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
         profiling_sample_size=int(m.get("profiling_sample_size", 5)),
+        profiling_stats_batch_size=int(m.get("profiling_stats_batch_size", 50)),
     )
 
 
@@ -951,6 +960,7 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
             "profiling_mode": db.profiling_mode,
             "profiling_max_rows": int(db.profiling_max_rows),
             "profiling_sample_size": int(db.profiling_sample_size),
+            "profiling_stats_batch_size": int(db.profiling_stats_batch_size),
         }
     )
     return base

@@ -113,6 +113,10 @@ class RedshiftAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        # Redshift mirrors Postgres: ``::text`` is the idiomatic cast.
+        return f"{agg}({quoted_col}::text)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

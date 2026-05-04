@@ -149,6 +149,14 @@ class SnowflakeAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _null_count_expr(self, quoted_col: str) -> str:
+        # Snowflake doesn't accept ``COUNT(*) FILTER (WHERE …)``; use the
+        # SUM(CASE) form that the per-column path also uses.
+        return f"SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END)"
+
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        return f"{agg}({quoted_col}::VARCHAR)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

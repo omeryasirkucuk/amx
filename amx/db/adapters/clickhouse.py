@@ -175,6 +175,18 @@ class ClickHouseAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _null_count_expr(self, quoted_col: str) -> str:
+        return f"countIf({quoted_col} IS NULL)"
+
+    def _distinct_count_expr(self, quoted_col: str) -> str:
+        # CH's exact-distinct primitive — matches the per-column path.
+        return f"uniqExact({quoted_col})"
+
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        # CH per-column path uses ``toString(min(col))`` (outer cast).
+        # CH is case-sensitive: lowercase ``min`` / ``max`` for built-ins.
+        return f"toString({agg.lower()}({quoted_col}))"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:

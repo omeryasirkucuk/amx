@@ -139,6 +139,17 @@ class MySQLAdapter(DatabaseAdapter):
             f"WHERE {quoted_col} IS NOT NULL LIMIT :lim"
         )
 
+    def _null_count_expr(self, quoted_col: str) -> str:
+        # MySQL doesn't accept FILTER. SUM(CASE) is portable across
+        # 5.7 / 8.x and MariaDB.
+        return f"SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END)"
+
+    def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
+        # MySQL's existing per-column path uses the outer-cast form
+        # ``CAST(MIN(col) AS CHAR)``. Mirror it so bulk and per-column
+        # paths produce identical MIN/MAX values.
+        return f"CAST({agg}({quoted_col}) AS CHAR)"
+
     # ── Table stats ───────────────────────────────────────────────────────
 
     def get_table_stats(self, engine: Engine, schema: str, table: str) -> dict[str, int]:
