@@ -388,6 +388,17 @@ def cmd_use(
             )
         else:
             success(f"Active DB scope: {', '.join(chosen)} (default = {chosen[0]} [{p.backend}])")
+        # Reassure the user that switching the *active* scope does not
+        # detach the shared run-history store: that one stays pinned to
+        # whichever profile was passed to `/history-store enable` until
+        # the user explicitly disables it or removes the host profile.
+        host = (getattr(cfg, "history_store_profile", "") or "").strip()
+        if getattr(cfg, "history_store_enabled", False) and host and host != chosen[0]:
+            info(
+                f"Shared run-history is still hosted on profile {host!r} "
+                "(this switch does not detach it). "
+                "Run `/history-store status` to inspect."
+            )
         if log_event is not None:
             log_event(
                 event_type="db_profile_switch",
@@ -924,21 +935,60 @@ def cmd_remove_profile(cfg: AMXConfig, rest: list[str]) -> None:
     # Guard: removing the profile that hosts the shared run-history
     # schema would orphan the connection on the next AMX startup
     # (factory falls back to local-only with a warning, but the user
-    # would not necessarily notice). Make the consequence explicit
-    # before dropping the profile.
+    # would not necessarily notice). Lead with the headline, reassure
+    # the user that local rows survive, and offer to drain a non-empty
+    # outbox to the remote backend before the profile disappears.
     if (
         getattr(cfg, "history_store_enabled", False)
         and getattr(cfg, "history_store_profile", "") == name
     ):
         schema = cfg.history_store_schema or "AMX"
         warn(
-            f"Profile {name!r} is the host for shared run-history "
-            f"(schema {schema!r}). Removing it will:\n"
-            "  • Disable shared mode on this machine.\n"
-            "  • Leave the shared schema on the remote untouched (your\n"
-            "    teammates' rows are safe).\n"
-            "  • Strand any pending shared writes still in the local outbox."
+            "Heads up — shared run-history is enabled on this profile.\n"
+            f"  Profile {name!r} hosts the AMX schema {schema!r}."
         )
+        info(
+            "Your local run history (~/.amx/history.db) stays intact. "
+            "Past runs and events created on this machine remain "
+            "queryable via `/history-runs` after deletion."
+        )
+        info(
+            "The shared schema on the remote backend is also untouched — "
+            "your teammates' rows are safe."
+        )
+        # Lazy import to avoid a circular dependency between the db and
+        # history_store command modules.
+        from amx.cli_support.commands.history_store import (
+            _action_flush,
+            _resolve_history_dual_store,
+        )
+
+        store = _resolve_history_dual_store()
+        depth = 0
+        if store is not None:
+            try:
+                depth = store.pending_count()
+            except Exception:
+                depth = 0
+        if depth > 0:
+            warn(
+                f"Outbox has {depth} pending shared write(s) that have NOT "
+                "reached the team backend yet."
+            )
+            if confirm(
+                "Flush them to the remote backend before deleting? (Recommended)",
+                default=True,
+            ):
+                _action_flush(cfg)
+                try:
+                    depth = store.pending_count() if store is not None else 0
+                except Exception:
+                    depth = 0
+            if depth > 0:
+                warn(
+                    f"{depth} write(s) still queued — they will not be retried "
+                    "after the profile is removed."
+                )
         if not confirm(
             f"Remove profile {name!r} AND disable shared run-history?",
             default=False,
