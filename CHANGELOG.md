@@ -6,6 +6,49 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed — `/edit` "Bulk by table" no longer surfaces columns and no longer dies on a stale catalog
+
+User report 2026-05-04: picking `world.City` in the `/edit` →
+"Bulk by name → Pick a table" wizard returned **33 column matches
+and zero table matches** — the same flow had earlier failed with
+"No tables or columns named 'country'" after picking `cars.country`.
+The user's actual selection was being thrown away.
+
+Two root causes:
+
+1. **Mode information was lost** between `_resolve_bulk_target_name`
+   (which knew the user picked a TABLE) and `_run_bulk_edit_by_name`
+   (which queried both table and column indices unconditionally).
+   A "table" run silently returned every column with the same name
+   — misleading and dangerous if the user had picked "Apply same
+   comment to all" without checking the kind column.
+2. **Catalog-only lookup**: when the on-disk SQLite catalog was
+   stale (a fresh profile, an unsynced schema, or just a recently
+   added table), the search returned nothing — even though the user
+   had literally just picked the entity from the live-DB picker one
+   step earlier.
+
+Fix: the resolver now returns `(bare_name, kind, seed)` and the
+runner honours both. Concretely:
+
+- `kind="table"` → only `find_tables_by_exact_name` runs; columns
+  are no longer surfaced.
+- `kind="column"` → only `find_columns_by_exact_name` runs.
+- `kind="any"` (the bare-name CLI invocation) keeps the legacy
+  search-both behaviour.
+- The user's live-picker selection (`seed`) is spliced into results
+  if the catalog miss it, so a stale index can never make their own
+  pick vanish.
+- For `kind="table"`, when the catalog returns nothing, the runner
+  **falls back to a live-DB scan** across every schema (one
+  `list_tables(schema)` call per schema; fast). This decouples the
+  table-bulk-edit flow from `/search sync` freshness entirely.
+
+Coverage: `tests/test_edit_bulk_table_mode.py` (10 tests) pins the
+mode-respect behaviour, the seed-splice logic (insert + de-dup),
+the live-DB fallback, the resolver's new return shape for all three
+modes, and the kind-aware error messages.
+
 ### Added — `/visualize` runs the doc RAG flow end-to-end (Stage 4)
 
 Settings → Docs no longer needs the CLI for the operational path.
