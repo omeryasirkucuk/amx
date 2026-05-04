@@ -751,27 +751,13 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         access_token = _ask_update_secret(
             "Access token", defaults.access_token or "", required=True
         )
-        # Probe the workspace for catalogs the user can actually see.
-        # Without this, a typo here ("sap" vs. "amx_test") silently
-        # saves and every ``amx`` startup later trips the
-        # SCHEMA_NOT_FOUND bootstrap warning.
-        probe_cfg_for_catalog = replace(
-            defaults,
-            backend="databricks",
-            host=host,
-            http_path=http_path,
-            access_token=access_token,
-            catalog="",
-            database="",
-        )
-        catalog = _ask_catalog_or_database_with_picker(
-            label="Unity Catalog",
-            current_value=defaults.catalog or "",
-            optional=True,
-            probe_cfg=probe_cfg_for_catalog,
-            listing_kind="catalogs",
-        )
-        database = _ask_update_text("Schema / database (optional)", defaults.database or "")
+        # Ask TLS settings BEFORE probing the workspace. Corporate
+        # Databricks setups frequently sit behind a self-signed proxy,
+        # and the previous wizard order (probe-then-TLS) blew up with
+        # SSLCertVerificationError on the very first ``SHOW CATALOGS``
+        # call — the fallback masked the cert problem and pushed the
+        # user back to free-form input. Asking TLS first means the
+        # picker probe respects the user's trust settings.
         tls_trusted_ca_file = _ask_update_text(
             "Trusted CA bundle path (optional, for corporate/self-signed TLS)",
             defaults.tls_trusted_ca_file or "",
@@ -780,6 +766,42 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Disable TLS certificate verification? (insecure; use only if a trusted CA bundle is not available)",
             bool(defaults.tls_no_verify),
         )
+        # Gate the catalog probe behind an explicit yes/no. Probing
+        # always involves a live SHOW CATALOGS round-trip; on flaky or
+        # restricted networks that's a 30-second wait followed by an
+        # unhelpful warning. When the user already knows their catalog
+        # name (typical second-time-through case) they should just type
+        # it instead of paying the round-trip cost.
+        probe_catalogs = _ask_update_bool(
+            "List the available Unity Catalog catalogs from the workspace? "
+            "(uses the credentials you just entered to run SHOW CATALOGS)",
+            current=False,
+        )
+        if probe_catalogs:
+            probe_cfg_for_catalog = replace(
+                defaults,
+                backend="databricks",
+                host=host,
+                http_path=http_path,
+                access_token=access_token,
+                catalog="",
+                database="",
+                tls_trusted_ca_file=tls_trusted_ca_file,
+                tls_no_verify=tls_no_verify,
+            )
+            catalog = _ask_catalog_or_database_with_picker(
+                label="Unity Catalog",
+                current_value=defaults.catalog or "",
+                optional=True,
+                probe_cfg=probe_cfg_for_catalog,
+                listing_kind="catalogs",
+            )
+        else:
+            catalog = _ask_update_text(
+                "Unity Catalog (optional)",
+                defaults.catalog or "",
+            )
+        database = _ask_update_text("Schema / database (optional)", defaults.database or "")
         return replace(
             defaults,
             backend="databricks",
