@@ -1260,9 +1260,7 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
 
         fake = FakeDB()
         toolbox = self._toolbox(fake)
-        payload = toolbox._tool_describe_table(
-            schema="amx_test_schema", table="customers"
-        )
+        payload = toolbox._tool_describe_table(schema="amx_test_schema", table="customers")
         self.assertTrue(payload["found"])
         self.assertEqual(payload["catalog"], "amx_test")
         self.assertEqual(fake.observed_catalog, "amx_test")
