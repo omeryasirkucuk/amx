@@ -33,7 +33,11 @@ _theme = Theme(
 )
 
 _real_console = Console(theme=_theme)
-_null_console = Console(file=open(os.devnull, "w"), theme=_theme, force_terminal=False)
+# Long-lived /dev/null sink the proxy routes to while a thread is in
+# ``quiet_console()``. Process-lifetime resource — closing it via a
+# ``with`` block would defeat the proxy, so SIM115 is suppressed.
+_devnull_handle = open(os.devnull, "w")  # noqa: SIM115
+_null_console = Console(file=_devnull_handle, theme=_theme, force_terminal=False)
 
 _BANNER_SHOWN = False
 
