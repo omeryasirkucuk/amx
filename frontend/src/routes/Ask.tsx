@@ -7,6 +7,7 @@ import AskChat, { type SubmittedTurn } from "../components/AskChat";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
+import { Skeleton, Tooltip, useToast } from "../components/ui";
 
 interface SessionRow {
   id: number;
@@ -95,32 +96,35 @@ export default function Ask() {
     queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
   }
 
+  const toast = useToast();
   const endSession = useMutation({
     mutationFn: (id: number) =>
       apiFetch(`/api/ask/sessions/${id}/end`, { method: "POST" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+      toast.push({ title: "Session ended", tone: "info", duration: 2200 });
     },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Could not end session",
+        description: e.message,
+        tone: "error",
+      }),
   });
 
   return (
     <>
-      <PageHeader
-        eyebrow="Conversational"
-        title="Ask"
-        description="Chat with the AMX search agent over your live database, catalog, and run history."
-      />
+      <PageHeader title="Ask" breadcrumbs={[{ label: "Ask" }]} />
 
       <div className="grid gap-4 md:grid-cols-[18rem_1fr]">
         <Card>
           <CardHeader
             title="Sessions"
-            description="Recent /ask threads — CLI and visualizer share the same SQLite-backed history."
             actions={
               <button
                 type="button"
                 onClick={startNewSession}
-                className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface px-2 py-1 text-[11px] font-medium text-ink-muted transition hover:border-accent/40 hover:text-ink"
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-medium text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink"
               >
                 <Plus size={12} /> New
               </button>
@@ -128,7 +132,14 @@ export default function Ask() {
           />
           <CardBody className="max-h-[60vh] overflow-y-auto p-0">
             {sessions.isLoading ? (
-              <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
+              <ul className="divide-y divide-border">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <li key={i} className="px-4 py-3 space-y-1.5">
+                    <Skeleton className="h-3 w-2/3" />
+                    <Skeleton className="h-3 w-full" />
+                  </li>
+                ))}
+              </ul>
             ) : sessions.data?.sessions?.length ? (
               <ul className="divide-y divide-surface-border">
                 {sessions.data.sessions.map((session) => {
@@ -170,18 +181,20 @@ export default function Ask() {
                         )}
                       </button>
                       {isOpen && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            endSession.mutate(session.id);
-                          }}
-                          disabled={endSession.isPending}
-                          title="End this session — next /ask starts a new one"
-                          className="px-2 text-ink-dim opacity-0 transition hover:bg-warning/10 hover:text-warning group-hover:opacity-100 disabled:opacity-50"
-                        >
-                          <CircleStop size={14} />
-                        </button>
+                        <Tooltip content="End session — next /ask starts a new one">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              endSession.mutate(session.id);
+                            }}
+                            disabled={endSession.isPending}
+                            aria-label="End session"
+                            className="px-2 text-ink-dim opacity-0 transition-colors duration-fast hover:bg-warning-soft hover:text-warning group-hover:opacity-100 disabled:opacity-50"
+                          >
+                            <CircleStop size={14} />
+                          </button>
+                        </Tooltip>
                       )}
                     </li>
                   );

@@ -185,21 +185,34 @@ export default function AskChat({
 
       <Card className="p-3">
         <form onSubmit={handleSubmit} className="flex items-end gap-2">
-          <textarea
-            ref={inputRef}
-            className="min-h-[44px] flex-1 resize-none rounded-md border border-surface-border bg-surface px-3 py-2 text-sm placeholder:text-ink-dim focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-            placeholder={activeJob ? "Waiting for answer…" : "Ask AMX…"}
-            value={question}
-            disabled={!!activeJob}
-            onChange={(e) => setQuestion(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmit(e);
-              }
-            }}
-            rows={1}
-          />
+          <div className="relative flex-1">
+            <textarea
+              ref={inputRef}
+              className="min-h-[44px] w-full resize-none rounded-md border border-border bg-surface-raised px-3 py-2 pr-16 text-sm text-ink placeholder:text-ink-dim focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+              placeholder={activeJob ? "Waiting for answer…" : "Ask AMX…"}
+              value={question}
+              disabled={!!activeJob}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
+              rows={1}
+            />
+            {!activeJob && (
+              <span
+                className="pointer-events-none absolute bottom-1.5 right-2 inline-flex items-center gap-1 text-[10px] text-ink-dim"
+                aria-hidden="true"
+              >
+                <kbd className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded border border-border bg-surface-subtle px-1 font-mono text-[10px] text-ink-muted">
+                  ↵
+                </kbd>
+                send
+              </span>
+            )}
+          </div>
           {activeJob ? (
             <button
               type="button"
