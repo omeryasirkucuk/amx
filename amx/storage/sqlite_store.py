@@ -966,22 +966,22 @@ class SQLiteHistoryStore:
                 f"SELECT COUNT(*) AS n FROM analysis_runs {where}", params
             ).fetchone()["n"]
             ok_runs = conn.execute(
-                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'success'"
+                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'success'"
                 + (" AND command = ?" if command_filter else ""),
                 params,
             ).fetchone()["n"]
             fail_runs = conn.execute(
-                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'failed'"
+                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'failed'"
                 + (" AND command = ?" if command_filter else ""),
                 params,
             ).fetchone()["n"]
             review_runs = conn.execute(
-                f"SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'ready_for_review'"
+                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'ready_for_review'"
                 + (" AND command = ?" if command_filter else ""),
                 params,
             ).fetchone()["n"]
             avg_duration = conn.execute(
-                f"SELECT AVG(duration_sec) AS v FROM analysis_runs WHERE duration_sec IS NOT NULL"
+                "SELECT AVG(duration_sec) AS v FROM analysis_runs WHERE duration_sec IS NOT NULL"
                 + (" AND command = ?" if command_filter else ""),
                 params,
             ).fetchone()["v"]
@@ -990,7 +990,7 @@ class SQLiteHistoryStore:
             ).fetchone()["v"]
             total_events = conn.execute("SELECT COUNT(*) AS n FROM app_events").fetchone()["n"]
             metrics_rows = conn.execute(
-                f"SELECT metrics_json FROM analysis_runs WHERE metrics_json IS NOT NULL"
+                "SELECT metrics_json FROM analysis_runs WHERE metrics_json IS NOT NULL"
                 + (" AND command = ?" if command_filter else ""),
                 params,
             ).fetchall()
