@@ -208,6 +208,36 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ comment }),
     }),
+  restorePending: (body: {
+    result_id?: number | null;
+    schema: string;
+    table: string;
+    column?: string | null;
+    final_description: string;
+    confidence?: string;
+    source?: string;
+    asset_kind?: string;
+    alternatives?: string[];
+    logprob_score?: number | null;
+  }) =>
+    apiFetch<{ ok: boolean; idx: number; count: number; already_present: boolean }>(
+      "/api/pending/restore",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  enableHistoryStore: (body: { profile: string; schema?: string; database?: string }) =>
+    apiFetch<{
+      enabled: boolean;
+      profile: string;
+      schema: string;
+      database: string;
+    }>("/api/admin/history-store/enable", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  disableHistoryStore: () =>
+    apiFetch<{ enabled: boolean }>("/api/admin/history-store/disable", {
+      method: "POST",
+    }),
   setSchemaComment: (schema: string, comment: string) =>
     apiFetch<{ schema: string; comment: string }>(
       `/api/comments/schemas/${encodeURIComponent(schema)}`,

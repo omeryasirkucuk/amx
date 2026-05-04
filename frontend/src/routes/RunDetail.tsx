@@ -710,14 +710,44 @@ function ResultsTab({
       queryClient.invalidateQueries({ queryKey: ["pending"] });
       toast.push({
         title: "Skipped",
-        description: "Removed from the pending queue.",
+        description: "Removed from the pending queue. You can restore it any time.",
         tone: "info",
-        duration: 1800,
+        duration: 2000,
       });
     },
     onError: (e: Error) =>
       toast.push({
         title: "Skip failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
+  const restorePending = useMutation({
+    mutationFn: (vars: {
+      result_id: number | null;
+      schema: string;
+      table: string;
+      column: string | null;
+      final_description: string;
+      confidence: string;
+      source: string;
+      asset_kind: string;
+      alternatives: string[];
+      logprob_score: number | null;
+    }) => api.restorePending(vars),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pending"] });
+      toast.push({
+        title: "Restored",
+        description: "Back in the pending queue. Apply will write it on next run.",
+        tone: "success",
+        duration: 2000,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Restore failed",
         description: e.message,
         tone: "error",
       }),
@@ -798,9 +828,19 @@ function ResultsTab({
             }
           }}
           onTerminal={() => {
-            queryClient.invalidateQueries({ queryKey: ["pending"] });
-            queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
-            queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+            // Refresh twice: the worker writes both row.applied_at
+            // and the pending file, but the SSE terminal event can
+            // arrive a tick before the SQLite write has been
+            // observed by a fresh GET. Two invalidations 1 s apart
+            // make the post-apply state stick visually.
+            const refresh = () => {
+              queryClient.invalidateQueries({ queryKey: ["pending"] });
+              queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
+              queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+              queryClient.invalidateQueries({ queryKey: ["stats"] });
+            };
+            refresh();
+            window.setTimeout(refresh, 1200);
             toast.push({
               title: "Apply finished",
               description: "Pending queue and applied badges refreshed.",
@@ -836,7 +876,26 @@ function ResultsTab({
                       if (!pendingEntry) return;
                       skipPending.mutate(pendingEntry.idx);
                     }}
-                    isMutating={patchPending.isPending || skipPending.isPending}
+                    restoreRow={(description) => {
+                      const alts = normalizeAlternatives(r.alternatives_json);
+                      restorePending.mutate({
+                        result_id: r.id ?? null,
+                        schema: r.schema_name,
+                        table: r.table_name,
+                        column: r.column_name,
+                        final_description: description,
+                        confidence: r.confidence || "medium",
+                        source: r.source || "user_restore",
+                        asset_kind: r.asset_kind || "table",
+                        alternatives: alts,
+                        logprob_score: r.logprob_score,
+                      });
+                    }}
+                    isMutating={
+                      patchPending.isPending ||
+                      skipPending.isPending ||
+                      restorePending.isPending
+                    }
                   />
                 );
               })}
@@ -853,12 +912,14 @@ function ResultRowItem({
   pendingEntry,
   pickAlternative,
   skipRow,
+  restoreRow,
   isMutating,
 }: {
   row: ResultRow;
   pendingEntry?: PendingEntry;
   pickAlternative: (description: string) => void;
   skipRow: () => void;
+  restoreRow: (description: string) => void;
   isMutating: boolean;
 }) {
   const sourceAlts = pendingEntry
@@ -937,18 +998,26 @@ function ResultRowItem({
         ) : (
           visible.map((alt, idx) => {
             const isChosen = alt === chosen;
+            // Editable rows pick a new chosen alternative; skipped
+            // rows clicking an alternative restore them to pending
+            // with that alternative as the chosen description.
             const canPick = editable && !isChosen;
+            const canRestore = skipped;
+            const clickable = canPick || canRestore;
             return (
               <button
                 key={`${row.id}-${idx}`}
                 type="button"
-                onClick={() => canPick && pickAlternative(alt)}
-                disabled={!canPick || isMutating}
+                onClick={() => {
+                  if (canPick) pickAlternative(alt);
+                  else if (canRestore) restoreRow(alt);
+                }}
+                disabled={!clickable || isMutating}
                 title={
                   applied
                     ? "Already applied — re-run to change."
-                    : !pendingEntry
-                      ? "This row isn't in the pending queue (re-run or open it for editing)."
+                    : skipped
+                      ? "Click to restore this row to the pending queue with this alternative chosen."
                       : isChosen
                         ? "Currently chosen alternative"
                         : "Make this the chosen alternative"
@@ -957,8 +1026,10 @@ function ResultRowItem({
                   "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-fast",
                   isChosen
                     ? "border-accent/40 bg-accent-soft/40 text-ink"
-                    : "border-border text-ink-muted hover:border-accent/40 hover:bg-surface-subtle/50 hover:text-ink",
-                  (!canPick || isMutating) && !isChosen && "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
+                    : skipped
+                      ? "border-warning/30 text-ink-muted hover:border-warning/60 hover:bg-warning-soft/30 hover:text-ink"
+                      : "border-border text-ink-muted hover:border-accent/40 hover:bg-surface-subtle/50 hover:text-ink",
+                  (!clickable || isMutating) && !isChosen && "cursor-default opacity-70 hover:border-border hover:bg-transparent hover:text-ink-muted",
                 )}
               >
                 <span
@@ -975,6 +1046,11 @@ function ResultRowItem({
               </button>
             );
           })
+        )}
+        {skipped && visible.length > 0 && (
+          <p className="px-1 text-[10.5px] text-ink-dim">
+            Skipped — click any alternative above to restore this row.
+          </p>
         )}
       </div>
     </li>
