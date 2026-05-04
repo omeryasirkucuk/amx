@@ -2,66 +2,100 @@
 @tailwind components;
 @tailwind utilities;
 
-/* CSS variables for the dark+light theme. Tailwind's `darkMode: class`
-   strategy reads `.dark` on <html>; PR-F adds the toggle, but we
-   already ship matching tokens for both modes so the SPA looks
-   sensible whichever scheme the OS prefers. */
+/* AMX visualizer design tokens.
+   Warm-neutral palette + amber accent. CSS custom properties power
+   both Tailwind classes (theme.extend.colors) and a small set of
+   ad-hoc utilities. The .dark variant ships matching tokens so the
+   theme toggle is a single class swap on <html>. */
 :root {
   color-scheme: light dark;
-  --surface: 248 250 252;
-  --surface-subtle: 241 245 249;
+
+  /* Warm-gray surfaces (Stone family). Avoids the generic blue-tinted
+     "modern SaaS" feel of the previous slate palette. */
+  --bg: 250 250 249;
+  --surface: 255 255 255;
+  --surface-subtle: 244 244 242;
   --surface-raised: 255 255 255;
-  --surface-border: 226 232 240;
-  --ink: 15 23 42;
-  --ink-muted: 51 65 85;
-  --ink-dim: 100 116 139;
-  --accent: 79 70 229;
-  --accent-soft: 224 231 255;
-  --accent-ink: 55 48 163;
-  --positive: 16 185 129;
-  --warning: 217 119 6;
-  --critical: 220 38 38;
+  --border: 231 229 228;
+  --border-strong: 214 211 209;
+
+  --ink: 28 25 23;
+  --ink-muted: 87 83 78;
+  --ink-dim: 168 162 158;
+
+  /* Amber accent — AMX signature. Replaces indigo. */
+  --accent: 194 65 12;
+  --accent-soft: 255 237 213;
+  --accent-ink: 154 52 18;
+
+  --positive: 21 128 61;
+  --positive-soft: 220 252 231;
+  --warning: 161 98 7;
+  --warning-soft: 254 243 199;
+  --critical: 185 28 28;
+  --critical-soft: 254 226 226;
+  --info: 14 116 144;
+  --info-soft: 207 250 254;
+
+  /* Motion scale — small, purposeful. Sub-200ms for hover/focus,
+     ~200ms for layout transitions. Components honour
+     prefers-reduced-motion via a global utility below. */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .dark {
-  --surface: 11 16 32;
-  --surface-subtle: 18 24 47;
-  --surface-raised: 23 30 60;
-  --surface-border: 39 47 84;
-  --ink: 226 232 240;
-  --ink-muted: 148 163 184;
-  --ink-dim: 100 116 139;
-  --accent: 129 140 248;
-  --accent-soft: 49 46 129;
-  --accent-ink: 199 210 254;
-  --positive: 52 211 153;
-  --warning: 251 191 36;
+  --bg: 15 15 14;
+  --surface: 26 25 24;
+  --surface-subtle: 19 17 15;
+  --surface-raised: 31 29 27;
+  --border: 42 39 35;
+  --border-strong: 61 57 52;
+
+  --ink: 245 244 242;
+  --ink-muted: 168 162 158;
+  --ink-dim: 120 113 108;
+
+  --accent: 251 146 60;
+  --accent-soft: 67 20 7;
+  --accent-ink: 254 215 170;
+
+  --positive: 74 222 128;
+  --positive-soft: 5 46 22;
+  --warning: 234 179 8;
+  --warning-soft: 66 32 6;
   --critical: 248 113 113;
+  --critical-soft: 69 10 10;
+  --info: 34 211 238;
+  --info-soft: 8 51 68;
 }
 
-/* Smooth font rendering on Retina + force the Tailwind-tuned colors
-   on the body so the SPA never flashes the user's default white. */
 html, body, #root {
   height: 100%;
 }
 
 body {
-  background-color: rgb(var(--surface));
+  background-color: rgb(var(--bg));
   color: rgb(var(--ink));
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Subtle scrollbar tuning so the asset tree + run lists don't look
-   like a 90s-era admin panel on Windows. */
+/* Quiet scrollbars — desktop browsers; mobile uses native overlay. */
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
-  background: rgb(var(--surface-border));
+  background: rgb(var(--border-strong));
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
@@ -70,4 +104,37 @@ body {
   background: rgb(var(--ink-dim));
   border: 2px solid transparent;
   background-clip: content-box;
+}
+
+/* Reduced-motion users get instant transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Subtle pulse for live status dots (running/queued jobs). */
+@keyframes amx-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.amx-pulse {
+  animation: amx-pulse 1.6s var(--ease-out) infinite;
+}
+
+/* Skeleton shimmer for loading states. */
+@keyframes amx-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.amx-skeleton {
+  background-image: linear-gradient(
+    90deg,
+    rgb(var(--surface-subtle)) 0%,
+    rgb(var(--border)) 50%,
+    rgb(var(--surface-subtle)) 100%
+  );
+  background-size: 200% 100%;
+  animation: amx-shimmer 1.6s linear infinite;
 }

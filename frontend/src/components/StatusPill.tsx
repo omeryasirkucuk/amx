@@ -1,23 +1,18 @@
-import { cn } from "../lib/cn";
+import type { ReactNode } from "react";
+
+import Badge, { type BadgeTone } from "./ui/Badge";
 
 interface Props {
-  tone?: "neutral" | "accent" | "positive" | "warning" | "critical";
-  children: React.ReactNode;
+  tone?: BadgeTone;
+  children: ReactNode;
 }
 
+/**
+ * Compatibility shim: StatusPill is the original badge component
+ * used across the routes. New code should import `Badge` directly
+ * from `components/ui`. This wrapper keeps the existing call sites
+ * (RunsList, Home, etc.) working without an immediate rewrite.
+ */
 export default function StatusPill({ tone = "neutral", children }: Props) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
-        tone === "neutral" && "bg-surface-subtle text-ink-muted",
-        tone === "accent" && "bg-accent-soft text-accent-ink",
-        tone === "positive" && "bg-positive/10 text-positive",
-        tone === "warning" && "bg-warning/10 text-warning",
-        tone === "critical" && "bg-critical/10 text-critical",
-      )}
-    >
-      {children}
-    </span>
-  );
+  return <Badge tone={tone}>{children}</Badge>;
 }

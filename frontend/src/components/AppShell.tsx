@@ -11,7 +11,7 @@ import { cn } from "../lib/cn";
 export default function AppShell() {
   const sidebarCollapsed = useUi((s) => s.sidebarCollapsed);
   return (
-    <div className="flex min-h-screen flex-col bg-surface text-ink">
+    <div className="flex min-h-screen flex-col bg-bg text-ink">
       <TopBar />
       <div className="flex flex-1 min-h-0">
         <aside
