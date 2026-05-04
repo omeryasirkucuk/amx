@@ -14,7 +14,7 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
-import { Button } from "../components/ui";
+import { Button, Skeleton } from "../components/ui";
 
 // Landing dashboard — counts, recent runs, jump-off into the deeper
 // routes. Reads /api/context, /api/history/stats, /api/history/runs.
@@ -83,7 +83,16 @@ export default function Home() {
           />
           <CardBody className="p-0">
             {runs.isLoading ? (
-              <div className="px-5 py-6 text-sm text-ink-dim">Loading recent runs…</div>
+              <ul className="divide-y divide-border">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <li key={i} className="flex items-center gap-3 px-5 py-2.5">
+                    <Skeleton className="h-3 w-10" />
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-3 w-32" />
+                    <Skeleton className="ml-auto h-4 w-16" />
+                  </li>
+                ))}
+              </ul>
             ) : runs.error ? (
               <div className="px-5 py-6 text-sm text-critical">
                 {(runs.error as Error).message}
