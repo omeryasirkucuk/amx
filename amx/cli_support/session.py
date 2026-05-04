@@ -22,6 +22,9 @@ from amx.cli_support.commands.db import (
     cmd_cleanup_placeholders as _cmd_cleanup_placeholders,
 )
 from amx.cli_support.commands.db import (
+    cmd_edit_profile as _cmd_edit_profile,
+)
+from amx.cli_support.commands.db import (
     cmd_inspect as _cmd_inspect,
 )
 from amx.cli_support.commands.db import (
@@ -226,27 +229,25 @@ Commands (in order):
   Profile management:
   2) /db-profiles                  List DB profiles (Backend + connection summary)
   3) /use-db [name]                Switch profile (interactive list shows [engine] per profile)
-  4) /add-db-profile [name]        Create/update profile — pick PostgreSQL, Snowflake, Databricks, or BigQuery
-  5) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
+  4) /add-db-profile [name]        Create a new profile — pick engine, then connection details
+  5) /edit-db-profile [name]       Edit an existing profile — current values prefilled,
+                                   catalog/database validated against the live backend
+  6) /remove-db-profile <name>     Remove a DB profile (cannot remove last)
 
   Profile settings:
-  6) /profiling [mode] [max] [N]   Show/set profiling guardrails
-  7) /tls [on|off] [ca|clear]      Show/set Databricks TLS settings
-
-  Active context:
-  8) /schema <name>                Set current schema context (used by /tables)
-  9) /table <name>                 Set current table context (used by /profile)
+  7) /profiling [mode] [max] [N]   Show/set profiling guardrails
+  8) /tls [on|off] [ca|clear]      Show/set Databricks TLS settings
 
   Connection & inspection:
- 10) /connect                      Test DB connectivity
- 11) /schemas                      List schemas
- 12) /tables [schema]              List tables (defaults to current schema)
- 13) /profile [schema] [table]     Profile a table (defaults to current context)
- 14) /inspect [profile]            Diagnose a profile: backend, capabilities, connection
+  9) /connect                      Test DB connectivity
+ 10) /schemas                      List schemas
+ 11) /tables [schema]              List tables in <schema>
+ 12) /profile [schema] [table]     Profile a table — pass schema + table positionally
+ 13) /inspect [profile]            Diagnose a profile: backend, capabilities, connection
                                    test, visible schemas, table counts. Read-only.
 
   Team collaboration:
- 15) /history-store                Configure shared run-history. Bare command opens an
+ 14) /history-store                Configure shared run-history. Bare command opens an
                                    interactive picker — Status, Enable, Disable,
                                    Migrate from local, Flush pending, Dump DDL — based
                                    on whether shared mode is on. Power-user shortcuts
@@ -254,7 +255,7 @@ Commands (in order):
                                    /history-store status).
 
   Maintenance:
- 16) /cleanup-placeholders [schema]
+ 15) /cleanup-placeholders [schema]
                                    Remove auto-inference fallback placeholder strings
                                    ("Auto-inference missed a reliable description; please
                                    review manually.") from the live DB. Use this once when
@@ -445,7 +446,7 @@ Commands (in order):
                                      Database — all schemas, all assets
                                      Schema   — select schema(s), all assets
                                      Asset    — specific tables/views
-                                     Default  — current /db schema and optional /table
+                                     Default  — interactive picker if no scope flags
   3) /run-apply [ASSET …] [--schema …] [--table …]   Same as /run --apply
   4) /apply                        Write pending comments to the database
 
@@ -543,7 +544,7 @@ Getting started (in order):
  10) /history                      Local SQLite history (/list, /show, /stats, /events)
 
 Inside namespaces (examples):
-  [bright_white]/db[/bright_white]   → /db-profiles, /schema, /table, /connect, /history-store, …
+  [bright_white]/db[/bright_white]   → /db-profiles, /add-db-profile, /edit-db-profile, /connect, /history-store, …
   [bright_white]/llm[/bright_white]   → /llm-profiles, /add-llm-profile, …
   [bright_white]/docs[/bright_white] → /doc-profiles, /add-doc-profile, /ingest, …
   [bright_white]/code[/bright_white] → /code-profiles, /add-code-profile, …
@@ -561,12 +562,9 @@ Examples:
   [bright_white]/db[/bright_white]
   [bright_white]/connect[/bright_white]
   [bright_white]/schemas[/bright_white]
-  [bright_white]/schema sap_s6p[/bright_white]
-  [bright_white]/tables[/bright_white]
-  [bright_white]/table t001[/bright_white]
-  [bright_white]/profile[/bright_white]
+  [bright_white]/tables sap_s6p[/bright_white]
+  [bright_white]/profile sap_s6p t001[/bright_white]
   [bright_white]/analyze[/bright_white]
-  [bright_white]/code-scan[/bright_white]  (after /schema …, uses active /code profile path)
   [bright_white]/code-scan https://github.com/org/repo --schema sap_s6p[/bright_white]
   [bright_white]/code-analyze vbrk vbrp[/bright_white]  (run Code Agent standalone on specific tables)
   [bright_white]/doc-analyze vbrk[/bright_white]  (run RAG Agent standalone)
@@ -831,6 +829,11 @@ def _handle_session_builtin(
             return True
         _cmd_add_profile(cfg, parts[1:], log_event=log_event)
         return True
+    if head == "edit-db-profile":
+        if not _require_namespace(head, namespace, "db", "edit-db-profile"):
+            return True
+        _cmd_edit_profile(cfg, parts[1:], log_event=log_event)
+        return True
     if head == "remove-db-profile":
         if not _require_namespace(head, namespace, "db", "remove-db-profile"):
             return True
@@ -885,26 +888,6 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "search", head):
             return True
         _cmd_embeddings(cfg, parts[1:])
-        return True
-    if head == "schema":
-        if not _require_namespace(head, namespace, "db", "schema"):
-            return True
-        if len(parts) < 2:
-            error("Usage: /schema <name> (inside /db)")
-            return True
-        cfg.current_schema = parts[1]
-        cfg.save()
-        info(f"Current schema set to: {cfg.current_schema}")
-        return True
-    if head == "table":
-        if not _require_namespace(head, namespace, "db", "table"):
-            return True
-        if len(parts) < 2:
-            error("Usage: /table <name> (inside /db)")
-            return True
-        cfg.current_table = parts[1]
-        cfg.save()
-        info(f"Current table set to: {cfg.current_table}")
         return True
     return False
 

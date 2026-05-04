@@ -156,9 +156,7 @@ def register_code_commands(
 
         schema_name = schema or cfg.current_schema
         if not schema_name:
-            error(
-                "Missing schema: use --schema sap_s6p or set context with `/db` then `/schema …` in session."
-            )
+            error("Missing schema: pass --schema sap_s6p (or use /run's interactive picker).")
             sys.exit(1)
 
         try:

@@ -422,6 +422,129 @@ def cmd_use(
         error(str(exc))
 
 
+def _ask_catalog_or_database_with_picker(
+    *,
+    label: str,
+    current_value: str,
+    optional: bool,
+    probe_cfg: DBConfig,
+    listing_kind: str,
+) -> str:
+    """Offer a picker over the catalogs/databases the live backend reports.
+
+    Replaces the historical free-form prompt at this stage of the
+    wizard. The user typed a non-existent catalog (``sap``) on a
+    Databricks workspace where it didn't exist; the profile saved
+    silently, and every subsequent ``amx`` startup raised
+    SCHEMA_NOT_FOUND when the lazy bootstrap reached for the missing
+    schema. With a picker, that class of footgun cannot happen unless
+    the user explicitly bypasses it via "type custom value" + a
+    "save anyway?" confirm.
+
+    Falls back to the free-form prompt when listing fails (no driver,
+    permission denied, network down). The fallback path emits one
+    ``warn()`` so the user knows validation is degraded, but the wizard
+    still progresses — you can configure a profile while offline.
+    """
+    from amx.db.connector import DatabaseConnector
+
+    info(f"Probing the {probe_cfg.backend} backend for available {listing_kind}…")
+    candidates: list[str] = []
+    listing_error: BaseException | None = None
+    try:
+        connector = DatabaseConnector(probe_cfg)
+        if listing_kind == "catalogs":
+            candidates = list(connector.list_catalogs() or [])
+        else:
+            candidates = list(connector.list_databases() or [])
+    except BaseException as exc:  # noqa: BLE001 — we genuinely want every failure mode
+        listing_error = exc
+
+    if not candidates:
+        if listing_error is not None:
+            warn(
+                f"Could not probe {listing_kind} ({listing_error.__class__.__name__}). "
+                "Falling back to free-form input — double-check spelling."
+            )
+        else:
+            warn(
+                f"Backend returned no {listing_kind} (role lacks visibility, or "
+                "discovery is unsupported). Falling back to free-form input."
+            )
+        return _ask_update_text(
+            f"{label.capitalize()} (optional)" if optional else label.capitalize(),
+            current_value,
+            required=not optional,
+            allow_clear=optional,
+        )
+
+    keep_label = f"(keep current: {current_value})" if current_value else ""
+    custom_label = "(type custom value)"
+    none_label = "(none)" if optional else ""
+
+    choices: list[str] = []
+    descriptions: dict[str, str] = {}
+    if keep_label:
+        choices.append(keep_label)
+        descriptions[keep_label] = (
+            f"Keep the existing value {current_value!r}."
+            if current_value in candidates
+            else f"Keep {current_value!r} (NOT visible in current listing)."
+        )
+    if none_label:
+        choices.append(none_label)
+        descriptions[none_label] = f"Leave {label} unset — pick at command time."
+    for value in candidates:
+        if value == current_value:
+            continue  # already covered by the keep-current entry
+        choices.append(value)
+    choices.append(custom_label)
+    descriptions[custom_label] = (
+        "Type a name not in the listing (only when discovery is permission-blocked)."
+    )
+
+    default = keep_label or none_label or candidates[0]
+    picked = ask_choice(
+        f"Select {label}",
+        choices,
+        default=default,
+        descriptions=descriptions,
+    )
+
+    if not picked or picked == keep_label:
+        return current_value
+    if picked == none_label:
+        return ""
+    if picked != custom_label:
+        return picked
+
+    # Free-form escape hatch — keep the listing visible so the user can
+    # tell whether they're typing a real name or going off-piste.
+    info(f"Available {listing_kind}: {', '.join(candidates) or '(none)'}")
+    typed = _ask_update_text(
+        f"{label.capitalize()} (custom)",
+        current_value,
+        required=not optional,
+        allow_clear=optional,
+    )
+    if typed and typed not in candidates:
+        warn(
+            f"{typed!r} is NOT in the listing returned by the backend. "
+            f"This is the same class of bug that produced the SCHEMA_NOT_FOUND "
+            f"warning — only override if you know discovery is permission-blocked."
+        )
+        if not confirm("Save anyway?", default=False):
+            warn("Re-opening the picker so you can pick a real value.")
+            return _ask_catalog_or_database_with_picker(
+                label=label,
+                current_value=current_value,
+                optional=optional,
+                probe_cfg=probe_cfg,
+                listing_kind=listing_kind,
+            )
+    return typed
+
+
 def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
     """Interactive prompts to build a DBConfig for any supported backend.
 
@@ -537,12 +660,24 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         password = _ask_update_secret("Password", defaults.password or "", required=True)
         # Pinning a default database is now OPTIONAL (0.11.0). When the
         # user leaves it blank we connect to the server and they can pick
-        # the database at /run / /sync / /ask time. Encourage filling it
-        # in for single-DB workflows by keeping the prompt example and
-        # using ``allow_clear=True`` so an explicit blank is accepted.
-        database = _ask_update_text(
-            "Database name (optional, e.g. postgres — leave blank to pick at command time)",
-            defaults.database or "",
+        # the database at /run / /sync / /ask time. The picker below
+        # confirms the typed name actually exists on the server before
+        # saving — same gate the Databricks catalog prompt added.
+        probe_cfg_for_db = replace(
+            defaults,
+            backend="postgresql",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database="",
+        )
+        database = _ask_catalog_or_database_with_picker(
+            label="database",
+            current_value=defaults.database or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_db,
+            listing_kind="databases",
         )
         return replace(
             defaults,
@@ -565,10 +700,21 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Username (e.g. ANALYST)", defaults.user, required=True, allow_clear=False
         )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
-        # Optional in 0.11.0 — see note on PostgreSQL above.
-        database = _ask_update_text(
-            "Database name (optional, e.g. ANALYTICS — leave blank to pick at command time)",
-            defaults.database,
+        # Optional in 0.11.0 — same picker pattern as PostgreSQL.
+        probe_cfg_for_db = replace(
+            defaults,
+            backend="snowflake",
+            account=account,
+            user=user,
+            password=password,
+            database="",
+        )
+        database = _ask_catalog_or_database_with_picker(
+            label="database",
+            current_value=defaults.database or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_db,
+            listing_kind="databases",
         )
         warehouse = _ask_update_text(
             "Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or ""
@@ -605,7 +751,26 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
         access_token = _ask_update_secret(
             "Access token", defaults.access_token or "", required=True
         )
-        catalog = _ask_update_text("Unity Catalog name (optional)", defaults.catalog or "")
+        # Probe the workspace for catalogs the user can actually see.
+        # Without this, a typo here ("sap" vs. "amx_test") silently
+        # saves and every ``amx`` startup later trips the
+        # SCHEMA_NOT_FOUND bootstrap warning.
+        probe_cfg_for_catalog = replace(
+            defaults,
+            backend="databricks",
+            host=host,
+            http_path=http_path,
+            access_token=access_token,
+            catalog="",
+            database="",
+        )
+        catalog = _ask_catalog_or_database_with_picker(
+            label="Unity Catalog",
+            current_value=defaults.catalog or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_catalog,
+            listing_kind="catalogs",
+        )
         database = _ask_update_text("Schema / database (optional)", defaults.database or "")
         tls_trusted_ca_file = _ask_update_text(
             "Trusted CA bundle path (optional, for corporate/self-signed TLS)",
@@ -672,9 +837,21 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Username (e.g. analyst)", defaults.user or "", required=True, allow_clear=False
         )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
-        database = _ask_update_text(
-            "Database name (optional — leave blank to pick at command time)",
-            defaults.database or "",
+        probe_cfg_for_db = replace(
+            defaults,
+            backend="mysql",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database="",
+        )
+        database = _ask_catalog_or_database_with_picker(
+            label="database",
+            current_value=defaults.database or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_db,
+            listing_kind="databases",
         )
         return replace(
             defaults,
@@ -754,9 +931,21 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Username (e.g. sa)", defaults.user or "", required=True, allow_clear=False
         )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
-        database = _ask_update_text(
-            "Database name (optional — leave blank to pick at command time)",
-            defaults.database or "",
+        probe_cfg_for_db = replace(
+            defaults,
+            backend="mssql",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database="",
+        )
+        database = _ask_catalog_or_database_with_picker(
+            label="database",
+            current_value=defaults.database or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_db,
+            listing_kind="databases",
         )
         driver = _ask_update_text(
             "ODBC driver name (default: 'ODBC Driver 18 for SQL Server')",
@@ -805,9 +994,21 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Username (e.g. admin)", defaults.user or "", required=True, allow_clear=False
         )
         password = _ask_update_secret("Password", defaults.password or "", required=True)
-        database = _ask_update_text(
-            "Database name (e.g. dev — leave blank to pick at command time)",
-            defaults.database or "",
+        probe_cfg_for_db = replace(
+            defaults,
+            backend="redshift",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database="",
+        )
+        database = _ask_catalog_or_database_with_picker(
+            label="database",
+            current_value=defaults.database or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_db,
+            listing_kind="databases",
         )
         cluster = _ask_update_text(
             "Cluster identifier (optional, only needed for IAM auth)",
@@ -853,9 +1054,22 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             defaults.password or "",
             required=False,
         )
-        database = _ask_update_text(
-            "Database (e.g. analytics — leave blank to pick at command time)",
-            defaults.database or "",
+        probe_cfg_for_db = replace(
+            defaults,
+            backend="clickhouse",
+            host=host,
+            port=int(port_raw),
+            user=user,
+            password=password,
+            database="",
+            secure=secure,
+        )
+        database = _ask_catalog_or_database_with_picker(
+            label="database",
+            current_value=defaults.database or "",
+            optional=True,
+            probe_cfg=probe_cfg_for_db,
+            listing_kind="databases",
         )
         return replace(
             defaults,
@@ -893,17 +1107,20 @@ def cmd_add_profile(
     name = rest[0] if len(rest) >= 1 else ask("Profile name", default="local")
     existing = cfg.db_profiles.get(name)
     if existing is not None:
-        info(f"Editing profile: {name}")
-        # Editing an existing profile — keep its current values as
-        # defaults so the user can press Enter to skip unchanged fields.
-        db = interactive_db_block(existing)
-    else:
-        info(f"Creating new profile: {name}")
-        # New profile — every prompt starts blank. We deliberately do
-        # NOT use ``cfg.db`` (the active profile) as defaults here, or a
-        # /add-db-profile would silently pre-fill with the active
-        # profile's host / token / etc.
-        db = interactive_db_block(None)
+        # Add and edit are now two clean, non-overlapping channels —
+        # silently switching to edit mode here used to surprise users
+        # who typed an existing name by accident. Surface the collision
+        # and point them at /edit-db-profile.
+        error(
+            f"Profile {name!r} already exists. Run `/edit-db-profile {name}` to change its values."
+        )
+        return
+    info(f"Creating new profile: {name}")
+    # New profile — every prompt starts blank. We deliberately do
+    # NOT use ``cfg.db`` (the active profile) as defaults here, or a
+    # /add-db-profile would silently pre-fill with the active
+    # profile's host / token / etc.
+    db = interactive_db_block(None)
     # Use the safe upsert + transactional set_active path. The previous inline
     # ``cfg.active_db_profile = name; cfg.db = db`` ordering tripped the
     # autosave hook between the two assignments — the intermediate save() ran
@@ -923,6 +1140,70 @@ def cmd_add_profile(
             event_type="db_profile_upsert",
             status="success",
             command="add-db-profile",
+            details={"profile": name, "backend": db.backend},
+        )
+
+
+def cmd_edit_profile(
+    cfg: AMXConfig,
+    rest: list[str],
+    *,
+    log_event: LogEvent | None = None,
+) -> None:
+    """Edit an existing DB profile — pick by name, walk the wizard
+    with current values prefilled.
+
+    Replaces the silent edit-on-collision behaviour that ``/add-db-profile``
+    used to have. The wizard helpers (``_ask_update_text`` /
+    ``_ask_update_secret`` / ``_ask_update_bool``) already render
+    ``[Enter keeps current]`` hints, so the user can step through and
+    only change what they need. Saving never auto-switches the active
+    profile unless the edited profile WAS already active — touching one
+    profile must not silently move the user's working scope.
+    """
+    available = sorted(cfg.db_profiles.keys())
+    if not available:
+        error("No profiles configured. Use `/add-db-profile` to create one.")
+        return
+
+    if len(rest) >= 1:
+        name = rest[0]
+        if name not in cfg.db_profiles:
+            error(f"Unknown profile: {name!r}. Available: {', '.join(available)}.")
+            return
+    else:
+        descriptions = {n: f"[{p.backend}] {p.display_summary}" for n, p in cfg.db_profiles.items()}
+        picked = ask_choice(
+            "Select profile to edit",
+            available,
+            default=cfg.active_db_profile or available[0],
+            descriptions=descriptions,
+        )
+        if not picked:
+            error("No profile selected.")
+            return
+        name = picked
+
+    info(f"Editing profile: {name}")
+    existing = cfg.db_profiles[name]
+    db = interactive_db_block(existing)
+
+    was_active = cfg.active_db_profile == name
+    with cfg.transaction():
+        cfg.upsert_db_profile(name, db)
+        if was_active:
+            # Refresh cfg.db / mirrors so the rest of the session sees
+            # the edits without forcing the user to re-run /use-db.
+            cfg.set_active_db_profile(name)
+    if was_active:
+        success(f"Profile saved (still active): {name} [{db.backend}]")
+    else:
+        success(f"Profile saved: {name} [{db.backend}] (active stays {cfg.active_db_profile!r})")
+    if log_event is not None:
+        log_event(
+            event_type="db_profile_edit",
+            status="success",
+            command="edit-db-profile",
             details={"profile": name, "backend": db.backend},
         )
 

@@ -113,6 +113,11 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
         "Switch DB scope. Single: /use-db prod_pg. Multi (0.11+): /use-db prod_pg analytics_bq → persisted multi-profile scope for /ask /run /sync.",
     ),
     SlashCommand("/add-db-profile", "db", "Add profile — choose engine then connection details"),
+    SlashCommand(
+        "/edit-db-profile",
+        "db",
+        "Edit existing DB profile — current values prefilled, validates catalog/database against the live backend (/edit-db-profile [<name>])",
+    ),
     SlashCommand("/remove-db-profile", "db", "Remove DB profile (/remove-db-profile <name>)"),
     # Profile settings
     SlashCommand(
@@ -121,9 +126,6 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
         "Show/set profiling guardrails (/profiling [full|sampled|metadata] [max_rows|off] [sample_size])",
     ),
     SlashCommand("/tls", "db", "Show/set Databricks TLS settings (/tls [on|off] [ca_path|clear])"),
-    # Active context
-    SlashCommand("/schema", "db", "Set current schema (/schema <name>)"),
-    SlashCommand("/table", "db", "Set current table (/table <name>)"),
     # Connection & inspection
     SlashCommand("/connect", "db", "Test DB connectivity"),
     SlashCommand("/schemas", "db", "List schemas"),

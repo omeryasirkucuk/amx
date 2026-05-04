@@ -140,8 +140,8 @@ def _resolve_runs(
 
     if not eff_schema and not eff_table:
         error(
-            "No scope to compare — pass run IDs, set /schema, or use "
-            "--schema/--table. Example: /compare --schema sales --last 3."
+            "No scope to compare — pass run IDs or use --schema/--table. "
+            "Example: /compare --schema sales --last 3."
         )
         return []
 
