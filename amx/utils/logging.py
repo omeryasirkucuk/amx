@@ -99,16 +99,52 @@ _human_fmt = logging.Formatter(
 )
 
 
+class _EncodingSafeStreamHandler(logging.StreamHandler):
+    """StreamHandler that never crashes on a non-encodable glyph.
+
+    Windows consoles default to cp1252, which can't encode common log
+    characters: the human formatter contains an em-dash (—), and call-
+    sites use arrows (→) and ellipses (…) liberally. The default
+    ``StreamHandler.emit`` re-raises ``UnicodeEncodeError`` straight up
+    the call stack, which on Windows surfaces as a "Logging error"
+    block plus a multi-frame traceback printed in the middle of the
+    interactive REPL — once per affected log call.
+
+    Catch the encode error, re-render the message with the stream's
+    own codec under ``errors='replace'``, and write that. The user
+    sees a ``?`` instead of ``→`` on cp1252; on every other codec the
+    fast path runs and nothing changes.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except UnicodeEncodeError:
+            try:
+                msg = self.format(record)
+                stream = self.stream
+                enc = getattr(stream, "encoding", None) or "ascii"
+                stream.write(msg.encode(enc, errors="replace").decode(enc) + self.terminator)
+                self.flush()
+            except Exception:
+                self.handleError(record)
+
+
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(f"amx.{name}")
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
         logger.addFilter(_RequestIdFilter())
-        fh = logging.FileHandler(LOG_DIR / "amx.log")
+        # Pin the on-disk log to UTF-8 explicitly. Without this, Python
+        # on Windows opens the file with the platform default codec
+        # (cp1252), and any log message containing →, —, … — including
+        # ones produced by the human formatter itself — raises
+        # UnicodeEncodeError on emit.
+        fh = logging.FileHandler(LOG_DIR / "amx.log", encoding="utf-8")
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(JsonFormatter())
         logger.addHandler(fh)
-        sh = logging.StreamHandler(sys.stderr)
+        sh = _EncodingSafeStreamHandler(sys.stderr)
         sh.setLevel(logging.WARNING)
         sh.setFormatter(_human_fmt)
         logger.addHandler(sh)
