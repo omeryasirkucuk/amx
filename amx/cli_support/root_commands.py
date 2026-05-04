@@ -131,6 +131,34 @@ def register_root_commands(
         saved = cfg.save()
         success(f"Configuration saved to {saved}")
 
+    @main.command()
+    @click.option(
+        "--port",
+        type=int,
+        default=None,
+        help="Listen port (defaults to 47821, falls back to a free ephemeral port).",
+    )
+    @click.option(
+        "--no-open",
+        "no_open",
+        is_flag=True,
+        default=False,
+        help="Skip auto-opening the browser (useful in headless environments).",
+    )
+    @click.pass_obj
+    def visualize(cfg: AMXConfig, port: int | None, no_open: bool) -> None:
+        """Launch the local web visualizer and open it in your browser."""
+        try:
+            from amx.web import launch_visualize
+        except ImportError as exc:  # pragma: no cover - belt-and-braces; web extras are core
+            error(
+                "FastAPI / uvicorn aren't available. "
+                "Run `pip install --upgrade amx-cli` to pull in the visualizer dependencies. "
+                f"Underlying import error: {exc}"
+            )
+            return
+        launch_visualize(cfg, port=port, open_browser=not no_open)
+
     @main.group()
     def db() -> None:
         """Database inspection, profiling, and shared run-history commands."""

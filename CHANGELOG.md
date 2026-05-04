@@ -6,6 +6,47 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` slash command + local web UI backend skeleton (PR-A)
+
+First slice of the local AMX web UI. Typing `/visualize` from the
+REPL boots a FastAPI backend on `127.0.0.1:<port>` (defaults to
+47821, falls back to a free ephemeral port), generates a one-shot
+URL-safe bearer token, and opens the user's default browser at
+`http://127.0.0.1:<port>/?t=<token>`. Pressing Ctrl-C in the parent
+terminal stops the server.
+
+This PR ships the backend scaffolding and a minimal placeholder
+landing page; the React/Vite SPA arrives in PR-B.
+
+What's included:
+
+- `amx/web/` package: `server.py` (FastAPI app factory), `launcher.py`
+  (uvicorn-in-thread + browser open + Ctrl-C handling), `auth.py`
+  (token middleware accepting `Authorization: Bearer …` and `?t=…`
+  fallback for SSE / EventSource), `jobs.py` (`Job` + `JobRegistry`
+  skeleton), `progress_bus.py` (per-job event queue powering future
+  SSE streams), `schemas.py` (pydantic DTOs), `deps.py` (FastAPI DI
+  helpers).
+- `amx/web/routers/system.py` — `GET /api/health`, `/api/version`,
+  `/api/context`. The SPA hits these on boot to confirm the token
+  works and render the active-profile pills.
+- `amx/web/static/index.html` — placeholder page with token-capture
+  JS so the protocol works end-to-end before the SPA bundle exists.
+- `/visualize` registered in the slash-command catalog
+  (`amx/cli_support/slash_commands.py`) and dispatched as a top-level
+  Click subcommand (`amx/cli_support/root_commands.py`) with
+  `--port` / `--no-open` flags.
+- Core deps: `fastapi>=0.110`, `uvicorn[standard]>=0.27`,
+  `sse-starlette>=2.0`. Static SPA bundle is shipped via
+  `[tool.setuptools.package-data] "amx.web" = ["static/**/*"]` so a
+  plain `pip install amx-cli` carries everything.
+- `Makefile` with `web-build` / `web-dev` / `web-clean` targets that
+  no-op gracefully until PR-B initialises `frontend/`.
+- 14 new tests under `tests/web/` covering auth (header, query, no
+  token, malformed scheme, unauthenticated index + SPA route
+  fallback), the three system endpoints, and the launcher's port
+  picker (preferred + ephemeral fallback).
+
 ## [0.12.7] - 2026-05-04
 
 ### Added — first-class `databricks_serving` LLM provider

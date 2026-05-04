@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AMX Visualizer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b1020">
+<style>
+  :root { color-scheme: light dark; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh; margin: 0; padding: 2rem;
+    background: linear-gradient(180deg, #0b1020 0%, #131836 100%);
+    color: #e6e7ee;
+    line-height: 1.55;
+  }
+  .card {
+    max-width: 38rem; padding: 2.25rem 2.5rem; border-radius: 16px;
+    background: rgba(19, 24, 54, 0.85);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(8px);
+  }
+  h1 { margin: 0 0 0.5rem 0; font-size: 1.5rem; letter-spacing: -0.01em; font-weight: 600; }
+  p  { margin: 0.5rem 0; opacity: 0.85; }
+  code, kbd {
+    background: rgba(255, 255, 255, 0.07); padding: 0.1em 0.4em; border-radius: 5px;
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.95em;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.4em;
+    padding: 0.2em 0.65em; border-radius: 999px;
+    background: rgba(86, 156, 214, 0.18); color: #8cc6ff;
+    font-size: 0.8em; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .pill::before { content: ""; width: 6px; height: 6px; background: #8cc6ff; border-radius: 50%; }
+  ul { padding-left: 1.2rem; }
+  ul li { margin: 0.25rem 0; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <span class="pill">backend up</span>
+    <h1>AMX Visualizer — coming soon</h1>
+    <p>The local visualizer backend is running. The polished SPA bundle ships in PR-B; until then this page is the placeholder.</p>
+    <p>You can still hit the JSON API directly:</p>
+    <ul>
+      <li><code>GET /api/health</code></li>
+      <li><code>GET /api/version</code></li>
+      <li><code>GET /api/context</code></li>
+    </ul>
+    <p>Every <code>/api/*</code> request needs the bearer token from the URL <code>?t=…</code> parameter — drop it into <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+    <p>Press <kbd>Ctrl-C</kbd> in the parent terminal to stop the visualizer.</p>
+  </div>
+  <script>
+    // Capture the token the launcher embedded in the URL, stash it in
+    // localStorage, and strip it from the address bar so it doesn't end
+    // up in the browser history. PR-B's SPA does the same on boot.
+    (function captureToken() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const token = params.get("t");
+        if (!token) return;
+        window.localStorage.setItem("amx.visualizer.token", token);
+        params.delete("t");
+        const next = window.location.pathname + (params.toString() ? "?" + params.toString() : "");
+        window.history.replaceState({}, document.title, next);
+      } catch (err) {
+        // localStorage might be disabled (private mode); the SPA falls
+        // back to keeping the token in the URL. Not fatal here.
+      }
+    })();
+  </script>
+</body>
+</html>
