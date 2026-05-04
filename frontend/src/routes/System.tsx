@@ -18,6 +18,7 @@ import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
+import { AlertDialog, Button, useToast } from "../components/ui";
 
 interface DoctorCheck {
   name: string;
@@ -75,20 +76,54 @@ const WINDOWS: Array<{ id: string; label: string }> = [
   { id: "all", label: "All time" },
 ];
 
+const SECTIONS: Array<{ id: string; label: string; icon: typeof Stethoscope }> = [
+  { id: "doctor", label: "Doctor", icon: Stethoscope },
+  { id: "usage", label: "Token usage", icon: Wallet },
+  { id: "catalog", label: "Catalog", icon: Database },
+  { id: "history", label: "Team history", icon: Users },
+  { id: "maintenance", label: "Maintenance", icon: Wrench },
+];
+
 export default function System() {
   return (
     <>
-      <PageHeader
-        eyebrow="Admin"
-        title="System"
-        description="Diagnostics, token usage + cost, and search catalog status — the same data the CLI's /doctor, /usage, and /search status surface."
-      />
-      <div className="space-y-4">
-        <DoctorCard />
-        <UsageCard />
-        <CatalogStatusCard />
-        <HistoryStoreCard />
-        <MaintenanceCard />
+      <PageHeader title="System" breadcrumbs={[{ label: "System" }]} />
+      <div className="grid gap-6 md:grid-cols-[10rem_1fr]">
+        <nav
+          aria-label="System sections"
+          className="hidden md:block"
+        >
+          <ul className="sticky top-4 flex flex-col gap-0.5 text-sm">
+            {SECTIONS.map((s) => (
+              <li key={s.id}>
+                <a
+                  href={`#sys-${s.id}`}
+                  className="flex items-center gap-2 rounded px-2 py-1 text-ink-muted transition-colors duration-fast hover:bg-surface-subtle hover:text-ink"
+                >
+                  <s.icon size={13} className="text-ink-dim" />
+                  {s.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <div className="space-y-4">
+          <section id="sys-doctor" className="scroll-mt-4">
+            <DoctorCard />
+          </section>
+          <section id="sys-usage" className="scroll-mt-4">
+            <UsageCard />
+          </section>
+          <section id="sys-catalog" className="scroll-mt-4">
+            <CatalogStatusCard />
+          </section>
+          <section id="sys-history" className="scroll-mt-4">
+            <HistoryStoreCard />
+          </section>
+          <section id="sys-maintenance" className="scroll-mt-4">
+            <MaintenanceCard />
+          </section>
+        </div>
       </div>
     </>
   );
@@ -483,8 +518,9 @@ interface CleanupResult {
 }
 
 function MaintenanceCard() {
+  const toast = useToast();
   const [result, setResult] = useState<CleanupResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
 
   const cleanup = useMutation({
     mutationFn: () =>
@@ -494,11 +530,20 @@ function MaintenanceCard() {
       }),
     onSuccess: (data) => {
       setResult(data);
-      setError(null);
+      setConfirm(false);
+      toast.push({
+        title: "Cleanup complete",
+        description: `${data.tables_cleared ?? 0} table(s) · ${data.columns_cleared ?? 0} column(s)`,
+        tone: "success",
+      });
     },
-    onError: (e) => {
-      setError(e instanceof Error ? e.message : "Cleanup failed.");
-      setResult(null);
+    onError: (e: Error) => {
+      setConfirm(false);
+      toast.push({
+        title: "Cleanup failed",
+        description: e.message,
+        tone: "error",
+      });
     },
   });
 
@@ -511,31 +556,25 @@ function MaintenanceCard() {
             Maintenance
           </span>
         }
-        description="One-shot ops that don't fit anywhere else. Right now: strip auto-inference placeholder text from every COMMENT in the active database."
       />
       <CardBody className="space-y-3">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => cleanup.mutate()}
-            disabled={cleanup.isPending}
-            className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Wrench size={14} />}
+            loading={cleanup.isPending}
+            onClick={() => setConfirm(true)}
           >
-            <Wrench size={14} />
             {cleanup.isPending ? "Cleaning…" : "Cleanup placeholder COMMENTs"}
-          </button>
+          </Button>
           <span className="text-xs text-ink-dim">
-            Removes the <code className="font-mono">[inferred by AMX]</code> markers from
-            the live DB without touching the descriptions themselves.
+            Strips <code className="font-mono">[inferred by AMX]</code> markers
+            from live DB COMMENTs.
           </span>
         </div>
-        {error && (
-          <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
-            {error}
-          </div>
-        )}
         {result && (
-          <div className="rounded-md border border-positive/40 bg-positive/5 px-3 py-2 text-xs text-positive">
+          <div className="rounded-md border border-positive/40 bg-positive-soft px-3 py-2 text-xs text-positive">
             Cleared {result.tables_cleared ?? 0} table(s) and{" "}
             {result.columns_cleared ?? 0} column(s) across{" "}
             {(result.schemas ?? []).length} schema(s).
@@ -549,6 +588,16 @@ function MaintenanceCard() {
           </div>
         )}
       </CardBody>
+      <AlertDialog
+        open={confirm}
+        onClose={() => setConfirm(false)}
+        onConfirm={() => cleanup.mutate()}
+        loading={cleanup.isPending}
+        title="Strip placeholder markers from the live database?"
+        description="This rewrites every COMMENT containing the [inferred by AMX] marker, removing the marker but keeping the surrounding text. The change is permanent."
+        confirmLabel="Run cleanup"
+        tone="primary"
+      />
     </Card>
   );
 }
