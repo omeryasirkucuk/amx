@@ -144,14 +144,21 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
                     ("orders_view", AssetKind.VIEW),
                 ]
             ),
+            # Returned per asset so the router can flag which children
+            # already have a description vs. which still need one.
+            get_table_comment=MagicMock(
+                side_effect=lambda _schema, name: (
+                    "Order line items" if name == "orders" else ""
+                )
+            ),
         ),
     )
     response = client.get("/api/live/schemas/sales/assets", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["assets"] == [
-        {"name": "orders", "kind": "table"},
-        {"name": "orders_view", "kind": "view"},
+        {"name": "orders", "kind": "table", "comment": "Order line items"},
+        {"name": "orders_view", "kind": "view", "comment": ""},
     ]
 
 
