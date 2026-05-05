@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Database as DatabaseIcon, FolderTree, Sparkles } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
+import GenerateScopeDialog from "../components/GenerateScopeDialog";
 import { Button, InlineEditText, Skeleton, useToast } from "../components/ui";
 
 /**
@@ -20,7 +21,9 @@ export default function Database() {
   const profile = params.profile || "active";
   const qc = useQueryClient();
   const toast = useToast();
+  const navigate = useNavigate();
   const [draftDescription, setDraftDescription] = useState("");
+  const [confirmGenerate, setConfirmGenerate] = useState(false);
 
   const ctx = useQuery({
     queryKey: ["context"],
@@ -63,7 +66,13 @@ export default function Database() {
     });
   }
 
-  const generate = useMutation({
+  // Two flavours of "Generate":
+  // - Single-shot endpoint writes ONLY the database/catalog's own
+  //   COMMENT (no schemas, no tables, one LLM call). Fast.
+  // - Bulk run path spawns the full analyze.run worker scoped to
+  //   every reachable schema so every table + column under the
+  //   database also gets a generated description.
+  const generateDbOnly = useMutation({
     mutationFn: () => api.generateDatabaseDescription(),
     onSuccess: (result) => {
       setDraftDescription(result.description);
@@ -81,6 +90,35 @@ export default function Database() {
         description: e.message,
         tone: "error",
       }),
+  });
+
+  const generateBulk = useMutation({
+    mutationFn: () => {
+      const list = schemas.data?.schemas ?? [];
+      // Build a scope that spans every reachable schema; an empty
+      // table list under each schema means "every table".
+      const scope: Record<string, string[]> = {};
+      for (const s of list) scope[s] = [];
+      return api.submitRun({ scope, apply: true, missing_only: false });
+    },
+    onSuccess: (result) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Bulk run started",
+        description: "Streaming activity for every schema and table…",
+        tone: "info",
+        duration: 2200,
+      });
+      navigate(`/runs/new-${result.job_id}`);
+    },
+    onError: (e: Error) => {
+      setConfirmGenerate(false);
+      toast.push({
+        title: "Could not start generation",
+        description: e.message,
+        tone: "error",
+      });
+    },
   });
 
   const needsScope =
@@ -115,8 +153,9 @@ export default function Database() {
             variant="primary"
             size="md"
             leadingIcon={<Sparkles size={14} />}
-            loading={generate.isPending}
-            onClick={() => generate.mutate()}
+            loading={generateDbOnly.isPending || generateBulk.isPending}
+            disabled={!schemas.data && !schemas.isError}
+            onClick={() => setConfirmGenerate(true)}
           >
             Generate description
           </Button>
@@ -183,6 +222,37 @@ export default function Database() {
           )}
         </CardBody>
       </Card>
+
+      <GenerateScopeDialog
+        open={confirmGenerate}
+        onClose={() => setConfirmGenerate(false)}
+        title={`Generate description for ${headingLabel}`}
+        description={
+          supportsCatalog
+            ? "Pick the scope. Single-shot writes only the catalog's own COMMENT. Bulk run walks every schema, table and column under it."
+            : "Pick the scope. Single-shot writes only the database's own COMMENT. Bulk run walks every schema, table and column under it."
+        }
+        singleOption={{
+          label: supportsCatalog ? "Just this catalog" : "Just this database",
+          description:
+            "One fast LLM call that writes only the top-level COMMENT. Schemas and tables untouched.",
+          loading: generateDbOnly.isPending,
+          onClick: () => {
+            generateDbOnly.mutate(undefined, {
+              onSettled: () => setConfirmGenerate(false),
+            });
+          },
+        }}
+        bulkOption={{
+          label: "Everything (bulk run)",
+          description: schemas.data
+            ? `Full analyze.run worker over ${schemas.data.schemas.length} schema${schemas.data.schemas.length === 1 ? "" : "s"} — every table and column gets a generated description, recorded in history.`
+            : "Full analyze.run worker over every reachable schema and table.",
+          loading: generateBulk.isPending,
+          disabled: !schemas.data || schemas.data.schemas.length === 0,
+          onClick: () => generateBulk.mutate(),
+        }}
+      />
     </>
   );
 }
