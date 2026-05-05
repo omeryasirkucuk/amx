@@ -7,9 +7,9 @@ import { ApiError, api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
+import GenerateScopeDialog from "../components/GenerateScopeDialog";
 import StatusPill from "../components/StatusPill";
 import {
-  AlertDialog,
   Button,
   InlineEditText,
   Skeleton,
@@ -124,25 +124,15 @@ export default function Schema() {
           />
         }
         actions={
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="md"
-              leadingIcon={<Sparkles size={14} />}
-              loading={generateSchemaOnly.isPending}
-              onClick={() => generateSchemaOnly.mutate()}
-            >
-              Just this schema
-            </Button>
-            <Button
-              variant="primary"
-              size="md"
-              leadingIcon={<Sparkles size={14} />}
-              onClick={() => setConfirmGenerate(true)}
-            >
-              All tables (bulk run)
-            </Button>
-          </div>
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Sparkles size={14} />}
+            loading={generateSchemaOnly.isPending || generate.isPending}
+            onClick={() => setConfirmGenerate(true)}
+          >
+            Generate description
+          </Button>
         }
       />
 
@@ -206,15 +196,29 @@ export default function Schema() {
         </CardBody>
       </Card>
 
-      <AlertDialog
+      <GenerateScopeDialog
         open={confirmGenerate}
         onClose={() => setConfirmGenerate(false)}
-        onConfirm={() => generate.mutate()}
-        loading={generate.isPending}
-        tone="primary"
-        title={`Bulk run for every table in ${schema}?`}
-        description="Spawns the full analyze.run worker — every reachable table and column gets a generated description, the run is recorded in history, results land in the pending queue, and we redirect you to the run-detail page so you can watch the worker stream. Use 'Just this schema' instead if you only want the schema's own comment."
-        confirmLabel="Start bulk run"
+        title={`Generate description for ${schema}`}
+        description="Pick the scope. Single-shot writes only the schema's own COMMENT (one fast LLM call). Bulk run spawns the full analyze worker for every table and column under the schema."
+        singleOption={{
+          label: "Just this schema",
+          description:
+            "Writes only the schema's own COMMENT. One LLM call, no tables touched.",
+          loading: generateSchemaOnly.isPending,
+          onClick: () => {
+            generateSchemaOnly.mutate(undefined, {
+              onSettled: () => setConfirmGenerate(false),
+            });
+          },
+        }}
+        bulkOption={{
+          label: "All tables (bulk run)",
+          description:
+            "Full analyze.run worker — every reachable table and column gets a generated description; recorded in history, redirected to run-detail.",
+          loading: generate.isPending,
+          onClick: () => generate.mutate(),
+        }}
       />
     </>
   );
