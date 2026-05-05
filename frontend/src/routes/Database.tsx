@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { Database as DatabaseIcon, FolderTree, Sparkles } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
+import { cn } from "../lib/cn";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
@@ -223,22 +224,35 @@ export default function Database() {
             <div className="px-5 py-6 text-sm text-critical">
               {(schemas.error as Error).message}
             </div>
-          ) : schemas.data?.schemas?.length ? (
+          ) : schemas.data?.items?.length ? (
             <ul className="divide-y divide-border">
-              {schemas.data.schemas.map((s) => {
+              {schemas.data.items.map((item) => {
+                const s = item.name;
                 const isGenerating =
                   generateSchemaOne.isPending && generateSchemaOne.variables === s;
+                const comment = item.comment?.trim() ?? "";
                 return (
                   <li
                     key={s}
-                    className="group flex items-center text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
+                    className="group flex items-start text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
                   >
                     <Link
                       to={`/db/${profile}/${s}`}
-                      className="flex flex-1 items-center gap-3 px-5 py-2.5"
+                      className="flex flex-1 items-start gap-3 px-5 py-2.5"
                     >
-                      <FolderTree size={14} className="text-accent" />
-                      <span className="font-mono text-ink">{s}</span>
+                      <FolderTree size={14} className="mt-0.5 text-accent" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-mono text-ink">{s}</span>
+                        <span
+                          className={cn(
+                            "mt-0.5 line-clamp-2 block text-xs",
+                            comment ? "text-ink-muted" : "italic text-ink-dim/70",
+                          )}
+                          title={comment || undefined}
+                        >
+                          {comment || "no description yet"}
+                        </span>
+                      </span>
                     </Link>
                     <div className="px-3 py-2">
                       <Button
