@@ -237,12 +237,16 @@ class PromptCancelled(Exception):
     submitted an empty answer" (Enter on an empty buffer) and from
     "user killed the whole session" (Ctrl-C → KeyboardInterrupt).
 
-    The prompt helpers below catch this internally, print a one-line
-    "Cancelled." note so the user sees the keystroke landed, and
-    return the appropriate "no answer" sentinel for that helper
-    (empty string / empty list / False). Callers that need to tell
-    cancel apart from empty-Enter can wrap a call in their own
-    try/except — but in practice the same outcome works for both.
+    Pre-0.12.9 the prompt helpers swallowed this and returned an
+    empty/false sentinel — which silently let multi-step wizards
+    march past Esc with garbage state (e.g. ``/add-db-profile`` saved
+    a profile with an empty name when the user hit Esc on the very
+    first prompt). 0.12.9 onward the helpers re-raise so Esc bubbles
+    out of the entire wizard. The interactive session dispatcher is
+    the single boundary that prints "Cancelled." and returns to the
+    namespace prompt; individual callers that genuinely want
+    "Esc means empty answer" must wrap their prompt in their own
+    try/except.
     """
 
 
@@ -280,21 +284,15 @@ def _safe_pt_prompt(*args: Any, **kwargs: Any) -> str:
 
 
 def ask(question: str, default: str = "") -> str:
-    """Free-text prompt. Esc soft-cancels and returns ''."""
-    try:
-        return _safe_pt_prompt(f"  {question}: ", default=default).strip()
-    except PromptCancelled:
-        info("Cancelled.")
-        return ""
+    """Free-text prompt. Esc raises ``PromptCancelled`` so the whole
+    wizard aborts; the session dispatcher prints "Cancelled." once at
+    the boundary."""
+    return _safe_pt_prompt(f"  {question}: ", default=default).strip()
 
 
 def ask_password(question: str) -> str:
-    """Hidden prompt for secrets. Esc soft-cancels and returns ''."""
-    try:
-        return _safe_pt_prompt(f"  {question}: ", is_password=True).strip()
-    except PromptCancelled:
-        info("Cancelled.")
-        return ""
+    """Hidden prompt for secrets. Esc raises ``PromptCancelled``."""
+    return _safe_pt_prompt(f"  {question}: ", is_password=True).strip()
 
 
 def ask_choice(
@@ -307,6 +305,7 @@ def ask_choice(
 
     *descriptions* is an optional ``{choice: one-line-description}`` mapping shown next to each option.
     The input line is never pre-filled with the default text (so you can type ``2`` immediately).
+    Esc raises ``PromptCancelled`` to abort the surrounding wizard.
     """
     if not choices:
         return default
@@ -318,14 +317,7 @@ def ask_choice(
         console.print(f"    {i}. [bold]{c}[/bold]{desc}[dim]{mark}[/dim]")
     # Keep the prompt minimal: users can press Enter for default without extra hint text.
     # Do not pass default= to pt_prompt — it pre-fills the whole string and forces delete-before-2.
-    try:
-        answer = _safe_pt_prompt("  > ", completer=completer).strip()
-    except PromptCancelled:
-        # Esc → return the empty string so callers detect "no choice
-        # made" the same way they handle invalid input. Print a note
-        # so the keystroke does not feel like a no-op.
-        info("Cancelled.")
-        return ""
+    answer = _safe_pt_prompt("  > ", completer=completer).strip()
     if not answer:
         return default if default in choices else ""
     if answer.isdigit() and 1 <= int(answer) <= len(choices):
@@ -339,15 +331,11 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
     console.print(f"  [info]{question}[/info]")
     console.print(
         "  (comma-separated numbers or names; `all` = everything; "
-        "Enter alone cancels — no accidental 'run on every table'; Esc cancels too)"
+        "Enter alone cancels — no accidental 'run on every table'; Esc aborts the wizard)"
     )
     for i, c in enumerate(choices, 1):
         console.print(f"    {i}. {c}")
-    try:
-        raw = _safe_pt_prompt("  > ").strip()
-    except PromptCancelled:
-        info("Cancelled.")
-        return []
+    raw = _safe_pt_prompt("  > ").strip()
     if not raw:
         return []
     if raw.lower() == "all":
@@ -381,19 +369,14 @@ def ask_multi_choice(question: str, choices: list[str]) -> list[str]:
 
 
 def confirm(question: str, default: bool = True) -> bool:
-    """Yes/no prompt. Esc soft-cancels and returns False (treated as 'no').
-
-    The Esc-as-False convention is deliberate: every confirm() call in
-    AMX is a destructive or scoping decision (disable shared mode?
-    apply comments? proceed despite warnings?). False — "do not
-    proceed" — is the safe default for an explicit cancel.
+    """Yes/no prompt. Esc raises ``PromptCancelled`` so the surrounding
+    wizard aborts uniformly with the other prompt helpers; the
+    pre-0.12.9 behavior of treating Esc as a silent ``False`` made
+    intermediate-step Esc indistinguishable from "no" and let the
+    wizard keep walking.
     """
     suffix = " [Y/n]" if default else " [y/N]"
-    try:
-        answer = _safe_pt_prompt(f"  {question}{suffix}: ").strip().lower()
-    except PromptCancelled:
-        info("Cancelled.")
-        return False
+    answer = _safe_pt_prompt(f"  {question}{suffix}: ").strip().lower()
     if not answer:
         return default
     return answer in ("y", "yes")

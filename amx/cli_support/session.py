@@ -108,7 +108,7 @@ from amx.cli_support.slash_commands import (
     commands_for_namespace as _registry_commands_for_namespace,
 )
 from amx.config import SUPPORTED_BACKENDS, AMXConfig
-from amx.utils.console import console, error, heading, info, success, warn
+from amx.utils.console import PromptCancelled, console, error, heading, info, success, warn
 
 LogEvent = Callable[..., None]
 WarnNoPaths = Callable[..., None]
@@ -158,6 +158,18 @@ def _kb_escape_namespace() -> KeyBindings:
         else:
             event.app.exit(result="__amx_esc_root__")
 
+    @kb.add("c-c")
+    def _(event) -> None:  # type: ignore[no-untyped-def]
+        # Ctrl-C with text in the buffer clears the line (standard shell
+        # convention). On an empty prompt — i.e. the user is just sitting
+        # on a tab, not mid-input — leave the session entirely so Ctrl-C
+        # behaves as a quick exit instead of a no-op.
+        buf = event.app.current_buffer
+        if buf.text:
+            buf.reset()
+        else:
+            event.app.exit(result="__amx_exit__")
+
     @kb.add("right", filter=_is_buffer_empty)
     def _(event) -> None:  # type: ignore[no-untyped-def]
         curr = _NS_STATE.get("namespace", "")
@@ -173,6 +185,25 @@ def _kb_escape_namespace() -> KeyBindings:
     return kb
 
 
+_TAB_ORDER = ["root", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
+
+
+def _print_tab_bar(namespace: str) -> None:
+    """Render the namespace tab strip as console output (not as part of the
+    prompt). Keeping it above the variable-length hint anchors it to a
+    stable line right after the banner — otherwise the bar visibly jumps
+    each time the hint above it changes height between namespaces.
+    """
+    curr = namespace or "root"
+    parts: list[str] = []
+    for tab in _TAB_ORDER:
+        if tab == curr:
+            parts.append(f"[bold cyan][ {tab.upper()} ][/bold cyan]")
+        else:
+            parts.append(f"[grey50]{tab}[/grey50]")
+    console.print("  ".join(parts))
+
+
 def _print_namespace_hint(
     namespace: str,
     cfg: AMXConfig,
@@ -181,6 +212,7 @@ def _print_namespace_hint(
     print_interactive_startup_summary: Callable[[AMXConfig], None],
     print_db_namespace_hint: PrintDbHint,
 ) -> None:
+    _print_tab_bar(namespace)
     if not namespace:
         heading("AMX Interactive Session")
         print_interactive_startup_summary(cfg)
@@ -1117,15 +1149,13 @@ def run_interactive_session(
     )
 
     def _build_prompt_message(ns: str) -> HTML:
-        tabs = ["root", "db", "metadata", "docs", "llm", "code", "analyze", "search", "history"]
-        curr = ns or "root"
-        parts = []
-        for tab in tabs:
-            if tab == curr:
-                parts.append(f"<ansicyan><b>[ {tab.upper()} ]</b></ansicyan>")
-            else:
-                parts.append(f"<style fg='gray'>{tab}</style>")
-        return HTML(f"{'  '.join(parts)}\n<b>&gt;</b> ")
+        # Tabs are rendered separately via ``_print_tab_bar`` immediately
+        # under the banner so they stay at a fixed line as the user moves
+        # between namespaces. The prompt itself is just the input chevron
+        # — keeping it short means prompt_toolkit's redraw on every
+        # keystroke doesn't repaint a wide tab strip below the hint.
+        del ns
+        return HTML("<b>&gt;</b> ")
 
     try:
         while True:
@@ -1139,11 +1169,16 @@ def run_interactive_session(
                 success("Session closed.")
                 return
             except KeyboardInterrupt:
-                # Ctrl-C on the prompt resets the input line and stays
-                # in the session. To leave: /exit, /quit, or Ctrl-D.
+                # Reached only if the c-c key binding didn't fire (e.g. a
+                # nested prompt raised). Treat as a line reset so the user
+                # is never stuck.
                 console.print()
                 continue
 
+            if raw == "__amx_exit__":
+                console.print()
+                success("Session closed.")
+                return
             if raw == "__amx_esc_back__":
                 namespace = ""
                 console.clear()
@@ -1297,7 +1332,17 @@ def run_interactive_session(
                 _run_ask_repl(cfg, main_command=main_command, log_event=log_event)
                 continue
 
-            handled = _handle_session_builtin(cfg, namespace, parts, log_event=log_event)
+            try:
+                handled = _handle_session_builtin(cfg, namespace, parts, log_event=log_event)
+            except PromptCancelled:
+                # A prompt helper (ask/ask_choice/confirm/...) re-raised
+                # because the user pressed Esc. Wizards no longer
+                # silently absorb that with a "Cancelled." then keep
+                # walking — bubble it out, print a single note, and
+                # drop back to the namespace prompt with no partial
+                # state saved.
+                info("Cancelled.")
+                continue
             if handled == "exit":
                 success("Session closed.")
                 return
@@ -1318,6 +1363,10 @@ def run_interactive_session(
                 main_command.main(args=args, prog_name="amx", standalone_mode=False)
             except click.ClickException as exc:
                 error(_format_session_click_error(cmdline, exc))
+            except PromptCancelled:
+                # Same Esc-aborts-the-wizard pathway as the builtin
+                # dispatcher above, for Click-routed commands.
+                info("Cancelled.")
             except KeyboardInterrupt:
                 # Ctrl-C interrupts a running command but must NOT exit
                 # the session. KeyboardInterrupt is a BaseException

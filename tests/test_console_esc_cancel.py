@@ -3,25 +3,26 @@
 When the user presses Esc inside any AMX prompt
 (``ask`` / ``ask_password`` / ``ask_choice`` / ``ask_multi_choice``
 / ``confirm``), the underlying ``_safe_pt_prompt`` raises
-:class:`PromptCancelled`. Each helper must catch that, surface a
-"Cancelled." note (so the keystroke does not look like a no-op), and
-return the appropriate sentinel for that helper's contract:
+:class:`PromptCancelled`. Pre-0.12.9 each helper caught that and
+returned an empty/false sentinel — but multi-step wizards never
+checked the sentinel, so Esc let the wizard march on with garbage
+state (``/add-db-profile`` would save a profile with an empty
+name). The contract is now: helpers re-raise ``PromptCancelled``,
+and the interactive session dispatcher prints a single "Cancelled."
+at the wizard boundary.
 
-* ``ask`` / ``ask_password`` → empty string
-* ``ask_choice`` → empty string
-* ``ask_multi_choice`` → empty list
-* ``confirm`` → False (treated as 'no' — the safe answer for every
-  AMX confirm() which is always a destructive or scoping decision)
-
-These tests stub ``_safe_pt_prompt`` to raise the exception; the real
-prompt_toolkit binding is not exercised under pytest because pt_prompt
-needs a TTY that pytest does not provide. The keystroke→exception
-glue is verified manually in the user-facing flows.
+These tests stub ``_safe_pt_prompt`` to raise the exception; the
+real prompt_toolkit binding is not exercised under pytest because
+pt_prompt needs a TTY that pytest does not provide. The
+keystroke→exception glue is verified manually in the user-facing
+flows.
 """
 
 from __future__ import annotations
 
 from unittest.mock import patch
+
+import pytest
 
 from amx.utils import console as c
 from amx.utils.console import (
@@ -34,37 +35,40 @@ from amx.utils.console import (
 )
 
 
-def test_ask_returns_empty_on_esc() -> None:
+def test_ask_reraises_on_esc() -> None:
     with patch.object(c, "_safe_pt_prompt", side_effect=PromptCancelled()):
-        assert ask("name") == ""
+        with pytest.raises(PromptCancelled):
+            ask("name")
 
 
-def test_ask_password_returns_empty_on_esc() -> None:
+def test_ask_password_reraises_on_esc() -> None:
     with patch.object(c, "_safe_pt_prompt", side_effect=PromptCancelled()):
-        assert ask_password("token") == ""
+        with pytest.raises(PromptCancelled):
+            ask_password("token")
 
 
-def test_ask_choice_returns_empty_on_esc() -> None:
+def test_ask_choice_reraises_on_esc() -> None:
     with patch.object(c, "_safe_pt_prompt", side_effect=PromptCancelled()):
-        # The default would normally come back if the user pressed Enter
-        # on an empty buffer; Esc should bypass the default and return
-        # the empty string so callers see "no choice made".
-        assert ask_choice("pick", ["a", "b", "c"], default="b") == ""
+        with pytest.raises(PromptCancelled):
+            ask_choice("pick", ["a", "b", "c"], default="b")
 
 
-def test_ask_multi_choice_returns_empty_list_on_esc() -> None:
+def test_ask_multi_choice_reraises_on_esc() -> None:
     with patch.object(c, "_safe_pt_prompt", side_effect=PromptCancelled()):
-        assert ask_multi_choice("pick some", ["a", "b", "c"]) == []
+        with pytest.raises(PromptCancelled):
+            ask_multi_choice("pick some", ["a", "b", "c"])
 
 
-def test_confirm_returns_false_on_esc_regardless_of_default() -> None:
-    """Esc on a confirm() always means 'do not proceed', even when the
-    default would have been True (Enter → Yes). This is intentional —
-    every confirm() in AMX is destructive or scoping; explicit cancel
-    is the safe interpretation."""
+def test_confirm_reraises_on_esc() -> None:
+    """Esc on a confirm() now aborts the surrounding wizard rather
+    than silently returning False. Pre-0.12.9 the False return made
+    intermediate-step Esc indistinguishable from "no" and let the
+    wizard keep walking with partial state."""
     with patch.object(c, "_safe_pt_prompt", side_effect=PromptCancelled()):
-        assert confirm("Apply 200 comments?", default=True) is False
-        assert confirm("Drop schema?", default=False) is False
+        with pytest.raises(PromptCancelled):
+            confirm("Apply 200 comments?", default=True)
+        with pytest.raises(PromptCancelled):
+            confirm("Drop schema?", default=False)
 
 
 def test_prompt_cancelled_is_distinct_from_empty_input() -> None:
