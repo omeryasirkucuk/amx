@@ -16,12 +16,12 @@ import { cn } from "../lib/cn";
 export default function AppShell() {
   const sidebarCollapsed = useUi((s) => s.sidebarCollapsed);
   return (
-    <div className="flex min-h-screen flex-col bg-bg text-ink">
+    <div className="flex h-screen flex-col overflow-hidden bg-bg text-ink">
       <TopBar />
       <div className="flex flex-1 min-h-0">
         <aside
           className={cn(
-            "border-r border-border bg-surface-subtle/50 transition-all duration-fast",
+            "min-h-0 overflow-hidden border-r border-border bg-surface-subtle/50 transition-all duration-fast",
             sidebarCollapsed ? "w-12" : "w-64",
           )}
         >

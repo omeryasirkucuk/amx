@@ -15,6 +15,7 @@ from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from rich import box
 from rich.align import Align
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape as _markup_escape
 from rich.panel import Panel
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
@@ -177,6 +178,23 @@ def info(text: str) -> None:
     if is_quiet():
         return
     console.print(f"[info]ℹ  {_markup_escape(text)}[/info]")
+
+
+def info_markdown(text: str) -> None:
+    """Render an LLM-style answer with markdown (bold, code, tables, lists).
+
+    Used for /ask responses so backticked names render as inline code,
+    `**bold**` actually bolds, GFM tables become Rich tables, and long
+    comma-soup lists at least pick up syntactic highlighting. The leading
+    ``ℹ`` keeps parity with ``info()`` so the surrounding REPL still
+    looks consistent.
+    """
+    if is_quiet():
+        return
+    if not text:
+        return
+    console.print("[info]ℹ[/info]", end=" ")
+    console.print(Markdown(text, code_theme="ansi_dark", inline_code_lexer="text"))
 
 
 def success(text: str) -> None:
