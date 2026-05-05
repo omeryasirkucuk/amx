@@ -6,6 +6,7 @@ import { ChevronRight, ChevronDown, Database, FolderTree, Layers } from "lucide-
 import { ApiError, api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { InfoHint } from "./ui";
+import ProfilePicker from "./topbar/ProfilePicker";
 
 interface Props {
   collapsed: boolean;
@@ -73,19 +74,20 @@ function ProfilesSection() {
   const { data } = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
   return (
     <div className="space-y-0.5 text-sm">
-      <ProfileRow label="DB" value={data?.active_db_profile ?? "(none)"} />
-      <ProfileRow label="LLM" value={data?.active_llm_profile ?? "(none)"} />
-    </div>
-  );
-}
-
-function ProfileRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between rounded px-2 py-0.5 text-ink-muted">
-      <span className="text-[10px] uppercase tracking-wider text-ink-dim">
-        {label}
-      </span>
-      <span className="truncate font-mono text-[11px] text-ink">{value}</span>
+      <ProfilePicker
+        kind="db"
+        label="DB"
+        variant="row"
+        activeName={data?.active_db_profile ?? null}
+        tooltip={data?.db_backend ?? undefined}
+      />
+      <ProfilePicker
+        kind="llm"
+        label="LLM"
+        variant="row"
+        activeName={data?.active_llm_profile ?? null}
+        tooltip={data?.llm_model ?? undefined}
+      />
     </div>
   );
 }

@@ -1,10 +1,7 @@
 import { Link, NavLink, useLocation, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import {
   Activity,
-  Check,
-  ChevronDown,
   ChevronRight,
   Database,
   PanelLeft,
@@ -13,15 +10,11 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 
-import { api } from "../lib/api";
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
-import CommandPalette from "./CommandPalette";
 import IconButton from "./ui/IconButton";
-import { InfoHint } from "./ui";
 import Logo from "./brand/Logo";
 import StudioMark from "./brand/StudioMark";
-import ProfilePicker from "./topbar/ProfilePicker";
 
 const navItems = [
   { to: "/", label: "Browse", icon: Database, end: true, match: ["/"] },
@@ -35,29 +28,15 @@ const navItems = [
  * Persistent top bar. Three regions, left to right:
  *   1. Sidebar toggle + brand + breadcrumb (where am I?)
  *   2. Primary nav (where can I go?)
- *   3. Context pills (DB / LLM / catalog) + ⌘K + theme toggle
- *      (what scope am I working in?)
+ *
+ * Profile / database scope was previously rendered here as pills.
+ * It now lives only in the Sidebar's Profiles section so we don't
+ * surface the same control twice.
  */
 export default function TopBar() {
   const toggleSidebar = useUi((s) => s.toggleSidebar);
   const location = useLocation();
   const params = useParams();
-
-  const { data: ctx } = useQuery({
-    queryKey: ["context"],
-    queryFn: () => api.context(),
-  });
-  const catalogs = useQuery({
-    queryKey: ["live-catalogs"],
-    queryFn: () => api.liveCatalogs(),
-    retry: false,
-  });
-  const databases = useQuery({
-    queryKey: ["live-databases"],
-    queryFn: () => api.liveDatabases(),
-    retry: false,
-    enabled: catalogs.data ? !catalogs.data.supports_catalogs : false,
-  });
 
   const crumbs = useMemo(
     () => buildCrumbs(location.pathname, params),
@@ -133,56 +112,6 @@ export default function TopBar() {
             </NavLink>
           ))}
         </nav>
-
-        <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
-
-        <div className="flex items-center gap-1.5">
-          <ProfilePicker
-            kind="db"
-            label="DB"
-            activeName={ctx?.active_db_profile ?? null}
-            tooltip={ctx?.db_backend ?? undefined}
-          />
-          <InfoHint
-            placement="bottom"
-            text="Active database profile. Connection details live in Settings → Database."
-          />
-          {catalogs.data?.supports_catalogs && (
-            <>
-              <CatalogPicker
-                activeCatalog={catalogs.data.active_catalog}
-                catalogs={catalogs.data.catalogs}
-              />
-              <InfoHint
-                placement="bottom"
-                text="Which catalog inside this profile to work in."
-              />
-            </>
-          )}
-          {catalogs.data && !catalogs.data.supports_catalogs && databases.data && (
-            <>
-              <DatabasePicker
-                activeDatabase={databases.data.active_database}
-                databases={databases.data.databases}
-              />
-              <InfoHint
-                placement="bottom"
-                text="Which database inside this profile to work in."
-              />
-            </>
-          )}
-          <ProfilePicker
-            kind="llm"
-            label="LLM"
-            activeName={ctx?.active_llm_profile ?? null}
-            tooltip={ctx?.llm_model ?? undefined}
-          />
-          <InfoHint
-            placement="bottom"
-            text="Profile of the AI model that writes the descriptions."
-          />
-          <CommandPalette />
-        </div>
       </div>
     </header>
   );
@@ -229,190 +158,4 @@ function buildCrumbs(
   };
   if (root && labels[root]) return [{ label: labels[root] }];
   return [];
-}
-
-function CatalogPicker({
-  activeCatalog,
-  catalogs,
-}: {
-  activeCatalog: string | null;
-  catalogs: string[];
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const queryClient = useQueryClient();
-
-  const activate = useMutation({
-    mutationFn: (name: string) => api.activateCatalog(name, true),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["live-catalogs"] });
-      queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
-      queryClient.invalidateQueries({ queryKey: ["live-assets"] });
-      queryClient.invalidateQueries({ queryKey: ["context"] });
-      setOpen(false);
-    },
-  });
-
-  useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [open]);
-
-  const display = activeCatalog || "Select catalog";
-  const empty = catalogs.length === 0;
-
-  return (
-    <div className="relative" ref={wrapperRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
-          activeCatalog
-            ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
-            : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
-        )}
-      >
-        <span className="text-[10px] uppercase tracking-wider opacity-70">
-          Catalog
-        </span>
-        <span className="max-w-[8rem] truncate font-mono">{display}</span>
-        <ChevronDown size={12} className="opacity-70" />
-      </button>
-      {open && (
-        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
-          {empty ? (
-            <div className="px-3 py-2 text-xs text-ink-dim">No catalogs visible.</div>
-          ) : (
-            <ul className="max-h-72 overflow-y-auto py-1">
-              {catalogs.map((name) => {
-                const isActive = name === activeCatalog;
-                return (
-                  <li key={name}>
-                    <button
-                      type="button"
-                      onClick={() => activate.mutate(name)}
-                      disabled={activate.isPending}
-                      className={cn(
-                        "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-subtle disabled:opacity-50",
-                        isActive && "bg-surface-subtle/60",
-                      )}
-                    >
-                      <span className="truncate font-mono">{name}</span>
-                      {isActive && <Check size={12} className="text-accent" />}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {activate.isError && (
-            <div className="border-t border-border px-3 py-1.5 text-[11px] text-critical">
-              {activate.error instanceof Error
-                ? activate.error.message
-                : "Activation failed."}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DatabasePicker({
-  activeDatabase,
-  databases,
-}: {
-  activeDatabase: string | null;
-  databases: string[];
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const queryClient = useQueryClient();
-
-  const activate = useMutation({
-    mutationFn: (name: string) => api.activateDatabase(name, true),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["live-databases"] });
-      queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
-      queryClient.invalidateQueries({ queryKey: ["live-assets"] });
-      queryClient.invalidateQueries({ queryKey: ["context"] });
-      setOpen(false);
-    },
-  });
-
-  useEffect(() => {
-    if (!open) return;
-    function onClick(e: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [open]);
-
-  const display = activeDatabase || "Select database";
-  const empty = databases.length === 0;
-
-  return (
-    <div className="relative" ref={wrapperRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
-          activeDatabase
-            ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
-            : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
-        )}
-      >
-        <span className="text-[10px] uppercase tracking-wider opacity-70">
-          Database
-        </span>
-        <span className="max-w-[8rem] truncate font-mono">{display}</span>
-        <ChevronDown size={12} className="opacity-70" />
-      </button>
-      {open && (
-        <div className="absolute right-0 z-30 mt-1 w-56 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
-          {empty ? (
-            <div className="px-3 py-2 text-xs text-ink-dim">No databases visible.</div>
-          ) : (
-            <ul className="max-h-72 overflow-y-auto py-1">
-              {databases.map((name) => {
-                const isActive = name === activeDatabase;
-                return (
-                  <li key={name}>
-                    <button
-                      type="button"
-                      onClick={() => activate.mutate(name)}
-                      disabled={activate.isPending}
-                      className={cn(
-                        "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-surface-subtle disabled:opacity-50",
-                        isActive && "bg-surface-subtle/60",
-                      )}
-                    >
-                      <span className="truncate font-mono">{name}</span>
-                      {isActive && <Check size={12} className="text-accent" />}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {activate.isError && (
-            <div className="border-t border-border px-3 py-1.5 text-[11px] text-critical">
-              {activate.error instanceof Error
-                ? activate.error.message
-                : "Activation failed."}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
 }

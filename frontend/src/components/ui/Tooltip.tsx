@@ -112,7 +112,7 @@ export default function Tooltip({
           id={tooltipId}
           role="tooltip"
           className={cn(
-            "pointer-events-none absolute z-50 max-w-xs whitespace-nowrap rounded-md bg-ink px-2 py-1 text-[11px] font-medium text-bg shadow-md animate-fade-in",
+            "pointer-events-none absolute z-50 w-max max-w-xs whitespace-normal break-words rounded-md bg-ink px-2 py-1 text-left text-[11px] font-medium leading-snug text-bg shadow-md animate-fade-in",
             placementClasses[placement],
             className,
           )}
