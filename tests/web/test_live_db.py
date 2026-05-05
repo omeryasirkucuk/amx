@@ -147,9 +147,7 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
             # Returned per asset so the router can flag which children
             # already have a description vs. which still need one.
             get_table_comment=MagicMock(
-                side_effect=lambda _schema, name: (
-                    "Order line items" if name == "orders" else ""
-                )
+                side_effect=lambda _schema, name: "Order line items" if name == "orders" else ""
             ),
         ),
     )
