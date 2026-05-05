@@ -26,11 +26,15 @@ export default function Sidebar({ collapsed }: Props) {
     );
   }
   return (
-    <div className="h-full overflow-y-auto px-3 py-3">
-      <SectionTitle>Profiles</SectionTitle>
-      <ProfilesSection />
-      <SectionTitle className="mt-4">Live database</SectionTitle>
-      <LiveDbTree />
+    <div className="flex h-full flex-col">
+      <div className="px-3 pt-3">
+        <SectionTitle>Profiles</SectionTitle>
+        <ProfilesSection />
+        <SectionTitle className="mt-4">Live database</SectionTitle>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+        <LiveDbTree />
+      </div>
     </div>
   );
 }

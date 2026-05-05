@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Send, Sparkles, Wrench } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
 import { apiFetch } from "../lib/api";
@@ -160,7 +162,11 @@ export default function AskChat({
         )}
         {turns.map((turn, idx) => (
           <Bubble key={idx} role={turn.role}>
-            {turn.content}
+            {turn.role === "assistant" ? (
+              <MarkdownBody text={turn.content} />
+            ) : (
+              turn.content
+            )}
             {turn.toolCalls && turn.toolCalls.length > 0 && (
               <ToolCallList calls={turn.toolCalls} />
             )}
@@ -255,10 +261,10 @@ function Bubble({
     >
       <div
         className={cn(
-          "max-w-2xl break-words rounded-2xl px-4 py-2.5 text-sm shadow-sm",
+          "break-words rounded-2xl px-4 py-2.5 text-sm shadow-sm",
           role === "user"
-            ? "bg-accent text-accent-soft"
-            : "bg-surface-subtle text-ink",
+            ? "max-w-2xl bg-accent text-accent-soft"
+            : "min-w-0 max-w-[min(56rem,calc(100%-1rem))] bg-surface-subtle text-ink",
           pulsing && "animate-pulse",
         )}
       >
@@ -268,6 +274,91 @@ function Bubble({
           children
         )}
       </div>
+    </div>
+  );
+}
+
+function MarkdownBody({ text }: { text: string }) {
+  return (
+    <div className="markdown-body text-sm leading-relaxed">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+          ul: ({ children }) => (
+            <ul className="mb-2 ml-5 list-disc space-y-0.5 last:mb-0">{children}</ul>
+          ),
+          ol: ({ children }) => (
+            <ol className="mb-2 ml-5 list-decimal space-y-0.5 last:mb-0">{children}</ol>
+          ),
+          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+          h1: ({ children }) => (
+            <h1 className="mb-2 mt-3 text-base font-semibold first:mt-0">{children}</h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="mb-2 mt-3 text-sm font-semibold first:mt-0">{children}</h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="mb-1.5 mt-2 text-sm font-semibold first:mt-0">{children}</h3>
+          ),
+          strong: ({ children }) => <strong className="font-semibold text-ink">{children}</strong>,
+          em: ({ children }) => <em className="italic">{children}</em>,
+          code: ({ children, className }) => {
+            const isBlock = className?.startsWith("language-");
+            if (isBlock) {
+              return (
+                <code className={cn("font-mono text-[12px]", className)}>{children}</code>
+              );
+            }
+            return (
+              <code className="rounded bg-surface-subtle px-1 py-0.5 font-mono text-[12px] text-ink">
+                {children}
+              </code>
+            );
+          },
+          pre: ({ children }) => (
+            <pre className="mb-2 overflow-x-auto rounded-md bg-surface-subtle p-3 text-[12px] last:mb-0">
+              {children}
+            </pre>
+          ),
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-accent underline underline-offset-2 hover:opacity-80"
+            >
+              {children}
+            </a>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote className="mb-2 border-l-2 border-accent/50 pl-3 italic text-ink-muted last:mb-0">
+              {children}
+            </blockquote>
+          ),
+          hr: () => <hr className="my-3 border-surface-border" />,
+          table: ({ children }) => (
+            <div className="mb-2 overflow-x-auto last:mb-0">
+              <table className="min-w-full border-collapse text-[12px]">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => (
+            <thead className="bg-surface-subtle text-left">{children}</thead>
+          ),
+          tbody: ({ children }) => (
+            <tbody className="divide-y divide-surface-border">{children}</tbody>
+          ),
+          tr: ({ children }) => <tr>{children}</tr>,
+          th: ({ children }) => (
+            <th className="border border-surface-border px-2 py-1 font-semibold">{children}</th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-surface-border px-2 py-1 align-top">{children}</td>
+          ),
+        }}
+      >
+        {text}
+      </ReactMarkdown>
     </div>
   );
 }
