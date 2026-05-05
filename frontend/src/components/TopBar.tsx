@@ -145,7 +145,7 @@ export default function TopBar() {
           />
           <InfoHint
             placement="bottom"
-            text="Aktif veritabanı profili. Bağlantı bilgileri Settings → Database'de."
+            text="Active database profile. Connection details live in Settings → Database."
           />
           {catalogs.data?.supports_catalogs && (
             <>
@@ -155,7 +155,7 @@ export default function TopBar() {
               />
               <InfoHint
                 placement="bottom"
-                text="Bu profil içindeki çalışılacak katalog."
+                text="Which catalog inside this profile to work in."
               />
             </>
           )}
@@ -167,7 +167,7 @@ export default function TopBar() {
               />
               <InfoHint
                 placement="bottom"
-                text="Bu profil içindeki çalışılacak veritabanı."
+                text="Which database inside this profile to work in."
               />
             </>
           )}
@@ -179,7 +179,7 @@ export default function TopBar() {
           />
           <InfoHint
             placement="bottom"
-            text="Açıklamaları üreten yapay zeka modelinin profili."
+            text="Profile of the AI model that writes the descriptions."
           />
           <CommandPalette />
         </div>

@@ -176,7 +176,7 @@ export default function RunNew() {
                 label={
                   <span className="inline-flex items-center gap-1">
                     Missing only
-                    <InfoHint text="Sadece açıklaması olmayan tablo/kolonlar işlenir." />
+                    <InfoHint text="Only process tables/columns that don't have a description yet." />
                   </span>
                 }
                 description="Skip tables and columns that already have a comment."
@@ -187,7 +187,7 @@ export default function RunNew() {
                 label={
                   <span className="inline-flex items-center gap-1">
                     Auto-apply on success
-                    <InfoHint text="İnceleme atlanır; sonuçlar doğrudan veritabanına yazılır." />
+                    <InfoHint text="Skip review; write generated descriptions straight to the database." />
                   </span>
                 }
                 description="Write approved descriptions to the live DB without a separate Apply step."

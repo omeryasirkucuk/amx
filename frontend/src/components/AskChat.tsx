@@ -379,7 +379,7 @@ function ThinkingBlock({ text }: { text: string }) {
     <div className="space-y-1">
       <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
         Thinking
-        <InfoHint text="Modelin akıl yürütme önizlemesi. Son cevap değil — düşünme adımları." />
+        <InfoHint text="The model's reasoning preview — not the final answer, just its thought steps." />
       </div>
       <div
         ref={ref}

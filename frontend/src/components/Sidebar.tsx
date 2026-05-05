@@ -29,13 +29,13 @@ export default function Sidebar({ collapsed }: Props) {
   return (
     <div className="flex h-full flex-col">
       <div className="px-3 pt-3">
-        <SectionTitle hint="Aktif DB ve LLM profilleri. Settings'ten değiştirilir.">
+        <SectionTitle hint="Currently active DB and LLM profiles. Switch from Settings.">
           Profiles
         </SectionTitle>
         <ProfilesSection />
         <SectionTitle
           className="mt-4"
-          hint="Aktif profilden canlı okunan şema/tablo ağacı."
+          hint="Schema and table tree read live from the active profile."
         >
           Live database
         </SectionTitle>

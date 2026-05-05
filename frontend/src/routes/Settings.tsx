@@ -436,7 +436,7 @@ function DbProfileWizard({
         </Field>
         <Field
           label="Backend"
-          hint="Bağlandığın veritabanı motoru (Postgres, Snowflake, Databricks…)."
+          hint="Which database engine you're connecting to (Postgres, Snowflake, Databricks…)."
         >
           <select
             value={backend}
@@ -786,7 +786,7 @@ function LlmProfileWizard({
         <div className="grid grid-cols-2 gap-3">
           <Field
             label={`Temperature (${temperature.toFixed(2)})`}
-            hint="Yaratıcılık: düşük = tutarlı, yüksek = çeşitli (önerilen 0.1–0.3)."
+            hint="Creativity: low = consistent, high = varied (0.1–0.3 recommended)."
           >
             <input
               type="range"
@@ -800,7 +800,7 @@ function LlmProfileWizard({
           </Field>
           <Field
             label={`Alternatives per column (${nAlternatives})`}
-            hint="Her sütun için kaç alternatif açıklama önerisi üretilsin."
+            hint="How many alternative description proposals to generate per column."
           >
             <input
               type="range"
@@ -814,7 +814,7 @@ function LlmProfileWizard({
           </Field>
           <Field
             label={`Column batch size (${columnBatchSize})`}
-            hint="Bir LLM çağrısında işlenen sütun sayısı. Yüksek = ucuz; düşük = stabil."
+            hint="Columns processed per LLM call. Higher = cheaper; lower = more stable."
           >
             <input
               type="number"
@@ -827,7 +827,7 @@ function LlmProfileWizard({
           </Field>
           <Field
             label="Prompt detail"
-            hint="Modele gönderilen bağlam miktarı. Çok = isabetli; az = hızlı/ucuz."
+            hint="How much context the model receives. More = accurate; less = fast/cheap."
           >
             <select
               value={promptDetail}
@@ -843,7 +843,7 @@ function LlmProfileWizard({
           </Field>
           <Field
             label="Description verbosity"
-            hint="Üretilen açıklamanın uzunluğu: brief = 1 cümle, exhaustive = detaylı."
+            hint="Output length: brief = one sentence, exhaustive = detailed."
           >
             <select
               value={descriptionVerbosity}
@@ -865,7 +865,7 @@ function LlmProfileWizard({
         <div className="grid grid-cols-2 gap-3">
           <Field
             label={`High (≥ ${logprobHigh.toFixed(2)})`}
-            hint="Bu eşiğin üstündeki tahminler 'yüksek güven' olarak işaretlenir."
+            hint="Predictions above this score are flagged 'high confidence'."
           >
             <input
               type="range"
@@ -879,7 +879,7 @@ function LlmProfileWizard({
           </Field>
           <Field
             label={`Medium (≥ ${logprobMedium.toFixed(2)})`}
-            hint="Bu eşiğin üstündekiler 'orta güven', altındakiler 'düşük' olur."
+            hint="Above this is 'medium confidence'; below counts as 'low'."
           >
             <input
               type="range"
