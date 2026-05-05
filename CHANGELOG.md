@@ -6,6 +6,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-05-05
+
+The `/visualize` umbrella release. Thirteen UI-overhaul PRs + Stage 2–7
+parity work + the design-system reset land together: the local web UI now
+has full feature parity with the REPL surface for run / review / apply /
+ask, with full DB / LLM / Docs / Code wizards, a System page (doctor /
+usage / catalog status / team history-store / maintenance), per-asset
+LLM-generate from any Browse page, and a complete pixel-art rebrand.
+README and amxcli.com both grow a `/visualize` entry point with the
+Overview screenshot.
+
 ### Added — `/visualize` per-asset generate + favicon swap (UI overhaul, PR 13)
 
 * **Favicon is now the AMX pixel-art mark.** Replaces the old
