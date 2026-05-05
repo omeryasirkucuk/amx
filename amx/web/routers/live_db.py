@@ -323,9 +323,7 @@ def list_columns(
     return {
         "schema": schema,
         "table": table,
-        "columns": [
-            {"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)} for c in cols
-        ],
+        "columns": [{"name": c.name, "dtype": c.dtype, "nullable": bool(c.nullable)} for c in cols],
         "count": len(cols),
     }
 

@@ -114,17 +114,13 @@ def test_list_schemas_uses_explicit_database(client, auth_headers, monkeypatch) 
             get_schema_comment=MagicMock(return_value=""),
         ),
     )
-    response = client.get(
-        f"/api/live/schemas{_q('database=appdb')}", headers=auth_headers
-    )
+    response = client.get(f"/api/live/schemas{_q('database=appdb')}", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["schemas"] == ["public", "sales"]
 
 
-def test_list_schemas_with_explicit_catalog_query_arg(
-    client, auth_headers, monkeypatch
-) -> None:
+def test_list_schemas_with_explicit_catalog_query_arg(client, auth_headers, monkeypatch) -> None:
     """Passing ?catalog= scopes the listing to a specific catalog
     without mutating the profile record. The connector receives a
     fresh DBConfig via dataclasses.replace."""
@@ -138,9 +134,7 @@ def test_list_schemas_with_explicit_catalog_query_arg(
         )
 
     monkeypatch.setattr(live_db, "DatabaseConnector", factory)
-    response = client.get(
-        f"/api/live/schemas{_q('catalog=ANALYTICS')}", headers=auth_headers
-    )
+    response = client.get(f"/api/live/schemas{_q('catalog=ANALYTICS')}", headers=auth_headers)
     assert response.status_code == 200
     assert captured["catalog"] == "ANALYTICS"
     assert response.json()["schemas"] == ["a", "b"]
@@ -158,9 +152,7 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
                 ]
             ),
             get_table_comment=MagicMock(
-                side_effect=lambda _schema, name: (
-                    "Order line items" if name == "orders" else ""
-                )
+                side_effect=lambda _schema, name: "Order line items" if name == "orders" else ""
             ),
         ),
     )
@@ -181,9 +173,7 @@ def test_list_volumes_returns_empty_for_unsupported_backends(
     capabilities = MagicMock()
     capabilities.volumes = False
     _patch_connector(monkeypatch, lambda: MagicMock(capabilities=capabilities))
-    response = client.get(
-        f"/api/live/schemas/sales/volumes{_q()}", headers=auth_headers
-    )
+    response = client.get(f"/api/live/schemas/sales/volumes{_q()}", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["supports_volumes"] is False
@@ -244,9 +234,7 @@ def test_list_columns_returns_lightweight_metadata(client, auth_headers, monkeyp
     ]
 
 
-def test_table_snapshot_passes_through_connector_payload(
-    client, auth_headers, monkeypatch
-) -> None:
+def test_table_snapshot_passes_through_connector_payload(client, auth_headers, monkeypatch) -> None:
     snapshot = {
         "schema": "sales",
         "table": "customers",
@@ -291,9 +279,7 @@ def test_browse_without_profile_returns_400(client, auth_headers) -> None:
 
 def test_browse_unknown_profile_returns_404(client, auth_headers, monkeypatch) -> None:
     _patch_connector(monkeypatch, lambda: MagicMock())
-    response = client.get(
-        "/api/live/catalogs?profile=does-not-exist", headers=auth_headers
-    )
+    response = client.get("/api/live/catalogs?profile=does-not-exist", headers=auth_headers)
     assert response.status_code == 404
     assert "does-not-exist" in response.json()["detail"]
 

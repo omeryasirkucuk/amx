@@ -157,7 +157,7 @@ def test_database_overlay_does_not_mutate_target_profile(
     monkeypatch.setattr(
         live_db,
         "DatabaseConnector",
-        lambda db: (seen.append(db) or MagicMock()),
+        lambda db: seen.append(db) or MagicMock(),
     )
 
     response = client.put(

@@ -74,9 +74,7 @@ def test_replace_does_not_mutate_profile(cfg_with_profiles, monkeypatch) -> None
     base = cfg_with_profiles.db_profiles["local-pg"]
     original_db = base.database
 
-    live_db._connector_for_scope(
-        cfg_with_profiles, "local-pg", database="other_db"
-    )
+    live_db._connector_for_scope(cfg_with_profiles, "local-pg", database="other_db")
 
     assert cfg_with_profiles.db_profiles["local-pg"].database == original_db
     assert original_db == "appdb"  # sanity
@@ -173,9 +171,7 @@ def test_concurrent_overlay_no_leak(cfg_with_profiles, monkeypatch) -> None:
     assert cfg_with_profiles.db_profiles["snowflake-prod"].catalog == original_catalog
 
 
-def test_no_overlay_uses_profile_record_directly(
-    cfg_with_profiles, monkeypatch
-) -> None:
+def test_no_overlay_uses_profile_record_directly(cfg_with_profiles, monkeypatch) -> None:
     """When neither ``database`` nor ``catalog`` is overridden, the
     helper passes the profile's existing DBConfig straight through to
     the connector — no spurious ``replace()`` allocation."""

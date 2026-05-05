@@ -164,9 +164,7 @@ def _scan_worker_body(
             if scope:
                 from amx.web.routers.live_db import _connector_for_scope
 
-                db = _connector_for_scope(
-                    cfg, scope, database=db_database, catalog=db_catalog
-                )
+                db = _connector_for_scope(cfg, scope, database=db_database, catalog=db_catalog)
             else:
                 db = DatabaseConnector(cfg.db)
         except Exception as exc:
