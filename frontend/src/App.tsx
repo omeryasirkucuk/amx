@@ -19,6 +19,11 @@ import System from "./routes/System";
 // top bar; each <Route element> renders inside the shell's main
 // canvas. ToastProvider sits above Routes so any handler can call
 // useToast() without prop drilling.
+//
+// Browse paths encode the full scope so two tabs on different
+// profiles never bleed state into each other:
+//   /db/:profile/:database/...   (2-level: Postgres, MySQL, ...)
+//   /cat/:profile/:catalog/...   (3-level: Databricks, BigQuery)
 export default function App() {
   return (
     <ToastProvider>
@@ -26,9 +31,15 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route index element={<Home />} />
           <Route path="db" element={<Navigate to="/" replace />} />
-          <Route path="db/:profile" element={<Database />} />
-          <Route path="db/:profile/:schema" element={<Schema />} />
-          <Route path="db/:profile/:schema/:table" element={<Table />} />
+          <Route path="db/:profile" element={<Navigate to="/" replace />} />
+          <Route path="db/:profile/:database" element={<Database />} />
+          <Route path="db/:profile/:database/:schema" element={<Schema />} />
+          <Route path="db/:profile/:database/:schema/:table" element={<Table />} />
+          <Route path="cat" element={<Navigate to="/" replace />} />
+          <Route path="cat/:profile" element={<Navigate to="/" replace />} />
+          <Route path="cat/:profile/:catalog" element={<Database />} />
+          <Route path="cat/:profile/:catalog/:schema" element={<Schema />} />
+          <Route path="cat/:profile/:catalog/:schema/:table" element={<Table />} />
           <Route path="runs" element={<RunsList />} />
           <Route path="runs/new" element={<RunNew />} />
           <Route path="runs/compare" element={<RunsCompare />} />

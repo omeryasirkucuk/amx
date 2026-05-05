@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from amx.agents.base import Confidence
 from amx.agents.orchestrator import ReviewResult
@@ -31,6 +31,7 @@ from amx.pending_review import load_pending, save_pending
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg
+from amx.web.routers.live_db import _connector_for_scope
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 log = get_logger("web.generate")
@@ -51,8 +52,20 @@ def _llm(cfg: AMXConfig) -> LLMProvider:
     return LLMProvider(cfg.llm)
 
 
-def _connector(cfg: AMXConfig) -> DatabaseConnector:
-    return DatabaseConnector(cfg.db)
+def _resolve_generate_connector(
+    cfg: AMXConfig,
+    profile: str,
+    database: str | None,
+    catalog: str | None,
+) -> tuple[DatabaseConnector, str, str]:
+    """Resolve a connector + return the profile name + DB-backend label
+    used in prompts so generated descriptions reference the requested
+    profile (never ``cfg.active_db_profile``).
+    """
+    conn = _connector_for_scope(cfg, profile, database=database, catalog=catalog)
+    base = cfg.db_profiles.get(profile.strip())
+    backend = getattr(base, "backend", "") if base else ""
+    return conn, profile.strip(), backend
 
 
 def _generate(llm: LLMProvider, prompt: str) -> str:
@@ -98,6 +111,8 @@ def _record_and_queue(
     table: str,
     column: str | None,
     asset_kind: str,
+    db_profile: str | None = None,
+    db_backend: str | None = None,
 ) -> dict[str, Any]:
     """Persist a generated description through history + pending queue.
 
@@ -133,12 +148,14 @@ def _record_and_queue(
             ),
         )
 
+    effective_profile = (db_profile or cfg.active_db_profile) or None
+    effective_backend = db_backend or (cfg.db.backend if cfg.db else None)
     try:
         run_id = hs.create_run(
             command=command,
             mode="chat",
-            db_backend=cfg.db.backend,
-            db_profile=cfg.active_db_profile,
+            db_backend=effective_backend,
+            db_profile=effective_profile,
             llm_provider=cfg.llm.provider,
             llm_model=cfg.llm.model,
             scope=scope,
@@ -209,14 +226,18 @@ def _record_and_queue(
 
 
 @router.post("/database")
-def generate_database(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
-    db = _connector(cfg)
+def generate_database(
+    profile: str = Query(...),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     try:
         schemas = db.list_schemas()
     except Exception:
         schemas = []
     schema_summary = ", ".join(schemas[:20]) or "(no schemas reachable)"
-    db_label = cfg.active_db_profile or "this database"
     prompt = (
         f"Database '{db_label}' contains the schemas: {schema_summary}. "
         "Describe the database's overall purpose."
@@ -230,15 +251,20 @@ def generate_database(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
         table="",
         column=None,
         asset_kind="database",
+        db_profile=db_label,
+        db_backend=backend or None,
     )
 
 
 @router.post("/schema/{schema}")
 def generate_schema(
     schema: str,
+    profile: str = Query(...),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    db = _connector(cfg)
+    db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     try:
         assets = db.list_assets(schema)
     except Exception:
@@ -257,6 +283,8 @@ def generate_schema(
         table="",
         column=None,
         asset_kind="schema",
+        db_profile=db_label,
+        db_backend=backend or None,
     )
 
 
@@ -264,9 +292,12 @@ def generate_schema(
 def generate_table(
     schema: str,
     table: str,
+    profile: str = Query(...),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    db = _connector(cfg)
+    db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     try:
         cols = db.list_column_profiles(schema, table)
     except Exception:
@@ -287,6 +318,8 @@ def generate_table(
         table=table,
         column=None,
         asset_kind="table",
+        db_profile=db_label,
+        db_backend=backend or None,
     )
 
 
@@ -295,9 +328,12 @@ def generate_column(
     schema: str,
     table: str,
     column: str,
+    profile: str = Query(...),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    db = _connector(cfg)
+    db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     try:
         cols = db.list_column_profiles(schema, table)
     except Exception:
@@ -327,6 +363,8 @@ def generate_column(
         table=table,
         column=column,
         asset_kind="column",
+        db_profile=db_label,
+        db_backend=backend or None,
     )
 
 

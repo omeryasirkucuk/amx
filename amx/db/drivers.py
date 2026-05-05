@@ -19,36 +19,38 @@ to the terminal.
 
 from __future__ import annotations
 
-#: backend label → (import probe, pip targets). The probe mirrors
-#: what each adapter actually does ``import`` at engine-create time.
-#: pip targets include any companion sqlalchemy plugin so the
-#: post-install ``create_engine`` call can resolve the dialect.
-BACKEND_DRIVER_PACKAGES: dict[str, tuple[str, list[str]]] = {
-    "postgresql": ("psycopg2", ["psycopg2-binary"]),
-    "snowflake": (
-        "snowflake.connector",
-        ["snowflake-sqlalchemy", "snowflake-connector-python"],
-    ),
-    "databricks": (
-        "databricks.sql",
-        ["databricks-sqlalchemy", "databricks-sql-connector"],
-    ),
-    "bigquery": (
-        "google.cloud.bigquery",
-        ["sqlalchemy-bigquery", "google-cloud-bigquery"],
-    ),
-    "mysql": ("pymysql", ["pymysql", "cryptography"]),
-    "oracle": ("oracledb", ["oracledb"]),
-    "mssql": ("pyodbc", ["pyodbc"]),
-    "redshift": (
-        "redshift_connector",
-        ["redshift_connector", "sqlalchemy-redshift"],
-    ),
-    "clickhouse": (
-        "clickhouse_connect",
-        ["clickhouse-connect", "clickhouse-sqlalchemy"],
-    ),
-    "duckdb": ("duckdb", ["duckdb-engine", "duckdb"]),
+#: backend label → list of ``(importable_module, pip_target)`` pairs.
+#: Each pip target needs its OWN importable probe — passing bare pip
+#: names that aren't valid Python module identifiers (anything with a
+#: hyphen, e.g. ``databricks-sql-connector``) makes ``find_spec`` return
+#: ``None`` on every launch and re-runs the install subprocess even
+#: when pip already has the package satisfied.
+BACKEND_DRIVER_PACKAGES: dict[str, list[tuple[str, str]]] = {
+    "postgresql": [("psycopg2", "psycopg2-binary")],
+    "snowflake": [
+        ("snowflake.connector", "snowflake-connector-python"),
+        ("snowflake.sqlalchemy", "snowflake-sqlalchemy"),
+    ],
+    "databricks": [
+        ("databricks.sql", "databricks-sql-connector"),
+        ("databricks.sqlalchemy", "databricks-sqlalchemy"),
+    ],
+    "bigquery": [
+        ("google.cloud.bigquery", "google-cloud-bigquery"),
+        ("sqlalchemy_bigquery", "sqlalchemy-bigquery"),
+    ],
+    "mysql": [("pymysql", "pymysql"), ("cryptography", "cryptography")],
+    "oracle": [("oracledb", "oracledb")],
+    "mssql": [("pyodbc", "pyodbc")],
+    "redshift": [
+        ("redshift_connector", "redshift_connector"),
+        ("sqlalchemy_redshift", "sqlalchemy-redshift"),
+    ],
+    "clickhouse": [
+        ("clickhouse_connect", "clickhouse-connect"),
+        ("clickhouse_sqlalchemy", "clickhouse-sqlalchemy"),
+    ],
+    "duckdb": [("duckdb", "duckdb"), ("duckdb_engine", "duckdb-engine")],
 }
 
 
@@ -60,17 +62,10 @@ def ensure_backend_driver(backend: str) -> None:
     driver is already installed. On first hit, runs the auto-install
     path with pip's progress streaming to the terminal.
     """
-    entry = BACKEND_DRIVER_PACKAGES.get(backend)
-    if not entry:
+    pairs = BACKEND_DRIVER_PACKAGES.get(backend)
+    if not pairs:
         return
-    probe, pip_targets = entry
 
     from amx.utils.optional_deps import ensure
 
-    # The probe + first pip target form the "known" pair we cache;
-    # additional pip targets (sqlalchemy plugins, cryptography, …)
-    # are appended via plain pip names so they install even when the
-    # probe alone is already present.
-    spec_list: list = [(probe, pip_targets[0])]
-    spec_list.extend(pip_targets[1:])
-    ensure(spec_list, feature=f"{backend} backend")
+    ensure(list(pairs), feature=f"{backend} backend")

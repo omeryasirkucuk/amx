@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Database as DatabaseIcon, FolderTree, Sparkles } from "lucide-react";
 
-import { ApiError, api } from "../lib/api";
+import { api } from "../lib/api";
 import { cn } from "../lib/cn";
+import { useScope, scopePath } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
@@ -12,72 +13,57 @@ import GenerateScopeDialog from "../components/GenerateScopeDialog";
 import { Button, InlineEditText, Skeleton, useToast } from "../components/ui";
 
 /**
- * Database / catalog landing page. Drives the same comment-edit
- * surface as Schema and Table — `PUT /api/comments/database` is the
- * write path. The schema list is borrowed from the live-DB
- * inventory.
+ * Database / catalog landing page. Scope (profile + database|catalog)
+ * comes from the URL — `useScope()` resolves it. Drives the same
+ * comment-edit surface as Schema and Table; the write path is
+ * `PUT /api/comments/database?profile=…&database=…`.
  */
 export default function Database() {
-  const params = useParams();
-  const profile = params.profile || "active";
+  const { scope } = useScope();
   const qc = useQueryClient();
   const toast = useToast();
   const navigate = useNavigate();
   const [draftDescription, setDraftDescription] = useState("");
   const [confirmGenerate, setConfirmGenerate] = useState(false);
 
-  const ctx = useQuery({
-    queryKey: ["context"],
-    queryFn: () => api.context(),
-  });
+  // Hooks must run unconditionally; we early-return below on missing
+  // scope. The queries get `enabled: !!scope` so they no-op until the
+  // URL is well-formed.
   const schemas = useQuery({
-    queryKey: ["live-schemas"],
-    queryFn: () => api.liveSchemas(),
+    queryKey: [
+      "live-schemas",
+      scope?.profile ?? "",
+      scope?.database ?? "",
+      scope?.catalog ?? "",
+    ],
+    queryFn: () => api.liveSchemas(scope!),
+    enabled: !!scope,
     retry: false,
-  });
-  const catalogs = useQuery({
-    queryKey: ["live-catalogs"],
-    queryFn: () => api.liveCatalogs(),
-    retry: false,
-  });
-  const databases = useQuery({
-    queryKey: ["live-databases"],
-    queryFn: () => api.liveDatabases(),
-    retry: false,
-    enabled: catalogs.data ? !catalogs.data.supports_catalogs : false,
   });
 
-  const supportsCatalog = catalogs.data?.supports_catalogs ?? false;
-  const activeName = supportsCatalog
-    ? catalogs.data?.active_catalog
-    : databases.data?.active_database;
-  const headingLabel = activeName ?? profile;
-  const subtitle = supportsCatalog
-    ? `Catalog · ${ctx.data?.db_backend ?? "—"}`
-    : `Database · ${ctx.data?.db_backend ?? "—"}`;
+  useEffect(() => {
+    setDraftDescription("");
+  }, [scope?.profile, scope?.database, scope?.catalog]);
 
   async function saveDescription(next: string) {
-    await api.setDatabaseComment(next);
+    if (!scope) return;
+    await api.setDatabaseComment(scope, next);
     setDraftDescription(next);
     qc.invalidateQueries({ queryKey: ["context"] });
     toast.push({
-      title: supportsCatalog ? "Catalog description saved" : "Database description saved",
+      title:
+        scope.kind === "catalog"
+          ? "Catalog description saved"
+          : "Database description saved",
       tone: "success",
       duration: 2000,
     });
   }
 
-  // Two flavours of "Generate":
-  // - Single-shot endpoint writes ONLY the database/catalog's own
-  //   COMMENT (no schemas, no tables, one LLM call). Fast.
-  // - Bulk run path spawns the full analyze.run worker scoped to
-  //   every reachable schema so every table + column under the
-  //   database also gets a generated description.
   const generateDbOnly = useMutation({
-    mutationFn: () => api.generateDatabaseDescription(),
+    mutationFn: () => api.generateDatabaseDescription(scope!),
     onSuccess: (result) => {
       setDraftDescription(result.description);
-      qc.invalidateQueries({ queryKey: ["context"] });
       toast.push({
         title: result.run_id
           ? `Queued for review (Run #${result.run_id})`
@@ -95,11 +81,9 @@ export default function Database() {
       }),
   });
 
-  // Per-row "Gen" mutation — generates a description for one schema
-  // reachable from this database/catalog. Mirrors the per-column Gen
-  // button on Table.tsx (no scope dialog, single LLM call, /pending).
   const generateSchemaOne = useMutation({
-    mutationFn: (schemaName: string) => api.generateSchemaDescription(schemaName),
+    mutationFn: (schemaName: string) =>
+      api.generateSchemaDescription(scope!, schemaName),
     onSuccess: (result, schemaName) => {
       qc.invalidateQueries({ queryKey: ["live-schemas"] });
       toast.push({
@@ -122,11 +106,16 @@ export default function Database() {
   const generateBulk = useMutation({
     mutationFn: () => {
       const list = schemas.data?.schemas ?? [];
-      // Build a scope that spans every reachable schema; an empty
-      // table list under each schema means "every table".
-      const scope: Record<string, string[]> = {};
-      for (const s of list) scope[s] = [];
-      return api.submitRun({ scope, apply: false, missing_only: false });
+      const reqScope: Record<string, string[]> = {};
+      for (const s of list) reqScope[s] = [];
+      return api.submitRun({
+        scope: reqScope,
+        apply: false,
+        missing_only: false,
+        db_profile: scope?.profile,
+        database: scope?.database,
+        catalog: scope?.catalog,
+      });
     },
     onSuccess: (result) => {
       setConfirmGenerate(false);
@@ -149,21 +138,32 @@ export default function Database() {
     },
   });
 
-  const needsScope =
-    schemas.error instanceof ApiError &&
-    schemas.error.status === 412 &&
-    (schemas.error.hint === "select-catalog" ||
-      schemas.error.hint === "select-database");
+  if (!scope) {
+    return (
+      <EmptyState
+        icon={DatabaseIcon}
+        title="Pick a database from the sidebar"
+        description="Expand a DB profile in the left tree, then click a database or catalog."
+      />
+    );
+  }
+
+  const headingLabel = scope.database ?? scope.catalog ?? scope.profile;
+  const subtitle = scope.kind === "catalog" ? "Catalog" : "Database";
 
   return (
     <>
       <PageHeader
         title={headingLabel}
-        breadcrumbs={[{ label: "Browse", to: "/" }, { label: headingLabel }]}
+        breadcrumbs={[
+          { label: "Browse", to: "/" },
+          { label: scope.profile },
+          { label: headingLabel },
+        ]}
         description={
           <>
             <span className="block text-[11px] uppercase tracking-wider text-ink-dim">
-              {subtitle}
+              {subtitle} · profile {scope.profile}
             </span>
             <div className="mt-1.5">
               <InlineEditText
@@ -171,7 +171,7 @@ export default function Database() {
                 onSave={saveDescription}
                 multiline
                 italicEmpty
-                emptyLabel={`No ${supportsCatalog ? "catalog" : "database"} description yet — click to add one or use Generate.`}
+                emptyLabel={`No ${scope.kind} description yet — click to add one or use Generate.`}
               />
             </div>
           </>
@@ -209,17 +209,6 @@ export default function Database() {
                 </li>
               ))}
             </ul>
-          ) : needsScope ? (
-            <div className="px-5 py-6">
-              <p className="text-sm font-medium text-warning">
-                {schemas.error instanceof ApiError && schemas.error.hint === "select-catalog"
-                  ? "No catalog selected."
-                  : "No database selected."}
-              </p>
-              <p className="mt-1 text-xs text-ink-muted">
-                Pick one from the top-bar pill so the schema inventory loads.
-              </p>
-            </div>
           ) : schemas.error ? (
             <div className="px-5 py-6 text-sm text-critical">
               {(schemas.error as Error).message}
@@ -237,7 +226,7 @@ export default function Database() {
                     className="group flex items-start text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
                   >
                     <Link
-                      to={`/db/${profile}/${s}`}
+                      to={scopePath(scope, s)}
                       className="flex flex-1 items-start gap-3 px-5 py-2.5"
                     >
                       <FolderTree size={14} className="mt-0.5 text-accent" />
@@ -275,7 +264,11 @@ export default function Database() {
             <div className="px-5 py-5">
               <EmptyState
                 icon={DatabaseIcon}
-                title={supportsCatalog ? "Catalog has no schemas" : "Database has no schemas"}
+                title={
+                  scope.kind === "catalog"
+                    ? "Catalog has no schemas"
+                    : "Database has no schemas"
+                }
                 description="No reachable schemas yet."
                 compact
               />
@@ -289,12 +282,12 @@ export default function Database() {
         onClose={() => setConfirmGenerate(false)}
         title={`Generate description for ${headingLabel}`}
         description={
-          supportsCatalog
+          scope.kind === "catalog"
             ? "Pick the scope. Single-shot writes only the catalog's own COMMENT. Bulk run walks every schema, table and column under it."
             : "Pick the scope. Single-shot writes only the database's own COMMENT. Bulk run walks every schema, table and column under it."
         }
         singleOption={{
-          label: supportsCatalog ? "Just this catalog" : "Just this database",
+          label: scope.kind === "catalog" ? "Just this catalog" : "Just this database",
           description:
             "One fast LLM call that writes only the top-level COMMENT. Schemas and tables untouched.",
           loading: generateDbOnly.isPending,

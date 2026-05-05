@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { PlayCircle } from "lucide-react";
 
-import { ApiError, api } from "../lib/api";
+import { api } from "../lib/api";
 import { cn } from "../lib/cn";
+import type { Scope } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import { Button, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
@@ -14,23 +15,40 @@ interface SchemaPickState {
   tables: string[]; // empty = "every reachable table"
 }
 
+/** Read scope from `?profile=…&database=…` (or `&catalog=…`) — the
+ * Database/Schema/Table pages link here with the scope encoded. */
+function useRunScope(): Scope | null {
+  const [params] = useSearchParams();
+  const profile = params.get("profile") || "";
+  const database = params.get("database") || "";
+  const catalog = params.get("catalog") || "";
+  if (!profile) return null;
+  if (catalog) return { profile, catalog, kind: "catalog" };
+  if (database) return { profile, database, kind: "database" };
+  return null;
+}
+
 export default function RunNew() {
   const navigate = useNavigate();
   const toast = useToast();
+  const scope = useRunScope();
   const [picked, setPicked] = useState<SchemaPickState[]>([]);
   const [missingOnly, setMissingOnly] = useState(true);
   const [autoApply, setAutoApply] = useState(false);
 
   const schemas = useQuery({
-    queryKey: ["live-schemas"],
-    queryFn: () => api.liveSchemas(),
+    queryKey: [
+      "live-schemas",
+      scope?.profile ?? "",
+      scope?.database ?? "",
+      scope?.catalog ?? "",
+    ],
+    queryFn: () => api.liveSchemas(scope!),
+    enabled: !!scope,
     retry: false,
   });
 
-  const scopeUnavailable =
-    schemas.error instanceof ApiError &&
-    schemas.error.status === 412 &&
-    (schemas.error.hint === "select-catalog" || schemas.error.hint === "select-database");
+  const scopeUnavailable = !scope;
 
   const submit = useMutation({
     mutationFn: () =>
@@ -38,6 +56,9 @@ export default function RunNew() {
         scope: Object.fromEntries(picked.map((p) => [p.schema, p.tables])),
         apply: autoApply,
         missing_only: missingOnly,
+        db_profile: scope?.profile,
+        database: scope?.database,
+        catalog: scope?.catalog,
       }),
     onSuccess: (result) => {
       toast.push({
@@ -90,15 +111,12 @@ export default function RunNew() {
       {scopeUnavailable ? (
         <Card>
           <CardBody className="px-6 py-8 text-sm">
-            <p className="font-medium text-warning">
-              {schemas.error instanceof ApiError &&
-              schemas.error.hint === "select-catalog"
-                ? "No catalog selected."
-                : "No database selected."}
-            </p>
+            <p className="font-medium text-warning">No scope selected.</p>
             <p className="mt-2 text-ink-muted">
-              Pick one from the top bar or sidebar before starting a run — without
-              an active catalog/database the agents can&apos;t see any schemas.
+              Open a database or catalog from the sidebar, then start the run from
+              its &quot;Generate description&quot; button — the scope (profile +
+              database/catalog) is encoded in the URL so this page knows which
+              schemas to enumerate.
             </p>
           </CardBody>
         </Card>
@@ -237,9 +255,17 @@ function SchemaTablePicker({
   selected: string[];
   onChange: (tables: string[]) => void;
 }) {
+  const scope = useRunScope();
   const assets = useQuery({
-    queryKey: ["live-assets", schema],
-    queryFn: () => api.liveAssets(schema),
+    queryKey: [
+      "live-assets",
+      scope?.profile ?? "",
+      scope?.database ?? "",
+      scope?.catalog ?? "",
+      schema,
+    ],
+    queryFn: () => api.liveAssets(scope!, schema),
+    enabled: !!scope,
   });
   if (assets.isLoading) {
     return (
