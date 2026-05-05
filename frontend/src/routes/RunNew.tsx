@@ -7,7 +7,7 @@ import { ApiError, api } from "../lib/api";
 import { cn } from "../lib/cn";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
-import { Button, Skeleton, Switch, useToast } from "../components/ui";
+import { Button, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
 
 interface SchemaPickState {
   schema: string;
@@ -173,13 +173,23 @@ export default function RunNew() {
               <Switch
                 checked={missingOnly}
                 onChange={(e) => setMissingOnly(e.target.checked)}
-                label="Missing only"
+                label={
+                  <span className="inline-flex items-center gap-1">
+                    Missing only
+                    <InfoHint text="Sadece açıklaması olmayan tablo/kolonlar işlenir." />
+                  </span>
+                }
                 description="Skip tables and columns that already have a comment."
               />
               <Switch
                 checked={autoApply}
                 onChange={(e) => setAutoApply(e.target.checked)}
-                label="Auto-apply on success"
+                label={
+                  <span className="inline-flex items-center gap-1">
+                    Auto-apply on success
+                    <InfoHint text="İnceleme atlanır; sonuçlar doğrudan veritabanına yazılır." />
+                  </span>
+                }
                 description="Write approved descriptions to the live DB without a separate Apply step."
               />
               <hr className="border-border" />

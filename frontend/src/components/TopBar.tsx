@@ -18,6 +18,7 @@ import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
 import CommandPalette from "./CommandPalette";
 import IconButton from "./ui/IconButton";
+import { InfoHint } from "./ui";
 import Logo from "./brand/Logo";
 import StudioMark from "./brand/StudioMark";
 import ProfilePicker from "./topbar/ProfilePicker";
@@ -142,23 +143,43 @@ export default function TopBar() {
             activeName={ctx?.active_db_profile ?? null}
             tooltip={ctx?.db_backend ?? undefined}
           />
+          <InfoHint
+            placement="bottom"
+            text="Aktif veritabanı profili. Bağlantı bilgileri Settings → Database'de."
+          />
           {catalogs.data?.supports_catalogs && (
-            <CatalogPicker
-              activeCatalog={catalogs.data.active_catalog}
-              catalogs={catalogs.data.catalogs}
-            />
+            <>
+              <CatalogPicker
+                activeCatalog={catalogs.data.active_catalog}
+                catalogs={catalogs.data.catalogs}
+              />
+              <InfoHint
+                placement="bottom"
+                text="Bu profil içindeki çalışılacak katalog."
+              />
+            </>
           )}
           {catalogs.data && !catalogs.data.supports_catalogs && databases.data && (
-            <DatabasePicker
-              activeDatabase={databases.data.active_database}
-              databases={databases.data.databases}
-            />
+            <>
+              <DatabasePicker
+                activeDatabase={databases.data.active_database}
+                databases={databases.data.databases}
+              />
+              <InfoHint
+                placement="bottom"
+                text="Bu profil içindeki çalışılacak veritabanı."
+              />
+            </>
           )}
           <ProfilePicker
             kind="llm"
             label="LLM"
             activeName={ctx?.active_llm_profile ?? null}
             tooltip={ctx?.llm_model ?? undefined}
+          />
+          <InfoHint
+            placement="bottom"
+            text="Açıklamaları üreten yapay zeka modelinin profili."
           />
           <CommandPalette />
         </div>

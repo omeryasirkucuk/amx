@@ -5,6 +5,7 @@ import { ChevronRight, ChevronDown, Database, FolderTree, Layers } from "lucide-
 
 import { ApiError, api } from "../lib/api";
 import { cn } from "../lib/cn";
+import { InfoHint } from "./ui";
 
 interface Props {
   collapsed: boolean;
@@ -28,9 +29,16 @@ export default function Sidebar({ collapsed }: Props) {
   return (
     <div className="flex h-full flex-col">
       <div className="px-3 pt-3">
-        <SectionTitle>Profiles</SectionTitle>
+        <SectionTitle hint="Aktif DB ve LLM profilleri. Settings'ten değiştirilir.">
+          Profiles
+        </SectionTitle>
         <ProfilesSection />
-        <SectionTitle className="mt-4">Live database</SectionTitle>
+        <SectionTitle
+          className="mt-4"
+          hint="Aktif profilden canlı okunan şema/tablo ağacı."
+        >
+          Live database
+        </SectionTitle>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <LiveDbTree />
@@ -42,18 +50,21 @@ export default function Sidebar({ collapsed }: Props) {
 function SectionTitle({
   children,
   className,
+  hint,
 }: {
   children: React.ReactNode;
   className?: string;
+  hint?: string;
 }) {
   return (
     <div
       className={cn(
-        "px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-dim",
+        "flex items-center gap-1 px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-dim",
         className,
       )}
     >
       {children}
+      {hint && <InfoHint text={hint} />}
     </div>
   );
 }

@@ -22,7 +22,7 @@ import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
-import { Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
+import { InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 
 type Tab = "db" | "llm" | "docs" | "code";
 
@@ -434,7 +434,10 @@ function DbProfileWizard({
             className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-60"
           />
         </Field>
-        <Field label="Backend">
+        <Field
+          label="Backend"
+          hint="Bağlandığın veritabanı motoru (Postgres, Snowflake, Databricks…)."
+        >
           <select
             value={backend}
             onChange={(e) => setBackend(e.target.value)}
@@ -781,7 +784,10 @@ function LlmProfileWizard({
           Generation knobs
         </h3>
         <div className="grid grid-cols-2 gap-3">
-          <Field label={`Temperature (${temperature.toFixed(2)})`}>
+          <Field
+            label={`Temperature (${temperature.toFixed(2)})`}
+            hint="Yaratıcılık: düşük = tutarlı, yüksek = çeşitli (önerilen 0.1–0.3)."
+          >
             <input
               type="range"
               min={0}
@@ -792,7 +798,10 @@ function LlmProfileWizard({
               className="w-full"
             />
           </Field>
-          <Field label={`Alternatives per column (${nAlternatives})`}>
+          <Field
+            label={`Alternatives per column (${nAlternatives})`}
+            hint="Her sütun için kaç alternatif açıklama önerisi üretilsin."
+          >
             <input
               type="range"
               min={1}
@@ -803,7 +812,10 @@ function LlmProfileWizard({
               className="w-full"
             />
           </Field>
-          <Field label={`Column batch size (${columnBatchSize})`}>
+          <Field
+            label={`Column batch size (${columnBatchSize})`}
+            hint="Bir LLM çağrısında işlenen sütun sayısı. Yüksek = ucuz; düşük = stabil."
+          >
             <input
               type="number"
               min={1}
@@ -813,7 +825,10 @@ function LlmProfileWizard({
               className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
             />
           </Field>
-          <Field label="Prompt detail">
+          <Field
+            label="Prompt detail"
+            hint="Modele gönderilen bağlam miktarı. Çok = isabetli; az = hızlı/ucuz."
+          >
             <select
               value={promptDetail}
               onChange={(e) => setPromptDetail(e.target.value)}
@@ -826,7 +841,10 @@ function LlmProfileWizard({
               ))}
             </select>
           </Field>
-          <Field label="Description verbosity">
+          <Field
+            label="Description verbosity"
+            hint="Üretilen açıklamanın uzunluğu: brief = 1 cümle, exhaustive = detaylı."
+          >
             <select
               value={descriptionVerbosity}
               onChange={(e) => setDescriptionVerbosity(e.target.value)}
@@ -845,7 +863,10 @@ function LlmProfileWizard({
           Confidence thresholds
         </h3>
         <div className="grid grid-cols-2 gap-3">
-          <Field label={`High (≥ ${logprobHigh.toFixed(2)})`}>
+          <Field
+            label={`High (≥ ${logprobHigh.toFixed(2)})`}
+            hint="Bu eşiğin üstündeki tahminler 'yüksek güven' olarak işaretlenir."
+          >
             <input
               type="range"
               min={0}
@@ -856,7 +877,10 @@ function LlmProfileWizard({
               className="w-full"
             />
           </Field>
-          <Field label={`Medium (≥ ${logprobMedium.toFixed(2)})`}>
+          <Field
+            label={`Medium (≥ ${logprobMedium.toFixed(2)})`}
+            hint="Bu eşiğin üstündekiler 'orta güven', altındakiler 'düşük' olur."
+          >
             <input
               type="range"
               min={0}
@@ -1498,15 +1522,18 @@ function Field({
   label,
   children,
   narrow,
+  hint,
 }: {
   label: string;
   children: React.ReactNode;
   narrow?: boolean;
+  hint?: string;
 }) {
   return (
     <label className={cn("block", narrow && "max-w-[160px]")}>
-      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
+      <span className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
         {label}
+        {hint && <InfoHint text={hint} />}
       </span>
       {children}
     </label>
