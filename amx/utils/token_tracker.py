@@ -1,15 +1,33 @@
-"""Token counting (tiktoken) and per-session usage tracking."""
+"""Token counting (tiktoken) and per-session usage tracking.
+
+``tiktoken`` is intentionally NOT imported at module top: the tracker
+module sits on the boot path (every ``cli_support/commands/*`` pulls
+it in), and tiktoken's ~10 MB BPE-table load was previously charged
+to every CLI invocation — including ``amx /db-profiles`` which
+doesn't count tokens. The lazy-import inside ``_get_encoding`` keeps
+the tracker cheap to import and defers the cost to the first
+``estimate_tokens`` call. The same lazy boundary doubles as the
+on-demand pip-install hook for users who never run a token-counting
+flow at all (see ``amx.utils.optional_deps``).
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
-import tiktoken
+if TYPE_CHECKING:
+    import tiktoken
 
 
 @lru_cache(maxsize=1)
 def _get_encoding() -> tiktoken.Encoding:
+    from amx.utils.optional_deps import ensure
+
+    ensure(["tiktoken"], feature="token counting")
+    import tiktoken
+
     return tiktoken.get_encoding("cl100k_base")
 
 

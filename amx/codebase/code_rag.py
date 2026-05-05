@@ -6,11 +6,24 @@ import ast
 import hashlib
 from pathlib import Path
 
-import chromadb
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from amx.utils.optional_deps import ensure as _ensure
 
-from amx.codebase.analyzer import CODE_EXTENSIONS, CodebaseReport
-from amx.utils.logging import get_logger
+# Codebase RAG shares chromadb + the splitter with /docs RAG; if the
+# user has already used /docs the ensure() call here is a cached
+# no-op. Otherwise this is the first /code ingest and we pull both.
+_ensure(
+    [
+        "chromadb",
+        ("langchain_text_splitters", "langchain-text-splitters"),
+    ],
+    feature="codebase RAG (/code)",
+)
+
+import chromadb  # noqa: E402
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
+
+from amx.codebase.analyzer import CODE_EXTENSIONS, CodebaseReport  # noqa: E402
+from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("codebase.code_rag")
 

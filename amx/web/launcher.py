@@ -91,14 +91,45 @@ def launch_studio(
         tests so the function returns once the server is reachable
         and the caller controls shutdown.
     """
+    from amx.utils.optional_deps import ensure
+
     try:
-        import uvicorn
-    except ImportError:
-        log.error(
-            "FastAPI / uvicorn aren't installed. "
-            "Run `pip install --upgrade amx-cli` to pick up the AMX Studio extras."
+        ensure(
+            [
+                "fastapi",
+                ("uvicorn", "uvicorn[standard]"),
+                ("sse_starlette", "sse-starlette"),
+            ],
+            feature="AMX Studio (/studio)",
         )
+    except RuntimeError as exc:
+        log.error("AMX Studio dependencies could not be installed: %s", exc)
         return False
+    import uvicorn
+
+    # Pre-install drivers for every saved DB profile BEFORE uvicorn
+    # starts. A web request triggering pip-install mid-flight would
+    # hang the request for 10–30 s while the browser shows a
+    # never-resolving spinner; doing it up front means the user sees
+    # the progress in the launching terminal and Studio is fully
+    # responsive once the page loads.
+    from amx.db.drivers import ensure_backend_driver
+
+    seen_backends: set[str] = set()
+    for profile in cfg.db_profiles.values():
+        backend = (getattr(profile, "backend", "") or "").strip()
+        if backend and backend not in seen_backends:
+            seen_backends.add(backend)
+            try:
+                ensure_backend_driver(backend)
+            except RuntimeError as exc:
+                log.error(
+                    "Could not install driver for backend %r: %s. "
+                    "Studio will start, but operations against this "
+                    "profile will surface a clearer error in the UI.",
+                    backend,
+                    exc,
+                )
 
     from amx.web.server import create_app
 

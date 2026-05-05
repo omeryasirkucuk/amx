@@ -45,13 +45,10 @@ class OpenAIBatchProvider(BatchProvider):
     def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]:
         import io
 
-        try:
-            import openai
-        except ImportError as exc:
-            raise ImportError(
-                "The 'openai' package is required for OpenAI Batch mode. "
-                "Install it with: pip install openai"
-            ) from exc
+        from amx.utils.optional_deps import ensure
+
+        ensure(["openai"], feature="OpenAI Batch API")
+        import openai
 
         client = openai.OpenAI(api_key=self.cfg.api_key or None)
         model = self._resolve_model() or "gpt-4o-mini"
@@ -272,13 +269,10 @@ class OpenAIBatchProvider(BatchProvider):
 
 class AnthropicBatchProvider(BatchProvider):
     def submit(self, requests: list[BatchRequest]) -> dict[str, ChatResult]:
-        try:
-            import anthropic
-        except ImportError as exc:
-            raise ImportError(
-                "The 'anthropic' package is required for Anthropic Batch mode. "
-                "Install it with: pip install anthropic"
-            ) from exc
+        from amx.utils.optional_deps import ensure
+
+        ensure(["anthropic"], feature="Anthropic Batch API")
+        import anthropic
 
         client = anthropic.Anthropic(api_key=self.cfg.api_key or None)
         model = self._resolve_model() or "claude-sonnet-4-20250514"

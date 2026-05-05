@@ -31,7 +31,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+from amx.utils.optional_deps import ensure as _ensure
+
+# Pulled in here (rather than at the entry-point of every /search and
+# /docs flow) because ``chromadb.api.types`` is referenced as a base
+# class below — the import has to succeed before class definitions
+# execute. ``_ensure`` is a cached no-op once the package is installed.
+_ensure(["chromadb"], feature="search index")
+
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings  # noqa: E402
 
 SUPPORTED_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
 DEFAULT_KIND = "minilm"
@@ -122,12 +130,9 @@ def configure_from_amx_config(cfg: Any, *, on_warning: Callable[[str], None] | N
 
 def _openai_client_factory(*, api_key: str, base_url: str, timeout: float | None) -> Any:
     """Build a real OpenAI-compatible client. Indirected so tests can patch."""
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover — openai is a hard dep
-        raise RuntimeError(
-            "The `openai` package is required for OpenAI-compatible embeddings."
-        ) from exc
+    _ensure(["openai"], feature="OpenAI-compatible embeddings")
+    from openai import OpenAI
+
     return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
 

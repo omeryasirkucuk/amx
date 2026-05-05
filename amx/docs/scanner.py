@@ -84,6 +84,9 @@ def normalize_github_url(url: str) -> str:
 
 def _resolve_github(url: str, target_dir: str | None = None) -> Iterator[DocInfo]:
     """Clone a GitHub repo to a temp dir and scan files."""
+    from amx.utils.optional_deps import ensure
+
+    ensure([("git", "gitpython")], feature="cloning Git repositories")
     import git as gitpython
 
     clone_url = normalize_github_url(url)
@@ -117,6 +120,9 @@ def _s3_local_path(dest: Path, key: str) -> Path:
 
 
 def _resolve_s3(uri: str, target_dir: str | None = None) -> Iterator[DocInfo]:
+    from amx.utils.optional_deps import ensure
+
+    ensure(["boto3"], feature="S3 document sources")
     import boto3
 
     dest = Path(target_dir or tempfile.mkdtemp(prefix="amx_s3_"))
@@ -262,13 +268,14 @@ def _gdrive_has_api_credentials() -> bool:
 
 def _google_drive_credentials():
     """Return credentials for Drive API or raise with setup hints."""
-    try:
-        from google.oauth2 import service_account
-        from google.oauth2.credentials import Credentials
-    except ImportError as exc:
-        raise RuntimeError(
-            "Google Drive API requires google-auth. Install AMX with its full dependencies."
-        ) from exc
+    from amx.utils.optional_deps import ensure
+
+    ensure(
+        [("google.oauth2", "google-auth")],
+        feature="Google Drive document sources",
+    )
+    from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
 
     sa_path = os.environ.get("AMX_GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if sa_path and Path(sa_path).is_file():
@@ -286,11 +293,14 @@ def _google_drive_credentials():
 
 
 def _google_drive_build_service():
-    try:
-        from googleapiclient.discovery import build
-        from googleapiclient.errors import HttpError
-    except ImportError as exc:
-        raise RuntimeError("Google Drive API requires google-api-python-client.") from exc
+    from amx.utils.optional_deps import ensure
+
+    ensure(
+        [("googleapiclient", "google-api-python-client")],
+        feature="Google Drive document sources",
+    )
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
     creds = _google_drive_credentials()
     return build("drive", "v3", credentials=creds, cache_discovery=False), HttpError
 
@@ -470,10 +480,10 @@ def _graph_app_token() -> str:
     tenant = os.environ.get("AMX_AZURE_TENANT_ID", "").strip()
     client_id = os.environ.get("AMX_AZURE_CLIENT_ID", "").strip()
     secret = os.environ.get("AMX_AZURE_CLIENT_SECRET", "").strip()
-    try:
-        import msal
-    except ImportError as exc:
-        raise RuntimeError("SharePoint / OneDrive API requires msal.") from exc
+    from amx.utils.optional_deps import ensure
+
+    ensure(["msal"], feature="SharePoint / OneDrive document sources")
+    import msal
 
     app = msal.ConfidentialClientApplication(
         client_id,
@@ -598,6 +608,9 @@ def test_git_remote_reachable(url: str) -> None:
 
 
 def _test_s3_reachable(uri: str) -> None:
+    from amx.utils.optional_deps import ensure
+
+    ensure(["boto3"], feature="S3 document sources")
     import boto3
     from botocore.exceptions import ClientError
 

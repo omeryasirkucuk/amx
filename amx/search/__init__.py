@@ -1,7 +1,10 @@
-"""Search catalog and search-agent helpers for AMX."""
+"""Search catalog and search-agent helpers for AMX.
 
-from amx.search.agent import SearchAgent
-from amx.search.catalog import SearchCatalog
-from amx.search.service import SearchService
-
-__all__ = ["SearchAgent", "SearchCatalog", "SearchService"]
+This package's ``__init__.py`` deliberately re-exports nothing. The
+``SearchAgent``/``SearchCatalog``/``SearchService`` symbols are
+imported by full path (``from amx.search.catalog import …``) at the
+boot-cold call sites that actually need them. Eagerly re-exporting
+them here used to drag chromadb (~400 ms) onto every CLI launch via
+``amx.search.session_store`` → ``amx.search`` → ``__init__`` →
+``catalog`` → ``index`` → chromadb.
+"""

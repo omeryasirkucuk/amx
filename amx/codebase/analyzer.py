@@ -63,6 +63,9 @@ class CodebaseReport:
 @contextmanager
 def _codebase_root(path: str) -> Iterator[str]:
     if path.startswith("https://github.com") or path.startswith("git@"):
+        from amx.utils.optional_deps import ensure
+
+        ensure([("git", "gitpython")], feature="cloning Git repositories")
         import git as gitpython
 
         from amx.docs.scanner import normalize_github_url

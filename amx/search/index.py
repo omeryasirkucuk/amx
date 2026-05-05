@@ -17,8 +17,18 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import chromadb
-from chromadb.api.types import EmbeddingFunction
+from amx.utils.optional_deps import ensure as _ensure
+
+# Idempotent after the first /search or /docs ingest — the cached set
+# inside ``optional_deps`` short-circuits subsequent imports. The
+# duplicate ``ensure`` calls across embeddings.py / index.py /
+# rag.py / code_rag.py exist because each of these modules can be
+# the very first chromadb-touching site depending on which feature
+# the user reaches first.
+_ensure(["chromadb"], feature="search index")
+
+import chromadb  # noqa: E402
+from chromadb.api.types import EmbeddingFunction  # noqa: E402
 
 _LEGACY_COLLECTION_NAME = "amx_search"
 
