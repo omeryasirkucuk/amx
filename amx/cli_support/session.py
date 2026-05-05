@@ -662,13 +662,14 @@ def _run_ask_repl(
         try:
             line = inner.prompt().strip()
         except EOFError:
+            # Ctrl-D on an empty ask prompt drops back to the main session.
             console.print()
             success("Left ask mode.")
             return
         except KeyboardInterrupt:
+            # Ctrl-C resets the input line; /exit leaves ask mode.
             console.print()
-            success("Left ask mode.")
-            return
+            continue
 
         if not line:
             continue
@@ -690,6 +691,11 @@ def _run_ask_repl(
             main_command.main(args=["search", "ask", line], prog_name="amx", standalone_mode=False)
         except click.ClickException as exc:
             error(_format_session_click_error(f"ask {line}", exc))
+        except KeyboardInterrupt:
+            # Ctrl-C cancels the running ask question but keeps the
+            # ask REPL alive — see the matching block in ``run_session``.
+            console.print()
+            info("Interrupted. Back at the ask prompt.")
         except SystemExit:
             pass
         except Exception as exc:  # pragma: no cover
@@ -1122,10 +1128,17 @@ def run_interactive_session(
             _NS_STATE["namespace"] = namespace
             try:
                 raw = session.prompt(_build_prompt_message(namespace)).strip()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
+                # Ctrl-D on an empty prompt closes the session (standard
+                # shell convention).
                 console.print()
                 success("Session closed.")
                 return
+            except KeyboardInterrupt:
+                # Ctrl-C on the prompt resets the input line and stays
+                # in the session. To leave: /exit, /quit, or Ctrl-D.
+                console.print()
+                continue
 
             if raw == "__amx_esc_back__":
                 namespace = ""
@@ -1301,6 +1314,16 @@ def run_interactive_session(
                 main_command.main(args=args, prog_name="amx", standalone_mode=False)
             except click.ClickException as exc:
                 error(_format_session_click_error(cmdline, exc))
+            except KeyboardInterrupt:
+                # Ctrl-C interrupts a running command but must NOT exit
+                # the session. KeyboardInterrupt is a BaseException
+                # (not Exception), so the broad ``except Exception``
+                # below would let it bubble up to Click which then
+                # prints "Aborted!" and quits. Catch it explicitly,
+                # drop a one-line note, and loop back to the namespace
+                # prompt.
+                console.print()
+                info("Interrupted. Back at the prompt — /exit to leave the session.")
             except SystemExit:
                 pass
             except Exception as exc:  # pragma: no cover
