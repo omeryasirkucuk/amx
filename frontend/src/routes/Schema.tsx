@@ -31,10 +31,35 @@ export default function Schema() {
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   const [draftDescription, setDraftDescription] = useState("");
 
+  const qc = useQueryClient();
   const assets = useQuery({
     queryKey: ["live-assets", schema],
     queryFn: () => api.liveAssets(schema),
     retry: false,
+  });
+
+  // Per-row "Gen" mutation — generates a description for one table
+  // under this schema. Mirrors the per-column Gen button on Table.tsx
+  // (no scope dialog, single LLM call, lands on /pending for review).
+  const generateTableOne = useMutation({
+    mutationFn: (table: string) => api.generateTableDescription(schema, table),
+    onSuccess: (result, table) => {
+      qc.invalidateQueries({ queryKey: ["live-assets", schema] });
+      toast.push({
+        title: result.run_id
+          ? `Table queued for review (Run #${result.run_id})`
+          : "Table description queued for review",
+        description: `${schema}.${table} — approve from /pending.`,
+        tone: "success",
+        duration: 3000,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Generation failed",
+        description: e.message,
+        tone: "error",
+      }),
   });
   const needsCatalog =
     assets.error instanceof ApiError &&
@@ -168,22 +193,43 @@ export default function Schema() {
             </div>
           ) : assets.data?.assets?.length ? (
             <ul className="divide-y divide-border">
-              {assets.data.assets.map((asset) => (
-                <li key={asset.name}>
-                  <Link
-                    to={`/db/${profile}/${schema}/${asset.name}`}
-                    className="flex items-center gap-3 px-5 py-2.5 text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
+              {assets.data.assets.map((asset) => {
+                const isGenerating =
+                  generateTableOne.isPending &&
+                  generateTableOne.variables === asset.name;
+                return (
+                  <li
+                    key={asset.name}
+                    className="group flex items-center text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
                   >
-                    <AssetIcon kind={asset.kind} />
-                    <span className="font-medium text-ink">{asset.name}</span>
-                    <span className="ml-auto">
-                      <StatusPill tone={ASSET_TONE[asset.kind] ?? "neutral"}>
-                        {asset.kind.replace("_", " ")}
-                      </StatusPill>
-                    </span>
-                  </Link>
-                </li>
-              ))}
+                    <Link
+                      to={`/db/${profile}/${schema}/${asset.name}`}
+                      className="flex flex-1 items-center gap-3 px-5 py-2.5"
+                    >
+                      <AssetIcon kind={asset.kind} />
+                      <span className="font-medium text-ink">{asset.name}</span>
+                      <span className="ml-auto">
+                        <StatusPill tone={ASSET_TONE[asset.kind] ?? "neutral"}>
+                          {asset.kind.replace("_", " ")}
+                        </StatusPill>
+                      </span>
+                    </Link>
+                    <div className="px-3 py-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leadingIcon={<Sparkles size={11} />}
+                        loading={isGenerating}
+                        disabled={generateTableOne.isPending}
+                        onClick={() => generateTableOne.mutate(asset.name)}
+                        title={`Generate description for ${asset.name}`}
+                      >
+                        Gen
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <div className="px-5 py-5">

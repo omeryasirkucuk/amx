@@ -94,6 +94,30 @@ export default function Database() {
       }),
   });
 
+  // Per-row "Gen" mutation — generates a description for one schema
+  // reachable from this database/catalog. Mirrors the per-column Gen
+  // button on Table.tsx (no scope dialog, single LLM call, /pending).
+  const generateSchemaOne = useMutation({
+    mutationFn: (schemaName: string) => api.generateSchemaDescription(schemaName),
+    onSuccess: (result, schemaName) => {
+      qc.invalidateQueries({ queryKey: ["live-schemas"] });
+      toast.push({
+        title: result.run_id
+          ? `Schema queued for review (Run #${result.run_id})`
+          : "Schema description queued for review",
+        description: `${schemaName} — approve from /pending.`,
+        tone: "success",
+        duration: 3000,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Generation failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
   const generateBulk = useMutation({
     mutationFn: () => {
       const list = schemas.data?.schemas ?? [];
@@ -201,17 +225,37 @@ export default function Database() {
             </div>
           ) : schemas.data?.schemas?.length ? (
             <ul className="divide-y divide-border">
-              {schemas.data.schemas.map((s) => (
-                <li key={s}>
-                  <Link
-                    to={`/db/${profile}/${s}`}
-                    className="flex items-center gap-3 px-5 py-2.5 text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
+              {schemas.data.schemas.map((s) => {
+                const isGenerating =
+                  generateSchemaOne.isPending && generateSchemaOne.variables === s;
+                return (
+                  <li
+                    key={s}
+                    className="group flex items-center text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
                   >
-                    <FolderTree size={14} className="text-accent" />
-                    <span className="font-mono text-ink">{s}</span>
-                  </Link>
-                </li>
-              ))}
+                    <Link
+                      to={`/db/${profile}/${s}`}
+                      className="flex flex-1 items-center gap-3 px-5 py-2.5"
+                    >
+                      <FolderTree size={14} className="text-accent" />
+                      <span className="font-mono text-ink">{s}</span>
+                    </Link>
+                    <div className="px-3 py-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leadingIcon={<Sparkles size={11} />}
+                        loading={isGenerating}
+                        disabled={generateSchemaOne.isPending}
+                        onClick={() => generateSchemaOne.mutate(s)}
+                        title={`Generate description for ${s}`}
+                      >
+                        Gen
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <div className="px-5 py-5">
