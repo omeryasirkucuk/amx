@@ -13,6 +13,7 @@ import {
 
 import { api } from "../lib/api";
 import { useUi } from "../lib/store";
+import { scopePath } from "../lib/scope";
 import { cn } from "../lib/cn";
 
 interface PaletteItem {
@@ -34,6 +35,7 @@ export default function CommandPalette() {
   const navigate = useNavigate();
   const lastTable = useUi((s) => s.lastOpenedTable);
   const lastSchema = useUi((s) => s.lastOpenedSchema);
+  const lastScope = useUi((s) => s.lastOpened);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -112,28 +114,41 @@ export default function CommandPalette() {
         keywords: "settings profile config",
       },
     ];
-    if (lastSchema && lastTable) {
+    if (lastScope) {
       base.push({
         id: "go-last-table",
-        label: `Reopen ${lastSchema}.${lastTable}`,
+        label: `Reopen ${lastScope.profile} · ${lastScope.schema}.${lastScope.table}`,
         hint: "Last viewed",
         group: "Navigate",
         icon: Database,
-        run: () => navigate(`/db/active/${lastSchema}/${lastTable}`),
+        run: () =>
+          navigate(scopePath(lastScope, lastScope.schema, lastScope.table)),
+      });
+    } else if (lastSchema && lastTable) {
+      // Pre-multi-profile state in localStorage — show a degraded
+      // entry that takes the user to home; once they click into a
+      // table the new scope-aware version replaces it.
+      base.push({
+        id: "go-last-table-legacy",
+        label: `Reopen ${lastSchema}.${lastTable}`,
+        hint: "Last viewed (pick profile from sidebar)",
+        group: "Navigate",
+        icon: Database,
+        run: () => navigate("/"),
       });
     }
     if (ctx.data?.active_db_profile) {
       base.push({
         id: "show-active-db",
-        label: `Active DB profile: ${ctx.data.active_db_profile}`,
-        hint: "Settings → Activate another",
+        label: `Active DB profile (CLI): ${ctx.data.active_db_profile}`,
+        hint: "Studio is multi-profile; this only matters for the CLI",
         group: "Context",
         icon: Database,
         run: () => navigate("/settings"),
       });
     }
     return base;
-  }, [ctx.data, lastSchema, lastTable, navigate]);
+  }, [ctx.data, lastScope, lastSchema, lastTable, navigate]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

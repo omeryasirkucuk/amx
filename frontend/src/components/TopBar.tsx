@@ -130,12 +130,22 @@ function buildCrumbs(
   const segs = pathname.split("/").filter(Boolean);
   const root = segs[0];
 
-  if (root === "db") {
+  if (root === "db" || root === "cat") {
     const out: Crumb[] = [{ label: "Browse", to: "/" }];
-    if (params.schema) {
+    const scopeSeg = params.database ?? params.catalog;
+    if (params.profile && scopeSeg) {
+      out.push({
+        label: params.profile,
+      });
+      out.push({
+        label: scopeSeg,
+        to: `/${root}/${params.profile}/${scopeSeg}`,
+      });
+    }
+    if (params.schema && scopeSeg && params.profile) {
       out.push({
         label: params.schema,
-        to: `/db/${params.profile ?? "active"}/${params.schema}`,
+        to: `/${root}/${params.profile}/${scopeSeg}/${params.schema}`,
       });
     }
     if (params.table) {

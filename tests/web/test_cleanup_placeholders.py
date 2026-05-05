@@ -69,14 +69,20 @@ def test_helper_raises_for_unknown_schema() -> None:
     assert "missing" in str(exc_info.value).lower()
 
 
-def test_endpoint_returns_helper_payload(client, auth_headers, monkeypatch) -> None:
-    db = _stub_db_with_placeholders()
-    from amx.web.routers import comments as comments_router
+def test_endpoint_returns_helper_payload(client, auth_headers, monkeypatch, cfg) -> None:
+    from amx.config import DBConfig
+    from amx.web.routers import live_db
 
-    monkeypatch.setattr(comments_router, "DatabaseConnector", lambda cfg: db)
+    cfg.db_profiles["test-profile"] = DBConfig(
+        backend="postgresql", host="pg.test", user="amx", database="appdb"
+    )
+    live_db._CONNECTOR_CACHE.clear()
+
+    db = _stub_db_with_placeholders()
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _cfg: db)
 
     response = client.post(
-        "/api/comments/cleanup-placeholders",
+        "/api/comments/cleanup-placeholders?profile=test-profile",
         headers=auth_headers,
         json={},
     )
@@ -86,14 +92,20 @@ def test_endpoint_returns_helper_payload(client, auth_headers, monkeypatch) -> N
     assert payload["columns_cleared"] == 2
 
 
-def test_endpoint_400_for_unknown_schema(client, auth_headers, monkeypatch) -> None:
-    db = _stub_db_with_placeholders()
-    from amx.web.routers import comments as comments_router
+def test_endpoint_400_for_unknown_schema(client, auth_headers, monkeypatch, cfg) -> None:
+    from amx.config import DBConfig
+    from amx.web.routers import live_db
 
-    monkeypatch.setattr(comments_router, "DatabaseConnector", lambda cfg: db)
+    cfg.db_profiles["test-profile"] = DBConfig(
+        backend="postgresql", host="pg.test", user="amx", database="appdb"
+    )
+    live_db._CONNECTOR_CACHE.clear()
+
+    db = _stub_db_with_placeholders()
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _cfg: db)
 
     response = client.post(
-        "/api/comments/cleanup-placeholders",
+        "/api/comments/cleanup-placeholders?profile=test-profile",
         headers=auth_headers,
         json={"schema": "missing"},
     )

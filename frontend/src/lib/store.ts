@@ -1,19 +1,32 @@
 // Cross-page Zustand store. Keeps the sidebar collapse state, the
-// last-opened schema/table pair (so the empty home page can deep-
-// link "Resume where you left off"), and the active job IDs the
-// progress panel polls.
+// last-opened table's full scope (so the empty home page and command
+// palette can deep-link "Resume where you left off"), and the active
+// job IDs the progress panel polls.
 //
 // Each slice is tiny on purpose — TanStack Query owns server state;
 // this is purely UI / navigation memory.
 
 import { create } from "zustand";
 
+interface LastOpened {
+  profile: string;
+  database?: string;
+  catalog?: string;
+  schema: string;
+  table: string;
+}
+
 interface UiSlice {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
   lastOpenedSchema: string | null;
   lastOpenedTable: string | null;
+  /** Full scope of the most recently viewed table (null until the
+   *  user navigates into one). Powers the command palette's
+   *  "Reopen …" entry across multi-profile layouts. */
+  lastOpened: LastOpened | null;
   rememberOpenedTable: (schema: string | null, table: string | null) => void;
+  rememberOpenedScope: (last: LastOpened) => void;
 }
 
 export const useUi = create<UiSlice>((set) => ({
@@ -22,6 +35,13 @@ export const useUi = create<UiSlice>((set) => ({
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
   lastOpenedSchema: null,
   lastOpenedTable: null,
+  lastOpened: null,
   rememberOpenedTable: (schema, table) =>
     set({ lastOpenedSchema: schema, lastOpenedTable: table }),
+  rememberOpenedScope: (last) =>
+    set({
+      lastOpened: last,
+      lastOpenedSchema: last.schema,
+      lastOpenedTable: last.table,
+    }),
 }));

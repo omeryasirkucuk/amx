@@ -4,8 +4,15 @@
 //   * attaches the bearer token from localStorage,
 //   * surfaces non-2xx responses as a typed `ApiError` so the UI
 //     can render the backend's `detail` message verbatim.
+//
+// Browse helpers take a Scope ({profile, database?, catalog?}) so each
+// request encodes the multi-profile target — see `lib/scope.ts`. The
+// browse pages read scope from the URL via `useScope()`; the sidebar
+// builds scopes when the user expands a tree node.
 
 import { getStoredToken } from "./auth";
+import type { Scope } from "./scope";
+import { scopeQuery } from "./scope";
 
 export class ApiError extends Error {
   status: number;
@@ -178,42 +185,56 @@ export interface StatsResponse {
   [key: string]: unknown;
 }
 
+/** Helper: append `?profile=…&database=…` to a path. */
+function withScope(path: string, scope: Scope, extra?: string): string {
+  const qs = scopeQuery(scope) + (extra ? `&${extra}` : "");
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}${qs}`;
+}
+
+/** Profile-only scope (used by sidebar tree expand: list catalogs/databases for a profile). */
+export type ProfileScope = { profile: string };
+
 export const api = {
   health: () => apiFetch<HealthResponse>("/api/health"),
   context: () => apiFetch<ContextResponse>("/api/context"),
-  liveCatalogs: () => apiFetch<CatalogsResponse>("/api/live/catalogs"),
-  activateCatalog: (name: string, persist = true) =>
-    apiFetch<{ catalog: string; profile: string; persisted: boolean }>(
-      `/api/live/catalogs/${encodeURIComponent(name)}/activate`,
-      { method: "POST", body: JSON.stringify({ persist }) },
+  /** List catalogs for a profile (3-level backends). */
+  liveCatalogs: (scope: ProfileScope) =>
+    apiFetch<CatalogsResponse>(
+      `/api/live/catalogs?profile=${encodeURIComponent(scope.profile)}`,
     ),
-  liveDatabases: () => apiFetch<DatabasesResponse>("/api/live/databases"),
-  activateDatabase: (name: string, persist = true) =>
-    apiFetch<{ database: string; profile: string; persisted: boolean }>(
-      `/api/live/databases/${encodeURIComponent(name)}/activate`,
-      { method: "POST", body: JSON.stringify({ persist }) },
+  /** List databases for a profile (2-level backends). */
+  liveDatabases: (scope: ProfileScope) =>
+    apiFetch<DatabasesResponse>(
+      `/api/live/databases?profile=${encodeURIComponent(scope.profile)}`,
     ),
-  liveSchemas: (catalog?: string) =>
-    apiFetch<SchemasResponse>(
-      catalog ? `/api/live/schemas?catalog=${encodeURIComponent(catalog)}` : "/api/live/schemas",
+  liveSchemas: (scope: Scope) =>
+    apiFetch<SchemasResponse>(withScope("/api/live/schemas", scope)),
+  liveAssets: (scope: Scope, schema: string) =>
+    apiFetch<AssetsResponse>(
+      withScope(`/api/live/schemas/${encodeURIComponent(schema)}/assets`, scope),
     ),
-  liveAssets: (schema: string) =>
-    apiFetch<AssetsResponse>(`/api/live/schemas/${encodeURIComponent(schema)}/assets`),
-  liveColumns: (schema: string, table: string) =>
+  liveColumns: (scope: Scope, schema: string, table: string) =>
     apiFetch<ColumnsResponse>(
-      `/api/live/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/columns`,
+      withScope(
+        `/api/live/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/columns`,
+        scope,
+      ),
     ),
-  liveSnapshot: (schema: string, table: string) =>
+  liveSnapshot: (scope: Scope, schema: string, table: string) =>
     apiFetch<SnapshotResponse>(
-      `/api/live/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/snapshot`,
+      withScope(
+        `/api/live/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/snapshot`,
+        scope,
+      ),
     ),
   recentRuns: (limit = 20, command: string | null = "analyze.run") => {
     const params = new URLSearchParams({ limit: String(limit) });
     if (command) params.set("command", command);
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
   },
-  setDatabaseComment: (comment: string) =>
-    apiFetch<{ comment: string }>("/api/comments/database", {
+  setDatabaseComment: (scope: Scope, comment: string) =>
+    apiFetch<{ comment: string }>(withScope("/api/comments/database", scope), {
       method: "PUT",
       body: JSON.stringify({ comment }),
     }),
@@ -247,41 +268,62 @@ export const api = {
     apiFetch<{ enabled: boolean }>("/api/admin/history-store/disable", {
       method: "POST",
     }),
-  generateDatabaseDescription: () =>
-    apiFetch<{ description: string; run_id: number | null; result_id: number | null }>("/api/generate/database", { method: "POST" }),
-  generateSchemaDescription: (schema: string) =>
+  generateDatabaseDescription: (scope: Scope) =>
     apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
-      `/api/generate/schema/${encodeURIComponent(schema)}`,
+      withScope("/api/generate/database", scope),
       { method: "POST" },
     ),
-  generateTableDescription: (schema: string, table: string) =>
+  generateSchemaDescription: (scope: Scope, schema: string) =>
     apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
-      `/api/generate/table/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`,
+      withScope(`/api/generate/schema/${encodeURIComponent(schema)}`, scope),
       { method: "POST" },
     ),
-  generateColumnDescription: (schema: string, table: string, column: string) =>
+  generateTableDescription: (scope: Scope, schema: string, table: string) =>
     apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
-      `/api/generate/column/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/${encodeURIComponent(column)}`,
+      withScope(
+        `/api/generate/table/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`,
+        scope,
+      ),
       { method: "POST" },
     ),
-  setSchemaComment: (schema: string, comment: string) =>
+  generateColumnDescription: (
+    scope: Scope,
+    schema: string,
+    table: string,
+    column: string,
+  ) =>
+    apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
+      withScope(
+        `/api/generate/column/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/${encodeURIComponent(column)}`,
+        scope,
+      ),
+      { method: "POST" },
+    ),
+  setSchemaComment: (scope: Scope, schema: string, comment: string) =>
     apiFetch<{ schema: string; comment: string }>(
-      `/api/comments/schemas/${encodeURIComponent(schema)}`,
+      withScope(`/api/comments/schemas/${encodeURIComponent(schema)}`, scope),
       { method: "PUT", body: JSON.stringify({ comment }) },
     ),
-  setTableComment: (schema: string, table: string, comment: string) =>
+  setTableComment: (scope: Scope, schema: string, table: string, comment: string) =>
     apiFetch<{ schema: string; table: string; comment: string }>(
-      `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}`,
+      withScope(
+        `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}`,
+        scope,
+      ),
       { method: "PUT", body: JSON.stringify({ comment }) },
     ),
   setColumnComment: (
+    scope: Scope,
     schema: string,
     table: string,
     column: string,
     comment: string,
   ) =>
     apiFetch<{ schema: string; table: string; column: string; comment: string }>(
-      `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`,
+      withScope(
+        `/api/comments/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/columns/${encodeURIComponent(column)}`,
+        scope,
+      ),
       { method: "PUT", body: JSON.stringify({ comment }) },
     ),
   stats: (command: string | null = "analyze.run") => {
@@ -296,6 +338,9 @@ export const api = {
     scope: Record<string, string[]>;
     apply?: boolean;
     missing_only?: boolean;
+    db_profile?: string;
+    database?: string;
+    catalog?: string;
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
@@ -303,6 +348,9 @@ export const api = {
         scope: body.scope,
         apply: !!body.apply,
         missing_only: !!body.missing_only,
+        db_profile: body.db_profile,
+        database: body.database,
+        catalog: body.catalog,
       }),
     }),
   cancelRun: (jobId: string) =>

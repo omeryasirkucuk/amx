@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlignLeft, Columns, Sparkles } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { AlignLeft, Columns, Sparkles, Database } from "lucide-react";
 
 import { api } from "../lib/api";
+import { useScope, scopePath } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
+import EmptyState from "../components/EmptyState";
 import GenerateScopeDialog from "../components/GenerateScopeDialog";
 import StatusPill from "../components/StatusPill";
 import { useUi } from "../lib/store";
@@ -17,27 +19,52 @@ import {
 } from "../components/ui";
 
 export default function Table() {
-  const params = useParams();
-  const schema = params.schema!;
-  const table = params.table!;
-  const profile = params.profile || "active";
+  const { scope } = useScope();
+  const schema = scope?.schema ?? "";
+  const table = scope?.table ?? "";
   const remember = useUi((s) => s.rememberOpenedTable);
+  const rememberScope = useUi((s) => s.rememberOpenedScope);
   const qc = useQueryClient();
   const toast = useToast();
   const navigate = useNavigate();
   const [confirmGenerate, setConfirmGenerate] = useState(false);
 
   useEffect(() => {
-    remember(schema, table);
-  }, [schema, table, remember]);
+    if (scope && schema && table) {
+      remember(schema, table);
+      rememberScope({
+        profile: scope.profile,
+        database: scope.database,
+        catalog: scope.catalog,
+        schema,
+        table,
+      });
+    }
+  }, [scope, schema, table, remember, rememberScope]);
 
   const snapshot = useQuery({
-    queryKey: ["live-snapshot", schema, table],
-    queryFn: () => api.liveSnapshot(schema, table),
+    queryKey: [
+      "live-snapshot",
+      scope?.profile ?? "",
+      scope?.database ?? "",
+      scope?.catalog ?? "",
+      schema,
+      table,
+    ],
+    queryFn: () => api.liveSnapshot(scope!, schema, table),
+    enabled: !!scope && !!schema && !!table,
   });
   const columns = useQuery({
-    queryKey: ["live-columns", schema, table],
-    queryFn: () => api.liveColumns(schema, table),
+    queryKey: [
+      "live-columns",
+      scope?.profile ?? "",
+      scope?.database ?? "",
+      scope?.catalog ?? "",
+      schema,
+      table,
+    ],
+    queryFn: () => api.liveColumns(scope!, schema, table),
+    enabled: !!scope && !!schema && !!table,
   });
 
   const totalCols = snapshot.data?.columns?.length ?? columns.data?.count ?? 0;
@@ -45,11 +72,10 @@ export default function Table() {
     snapshot.data?.columns?.filter((c) => (c.comment || "").trim().length > 0).length ?? 0;
   const tableComment = snapshot.data?.table_comment ?? "";
 
-  // Inline-edit save handlers — they invalidate the snapshot so the
-  // visible value re-fetches with the freshly written COMMENT.
   async function saveTableComment(next: string) {
-    await api.setTableComment(schema, table, next);
-    qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+    if (!scope) return;
+    await api.setTableComment(scope, schema, table, next);
+    qc.invalidateQueries({ queryKey: ["live-snapshot"] });
     toast.push({
       title: "Description saved",
       tone: "success",
@@ -58,8 +84,9 @@ export default function Table() {
   }
 
   async function saveColumnComment(column: string, next: string) {
-    await api.setColumnComment(schema, table, column, next);
-    qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+    if (!scope) return;
+    await api.setColumnComment(scope, schema, table, column, next);
+    qc.invalidateQueries({ queryKey: ["live-snapshot"] });
     toast.push({
       title: `Comment saved`,
       description: `${schema}.${table}.${column}`,
@@ -68,15 +95,10 @@ export default function Table() {
     });
   }
 
-  // Two flavours of "Generate":
-  // - Single-shot endpoint writes ONLY the table's own COMMENT
-  //   (no columns). Fast, one LLM call, returns the new text.
-  // - Bulk run path spawns the analyze.run worker for the whole
-  //   table so every column also gets a generated description.
   const generateTableOnly = useMutation({
-    mutationFn: () => api.generateTableDescription(schema, table),
+    mutationFn: () => api.generateTableDescription(scope!, schema, table),
     onSuccess: (result) => {
-      qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+      qc.invalidateQueries({ queryKey: ["live-snapshot"] });
       toast.push({
         title: result.run_id
           ? `Queued for review (Run #${result.run_id})`
@@ -96,9 +118,9 @@ export default function Table() {
 
   const generateColumnOne = useMutation({
     mutationFn: (column: string) =>
-      api.generateColumnDescription(schema, table, column),
+      api.generateColumnDescription(scope!, schema, table, column),
     onSuccess: (result, column) => {
-      qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+      qc.invalidateQueries({ queryKey: ["live-snapshot"] });
       toast.push({
         title: result.run_id
           ? `Column queued for review (Run #${result.run_id})`
@@ -116,15 +138,15 @@ export default function Table() {
       }),
   });
 
-  // Auto-generate via the existing /run worker — spawns a job and
-  // redirects to the run-detail page so the user can watch the
-  // streaming progress.
   const generate = useMutation({
     mutationFn: () =>
       api.submitRun({
         scope: { [schema]: [table] },
         apply: false,
         missing_only: false,
+        db_profile: scope?.profile,
+        database: scope?.database,
+        catalog: scope?.catalog,
       }),
     onSuccess: (result) => {
       setConfirmGenerate(false);
@@ -146,13 +168,28 @@ export default function Table() {
     },
   });
 
+  if (!scope || !schema || !table) {
+    return (
+      <EmptyState
+        icon={Database}
+        title="Pick a table from the sidebar"
+        description="Expand a schema to see its tables."
+      />
+    );
+  }
+
   return (
     <>
       <PageHeader
         title={table}
         breadcrumbs={[
           { label: "Browse", to: "/" },
-          { label: schema, to: `/db/${profile}/${schema}` },
+          { label: scope.profile },
+          {
+            label: scope.database ?? scope.catalog ?? "",
+            to: scopePath(scope),
+          },
+          { label: schema, to: scopePath(scope, schema) },
           { label: table },
         ]}
         description={
@@ -275,7 +312,7 @@ export default function Table() {
 
       <div className="mt-4">
         <Link
-          to={`/db/${profile}/${schema}`}
+          to={scopePath(scope, schema)}
           className="text-xs text-ink-dim hover:text-ink"
         >
           ← Back to schema

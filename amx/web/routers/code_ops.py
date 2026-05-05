@@ -33,6 +33,12 @@ class _CodeScanRequest(BaseModel):
 
     Path resolution precedence: ``path`` > ``profile`` > active code
     profile. Same fallback chain the CLI's ``/code-scan`` uses.
+
+    DB enumeration scope (``db_profile`` / ``db_database`` /
+    ``db_catalog``): the worker walks tables/columns to know which
+    strings in source code are DB references. Set these to scope the
+    enumeration to a specific DB profile without flipping the active
+    one. Omitted → legacy single-active behaviour.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -43,6 +49,9 @@ class _CodeScanRequest(BaseModel):
     # field with an alias so request bodies still send {"schema": "x"}.
     schema_: str | None = Field(default=None, alias="schema")
     column_scan: bool = False  # include column names — slower but richer report
+    db_profile: str | None = None
+    db_database: str | None = None
+    db_catalog: str | None = None
 
 
 def _resolve_path(body: _CodeScanRequest, cfg: AMXConfig) -> str:
@@ -71,7 +80,16 @@ def submit_scan(
     job = jobs.new_job("code_scan")
     thread = threading.Thread(
         target=_scan_worker,
-        args=(cfg, job, path, body.schema_, body.column_scan),
+        args=(
+            cfg,
+            job,
+            path,
+            body.schema_,
+            body.column_scan,
+            body.db_profile,
+            body.db_database,
+            body.db_catalog,
+        ),
         name=f"amx-code-scan-{job.id}",
         daemon=True,
     )
@@ -102,9 +120,21 @@ def _scan_worker(
     path: str,
     schema_filter: str | None,
     column_scan: bool,
+    db_profile: str | None = None,
+    db_database: str | None = None,
+    db_catalog: str | None = None,
 ) -> None:
     with quiet_console():
-        _scan_worker_body(cfg, job, path, schema_filter, column_scan)
+        _scan_worker_body(
+            cfg,
+            job,
+            path,
+            schema_filter,
+            column_scan,
+            db_profile,
+            db_database,
+            db_catalog,
+        )
 
 
 def _scan_worker_body(
@@ -113,6 +143,9 @@ def _scan_worker_body(
     path: str,
     schema_filter: str | None,
     column_scan: bool,
+    db_profile: str | None = None,
+    db_database: str | None = None,
+    db_catalog: str | None = None,
 ) -> None:
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Collecting catalog assets"})
@@ -127,10 +160,16 @@ def _scan_worker_body(
         table_names: list[str] = []
         column_names: list[str] = []
         try:
-            db = DatabaseConnector(cfg.db)
+            scope = (db_profile or "").strip()
+            if scope:
+                from amx.web.routers.live_db import _connector_for_scope
+
+                db = _connector_for_scope(cfg, scope, database=db_database, catalog=db_catalog)
+            else:
+                db = DatabaseConnector(cfg.db)
         except Exception as exc:
             raise RuntimeError(
-                f"Cannot open active DB profile to enumerate tables for scan: {exc}"
+                f"Cannot open DB profile to enumerate tables for scan: {exc}"
             ) from exc
         try:
             schemas = [schema_filter] if schema_filter else list(db.list_schemas())
