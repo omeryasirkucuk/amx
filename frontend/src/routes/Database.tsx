@@ -78,10 +78,12 @@ export default function Database() {
       setDraftDescription(result.description);
       qc.invalidateQueries({ queryKey: ["context"] });
       toast.push({
-        title: "Description generated",
-        description: "Written straight to the live database.",
+        title: result.run_id
+          ? `Queued for review (Run #${result.run_id})`
+          : "Description queued for review",
+        description: "Approve from the Pending page to write it to the live database.",
         tone: "success",
-        duration: 2400,
+        duration: 3200,
       });
     },
     onError: (e: Error) =>
@@ -99,15 +101,16 @@ export default function Database() {
       // table list under each schema means "every table".
       const scope: Record<string, string[]> = {};
       for (const s of list) scope[s] = [];
-      return api.submitRun({ scope, apply: true, missing_only: false });
+      return api.submitRun({ scope, apply: false, missing_only: false });
     },
     onSuccess: (result) => {
       setConfirmGenerate(false);
       toast.push({
-        title: "Bulk run started",
-        description: "Streaming activity for every schema and table…",
+        title: "Bulk run queued for review",
+        description:
+          "Streaming activity for every schema and table; results land on the Pending page.",
         tone: "info",
-        duration: 2200,
+        duration: 2600,
       });
       navigate(`/runs/new-${result.job_id}`);
     },

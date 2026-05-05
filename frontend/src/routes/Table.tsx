@@ -75,13 +75,15 @@ export default function Table() {
   //   table so every column also gets a generated description.
   const generateTableOnly = useMutation({
     mutationFn: () => api.generateTableDescription(schema, table),
-    onSuccess: () => {
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
       toast.push({
-        title: "Table description generated",
-        description: "Written straight to the live database.",
+        title: result.run_id
+          ? `Queued for review (Run #${result.run_id})`
+          : "Description queued for review",
+        description: "Approve from the Pending page to write it to the live database.",
         tone: "success",
-        duration: 2400,
+        duration: 3200,
       });
     },
     onError: (e: Error) =>
@@ -95,13 +97,15 @@ export default function Table() {
   const generateColumnOne = useMutation({
     mutationFn: (column: string) =>
       api.generateColumnDescription(schema, table, column),
-    onSuccess: (_data, column) => {
+    onSuccess: (result, column) => {
       qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
       toast.push({
-        title: "Column description generated",
-        description: `${schema}.${table}.${column}`,
+        title: result.run_id
+          ? `Column queued for review (Run #${result.run_id})`
+          : "Column description queued for review",
+        description: `${schema}.${table}.${column} — approve from /pending.`,
         tone: "success",
-        duration: 2200,
+        duration: 3000,
       });
     },
     onError: (e: Error) =>
@@ -119,16 +123,16 @@ export default function Table() {
     mutationFn: () =>
       api.submitRun({
         scope: { [schema]: [table] },
-        apply: true,
+        apply: false,
         missing_only: false,
       }),
     onSuccess: (result) => {
       setConfirmGenerate(false);
       toast.push({
-        title: "Bulk run started",
-        description: `Streaming every column of ${schema}.${table}…`,
+        title: "Bulk run queued for review",
+        description: `Streaming every column of ${schema}.${table}; results land on the Pending page.`,
         tone: "info",
-        duration: 2200,
+        duration: 2600,
       });
       navigate(`/runs/new-${result.job_id}`);
     },

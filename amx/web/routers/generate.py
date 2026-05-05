@@ -1,29 +1,39 @@
 """Per-asset LLM-driven generate endpoints.
 
 Each route runs ONE focused LLM call for a single asset
-(database/schema/table/column), writes the resulting description
-back via the existing connector setters, and returns the new text
-synchronously. Mirrors what the analyze.run worker would do for a
-single asset, minus the run-history bookkeeping and the pending
-queue indirection — the user is asking AMX to generate one piece
-of metadata, so we just generate it and write it.
+(database/schema/table/column) and routes the result through the
+same history + pending-review path the bulk ``analyze.run`` worker
+uses. The generated description does NOT land on the live database
+until the user approves it from the Pending page — every generate,
+single-shot or bulk, goes through human-in-the-loop.
 
-Bulk generation (``POST /api/runs`` with a wide scope) remains the
-canonical path for filling in many assets at once. These endpoints
-exist so a user reviewing one row can hit "Generate" without
-spawning a multi-asset job.
+Response shape: ``{description, run_id, result_id}``.
+- ``description`` is what was generated (for an instant preview).
+- ``run_id`` ties the call back to ``analysis_runs`` so the user can
+  find it on the Runs page.
+- ``result_id`` is the matching ``run_results`` row id and the same
+  id stored on the pending queue entry — the SPA uses it to scroll
+  the Pending page to the freshly-queued row.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from amx.agents.base import Confidence
+from amx.agents.orchestrator import ReviewResult
 from amx.config import AMXConfig
-from amx.db.connector import AssetKind, DatabaseConnector
+from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
+from amx.pending_review import load_pending, save_pending
+from amx.storage.sqlite_store import history_store
+from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
+log = get_logger("web.generate")
 
 _SYSTEM = (
     "You write concise, factual database asset descriptions. Reply "
@@ -79,18 +89,127 @@ def _generate(llm: LLMProvider, prompt: str) -> str:
     return text
 
 
-def _write_or_400(action: str, fn) -> None:
-    try:
-        fn()
-    except Exception as exc:
+def _record_and_queue(
+    cfg: AMXConfig,
+    *,
+    command: str,
+    description: str,
+    schema: str,
+    table: str,
+    column: str | None,
+    asset_kind: str,
+) -> dict[str, Any]:
+    """Persist a generated description through history + pending queue.
+
+    Mirrors what ``_run_worker`` does for the bulk path: open a fresh
+    ``analysis_runs`` row, save the LLM output as a single
+    ``run_results`` entry, mark the run ``ready_for_review``, and append
+    a :class:`ReviewResult` to ``~/.amx/pending_metadata.json`` so the
+    SPA's Pending page picks it up. The live database is NOT touched —
+    the user approves from /pending and the existing apply worker does
+    the writeback.
+    """
+    response: dict[str, Any] = {
+        "description": description,
+        "run_id": None,
+        "result_id": None,
+    }
+    scope = {schema: [table] if table else []} if schema else {}
+    selected = 1
+    hs = history_store()
+    if hs is None:
+        # No history store available — surface a clear error rather
+        # than silently dropping the generation. Callers can decide
+        # whether to retry or fall back, but on a fresh install this
+        # path effectively means "history-store wasn't initialised",
+        # which is a configuration bug worth knowing about.
+        log.warning("history_store() returned None; generated text not recorded")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"{action} failed: {exc.__class__.__name__}: {exc}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "History store is not initialised. The generated description "
+                "was not persisted. Open Settings → History to enable it, then "
+                "retry."
+            ),
+        )
+
+    try:
+        run_id = hs.create_run(
+            command=command,
+            mode="chat",
+            db_backend=cfg.db.backend,
+            db_profile=cfg.active_db_profile,
+            llm_provider=cfg.llm.provider,
+            llm_model=cfg.llm.model,
+            scope=scope,
+            selected_count=selected,
+            planned_count=selected,
+            review_strategy="individual",
+            llm_profile=cfg.active_llm_profile,
+            doc_profile=cfg.active_doc_profile or None,
+            code_profile=cfg.active_code_profile or None,
+            settings={"trigger": "visualizer.generate.singleshot"},
+        )
+    except Exception as exc:  # pragma: no cover — DB-layer failure
+        log.warning("Could not record generate run: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not persist run history: {exc.__class__.__name__}: {exc}",
         ) from exc
+
+    response["run_id"] = int(run_id)
+
+    try:
+        result_ids = hs.save_run_results(
+            run_id,
+            [
+                {
+                    "schema": schema,
+                    "table": table,
+                    "column": column,
+                    "asset_kind": asset_kind,
+                    "source": "generate.singleshot",
+                    "confidence": Confidence.MEDIUM.value,
+                    "alternatives": [description],
+                    "reasoning": "",
+                }
+            ],
+        )
+    except Exception as exc:  # pragma: no cover
+        log.warning("Could not save run_results for run %s: %s", run_id, exc)
+        result_ids = []
+
+    if result_ids:
+        response["result_id"] = int(result_ids[0])
+
+    try:
+        hs.update_run_status(int(run_id), "ready_for_review")
+    except Exception as exc:  # pragma: no cover
+        log.warning("Could not flip run %s to ready_for_review: %s", run_id, exc)
+
+    rr = ReviewResult(
+        schema=schema,
+        table=table,
+        column=column,
+        final_description=description,
+        confidence=Confidence.MEDIUM,
+        source="generate.singleshot",
+        applied=True,
+        asset_kind=asset_kind,
+        result_id=response["result_id"],
+    )
+    try:
+        rows = load_pending()
+        rows.append(rr)
+        save_pending(rows)
+    except Exception as exc:  # pragma: no cover
+        log.warning("Could not append generate result to pending queue: %s", exc)
+
+    return response
 
 
 @router.post("/database")
-def generate_database(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, str]:
+def generate_database(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     db = _connector(cfg)
     try:
         schemas = db.list_schemas()
@@ -103,15 +222,22 @@ def generate_database(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, str]:
         "Describe the database's overall purpose."
     )
     description = _generate(_llm(cfg), prompt)
-    _write_or_400("Setting database comment", lambda: db.set_database_comment(description))
-    return {"description": description}
+    return _record_and_queue(
+        cfg,
+        command="generate.database",
+        description=description,
+        schema="",
+        table="",
+        column=None,
+        asset_kind="database",
+    )
 
 
 @router.post("/schema/{schema}")
 def generate_schema(
     schema: str,
     cfg: AMXConfig = Depends(get_cfg),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     db = _connector(cfg)
     try:
         assets = db.list_assets(schema)
@@ -123,11 +249,15 @@ def generate_schema(
         f"Schema '{schema}' contains the tables: {table_summary}. Describe the schema's purpose."
     )
     description = _generate(_llm(cfg), prompt)
-    _write_or_400(
-        f"Setting schema comment on {schema}",
-        lambda: db.set_schema_comment(schema, description),
+    return _record_and_queue(
+        cfg,
+        command="generate.schema",
+        description=description,
+        schema=schema,
+        table="",
+        column=None,
+        asset_kind="schema",
     )
-    return {"description": description}
 
 
 @router.post("/table/{schema}/{table}")
@@ -135,7 +265,7 @@ def generate_table(
     schema: str,
     table: str,
     cfg: AMXConfig = Depends(get_cfg),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     db = _connector(cfg)
     try:
         cols = db.list_column_profiles(schema, table)
@@ -149,11 +279,15 @@ def generate_table(
         "Describe what one row in this table represents."
     )
     description = _generate(_llm(cfg), prompt)
-    _write_or_400(
-        f"Setting table comment on {schema}.{table}",
-        lambda: db.set_table_comment(schema, table, description, asset_kind=AssetKind.TABLE),
+    return _record_and_queue(
+        cfg,
+        command="generate.table",
+        description=description,
+        schema=schema,
+        table=table,
+        column=None,
+        asset_kind="table",
     )
-    return {"description": description}
 
 
 @router.post("/column/{schema}/{table}/{column}")
@@ -162,7 +296,7 @@ def generate_column(
     table: str,
     column: str,
     cfg: AMXConfig = Depends(get_cfg),
-) -> dict[str, str]:
+) -> dict[str, Any]:
     db = _connector(cfg)
     try:
         cols = db.list_column_profiles(schema, table)
@@ -185,11 +319,15 @@ def generate_column(
     parts.append("Describe what this column stores.")
     prompt = " ".join(parts)
     description = _generate(_llm(cfg), prompt)
-    _write_or_400(
-        f"Setting column comment on {schema}.{table}.{column}",
-        lambda: db.set_column_comment(schema, table, column, description),
+    return _record_and_queue(
+        cfg,
+        command="generate.column",
+        description=description,
+        schema=schema,
+        table=table,
+        column=column,
+        asset_kind="column",
     )
-    return {"description": description}
 
 
 __all__ = ["router"]
