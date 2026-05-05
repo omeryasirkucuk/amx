@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -59,62 +57,31 @@ _BACKEND_DRIVER_PROBES: dict[str, tuple[str, str]] = {
 
 
 def _offer_to_install_backend_driver(backend: str) -> None:
-    """Probe *backend*'s optional driver and offer to auto-install it.
+    """Auto-install *backend*'s driver during the ``/add-db-profile`` wizard.
 
-    The whole point: a user picking ``databricks`` in the wizard on a
-    fresh ``pip install amx-cli`` should never have to drop out, look up
-    the extras name, type ``pip install -U 'amx-cli[databricks]'``, and
-    rerun the wizard. Instead AMX prints a single Y/n prompt; on Y it
-    runs ``sys.executable -m pip install 'amx-cli[<extra>]'`` inline so
-    the user sees pip's normal output. On success the wizard continues
-    with the driver loaded; on N (or pip failure) it falls through to
-    the air-gapped path with the install hint visible.
-
-    Always uses ``sys.executable -m pip`` so the install lands in the
-    same interpreter that's running AMX — the typical pip-on-PATH
-    confusion (system pip vs venv pip) cannot bite.
+    Pre-0.12.9 this asked a Y/n prompt and ran ``pip install
+    'amx-cli[<extra>]'``. The Y/n was friction (the user had just
+    picked the backend; "do you want it to work?" is not a useful
+    question), and the wizard's pre-install was duplicated by
+    ``DatabaseConnector.__init__`` which would have triggered the
+    same install on first use anyway. Calling
+    ``ensure_backend_driver`` here pre-warms the same path so the
+    wizard's "test connection" step at the end of the flow finds the
+    driver already loaded.
     """
     probe = _BACKEND_DRIVER_PROBES.get(backend)
     if not probe:
         return
-    extra, module = probe
-    try:
-        __import__(module)
-        return
-    except ImportError:
-        pass
-
-    info(f"The {backend!r} backend driver isn't installed yet.")
-    if not confirm("Install it now via pip?", default=True):
-        warn(f"Skipping. Run later: pip install 'amx-cli[{extra}]'")
-        return
-
-    target = f"amx-cli[{extra}]"
-    info(f"Running: {sys.executable} -m pip install {target}")
-    try:
-        # No capture_output: let pip's progress stream straight to the
-        # user's terminal — the user wants to see it work.
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", target],
-            check=False,
-        )
-    except OSError as exc:
-        error(f"Could not invoke pip: {exc}")
-        warn(f"Run manually: pip install 'amx-cli[{extra}]'")
-        return
-
-    if result.returncode != 0:
-        error(f"pip install exited with code {result.returncode}.")
-        warn(f"Run manually: pip install 'amx-cli[{extra}]'")
-        return
+    from amx.db.drivers import ensure_backend_driver
 
     try:
-        __import__(module)
-    except ImportError as exc:
-        error(f"Driver still not importable after install: {exc}")
-        warn(f"Run manually: pip install 'amx-cli[{extra}]'")
-        return
-    success(f"Installed amx-cli[{extra}].")
+        ensure_backend_driver(backend)
+    except RuntimeError as exc:
+        # Surface the failure but don't abort the wizard — the user
+        # can still finish entering connection details and AMX will
+        # re-attempt the install (or report the same hint) on first
+        # connect.
+        error(str(exc))
 
 
 def _ask_update_text(

@@ -201,6 +201,16 @@ class DatabaseConnector:
         self.cfg = cfg
         self._engine: Engine | None = None
 
+        # Auto-install the backend's driver(s) before constructing the
+        # adapter so a user with a saved profile (e.g. ``local-postgre``
+        # backed by Postgres) on a fresh slim install never sees the
+        # raw ``ModuleNotFoundError: No module named 'psycopg2'`` —
+        # they see the same one-time pip-progress UX every other
+        # feature uses. Idempotent / cached after first hit.
+        from amx.db.drivers import ensure_backend_driver
+
+        ensure_backend_driver(cfg.backend)
+
         from amx.db.adapters import get_adapter
 
         self._adapter = get_adapter(cfg)
