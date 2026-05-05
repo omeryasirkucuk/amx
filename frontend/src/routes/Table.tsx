@@ -68,10 +68,53 @@ export default function Table() {
     });
   }
 
-  // Auto-generate via the existing /run worker. Spawning a job
-  // returns immediately; we redirect to the run-detail page so the
-  // user can watch streaming progress, then come back to this table
-  // once the worker exits.
+  // Two flavours of "Generate":
+  // - Single-shot endpoint writes ONLY the table's own COMMENT
+  //   (no columns). Fast, one LLM call, returns the new text.
+  // - Bulk run path spawns the analyze.run worker for the whole
+  //   table so every column also gets a generated description.
+  const generateTableOnly = useMutation({
+    mutationFn: () => api.generateTableDescription(schema, table),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+      toast.push({
+        title: "Table description generated",
+        description: "Written straight to the live database.",
+        tone: "success",
+        duration: 2400,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Generation failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
+  const generateColumnOne = useMutation({
+    mutationFn: (column: string) =>
+      api.generateColumnDescription(schema, table, column),
+    onSuccess: (_data, column) => {
+      qc.invalidateQueries({ queryKey: ["live-snapshot", schema, table] });
+      toast.push({
+        title: "Column description generated",
+        description: `${schema}.${table}.${column}`,
+        tone: "success",
+        duration: 2200,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Generation failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
+  // Auto-generate via the existing /run worker — spawns a job and
+  // redirects to the run-detail page so the user can watch the
+  // streaming progress.
   const generate = useMutation({
     mutationFn: () =>
       api.submitRun({
@@ -82,8 +125,8 @@ export default function Table() {
     onSuccess: (result) => {
       setConfirmGenerate(false);
       toast.push({
-        title: "Generation started",
-        description: `Streaming activity for ${schema}.${table}…`,
+        title: "Bulk run started",
+        description: `Streaming every column of ${schema}.${table}…`,
         tone: "info",
         duration: 2200,
       });
@@ -118,14 +161,25 @@ export default function Table() {
           />
         }
         actions={
-          <Button
-            variant="primary"
-            size="md"
-            leadingIcon={<Sparkles size={14} />}
-            onClick={() => setConfirmGenerate(true)}
-          >
-            Generate descriptions
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<Sparkles size={14} />}
+              loading={generateTableOnly.isPending}
+              onClick={() => generateTableOnly.mutate()}
+            >
+              Just this table
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Sparkles size={14} />}
+              onClick={() => setConfirmGenerate(true)}
+            >
+              All columns (bulk run)
+            </Button>
+          </div>
         }
       />
 
@@ -171,11 +225,14 @@ export default function Table() {
                   <th className="px-5 py-2 text-left font-semibold">Type</th>
                   <th className="px-5 py-2 text-left font-semibold">Nullable</th>
                   <th className="px-5 py-2 text-left font-semibold">Comment</th>
+                  <th className="px-2 py-2 text-right font-semibold w-20">Generate</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {columns.data.columns.map((col) => {
                   const snap = snapshot.data?.columns.find((c) => c.name === col.name);
+                  const isGenerating =
+                    generateColumnOne.isPending && generateColumnOne.variables === col.name;
                   return (
                     <tr key={col.name} className="align-top hover:bg-surface-subtle/40">
                       <td className="px-5 py-2 font-mono text-xs text-ink">{col.name}</td>
@@ -195,6 +252,19 @@ export default function Table() {
                           italicEmpty
                           emptyLabel="no comment — click to add"
                         />
+                      </td>
+                      <td className="px-2 py-2 text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          leadingIcon={<Sparkles size={11} />}
+                          loading={isGenerating}
+                          disabled={generateColumnOne.isPending}
+                          onClick={() => generateColumnOne.mutate(col.name)}
+                          title={`Generate description for ${col.name}`}
+                        >
+                          Gen
+                        </Button>
                       </td>
                     </tr>
                   );
@@ -224,9 +294,9 @@ export default function Table() {
         onConfirm={() => generate.mutate()}
         loading={generate.isPending}
         tone="primary"
-        title={`Generate descriptions for ${schema}.${table}?`}
-        description="A new /run job is started for this table. Existing descriptions are overwritten and the new ones are written straight to the live database. You'll be redirected to the run-detail page to watch the worker stream."
-        confirmLabel="Start generation"
+        title={`Bulk run for ${schema}.${table}?`}
+        description="Spawns the full analyze.run worker — every column gets a generated description, the run is recorded in history, results land in the pending queue, and you'll be redirected to the run-detail page so you can watch the worker stream. Use 'Just this table' instead if you only want the table comment."
+        confirmLabel="Start bulk run"
       />
     </>
   );

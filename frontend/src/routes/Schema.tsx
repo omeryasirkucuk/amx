@@ -58,6 +58,30 @@ export default function Schema() {
     });
   }
 
+  // Two flavours of "Generate":
+  // - the single-shot endpoint writes ONLY this schema's COMMENT
+  //   (no tables, no columns, one LLM call). Fast.
+  // - the bulk run path spawns the full analyze.run worker so every
+  //   table + column under the schema also gets generated.
+  const generateSchemaOnly = useMutation({
+    mutationFn: () => api.generateSchemaDescription(schema),
+    onSuccess: (result) => {
+      setDraftDescription(result.description);
+      toast.push({
+        title: "Schema description generated",
+        description: "Written straight to the live database.",
+        tone: "success",
+        duration: 2400,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Generation failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
   const generate = useMutation({
     mutationFn: () =>
       api.submitRun({
@@ -68,8 +92,8 @@ export default function Schema() {
     onSuccess: (result) => {
       setConfirmGenerate(false);
       toast.push({
-        title: "Generation started",
-        description: `Streaming activity for schema ${schema}…`,
+        title: "Bulk run started",
+        description: `Streaming activity for every table under ${schema}…`,
         tone: "info",
         duration: 2200,
       });
@@ -100,14 +124,25 @@ export default function Schema() {
           />
         }
         actions={
-          <Button
-            variant="primary"
-            size="md"
-            leadingIcon={<Sparkles size={14} />}
-            onClick={() => setConfirmGenerate(true)}
-          >
-            Generate descriptions
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<Sparkles size={14} />}
+              loading={generateSchemaOnly.isPending}
+              onClick={() => generateSchemaOnly.mutate()}
+            >
+              Just this schema
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<Sparkles size={14} />}
+              onClick={() => setConfirmGenerate(true)}
+            >
+              All tables (bulk run)
+            </Button>
+          </div>
         }
       />
 
@@ -177,9 +212,9 @@ export default function Schema() {
         onConfirm={() => generate.mutate()}
         loading={generate.isPending}
         tone="primary"
-        title={`Generate descriptions for ${schema}?`}
-        description="A new /run job is started covering every reachable table in this schema. Existing descriptions are overwritten and the new ones are written straight to the live database."
-        confirmLabel="Start generation"
+        title={`Bulk run for every table in ${schema}?`}
+        description="Spawns the full analyze.run worker — every reachable table and column gets a generated description, the run is recorded in history, results land in the pending queue, and we redirect you to the run-detail page so you can watch the worker stream. Use 'Just this schema' instead if you only want the schema's own comment."
+        confirmLabel="Start bulk run"
       />
     </>
   );
