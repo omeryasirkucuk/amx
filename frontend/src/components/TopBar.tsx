@@ -19,6 +19,7 @@ import { cn } from "../lib/cn";
 import CommandPalette from "./CommandPalette";
 import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
+import StudioMark from "./brand/StudioMark";
 import ProfilePicker from "./topbar/ProfilePicker";
 
 const navItems = [
@@ -73,10 +74,11 @@ export default function TopBar() {
         />
         <Link
           to="/"
-          aria-label="AMX home"
-          className="group flex items-center rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
+          aria-label="AMX Studio home"
+          className="group flex items-end gap-1.5 rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
         >
           <Logo size={16} />
+          <StudioMark size={10} />
         </Link>
         {crumbs.length > 0 && (
           <nav aria-label="Breadcrumb" className="hidden md:flex">
