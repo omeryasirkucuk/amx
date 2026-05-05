@@ -18,7 +18,7 @@ def _wait_for_status(client, job_id: str, target: str, timeout: float = 3.0) -> 
     while time.monotonic() < deadline:
         resp = client.get(
             f"/api/runs/{job_id}",
-            headers={"Authorization": "Bearer test-visualizer-token-abc123"},
+            headers={"Authorization": "Bearer test-studio-token-abc123"},
         )
         body = resp.json()
         if body["status"] == target:

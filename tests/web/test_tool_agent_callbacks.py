@@ -2,7 +2,7 @@
 :func:`amx.search.tool_agent.run_tool_agent`.
 
 PR-D added three optional kwargs (``on_thinking_delta``,
-``on_tool_call``, ``cancel_token``) that the visualizer's
+``on_tool_call``, ``cancel_token``) that AMX Studio's
 ``/api/ask`` endpoint plugs into. Tests here exercise them
 without spinning up a real LLM by stubbing :class:`LLMProvider.chat`
 and the :class:`ToolBox` constructor.

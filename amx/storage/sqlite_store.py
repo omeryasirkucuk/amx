@@ -954,8 +954,8 @@ class SQLiteHistoryStore:
     def stats(self, command_filter: str | None = "analyze.run") -> dict[str, Any]:
         """Aggregate counters for the dashboard.
 
-        ``command_filter`` defaults to ``"analyze.run"`` so the
-        visualizer's "Total runs" / "Success rate" tiles reflect the
+        ``command_filter`` defaults to ``"analyze.run"`` so AMX
+        Studio's "Total runs" / "Success rate" tiles reflect the
         same scope the Recent runs feed (which only lists `/run`
         invocations). Pass ``None`` to include every command kind.
         """

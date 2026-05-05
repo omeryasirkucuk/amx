@@ -25,7 +25,7 @@ def _wait_for_status(client, job_id: str, target: str, timeout: float = 3.0) -> 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         resp = client.get(
-            f"/api/apply/{job_id}", headers={"Authorization": "Bearer test-visualizer-token-abc123"}
+            f"/api/apply/{job_id}", headers={"Authorization": "Bearer test-studio-token-abc123"}
         )
         body = resp.json()
         if body["status"] == target:
@@ -241,7 +241,7 @@ def test_cancel_unknown_job_returns_404(client, auth_headers) -> None:
 def _drain_sse(client, path: str, auth_headers, timeout: float = 3.0) -> list[dict[str, Any]]:
     """Read SSE frames until ``job.*`` arrives. Uses Starlette
     TestClient's streaming context manager."""
-    url = f"{path}?t=test-visualizer-token-abc123"
+    url = f"{path}?t=test-studio-token-abc123"
     events: list[dict[str, Any]] = []
     with client.stream("GET", url, headers=auth_headers, timeout=timeout) as response:
         assert response.status_code == 200

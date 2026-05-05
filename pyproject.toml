@@ -68,9 +68,9 @@ dependencies = [
     "google-auth>=2.0",
     "msal>=1.24",
     "keyring>=24.0",
-    # ── /visualize web UI (PR-A onwards) ─────────────────────────────────
+    # ── /studio web UI (PR-A onwards) ────────────────────────────────────
     # FastAPI / uvicorn are core (not an optional extra) so a plain
-    # ``pip install amx-cli`` boots the visualizer end-to-end. The total
+    # ``pip install amx-cli`` boots AMX Studio end-to-end. The total
     # dep weight is ~12 MB; AMX is already a heavy install.
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
@@ -155,10 +155,10 @@ amx = "amx.cli:run_cli"
 include = ["amx*"]
 
 [tool.setuptools.package-data]
-# Ship the pre-built /visualize SPA bundle (index.html + hashed
+# Ship the pre-built /studio SPA bundle (index.html + hashed
 # assets) inside the wheel. The directory is committed to the repo
 # (vendored dist) so a developer cloning the repo + running
-# ``pip install -e .`` gets a working visualizer without Node.
+# ``pip install -e .`` gets a working AMX Studio without Node.
 "amx.web" = ["static/**/*", "static/index.html"]
 
 [tool.ruff]

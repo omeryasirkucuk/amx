@@ -1,4 +1,4 @@
-"""Auth middleware contract tests for the AMX visualizer.
+"""Auth middleware contract tests for AMX Studio.
 
 Covers the three delivery modes the SPA / SSE clients use:
 

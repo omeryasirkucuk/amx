@@ -5,7 +5,7 @@ includes.
 These don't exercise React behaviour (we don't run a headless
 browser in CI). They guard the seam between the Vite output and
 the Python wheel: a stale build, a renamed favicon, or a missing
-asset would all surface here before users hit the visualizer.
+asset would all surface here before users hit AMX Studio.
 """
 
 from __future__ import annotations
@@ -34,13 +34,13 @@ def test_index_carries_token_capture_marker() -> None:
     every SPA build must include the token-capture script (or, for
     PR-A's placeholder, the placeholder marker). If a future Vite
     build accidentally strips the inline script, this test catches
-    it before users hit a broken visualizer."""
+    it before users hit a broken AMX Studio."""
     text = (_static_root() / "index.html").read_text(encoding="utf-8")
     assert "<title>" in text.lower()
     # Either the placeholder marker (PR-A) or the SPA's runtime
     # marker (PR-B+ Vite-built bundle) is enough to tell us this
     # isn't an empty/garbage file.
-    markers = ("AMX Visualizer", '<div id="root">')
+    markers = ("AMX Studio", '<div id="root">')
     assert any(m in text for m in markers), (
         f"index.html doesn't contain a recognised SPA marker. Snippet: {text[:200]!r}"
     )
@@ -78,4 +78,4 @@ def test_app_serves_index_unauthenticated(client) -> None:
     and only then starts hitting `/api/*`)."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "AMX Visualizer" in response.text or '<div id="root">' in response.text
+    assert "AMX Studio" in response.text or '<div id="root">' in response.text

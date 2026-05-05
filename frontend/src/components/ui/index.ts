@@ -1,4 +1,4 @@
-// Barrel for AMX visualizer UI primitives. Routes import from
+// Barrel for AMX Studio UI primitives. Routes import from
 // `@/components/ui` (or relative path) to keep imports flat.
 
 export { default as Button } from "./Button";

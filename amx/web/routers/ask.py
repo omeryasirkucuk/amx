@@ -1,4 +1,4 @@
-"""SSE-streaming ``/ask`` endpoint for the visualizer.
+"""SSE-streaming ``/ask`` endpoint for AMX Studio.
 
 The chat panel hits ``POST /api/ask`` with a question + optional
 session id; the backend spawns a worker that calls
@@ -87,7 +87,7 @@ def submit_ask(
     thread = threading.Thread(
         target=_ask_worker,
         args=(cfg, job, body.question, session_id, db_profile),
-        name=f"amx-visualizer-ask-{job.id}",
+        name=f"amx-studio-ask-{job.id}",
         daemon=True,
     )
     thread.start()
@@ -314,7 +314,7 @@ def _ask_worker(
     # Persist the assistant's reply (best-effort). Note the keyword
     # argument is ``answer_summary`` (not ``answer``) and ``run_id`` is
     # required — passing ``answer=`` previously raised a TypeError that
-    # the bare ``except`` swallowed, so visualizer-driven sessions
+    # the bare ``except`` swallowed, so Studio-driven sessions
     # ended up with user-only history.
     if session_id is not None:
         store = _session_store_or_none()

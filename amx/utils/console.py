@@ -41,7 +41,7 @@ _null_console = Console(file=_devnull_handle, theme=_theme, force_terminal=False
 
 _BANNER_SHOWN = False
 
-# Per-thread "quiet" flag. The visualizer's run worker turns this on
+# Per-thread "quiet" flag. AMX Studio's run worker turns this on
 # before invoking the orchestrator so the rich CLI banners + table
 # previews don't bleed into the user's terminal — they belong on the
 # SSE stream the browser is subscribed to. ``info`` / ``success`` /
@@ -85,7 +85,7 @@ class _ConsoleProxy:
 
 # Module-level alias preserves every existing ``from amx.utils.console
 # import console`` call. Existing CLI threads see the real console;
-# the visualizer worker sees the null one for the duration of
+# the Studio worker sees the null one for the duration of
 # ``quiet_console()``.
 console: Any = _ConsoleProxy()
 
@@ -95,7 +95,7 @@ def quiet_console() -> Generator[None, None, None]:
     """Suppress info/success/warn/error printing + Rich console output
     for the current thread.
 
-    Used by the visualizer's headless run worker to keep the parent
+    Used by AMX Studio's headless run worker to keep the parent
     CLI's terminal clean while the browser streams the same events
     over SSE.
     """

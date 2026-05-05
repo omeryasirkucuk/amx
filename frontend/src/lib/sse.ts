@@ -1,5 +1,5 @@
 // useEventSource — thin React hook wrapping the browser's
-// EventSource API. The visualizer uses SSE instead of WebSockets
+// EventSource API. AMX Studio uses SSE instead of WebSockets
 // because every server → client stream we need (run progress, ask
 // thinking, apply writeback) is one-way and SSE rides through any
 // proxy that allows long-lived HTTP.

@@ -6,18 +6,45 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed — AMX Studio launch (`/studio`)
+
+The local web UI is now **AMX Studio**. The slash command, the Click
+subcommand, the Python entry point, and the user-facing brand are all
+unified:
+
+* **Slash command**: `amx /studio` (same flags: `--port`, `--no-open`,
+  same default port `47821`, same Ctrl-C shutdown).
+* **Click subcommand**: `amx studio`.
+* **Python entry point**: `amx.web.launch_studio` is the only public
+  re-export from `amx.web`.
+* **Web app metadata**: FastAPI `title`, browser tab `<title>`,
+  uvicorn thread name (`amx-studio-uvicorn`), per-job thread names
+  (`amx-studio-run-…`, `-apply-…`, `-ask-…`, `-pending-apply-…`), the
+  persisted `trigger` field on run rows (`"studio"` /
+  `"studio.generate.singleshot"`), and the three auth error messages
+  all read **AMX Studio**.
+* **localStorage key**: `amx.studio.token`. Token is short-lived per
+  launch, so existing users only need to re-launch.
+* **npm package**: `frontend/package.json`'s `name` is `amx-studio`.
+* **Docs**: `docs/studio.md` (in the AMX repo) and
+  `cli/studio.md` (on amxcli.com) describe the surface end-to-end;
+  README, Makefile help text, and `pyproject.toml` package-data
+  comments all reference `/studio`.
+* **Screenshots**: `studio-overview.png` is the canonical Overview
+  asset (in both `AMX/docs/assets/` and `amx-docs/docs/assets/`).
+
 ## [0.12.8] - 2026-05-05
 
-The `/visualize` umbrella release. Thirteen UI-overhaul PRs + Stage 2–7
+The `/studio` umbrella release. Thirteen UI-overhaul PRs + Stage 2–7
 parity work + the design-system reset land together: the local web UI now
 has full feature parity with the REPL surface for run / review / apply /
 ask, with full DB / LLM / Docs / Code wizards, a System page (doctor /
 usage / catalog status / team history-store / maintenance), per-asset
 LLM-generate from any Browse page, and a complete pixel-art rebrand.
-README and amxcli.com both grow a `/visualize` entry point with the
+README and amxcli.com both grow a `/studio` entry point with the
 Overview screenshot.
 
-### Added — `/visualize` per-asset generate + favicon swap (UI overhaul, PR 13)
+### Added — `/studio` per-asset generate + favicon swap (UI overhaul, PR 13)
 
 * **Favicon is now the AMX pixel-art mark.** Replaces the old
   indigo+cyan scribble; the user-supplied transparent PNG is
@@ -52,7 +79,7 @@ Overview screenshot.
 No backend or run-history changes for the bulk path — it's still
 the same /run worker. Backend test suite unchanged.
 
-### Added / Fixed — `/visualize` skip-restore + database page + history-store enable + favicon (UI overhaul, PR 12)
+### Added / Fixed — `/studio` skip-restore + database page + history-store enable + favicon (UI overhaul, PR 12)
 
 Five follow-up items in one PR (one — schema-only LLM generate —
 deferred to the next pass because it needs an LLM call helper, not a
@@ -97,12 +124,12 @@ trivial UI tweak).
 
 Backend test suite unchanged. Bundle rebuilt and vendored.
 
-### Fixed / Changed — `/visualize` apply state + stats scope + history-store card (UI overhaul, PR 11)
+### Fixed / Changed — `/studio` apply state + stats scope + history-store card (UI overhaul, PR 11)
 
 Three follow-up items.
 
 * **Total runs / Success rate now scope to `analyze.run`.** The
-  visualizer's Recent runs feed only lists `/run` invocations, but
+  AMX Studio's Recent runs feed only lists `/run` invocations, but
   the dashboard tiles were summing every command (including
   `/ask`), so users saw "Total runs: 9" against three rows in the
   feed. `HistoryStore.stats()` gains a `command_filter` parameter
@@ -131,7 +158,7 @@ Three follow-up items.
 No frontend bundle dependencies changed; backend test suite
 unchanged.
 
-### Fixed / Added — `/visualize` run-detail human-in-the-loop + schema page editing (UI overhaul, PR 10)
+### Fixed / Added — `/studio` run-detail human-in-the-loop + schema page editing (UI overhaul, PR 10)
 
 Six follow-up items in one PR.
 
@@ -170,11 +197,11 @@ Six follow-up items in one PR.
 
 No backend changes; bundle rebuilt and vendored.
 
-### Changed / Added — `/visualize` runs context + live progress + evaluation flow (UI overhaul, PR 9)
+### Changed / Added — `/studio` runs context + live progress + evaluation flow (UI overhaul, PR 9)
 
 Four follow-up items in one PR.
 
-* **Browser tab title** updated from "AMX Visualizer" to "AMX —
+* **Browser tab title** updated from "AMX Studio" to "AMX —
   Agentic Metadata Extractor" so the tab favicon + label combo
   reads as the product, not the surface.
 * **`RunsList` table picks up DB / Model / Started columns.**
@@ -202,7 +229,7 @@ Four follow-up items in one PR.
 
 No backend changes; bundle rebuilt and vendored.
 
-### Added — `/visualize` table page: inline edit + LLM auto-generate (UI overhaul, PR 8)
+### Added — `/studio` table page: inline edit + LLM auto-generate (UI overhaul, PR 8)
 
 The table page (`/db/<profile>/<schema>/<table>`) becomes the single
 spot where a user can review, hand-write, or have AMX generate the
@@ -234,7 +261,7 @@ leaving the page.
 No backend changes — both flows reuse endpoints already exposed by
 the FastAPI app. Bundle rebuilt and vendored.
 
-### Fixed / Changed — `/visualize` Home tile + recent-runs polish (UI overhaul, PR 7)
+### Fixed / Changed — `/studio` Home tile + recent-runs polish (UI overhaul, PR 7)
 
 Three Home-page items: a stats bug that made two tiles always show
 "—", a discoverability gap (nothing on the dashboard was actually
@@ -267,7 +294,7 @@ clickable), and a context gap on the recent-runs feed.
 
 No backend or API changes.
 
-### Changed — `/visualize` second-pass feedback (UI overhaul, PR 6)
+### Changed — `/studio` second-pass feedback (UI overhaul, PR 6)
 
 Seven user-driven follow-ups in one PR.
 
@@ -306,7 +333,7 @@ Seven user-driven follow-ups in one PR.
 
 No backend or API changes; bundle rebuilt and vendored.
 
-### Changed — `/visualize` first-pass feedback (UI overhaul, PR 5)
+### Changed — `/studio` first-pass feedback (UI overhaul, PR 5)
 
 User-driven follow-up batch on top of the four-PR overhaul. Six
 items in one PR, each independently small but together they sand
@@ -335,7 +362,7 @@ use.
   `3 schemas · 47 tables` / `All schemas`. Applied in both the
   Home dashboard feed and the `/runs` DataTable. Status badges
   also drop `ready_for_review` for the shorter `ready`.
-* **Light theme removed; visualizer is now dark-only.** The
+* **Light theme removed; AMX Studio is now dark-only.** The
   light-mode token block, `lib/theme.ts`, and the `ThemeToggle`
   component are deleted. `:root` carries the dark palette; the
   TopBar loses the sun/moon icon. Less surface to maintain, no
@@ -355,9 +382,9 @@ use.
 
 No backend or API changes. Bundle rebuilt and vendored.
 
-### Changed — `/visualize` monolith breakup + RunDetail/Ask/System polish (UI overhaul, PR 4/4)
+### Changed — `/studio` monolith breakup + RunDetail/Ask/System polish (UI overhaul, PR 4/4)
 
-Final slice of the visualizer overhaul. Wraps up the four-PR design
+Final slice of AMX Studio overhaul. Wraps up the four-PR design
 system reset by tackling the longest pages (Settings, System) and
 the activity-heavy ones (RunDetail, Ask), and by wiring the new
 AlertDialog + Toast primitives into the destructive paths.
@@ -395,9 +422,9 @@ AlertDialog + Toast primitives into the destructive paths.
 
 No backend or API changes. Bundle rebuilt and vendored.
 
-### Changed — `/visualize` lists, forms, and skeleton loading (UI overhaul, PR 3/4)
+### Changed — `/studio` lists, forms, and skeleton loading (UI overhaul, PR 3/4)
 
-Third slice of the visualizer overhaul. Tackles the surfaces that
+Third slice of AMX Studio overhaul. Tackles the surfaces that
 were lowest-information and highest-friction: list pages that didn't
 scale past their first 50 rows, form submissions that gave no
 feedback, and the "Loading…" text strings that pre-paint every page.
@@ -440,9 +467,9 @@ feedback, and the "Loading…" text strings that pre-paint every page.
 
 No backend or API changes; bundle rebuilt and vendored.
 
-### Changed — `/visualize` shell, brand, and IA pass (UI overhaul, PR 2/4)
+### Changed — `/studio` shell, brand, and IA pass (UI overhaul, PR 2/4)
 
-Second slice of the visualizer overhaul. PR 2 tightens the chrome
+Second slice of AMX Studio overhaul. PR 2 tightens the chrome
 and removes the loudest "AI-generated dashboard" tells now that the
 PR 1 token foundation is in place.
 
@@ -485,9 +512,9 @@ PR 1 token foundation is in place.
 
 No backend or API changes; the bundle was rebuilt and vendored.
 
-### Changed — `/visualize` design system reset (UI overhaul, PR 1/4)
+### Changed — `/studio` design system reset (UI overhaul, PR 1/4)
 
-First slice of a four-PR overhaul to take the visualizer SPA from a
+First slice of a four-PR overhaul to take AMX Studio SPA from a
 generic "AI-generated dashboard" look to a calm, dense, branded dev
 tool. PR 1 swaps tokens and lays the primitive foundation; PRs 2–4
 land the shell rewrite, list/form polish, and per-route surgery.
@@ -524,9 +551,9 @@ No backend, route, or API changes — bundle output rebuilt and
 vendored to `amx/web/static/` so the wheel ships the new look on
 the next release.
 
-### Added — `/visualize` end-session + maintenance + team history-store status (Stage 7)
+### Added — `/studio` end-session + maintenance + team history-store status (Stage 7)
 
-The last batch of CLI parity items the visualizer was missing.
+The last batch of CLI parity items AMX Studio was missing.
 
 * **`POST /api/ask/sessions/{id}/end`** — closes a chat session
   and clears `cfg.active_chat_session_id` if it pointed there.
@@ -539,7 +566,7 @@ The last batch of CLI parity items the visualizer was missing.
   enable wizard is interactive (CLI-only for now).
 * **System → Maintenance card** wires the existing
   `POST /api/comments/cleanup-placeholders` endpoint to a one-click
-  button so the visualizer doesn't need to send the user back to
+  button so AMX Studio doesn't need to send the user back to
   the CLI to strip `[inferred by AMX]` markers from the live DB.
 
 Tests: 5 new (3 in `tests/web/test_ask.py`, 2 in
@@ -547,10 +574,10 @@ Tests: 5 new (3 in `tests/web/test_ask.py`, 2 in
 active-pointer clear, plus history-store status both branches.
 Full suite: 859 passed.
 
-### Added — `/visualize` Code scan + History compare (Stage 6)
+### Added — `/studio` Code scan + History compare (Stage 6)
 
 * **`POST /api/code/scan`** — wraps `analyze_codebase` so the
-  visualizer can drive the same scan the CLI's `/code-scan` runs.
+  AMX Studio can drive the same scan the CLI's `/code-scan` runs.
   Path resolution: explicit `path` > `profile` > active code
   profile (matches the CLI's fallback chain). The worker enumerates
   table names from the active DB (and column names when
@@ -577,9 +604,9 @@ Tests: 4 new in `tests/web/test_code_ops.py` covering 400 on
 missing path, profile fallback, explicit-path-wins precedence, and
 the `column_scan=true` flag wiring. Full suite: 855 passed.
 
-### Added — `/visualize` System page: doctor, token usage, catalog status (Stage 5)
+### Added — `/studio` System page: doctor, token usage, catalog status (Stage 5)
 
-Three admin views the visualizer was missing — `amx doctor`,
+Three admin views AMX Studio was missing — `amx doctor`,
 `/usage`, and `/search status` — now render in the browser.
 
 * **`GET /api/doctor`** runs every check the CLI's `amx doctor`
@@ -654,7 +681,7 @@ mode-respect behaviour, the seed-splice logic (insert + de-dup),
 the live-DB fallback, the resolver's new return shape for all three
 modes, and the kind-aware error messages.
 
-### Added — `/visualize` runs the doc RAG flow end-to-end (Stage 4)
+### Added — `/studio` runs the doc RAG flow end-to-end (Stage 4)
 
 Settings → Docs no longer needs the CLI for the operational path.
 Three new endpoints, each backed by a quiet (browser-only) worker:
@@ -677,7 +704,7 @@ Frontend: Settings → Docs grows a "Search docs" search box + per-row
 `kind="docs/scan"` and `kind="docs/ingest"` so the streaming feed
 looks identical across surfaces.
 
-The visualizer's `quiet_console()` is reused so the agents' Rich
+AMX Studio's `quiet_console()` is reused so the agents' Rich
 prints don't bleed into the parent CLI terminal during a
 web-triggered ingest.
 
@@ -686,7 +713,7 @@ dispatch contract, profile-resolution fallback, refresh flag wiring,
 and the search endpoint's empty-store + happy paths. Full suite:
 834 passed.
 
-### Added — `/visualize` Settings page with full DB / LLM / Docs / Code wizards (Stage 3)
+### Added — `/studio` Settings page with full DB / LLM / Docs / Code wizards (Stage 3)
 
 The Settings page used to list profiles read-only and tell the user
 to "run /add-db-profile from the CLI" for everything else. Stage 3
@@ -725,9 +752,9 @@ brings the four CLI wizards (`/add-db-profile`, `/add-llm-profile`,
   Escape closes, click-outside closes, body scroll is locked while
   open.
 
-### Added — `/visualize` can now drive a `/run` end-to-end (Stage 2)
+### Added — `/studio` can now drive a `/run` end-to-end (Stage 2)
 
-The visualizer's Run lifecycle was previously a 501 stub: clicking
+AMX Studio's Run lifecycle was previously a 501 stub: clicking
 "trigger run" emitted a `job.failed` event with the message "use the
 CLI for now." That's gone — the SPA can now start, watch, and review
 a `/run` without leaving the browser.
@@ -803,11 +830,11 @@ Follow-ups (same PR) after the user smoke-tested:
   `final_description` and the next Apply writes that variant to
   the live DB.
 
-### Fixed — `/visualize` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, missing database picker for 2-level backends, and one-database-only sidebar
+### Fixed — `/studio` Ask thinking duplication, dead session list, "Catalog 'None'" crash, dashboard card overflow, lost assistant turns, runaway thinking panel, missing database picker for 2-level backends, and one-database-only sidebar
 
-Eight user-reported issues against the visualizer surface, fixed in
+Eight user-reported issues against AMX Studio surface, fixed in
 one PR. None changes the CLI; all live under the FastAPI/React
-layer that `/visualize` boots.
+layer that `/studio` boots.
 
 1. **Ask: "thinking" panel no longer prints
    `TheThe userThe user is…`.** The provider's streaming consumer
@@ -836,7 +863,7 @@ layer that `/visualize` boots.
    thread.
 3. **Browse: "Catalog 'None' was not found" replaced with a clean
    picker.** For 3-level backends like Databricks, when the user
-   activates a profile through the visualizer we never ran the
+   activates a profile through AMX Studio we never ran the
    catalog picker that the CLI's `/connect` does (see
    `amx/cli_support/catalog_picker.py`), so `cfg.db.catalog`
    stayed empty. The connector then fell through to the
@@ -860,11 +887,11 @@ layer that `/visualize` boots.
    `text-lg` for short numerics), and a `title=` tooltip carrying
    the full string for hover.
 5. **Ask: assistant turns are persisted, so prior conversations
-   survive a session reload.** The visualizer worker called
+   survive a session reload.** AMX Studio worker called
    `store.append_assistant_turn(answer=…)` but the store
    signature is `append_assistant_turn(*, run_id, answer_summary)`
    — the `TypeError: unexpected keyword argument 'answer'` was
-   silently swallowed by a bare `except`, so visualizer-driven
+   silently swallowed by a bare `except`, so Studio-driven
    sessions ended up with user-only history (the session opened
    showing only the questions, no replies). Worker now passes
    `run_id=None, answer_summary=result.answer or ""`, with a
@@ -883,7 +910,7 @@ layer that `/visualize` boots.
    now show a picker instead of silently using the server's
    default.** The CLI's `ensure_hierarchy_resolved` already
    prompts for a database when `cfg.db.is_database_pinned()` is
-   False, but the visualizer just landed on the connector's
+   False, but AMX Studio just landed on the connector's
    default DB and rendered its `public` schema (only) — masking
    every other database on the server. The 412
    `select-catalog` gate added in this PR is now a single
@@ -943,7 +970,7 @@ bare-logger format string in the package and fails the test suite
 if a non-ASCII character sneaks back in — so this regression class
 can't ship to PyPI again.
 
-### Added — dark-mode toggle, ⌘K command palette, docs/visualize.md (PR-F)
+### Added — dark-mode toggle, ⌘K command palette, docs/studio.md (PR-F)
 
 Final slice of the local AMX web UI. Polish + ergonomics + first
 proper docs.
@@ -963,8 +990,8 @@ What's included:
   (jump back to the last viewed table, hop to settings to switch
   the active DB profile). Arrow-key navigation, <kbd>Esc</kbd>
   to close.
-- **`docs/visualize.md`** — first proper user-facing doc for
-  `/visualize`: quick start, page-by-page rundown, keyboard
+- **`docs/studio.md`** — first proper user-facing doc for
+  `/studio`: quick start, page-by-page rundown, keyboard
   shortcuts, security model, cancellation semantics, dev
   workflow, and a troubleshooting section covering the common
   failure modes (port conflict, missing token, empty catalog,
@@ -977,11 +1004,11 @@ What's included:
   Vite chunks under assets/, favicon.svg, unauthenticated `/`
   serve). These guard the seam between the Vite output and the
   Python wheel so a stale build / missing asset surfaces in CI
-  before a user hits a broken visualizer.
+  before a user hits a broken AMX Studio.
 
 ### Added — profile editor + pending review queue + cleanup-placeholders endpoint (PR-E)
 
-Fifth slice of the local AMX web UI. The visualizer manages DB and
+Fifth slice of the local AMX web UI. AMX Studio manages DB and
 LLM profiles end-to-end (list / view / create / update / delete /
 activate / connection-test), edits and applies the pending review
 queue without dropping into the CLI, and triggers the
@@ -1032,7 +1059,7 @@ What's included:
 
 ### Added — `/ask` SSE chat panel + run comparison endpoint (PR-D)
 
-Fourth slice of the local AMX web UI. The visualizer can now hold a
+Fourth slice of the local AMX web UI. AMX Studio can now hold a
 streaming chat conversation with the AMX search agent, watching
 reasoning tokens scroll in live, tool calls expand inline, and the
 final answer arrive without a single page reload.
@@ -1044,7 +1071,7 @@ What's included:
   `on_tool_call`, and `cancel_token`. All purely additive (default
   `None`); existing CLI callers are unchanged. The agent loop checks
   `cancel_token` at the top of every iteration and raises
-  `RunCancelled` so the visualizer's job machinery can flip the
+  `RunCancelled` so AMX Studio's job machinery can flip the
   status to `cancelled`.
 - **New router** `amx/web/routers/ask.py`:
   - `POST /api/ask` — spawns an ask worker, returns `{job_id,
@@ -1071,9 +1098,9 @@ What's included:
   flow, the additive tool-agent callback contract, and the new
   compare endpoint.
 
-### Added — action APIs + cancellation plumbing for `/visualize` (PR-C)
+### Added — action APIs + cancellation plumbing for `/studio` (PR-C)
 
-Third slice of the local AMX web UI. The visualizer can now trigger
+Third slice of the local AMX web UI. AMX Studio can now trigger
 the existing `apply_review_results_to_db` flow, stream live progress
 to the SPA via Server-Sent-Events, and cancel mid-flight without
 rolling back already-written COMMENTs.
@@ -1122,7 +1149,7 @@ What's included:
 
 ### Added — read-only browse API + Vite/React/Tailwind SPA (PR-B)
 
-Second slice of the local AMX web UI. `/visualize` now opens a real
+Second slice of the local AMX web UI. `/studio` now opens a real
 React SPA — left tree of databases / catalogs / schemas / tables,
 center canvas with table-detail drill (Columns tab), top bar with
 active DB / LLM pills, dashboard with stats cards and the last 8
@@ -1166,9 +1193,9 @@ What's included:
   catalog read, history wrappers — all backed by stub connectors
   and stub stores so the suite doesn't need a real DB).
 
-### Added — `/visualize` slash command + local web UI backend skeleton (PR-A)
+### Added — `/studio` slash command + local web UI backend skeleton (PR-A)
 
-First slice of the local AMX web UI. Typing `/visualize` from the
+First slice of the local AMX web UI. Typing `/studio` from the
 REPL boots a FastAPI backend on `127.0.0.1:<port>` (defaults to
 47821, falls back to a free ephemeral port), generates a one-shot
 URL-safe bearer token, and opens the user's default browser at
@@ -1192,7 +1219,7 @@ What's included:
   works and render the active-profile pills.
 - `amx/web/static/index.html` — placeholder page with token-capture
   JS so the protocol works end-to-end before the SPA bundle exists.
-- `/visualize` registered in the slash-command catalog
+- `/studio` registered in the slash-command catalog
   (`amx/cli_support/slash_commands.py`) and dispatched as a top-level
   Click subcommand (`amx/cli_support/root_commands.py`) with
   `--port` / `--no-open` flags.

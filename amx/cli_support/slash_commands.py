@@ -103,11 +103,11 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
     SlashCommand("/history", "root", "Enter /history namespace"),
     SlashCommand("/session", "root", "Manage /ask conversation sessions"),
     SlashCommand(
-        "/visualize",
+        "/studio",
         "root",
-        "Open AMX in your browser",
+        "Open AMX Studio in your browser",
         long_desc=(
-            "Boot the local AMX visualizer at http://127.0.0.1:<port> and open it in your "
+            "Boot AMX Studio at http://127.0.0.1:<port> and open it in your "
             "default browser. Browse every database / catalog / schema / table / column, "
             "trigger /run + /apply jobs, and chat with /ask from one place. Ctrl-C in this "
             "terminal stops the server."

@@ -1,4 +1,4 @@
-"""In-process registry of long-running visualizer jobs.
+"""In-process registry of long-running AMX Studio jobs.
 
 Three job kinds are submitted from the UI:
 
@@ -37,7 +37,7 @@ JobStatus = Literal["queued", "running", "cancelled", "done", "failed"]
 
 @dataclass
 class Job:
-    """One submitted unit of work the visualizer is tracking.
+    """One submitted unit of work AMX Studio is tracking.
 
     Created by :class:`JobRegistry.submit`. Mutated by the worker thread
     (status, ended_at, summary, error) and by the cancel endpoint

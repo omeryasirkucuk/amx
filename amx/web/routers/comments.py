@@ -1,6 +1,6 @@
 """Per-asset comment write-back endpoints.
 
-The visualizer's table-detail page surfaces a per-column "edit
+AMX Studio's table-detail page surfaces a per-column "edit
 comment" UI; PR-E hooks the inline editor to these PUT endpoints.
 The backend simply re-uses :class:`amx.db.connector.DatabaseConnector`'s
 existing setters — nothing here is new ground.

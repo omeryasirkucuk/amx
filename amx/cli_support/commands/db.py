@@ -1693,7 +1693,7 @@ def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:
     in the active DB profile, NULLs out any matching placeholder, and
     reports counts. Optional ``[schema]`` arg limits the scope.
 
-    Delegates to :func:`cleanup_placeholders_core` so the visualizer's
+    Delegates to :func:`cleanup_placeholders_core` so AMX Studio's
     web endpoint and this CLI command share one implementation.
     """
     from amx.db.connector import DatabaseConnector

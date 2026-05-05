@@ -1,4 +1,4 @@
-"""Shared fixtures for visualizer FastAPI tests.
+"""Shared fixtures for AMX Studio FastAPI tests.
 
 Every test gets:
 
@@ -15,7 +15,7 @@ import pytest
 from amx.config import AMXConfig
 from amx.web.server import create_app
 
-_TEST_TOKEN = "test-visualizer-token-abc123"
+_TEST_TOKEN = "test-studio-token-abc123"
 
 
 @pytest.fixture()

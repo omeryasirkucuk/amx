@@ -1,7 +1,7 @@
 """Document scan / ingest / search routes.
 
-Wraps :mod:`amx.docs.scanner` and :mod:`amx.docs.rag` so the
-visualizer's Settings → Docs tab can drive the same flows the CLI's
+Wraps :mod:`amx.docs.scanner` and :mod:`amx.docs.rag` so
+AMX Studio's Settings → Docs tab can drive the same flows the CLI's
 ``/scan`` / ``/ingest`` / ``/search-docs`` commands run, without
 spawning a subprocess. Every long-running operation goes through the
 existing :class:`Job` registry + SSE event bus so the SPA renders

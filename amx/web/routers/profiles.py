@@ -2,7 +2,7 @@
 
 Mirrors the four CLI wizards (``/db-profiles``, ``/llm-profiles``,
 ``/docs-profiles``, ``/code-profiles``) without the interactive
-prompts. The visualizer's Settings page mutates the same
+prompts. AMX Studio's Settings page mutates the same
 :class:`AMXConfig` the parent CLI is using, so an edit here is
 visible the moment the user types a command in the terminal.
 

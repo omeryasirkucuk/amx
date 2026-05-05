@@ -1,9 +1,9 @@
-"""Token-based auth for the local AMX visualizer.
+"""Token-based auth for AMX Studio.
 
-The visualizer always binds to ``127.0.0.1`` so untrusted machines on the
+AMX Studio always binds to ``127.0.0.1`` so untrusted machines on the
 LAN can't reach it. On a multi-user host, though, loopback isn't enough:
 any local process can curl 127.0.0.1. We add a single shared secret —
-generated fresh per ``/visualize`` invocation — that the SPA carries on
+generated fresh per ``/studio`` invocation — that the SPA carries on
 every API call.
 
 Two delivery modes:
@@ -39,7 +39,7 @@ PROTECTED_PREFIXES: tuple[str, ...] = ("/api/",)
 
 
 def generate_token() -> str:
-    """Return a fresh URL-safe token for one ``/visualize`` invocation.
+    """Return a fresh URL-safe token for one ``/studio`` invocation.
 
     32 bytes → 43 base64url characters; way more entropy than we need
     but the URL stays human-readable.
@@ -64,15 +64,15 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
         if not expected:
             # Misconfiguration — don't silently accept requests just
             # because the server forgot to set a token.
-            return _unauthorized("Visualizer auth is not configured.")
+            return _unauthorized("AMX Studio auth is not configured.")
 
         provided = _extract_token(request)
         if provided is None:
-            return _unauthorized("Missing visualizer token.")
+            return _unauthorized("Missing AMX Studio token.")
         # ``secrets.compare_digest`` keeps the comparison constant-time —
         # paranoid, but free.
         if not secrets.compare_digest(provided, expected):
-            return _unauthorized("Invalid visualizer token.")
+            return _unauthorized("Invalid AMX Studio token.")
         return await call_next(request)
 
 
