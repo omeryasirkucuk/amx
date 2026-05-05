@@ -372,10 +372,14 @@ Commands (in order):
                                           Run without args to show the current level + what each
                                           preset includes.
   7) /description-verbosity [level]     Show or set the OUTPUT description length
-                                          Levels: brief (default) | detailed
-                                          brief = 1 sentence per column
-                                          detailed = 2-4 sentences with purpose, typical values,
-                                          and relationships when supported by evidence.
+                                          Levels: brief (default) | detailed | comprehensive | exhaustive
+                                          brief         = 1-2 sentences per column
+                                          detailed      = 2-4 sentences with purpose, typical values,
+                                                          and relationships when supported by evidence
+                                          comprehensive = 1-2 short paragraphs (~5-8 sentences) adding
+                                                          usage patterns and caveats
+                                          exhaustive    = multi-paragraph reference-style entry; best
+                                                          for documentation, not interactive runs
   8) /n-alternatives [N]                Show or set number of description alternatives per column
   9) /temperature [0.0-2.0]             Show or set LLM sampling temperature (default 0.2)
 

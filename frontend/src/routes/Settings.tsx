@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -74,8 +75,26 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Database }> = [
   { id: "code", label: "Code", icon: CodeIcon },
 ];
 
+const TAB_IDS: readonly Tab[] = ["db", "llm", "docs", "code"];
+
+function isTab(value: string | null): value is Tab {
+  return value !== null && (TAB_IDS as readonly string[]).includes(value);
+}
+
 export default function Settings() {
-  const [tab, setTab] = useState<Tab>("db");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const tab: Tab = isTab(tabParam) ? tabParam : "db";
+  const setTab = (next: Tab) => {
+    setSearchParams(
+      (prev) => {
+        const sp = new URLSearchParams(prev);
+        sp.set("tab", next);
+        return sp;
+      },
+      { replace: true },
+    );
+  };
   return (
     <>
       <PageHeader
@@ -315,23 +334,24 @@ function DbProfileWizard({
   const [name, setName] = useState(editingName ?? "");
   const [backend, setBackend] = useState<string>("postgresql");
   const [values, setValues] = useState<Record<string, string>>({});
+  const [hydratedFor, setHydratedFor] = useState<string | null>(null);
 
-  // When the existing profile loads, hydrate the form. Effect on data
-  // pointer keeps it idempotent during refetches.
-  if (
-    isEdit &&
-    existing.data &&
-    backend !== ((existing.data as { backend?: string }).backend || "postgresql")
-  ) {
-    setBackend((existing.data as { backend?: string }).backend || "postgresql");
+  useEffect(() => {
+    if (!isEdit || !existing.data) return;
+    const data = existing.data as Record<string, unknown>;
+    const dataName = typeof data.name === "string" ? data.name : null;
+    if (dataName !== editingName) return;
+    if (hydratedFor === editingName) return;
+    setBackend(String(data.backend || "postgresql"));
     const next: Record<string, string> = {};
-    for (const [k, v] of Object.entries(existing.data)) {
+    for (const [k, v] of Object.entries(data)) {
       if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
         next[k] = String(v);
       }
     }
     setValues(next);
-  }
+    setHydratedFor(editingName);
+  }, [isEdit, existing.data, editingName, hydratedFor]);
 
   const chosenBackend = backends.data?.backends.find((b) => b.id === backend);
   const fields = chosenBackend?.fields ?? ["host", "port", "user", "password", "database"];
@@ -603,10 +623,14 @@ function LlmProfileWizard({
   const [descriptionVerbosity, setDescriptionVerbosity] = useState("brief");
   const [logprobHigh, setLogprobHigh] = useState(0.85);
   const [logprobMedium, setLogprobMedium] = useState(0.5);
+  const [hydratedFor, setHydratedFor] = useState<string | null>(null);
 
-  // Hydrate once when existing profile data arrives.
-  if (isEdit && existing.data && (existing.data as { provider?: string }).provider !== provider) {
+  useEffect(() => {
+    if (!isEdit || !existing.data) return;
     const d = existing.data as Record<string, unknown>;
+    const dataName = typeof d.name === "string" ? d.name : null;
+    if (dataName !== editingName) return;
+    if (hydratedFor === editingName) return;
     setProvider(String(d.provider || "openrouter"));
     setModel(String(d.model || ""));
     setApiKey(String(d.api_key || ""));
@@ -618,7 +642,8 @@ function LlmProfileWizard({
     setDescriptionVerbosity(String(d.description_verbosity || "brief"));
     setLogprobHigh(Number(d.logprob_high ?? 0.85));
     setLogprobMedium(Number(d.logprob_medium ?? 0.5));
-  }
+    setHydratedFor(editingName);
+  }, [isEdit, existing.data, editingName, hydratedFor]);
 
   const chosenProvider = providers.data?.providers.find((p) => p.id === provider);
   const showApiBase = !!chosenProvider?.needs_base;
@@ -792,7 +817,7 @@ function LlmProfileWizard({
               onChange={(e) => setDescriptionVerbosity(e.target.value)}
               className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
             >
-              {["brief", "detailed"].map((v) => (
+              {["brief", "detailed", "comprehensive", "exhaustive"].map((v) => (
                 <option key={v} value={v}>
                   {v}
                 </option>
