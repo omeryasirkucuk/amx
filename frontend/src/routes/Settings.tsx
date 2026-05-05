@@ -7,6 +7,7 @@ import {
   Code as CodeIcon,
   Database,
   FileText,
+  Loader2,
   Pencil,
   Plus,
   Sparkles,
@@ -207,6 +208,26 @@ function DbProfilesSection() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
+                        {result && (
+                          <div
+                            title={result.message}
+                            className={cn(
+                              "inline-flex max-w-[260px] items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
+                              result.ok
+                                ? "bg-positive/10 text-positive"
+                                : "bg-critical/10 text-critical",
+                            )}
+                          >
+                            {result.ok ? (
+                              <CheckCircle size={12} className="shrink-0" />
+                            ) : (
+                              <AlertCircle size={12} className="shrink-0" />
+                            )}
+                            <span className="truncate">
+                              {result.message || (result.ok ? "OK" : "Failed")}
+                            </span>
+                          </div>
+                        )}
                         {p.is_active ? (
                           <StatusPill tone="positive">Active</StatusPill>
                         ) : (
@@ -221,10 +242,17 @@ function DbProfilesSection() {
                         <button
                           type="button"
                           onClick={() => test.mutate(p.name)}
-                          disabled={test.isPending}
-                          className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-50"
+                          disabled={test.isPending && test.variables === p.name}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-surface-border disabled:opacity-60"
                         >
-                          Test
+                          {test.isPending && test.variables === p.name ? (
+                            <>
+                              <Loader2 size={12} className="animate-spin" />
+                              Testing…
+                            </>
+                          ) : (
+                            "Connection test"
+                          )}
                         </button>
                         <button
                           type="button"
@@ -248,19 +276,6 @@ function DbProfilesSection() {
                         )}
                       </div>
                     </div>
-                    {result && (
-                      <div
-                        className={cn(
-                          "mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px]",
-                          result.ok
-                            ? "bg-positive/10 text-positive"
-                            : "bg-critical/10 text-critical",
-                        )}
-                      >
-                        {result.ok ? <CheckCircle size={12} /> : <AlertCircle size={12} />}
-                        {result.message || (result.ok ? "OK" : "Failed")}
-                      </div>
-                    )}
                   </li>
                 );
               })}

@@ -32,6 +32,7 @@ from amx.utils.console import (
     console,
     error,
     info,
+    info_markdown,
     render_table,
     success,
     warn,
@@ -570,7 +571,7 @@ def _run_search_ask_body(
                 "force_logprobs": bool(getattr(cfg.llm, "force_logprobs", True)),
             },
         )
-    info(answer.summary)
+    info_markdown(answer.summary)
     # Provenance and confidence are diagnostic, not conversational. Surface
     # them only when --debug is set or when the user explicitly opted in via
     # `/search config show_provenance true`. By default we keep the answer
