@@ -6,6 +6,41 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added — `/visualize` per-asset generate + favicon swap (UI overhaul, PR 13)
+
+* **Favicon is now the AMX pixel-art mark.** Replaces the old
+  indigo+cyan scribble; the user-supplied transparent PNG is
+  dropped into both `frontend/public/favicon.png` and
+  `amx/web/static/favicon.png` and `index.html` references it via
+  `<link rel="icon" type="image/png">` so the browser tab shows
+  the mark on the next reload.
+* **Per-asset LLM generate endpoints.** New router
+  `amx/web/routers/generate.py` exposes four POST routes —
+  \`/api/generate/database\`, \`/api/generate/schema/{schema}\`,
+  \`/api/generate/table/{schema}/{table}\`, and
+  \`/api/generate/column/{schema}/{table}/{column}\`. Each runs
+  one focused LLM call, writes the description back via the
+  existing connector setters, and returns the new text
+  synchronously. Mirrors what the analyze.run worker would do
+  for that asset, minus the run-history bookkeeping and the
+  pending queue indirection.
+* **UI gives users the choice.** Bulk run (the existing
+  analyze.run path) stays the canonical way to fill in many
+  assets at once and is unchanged. New buttons add the
+  one-asset-at-a-time path:
+  - Database page header: a "Generate description" button that
+    writes the database/catalog comment directly.
+  - Schema page header: two buttons — "Just this schema"
+    (single endpoint) vs "All tables (bulk run)" (existing
+    analyze.run flow).
+  - Table page header: two buttons — "Just this table" vs "All
+    columns (bulk run)".
+  - Table column rows: a per-row "Gen" button that writes that
+    one column's COMMENT in place.
+
+No backend or run-history changes for the bulk path — it's still
+the same /run worker. Backend test suite unchanged.
+
 ### Added / Fixed — `/visualize` skip-restore + database page + history-store enable + favicon (UI overhaul, PR 12)
 
 Five follow-up items in one PR (one — schema-only LLM generate —
