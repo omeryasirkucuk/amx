@@ -30,17 +30,26 @@ interface Props {
   label: string;
   /** Currently-active profile name (or null). */
   activeName: string | null | undefined;
-  /** Tooltip on the pill (backend / model). */
+  /** Tooltip on the trigger (backend / model). */
   tooltip?: string | undefined;
+  /** Trigger style — "pill" for compact TopBar, "row" for full-width sidebar. */
+  variant?: "pill" | "row";
 }
 
 /**
- * TopBar pill that exposes every saved DB or LLM profile in a
- * dropdown for one-click activation. The first menu row jumps to
- * Settings to add a new profile (the wizard there mirrors the CLI's
- * /db add and /llm add flows).
+ * Dropdown trigger that exposes every saved DB or LLM profile for
+ * one-click activation. Two trigger styles share the same dropdown
+ * body: a compact pill (TopBar) and a full-width row (Sidebar). The
+ * first menu item jumps to Settings to add a new profile, mirroring
+ * the CLI's /db add and /llm add flows.
  */
-export default function ProfilePicker({ kind, label, activeName, tooltip }: Props) {
+export default function ProfilePicker({
+  kind,
+  label,
+  activeName,
+  tooltip,
+  variant = "pill",
+}: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
@@ -95,27 +104,58 @@ export default function ProfilePicker({ kind, label, activeName, tooltip }: Prop
 
   return (
     <div className="relative" ref={wrapperRef}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        title={tooltip}
-        className={cn(
-          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-medium transition-colors duration-fast",
-          activeName
-            ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
-            : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
-        )}
-      >
-        <span className="text-[10px] uppercase tracking-wider opacity-70">
-          {label}
-        </span>
-        <span className="max-w-[8rem] truncate font-mono text-[11px]">
-          {display}
-        </span>
-        <ChevronDown size={12} className="opacity-70" />
-      </button>
+      {variant === "row" ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          title={tooltip}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="flex w-full items-center justify-between gap-2 rounded px-2 py-0.5 text-left transition-colors duration-fast hover:bg-surface-subtle"
+        >
+          <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+            {label}
+          </span>
+          <span className="flex min-w-0 items-center gap-1">
+            <span
+              className={cn(
+                "max-w-[10rem] truncate font-mono text-[11px]",
+                activeName ? "text-ink" : "text-warning",
+              )}
+            >
+              {display}
+            </span>
+            <ChevronDown size={11} className="text-ink-dim" />
+          </span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          title={tooltip}
+          className={cn(
+            "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-medium transition-colors duration-fast",
+            activeName
+              ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
+              : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
+          )}
+        >
+          <span className="text-[10px] uppercase tracking-wider opacity-70">
+            {label}
+          </span>
+          <span className="max-w-[8rem] truncate font-mono text-[11px]">
+            {display}
+          </span>
+          <ChevronDown size={12} className="opacity-70" />
+        </button>
+      )}
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-72 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
+        <div
+          className={cn(
+            "absolute z-30 mt-1 w-72 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in",
+            variant === "row" ? "left-0" : "right-0",
+          )}
+        >
           <button
             type="button"
             onClick={() => {
