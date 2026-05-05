@@ -52,36 +52,49 @@ def _catalog(cfg: AMXConfig) -> SearchCatalog:
     return cat
 
 
-def _active_profile(cfg: AMXConfig) -> str:
-    name = (cfg.active_db_profile or "").strip()
+def _resolve_profile(cfg: AMXConfig, profile: str | None) -> str:
+    """Resolve the target profile for an indexed-catalog query.
+
+    Multi-profile Studio always passes ``?profile=NAME``; the CLI's
+    web bridge falls back to ``cfg.active_db_profile`` when it has one.
+    Either way, an empty resolution surfaces a 400 with a precise hint.
+    """
+    name = (profile or cfg.active_db_profile or "").strip()
     if not name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No active DB profile — pick one via /api/profiles/db/<name>/activate.",
+            detail=(
+                "No active DB profile — pass ?profile=<name> to scope this "
+                "request, or activate a profile via /api/profiles/db/<name>/activate."
+            ),
         )
     return name
 
 
 @router.get("/databases")
-def known_databases(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+def known_databases(
+    profile: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
     """Databases the catalog has indexed entities for, with row
     counts. Empty list when ``/sync`` has never been run for the
-    active profile."""
-    profile = _active_profile(cfg)
-    rows = _catalog(cfg).known_databases(profile)
+    target profile."""
+    name = _resolve_profile(cfg, profile)
+    rows = _catalog(cfg).known_databases(name)
     return {"databases": rows, "count": len(rows)}
 
 
 @router.get("/schemas")
 def known_schemas(
     database: str | None = Query(default=None, alias="db"),
+    profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Indexed schemas for the active profile. ``?db=`` scopes the
+    """Indexed schemas for the target profile. ``?db=`` scopes the
     listing to one database (Databricks UC catalog / BigQuery
     project)."""
-    profile = _active_profile(cfg)
-    rows = _catalog(cfg).known_schemas(profile, database_name=database)
+    name = _resolve_profile(cfg, profile)
+    rows = _catalog(cfg).known_schemas(name, database_name=database)
     return {"database": database or None, "schemas": rows, "count": len(rows)}
 
 
@@ -90,14 +103,15 @@ def schema_inventory(
     schema: str | None = Query(default=None),
     database: str | None = Query(default=None, alias="db"),
     limit: int = Query(default=500, ge=1, le=5000),
+    profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Return per-table structural inventory: table name, asset kind,
     row count, column count, effective description. The SPA renders
     this as the schema-detail page's main grid."""
-    profile = _active_profile(cfg)
+    name = _resolve_profile(cfg, profile)
     rows = _catalog(cfg).schema_inventory(
-        profile,
+        name,
         schema_name=schema,
         database_name=database,
         limit=limit,
@@ -114,14 +128,15 @@ def schema_inventory(
 @router.get("/explain")
 def explain_table(
     path: str = Query(..., min_length=1),
+    profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Per-table "card" the table-detail page hydrates with: structural
     metadata + column entities + relationships. ``path`` is
     ``schema.table`` (or ``database.schema.table`` for 3-level
     backends)."""
-    profile = _active_profile(cfg)
-    payload = _catalog(cfg).explain_table(profile, path)
+    name = _resolve_profile(cfg, profile)
+    payload = _catalog(cfg).explain_table(name, path)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -134,11 +149,12 @@ def explain_table(
 def search_columns(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=8, ge=1, le=50),
+    profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Hybrid lexical + vector search over indexed columns."""
-    profile = _active_profile(cfg)
-    rows = _catalog(cfg).search_columns(profile, q, limit=limit)
+    name = _resolve_profile(cfg, profile)
+    rows = _catalog(cfg).search_columns(name, q, limit=limit)
     return {"q": q, "rows": rows, "count": len(rows)}
 
 
@@ -146,20 +162,24 @@ def search_columns(
 def search_tables(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=8, ge=1, le=50),
+    profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Hybrid lexical + vector search over indexed tables."""
-    profile = _active_profile(cfg)
-    rows = _catalog(cfg).search_tables(profile, q, limit=limit)
+    name = _resolve_profile(cfg, profile)
+    rows = _catalog(cfg).search_tables(name, q, limit=limit)
     return {"q": q, "rows": rows, "count": len(rows)}
 
 
 @router.get("/settings")
-def get_settings(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+def get_settings(
+    profile: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
     """Per-profile search settings — the SPA's Settings page renders
     these as toggles (vector search on/off, score thresholds, etc.)."""
-    profile = _active_profile(cfg)
+    name = _resolve_profile(cfg, profile)
     return {
-        "profile": profile,
-        "settings": _catalog(cfg).get_settings(profile),
+        "profile": name,
+        "settings": _catalog(cfg).get_settings(name),
     }

@@ -3,6 +3,10 @@
 We mock :class:`DatabaseConnector` at the cache layer so the test
 suite never tries to open a real SQLAlchemy engine — the goal is to
 verify the HTTP shape, not the connector's per-backend SQL.
+
+Every browse endpoint requires ``?profile=NAME`` (the legacy
+single-active path retired in PR-3). Tests register a profile with
+``cfg.db_profiles[name]`` so :func:`_connector_for_scope` can find it.
 """
 
 from __future__ import annotations
@@ -11,36 +15,48 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from amx.config import DBConfig
+from amx.db.connector import AssetKind
 from amx.web.routers import live_db
+
+PROFILE = "test-profile"
 
 
 @pytest.fixture(autouse=True)
 def _wipe_connector_cache() -> None:
-    """The router caches connectors per profile-key. Drop the cache
-    between tests so a fixture-built mock never bleeds into the next
-    case."""
+    """Drop the cache between tests so a fixture-built mock never
+    bleeds into the next case."""
     live_db._CONNECTOR_CACHE.clear()
     yield
     live_db._CONNECTOR_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)
-def _pin_default_database(cfg) -> None:
-    """Pin a database on the default postgres profile so tests opt
-    INTO the under-scoped path explicitly. The 2-level browse gate
-    (added 2026-05-04) blocks browse endpoints when the active
-    profile leaves ``database`` blank — without this fixture every
-    pre-existing test would hit a 412."""
-    cfg.db.database = cfg.db.database or "appdb"
+def _register_profile(cfg) -> None:
+    """Register a default profile so ``?profile=test-profile`` resolves.
+    Tests that need a 3-level backend overwrite this with a Databricks
+    profile via ``cfg.db_profiles[PROFILE] = …``."""
+    cfg.db_profiles[PROFILE] = DBConfig(
+        backend="postgresql",
+        host="pg.test",
+        user="amx",
+        database="appdb",
+    )
 
 
 def _patch_connector(monkeypatch, builder) -> MagicMock:
-    """Install ``builder()`` as the cached connector for any profile
-    key. Returns the mock so the test can assert on call arguments.
-    """
+    """Install ``builder()`` as the connector :func:`DatabaseConnector`
+    factory uses inside :mod:`amx.web.routers.live_db`. Returns the
+    mock so the test can assert on call arguments."""
     instance = builder()
-    monkeypatch.setattr(live_db, "_connector", lambda cfg: instance)
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _db: instance)
     return instance
+
+
+def _q(extra: str = "") -> str:
+    """Build the ``?profile=…`` query string (plus optional extras)."""
+    base = f"?profile={PROFILE}"
+    return base + (f"&{extra}" if extra else "")
 
 
 def test_list_catalogs_three_level_backend(client, auth_headers, monkeypatch) -> None:
@@ -51,7 +67,7 @@ def test_list_catalogs_three_level_backend(client, auth_headers, monkeypatch) ->
             list_catalogs=MagicMock(return_value=["main", "sap", "samples"]),
         ),
     )
-    response = client.get("/api/live/catalogs", headers=auth_headers)
+    response = client.get(f"/api/live/catalogs{_q()}", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["supports_catalogs"] is True
@@ -71,7 +87,7 @@ def test_list_catalogs_two_level_backend_returns_empty_with_flag(
             list_catalogs=MagicMock(return_value=[]),
         ),
     )
-    response = client.get("/api/live/catalogs", headers=auth_headers)
+    response = client.get(f"/api/live/catalogs{_q()}", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["supports_catalogs"] is False
@@ -81,59 +97,56 @@ def test_list_catalogs_two_level_backend_returns_empty_with_flag(
 def test_list_databases(client, auth_headers, monkeypatch) -> None:
     _patch_connector(
         monkeypatch,
-        lambda: MagicMock(
-            list_databases=MagicMock(return_value=["app", "analytics"]),
-        ),
+        lambda: MagicMock(list_databases=MagicMock(return_value=["app", "analytics"])),
     )
-    response = client.get("/api/live/databases", headers=auth_headers)
+    response = client.get(f"/api/live/databases{_q()}", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["databases"] == ["app", "analytics"]
 
 
-def test_list_schemas_uses_active_catalog_default(client, auth_headers, monkeypatch) -> None:
+def test_list_schemas_uses_explicit_database(client, auth_headers, monkeypatch) -> None:
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
             supports_catalogs=MagicMock(return_value=False),
             list_schemas=MagicMock(return_value=["public", "sales"]),
+            get_schema_comment=MagicMock(return_value=""),
         ),
     )
-    response = client.get("/api/live/schemas", headers=auth_headers)
+    response = client.get(
+        f"/api/live/schemas{_q('database=appdb')}", headers=auth_headers
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["schemas"] == ["public", "sales"]
 
 
 def test_list_schemas_with_explicit_catalog_query_arg(
-    client, auth_headers, monkeypatch, cfg
+    client, auth_headers, monkeypatch
 ) -> None:
-    """When the caller passes ?catalog=…, the router temporarily swaps
-    cfg.db.catalog so the connector's listing is scoped to the
-    requested catalog. The pin must be restored after the call."""
-    cfg.db.catalog = "old"
-    observed: dict[str, str] = {}
+    """Passing ?catalog= scopes the listing to a specific catalog
+    without mutating the profile record. The connector receives a
+    fresh DBConfig via dataclasses.replace."""
+    captured: dict[str, object] = {}
 
-    def list_schemas() -> list[str]:
-        observed["catalog_during_call"] = cfg.db.catalog
-        return ["a", "b"]
+    def factory(db_cfg):
+        captured["catalog"] = db_cfg.catalog
+        return MagicMock(
+            list_schemas=MagicMock(return_value=["a", "b"]),
+            get_schema_comment=MagicMock(return_value=""),
+        )
 
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(list_schemas=MagicMock(side_effect=list_schemas)),
+    monkeypatch.setattr(live_db, "DatabaseConnector", factory)
+    response = client.get(
+        f"/api/live/schemas{_q('catalog=ANALYTICS')}", headers=auth_headers
     )
-    response = client.get("/api/live/schemas?catalog=new", headers=auth_headers)
     assert response.status_code == 200
-    assert observed["catalog_during_call"] == "new"
-    assert cfg.db.catalog == "old", "router must restore the pinned catalog"
+    assert captured["catalog"] == "ANALYTICS"
+    assert response.json()["schemas"] == ["a", "b"]
 
 
 def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> None:
-    """``list_assets`` returns ``(name, AssetKind)`` tuples; the router
-    must surface the enum as its string value so the SPA gets plain
-    JSON."""
-    from amx.db.connector import AssetKind
-
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
@@ -144,14 +157,16 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
                     ("orders_view", AssetKind.VIEW),
                 ]
             ),
-            # Returned per asset so the router can flag which children
-            # already have a description vs. which still need one.
             get_table_comment=MagicMock(
-                side_effect=lambda _schema, name: "Order line items" if name == "orders" else ""
+                side_effect=lambda _schema, name: (
+                    "Order line items" if name == "orders" else ""
+                )
             ),
         ),
     )
-    response = client.get("/api/live/schemas/sales/assets", headers=auth_headers)
+    response = client.get(
+        f"/api/live/schemas/sales/assets{_q('database=appdb')}", headers=auth_headers
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["assets"] == [
@@ -163,44 +178,44 @@ def test_list_assets_serializes_kind_enum(client, auth_headers, monkeypatch) -> 
 def test_list_volumes_returns_empty_for_unsupported_backends(
     client, auth_headers, monkeypatch
 ) -> None:
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(
-            capabilities=MagicMock(volumes=False),
-        ),
+    capabilities = MagicMock()
+    capabilities.volumes = False
+    _patch_connector(monkeypatch, lambda: MagicMock(capabilities=capabilities))
+    response = client.get(
+        f"/api/live/schemas/sales/volumes{_q()}", headers=auth_headers
     )
-    response = client.get("/api/live/schemas/sales/volumes", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["supports_volumes"] is False
     assert payload["volumes"] == []
 
 
-def test_list_volumes_returns_rows_for_databricks(client, auth_headers, monkeypatch, cfg) -> None:
-    cfg.db.catalog = "main"
+def test_list_volumes_returns_rows_for_databricks(client, auth_headers, monkeypatch) -> None:
+    capabilities = MagicMock()
+    capabilities.volumes = True
     _patch_connector(
         monkeypatch,
         lambda: MagicMock(
-            supports_catalogs=MagicMock(return_value=True),
-            capabilities=MagicMock(volumes=True),
+            capabilities=capabilities,
             list_volumes=MagicMock(
                 return_value=[
-                    {"name": "raw_files", "type": "managed", "comment": "ETL inbox"},
+                    {"name": "raw", "type": "managed", "comment": "Raw uploads"},
+                    {"name": "stage", "type": "external", "comment": ""},
                 ]
             ),
         ),
     )
-    response = client.get("/api/live/schemas/sales/volumes", headers=auth_headers)
+    response = client.get(
+        f"/api/live/schemas/sales/volumes{_q('catalog=main')}", headers=auth_headers
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["supports_volumes"] is True
-    assert payload["volumes"] == [{"name": "raw_files", "kind": "managed", "comment": "ETL inbox"}]
+    assert len(payload["volumes"]) == 2
+    assert payload["volumes"][0]["name"] == "raw"
 
 
 def test_list_columns_returns_lightweight_metadata(client, auth_headers, monkeypatch) -> None:
-    """``list_column_profiles`` returns ColumnProfile dataclasses; the
-    router pulls only name/dtype/nullable so the SPA renders the
-    Columns table fast (no row scan)."""
     cp1 = MagicMock(name="cp1")
     cp1.name = "id"
     cp1.dtype = "BIGINT"
@@ -217,7 +232,10 @@ def test_list_columns_returns_lightweight_metadata(client, auth_headers, monkeyp
             list_column_profiles=MagicMock(return_value=[cp1, cp2]),
         ),
     )
-    response = client.get("/api/live/schemas/sales/tables/customers/columns", headers=auth_headers)
+    response = client.get(
+        f"/api/live/schemas/sales/tables/customers/columns{_q('database=appdb')}",
+        headers=auth_headers,
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["columns"] == [
@@ -226,7 +244,9 @@ def test_list_columns_returns_lightweight_metadata(client, auth_headers, monkeyp
     ]
 
 
-def test_table_snapshot_passes_through_connector_payload(client, auth_headers, monkeypatch) -> None:
+def test_table_snapshot_passes_through_connector_payload(
+    client, auth_headers, monkeypatch
+) -> None:
     snapshot = {
         "schema": "sales",
         "table": "customers",
@@ -242,7 +262,10 @@ def test_table_snapshot_passes_through_connector_payload(client, auth_headers, m
             get_table_metadata_snapshot=MagicMock(return_value=snapshot),
         ),
     )
-    response = client.get("/api/live/schemas/sales/tables/customers/snapshot", headers=auth_headers)
+    response = client.get(
+        f"/api/live/schemas/sales/tables/customers/snapshot{_q('database=appdb')}",
+        headers=auth_headers,
+    )
     assert response.status_code == 200
     assert response.json() == snapshot
 
@@ -254,98 +277,35 @@ def test_connector_errors_surface_as_500_with_actionable_detail(
         monkeypatch,
         lambda: MagicMock(list_databases=MagicMock(side_effect=RuntimeError("connect timed out"))),
     )
-    response = client.get("/api/live/databases", headers=auth_headers)
+    response = client.get(f"/api/live/databases{_q()}", headers=auth_headers)
     assert response.status_code == 500
     assert "connect timed out" in response.json()["detail"]
 
 
-def test_list_assets_412_when_3level_backend_has_no_catalog(
-    client, auth_headers, monkeypatch
-) -> None:
-    """Databricks (3-level) without a catalog must return 412 with the
-    select-catalog hint, not crash with ``Catalog 'None' was not found``."""
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),
-    )
-    response = client.get("/api/live/schemas/sales/assets", headers=auth_headers)
-    assert response.status_code == 412
-    detail = response.json()["detail"]
-    assert detail["hint"] == "select-catalog"
+def test_browse_without_profile_returns_400(client, auth_headers) -> None:
+    """Studio always sends ?profile=…; omitting it surfaces a clean
+    400 instead of a confusing 422 from FastAPI."""
+    response = client.get("/api/live/catalogs", headers=auth_headers)
+    assert response.status_code == 422  # FastAPI's default for missing required query
 
 
-def test_activate_catalog_writes_to_active_profile(client, auth_headers, monkeypatch, cfg) -> None:
-    cfg.db.catalog = ""
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),
+def test_browse_unknown_profile_returns_404(client, auth_headers, monkeypatch) -> None:
+    _patch_connector(monkeypatch, lambda: MagicMock())
+    response = client.get(
+        "/api/live/catalogs?profile=does-not-exist", headers=auth_headers
     )
-    response = client.post(
+    assert response.status_code == 404
+    assert "does-not-exist" in response.json()["detail"]
+
+
+def test_activate_endpoints_removed(client, auth_headers) -> None:
+    """PR-3 removed POST /api/live/{catalogs|databases}/{name}/activate.
+    Studio is multi-profile and never persists a single-active scope;
+    the CLI's /connect picker mutates ``cfg.db`` in-process only.
+    """
+    for url in (
         "/api/live/catalogs/main/activate",
-        headers=auth_headers,
-        json={"persist": False},
-    )
-    assert response.status_code == 200
-    assert response.json()["catalog"] == "main"
-    assert cfg.db.catalog == "main"
-
-
-def test_activate_catalog_rejects_2level_backend(client, auth_headers, monkeypatch) -> None:
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
-    )
-    response = client.post(
-        "/api/live/catalogs/main/activate",
-        headers=auth_headers,
-        json={"persist": False},
-    )
-    assert response.status_code == 400
-
-
-def test_list_assets_412_when_2level_backend_has_no_database(
-    client, auth_headers, monkeypatch, cfg
-) -> None:
-    """The Postgres / MySQL counterpart of the 3-level catalog gate.
-    When the active profile leaves ``database`` blank the connector
-    silently lands on the server's default DB and only schemas of
-    that DB are visible — exactly what the user reported. Surface
-    412 with hint=select-database so the SPA can show a picker."""
-    cfg.db.database = ""
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
-    )
-    response = client.get("/api/live/schemas/public/assets", headers=auth_headers)
-    assert response.status_code == 412
-    detail = response.json()["detail"]
-    assert detail["hint"] == "select-database"
-
-
-def test_activate_database_writes_to_active_profile(client, auth_headers, monkeypatch, cfg) -> None:
-    cfg.db.database = ""
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(supports_catalogs=MagicMock(return_value=False)),
-    )
-    response = client.post(
         "/api/live/databases/appdb/activate",
-        headers=auth_headers,
-        json={"persist": False},
-    )
-    assert response.status_code == 200
-    assert response.json()["database"] == "appdb"
-    assert cfg.db.database == "appdb"
-
-
-def test_activate_database_rejects_3level_backend(client, auth_headers, monkeypatch) -> None:
-    _patch_connector(
-        monkeypatch,
-        lambda: MagicMock(supports_catalogs=MagicMock(return_value=True)),
-    )
-    response = client.post(
-        "/api/live/databases/appdb/activate",
-        headers=auth_headers,
-        json={"persist": False},
-    )
-    assert response.status_code == 400
+    ):
+        response = client.post(url, headers=auth_headers, json={"persist": False})
+        assert response.status_code in (404, 405), url

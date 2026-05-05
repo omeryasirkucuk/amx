@@ -85,8 +85,16 @@ def usage(window: str = Query(default="7d")) -> dict[str, Any]:
 
 
 @router.get("/catalog/status")
-def catalog_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
-    """Return the same metric block ``/search status`` prints."""
+def catalog_status(
+    profile: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Return the same metric block ``/search status`` prints.
+
+    Pass ``?profile=NAME`` to inspect a specific profile's index without
+    flipping the active scope. Without it, falls back to the active
+    profile (legacy behaviour).
+    """
     from amx.search.catalog import SearchCatalog
 
     catalog = SearchCatalog.from_history_store()
@@ -95,9 +103,11 @@ def catalog_status(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             "ready": False,
             "message": "Search catalog isn't initialised yet — run /sync once.",
         }
-    snap = catalog.sync_status(cfg.active_db_profile or "default")
+    target = (profile or cfg.active_db_profile or "default").strip() or "default"
+    snap = catalog.sync_status(target)
     snap["llm_ready"] = bool(cfg.llm.provider and cfg.llm.model)
     snap["ready"] = bool(int(snap.get("entities", {}).get("total_entities", 0) or 0) > 0)
+    snap["profile"] = target
     return snap
 
 

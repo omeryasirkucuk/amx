@@ -52,6 +52,7 @@ from amx.utils.token_tracker import tracker as token_tracker
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
 from amx.web.progress_bus import emit, emit_terminal
+from amx.web.routers.live_db import _connector_for_scope
 
 router = APIRouter(prefix="/api", tags=["runs"])
 log = get_logger("web.runs")
@@ -66,6 +67,11 @@ class RunRequest(BaseModel):
     plan §3 Run section). For now ``/api/runs`` accepts the same
     payload shape so the SPA can stub-call it; the worker emits an
     explanatory ``job.failed`` event.
+
+    Scope (``db_profile`` / ``database`` / ``catalog``): when set, the
+    worker resolves the connector via :func:`_connector_for_scope` and
+    records the run under that profile name. Omit them to keep the
+    legacy single-active behaviour for the pre-multi-profile SPA.
     """
 
     scope: dict[str, list[str]] = Field(
@@ -75,6 +81,12 @@ class RunRequest(BaseModel):
     apply: bool = Field(default=False, description="Auto-apply after the run completes.")
     missing_only: bool = Field(default=False)
     batch_mode: bool = Field(default=False)
+    db_profile: str | None = Field(
+        default=None,
+        description="DB profile name. Empty means 'use the active profile' (legacy).",
+    )
+    database: str | None = Field(default=None)
+    catalog: str | None = Field(default=None)
 
 
 class ApplyRequest(BaseModel):
@@ -83,9 +95,43 @@ class ApplyRequest(BaseModel):
     ``results`` accepts the on-disk ``ReviewResult`` shape. Omit the
     field to apply the user's pending queue
     (``~/.amx/pending_metadata.json``) end-to-end.
+
+    ``db_profile`` / ``database`` / ``catalog`` route the writeback to a
+    specific profile without flipping the active scope (multi-profile
+    apply support).
     """
 
     results: list[dict[str, Any]] | None = None
+    db_profile: str | None = Field(default=None)
+    database: str | None = Field(default=None)
+    catalog: str | None = Field(default=None)
+
+
+def _scoped_connector(
+    cfg: AMXConfig,
+    db_profile: str | None,
+    database: str | None,
+    catalog: str | None,
+) -> tuple[DatabaseConnector, str | None, str | None]:
+    """Open a connector for the requested profile, or fall back to
+    ``cfg.active_db_profile`` when the body omits ``db_profile``.
+
+    Returns ``(connector, profile_name, backend)``. The Studio always
+    sends ``db_profile`` explicitly (its URL encodes the scope); the
+    CLI's web-bridged commands fall back to the active profile so the
+    "Run" button keeps working without a scope mid-session.
+    """
+    name = (db_profile or "").strip()
+    if name:
+        conn = _connector_for_scope(cfg, name, database=database, catalog=catalog)
+        base = cfg.db_profiles.get(name)
+        return conn, name, getattr(base, "backend", None) if base else None
+    # Active-profile fallback (CLI / pre-multi-profile tests).
+    return (
+        DatabaseConnector(cfg.db),
+        cfg.active_db_profile,
+        cfg.db.backend if cfg.db else None,
+    )
 
 
 @router.post("/runs")
@@ -281,7 +327,12 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     )
 
     try:
-        db = DatabaseConnector(cfg.db)
+        db, effective_profile, effective_backend = _scoped_connector(
+            cfg, body.db_profile, body.database, body.catalog
+        )
+    except HTTPException as exc:
+        _fail_job(job, f"Could not open DB connector: {exc.detail}")
+        return
     except Exception as exc:
         _fail_job(job, f"Could not open DB connector: {exc}")
         return
@@ -303,8 +354,8 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             run_id = hs.create_run(
                 command="analyze.run",
                 mode="chat",
-                db_backend=cfg.db.backend,
-                db_profile=cfg.active_db_profile,
+                db_backend=effective_backend,
+                db_profile=effective_profile,
                 llm_provider=cfg.llm.provider,
                 llm_model=cfg.llm.model,
                 scope=scope,
@@ -440,7 +491,9 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         and not job.cancel.is_set()
     ):
         try:
-            db_for_apply = DatabaseConnector(cfg.db)
+            db_for_apply, _, _ = _scoped_connector(
+                cfg, body.db_profile, body.database, body.catalog
+            )
             applied = apply_review_results_to_db(
                 db_for_apply,
                 deferred,
@@ -587,7 +640,15 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         emit_terminal(job.queue, "job.done", {"summary": job.summary})
         return
 
-    db = DatabaseConnector(cfg.db)
+    try:
+        db, _, _ = _scoped_connector(cfg, body.db_profile, body.database, body.catalog)
+    except HTTPException as exc:
+        job.status = "failed"
+        job.error = str(exc.detail)
+        job.ended_at = time.time()
+        emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        emit_terminal(job.queue, "job.failed", {"error": job.error})
+        return
     try:
         applied = apply_review_results_to_db(
             db,
