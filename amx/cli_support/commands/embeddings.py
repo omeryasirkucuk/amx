@@ -17,10 +17,6 @@ from amx.config import (
     AMXConfig,
     EmbeddingConfig,
 )
-from amx.search.embeddings import (
-    DEFAULT_OPENAI_BASE_URL,
-    configure_from_amx_config,
-)
 from amx.utils.console import (
     ask,
     ask_choice,
@@ -31,6 +27,19 @@ from amx.utils.console import (
     success,
     warn,
 )
+
+# ``amx.search.embeddings`` pulls in chromadb at import time, which
+# we don't want to load on every CLI launch. Mirror the constant
+# here as a tiny duplicate (it never changes) and lazy-import the
+# function inside the wrapper below so handlers can call it without
+# the chromadb tax landing on the boot path.
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+
+def _configure_from_amx_config(*args, **kwargs):  # type: ignore[no-untyped-def]
+    from amx.search.embeddings import configure_from_amx_config
+
+    return configure_from_amx_config(*args, **kwargs)
 
 _LABEL_MINILM = "MiniLM"
 _LABEL_OPENAI = "OpenAI-compatible"
@@ -93,7 +102,7 @@ def _print_current(cfg: AMXConfig) -> None:
 
 def _set_minilm(cfg: AMXConfig) -> None:
     cfg.embedding = EmbeddingConfig(kind="minilm")
-    configure_from_amx_config(cfg, on_warning=warn)
+    _configure_from_amx_config(cfg, on_warning=warn)
     success("Embeddings switched to MiniLM (Chroma's bundled default).")
     info("Run /search rebuild to re-embed the catalog with the new provider.")
 
@@ -133,7 +142,7 @@ def _set_openai_compatible(cfg: AMXConfig, rest: list[str]) -> None:
         api_key=api_key,
         base_url=base_url,
     )
-    configure_from_amx_config(cfg, on_warning=warn)
+    _configure_from_amx_config(cfg, on_warning=warn)
     success(f"Embeddings switched to OpenAI-compatible / {model}.")
     info(
         f"Endpoint: {base_url}. The API key is stored in the OS keyring under "
@@ -154,7 +163,7 @@ def _set_sentence_transformers(cfg: AMXConfig, rest: list[str]) -> None:
         error("A model id is required for local sentence-transformers embeddings.")
         return
     cfg.embedding = EmbeddingConfig(kind="sentence_transformers", model=model)
-    configure_from_amx_config(cfg, on_warning=warn)
+    _configure_from_amx_config(cfg, on_warning=warn)
     success(f"Embeddings switched to local sentence-transformers / {model}.")
     info(
         'Requires `pip install "amx-cli[local-embeddings]"` if you have not '

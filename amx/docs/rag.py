@@ -5,8 +5,29 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import chromadb
-from langchain_community.document_loaders import (
+from amx.utils.optional_deps import ensure as _ensure
+
+# Document-RAG is a heavy cluster (~150 MB across chromadb + the
+# langchain ecosystem + unstructured's parser fleet). It only loads
+# on first ``/docs ingest`` / ``/run`` with docs / RAG-backed answer
+# — not on every CLI launch — so the install cost is amortised across
+# the whole tool's lifetime, paid once, by the user who actually uses
+# the feature.
+_ensure(
+    [
+        "chromadb",
+        ("langchain_community", "langchain-community"),
+        ("langchain_text_splitters", "langchain-text-splitters"),
+        "unstructured",
+        "pypdf",
+        ("docx", "python-docx"),
+        "openpyxl",
+    ],
+    feature="document RAG (/docs)",
+)
+
+import chromadb  # noqa: E402
+from langchain_community.document_loaders import (  # noqa: E402
     CSVLoader,
     Docx2txtLoader,
     PyPDFLoader,
@@ -16,10 +37,10 @@ from langchain_community.document_loaders import (
     UnstructuredMarkdownLoader,
     UnstructuredPowerPointLoader,
 )
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
 
-from amx.docs.scanner import DocInfo
-from amx.utils.logging import get_logger
+from amx.docs.scanner import DocInfo  # noqa: E402
+from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
 

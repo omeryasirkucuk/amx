@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich import box
@@ -12,11 +12,18 @@ from rich.text import Text
 
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
-from amx.search.catalog import SearchCatalog
 from amx.search.confidence import band as _confidence_band
 from amx.search.confidence import band_style as _confidence_band_style
-from amx.search.service import SearchService
 from amx.services.analyze_scope import finalize_scope as _finalize_scope
+
+if TYPE_CHECKING:
+    # ``amx.search.catalog`` and ``amx.search.service`` reach
+    # ``amx.search.index`` which imports chromadb at module top — a
+    # ~400 ms cost we don't want to pay on every CLI launch. Type
+    # references are string-only thanks to ``from __future__ import
+    # annotations``; runtime use sites lazy-import these names below.
+    from amx.search.catalog import SearchCatalog
+    from amx.search.service import SearchService
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
     ask_choice,
@@ -36,7 +43,9 @@ LogEvent = Callable[..., None]
 
 
 def _catalog() -> SearchCatalog | None:
-    return SearchCatalog.from_history_store()
+    from amx.search.catalog import SearchCatalog as _SearchCatalog
+
+    return _SearchCatalog.from_history_store()
 
 
 def _service(
@@ -50,11 +59,13 @@ def _service(
     ``/ask --db-profile``. When omitted the service falls back to the
     persisted active scope (``cfg.active_db_profiles``).
     """
+    from amx.search.service import SearchService as _SearchService
+
     catalog = _catalog()
     if catalog is None:
         error("Search catalog is not initialized.")
         return None
-    return SearchService(cfg, catalog, db_profiles=db_profiles)
+    return _SearchService(cfg, catalog, db_profiles=db_profiles)
 
 
 def _render_search_rows(

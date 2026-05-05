@@ -39,42 +39,22 @@ classifiers = [
 ]
 
 dependencies = [
+    # ── Core: needed by EVERY ``amx`` invocation ────────────────────────
+    # Heavy clusters (RAG, /docs ingestion, AMX Studio, cloud sources,
+    # Batch APIs, gitpython, tiktoken) are auto-installed by AMX itself
+    # the first time the user reaches the relevant feature — see
+    # ``amx/utils/optional_deps.py``. This keeps ``pip install amx-cli``
+    # under ~50 MB and a few seconds for first-time users while still
+    # making every feature work end-to-end on demand.
     "click>=8.1",
     "rich>=13.0",
     "prompt_toolkit>=3.0.40",
     "sqlalchemy>=2.0",
-    "pandas>=2.0",
-    "chromadb>=0.5",
-    "langchain>=0.3",
-    "langchain-community>=0.3",
-    "langchain-text-splitters>=0.3",
-    "tiktoken>=0.7",
-    "openai>=1.0",
-    "anthropic>=0.30",
-    "google-generativeai>=0.7",
-    "litellm>=1.83.7",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
-    "tqdm>=4.66",
-    "unstructured>=0.15",
-    "python-magic>=0.4",
-    "pypdf>=4.0",
-    "openpyxl>=3.1",
-    "python-docx>=1.1",
-    "gitpython>=3.1",
-    "boto3>=1.34",
+    "litellm>=1.83.7",
     "requests>=2.31",
-    "google-api-python-client>=2.0",
-    "google-auth>=2.0",
-    "msal>=1.24",
     "keyring>=24.0",
-    # ── /studio web UI (PR-A onwards) ────────────────────────────────────
-    # FastAPI / uvicorn are core (not an optional extra) so a plain
-    # ``pip install amx-cli`` boots AMX Studio end-to-end. The total
-    # dep weight is ~12 MB; AMX is already a heavy install.
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "sse-starlette>=2.0",
 ]
 
 [project.urls]
@@ -85,6 +65,46 @@ Issues = "https://github.com/omeryasirkucuk/amx/issues"
 Changelog = "https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# ── Feature bundles (preinstall to skip the auto-install prompt) ─────
+# AMX auto-installs these the first time the user reaches the matching
+# feature, so ``pip install amx-cli`` is enough for a normal install.
+# Pre-install one of these extras when the runtime environment has no
+# pip access (Docker images, air-gapped CI, locked corp envs).
+rag = [
+    "chromadb>=0.5",
+    "langchain-text-splitters>=0.3",
+    "tiktoken>=0.7",
+]
+docs = [
+    "chromadb>=0.5",
+    "langchain-community>=0.3",
+    "langchain-text-splitters>=0.3",
+    "tiktoken>=0.7",
+    "unstructured>=0.15",
+    "python-magic>=0.4",
+    "pypdf>=4.0",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+]
+studio = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "sse-starlette>=2.0",
+]
+cloud-sources = [
+    "boto3>=1.34",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+    "msal>=1.24",
+]
+batch = [
+    "openai>=1.0",
+    "anthropic>=0.30",
+]
+git-sources = [
+    "gitpython>=3.1",
+]
+
 code-intel = [
     "sqlglot>=24.0",
 ]
@@ -120,6 +140,7 @@ clickhouse = [
 ]
 duckdb = ["duckdb-engine>=0.13", "duckdb>=1.0"]
 all = [
+    # Every DB backend driver
     "psycopg2-binary>=2.9",
     "snowflake-sqlalchemy>=1.6",
     "snowflake-connector-python>=3.6",
@@ -137,6 +158,27 @@ all = [
     "clickhouse-sqlalchemy>=0.3",
     "duckdb-engine>=0.13",
     "duckdb>=1.0",
+    # Every feature cluster (auto-installed on demand otherwise)
+    "chromadb>=0.5",
+    "langchain-community>=0.3",
+    "langchain-text-splitters>=0.3",
+    "tiktoken>=0.7",
+    "unstructured>=0.15",
+    "python-magic>=0.4",
+    "pypdf>=4.0",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "sse-starlette>=2.0",
+    "boto3>=1.34",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+    "msal>=1.24",
+    "openai>=1.0",
+    "anthropic>=0.30",
+    "gitpython>=3.1",
+    "sqlglot>=24.0",
 ]
 dev = [
     "pytest>=8.0",
