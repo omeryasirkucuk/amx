@@ -143,17 +143,14 @@ def ensure(packages: Iterable[PackageSpec], *, feature: str) -> None:
         proc = subprocess.run(cmd, check=False)
     except OSError as exc:
         manual = "pip install " + " ".join(missing_pip)
-        raise RuntimeError(
-            f"Could not invoke pip ({exc}). Install manually: {manual}"
-        ) from exc
+        raise RuntimeError(f"Could not invoke pip ({exc}). Install manually: {manual}") from exc
 
     if proc.returncode != 0:
         for key in seen_keys:
             _VERIFIED.discard(key)
         manual = "pip install " + " ".join(missing_pip)
         raise RuntimeError(
-            f"pip install failed (exit code {proc.returncode}). "
-            f"Run manually: {manual}"
+            f"pip install failed (exit code {proc.returncode}). Run manually: {manual}"
         )
 
     # Newly-installed packages weren't on sys.path at process start;

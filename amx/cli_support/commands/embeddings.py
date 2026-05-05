@@ -41,6 +41,7 @@ def _configure_from_amx_config(*args, **kwargs):  # type: ignore[no-untyped-def]
 
     return configure_from_amx_config(*args, **kwargs)
 
+
 _LABEL_MINILM = "MiniLM"
 _LABEL_OPENAI = "OpenAI-compatible"
 _LABEL_LOCAL = "Local sentence-transformers"
