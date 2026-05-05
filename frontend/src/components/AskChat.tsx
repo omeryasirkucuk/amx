@@ -7,6 +7,7 @@ import { useEventSource, type SseEvent } from "../lib/sse";
 import { apiFetch } from "../lib/api";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
+import { InfoHint } from "./ui";
 
 export interface SubmittedTurn {
   role: "user" | "assistant";
@@ -376,8 +377,9 @@ function ThinkingBlock({ text }: { text: string }) {
   }, [text]);
   return (
     <div className="space-y-1">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
+      <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
         Thinking
+        <InfoHint text="The model's reasoning preview — not the final answer, just its thought steps." />
       </div>
       <div
         ref={ref}
