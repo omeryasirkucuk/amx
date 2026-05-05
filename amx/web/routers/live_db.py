@@ -12,14 +12,22 @@ behind a ``POST`` so the SPA can show a spinner — the lightweight
 default browse experience.
 
 A small in-process LRU cache (:func:`_cached_connector`) keeps a
-:class:`DatabaseConnector` per ``(active_db_profile, host, database,
-catalog)`` tuple alive across requests so the SQLAlchemy connection
-pool isn't recreated on every navigation. Active-profile changes
-invalidate naturally because the cache key embeds the profile name.
+:class:`DatabaseConnector` per ``(profile, host, database, catalog)``
+tuple alive across requests so the SQLAlchemy connection pool isn't
+recreated on every navigation. Editing a profile yields a different
+cache key and therefore a fresh connector.
+
+Scope resolution: every browse endpoint accepts an explicit
+``?profile=&database=&catalog=`` triple via :func:`_connector_for_scope`,
+so multi-profile browsing in AMX Studio never mutates ``cfg.db``. When
+the caller omits ``profile`` we fall back to the legacy single-active
+path (``cfg.db`` / ``cfg.active_db_profile``) so older SPA builds and
+the CLI keep working unchanged. The fall-back path retires in PR-3.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -93,20 +101,24 @@ _require_catalog_for_3level = _require_scope_for_browse
 
 
 #: Per-key connector cache. Keys are tuples derived from
-#: :func:`_profile_key`; values are the SQLAlchemy-backed
-#: :class:`DatabaseConnector` instances. We cap the size manually so
-#: a long Studio session can't grow unbounded if the user keeps
-#: tweaking profile fields.
+#: :func:`_profile_key`, prefixed with the profile name so two profiles
+#: that point at the same ``host:db`` (e.g. ``prod_pg`` and
+#: ``prod_pg_readonly``) don't collide. Values are the SQLAlchemy-backed
+#: :class:`DatabaseConnector` instances. Cap is set generously enough
+#: that a multi-profile browse session doesn't thrash; SQLAlchemy's
+#: per-engine pool is small (5 connections by default) so 32 entries
+#: is still well within file-descriptor budget.
 _CONNECTOR_CACHE: dict[tuple, DatabaseConnector] = {}
-_CONNECTOR_CACHE_MAX = 8
+_CONNECTOR_CACHE_MAX = 32
 
 
 def _profile_key(db: DBConfig) -> tuple:
-    """Return the cache key for a :class:`DBConfig`.
+    """Return the cache key tail for a :class:`DBConfig`.
 
     Embeds every field that influences the SQLAlchemy URL or the
     catalog scope so a profile edit invalidates the connector
-    cache automatically.
+    cache automatically. Callers prepend the profile name to
+    disambiguate identically-configured profiles.
     """
     return (
         db.backend,
@@ -122,27 +134,103 @@ def _profile_key(db: DBConfig) -> tuple:
     )
 
 
-def _connector(cfg: AMXConfig) -> DatabaseConnector:
-    """Resolve the live connector for the active profile.
+def _evict_oldest() -> None:
+    """Drop the oldest cache entry and close its connector."""
+    if not _CONNECTOR_CACHE:
+        return
+    oldest_key = next(iter(_CONNECTOR_CACHE))
+    try:
+        _CONNECTOR_CACHE.pop(oldest_key).close()
+    except Exception:  # pragma: no cover - defensive
+        pass
 
-    Caches per-key so navigating the browse UI doesn't rebuild the
-    SQLAlchemy connection pool on every request. A profile edit
-    yields a different key and therefore a fresh connector.
+
+def _connector(cfg: AMXConfig) -> DatabaseConnector:
+    """Resolve the live connector for the active profile (legacy path).
+
+    Used only by the back-compat path when callers don't pass an
+    explicit ``?profile=`` query parameter. New code should reach for
+    :func:`_connector_for_scope` instead so it never mutates ``cfg.db``.
     """
-    key = _profile_key(cfg.db)
+    profile_name = (cfg.active_db_profile or "").strip() or "_active_"
+    key = (profile_name,) + _profile_key(cfg.db)
     cached = _CONNECTOR_CACHE.get(key)
     if cached is not None:
         return cached
     if len(_CONNECTOR_CACHE) >= _CONNECTOR_CACHE_MAX:
-        # Drop the oldest entry — Python 3.7+ dicts preserve insertion order.
-        oldest_key = next(iter(_CONNECTOR_CACHE))
-        try:
-            _CONNECTOR_CACHE.pop(oldest_key).close()
-        except Exception:  # pragma: no cover - defensive
-            pass
+        _evict_oldest()
     connector = DatabaseConnector(cfg.db)
     _CONNECTOR_CACHE[key] = connector
     return connector
+
+
+def _connector_for_scope(
+    cfg: AMXConfig,
+    profile: str,
+    *,
+    database: str | None = None,
+    catalog: str | None = None,
+) -> DatabaseConnector:
+    """Build a connector for an explicit ``(profile, database, catalog)``.
+
+    Looks up *profile* in ``cfg.db_profiles`` and produces a fresh
+    :class:`DBConfig` via :func:`dataclasses.replace`, overlaying
+    ``database`` / ``catalog`` when provided. The original profile
+    record is **never mutated**, which is the property the legacy
+    ``cfg.db.catalog = …; finally: restore`` pattern in
+    :func:`list_schemas` lacked — under concurrent requests the
+    restore could land after another request's overlay and corrupt
+    the shared dataclass. This helper has no such race.
+
+    Callers must validate that the requested ``database`` / ``catalog``
+    is appropriate for the backend (the route layer surfaces 400s);
+    this helper only enforces that *profile* exists.
+    """
+    profile_name = (profile or "").strip()
+    if not profile_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile query parameter is required.",
+        )
+    base = cfg.db_profiles.get(profile_name)
+    if base is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No DB profile named {profile_name!r}.",
+        )
+    overlay: dict[str, Any] = {}
+    if database is not None:
+        overlay["database"] = database
+    if catalog is not None:
+        overlay["catalog"] = catalog
+    scoped: DBConfig = replace(base, **overlay) if overlay else base
+    key = (profile_name,) + _profile_key(scoped)
+    cached = _CONNECTOR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if len(_CONNECTOR_CACHE) >= _CONNECTOR_CACHE_MAX:
+        _evict_oldest()
+    connector = DatabaseConnector(scoped)
+    _CONNECTOR_CACHE[key] = connector
+    return connector
+
+
+def _resolve_connector(
+    cfg: AMXConfig,
+    profile: str | None,
+    *,
+    database: str | None = None,
+    catalog: str | None = None,
+) -> DatabaseConnector:
+    """Pick scoped vs legacy connector based on ``profile`` presence.
+
+    PR-1 keeps the legacy path so the existing SPA build (which doesn't
+    yet send ``?profile=``) and the CLI's web bridge continue working.
+    PR-3 will remove the fall-back and require ``profile`` everywhere.
+    """
+    if (profile or "").strip():
+        return _connector_for_scope(cfg, profile, database=database, catalog=catalog)
+    return _connector(cfg)
 
 
 def _coerce_or_500(action: str, fn):
@@ -162,74 +250,145 @@ def _coerce_or_500(action: str, fn):
 
 
 @router.get("/catalogs")
-def list_catalogs(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+def list_catalogs(
+    profile: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
     """Return ``SHOW CATALOGS`` (or backend equivalent) for 3-level
     backends. 2-level backends return an empty list with
     ``supports_catalogs=false`` so the SPA can collapse the catalog
-    rail in the asset tree."""
-    db = _connector(cfg)
+    rail in the asset tree.
+
+    Pass ``?profile=NAME`` to list catalogs for any DB profile in the
+    config without flipping the active profile. Omitting the param
+    falls back to the legacy single-active path for back-compat.
+    """
+    db = _resolve_connector(cfg, profile)
     supports = _coerce_or_500("Probing catalog support", db.supports_catalogs)
     catalogs = _coerce_or_500("Listing catalogs", db.list_catalogs) if supports else []
+    # ``active_catalog`` is preserved for the legacy SPA's UI hint;
+    # callers passing ``?profile=`` get the resolved profile's pinned
+    # catalog (if any), which mirrors the legacy semantics scoped to
+    # that profile.
+    if (profile or "").strip():
+        base = cfg.db_profiles.get(profile.strip())
+        active_catalog = (getattr(base, "catalog", "") or "") if base else ""
+    else:
+        active_catalog = getattr(cfg.db, "catalog", "") or ""
     return {
         "supports_catalogs": bool(supports),
         "catalogs": list(catalogs),
-        "active_catalog": getattr(cfg.db, "catalog", "") or None,
+        "active_catalog": active_catalog or None,
     }
 
 
 @router.get("/databases")
-def list_databases(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+def list_databases(
+    profile: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
     """``SHOW DATABASES`` for 2-level backends. Returns an empty list
     on backends that don't expose a multi-database server (Databricks,
-    BigQuery — those use ``/api/live/catalogs`` instead)."""
-    db = _connector(cfg)
+    BigQuery — those use ``/api/live/catalogs`` instead).
+
+    Pass ``?profile=NAME`` to list databases for any DB profile.
+    """
+    db = _resolve_connector(cfg, profile)
     databases = _coerce_or_500("Listing databases", db.list_databases)
+    if (profile or "").strip():
+        base = cfg.db_profiles.get(profile.strip())
+        active_database = (getattr(base, "database", "") or "") if base else ""
+    else:
+        active_database = getattr(cfg.db, "database", "") or ""
     return {
         "databases": list(databases),
-        "active_database": getattr(cfg.db, "database", "") or None,
+        "active_database": active_database or None,
     }
 
 
 @router.get("/schemas")
 def list_schemas(
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """List schemas in the active catalog (or the one passed in
-    ``?catalog=…``).
+    """List schemas under the requested scope.
 
-    The current connector reads ``cfg.db.catalog`` for the listing
-    query, so when the caller passes a different catalog we
-    temporarily swap it on the dataclass — same pattern the
-    ``/ask`` agent's ``_scoped_catalog`` uses (see
-    ``amx/search/agent_tools.py``).
+    With ``?profile=NAME`` the route resolves a connector via
+    :func:`_connector_for_scope` and never mutates ``cfg.db`` — safe
+    under concurrent multi-profile browsing. Without ``profile`` we
+    fall back to the legacy single-active path, which still uses the
+    in-place catalog swap pattern (this is the racy path retiring in
+    PR-3).
+
+    Each schema is enriched with its current ``comment`` so the
+    Database page can show at a glance which schemas already have a
+    description. Comment lookups go through the SQLAlchemy inspector
+    per schema; failures are swallowed and the comment falls back to
+    ``""`` so a single broken row never breaks the whole list.
     """
-    db = _connector(cfg)
-    effective_catalog = (catalog or getattr(cfg.db, "catalog", "") or "").strip()
-    if not effective_catalog:
-        _require_scope_for_browse(cfg, db)
-    if catalog and catalog != getattr(cfg.db, "catalog", ""):
-        previous = cfg.db.catalog
-        try:
-            cfg.db.catalog = catalog
-            schemas = _coerce_or_500("Listing schemas", db.list_schemas)
-        finally:
-            cfg.db.catalog = previous
-    else:
+    if (profile or "").strip():
+        db = _connector_for_scope(cfg, profile, database=database, catalog=catalog)
         schemas = _coerce_or_500("Listing schemas", db.list_schemas)
-    return {"catalog": catalog or getattr(cfg.db, "catalog", "") or None, "schemas": list(schemas)}
+        effective_catalog = (catalog or "") or None
+    else:
+        db = _connector(cfg)
+        effective_catalog_str = (catalog or getattr(cfg.db, "catalog", "") or "").strip()
+        if not effective_catalog_str:
+            _require_scope_for_browse(cfg, db)
+        if catalog and catalog != getattr(cfg.db, "catalog", ""):
+            previous = cfg.db.catalog
+            try:
+                cfg.db.catalog = catalog
+                schemas = _coerce_or_500("Listing schemas", db.list_schemas)
+            finally:
+                cfg.db.catalog = previous
+        else:
+            schemas = _coerce_or_500("Listing schemas", db.list_schemas)
+        effective_catalog = catalog or getattr(cfg.db, "catalog", "") or None
+    items: list[dict[str, Any]] = []
+    for name in schemas:
+        try:
+            comment = db.get_schema_comment(name) or ""
+        except Exception:
+            comment = ""
+        items.append({"name": name, "comment": comment})
+    return {
+        "catalog": effective_catalog,
+        "schemas": [it["name"] for it in items],
+        "items": items,
+    }
 
 
 @router.get("/schemas/{schema}/assets")
-def list_assets(schema: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+def list_assets(
+    schema: str,
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
     """Return tables, views, and materialized views in *schema* in one
     payload — what the SPA expands when the user clicks a schema in
     the left tree.
+
+    With ``?profile=`` the connector is scoped per-request; without it
+    the legacy single-active path applies (retires in PR-3).
     """
-    db = _connector(cfg)
-    _require_scope_for_browse(cfg, db)
+    if (profile or "").strip():
+        db = _connector_for_scope(cfg, profile, database=database, catalog=catalog)
+    else:
+        db = _connector(cfg)
+        _require_scope_for_browse(cfg, db)
     raw = _coerce_or_500(f"Listing assets in {schema}", lambda: db.list_assets(schema))
-    items = [{"name": name, "kind": kind.value} for name, kind in raw]
+    items: list[dict[str, Any]] = []
+    for name, kind in raw:
+        try:
+            comment = db.get_table_comment(schema, name) or ""
+        except Exception:
+            comment = ""
+        items.append({"name": name, "kind": kind.value, "comment": comment})
     return {"schema": schema, "assets": items, "count": len(items)}
 
 
@@ -342,13 +501,18 @@ def activate_database(
 @router.get("/schemas/{schema}/volumes")
 def list_volumes(
     schema: str,
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Databricks Unity Catalog volumes in *schema*. Returns an empty
     list with a hint for backends without volume support so the SPA
     can grey out the "Volumes" tab."""
-    db = _connector(cfg)
+    if (profile or "").strip():
+        db = _connector_for_scope(cfg, profile, database=database, catalog=catalog)
+    else:
+        db = _connector(cfg)
     if not getattr(db.capabilities, "volumes", False):
         return {
             "schema": schema,
@@ -356,7 +520,7 @@ def list_volumes(
             "supports_volumes": False,
             "message": "This backend does not expose volumes.",
         }
-    if not (catalog or "").strip():
+    if not (profile or "").strip() and not (catalog or "").strip():
         _require_scope_for_browse(cfg, db)
     rows = _coerce_or_500(
         f"Listing volumes in {schema}",
@@ -380,6 +544,9 @@ def list_volumes(
 def list_columns(
     schema: str,
     table: str,
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Lightweight column metadata: name, dtype, nullable. No row
@@ -387,8 +554,11 @@ def list_columns(
     skeleton instantly and only kick off ``profile_table`` when the
     user clicks "Profile this table".
     """
-    db = _connector(cfg)
-    _require_scope_for_browse(cfg, db)
+    if (profile or "").strip():
+        db = _connector_for_scope(cfg, profile, database=database, catalog=catalog)
+    else:
+        db = _connector(cfg)
+        _require_scope_for_browse(cfg, db)
     cols = _coerce_or_500(
         f"Listing columns of {schema}.{table}",
         lambda: db.list_column_profiles(schema, table),
@@ -405,13 +575,19 @@ def list_columns(
 def table_snapshot(
     schema: str,
     table: str,
+    profile: str | None = Query(default=None),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Return the lightweight metadata snapshot the orchestrator uses:
     column names + dtypes + comments + table comment. No profiling.
     """
-    db = _connector(cfg)
-    _require_scope_for_browse(cfg, db)
+    if (profile or "").strip():
+        db = _connector_for_scope(cfg, profile, database=database, catalog=catalog)
+    else:
+        db = _connector(cfg)
+        _require_scope_for_browse(cfg, db)
     return _coerce_or_500(
         f"Reading metadata snapshot of {schema}.{table}",
         lambda: db.get_table_metadata_snapshot(schema, table),

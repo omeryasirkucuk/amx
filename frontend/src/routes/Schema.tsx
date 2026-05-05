@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { Database, FileText, Layers, Sparkles, Table as TableIcon } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
+import { cn } from "../lib/cn";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
@@ -197,18 +198,32 @@ export default function Schema() {
                 const isGenerating =
                   generateTableOne.isPending &&
                   generateTableOne.variables === asset.name;
+                const comment = asset.comment?.trim() ?? "";
                 return (
                   <li
                     key={asset.name}
-                    className="group flex items-center text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
+                    className="group flex items-start text-sm transition-colors duration-fast hover:bg-surface-subtle/50"
                   >
                     <Link
                       to={`/db/${profile}/${schema}/${asset.name}`}
-                      className="flex flex-1 items-center gap-3 px-5 py-2.5"
+                      className="flex flex-1 items-start gap-3 px-5 py-2.5"
                     >
-                      <AssetIcon kind={asset.kind} />
-                      <span className="font-medium text-ink">{asset.name}</span>
-                      <span className="ml-auto">
+                      <span className="mt-0.5">
+                        <AssetIcon kind={asset.kind} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium text-ink">{asset.name}</span>
+                        <span
+                          className={cn(
+                            "mt-0.5 line-clamp-2 block text-xs",
+                            comment ? "text-ink-muted" : "italic text-ink-dim/70",
+                          )}
+                          title={comment || undefined}
+                        >
+                          {comment || "no description yet"}
+                        </span>
+                      </span>
+                      <span className="mt-0.5">
                         <StatusPill tone={ASSET_TONE[asset.kind] ?? "neutral"}>
                           {asset.kind.replace("_", " ")}
                         </StatusPill>

@@ -83,14 +83,23 @@ export interface DatabasesResponse {
   active_database: string | null;
 }
 
+export interface SchemaItem {
+  name: string;
+  comment: string;
+}
 export interface SchemasResponse {
   catalog: string | null;
+  /** Legacy flat name list — kept for callers that don't need comments. */
   schemas: string[];
+  /** Enriched list with per-schema existing comment. */
+  items: SchemaItem[];
 }
 
 export interface AssetRow {
   name: string;
   kind: string;
+  /** The asset's current table/view COMMENT, or "" when none. */
+  comment: string;
 }
 export interface AssetsResponse {
   schema: string;
