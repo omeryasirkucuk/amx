@@ -41,6 +41,7 @@ Confidence rules:
 Reasoning must cite concrete evidence categories, not vague statements.
 Do not copy existing comments verbatim unless they are already the clearest available description.
 If a column cannot be resolved precisely, prefer a broader neutral description over hallucinating a specific one.
+Coverage rule (CRITICAL): emit one COLUMN block for EVERY column listed in the input — never skip a column. `DESCRIPTION_1` must be a non-empty sentence; if evidence is thin, write a brief generic best-effort description and mark `CONFIDENCE: LOW` rather than leaving it blank or omitting the block.
 
 For EACH column provide:
 1. {description_length_rule}
@@ -70,6 +71,51 @@ REASONING: The column participates in key relationships, has identifier-like sam
 """
 
 
+_DESCRIPTION_LENGTH_RULES: dict[str, str] = {
+    "brief": "A concise description (1-2 sentences).",
+    "detailed": (
+        "A DETAILED description (2-4 sentences). Cover the column's purpose, "
+        "the typical kind of values it stores, and any relationships to other "
+        "tables/keys/business processes that the evidence supports. Write "
+        "concrete, specific sentences — do not pad with filler. If evidence "
+        "for a 4-sentence answer is missing, write fewer sentences rather "
+        "than invent context."
+    ),
+    "comprehensive": (
+        "A COMPREHENSIVE description (1-2 short paragraphs, roughly 5-8 "
+        "sentences). Cover the column's purpose, typical values and ranges, "
+        "relationships to other tables/keys/business processes, common usage "
+        "patterns in analytical queries, and any caveats or edge cases that "
+        "the evidence reveals (NULL handling, distinct cardinality, dominant "
+        "values). Stay specific and grounded in the evidence — never invent "
+        "context. If evidence is thin, shorten the answer rather than pad."
+    ),
+    "exhaustive": (
+        "An EXHAUSTIVE reference-style description (multiple short "
+        "paragraphs). Document, in order: (1) semantic meaning and business "
+        "purpose; (2) typical values, ranges, and data-type considerations; "
+        "(3) relationships to other tables, foreign keys, and upstream/"
+        "downstream business processes; (4) common analytical and reporting "
+        "patterns this column participates in; (5) edge cases, NULL "
+        "semantics, and any data-quality observations visible in the "
+        "evidence. Use multiple short paragraphs for readability. Cite only "
+        "what the evidence supports — omit sections you cannot ground."
+    ),
+}
+
+
+# Per-column output budget used to size ``max_tokens`` for a batch. Scaled by
+# ``description_verbosity`` so a 100-column batch in `comprehensive`/`exhaustive`
+# mode doesn't truncate halfway through — truncation is the dominant cause of
+# empty/missing per-column outputs in long batches.
+_VERBOSITY_PER_COL_TOKEN_BUDGET: dict[str, int] = {
+    "brief": 150,
+    "detailed": 350,
+    "comprehensive": 800,
+    "exhaustive": 1600,
+}
+
+
 def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
@@ -77,10 +123,11 @@ def _build_system_prompt(
     """Build the system prompt dynamically for the requested number of alternatives.
 
     ``description_verbosity`` controls the LENGTH of generated descriptions:
-    * ``brief`` (default): 1 short sentence (current behavior).
-    * ``detailed``: 2–4 sentences covering purpose, typical values, and
-      relationships when supported by the provided evidence. Detailed
-      descriptions roughly double per-column output token cost.
+    * ``brief`` (default): 1-2 short sentences.
+    * ``detailed``: 2-4 sentences (≈2× brief output tokens).
+    * ``comprehensive``: 1-2 short paragraphs / ~5-8 sentences (≈4-6× brief).
+    * ``exhaustive``: multi-paragraph reference-style entry (≈8-12× brief);
+      best for documentation, not interactive runs.
     """
     n = max(1, min(5, n_alternatives))
     if n == 1:
@@ -95,17 +142,10 @@ def _build_system_prompt(
         table_desc_lines = "\n".join(
             f"TABLE_DESCRIPTION_{i}: <alternative table description>" for i in range(2, n + 1)
         )
-    if (description_verbosity or "brief").lower() == "detailed":
-        description_length_rule = (
-            "A DETAILED description (2-4 sentences). Cover the column's purpose, "
-            "the typical kind of values it stores, and any relationships to other "
-            "tables/keys/business processes that the evidence supports. Write "
-            "concrete, specific sentences — do not pad with filler. If evidence "
-            "for a 4-sentence answer is missing, write fewer sentences rather "
-            "than invent context."
-        )
-    else:
-        description_length_rule = "A concise description (1-2 sentences)."
+    level = (description_verbosity or "brief").lower()
+    description_length_rule = _DESCRIPTION_LENGTH_RULES.get(
+        level, _DESCRIPTION_LENGTH_RULES["brief"]
+    )
     return (
         _BASE_SYSTEM_PROMPT.format(
             description_length_rule=description_length_rule,
@@ -141,6 +181,10 @@ class ProfileAgent(BaseAgent):
     @property
     def _n_alternatives(self) -> int:
         return max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
+
+    def _per_col_token_budget(self) -> int:
+        level = (getattr(self.llm.cfg, "description_verbosity", "brief") or "brief").lower()
+        return _VERBOSITY_PER_COL_TOKEN_BUDGET.get(level, 150)
 
     @property
     def _prompt_detail(self) -> PromptDetail:
@@ -328,7 +372,7 @@ class ProfileAgent(BaseAgent):
             batch_ctx = self._ctx_with_columns(ctx, batch)
             msgs = self._build_messages(batch_ctx)
 
-            mt = max(self.llm.cfg.max_tokens, len(batch) * 150)
+            mt = max(self.llm.cfg.max_tokens, len(batch) * self._per_col_token_budget())
             requests.append(
                 BatchRequest(
                     custom_id=f"profile:{ctx.schema}:{ctx.table}:{idx}",
@@ -362,7 +406,12 @@ class ProfileAgent(BaseAgent):
         ]
 
     def _run_single_batch(
-        self, ctx: AgentContext, columns: list, *, batch_label: str = ""
+        self,
+        ctx: AgentContext,
+        columns: list,
+        *,
+        batch_label: str = "",
+        _is_retry: bool = False,
     ) -> list[MetadataSuggestion]:
         messages = self._build_messages(ctx)
         log.debug(
@@ -375,8 +424,11 @@ class ProfileAgent(BaseAgent):
         est = estimate_tokens(messages)
         label = f"Profile Agent {batch_label}" if batch_label else "Profile Agent"
 
-        # dynamically adjust max_tokens based on columns count if model defaults are too low
-        mt = max(self.llm.cfg.max_tokens, len(columns) * 150)
+        # Per-column output budget scales with description_verbosity so a long
+        # batch in `comprehensive`/`exhaustive` mode doesn't truncate halfway
+        # through — truncation is the dominant cause of empty/missing per-column
+        # outputs in dense batches.
+        mt = max(self.llm.cfg.max_tokens, len(columns) * self._per_col_token_budget())
 
         try:
             with step_spinner(label, token_estimate=est):
@@ -422,13 +474,87 @@ class ProfileAgent(BaseAgent):
             )
             return []
 
-        return apply_logprob_confidence(
+        suggestions = apply_logprob_confidence(
             suggestions,
             _logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
             response_text=response,
         )
+
+        if not _is_retry:
+            suggestions = self._retry_missing_columns(
+                ctx, columns, suggestions, batch_label=batch_label
+            )
+
+        return suggestions
+
+    def _retry_missing_columns(
+        self,
+        ctx: AgentContext,
+        requested_columns: list,
+        suggestions: list[MetadataSuggestion],
+        *,
+        batch_label: str = "",
+    ) -> list[MetadataSuggestion]:
+        """One-shot targeted retry for columns the model skipped or returned blank.
+
+        After the empty-description filter in the parser, a column is "missing"
+        if no per-column suggestion was emitted for it. We re-prompt with just
+        those columns; the smaller batch fits within ``max_tokens`` even if the
+        first response was truncated, which is the most common failure mode.
+        Bounded to a single retry so cost stays predictable on large tables.
+        """
+        requested_names = {
+            str(c.get("name", "")).strip()
+            for c in requested_columns
+            if str(c.get("name", "")).strip()
+        }
+        if not requested_names:
+            return suggestions
+        returned_names = {s.column for s in suggestions if s.column}
+        missing = sorted(requested_names - returned_names)
+        if not missing:
+            return suggestions
+
+        missing_set = set(missing)
+        missing_cols = [
+            c for c in requested_columns if str(c.get("name", "")).strip() in missing_set
+        ]
+        if not missing_cols:
+            return suggestions
+
+        preview = ", ".join(missing[:5]) + (" …" if len(missing) > 5 else "")
+        full_label = f"Profile Agent {batch_label}".strip()
+        log.info(
+            "%s: %d/%d columns missing or blank; retrying %s",
+            full_label,
+            len(missing),
+            len(requested_names),
+            preview,
+        )
+        self._record_diagnostic(
+            f"Retrying {len(missing)} column(s) skipped or returned blank by the "
+            f"model in {ctx.schema}.{ctx.table}: {preview}"
+        )
+        retry_label = f"{batch_label} retry".strip() or "retry"
+        try:
+            retry_ctx = self._ctx_with_columns(ctx, missing_cols)
+            retry_suggestions = self._run_single_batch(
+                retry_ctx,
+                missing_cols,
+                batch_label=retry_label,
+                _is_retry=True,
+            )
+        except Exception as exc:
+            log.warning("Retry batch failed: %s", exc)
+            return suggestions
+
+        # Drop retry's table-level suggestion; the original batch already produced one.
+        for s in retry_suggestions:
+            if s.column is not None:
+                suggestions.append(s)
+        return suggestions
 
     def _save_failed_response_for_debug(self, response: str, ctx: AgentContext) -> None:
         """Persist the model output when nothing could be parsed (inspect off-line)."""
@@ -630,7 +756,11 @@ class ProfileAgent(BaseAgent):
                 conf = Confidence.MEDIUM
                 reasoning = ""
             elif line.startswith("DESCRIPTION_"):
-                descs.append(line.split(":", 1)[1].strip())
+                # Drop blank `DESCRIPTION_n:` lines so the column isn't emitted
+                # with an empty suggestion; missing-column retry then refills it.
+                value = line.split(":", 1)[1].strip()
+                if value:
+                    descs.append(value)
             elif line.startswith("CONFIDENCE:"):
                 raw = line.split(":", 1)[1].strip().upper()
                 conf = Confidence[raw] if raw in Confidence.__members__ else Confidence.MEDIUM
@@ -638,7 +768,9 @@ class ProfileAgent(BaseAgent):
                 reasoning = line.split(":", 1)[1].strip()
             # Match TABLE_DESCRIPTION_1:, TABLE_DESCRIPTION_2:, TABLE_DESCRIPTION: (legacy)
             elif re.match(r"TABLE_DESCRIPTION(?:_\d+)?:", line):
-                table_descs.append(line.split(":", 1)[1].strip())
+                value = line.split(":", 1)[1].strip()
+                if value:
+                    table_descs.append(value)
             elif line.startswith("TABLE_CONFIDENCE:"):
                 tconf_str = line.split(":", 1)[1].strip().upper()
                 table_conf = (

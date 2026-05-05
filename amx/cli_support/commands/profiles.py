@@ -453,26 +453,42 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
     )
 
 
-_DESCRIPTION_VERBOSITY_LEVELS = ("brief", "detailed")
+_DESCRIPTION_VERBOSITY_LEVELS = ("brief", "detailed", "comprehensive", "exhaustive")
+
+_DESCRIPTION_VERBOSITY_COST_HINTS: dict[str, str] = {
+    "detailed": "per-column output tokens roughly double brief",
+    "comprehensive": "per-column output tokens are roughly 4-6× brief",
+    "exhaustive": "per-column output tokens are roughly 8-12× brief",
+}
 
 
 def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
     """Show or set the description-verbosity level for the active LLM profile.
 
-    Brief (default) = 1 short sentence per column. Detailed = 2-4 sentences
-    covering purpose + typical values + relationships, when supported by
-    evidence. Detailed roughly doubles per-column output token cost.
+    Levels (ascending length):
+      * brief         — 1-2 sentences per column.
+      * detailed      — 2-4 sentences covering purpose + values + relationships.
+      * comprehensive — 1-2 short paragraphs (~5-8 sentences) adding usage
+                        patterns and caveats.
+      * exhaustive    — multi-paragraph reference-style entry; best for
+                        documentation generation rather than interactive runs.
+    Each step up roughly multiplies per-column output token cost.
     """
+    levels_pipe = "|".join(_DESCRIPTION_VERBOSITY_LEVELS)
     if not rest:
         current = cfg.llm.description_verbosity or "brief"
         heading(f"Description verbosity: {current}")
         info(
-            "  brief    — 1 sentence per column (e.g. 'Sales document number.')\n"
-            "  detailed — 2-4 sentences covering purpose, typical values, "
+            "  brief         — 1-2 sentences per column (e.g. 'Sales document number.')\n"
+            "  detailed      — 2-4 sentences covering purpose, typical values, "
             "and relationships when supported by evidence.\n"
+            "  comprehensive — 1-2 short paragraphs (~5-8 sentences) adding "
+            "usage patterns and caveats.\n"
+            "  exhaustive    — multi-paragraph reference-style entry; best for "
+            "documentation generation, not interactive runs.\n"
             f"\nCurrent: [#22d3ee]{current}[/#22d3ee] for LLM profile "
             f"'{cfg.active_llm_profile or 'default'}'.\n"
-            "Run [#22d3ee]/description-verbosity brief|detailed[/#22d3ee] to change."
+            f"Run [#22d3ee]/description-verbosity {levels_pipe}[/#22d3ee] to change."
         )
         return
 
@@ -489,9 +505,10 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
         f"Description verbosity set to [#22d3ee]{level}[/#22d3ee] and saved "
         f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
     )
-    if level == "detailed":
+    cost_hint = _DESCRIPTION_VERBOSITY_COST_HINTS.get(level)
+    if cost_hint:
         info(
-            "Detailed mode: per-column output tokens roughly double. "
+            f"{level.capitalize()} mode: {cost_hint}. "
             "Tune AMX_LLM_TIMEOUT_SEC / column_batch_size if you hit timeouts."
         )
 

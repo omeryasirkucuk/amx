@@ -211,7 +211,7 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/description-verbosity",
         "llm",
-        "Show/set output description length (/description-verbosity [brief|detailed])",
+        "Show/set output description length (/description-verbosity [brief|detailed|comprehensive|exhaustive])",
     ),
     SlashCommand(
         "/n-alternatives",
