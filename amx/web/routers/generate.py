@@ -66,7 +66,7 @@ def _generate(llm: LLMProvider, prompt: str) -> str:
     # Some models still wrap their reply in a "Description: …" prefix.
     for prefix in ("Description:", "DESCRIPTION:", "description:"):
         if text.startswith(prefix):
-            text = text[len(prefix):].strip()
+            text = text[len(prefix) :].strip()
     if not text:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -120,8 +120,7 @@ def generate_schema(
     table_names = [name if isinstance(name, str) else name[0] for name in assets[:20]]
     table_summary = ", ".join(table_names) or "(no tables reachable)"
     prompt = (
-        f"Schema '{schema}' contains the tables: {table_summary}. "
-        "Describe the schema's purpose."
+        f"Schema '{schema}' contains the tables: {table_summary}. Describe the schema's purpose."
     )
     description = _generate(_llm(cfg), prompt)
     _write_or_400(
@@ -143,8 +142,7 @@ def generate_table(
     except Exception:
         cols = []
     col_summary = (
-        ", ".join(f"{c.name} ({c.dtype})" for c in cols[:25])
-        or "(no introspectable columns)"
+        ", ".join(f"{c.name} ({c.dtype})" for c in cols[:25]) or "(no introspectable columns)"
     )
     prompt = (
         f"Table '{schema}.{table}' has the columns: {col_summary}. "
@@ -153,9 +151,7 @@ def generate_table(
     description = _generate(_llm(cfg), prompt)
     _write_or_400(
         f"Setting table comment on {schema}.{table}",
-        lambda: db.set_table_comment(
-            schema, table, description, asset_kind=AssetKind.TABLE
-        ),
+        lambda: db.set_table_comment(schema, table, description, asset_kind=AssetKind.TABLE),
     )
     return {"description": description}
 
@@ -180,11 +176,7 @@ def generate_column(
         table_comment = (db.get_table_comment(schema, table) or "").strip()
     except Exception:
         table_comment = ""
-    sibling_summary = (
-        ", ".join(c.name for c in cols if c.name != column)[:200]
-        if cols
-        else ""
-    )
+    sibling_summary = ", ".join(c.name for c in cols if c.name != column)[:200] if cols else ""
     parts = [f"Column '{schema}.{table}.{column}' (type {dtype}, {nullable})."]
     if table_comment:
         parts.append(f"The table is: {table_comment}.")
