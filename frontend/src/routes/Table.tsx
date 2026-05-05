@@ -6,10 +6,10 @@ import { AlignLeft, Columns, Sparkles } from "lucide-react";
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
+import GenerateScopeDialog from "../components/GenerateScopeDialog";
 import StatusPill from "../components/StatusPill";
 import { useUi } from "../lib/store";
 import {
-  AlertDialog,
   Button,
   InlineEditText,
   Skeleton,
@@ -161,25 +161,15 @@ export default function Table() {
           />
         }
         actions={
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="md"
-              leadingIcon={<Sparkles size={14} />}
-              loading={generateTableOnly.isPending}
-              onClick={() => generateTableOnly.mutate()}
-            >
-              Just this table
-            </Button>
-            <Button
-              variant="primary"
-              size="md"
-              leadingIcon={<Sparkles size={14} />}
-              onClick={() => setConfirmGenerate(true)}
-            >
-              All columns (bulk run)
-            </Button>
-          </div>
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Sparkles size={14} />}
+            loading={generateTableOnly.isPending || generate.isPending}
+            onClick={() => setConfirmGenerate(true)}
+          >
+            Generate description
+          </Button>
         }
       />
 
@@ -288,15 +278,28 @@ export default function Table() {
         </Link>
       </div>
 
-      <AlertDialog
+      <GenerateScopeDialog
         open={confirmGenerate}
         onClose={() => setConfirmGenerate(false)}
-        onConfirm={() => generate.mutate()}
-        loading={generate.isPending}
-        tone="primary"
-        title={`Bulk run for ${schema}.${table}?`}
-        description="Spawns the full analyze.run worker — every column gets a generated description, the run is recorded in history, results land in the pending queue, and you'll be redirected to the run-detail page so you can watch the worker stream. Use 'Just this table' instead if you only want the table comment."
-        confirmLabel="Start bulk run"
+        title={`Generate description for ${schema}.${table}`}
+        description="Pick the scope. Just-the-table writes only the table's own COMMENT (one fast LLM call). Bulk run also generates a description for every column."
+        singleOption={{
+          label: "Just this table",
+          description: "Writes only the table's COMMENT. One LLM call, columns untouched.",
+          loading: generateTableOnly.isPending,
+          onClick: () => {
+            generateTableOnly.mutate(undefined, {
+              onSettled: () => setConfirmGenerate(false),
+            });
+          },
+        }}
+        bulkOption={{
+          label: "Whole table — every column too (bulk run)",
+          description:
+            "Spawns analyze.run for the full table; each column gets its own generated description, recorded in history.",
+          loading: generate.isPending,
+          onClick: () => generate.mutate(),
+        }}
       />
     </>
   );
