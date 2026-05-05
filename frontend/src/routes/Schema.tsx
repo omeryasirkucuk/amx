@@ -68,10 +68,12 @@ export default function Schema() {
     onSuccess: (result) => {
       setDraftDescription(result.description);
       toast.push({
-        title: "Schema description generated",
-        description: "Written straight to the live database.",
+        title: result.run_id
+          ? `Queued for review (Run #${result.run_id})`
+          : "Description queued for review",
+        description: "Approve from the Pending page to write it to the live database.",
         tone: "success",
-        duration: 2400,
+        duration: 3200,
       });
     },
     onError: (e: Error) =>
@@ -86,16 +88,16 @@ export default function Schema() {
     mutationFn: () =>
       api.submitRun({
         scope: { [schema]: [] },
-        apply: true,
+        apply: false,
         missing_only: false,
       }),
     onSuccess: (result) => {
       setConfirmGenerate(false);
       toast.push({
-        title: "Bulk run started",
-        description: `Streaming activity for every table under ${schema}…`,
+        title: "Bulk run queued for review",
+        description: `Streaming activity for every table under ${schema}; results land on the Pending page for approval.`,
         tone: "info",
-        duration: 2200,
+        duration: 2600,
       });
       navigate(`/runs/new-${result.job_id}`);
     },
