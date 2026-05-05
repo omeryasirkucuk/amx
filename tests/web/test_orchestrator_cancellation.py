@@ -1,5 +1,5 @@
 """Orchestrator cancellation-token plumbing — the additive patch
-that lets the visualizer's "Cancel job" button stop work between
+that lets AMX Studio's "Cancel job" button stop work between
 rows of an /apply loop without rolling back already-written
 COMMENTs.
 
@@ -95,7 +95,7 @@ def test_mid_loop_cancel_commits_partial_progress() -> None:
 
 
 def test_run_cancelled_is_a_runtime_error_subclass() -> None:
-    """The visualizer's job machinery catches ``RunCancelled``
+    """AMX Studio's job machinery catches ``RunCancelled``
     explicitly to differentiate it from generic exceptions. Pin
     the inheritance so a future rename doesn't silently break
     the error mapping."""

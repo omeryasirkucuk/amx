@@ -25,7 +25,7 @@ interface PaletteItem {
   keywords?: string;
 }
 
-// Cmd-K palette. The visualizer's primary navigation is route-based
+// Cmd-K palette. AMX Studio's primary navigation is route-based
 // but power users want one-key access; this component renders a
 // modal with fuzzy search across routes + dynamic actions
 // ("Open table sales.orders", "Switch DB to prod"). Mac users press

@@ -23,7 +23,7 @@ from amx.web.schemas import ContextResponse, HealthResponse, VersionResponse
 
 router = APIRouter(prefix="/api", tags=["system"])
 
-#: Bumped manually whenever the visualizer's REST contract changes in
+#: Bumped manually whenever AMX Studio's REST contract changes in
 #: a backwards-incompatible way. The SPA reads it on boot to decide
 #: whether to show an "AMX upgrade required" banner.
 WEB_API_VERSION = "v1"
@@ -31,7 +31,7 @@ WEB_API_VERSION = "v1"
 #: SQLite history-store schema marker. There's no migration-aware
 #: counter in :mod:`amx.storage.sqlite_store` today (migrations are
 #: tracked via column-existence checks), so we hard-code 1 and bump
-#: it the first time the visualizer needs to gate behaviour on a
+#: it the first time AMX Studio needs to gate behaviour on a
 #: schema-level migration.
 HISTORY_SCHEMA_VERSION = 1
 

@@ -27,7 +27,7 @@ interface Props {
 /**
  * Lightweight tooltip — hover/focus triggered, ESC dismisses. Not a
  * full Radix replacement (no collision detection, no portal) but
- * sufficient for the visualizer's TopBar pills, IconButton labels,
+ * sufficient for AMX Studio's TopBar pills, IconButton labels,
  * and inline help icons. Place tooltips on elements with positioning
  * context; the trigger gets `position: relative` automatically.
  */

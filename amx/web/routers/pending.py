@@ -1,7 +1,7 @@
 """Pending-review queue router.
 
 Wraps the on-disk pending file at ``~/.amx/pending_metadata.json``
-that :mod:`amx.pending_review` reads/writes. The visualizer's
+that :mod:`amx.pending_review` reads/writes. AMX Studio's
 ``/pending`` page lists, edits, deletes, clears, and applies the
 queue without the user touching the filesystem.
 
@@ -253,7 +253,7 @@ def apply_pending(
     thread = threading.Thread(
         target=_apply_worker,
         args=(cfg, job, ApplyRequest(results=None)),
-        name=f"amx-visualizer-pending-apply-{job.id}",
+        name=f"amx-studio-pending-apply-{job.id}",
         daemon=True,
     )
     thread.start()

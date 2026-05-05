@@ -1,6 +1,6 @@
 """Code scan + results routes.
 
-Wraps :func:`amx.codebase.analyzer.analyze_codebase` so the visualizer
+Wraps :func:`amx.codebase.analyzer.analyze_codebase` so AMX Studio
 can drive a code scan with the same shape the CLI's ``/code-scan``
 runs. Output is JSON: per-asset reference counts + a sample of file
 hits. Heavier than docs scan because the analyzer walks every source

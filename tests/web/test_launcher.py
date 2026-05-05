@@ -1,6 +1,6 @@
 """Launcher unit tests — port picking + import-failure handling.
 
-The full ``launch_visualize`` end-to-end (uvicorn boot + browser open
+The full ``launch_studio`` end-to-end (uvicorn boot + browser open
 + Ctrl-C) is exercised manually; here we only assert the pieces the
 unit suite can verify without spawning a real listener."""
 
@@ -14,7 +14,7 @@ from amx.web.launcher import _pick_port
 def test_pick_port_uses_preferred_when_free() -> None:
     """When the preferred port is free, the picker returns it
     verbatim — important so the URL printed to the console matches
-    the documented default in `/visualize --help`."""
+    the documented default in `/studio --help`."""
     chosen = _pick_port(0)  # 0 → OS-allocates a free ephemeral port
     assert isinstance(chosen, int)
     assert 1024 <= chosen <= 65535

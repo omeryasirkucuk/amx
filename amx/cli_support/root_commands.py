@@ -146,18 +146,18 @@ def register_root_commands(
         help="Skip auto-opening the browser (useful in headless environments).",
     )
     @click.pass_obj
-    def visualize(cfg: AMXConfig, port: int | None, no_open: bool) -> None:
-        """Launch the local web visualizer and open it in your browser."""
+    def studio(cfg: AMXConfig, port: int | None, no_open: bool) -> None:
+        """Launch AMX Studio (local web UI) and open it in your browser."""
         try:
-            from amx.web import launch_visualize
+            from amx.web import launch_studio
         except ImportError as exc:  # pragma: no cover - belt-and-braces; web extras are core
             error(
                 "FastAPI / uvicorn aren't available. "
-                "Run `pip install --upgrade amx-cli` to pull in the visualizer dependencies. "
+                "Run `pip install --upgrade amx-cli` to pull in the AMX Studio dependencies. "
                 f"Underlying import error: {exc}"
             )
             return
-        launch_visualize(cfg, port=port, open_browser=not no_open)
+        launch_studio(cfg, port=port, open_browser=not no_open)
 
     @main.group()
     def db() -> None:

@@ -148,7 +148,7 @@ def _record_and_queue(
             llm_profile=cfg.active_llm_profile,
             doc_profile=cfg.active_doc_profile or None,
             code_profile=cfg.active_code_profile or None,
-            settings={"trigger": "visualizer.generate.singleshot"},
+            settings={"trigger": "studio.generate.singleshot"},
         )
     except Exception as exc:  # pragma: no cover — DB-layer failure
         log.warning("Could not record generate run: %s", exc)

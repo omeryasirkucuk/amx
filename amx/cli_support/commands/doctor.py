@@ -363,7 +363,7 @@ def collect_doctor_checks(
     """Build the diagnostic check list without rendering it.
 
     Shared between the CLI's ``run_doctor`` (which renders the list as
-    a Rich report) and the visualizer's ``GET /api/doctor`` endpoint
+    a Rich report) and AMX Studio's ``GET /api/doctor`` endpoint
     (which JSON-encodes it). Splitting render from collect keeps the
     two surfaces in lock-step without each pulling in the other's
     Rich dependency.

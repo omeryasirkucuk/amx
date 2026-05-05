@@ -1,4 +1,4 @@
-"""Boot the local visualizer from the ``/visualize`` slash command.
+"""Boot AMX Studio from the ``/studio`` slash command.
 
 The launcher:
 
@@ -48,7 +48,7 @@ SHUTDOWN_TIMEOUT_SEC = 3.0
 def _pick_port(preferred: int) -> int:
     """Return ``preferred`` if free, otherwise an OS-allocated port.
 
-    Uses ``SO_REUSEADDR`` while probing so a recently-closed visualizer
+    Uses ``SO_REUSEADDR`` while probing so a recently-closed studio
     on the same port doesn't make us look elsewhere unnecessarily.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -63,14 +63,14 @@ def _pick_port(preferred: int) -> int:
         sock.close()
 
 
-def launch_visualize(
+def launch_studio(
     cfg: AMXConfig,
     *,
     port: int | None = None,
     open_browser: bool = True,
     block: bool = True,
 ) -> bool:
-    """Start the visualizer for one ``/visualize`` invocation.
+    """Start AMX Studio for one ``/studio`` invocation.
 
     Parameters
     ----------
@@ -80,7 +80,7 @@ def launch_visualize(
         the rest of the REPL session.
     port
         Override for the listen port. Tests pass an explicit port to
-        avoid colliding with a real running visualizer.
+        avoid colliding with a real running studio.
     open_browser
         Disable when running in a headless test or a remote SSH
         session where ``webbrowser.open_new_tab`` would error or
@@ -96,7 +96,7 @@ def launch_visualize(
     except ImportError:
         log.error(
             "FastAPI / uvicorn aren't installed. "
-            "Run `pip install --upgrade amx-cli` to pick up the visualizer extras."
+            "Run `pip install --upgrade amx-cli` to pick up the AMX Studio extras."
         )
         return False
 
@@ -119,18 +119,18 @@ def launch_visualize(
     # otherwise install its own and swallow Ctrl-C from the prompt.
     server.install_signal_handlers = lambda: None
 
-    server_thread = threading.Thread(target=server.run, name="amx-visualizer-uvicorn", daemon=True)
+    server_thread = threading.Thread(target=server.run, name="amx-studio-uvicorn", daemon=True)
     server_thread.start()
 
     started = _wait_for_startup(server, STARTUP_TIMEOUT_SEC)
     if not started:
         log.warning(
-            "Visualizer did not report startup within %.1fs; opening the browser anyway.",
+            "AMX Studio did not report startup within %.1fs; opening the browser anyway.",
             STARTUP_TIMEOUT_SEC,
         )
 
     print(  # user-facing — keep print, not log
-        f"AMX visualizer running → {url}\nPress Ctrl-C in this terminal to stop the visualizer."
+        f"AMX Studio running → {url}\nPress Ctrl-C in this terminal to stop AMX Studio."
     )
     if open_browser:
         try:
@@ -154,11 +154,11 @@ def launch_visualize(
         server_thread.join(timeout=SHUTDOWN_TIMEOUT_SEC)
         if server_thread.is_alive():  # pragma: no cover - graceful shutdown is best-effort
             log.warning(
-                "Visualizer uvicorn thread did not exit within %.1fs; leaving it as daemon.",
+                "AMX Studio uvicorn thread did not exit within %.1fs; leaving it as daemon.",
                 SHUTDOWN_TIMEOUT_SEC,
             )
         else:
-            print("AMX visualizer stopped.")
+            print("AMX Studio stopped.")
     return True
 
 

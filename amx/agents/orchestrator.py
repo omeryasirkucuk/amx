@@ -226,7 +226,7 @@ class ReviewResult:
 class RunCancelled(RuntimeError):
     """Signal raised when a run / apply / ask job has been cancelled.
 
-    The visualizer's ``/api/runs/{id}/cancel`` endpoint flips a
+    AMX Studio's ``/api/runs/{id}/cancel`` endpoint flips a
     :class:`threading.Event` plumbed through the orchestrator. Phase
     boundaries (per-table loop, post-profile, post-merge, write-back
     iteration) check the event and raise :class:`RunCancelled` so the
@@ -277,7 +277,7 @@ def apply_review_results_to_db(
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database.
 
-    ``cancel_token`` is checked between rows so the visualizer's
+    ``cancel_token`` is checked between rows so AMX Studio's
     "Cancel job" button stops the loop within one row latency. The
     transaction commits whatever was applied so far — matching the
     CLI's Ctrl-C behaviour, and avoiding a multi-minute rollback that
@@ -301,7 +301,7 @@ def apply_review_results_to_db(
         index = 0
         while index < total:
             if cancel_token is not None and cancel_token.is_set():
-                # User clicked "Cancel" in the visualizer (or the CLI
+                # User clicked "Cancel" in AMX Studio (or the CLI
                 # job orchestrator set the token). Commit whatever was
                 # already written and let the caller surface the
                 # cancellation as a job.cancelled event.

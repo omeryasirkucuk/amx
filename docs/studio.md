@@ -1,23 +1,27 @@
-# `/visualize` — Local AMX Web UI
+# `/studio` — Local AMX Web UI
 
-`amx /visualize` boots a local web UI on `127.0.0.1:<port>`,
-generates a one-shot bearer token, and opens your default browser
-at the token-protected URL. Press <kbd>Ctrl-C</kbd> in the parent
-terminal to stop the server.
+`amx /studio` boots **AMX Studio** on `127.0.0.1:<port>`, generates a
+one-shot bearer token, and opens your default browser at the
+token-protected URL. Press <kbd>Ctrl-C</kbd> in the parent terminal to
+stop the server.
+
+The CLI command is `amx /studio` (slash form, used inside the AMX REPL)
+and `amx studio` (Click subcommand, used from a fresh shell). Both
+flow through the same `amx.web.launch_studio` entry point.
 
 ## Quick start
 
 ```sh
 pip install --upgrade amx-cli
-amx /visualize
+amx /studio
 ```
 
 The default port is **47821**; pass `--port 8080` to pin a specific
 port, or `--no-open` to skip the auto-launch when running over SSH.
 
-The visualizer ships in `amx-cli`. There is **no separate package**
-to install and **no Node toolchain** required on your machine — the
-SPA bundle is vendored inside the wheel.
+AMX Studio ships in `amx-cli`. There is **no separate package** to
+install and **no Node toolchain** required on your machine — the SPA
+bundle is vendored inside the wheel.
 
 ## What's in the UI
 
@@ -46,27 +50,25 @@ choice persists in `localStorage`; "System" tracks
 
 ## Security model
 
-The visualizer binds **only** to `127.0.0.1` — never `0.0.0.0`. On
-top of loopback isolation, every API call carries a one-shot bearer
-token generated fresh per `/visualize` invocation. The SPA captures
-the token from `?t=…` on first load, stashes it in `localStorage`,
-and strips it from the URL bar so it doesn't end up in browser
-history.
+AMX Studio binds **only** to `127.0.0.1` — never `0.0.0.0`. On top
+of loopback isolation, every API call carries a one-shot bearer
+token generated fresh per `/studio` invocation. The SPA captures the
+token from `?t=…` on first load, stashes it in `localStorage`, and
+strips it from the URL bar so it doesn't end up in browser history.
 
 EventSource clients (the SSE streams behind `/ask` and `/apply`)
 re-attach the token via `?t=…` because browsers don't allow custom
 headers on `EventSource`.
 
 You can rotate the token by stopping the server (<kbd>Ctrl-C</kbd>)
-and re-running `amx /visualize`. Future versions will expose an
-in-UI "Rotate token" button under Settings.
+and re-running `amx /studio`. Future versions will expose an in-UI
+"Rotate token" button under Settings.
 
 ### What's NOT exposed
 
 - The JSON API does not include `/docs` or `/redoc`. The OpenAPI
-  surface stays internal so the visualizer doesn't accidentally
-  expose your AMX configuration to anyone who happened to grab the
-  token.
+  surface stays internal so AMX Studio doesn't accidentally expose
+  your AMX configuration to anyone who happened to grab the token.
 - Static asset routes (`/`, `/assets/*`) are unauthenticated by
   design — they only ship the SPA bundle, not data.
 - Secret fields (`password`, `access_token`, `api_key`) are masked
@@ -99,24 +101,24 @@ ephemeral fallback also fell over). Pass `--port` to force a
 different port:
 
 ```sh
-amx /visualize --port 8765
+amx /studio --port 8765
 ```
 
-### "Visualizer auth is not configured" on every request
+### "AMX Studio auth is not configured" on every request
 
 The token cookie / localStorage entry was wiped or never captured
-on this browser. Re-launch `amx /visualize` and let the launcher
+on this browser. Re-launch `amx /studio` and let the launcher
 re-open the browser with a fresh `?t=…` URL.
 
 ### `/ask` returns "Search catalog isn't initialised yet"
 
 Run `/sync` (or `/run` once) to populate the SQLite-backed catalog.
-The visualizer reuses the same store the CLI's `/ask` uses, so a
-sync from either side surfaces immediately.
+AMX Studio reuses the same store the CLI's `/ask` uses, so a sync
+from either side surfaces immediately.
 
 ### Pending queue is empty but I just approved rows
 
-The visualizer reads `~/.amx/pending_metadata.json`. Older AMX
+AMX Studio reads `~/.amx/pending_metadata.json`. Older AMX
 versions wrote it to a different path — confirm with
 `ls -la ~/.amx/pending_metadata.json`. If you're on shared-mode
 history, the queue is still local-only by design (write-back is
@@ -124,7 +126,7 @@ per-machine).
 
 ### Connection-test on a Databricks profile fails with TLS error
 
-The visualizer reuses `DatabaseConnector.test_connection_result()`,
+AMX Studio reuses `DatabaseConnector.test_connection_result()`,
 so the same TLS setup as the CLI applies. Set
 `tls_no_verify=true` (or pin a `tls_trusted_ca_file`) on the
 profile from Settings, then click Test again.
@@ -134,13 +136,14 @@ profile from Settings, then click Test again.
 The web UI source lives in two places:
 
 - `amx/web/` — FastAPI backend (Python).
-- `frontend/` — Vite + React + TypeScript + Tailwind project.
+- `frontend/` — Vite + React + TypeScript + Tailwind project (the
+  `amx-studio` npm package).
 
 To work on the SPA locally:
 
 ```sh
 # Terminal A — backend on :47821
-amx /visualize --no-open
+amx /studio --no-open
 
 # Terminal B — Vite dev server on :5173 with /api proxy
 cd frontend
@@ -159,6 +162,6 @@ git diff --quiet amx/web/static/   # CI requires this to be clean
 ```
 
 The `amx/web/static/` directory is committed (vendored) so a fresh
-clone running `pip install -e .` gets a working `/visualize`
-without Node. CI's `web-build-freshness` job re-runs the build and
-fails the PR if the committed dist is stale.
+clone running `pip install -e .` gets a working `/studio` without
+Node. CI's `web-build-freshness` job re-runs the build and fails
+the PR if the committed dist is stale.

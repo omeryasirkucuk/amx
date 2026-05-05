@@ -1,4 +1,4 @@
-// Token capture + storage for the visualizer SPA.
+// Token capture + storage for the AMX Studio SPA.
 //
 // Workflow:
 //   1. The launcher embeds the bearer token in the URL: /?t=<token>.
@@ -11,7 +11,7 @@
 // after capture, never console logs. PR-F's Settings page will ship a
 // "rotate token" button that re-runs this flow.
 
-const STORAGE_KEY = "amx.visualizer.token";
+const STORAGE_KEY = "amx.studio.token";
 
 export function captureTokenFromUrl(): string | null {
   try {

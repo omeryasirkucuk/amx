@@ -17,7 +17,7 @@ def _wait_for_status(client, job_id: str, target: str, timeout: float = 3.0) -> 
     while time.monotonic() < deadline:
         resp = client.get(
             f"/api/apply/{job_id}",
-            headers={"Authorization": "Bearer test-visualizer-token-abc123"},
+            headers={"Authorization": "Bearer test-studio-token-abc123"},
         )
         body = resp.json()
         if body["status"] == target:
@@ -227,7 +227,7 @@ def test_pending_apply_streams_via_apply_events_endpoint(
 
 
 def _drain_sse(client, path: str, auth_headers, timeout: float = 3.0):
-    url = f"{path}?t=test-visualizer-token-abc123"
+    url = f"{path}?t=test-studio-token-abc123"
     events: list[dict[str, Any]] = []
     with client.stream("GET", url, headers=auth_headers, timeout=timeout) as response:
         assert response.status_code == 200

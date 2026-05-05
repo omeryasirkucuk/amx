@@ -383,7 +383,7 @@ def run_tool_agent(
     their thinking text into the live thinking panel; for models that don't
     expose reasoning, it's a no-op.
 
-    The remaining kwargs are additive hooks the visualizer's
+    The remaining kwargs are additive hooks AMX Studio's
     ``/api/ask`` SSE endpoint plugs into:
 
     * ``on_thinking_delta(text)`` — invoked for every reasoning chunk
@@ -465,7 +465,7 @@ def _run_tool_loop(
     # streaming continuously even as we hop between LLM calls + tool calls.
     # The web layer ``on_thinking_delta`` runs alongside the CLI
     # ``display.update_thinking`` — both fire on the same chunk so /ask
-    # in the terminal and /visualize in the browser stay in sync.
+    # in the terminal and /studio in the browser stay in sync.
     def _forward_thinking(text: str) -> None:
         if display is not None:
             display.update_thinking(text)

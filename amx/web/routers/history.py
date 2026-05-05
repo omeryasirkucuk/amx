@@ -27,7 +27,7 @@ def _store() -> Any:
     """Return the active history-store singleton or 503 if absent.
 
     The store is initialized at CLI startup; if it isn't ready yet
-    (e.g. the user typed /visualize before any DB profile activated)
+    (e.g. the user typed /studio before any DB profile activated)
     we surface a clean 503 with a hint instead of a 500 on
     ``store.list_recent_runs``.
     """
@@ -120,7 +120,7 @@ def stats(
 ) -> dict[str, Any]:
     """Aggregate counters the SPA renders as dashboard cards.
 
-    ``command`` defaults to ``"analyze.run"`` so the visualizer's
+    ``command`` defaults to ``"analyze.run"`` so AMX Studio's
     "Total runs" / "Success rate" tiles match the Recent runs feed
     (which only shows /run invocations). Pass ``command=all`` to
     include every kind (analyze + ask + apply + …).

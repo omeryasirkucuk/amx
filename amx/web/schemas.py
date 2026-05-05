@@ -1,4 +1,4 @@
-"""Pydantic DTOs returned by the visualizer API.
+"""Pydantic DTOs returned by the AMX Studio API.
 
 These are intentionally thin — most read endpoints pass the matching
 :mod:`amx.config` / :mod:`amx.db.connector` / :mod:`amx.storage.sqlite_store`
@@ -30,7 +30,7 @@ class VersionResponse(BaseModel):
     schema_version: int = Field(
         ..., alias="schema", description="SQLite history-store schema version"
     )
-    web: str = Field("v1", description="Visualizer API version")
+    web: str = Field("v1", description="AMX Studio API version")
 
 
 class ContextResponse(BaseModel):

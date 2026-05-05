@@ -11,7 +11,7 @@ help:
 	@echo "  make lint         Run ruff check + format --check."
 	@echo "  make format       Apply ruff format."
 	@echo "  make type         Run mypy."
-	@echo "  make web-build    Build the /visualize SPA into amx/web/static/."
+	@echo "  make web-build    Build the /studio SPA into amx/web/static/."
 	@echo "  make web-dev      Run uvicorn + Vite dev server side-by-side."
 	@echo "  make web-clean    Wipe amx/web/static/ (will need rebuild)."
 
@@ -31,7 +31,7 @@ format:
 type:
 	mypy amx
 
-# ── /visualize web UI ────────────────────────────────────────────────
+# ── /studio web UI ───────────────────────────────────────────────────
 # The Vite project under frontend/ is repo-only — it never ships in
 # the wheel. ``web-build`` produces the dist files, drops them into
 # amx/web/static/, and that vendored output IS in the wheel.
@@ -48,9 +48,9 @@ web-dev:
 	  echo "frontend/ doesn't exist yet — PR-B initialises the Vite project."; \
 	  exit 1; \
 	fi
-	@echo "Run the visualizer in dev mode in two terminals:"
+	@echo "Run AMX Studio in dev mode in two terminals:"
 	@echo "  Terminal A: cd frontend && npm run dev"
-	@echo "  Terminal B: amx /visualize --no-open"
+	@echo "  Terminal B: amx /studio --no-open"
 	@echo "Then point your browser at http://127.0.0.1:5173/?t=<token>"
 	@echo "(Vite proxies /api/* to the uvicorn backend.)"
 

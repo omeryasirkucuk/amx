@@ -1,6 +1,6 @@
 """Run + apply trigger endpoints with SSE progress streams.
 
-PR-C wires the /visualize UI's "Run on this table" / "Apply approved"
+PR-C wires AMX Studio's "Run on this table" / "Apply approved"
 buttons to the existing :class:`amx.agents.orchestrator.Orchestrator`
 + :func:`apply_review_results_to_db`.
 
@@ -17,7 +17,7 @@ Job lifecycle:
 4. ``POST /api/runs/{id}/cancel`` flips the cancel token; the worker
    bails between rows and the SSE stream emits ``job.cancelled``.
 
-Per-job state is in-memory only — the visualizer is single-process
+Per-job state is in-memory only — AMX Studio is single-process
 and per-CLI-session. PR-D adds the ``/ask`` job kind on the same
 machinery.
 """
@@ -100,7 +100,7 @@ def submit_run(
     thread = threading.Thread(
         target=_run_worker,
         args=(cfg, job, body),
-        name=f"amx-visualizer-run-{job.id}",
+        name=f"amx-studio-run-{job.id}",
         daemon=True,
     )
     thread.start()
@@ -119,7 +119,7 @@ def submit_apply(
     thread = threading.Thread(
         target=_apply_worker,
         args=(cfg, job, body),
-        name=f"amx-visualizer-apply-{job.id}",
+        name=f"amx-studio-apply-{job.id}",
         daemon=True,
     )
     thread.start()
@@ -223,7 +223,7 @@ def _build_progress_callback(job: Job) -> Callable[[ReviewResult, str, int, int,
 
 
 def _run_worker(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
-    """Drive a headless ``/run`` from the visualizer.
+    """Drive a headless ``/run`` from AMX Studio.
 
     Mirrors the non-interactive subset of ``cli_support/commands/
     analyze_flow.py``: create a history row, build Orchestrator, walk
@@ -317,7 +317,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                 settings={
                     "missing_only": bool(body.missing_only),
                     "applied_flag": bool(body.apply),
-                    "trigger": "visualizer",
+                    "trigger": "studio",
                 },
             )
             emit(job.queue, "run.created", {"run_id": int(run_id)})

@@ -1,4 +1,4 @@
-"""Rich-uyumlu CLI renk sabitleri. Visualize SPA paleti ile aynı."""
+"""Rich-uyumlu CLI renk sabitleri. Studio SPA paleti ile aynı."""
 
 ACCENT = "#fb923c"
 ACCENT_INK = "#fed7aa"

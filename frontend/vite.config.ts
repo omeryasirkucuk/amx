@@ -2,11 +2,11 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 
-// Vite config for the AMX visualizer SPA.
+// Vite config for the AMX Studio SPA.
 // `outDir` points at amx/web/static so the wheel ships the dist
 // directly. `base: "/"` matches the FastAPI mount path. Dev server
 // proxies /api/* into the local uvicorn so `npm run dev` works
-// against `amx /visualize --no-open`.
+// against `amx /studio --no-open`.
 export default defineConfig({
   plugins: [react()],
   resolve: {

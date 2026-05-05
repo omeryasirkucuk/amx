@@ -1,4 +1,4 @@
-"""Per-job event bus that backs the visualizer's SSE streams.
+"""Per-job event bus that backs AMX Studio's SSE streams.
 
 The orchestrator + agents already accept ``on_progress`` /
 ``on_thinking`` callbacks (``Callable[..., None]``). The web layer wraps

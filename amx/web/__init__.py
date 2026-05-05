@@ -1,10 +1,10 @@
-"""Local web UI for AMX.
+"""Local web UI for AMX (AMX Studio).
 
-The ``/visualize`` slash command boots a FastAPI app at ``127.0.0.1:<port>``
+The ``/studio`` slash command boots a FastAPI app at ``127.0.0.1:<port>``
 in a daemon thread, opens the user's default browser at a token-protected
 URL, and stays alive until Ctrl-C in the parent CLI.
 
-The package layout follows the design in docs/visualize.md:
+The package layout follows the design in docs/studio.md:
 
 * :mod:`amx.web.server` — FastAPI app factory.
 * :mod:`amx.web.launcher` — uvicorn lifecycle + browser open + Ctrl-C handling.
@@ -14,12 +14,12 @@ The package layout follows the design in docs/visualize.md:
 * :mod:`amx.web.routers` — routers grouped by capability (system / live_db /
   catalog / runs / pending / apply / ask / history / comments / profiles).
 
-The single public entry point is :func:`launch_visualize`, which is what the
-``/visualize`` slash command in :mod:`amx.cli_support.session` invokes.
+The single public entry point is :func:`launch_studio`, which is what the
+``/studio`` slash command in :mod:`amx.cli_support.session` invokes.
 """
 
 from __future__ import annotations
 
-from amx.web.launcher import launch_visualize
+from amx.web.launcher import launch_studio
 
-__all__ = ["launch_visualize"]
+__all__ = ["launch_studio"]

@@ -36,7 +36,7 @@ def _require_scope_for_browse(cfg: AMXConfig, db: DatabaseConnector) -> None:
     r"""Block schema/table queries when the active profile is under-scoped.
 
     Two related cases the CLI's ``ensure_hierarchy_resolved`` covers and
-    the visualizer needs to mirror:
+    AMX Studio needs to mirror:
 
     1. **3-level backends (Databricks, BigQuery)**: when ``cfg.db.catalog``
        is empty the connector falls back to the SQLAlchemy inspector
@@ -95,7 +95,7 @@ _require_catalog_for_3level = _require_scope_for_browse
 #: Per-key connector cache. Keys are tuples derived from
 #: :func:`_profile_key`; values are the SQLAlchemy-backed
 #: :class:`DatabaseConnector` instances. We cap the size manually so
-#: a long visualizer session can't grow unbounded if the user keeps
+#: a long Studio session can't grow unbounded if the user keeps
 #: tweaking profile fields.
 _CONNECTOR_CACHE: dict[tuple, DatabaseConnector] = {}
 _CONNECTOR_CACHE_MAX = 8
@@ -249,7 +249,7 @@ def activate_catalog(
     ``amx/cli_support/catalog_picker.py``). Without a catalog set,
     3-level backends like Databricks fall back to ``SHOW TABLES
     FROM `None`.<schema>`` and crash. This endpoint persists the
-    pick so subsequent visualizer sessions remember it.
+    pick so subsequent Studio sessions remember it.
     """
     chosen = (name or "").strip()
     if not chosen:
@@ -271,7 +271,7 @@ def activate_catalog(
     persist = True if body is None else bool(body.persist)
     if persist:
         # Mirror the CLI flow: writes back to ~/.amx/config.yml so the
-        # picker doesn't have to run on every visualizer launch.
+        # picker doesn't have to run on every Studio launch.
         try:
             cfg.save()
         except Exception:

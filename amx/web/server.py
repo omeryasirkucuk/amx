@@ -1,9 +1,9 @@
-"""FastAPI app factory for the AMX visualizer.
+"""FastAPI app factory for AMX Studio.
 
-The app is built once per ``/visualize`` invocation. Tests construct
+The app is built once per ``/studio`` invocation. Tests construct
 their own app via :func:`create_app`, supplying an in-memory
 :class:`AMXConfig` and a fresh token. The launcher
-(:func:`amx.web.launcher.launch_visualize`) builds one for the real
+(:func:`amx.web.launcher.launch_studio`) builds one for the real
 session, mounts the static SPA bundle, and hands it to uvicorn.
 """
 
@@ -54,7 +54,7 @@ def create_app(
     jobs: JobRegistry | None = None,
     static_root: Path | None = None,
 ) -> FastAPI:
-    """Build a fully wired visualizer FastAPI app.
+    """Build a fully wired AMX Studio FastAPI app.
 
     Parameters
     ----------
@@ -75,7 +75,7 @@ def create_app(
         with stub files.
     """
     app = FastAPI(
-        title="AMX Visualizer",
+        title="AMX Studio",
         version=AMX_VERSION,
         docs_url=None,  # disable /docs and /redoc — local-only UI doesn't
         redoc_url=None,  # need OpenAPI exposed; SPA fetches /api/* directly.
@@ -148,7 +148,7 @@ _PLACEHOLDER_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AMX Visualizer</title>
+<title>AMX Studio</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { color-scheme: light dark; }
@@ -164,8 +164,8 @@ _PLACEHOLDER_HTML = """<!doctype html>
 </head>
 <body>
   <div class="card">
-    <h1>AMX Visualizer — coming soon</h1>
-    <p>The local visualizer backend is running. The frontend bundle has not been built yet.</p>
+    <h1>AMX Studio — coming soon</h1>
+    <p>The AMX Studio backend is running. The frontend bundle has not been built yet.</p>
     <p>Until the SPA lands you can still hit the JSON API directly, e.g.
        <code>curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:&lt;port&gt;/api/health</code>.</p>
   </div>

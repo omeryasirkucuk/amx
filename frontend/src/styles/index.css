@@ -2,10 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* AMX visualizer design tokens — dark-only.
+/* AMX Studio design tokens — dark-only.
    Warm-neutral surfaces + amber accent. CSS custom properties power
    both Tailwind classes (theme.extend.colors) and a small set of
-   ad-hoc utilities. The visualizer is intentionally single-theme so
+   ad-hoc utilities. AMX Studio is intentionally single-theme so
    the palette can be tuned without juggling two contrast budgets. */
 :root {
   color-scheme: dark;
