@@ -112,6 +112,14 @@ export default function Ask() {
       }),
   });
 
+  // The chat panel is "empty" when the user has no loaded session AND
+  // no seeded turns — i.e. they're already looking at the blank state
+  // that "+ New" would create. In that case the button is redundant,
+  // so we render it dimmer. Once a session is loaded (or the first
+  // question gets a session id assigned), the button regains weight.
+  const chatIsEmpty =
+    selectedSessionId == null && (seedTurns == null || seedTurns.length === 0);
+
   return (
     <>
       <PageHeader title="Ask" breadcrumbs={[{ label: "Ask" }]} />
@@ -124,7 +132,19 @@ export default function Ask() {
               <button
                 type="button"
                 onClick={startNewSession}
-                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-medium text-ink-muted transition-colors duration-fast hover:border-accent/40 hover:text-ink"
+                disabled={chatIsEmpty}
+                aria-disabled={chatIsEmpty}
+                title={
+                  chatIsEmpty
+                    ? "You're already on a new session"
+                    : "Start a fresh session"
+                }
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors duration-fast",
+                  chatIsEmpty
+                    ? "cursor-default border-transparent bg-transparent text-ink-dim/60"
+                    : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-ink",
+                )}
               >
                 <Plus size={12} /> New
               </button>
