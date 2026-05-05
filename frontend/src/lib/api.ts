@@ -238,6 +238,23 @@ export const api = {
     apiFetch<{ enabled: boolean }>("/api/admin/history-store/disable", {
       method: "POST",
     }),
+  generateDatabaseDescription: () =>
+    apiFetch<{ description: string }>("/api/generate/database", { method: "POST" }),
+  generateSchemaDescription: (schema: string) =>
+    apiFetch<{ description: string }>(
+      `/api/generate/schema/${encodeURIComponent(schema)}`,
+      { method: "POST" },
+    ),
+  generateTableDescription: (schema: string, table: string) =>
+    apiFetch<{ description: string }>(
+      `/api/generate/table/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`,
+      { method: "POST" },
+    ),
+  generateColumnDescription: (schema: string, table: string, column: string) =>
+    apiFetch<{ description: string }>(
+      `/api/generate/column/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/${encodeURIComponent(column)}`,
+      { method: "POST" },
+    ),
   setSchemaComment: (schema: string, comment: string) =>
     apiFetch<{ schema: string; comment: string }>(
       `/api/comments/schemas/${encodeURIComponent(schema)}`,

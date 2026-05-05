@@ -1,13 +1,13 @@
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { Database as DatabaseIcon, FolderTree } from "lucide-react";
+import { Database as DatabaseIcon, FolderTree, Sparkles } from "lucide-react";
 
 import { ApiError, api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
-import { InlineEditText, Skeleton, useToast } from "../components/ui";
+import { Button, InlineEditText, Skeleton, useToast } from "../components/ui";
 
 /**
  * Database / catalog landing page. Drives the same comment-edit
@@ -63,6 +63,26 @@ export default function Database() {
     });
   }
 
+  const generate = useMutation({
+    mutationFn: () => api.generateDatabaseDescription(),
+    onSuccess: (result) => {
+      setDraftDescription(result.description);
+      qc.invalidateQueries({ queryKey: ["context"] });
+      toast.push({
+        title: "Description generated",
+        description: "Written straight to the live database.",
+        tone: "success",
+        duration: 2400,
+      });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Generation failed",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
   const needsScope =
     schemas.error instanceof ApiError &&
     schemas.error.status === 412 &&
@@ -85,10 +105,21 @@ export default function Database() {
                 onSave={saveDescription}
                 multiline
                 italicEmpty
-                emptyLabel={`No ${supportsCatalog ? "catalog" : "database"} description yet — click to add one.`}
+                emptyLabel={`No ${supportsCatalog ? "catalog" : "database"} description yet — click to add one or use Generate.`}
               />
             </div>
           </>
+        }
+        actions={
+          <Button
+            variant="primary"
+            size="md"
+            leadingIcon={<Sparkles size={14} />}
+            loading={generate.isPending}
+            onClick={() => generate.mutate()}
+          >
+            Generate description
+          </Button>
         }
       />
 
