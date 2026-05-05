@@ -44,6 +44,32 @@ def test_add_profile_refuses_when_name_already_exists() -> None:
         wizard.assert_not_called()
 
 
+def test_add_profile_aborts_when_user_escs_on_name_prompt() -> None:
+    """Regression: pre-0.12.9 ``ask`` swallowed Esc and returned ``""``,
+    so the wizard kept walking with ``name=""``, called the engine
+    picker, and on a second Esc happily saved a profile with an empty
+    name AND empty backend (``Profile saved and activated: []``). The
+    fix is to let ``PromptCancelled`` propagate so the dispatcher
+    aborts the whole command before any save happens.
+    """
+    from amx.utils.console import PromptCancelled
+
+    cfg = AMXConfig()
+    cfg.db_profiles = {}
+    cfg.active_db_profile = None
+
+    with (
+        patch("amx.cli_support.commands.db.ask", side_effect=PromptCancelled()),
+        patch("amx.cli_support.commands.db.interactive_db_block") as wizard,
+    ):
+        with pytest.raises(PromptCancelled):
+            cmd_add_profile(cfg, [])
+        # The engine picker must never run, and nothing must be saved.
+        wizard.assert_not_called()
+    assert cfg.db_profiles == {}
+    assert cfg.active_db_profile is None
+
+
 def test_edit_profile_unknown_name_errors_without_wizard() -> None:
     cfg = AMXConfig()
     cfg.db_profiles = {"foo": DBConfig(backend="postgresql", host="db.example.com")}
