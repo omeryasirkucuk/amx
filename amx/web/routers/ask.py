@@ -122,7 +122,36 @@ def submit_ask(
     jobs: JobRegistry = Depends(get_jobs),
 ) -> dict[str, Any]:
     """Spawn an ask worker. Returns a job id the SPA subscribes to,
-    plus the session id (existing or newly minted)."""
+    plus the session id (existing or newly minted).
+
+    Pre-flight: validates the LLM config so a misconfigured profile
+    fails fast with a helpful 412 instead of stranding the SPA on a
+    "Reasoning…" spinner that never resolves (the worker thread
+    couldn't open an SSE stream with a clean error event before this
+    check existed).
+    """
+    if not cfg.llm or not (cfg.llm.provider or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "message": (
+                    "No active LLM profile. Open Settings → LLM and pick "
+                    "a provider before asking a question."
+                ),
+                "hint": "configure-llm",
+            },
+        )
+    if not (cfg.llm.model or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "message": (
+                    "Active LLM profile has no model selected. Open "
+                    "Settings → LLM and pick a model."
+                ),
+                "hint": "configure-llm",
+            },
+        )
     db_profile = (body.db_profile or cfg.active_db_profile or "default").strip()
     llm_profile = (cfg.active_llm_profile or "default").strip()
 
@@ -378,10 +407,36 @@ def _ask_worker(
         job.error = "Search catalog isn't initialised yet — run /search sync first."
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
-        emit_terminal(job.queue, "job.failed", {"error": job.error})
+        emit_terminal(
+            job.queue,
+            "job.failed",
+            {"error": job.error, "hint": "sync-catalog"},
+        )
         return
 
-    llm = LLMProvider(cfg.llm)
+    # Open the LLM provider INSIDE the try-fail path so a misconfigured
+    # provider (missing API key, bad model id, network down to the LLM
+    # endpoint) results in a clean ``job.failed`` SSE event instead of
+    # a thread crash that leaves the SPA hanging on "Reasoning…". The
+    # ``hint=configure-llm`` is what the SPA's AskChat reads to show
+    # a "Check Settings → LLM" CTA instead of the raw exception text.
+    try:
+        llm = LLMProvider(cfg.llm)
+    except Exception as exc:
+        job.status = "failed"
+        job.error = (
+            f"Couldn't initialise LLM ({cfg.llm.provider or 'unknown'}/"
+            f"{cfg.llm.model or 'unknown'}): {exc.__class__.__name__}: {exc}. "
+            "Check Settings → LLM (API key, model id, network)."
+        )
+        job.ended_at = time.time()
+        emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        emit_terminal(
+            job.queue,
+            "job.failed",
+            {"error": job.error, "hint": "configure-llm"},
+        )
+        return
 
     # ``on_thinking_delta`` from tool_agent forwards CUMULATIVE reasoning
     # text (the CLI display takes a tail of it). The browser builds the
@@ -431,10 +486,46 @@ def _ask_worker(
         return
     except Exception as exc:
         job.status = "failed"
-        job.error = str(exc)
+        # Best-effort classification: surface a configure-llm hint when
+        # the failure smells like an LLM-side problem (auth, network,
+        # rate limit, model not found). The SPA uses the hint to show
+        # a "Check Settings → LLM" CTA. Anything else stays generic.
+        message = str(exc) or exc.__class__.__name__
+        lower = message.lower()
+        llm_signals = (
+            "api key",
+            "401",
+            "403",
+            "unauthorized",
+            "authentication",
+            "rate limit",
+            "rate_limit",
+            "model not found",
+            "model_not_found",
+            "unknown model",
+            "connection refused",
+            "connect timeout",
+            "read timeout",
+            "name or service not known",
+            "could not resolve",
+            "nodename nor servname",
+            "litellm",
+            "openai",
+            "anthropic",
+            "openrouter",
+        )
+        hint = "configure-llm" if any(token in lower for token in llm_signals) else None
+        if hint == "configure-llm":
+            message = (
+                f"LLM call failed: {message}. Check Settings → LLM (API key, model id, network)."
+            )
+        job.error = message
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
-        emit_terminal(job.queue, "job.failed", {"error": job.error})
+        payload: dict[str, Any] = {"error": job.error}
+        if hint:
+            payload["hint"] = hint
+        emit_terminal(job.queue, "job.failed", payload)
         return
 
     # Persist the assistant's reply (best-effort). Note the keyword
