@@ -208,11 +208,14 @@ def test_apply_sse_stream_emits_json_events(client, auth_headers, monkeypatch) -
     assert types[-1] == "job.done"
 
 
-def test_run_endpoint_fails_fast_without_llm(client, auth_headers) -> None:
-    """``/api/runs`` is wired to the real Orchestrator now. The fixture
-    cfg has no LLM configured, so the worker must fail with a clear
-    ``No active LLM profile`` error before touching the DB or running
-    any agent. Pin the early-exit contract."""
+def test_run_endpoint_fails_fast_without_llm(client, auth_headers, cfg) -> None:
+    """``/api/runs`` is wired to the real Orchestrator now. Strip the
+    LLM the conftest fixture seeds (added in fix/ask-llm-error-handling
+    so /api/ask's pre-flight check has something to greenlight) and
+    confirm the run worker still fails with a clear LLM-missing error
+    before touching the DB or running any agent."""
+    cfg.llm.provider = ""
+    cfg.llm.model = ""
     response = client.post("/api/runs", headers=auth_headers, json={"scope": {}})
     assert response.status_code == 200
     job_id = response.json()["job_id"]
