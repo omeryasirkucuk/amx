@@ -35,13 +35,12 @@ class TopLevelAmxSurfaceTests(unittest.TestCase):
 
         self.assertEqual(
             set(amx.__all__),
-            {"AMXApplication", "AbstractEntity", "UniversalMetadataAdapter", "__version__", "init"},
+            {"AMXApplication", "AbstractEntity", "UniversalMetadataAdapter", "__version__"},
         )
 
     def test_lazy_attributes_resolve(self) -> None:
         import amx
 
-        self.assertTrue(callable(amx.init))
         self.assertTrue(hasattr(amx.AMXApplication, "load"))
         self.assertTrue(amx.AbstractEntity.__name__ == "AbstractEntity")
         self.assertTrue(amx.UniversalMetadataAdapter.__name__ == "UniversalMetadataAdapter")
@@ -65,12 +64,9 @@ class CoreSurfaceTests(unittest.TestCase):
         {
             "AMXApplication",
             "AbstractEntity",
-            "AskToolbox",
-            "LoopBasedAskAgent",
+            "InferenceResult",
             "StateManager",
-            "ToolAskResponse",
             "UniversalMetadataAdapter",
-            "infer_table_metadata",
         }
     )
 
@@ -132,14 +128,7 @@ class CoreModuleAllListsTests(unittest.TestCase):
 
     EXPECTED: dict[str, set[str]] = {
         "amx.core.application": {"AMXApplication"},
-        "amx.core.ask_agent": {
-            "AskToolbox",
-            "LoopBasedAskAgent",
-            "ReasoningTraceStep",
-            "ToolAskResponse",
-            "ToolResult",
-        },
-        "amx.core.inference": {"infer_table_metadata"},
+        "amx.core.inference": {"InferenceResult"},
         "amx.core.metadata": {
             "AbstractEntity",
             "LexicalSignal",

@@ -10,7 +10,6 @@ import pytest
 
 from amx.agents.base import Confidence, MetadataSuggestion
 from amx.config import AMXConfig
-from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent
 from amx.db.connector import AssetKind, ColumnProfile, TableProfile
 from amx.search.agent import SearchPlan, SearchPolicy
 from amx.search.catalog import SearchCatalog
@@ -1111,25 +1110,6 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertTrue(
             any(step["step"] == "schema_explorer" for step in answer.details["thought_trace"])
         )
-
-    def test_headless_ask_inventory_uses_schema_explorer_strategy(self) -> None:
-        self.catalog.sync_table_profile(
-            db_profile="default",
-            db_backend="postgresql",
-            database_name="SAP",
-            profile=self._profile(),
-            query_usage={},
-        )
-        cfg = self._search_cfg()
-        cfg.current_schema = "sap"
-        response = LoopBasedAskAgent(AskToolbox(cfg, self.catalog)).answer(
-            "How many columns per table?"
-        )
-
-        self.assertEqual(response.strategy, "inventory")
-        self.assertEqual(response.tool_results[0].tool, "SchemaExplorer")
-        self.assertIn("| sap | vbak | 3 | 10 |", response.answer)
-        self.assertNotIn("Best grounded match", response.answer)
 
     def test_table_concept_question_reroutes_from_inventory_to_semantic_table_search(self) -> None:
         self.catalog.sync_table_profile(
