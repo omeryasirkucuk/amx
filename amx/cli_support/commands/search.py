@@ -538,11 +538,59 @@ def _run_search_ask_body(
             model=cfg.llm.model,
         )
         started_display = True
+    # Ctrl-C cancellation: install a temporary SIGINT handler that sets
+    # a threading.Event the agent loop polls between iterations. Without
+    # this, a long-running LLM call (or a chained tool call sequence)
+    # had to drain to completion before Python's default KeyboardInterrupt
+    # path could reach the user — they reported "Ctrl-C can't end the
+    # ask session". The handler ALSO raises KeyboardInterrupt the second
+    # time it fires so a stuck HTTP socket eventually unblocks; the
+    # first press just sets the flag for a graceful between-iteration
+    # exit. Restored in ``finally`` so the REPL's own SIGINT handling
+    # (return-to-prompt on Ctrl-C) takes over after the ask returns.
+    import signal as _signal
+    import threading as _threading
+
+    cancel_token = _threading.Event()
+    interrupt_count = {"n": 0}
+    previous_handler = _signal.getsignal(_signal.SIGINT)
+
+    def _on_sigint(_signum, _frame):
+        interrupt_count["n"] += 1
+        cancel_token.set()
+        # First press: set the flag and let the agent loop exit cleanly.
+        # Second press: raise so any blocked I/O (e.g. mid-stream HTTP
+        # read that ignored the flag) terminates immediately.
+        if interrupt_count["n"] >= 2:
+            raise KeyboardInterrupt
+
     try:
-        answer = svc.ask(question_text)
+        _signal.signal(_signal.SIGINT, _on_sigint)
+    except Exception:
+        # Worker threads / Windows compat: fall through to default.
+        previous_handler = None
+    try:
+        answer = svc.ask(question_text, cancel_token=cancel_token)
+    except KeyboardInterrupt:
+        from amx.search.catalog import SearchAnswer
+
+        answer = SearchAnswer(
+            intent="cancelled",
+            question=question_text,
+            rows=[],
+            confidence="low",
+            summary="Cancelled by user.",
+            provenance=["user_cancelled"],
+            details={"reason": "cancelled_by_user"},
+        )
     finally:
         if started_display:
             display.stop()
+        if previous_handler is not None:
+            try:
+                _signal.signal(_signal.SIGINT, previous_handler)
+            except Exception:
+                pass
     hs = history_store()
     run_id: int | None = None
     if hs is not None:
