@@ -242,6 +242,18 @@ export default function Ask() {
           seedTurns={seedTurns}
           seedToken={seedToken}
           onSessionAssigned={handleSessionAssigned}
+          onResumeStale={() => {
+            // The AskChat detected a stored "in-flight" job that has
+            // already terminated (worker finished while the user was
+            // away, or the CLI process restarted). Pull the session
+            // detail again so the assistant turn the worker just
+            // persisted lands in the chat history.
+            if (selectedSessionId != null) {
+              void openSession(selectedSessionId);
+            } else {
+              queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+            }
+          }}
         />
       </div>
     </>
