@@ -15,6 +15,7 @@ must use :class:`SearchService`.
 from __future__ import annotations
 
 import contextlib
+import threading
 from typing import Any
 
 from amx.config import AMXConfig
@@ -92,8 +93,19 @@ class SearchService:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def ask(self, question: str) -> SearchAnswer:
-        return self._agent.ask(question)
+    def ask(
+        self,
+        question: str,
+        *,
+        cancel_token: threading.Event | None = None,
+    ) -> SearchAnswer:
+        """Run one /ask turn.
+
+        ``cancel_token`` lets the CLI's Ctrl-C handler signal a clean
+        cancellation between agent-loop iterations. Forwarded to
+        :meth:`SearchAgent.ask`.
+        """
+        return self._agent.ask(question, cancel_token=cancel_token)
 
     def explain(self, question: str) -> dict[str, Any]:
         answer = self.ask(question)

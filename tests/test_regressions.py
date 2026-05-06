@@ -3085,7 +3085,7 @@ class RequestIdWiringTests(unittest.TestCase):
                 "show_confidence": "false",
             }
 
-            def ask(self, question_text: str):
+            def ask(self, question_text: str, **_kwargs):
                 # The whole point: at this exact moment, the request
                 # id must be set, so any log line emitted from inside
                 # SearchAgent / SearchCatalog / LLMProvider carries it.
@@ -3128,7 +3128,7 @@ class RequestIdWiringTests(unittest.TestCase):
         class FailingService:
             settings: dict[str, str] = {}
 
-            def ask(self, _q: str):
+            def ask(self, _q: str, **_kwargs):
                 raise RuntimeError("svc boom")
 
         cfg = AMXConfig()
