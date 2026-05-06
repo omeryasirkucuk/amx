@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Send, Sparkles, Wrench } from "lucide-react";
+import { Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
+import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
-import { apiFetch } from "../lib/api";
+import { apiFetch, ApiError } from "../lib/api";
 import { useUi } from "../lib/store";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
@@ -60,6 +61,7 @@ export default function AskChat({
   const [activeJob, setActiveJob] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitErrorHint, setSubmitErrorHint] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
 
@@ -80,6 +82,7 @@ export default function AskChat({
     setTurns(seedTurns ?? []);
     setActiveJob(null);
     setSubmitError(null);
+    setSubmitErrorHint(null);
     // Drop the "_new_" scratch entry when the parent transitions us
     // to a saved session — the saved session has its own key now.
     if (selectedSessionId != null) {
@@ -94,7 +97,7 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, finalAnswer, toolCalls, finalMeta } = useMemo(() => {
+  const { thinking, finalAnswer, toolCalls, finalMeta, jobFailure } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
@@ -108,6 +111,7 @@ export default function AskChat({
       focusProfile?: string | null;
       totalLatencyMs?: number;
     } = {};
+    let failure: { message: string; hint?: string } | null = null;
     for (const event of events) {
       if (event.type === "thinking.delta" && typeof event.text === "string") {
         thinkingChunks.push(event.text);
@@ -134,6 +138,11 @@ export default function AskChat({
               ? (event.total_latency_ms as number)
               : undefined,
         };
+      } else if (event.type === "job.failed") {
+        failure = {
+          message: String(event.error || "Ask failed."),
+          hint: typeof event.hint === "string" ? event.hint : undefined,
+        };
       }
     }
     return {
@@ -141,13 +150,19 @@ export default function AskChat({
       finalAnswer: finalText,
       toolCalls: tools,
       finalMeta: meta,
+      jobFailure: failure,
     };
   }, [events]);
 
   // Once the worker reports answer.final, snapshot the turn into
-  // history so the next question doesn't clobber it.
+  // history so the next question doesn't clobber it. When the worker
+  // emits ``job.failed`` instead of ``answer.final``, surface the
+  // error inline (so the chat doesn't sit on "Reasoning…" forever)
+  // and mark the assistant turn so the user knows the question
+  // didn't go through.
   useEffect(() => {
-    if (closed && finalAnswer != null) {
+    if (!closed) return;
+    if (finalAnswer != null) {
       setTurns((prev) => {
         const last = prev[prev.length - 1];
         if (last?.role === "assistant" && last.content === finalAnswer) return prev;
@@ -164,14 +179,33 @@ export default function AskChat({
         ];
       });
       setActiveJob(null);
+      return;
     }
-  }, [closed, finalAnswer, toolCalls, finalMeta]);
+    if (jobFailure) {
+      setSubmitError(jobFailure.message);
+      setSubmitErrorHint(jobFailure.hint ?? null);
+      // Pop the user's question turn off the bubble list — the
+      // submitError block below replaces it with the clean error
+      // surface so we don't leave an orphaned user-only bubble.
+      setActiveJob(null);
+      return;
+    }
+    // Stream closed without final answer AND without job.failed (rare
+    // — proxy reset, network glitch). Surface a generic message so
+    // the chat doesn't hang on "Reasoning…".
+    setSubmitError(
+      "The ask stream ended without a final answer. Try again, or check Settings → LLM if this keeps happening.",
+    );
+    setSubmitErrorHint("configure-llm");
+    setActiveJob(null);
+  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = question.trim();
     if (!text || activeJob) return;
     setSubmitError(null);
+    setSubmitErrorHint(null);
     setTurns((prev) => [...prev, { role: "user", content: text }]);
     setQuestion("");
     try {
@@ -205,8 +239,21 @@ export default function AskChat({
       setActiveJob(result.job_id);
       onSessionAssigned?.(result.session_id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Ask failed.";
+      // The 412 pre-flight check on the LLM config carries a
+      // ``hint=configure-llm`` so we can show a "Open Settings" CTA
+      // alongside the error rather than leaving the user wondering
+      // why the chat hung. Other errors render as plain text with no
+      // CTA — the message is still actionable.
+      let message = "Ask failed.";
+      let hint: string | null = null;
+      if (err instanceof ApiError) {
+        message = err.detail || err.message || message;
+        hint = err.hint ?? null;
+      } else if (err instanceof Error) {
+        message = err.message;
+      }
       setSubmitError(message);
+      setSubmitErrorHint(hint);
     }
   }
 
@@ -290,9 +337,14 @@ export default function AskChat({
           </Bubble>
         )}
         {submitError && (
-          <div className="rounded-md border border-critical/30 bg-critical/5 px-3 py-2 text-xs text-critical">
-            {submitError}
-          </div>
+          <AskErrorBanner
+            message={submitError}
+            hint={submitErrorHint}
+            onDismiss={() => {
+              setSubmitError(null);
+              setSubmitErrorHint(null);
+            }}
+          />
         )}
       </div>
 
@@ -528,6 +580,98 @@ function ToolCallList({
         })}
       </ul>
     </details>
+  );
+}
+
+/**
+ * Friendly error surface for /ask failures.
+ *
+ * Two flavours:
+ *   - ``configure-llm`` hint → a "Couldn't reach the LLM" headline
+ *     plus an "Open Settings" call-to-action. Shown for every
+ *     LLM-side failure (missing API key, bad model, network down to
+ *     the provider). This is the path that previously hung on
+ *     "Reasoning…" forever.
+ *   - any other hint / no hint → plain-text error with the backend's
+ *     message verbatim.
+ *
+ * Always dismissable so the user can retry without reloading the
+ * whole chat.
+ */
+function AskErrorBanner({
+  message,
+  hint,
+  onDismiss,
+}: {
+  message: string;
+  hint?: string | null;
+  onDismiss: () => void;
+}) {
+  const isLlm = hint === "configure-llm";
+  return (
+    <div
+      role="alert"
+      className={cn(
+        "flex flex-col gap-2 rounded-md border px-3 py-2.5 text-xs",
+        isLlm
+          ? "border-warning/40 bg-warning-soft/40 text-warning-ink"
+          : "border-critical/30 bg-critical/5 text-critical",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <SettingsIcon
+          size={14}
+          className={cn(
+            "mt-0.5 flex-none",
+            isLlm ? "text-warning" : "text-critical",
+          )}
+          aria-hidden="true"
+        />
+        <div className="min-w-0 flex-1">
+          {isLlm ? (
+            <>
+              <p className="font-semibold text-ink">
+                Couldn't reach the LLM.
+              </p>
+              <p className="mt-0.5 text-ink-muted">
+                Check your provider settings — most likely an unset API
+                key, a wrong model id, or a network block.
+              </p>
+              <p className="mt-1 text-ink-dim/80">
+                <span className="font-mono text-[10px]">{message}</span>
+              </p>
+            </>
+          ) : (
+            <p className="text-ink">{message}</p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="ml-2 flex-none text-ink-dim hover:text-ink"
+        >
+          ×
+        </button>
+      </div>
+      {isLlm && (
+        <div className="flex items-center gap-2">
+          <Link
+            to="/settings?tab=llm"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-accent px-3 text-[11px] font-medium text-accent-soft transition hover:opacity-90"
+          >
+            <SettingsIcon size={12} />
+            Open LLM settings
+          </Link>
+          <Link
+            to="/system"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] text-ink-muted hover:border-accent/40 hover:text-ink"
+          >
+            Run doctor
+          </Link>
+        </div>
+      )}
+    </div>
   );
 }
 

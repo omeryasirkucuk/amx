@@ -20,7 +20,15 @@ _TEST_TOKEN = "test-studio-token-abc123"
 
 @pytest.fixture()
 def cfg() -> AMXConfig:
-    return AMXConfig()
+    cfg = AMXConfig()
+    # /api/ask now gates submission on a configured LLM provider/model
+    # (PR fix/ask-llm-error-handling) so a fresh AMXConfig() returns 412
+    # instead of spawning the worker. Seed sane defaults for the tests
+    # that only care about session / scope plumbing — the LLM is
+    # mocked at the worker boundary in tests that exercise it.
+    cfg.llm.provider = "openai"
+    cfg.llm.model = "gpt-4"
+    return cfg
 
 
 @pytest.fixture()
