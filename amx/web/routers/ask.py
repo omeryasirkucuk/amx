@@ -380,6 +380,83 @@ def _event_generator(job: Job):
             break
 
 
+#: How many prior Q/A pairs to feed back into the agent when
+#: resuming a chat. The CLI's SessionMemoryMixin reads
+#: ``conversation_memory_turns`` from search settings (default 4);
+#: Studio mirrors that default — covers the typical "follow-up to a
+#: question 2-3 turns ago" pattern without ballooning the prompt.
+_MEMORY_TURN_PAIRS = 4
+
+
+def _load_session_memory(session_id: int | None) -> list[dict[str, Any]] | None:
+    """Hydrate the prior-turn context the agent loop replays.
+
+    When a Studio user reopens an old chat session and asks a follow-up,
+    ``run_tool_agent`` needs to see what was said before so references
+    like "that table", "the second one", "in Turkish" resolve. Without
+    this, every /ask in a resumed session looks like a fresh question
+    — exactly the user-reported "old chat forgot history" bug.
+
+    Skips the most-recent user row, which the caller has already
+    inserted via ``append_user_turn`` for the current question; if we
+    forwarded it the LLM would see the question twice and double-
+    process. Compaction summary rows are surfaced as a synthetic
+    ``user`` message tagged "(prior conversation summary)" so the
+    model uses them as context rather than treating them as the next
+    user turn.
+
+    Returns ``None`` when session memory isn't available (no session,
+    no history store, or fetch failed) — the agent loop treats that
+    identically to an empty list.
+    """
+    if not session_id:
+        return None
+    store = _session_store_or_none()
+    if store is None:
+        return None
+    try:
+        turns = store.recent_turns(
+            int(session_id),
+            limit=_MEMORY_TURN_PAIRS,
+            include_summary=True,
+            include_compacted=False,
+        )
+    except Exception as exc:  # pragma: no cover — best-effort
+        log.warning("Could not load chat history for session %s: %s", session_id, exc)
+        return None
+    if not turns:
+        return None
+    # Drop the trailing user-row that ``submit_ask`` just inserted for
+    # the question we're about to answer; sending it back would double-
+    # post the question into the conversation.
+    pruned = list(turns)
+    while pruned and pruned[-1].get("role") == "user":
+        pruned.pop()
+    memory: list[dict[str, Any]] = []
+    for turn in pruned:
+        role = str(turn.get("role") or "")
+        if role == "summary":
+            summary_text = str(turn.get("answer_summary") or "").strip()
+            if summary_text:
+                memory.append(
+                    {
+                        "role": "user",
+                        "content": "(prior conversation summary) " + summary_text,
+                    }
+                )
+            continue
+        if role == "user":
+            content = str(turn.get("question") or "").strip()
+            if content:
+                memory.append({"role": "user", "content": content})
+            continue
+        if role == "assistant":
+            content = str(turn.get("answer_summary") or "").strip()
+            if content:
+                memory.append({"role": "assistant", "content": content})
+    return memory or None
+
+
 def _ask_worker(
     cfg: AMXConfig,
     job: Job,
@@ -464,6 +541,13 @@ def _ask_worker(
             },
         )
 
+    # Hydrate the prior-turn context so a resumed chat can resolve
+    # follow-up references ("that table", "the second one"). Pulled
+    # from chat_sessions/chat_turns; ``submit_ask`` has already
+    # appended the current user question, so the loader trims the
+    # trailing user row to avoid double-posting.
+    session_memory = _load_session_memory(session_id)
+
     try:
         result = run_tool_agent(
             cfg=cfg,
@@ -471,7 +555,7 @@ def _ask_worker(
             llm=llm,
             question=question,
             answer_language=cfg.llm.language or "english",
-            session_memory=None,  # PR-D ships without session memory wiring; PR-E adds it.
+            session_memory=session_memory,
             display=None,
             on_thinking_delta=_on_thinking,
             on_tool_call=_on_tool_call,
