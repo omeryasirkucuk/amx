@@ -5,9 +5,11 @@ import remarkGfm from "remark-gfm";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
 import { apiFetch } from "../lib/api";
+import { useUi } from "../lib/store";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
 import { InfoHint } from "./ui";
+import AskScopeDropdown from "./AskScopeDropdown";
 
 export interface SubmittedTurn {
   role: "user" | "assistant";
@@ -19,6 +21,7 @@ interface SubmitResponse {
   job_id: string;
   session_id: number | null;
   status: string;
+  scope_profiles?: string[];
 }
 
 interface AskChatProps {
@@ -51,12 +54,28 @@ export default function AskChat({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
 
+  // Per-chat sticky scope. Keyed by session id (or "_new_" before the
+  // first message of a fresh chat assigns one). The dropdown writes
+  // here; submit reads here. Resets when the parent starts a new chat
+  // because the session key changes (or the entry hadn't been set).
+  const sessionKey = sessionId != null ? String(sessionId) : "_new_";
+  const askScopeBySession = useUi((s) => s.askScopeBySession);
+  const setAskScope = useUi((s) => s.setAskScope);
+  const clearAskScope = useUi((s) => s.clearAskScope);
+  const scopeForSession =
+    sessionKey in askScopeBySession ? askScopeBySession[sessionKey] : null;
+
   // Reseed history when the parent picks a different session.
   useEffect(() => {
     setSessionId(selectedSessionId);
     setTurns(seedTurns ?? []);
     setActiveJob(null);
     setSubmitError(null);
+    // Drop the "_new_" scratch entry when the parent transitions us
+    // to a saved session — the saved session has its own key now.
+    if (selectedSessionId != null) {
+      clearAskScope("_new_");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedToken]);
 
@@ -114,16 +133,53 @@ export default function AskChat({
     setTurns((prev) => [...prev, { role: "user", content: text }]);
     setQuestion("");
     try {
+      const body: Record<string, unknown> = {
+        question: text,
+        session_id: sessionId ?? undefined,
+      };
+      // Multi-profile sticky scope: only attach when the user has
+      // narrowed it (scope_profiles=null means "default to config").
+      if (scopeForSession !== null) {
+        body.scope_profiles = scopeForSession;
+      }
       const result = await apiFetch<SubmitResponse>("/api/ask", {
         method: "POST",
-        body: JSON.stringify({ question: text, session_id: sessionId ?? undefined }),
+        body: JSON.stringify(body),
       });
+      // When the backend assigns a fresh session id, migrate the
+      // "_new_" scope entry to the real session key so the dropdown
+      // stays sticky across the rest of this chat.
+      if (
+        result.session_id != null &&
+        sessionId == null &&
+        sessionKey === "_new_" &&
+        "_new_" in askScopeBySession
+      ) {
+        const migrated = askScopeBySession["_new_"];
+        setAskScope(String(result.session_id), migrated);
+        clearAskScope("_new_");
+      }
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
       onSessionAssigned?.(result.session_id);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Ask failed.";
       setSubmitError(message);
+    }
+  }
+
+  function handleScopeChange(next: string[] | null) {
+    setAskScope(sessionKey, next);
+    // Persist to the backend session record so cross-tab reloads pick
+    // it up. Skip when there's no session yet — the migration on
+    // first /ask covers it.
+    if (sessionId != null) {
+      apiFetch(`/api/ask/sessions/${sessionId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ scope_profiles: next }),
+      }).catch(() => {
+        /* best-effort — local state is still authoritative */
+      });
     }
   }
 
@@ -191,6 +247,13 @@ export default function AskChat({
       </div>
 
       <Card className="p-3">
+        <div className="mb-2 flex items-center justify-end">
+          <AskScopeDropdown
+            scope={scopeForSession}
+            onChange={handleScopeChange}
+            disabled={!!activeJob}
+          />
+        </div>
         <form onSubmit={handleSubmit} className="flex items-end gap-2">
           <div className="relative flex-1">
             <textarea

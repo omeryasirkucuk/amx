@@ -37,7 +37,10 @@ class _FakeToolbox:
         return []
 
     def __init__(self, *args, **kwargs):
-        pass
+        # Mirror the public scope attributes the multi-profile-aware
+        # tool_loop reads off ToolBox so the fake stays drop-in.
+        self.db_profiles: list[str] = ["test"]
+        self.db_profile: str = "test"
 
     def __enter__(self):
         return self
