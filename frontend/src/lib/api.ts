@@ -77,6 +77,7 @@ export interface ContextResponse {
   db_backend: string | null;
   llm_provider: string | null;
   llm_model: string | null;
+  llm_supports_batch: boolean;
 }
 
 export interface CatalogsResponse {
@@ -338,6 +339,7 @@ export const api = {
     scope: Record<string, string[]>;
     apply?: boolean;
     missing_only?: boolean;
+    batch_mode?: boolean;
     db_profile?: string;
     database?: string;
     catalog?: string;
@@ -348,6 +350,7 @@ export const api = {
         scope: body.scope,
         apply: !!body.apply,
         missing_only: !!body.missing_only,
+        batch_mode: !!body.batch_mode,
         db_profile: body.db_profile,
         database: body.database,
         catalog: body.catalog,

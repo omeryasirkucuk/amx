@@ -35,6 +35,11 @@ export default function RunNew() {
   const [picked, setPicked] = useState<SchemaPickState[]>([]);
   const [missingOnly, setMissingOnly] = useState(true);
   const [autoApply, setAutoApply] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+
+  const ctx = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
+  const supportsBatch = !!ctx.data?.llm_supports_batch;
+  const llmProvider = ctx.data?.llm_provider ?? null;
 
   const schemas = useQuery({
     queryKey: [
@@ -56,6 +61,7 @@ export default function RunNew() {
         scope: Object.fromEntries(picked.map((p) => [p.schema, p.tables])),
         apply: autoApply,
         missing_only: missingOnly,
+        batch_mode: batchMode && supportsBatch,
         db_profile: scope?.profile,
         database: scope?.database,
         catalog: scope?.catalog,
@@ -210,6 +216,28 @@ export default function RunNew() {
                 }
                 description="Write approved descriptions to the live DB without a separate Apply step."
               />
+              <Switch
+                checked={batchMode && supportsBatch}
+                onChange={(e) => setBatchMode(e.target.checked)}
+                disabled={!supportsBatch}
+                label={
+                  <span className="inline-flex items-center gap-1">
+                    Batch mode
+                    <InfoHint
+                      text={
+                        supportsBatch
+                          ? "Submit every request in one async batch — ~50% cheaper, returns in minutes to hours instead of streaming live."
+                          : `Provider${llmProvider ? ` "${llmProvider}"` : ""} has no batch implementation. Switch to OpenAI or Anthropic to enable.`
+                      }
+                    />
+                  </span>
+                }
+                description={
+                  supportsBatch
+                    ? "Best for large scopes where you can wait. Streams a polling progress indicator instead of per-table updates."
+                    : "Only OpenAI and Anthropic providers support batch."
+                }
+              />
               <hr className="border-border" />
               <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
                 <dt className="text-ink-dim">Schemas</dt>
@@ -219,6 +247,10 @@ export default function RunNew() {
                 <dt className="text-ink-dim">Asset slots</dt>
                 <dd className="text-right font-mono tabular-nums text-ink">
                   {totalAssets}
+                </dd>
+                <dt className="text-ink-dim">Mode</dt>
+                <dd className="text-right font-mono text-ink">
+                  {batchMode && supportsBatch ? "batch" : "chat"}
                 </dd>
               </dl>
               <Button
