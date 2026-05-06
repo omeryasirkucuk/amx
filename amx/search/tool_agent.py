@@ -54,12 +54,25 @@ class ToolAgentResult:
         iterations: int,
         usage: dict[str, Any],
         finish_reason: str | None,
+        scope_profiles: list[str] | None = None,
+        focus_profile: str | None = None,
+        total_latency_ms: int | None = None,
+        per_tool_latency_ms: dict[str, int] | None = None,
     ) -> None:
         self.answer = answer
         self.tool_calls = tool_calls
         self.iterations = iterations
         self.usage = usage
         self.finish_reason = finish_reason
+        # Multi-profile observability (PR-D): each /ask reports the
+        # resolved scope, the auto-detected focus, the wall-clock
+        # latency, and the per-tool latency breakdown so users (and
+        # the SPA's footer badge) can spot slow profiles + measure
+        # the cost of multi-profile retrieval.
+        self.scope_profiles = scope_profiles
+        self.focus_profile = focus_profile
+        self.total_latency_ms = total_latency_ms
+        self.per_tool_latency_ms = per_tool_latency_ms or {}
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +81,10 @@ class ToolAgentResult:
             "iterations": self.iterations,
             "usage": dict(self.usage),
             "finish_reason": self.finish_reason,
+            "scope_profiles": list(self.scope_profiles or []),
+            "focus_profile": self.focus_profile,
+            "total_latency_ms": self.total_latency_ms,
+            "per_tool_latency_ms": dict(self.per_tool_latency_ms),
         }
 
 
@@ -142,6 +159,18 @@ def _agent_system_prompt(
         if profile_lines
         else "  (none configured — only the active connection is reachable)"
     )
+
+    # Token budget guard: ``schema_hint`` can balloon when the active
+    # profile has 200+ schemas (saw ~5K tokens on a Snowflake account).
+    # Cap at the first 50 names — the LLM can always call list_schemas
+    # for the full picture. Only kicks in when we'd actually overshoot;
+    # short profiles render in full as before.
+    if schema_hint and len(schema_hint) > 50:
+        truncated = list(schema_hint[:50])
+        schema_line = (
+            ", ".join(truncated)
+            + f", … ({len(schema_hint) - 50} more — call list_schemas to see all)"
+        )
 
     # Multi-profile guidance block.
     scope_block = ""
@@ -588,6 +617,16 @@ def _run_tool_loop(
 
     aggregated_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     tool_call_log: list[dict[str, Any]] = []
+    # Per-tool latency accumulator: name → total ms across all calls
+    # in this question (a single tool may be called multiple times).
+    # Surfaced in the response payload so the SPA's footer can show
+    # which tool dominated wall-clock — invaluable for debugging
+    # "why did this take 9 seconds" without having to attach a
+    # profiler.
+    per_tool_latency_ms: dict[str, int] = {}
+    import time as _time
+
+    loop_start = _time.monotonic()
     final_answer = ""
     finish_reason: str | None = None
     iterations = 0
@@ -652,8 +691,12 @@ def _run_tool_loop(
             }
         )
         for tc in result.tool_calls:
+            tool_t0 = _time.monotonic()
             tool_result = toolbox.invoke(tc.name, tc.arguments or "{}")
+            tool_elapsed_ms = int((_time.monotonic() - tool_t0) * 1000)
+            per_tool_latency_ms[tc.name] = per_tool_latency_ms.get(tc.name, 0) + tool_elapsed_ms
             summary = _summarise_tool_call(tc, tool_result)
+            summary["latency_ms"] = tool_elapsed_ms
             tool_call_log.append(summary)
             if on_tool_call is not None:
                 try:
@@ -692,10 +735,15 @@ def _run_tool_loop(
         final_answer = (result.content or "").strip()
         finish_reason = result.finish_reason or finish_reason
 
+    total_latency_ms = int((_time.monotonic() - loop_start) * 1000)
     return ToolAgentResult(
         answer=final_answer or "(empty response)",
         tool_calls=tool_call_log,
         iterations=iterations,
         usage=aggregated_usage,
         finish_reason=finish_reason,
+        scope_profiles=list(toolbox.db_profiles),
+        focus_profile=focus_profile,
+        total_latency_ms=total_latency_ms,
+        per_tool_latency_ms=per_tool_latency_ms,
     )

@@ -14,7 +14,16 @@ import AskScopeDropdown from "./AskScopeDropdown";
 export interface SubmittedTurn {
   role: "user" | "assistant";
   content: string;
-  toolCalls?: Array<{ name: string; arguments: string; result_preview: string }>;
+  toolCalls?: Array<{
+    name: string;
+    arguments: string;
+    result_preview: string;
+    latency_ms?: number;
+  }>;
+  /** Multi-profile observability stamped on assistant turns. */
+  scopeProfiles?: string[];
+  focusProfile?: string | null;
+  totalLatencyMs?: number;
 }
 
 interface SubmitResponse {
@@ -85,10 +94,20 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, finalAnswer, toolCalls } = useMemo(() => {
+  const { thinking, finalAnswer, toolCalls, finalMeta } = useMemo(() => {
     const thinkingChunks: string[] = [];
-    const tools: Array<{ name: string; arguments: string; result_preview: string }> = [];
+    const tools: Array<{
+      name: string;
+      arguments: string;
+      result_preview: string;
+      latency_ms?: number;
+    }> = [];
     let finalText: string | null = null;
+    let meta: {
+      scopeProfiles?: string[];
+      focusProfile?: string | null;
+      totalLatencyMs?: number;
+    } = {};
     for (const event of events) {
       if (event.type === "thinking.delta" && typeof event.text === "string") {
         thinkingChunks.push(event.text);
@@ -97,15 +116,31 @@ export default function AskChat({
           name: String(event.name || ""),
           arguments: String(event.arguments || ""),
           result_preview: String(event.result_preview || ""),
+          latency_ms:
+            typeof event.latency_ms === "number" ? event.latency_ms : undefined,
         });
       } else if (event.type === "answer.final" && typeof event.answer === "string") {
         finalText = event.answer;
+        meta = {
+          scopeProfiles: Array.isArray(event.scope_profiles)
+            ? (event.scope_profiles as string[])
+            : undefined,
+          focusProfile:
+            typeof event.focus_profile === "string"
+              ? (event.focus_profile as string)
+              : null,
+          totalLatencyMs:
+            typeof event.total_latency_ms === "number"
+              ? (event.total_latency_ms as number)
+              : undefined,
+        };
       }
     }
     return {
       thinking: thinkingChunks.join(""),
       finalAnswer: finalText,
       toolCalls: tools,
+      finalMeta: meta,
     };
   }, [events]);
 
@@ -118,12 +153,19 @@ export default function AskChat({
         if (last?.role === "assistant" && last.content === finalAnswer) return prev;
         return [
           ...prev,
-          { role: "assistant", content: finalAnswer, toolCalls },
+          {
+            role: "assistant",
+            content: finalAnswer,
+            toolCalls,
+            scopeProfiles: finalMeta.scopeProfiles,
+            focusProfile: finalMeta.focusProfile ?? null,
+            totalLatencyMs: finalMeta.totalLatencyMs,
+          },
         ];
       });
       setActiveJob(null);
     }
-  }, [closed, finalAnswer, toolCalls]);
+  }, [closed, finalAnswer, toolCalls, finalMeta]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -227,6 +269,14 @@ export default function AskChat({
             {turn.toolCalls && turn.toolCalls.length > 0 && (
               <ToolCallList calls={turn.toolCalls} />
             )}
+            {turn.role === "assistant" &&
+              (turn.scopeProfiles?.length || turn.totalLatencyMs != null) && (
+                <AnswerMeta
+                  scopeProfiles={turn.scopeProfiles}
+                  focusProfile={turn.focusProfile ?? null}
+                  totalLatencyMs={turn.totalLatencyMs}
+                />
+              )}
           </Bubble>
         ))}
         {activeJob && (
@@ -478,5 +528,42 @@ function ToolCallList({
         })}
       </ul>
     </details>
+  );
+}
+
+/**
+ * Footer beneath an assistant turn showing multi-profile observability:
+ * how many profiles answered, the auto-detected focus, and wall-clock
+ * latency. Renders inline-italic dim so it doesn't fight the answer
+ * for attention. Only shown when there's data to show — single-profile
+ * single-second responses get nothing.
+ */
+function AnswerMeta({
+  scopeProfiles,
+  focusProfile,
+  totalLatencyMs,
+}: {
+  scopeProfiles?: string[];
+  focusProfile?: string | null;
+  totalLatencyMs?: number;
+}) {
+  const parts: string[] = [];
+  if (scopeProfiles && scopeProfiles.length) {
+    parts.push(
+      `${scopeProfiles.length} profile${scopeProfiles.length === 1 ? "" : "s"}`,
+    );
+  }
+  if (typeof totalLatencyMs === "number" && totalLatencyMs > 0) {
+    const seconds = totalLatencyMs / 1000;
+    parts.push(`${seconds.toFixed(seconds < 10 ? 1 : 0)}s`);
+  }
+  if (focusProfile) {
+    parts.push(`focus: ${focusProfile}`);
+  }
+  if (parts.length === 0) return null;
+  return (
+    <div className="mt-2 text-[10.5px] italic text-ink-dim">
+      {parts.join(" · ")}
+    </div>
   );
 }

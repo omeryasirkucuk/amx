@@ -468,6 +468,15 @@ def _ask_worker(
             "iterations": result.iterations,
             "usage": dict(result.usage),
             "finish_reason": result.finish_reason,
+            # Multi-profile observability: which profiles were in
+            # scope, which one the system prompt flagged as the
+            # auto-detected focus, and where the time went. The
+            # SPA's footer renders "answered from 3 profiles in
+            # 3.4s · focus: WAREHOUSE" off these.
+            "scope_profiles": list(result.scope_profiles or []),
+            "focus_profile": result.focus_profile,
+            "total_latency_ms": result.total_latency_ms,
+            "per_tool_latency_ms": dict(result.per_tool_latency_ms or {}),
         },
     )
     emit(
