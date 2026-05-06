@@ -6,6 +6,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.12.9] - 2026-05-07
+
+The multi-profile + library-API-cleanup release. AMX is now multi-profile
+end-to-end — both AMX Studio's sidebar tree and the CLI's `/ask` operate
+across every saved DB profile in one shot, with per-request scope, parallel
+live-DB fan-out, and a `find_joinable_across_profiles` tool that scores
+cross-DB join candidates with a 4-signal mix (column-name token overlap,
+dtype compatibility, vector similarity, FK pattern). Studio gains a sticky
+multi-select profile picker plus an auto-focus hint; the CLI's `/session`
+suite now dispatches from every tab and resumed chats replay the prior 4
+Q/A pairs into the agent. The `amx.core` Python surface is also cleaned up
+to a single shape (BREAKING — see migration block below). `/ask`'s answer
+quality, the CLI Ctrl-C path, the LiteLLM startup chatter on corp TLS
+proxies, and last-profile deletion all get fixed in the same release.
+Feature-gated DB drivers and connector backends now auto-install on first
+use.
+
 ### BREAKING CHANGE — Python library API cleanup
 
 The `amx.core` library surface (the `from amx.core import …` API used
@@ -71,6 +88,113 @@ unified:
   comments all reference `/studio`.
 * **Screenshots**: `studio-overview.png` is the canonical Overview
   asset (in both `AMX/docs/assets/` and `amx-docs/docs/assets/`).
+
+### Added — Multi-profile browse and `/ask` (#167, #168, #169, #170, #171)
+
+* **Studio sidebar browses every saved DB profile.** Tree shape is
+  `profile → database/catalog → schema → table`; routes are explicit
+  (`/db/:profile/:database/:schema/:table` for 2-level backends,
+  `/cat/:profile/:catalog/:schema/:table` for 3-level UC/BigQuery).
+  Per-request scope means two browser tabs on different profiles never
+  collide. The legacy "Switch" pill is gone; inline comment editors and
+  per-asset Generate buttons all carry the page's profile so writes land
+  on the right backend.
+* **Multi-profile `/ask` retrieval.** Catalog tools span the configured
+  profile list in a single SQL pass via `db_profile IN (?, ?, …)`.
+  Live-DB tools (`list_schemas`, `list_tables_in_schema`,
+  `list_databases`) parallel-query each profile via `ThreadPoolExecutor`
+  (cap 8 workers, 8s per-profile timeout — slow profile never blocks the
+  others). Result rows always carry `db_profile` so the LLM cites the
+  right source.
+* **`find_joinable_across_profiles` tool.** Scores cross-DB join
+  candidates with a 4-signal mix (column-name token overlap, dtype
+  compatibility, vector similarity, FK pattern). Answers "what can I
+  join this table with from a different DB?" in one tool call.
+* **Studio scope dropdown + auto-focus.** Multi-select profile picker
+  above the Ask textarea (sticky per chat session, resets on `+ New`),
+  plus a read-only "Focus: X (auto)" hint when the conversation has
+  gravitated toward one profile in recent turns. Auto-focus heuristic
+  scans the last 3 assistant turns; ≥60% mention dominance biases the
+  system prompt without locking out cross-profile questions. Answer
+  footer shows `N profiles · X.Ys · focus: WAREHOUSE` per turn.
+
+### Added — `/ask` answer-quality + agent observability (#171, #173, #179, #180)
+
+* **Resumed chats replay history into the agent.** `/session resume <id>`
+  feeds the prior 4 Q/A pairs back into the agent's context so follow-up
+  references like "that table" / "the second one" resolve without
+  re-explaining context.
+* **Lists and tables for many-item answers.** The system prompt now
+  directs the LLM to render >5-item answers as bulleted lists or
+  markdown tables instead of comma-glued paragraphs.
+* **STATS-EXAMPLE-DRILL pattern for large data sets.** When tools
+  return >50 rows, the agent now answers in three layers
+  (aggregate stats → 3 representative examples → drill-down hint)
+  instead of dumping every row.
+* **Token guard + observability.** Per-turn token budget enforced before
+  the LLM call (over-budget → friendly fallback rather than a 400);
+  observability footer shows tools called, tokens used, latency, and
+  scope.
+
+### Fixed — CLI robustness (#172, #175, #176, #177, #178)
+
+* **CLI `/session` dispatch from every tab.** `/session list`,
+  `/session resume <id>`, `/session new`, `/session end`,
+  `/session scope` no longer fail inside `/search`. The slash registry
+  lists `/session` next to `/ask` under the search group. Same fix
+  applies to `/studio`, `/setup`, `/config`.
+* **Friendly LLM-broken errors.** `/ask` no longer hangs on
+  "Reasoning…" when the LLM is misconfigured. Studio shows the
+  configure-llm banner immediately on a missing provider/model
+  (412 pre-flight); worker failures emit a `job.failed` SSE event with
+  classification (auth / rate-limit / network / model-not-found →
+  `configure-llm` hint; generic errors stay generic).
+* **Ctrl-C cancels `/ask` cleanly.** First press sets a `cancel_token`
+  the agent loop polls between iterations; second press also raises
+  `KeyboardInterrupt` for stuck socket I/O. The chat surfaces
+  "Cancelled by user." (TR: "Soru kullanıcı tarafından iptal edildi.")
+  rather than draining the question to completion.
+* **LiteLLM startup chatter silenced.** Corp-network TLS proxies no
+  longer surface a "Failed to fetch remote model cost map" warning on
+  every `/ask` — `LITELLM_LOCAL_MODEL_COST_MAP=True` skips the GitHub
+  fetch entirely.
+* **Last/active profile delete.** `/remove-db-profile` and
+  `/remove-llm-profile` no longer refuse the only profile — config
+  resets to empty, downstream surfaces handle it. Empty config triggers
+  a friendly "configure an LLM profile" prompt (Studio: 412 +
+  `configure-llm` hint with "Open LLM settings" / "Run doctor" CTAs;
+  CLI: `/search` discussion-requires-LLM message).
+
+### Added — On-demand driver and dependency install
+
+* **DB backend drivers auto-install on first connect.** Connecting to a
+  new backend (Snowflake, BigQuery, Databricks, MySQL, MS SQL, Trino,
+  Redshift, etc.) now installs the driver package on demand instead of
+  failing with `ModuleNotFoundError`. Users no longer need to know the
+  pip-extras incantation up-front.
+* **Feature-gated packages auto-install.** RAG, codebase analysis, and
+  optional LLM provider SDKs install on first use behind a one-line
+  consent prompt. The `pip install amx-cli[…]` extras still work for
+  reproducible environments.
+
+### Changed — Studio polish (#160, #161, #162, #163, #165, #166, #183, #184)
+
+* Markdown rendering for answers; sidebar overflow fix; Settings page
+  copy + layout polish.
+* Plain-language hover hints throughout for non-technical users.
+* Single profile picker in the sidebar; lean topbar; tooltips wrap.
+* `+ New` button dims when the chat panel is already empty.
+* Per-row Generate button on Database and Schema pages (writes a single
+  comment in place); existing-description preview shown on Database and
+  Schema rows.
+* RunNew gains a batch-mode toggle, gated by provider capability.
+* In-flight ask job resumes on navigation back to the chat tab.
+
+### Changed — Brand polish (#158)
+
+* Favicons across `frontend/public/` and `amx/web/static/` aligned with
+  the pixel-art AMX mark; ruff format pass clears pre-existing
+  formatting debt (#159).
 
 ## [0.12.8] - 2026-05-05
 
