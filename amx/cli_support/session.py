@@ -934,6 +934,32 @@ def _handle_session_builtin(
     return False
 
 
+#: Top-level Click namespaces (the ``/db``, ``/llm``, … tabs) plus
+#: every command registered as a sibling Click subcommand at the same
+#: level. ``head`` matches against this set so a typed
+#: ``/<head> <subcmd>`` from any tab dispatches directly to the right
+#: namespace's Click group — no per-namespace whitelist drift. Tabs
+#: GROUP commands for discovery; this set keeps every command
+#: dispatchable from any tab.
+_CROSS_NAMESPACE_HEADS: frozenset[str] = frozenset(
+    {
+        "db",
+        "metadata",
+        "manual",  # alias → metadata
+        "docs",
+        "llm",
+        "code",
+        "analyze",
+        "search",
+        "history",
+        "session",
+        "setup",
+        "config",
+        "studio",
+    }
+)
+
+
 def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
     head = parts[0]
     shortcut_map = {
@@ -1012,7 +1038,11 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         # of asking the LLM to "interpret" it as a question.
         if head in shortcut_map:
             return shortcut_map[head] + parts[1:]
-        if head in {"db", "metadata", "manual", "docs", "llm", "code", "analyze", "history"}:
+        # Single source of truth for cross-namespace dispatch — same
+        # set the non-search branch below uses, so every command stays
+        # reachable regardless of which tab the user is on. Tabs are
+        # for grouping/discovery; routing is global.
+        if head in _CROSS_NAMESPACE_HEADS:
             if head == "manual":
                 return ["metadata"] + parts[1:]
             return parts
@@ -1024,21 +1054,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         # "Unknown command: /<x>" instead of silently routing the typo into
         # the search agent (e.g. ``/asl`` → ``search ask asl``).
         return None
-    if head in {
-        "db",
-        "metadata",
-        "manual",
-        "docs",
-        "llm",
-        "code",
-        "analyze",
-        "search",
-        "history",
-        "session",
-        "setup",
-        "config",
-        "studio",
-    }:
+    if head in _CROSS_NAMESPACE_HEADS:
         if head == "manual":
             return ["metadata"] + parts[1:]
         return parts

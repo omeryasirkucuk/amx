@@ -101,7 +101,6 @@ _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (
     SlashCommand("/analyze", "root", "Enter /analyze namespace"),
     SlashCommand("/search", "root", "Enter /search namespace"),
     SlashCommand("/history", "root", "Enter /history namespace"),
-    SlashCommand("/session", "root", "Manage /ask conversation sessions"),
     SlashCommand(
         "/studio",
         "root",
@@ -276,6 +275,25 @@ _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
         "/ask",
         "search",
         "Ask a metadata question; add --db-profile NAME (multi) for cross-DB scope; --actions for approved follow-up execution",
+    ),
+    # Sessions — manage `/ask` conversational threads. Dispatch is
+    # cross-namespace (works from any tab) like /doctor and /compare;
+    # listing here groups it next to /ask where it conceptually belongs.
+    SlashCommand(
+        "/session",
+        "search",
+        "Manage /ask conversation sessions (/session list|resume <id>|new|end|scope [profiles])",
+        long_desc=(
+            "Manage chat sessions for /ask. Subcommands:\n"
+            "  /session list                   — recent sessions (filter "
+            "with -n N or --all-profiles)\n"
+            "  /session resume <id>            — make ID the active session "
+            "for follow-up /ask turns\n"
+            "  /session new [--title TEXT]     — start a fresh session\n"
+            "  /session end                    — close the active session\n"
+            "  /session scope [profiles|clear] — sticky multi-profile scope "
+            "for the active session"
+        ),
     ),
     # Status
     SlashCommand("/status", "search", "Show catalog/index status"),
