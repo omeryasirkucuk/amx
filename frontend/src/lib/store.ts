@@ -7,6 +7,7 @@
 // this is purely UI / navigation memory.
 
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 interface LastOpened {
   profile: string;
@@ -33,32 +34,71 @@ interface UiSlice {
   askScopeBySession: Record<string, string[] | null>;
   setAskScope: (sessionKey: string, scope: string[] | null) => void;
   clearAskScope: (sessionKey: string) => void;
+  /** Per-session in-flight ask job id. Persisted via localStorage so
+   *  navigating away from /ask (or reloading the tab) and coming back
+   *  can reattach the SSE stream — the worker thread keeps running
+   *  on the backend regardless of the SPA's state, and JobRegistry
+   *  buffers events until a consumer drains them. Cleared on terminal
+   *  events (job.done / failed / cancelled) inside AskChat. */
+  askActiveJobBySession: Record<string, string>;
+  setAskActiveJob: (sessionKey: string, jobId: string) => void;
+  clearAskActiveJob: (sessionKey: string) => void;
 }
 
-export const useUi = create<UiSlice>((set) => ({
-  sidebarCollapsed: false,
-  toggleSidebar: () =>
-    set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
-  lastOpenedSchema: null,
-  lastOpenedTable: null,
-  lastOpened: null,
-  rememberOpenedTable: (schema, table) =>
-    set({ lastOpenedSchema: schema, lastOpenedTable: table }),
-  rememberOpenedScope: (last) =>
-    set({
-      lastOpened: last,
-      lastOpenedSchema: last.schema,
-      lastOpenedTable: last.table,
+export const useUi = create<UiSlice>()(
+  persist(
+    (set) => ({
+      sidebarCollapsed: false,
+      toggleSidebar: () =>
+        set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+      lastOpenedSchema: null,
+      lastOpenedTable: null,
+      lastOpened: null,
+      rememberOpenedTable: (schema, table) =>
+        set({ lastOpenedSchema: schema, lastOpenedTable: table }),
+      rememberOpenedScope: (last) =>
+        set({
+          lastOpened: last,
+          lastOpenedSchema: last.schema,
+          lastOpenedTable: last.table,
+        }),
+      askScopeBySession: {},
+      setAskScope: (sessionKey, scope) =>
+        set((state) => ({
+          askScopeBySession: { ...state.askScopeBySession, [sessionKey]: scope },
+        })),
+      clearAskScope: (sessionKey) =>
+        set((state) => {
+          const next = { ...state.askScopeBySession };
+          delete next[sessionKey];
+          return { askScopeBySession: next };
+        }),
+      askActiveJobBySession: {},
+      setAskActiveJob: (sessionKey, jobId) =>
+        set((state) => ({
+          askActiveJobBySession: {
+            ...state.askActiveJobBySession,
+            [sessionKey]: jobId,
+          },
+        })),
+      clearAskActiveJob: (sessionKey) =>
+        set((state) => {
+          const next = { ...state.askActiveJobBySession };
+          delete next[sessionKey];
+          return { askActiveJobBySession: next };
+        }),
     }),
-  askScopeBySession: {},
-  setAskScope: (sessionKey, scope) =>
-    set((state) => ({
-      askScopeBySession: { ...state.askScopeBySession, [sessionKey]: scope },
-    })),
-  clearAskScope: (sessionKey) =>
-    set((state) => {
-      const next = { ...state.askScopeBySession };
-      delete next[sessionKey];
-      return { askScopeBySession: next };
-    }),
-}));
+    {
+      name: "amx-studio-ui",
+      storage: createJSONStorage(() => localStorage),
+      // Only persist the keys that need to survive a reload. Sidebar
+      // collapse state and last-opened breadcrumbs are intentionally
+      // session-only — persisting them was never the intent of this
+      // store. Persisting askActiveJobBySession lets a hard reload
+      // (Cmd-R) still find an in-flight ask job.
+      partialize: (state) => ({
+        askActiveJobBySession: state.askActiveJobBySession,
+      }),
+    },
+  ),
+);

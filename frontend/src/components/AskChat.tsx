@@ -45,6 +45,11 @@ interface AskChatProps {
   // Lets the chat panel notify parent when a brand-new session id is
   // assigned by the backend, so the sidebar can refresh / highlight.
   onSessionAssigned?: (sessionId: number | null) => void;
+  // Fires when AskChat detects a stored "in-flight" ask job that has
+  // already terminated (or vanished — backend restart) while the user
+  // was away. Parent should re-fetch the session detail so the
+  // assistant turn the worker just persisted shows up.
+  onResumeStale?: () => void;
 }
 
 // Self-contained chat panel — owns the question textarea, SSE
@@ -55,6 +60,7 @@ export default function AskChat({
   seedTurns,
   seedToken,
   onSessionAssigned,
+  onResumeStale,
 }: AskChatProps) {
   const [turns, setTurns] = useState<SubmittedTurn[]>([]);
   const [question, setQuestion] = useState("");
@@ -73,6 +79,8 @@ export default function AskChat({
   const askScopeBySession = useUi((s) => s.askScopeBySession);
   const setAskScope = useUi((s) => s.setAskScope);
   const clearAskScope = useUi((s) => s.clearAskScope);
+  const setAskActiveJob = useUi((s) => s.setAskActiveJob);
+  const clearAskActiveJob = useUi((s) => s.clearAskActiveJob);
   const scopeForSession =
     sessionKey in askScopeBySession ? askScopeBySession[sessionKey] : null;
 
@@ -87,6 +95,53 @@ export default function AskChat({
     // to a saved session — the saved session has its own key now.
     if (selectedSessionId != null) {
       clearAskScope("_new_");
+    }
+
+    // Resume in-flight ask: when the user navigated away mid-question,
+    // the backend worker thread keeps running and JobRegistry buffers
+    // every event in the job's queue (see amx/web/jobs.py — jobs live
+    // until the parent CLI process exits). Reattaching the SSE stream
+    // drains the buffered events and surfaces the answer instead of
+    // leaving the user stranded on a "only my question" view.
+    const resumeKey =
+      selectedSessionId != null ? String(selectedSessionId) : "_new_";
+    const savedJobId = useUi.getState().askActiveJobBySession[resumeKey];
+    if (savedJobId) {
+      let cancelled = false;
+      // Helper: bail if the saved pointer has changed since we started
+      // (e.g. the user submitted a fresh question while the verify GET
+      // was in flight). Without this, the late resolve could clobber
+      // the new activeJob with the old jobId.
+      const stillThis = () =>
+        useUi.getState().askActiveJobBySession[resumeKey] === savedJobId;
+      void (async () => {
+        try {
+          const status = await apiFetch<{ id: string; status: string }>(
+            `/api/ask/${savedJobId}`,
+          );
+          if (cancelled || !stillThis()) return;
+          if (status.status === "running" || status.status === "queued") {
+            setActiveJob(savedJobId);
+          } else {
+            // Worker terminated while we were away. The assistant turn
+            // (or failure) is already persisted to chat_sessions; ask
+            // the parent to re-pull the seed so it shows.
+            clearAskActiveJob(resumeKey);
+            onResumeStale?.();
+          }
+        } catch {
+          // 404 or network error — backend doesn't know this job
+          // (CLI process restarted between submit and remount). Drop
+          // the stale pointer; the seed turns from history are the
+          // authoritative view of the conversation.
+          if (cancelled || !stillThis()) return;
+          clearAskActiveJob(resumeKey);
+          onResumeStale?.();
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedToken]);
@@ -179,6 +234,7 @@ export default function AskChat({
         ];
       });
       setActiveJob(null);
+      clearAskActiveJob(sessionKey);
       return;
     }
     if (jobFailure) {
@@ -188,6 +244,7 @@ export default function AskChat({
       // submitError block below replaces it with the clean error
       // surface so we don't leave an orphaned user-only bubble.
       setActiveJob(null);
+      clearAskActiveJob(sessionKey);
       return;
     }
     // Stream closed without final answer AND without job.failed (rare
@@ -198,7 +255,8 @@ export default function AskChat({
     );
     setSubmitErrorHint("configure-llm");
     setActiveJob(null);
-  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta]);
+    clearAskActiveJob(sessionKey);
+  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, sessionKey, clearAskActiveJob]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -237,6 +295,14 @@ export default function AskChat({
       }
       setSessionId(result.session_id);
       setActiveJob(result.job_id);
+      // Persist the in-flight job under the resolved session key so a
+      // navigation-away-and-back can reattach the SSE stream. For a
+      // brand-new session we know the real id from the response — use
+      // it directly instead of the stale "_new_" sessionKey, which a
+      // sibling effect promotes only on the next render.
+      const persistKey =
+        result.session_id != null ? String(result.session_id) : sessionKey;
+      setAskActiveJob(persistKey, result.job_id);
       onSessionAssigned?.(result.session_id);
     } catch (err) {
       // The 412 pre-flight check on the LLM config carries a
