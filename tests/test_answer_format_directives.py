@@ -28,25 +28,57 @@ def test_prompt_explains_markdown_renders_on_both_surfaces() -> None:
     assert "Markdown" in prompt
 
 
-def test_prompt_directs_lists_for_many_items() -> None:
-    """5+ items → bullet list, not comma-separated paragraph."""
+def test_prompt_directs_lists_for_5_to_10_items() -> None:
+    """5–10 items → Markdown bullet list, sorted, one per line. Past
+    10 the rule shifts to STATS-EXAMPLE-DRILL (covered in its own
+    test). The two regimes are explicit so the LLM doesn't bullet-
+    dump 30 names in the middle ground."""
     cfg = AMXConfig()
     prompt = _agent_system_prompt(cfg, ["public"])
-    assert "Listing many items" in prompt
-    # The anti-pattern is called out explicitly so the LLM doesn't
-    # default to it on long lists.
+    assert "5–10 items" in prompt or "5-10 items" in prompt
     lower = prompt.lower()
-    assert "comma-separated" in lower or "comma" in lower
     assert "bullet list" in lower
 
 
-def test_prompt_caps_long_list_sizes() -> None:
-    """When the data set is huge (>30 items) the LLM should mention
-    the total + truncate or aggregate, not dump all 70 inline."""
+def test_prompt_uses_stats_example_drill_for_large_sets() -> None:
+    """When the data set is large (>10 items) the LLM should NOT
+    bullet-dump 30 entries — that's still unscannable. The new
+    STATS-EXAMPLE-DRILL pattern: total + 5-8 examples + ONE drill-in
+    question."""
     cfg = AMXConfig()
     prompt = _agent_system_prompt(cfg, ["public"])
-    assert "30 items" in prompt or "30 entries" in prompt or "~30" in prompt
-    assert "total" in prompt.lower()
+    assert "STATS-EXAMPLE-DRILL" in prompt
+    # Anti-patterns the rule explicitly forbids.
+    assert 'no "top 30"' in prompt
+    assert "NEVER dump the full list" in prompt
+    # The three-part shape is named.
+    assert "Stats line" in prompt
+    assert "example names" in prompt or "Example names" in prompt
+    assert "Drill-in invitation" in prompt
+
+
+def test_prompt_forbids_blocking_picker_first() -> None:
+    """The user came with a question — the LLM must not refuse to
+    answer until the user picks a database/schema. Stats + examples
+    come first, drill-in is an invitation, not a precondition."""
+    cfg = AMXConfig()
+    prompt = _agent_system_prompt(cfg, ["public"])
+    assert "NEVER ask the user to pick" in prompt
+    assert "blocker" in prompt.lower()
+
+
+def test_prompt_pattern_covers_multiple_data_types() -> None:
+    """The STATS-EXAMPLE-DRILL rule applies to tables, columns, and
+    schemas — not just schemas. Pin examples for each so a future
+    edit doesn't quietly narrow the rule."""
+    cfg = AMXConfig()
+    prompt = _agent_system_prompt(cfg, ["public"])
+    # Tables example.
+    assert "5,000 tables" in prompt or "5,142 tables" in prompt
+    # Columns example (date-shaped).
+    assert "800 columns" in prompt or "~800" in prompt
+    # Schemas example (the screenshot scenario).
+    assert "70 schemas" in prompt
 
 
 def test_prompt_directs_tables_for_tabular_data() -> None:
@@ -57,24 +89,22 @@ def test_prompt_directs_tables_for_tabular_data() -> None:
     assert "GFM table" in prompt or "Markdown table" in prompt or "Tabular" in prompt
 
 
-def test_prompt_directs_per_profile_grouping_in_multi_profile() -> None:
-    """Multi-profile breakdowns: profile name **bold** at the start
-    of each item, then the data nested. The previous prompt didn't
-    say this, so the LLM produced "dbr and test-postgre both expose
-    the same schema set under catalog/database amx_test, including
-    address, airline, app_store, …" — unreadable for 70 schemas."""
+def test_prompt_directs_per_profile_aggregation_in_multi_profile() -> None:
+    """Multi-profile breakdowns: aggregate ACROSS profiles in stats
+    line ('140 schemas total: 70 in dbr, 70 in test-postgre'), don't
+    pick one silently. Pin both the small-list bold-name format and
+    the large-list aggregation directive."""
     cfg = AMXConfig()
     prompt = _agent_system_prompt(
         cfg,
         ["public"],
         scope_profiles=["alpha", "beta"],
     )
-    # The multi-profile block tells the LLM to bold the profile name
-    # at the start of each row when listing per-profile data.
-    assert "bullet list" in prompt.lower()
+    # Don't pick a single profile when the question is open.
+    assert "aggregate ACROSS every" in prompt or "aggregate across every" in prompt.lower()
+    assert "Don't pick a single profile" in prompt or "single profile silently" in prompt
+    # Small-list per-profile bold format still mentioned.
     assert "**bold**" in prompt or "**" in prompt
-    # And the explicit anti-pattern note.
-    assert "comma" in prompt.lower()
 
 
 def test_prompt_directs_single_paragraph_for_short_answers() -> None:
