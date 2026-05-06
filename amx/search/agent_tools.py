@@ -62,10 +62,39 @@ class ToolBox:
         catalog: SearchCatalog,
         *,
         db_factory: Callable[[], DatabaseConnector] | None = None,
+        db_profiles: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.cfg = cfg
         self.catalog = catalog
-        self.db_profile = cfg.active_db_profile or "default"
+        # Resolve the multi-profile retrieval scope.
+        # ``db_profiles`` (caller-supplied) > ``cfg.active_db_profiles`` (the
+        # 0.11.0 multi-pick scope) > legacy single-active fallback. Anchor
+        # ``self.db_profile`` to the first entry so legacy single-profile
+        # call-sites that read it still resolve to a valid name; full
+        # multi-profile callers use ``self.db_profile_filter`` instead.
+        configured: list[str] = []
+        if db_profiles:
+            configured = [str(name).strip() for name in db_profiles if str(name).strip()]
+        elif callable(getattr(cfg, "effective_db_profiles", None)):
+            try:
+                configured = [
+                    str(name).strip() for name in cfg.effective_db_profiles() if str(name).strip()
+                ]
+            except Exception:
+                configured = []
+        if not configured:
+            fallback = (cfg.active_db_profile or "default").strip() or "default"
+            configured = [fallback]
+        # Dedupe while preserving order.
+        seen: set[str] = set()
+        scope: list[str] = []
+        for name in configured:
+            if name in seen:
+                continue
+            seen.add(name)
+            scope.append(name)
+        self.db_profiles: list[str] = scope
+        self.db_profile: str = scope[0]  # anchor for legacy single-profile reads
         self._db_factory = db_factory or (lambda: DatabaseConnector(cfg.db))
         # Only build the live DB connector lazily — many tools never need it.
         self._db: DatabaseConnector | None = None
@@ -77,8 +106,30 @@ class ToolBox:
         # collapses the 2nd and 3rd call to a free memory lookup.
         # ToolBox is instantiated per /ask question so the cache never
         # outlives a single point-in-time view of the database.
-        self._tool_cache: dict[tuple[str, str], str] = {}
+        # The cache key includes the tuple of profiles — a multi-profile
+        # call's results are NOT interchangeable with a single-profile
+        # call's results, so they must miss when the scope changes.
+        self._tool_cache: dict[tuple[str, str, tuple[str, ...]], str] = {}
         self._tool_cache_hits: int = 0
+
+    @property
+    def db_profile_filter(self) -> str | list[str]:
+        """Return the scope in the form catalog tools accept.
+
+        Catalog methods type their ``db_profile`` parameter as
+        ``DBProfileFilter = str | Sequence[str]``. We hand back a scalar
+        for the single-profile case (so the SQL stays ``db_profile = ?``,
+        cheap path) and a list for multi-profile (which expands to
+        ``db_profile IN (?, ?, ?)``).
+        """
+        if len(self.db_profiles) <= 1:
+            return self.db_profile
+        return list(self.db_profiles)
+
+    @property
+    def is_multi_profile(self) -> bool:
+        """``True`` when the scope spans 2+ profiles."""
+        return len(self.db_profiles) > 1
 
     # ------------------------------------------------------------------ helpers
     def _live_db(self) -> DatabaseConnector:
@@ -926,10 +977,19 @@ class ToolBox:
         # (e.g. {"a":1,"b":2} vs {"b":2,"a":1}) hash to the same key.
         # Falls through to the handler on TypeError if some arg isn't
         # JSON-serialisable (no caching, but no crash either).
-        cache_key: tuple[str, str] | None = None
+        # The third element of the key is the (sorted) tuple of profiles
+        # in scope; a multi-profile result MUST NOT be served to a
+        # single-profile call or vice versa, so the scope tuple
+        # disambiguates them.
+        cache_key: tuple[str, str, tuple[str, ...]] | None = None
         if name not in self._UNCACHED_TOOLS:
             try:
-                cache_key = (name, json.dumps(args, sort_keys=True, default=str))
+                profile_key = tuple(sorted(self.db_profiles))
+                cache_key = (
+                    name,
+                    json.dumps(args, sort_keys=True, default=str),
+                    profile_key,
+                )
                 cached = self._tool_cache.get(cache_key)
                 if cached is not None:
                     self._tool_cache_hits += 1
@@ -1366,13 +1426,26 @@ class ToolBox:
         if not target:
             raise _ToolError("Argument 'name' is required.")
         # ── Stage 1 — exact match in both catalog + live DB ──
-        catalog_rows = self.catalog.find_tables_by_exact_name(self.db_profile, target, limit=20)
+        # Multi-profile scope: ``find_tables_by_exact_name`` accepts a
+        # DBProfileFilter, so a single SQL pass covers every profile.
+        # Result rows carry their own ``db_profile`` field; we tag each
+        # match path with it so the LLM can disambiguate cross-profile.
+        catalog_rows = self.catalog.find_tables_by_exact_name(
+            self.db_profile_filter, target, limit=20
+        )
         catalog_paths: list[str] = []
         for row in catalog_rows:
             schema_name = str(row.get("schema_name") or "")
             table_name = str(row.get("table_name") or "")
+            row_profile = str(row.get("db_profile") or "")
             if schema_name and table_name:
-                catalog_paths.append(f"{schema_name}.{table_name}")
+                # In multi-profile mode prefix the path with profile so
+                # downstream dedupe doesn't collapse same-named tables
+                # from different profiles into one.
+                if self.is_multi_profile and row_profile:
+                    catalog_paths.append(f"{row_profile}::{schema_name}.{table_name}")
+                else:
+                    catalog_paths.append(f"{schema_name}.{table_name}")
         live_paths: list[str] = []
         # Walk live DB once and remember every table name we see; the
         # exact-match check happens here, fuzzy fallback (Stage 2)
@@ -1457,13 +1530,17 @@ class ToolBox:
 
         # Catalog-side fuzzy: also scan catalog entities so we catch
         # tables that exist in the catalog but aren't in the live DB
-        # listing yet (or live discovery failed).
+        # listing yet (or live discovery failed). Multi-profile scope
+        # expands ``WHERE db_profile = ?`` to ``IN (?, ?, …)``.
+        from amx.search._catalog._db_profile_clause import build_db_profile_clause
+
         try:
+            clause, binds = build_db_profile_clause(self.db_profile_filter)
             with self.catalog._connect() as conn:  # noqa: SLF001
                 catalog_all = conn.execute(
-                    "SELECT schema_name, table_name FROM catalog_entities "
-                    "WHERE db_profile = ? AND entity_kind = 'table'",
-                    (self.db_profile,),
+                    f"SELECT db_profile, schema_name, table_name FROM catalog_entities "
+                    f"WHERE {clause} AND entity_kind = 'table'",
+                    tuple(binds),
                 ).fetchall()
             for r in catalog_all:
                 schema_name = str(r["schema_name"] or "")
@@ -1715,12 +1792,17 @@ class ToolBox:
         return head
 
     def _tool_search_tables_by_concept(self, concept: str, limit: int = 10) -> dict[str, Any]:
-        rows = self.catalog.search_tables(self.db_profile, concept or "", limit=int(limit))
+        # ``db_profile_filter`` collapses to a scalar in single-profile
+        # scope and a list in multi-profile scope — search_tables expands
+        # the WHERE clause via build_db_profile_clause either way, so the
+        # SQL stays one query regardless of how many profiles are in scope.
+        rows = self.catalog.search_tables(self.db_profile_filter, concept or "", limit=int(limit))
         return {
             "concept": concept,
             "count": len(rows),
             "matches": [
                 {
+                    "db_profile": str(r.get("db_profile") or ""),
                     "schema": str(r.get("schema_name") or ""),
                     "table": str(r.get("table_name") or ""),
                     "score": float(r.get("rank_score") or r.get("score") or 0.0),
@@ -1731,12 +1813,13 @@ class ToolBox:
         }
 
     def _tool_search_columns_by_concept(self, concept: str, limit: int = 10) -> dict[str, Any]:
-        rows = self.catalog.search_columns(self.db_profile, concept or "", limit=int(limit))
+        rows = self.catalog.search_columns(self.db_profile_filter, concept or "", limit=int(limit))
         return {
             "concept": concept,
             "count": len(rows),
             "matches": [
                 {
+                    "db_profile": str(r.get("db_profile") or ""),
                     "schema": str(r.get("schema_name") or ""),
                     "table": str(r.get("table_name") or ""),
                     "column": str(r.get("column_name") or ""),
@@ -1995,13 +2078,19 @@ class ToolBox:
         if not token:
             raise _ToolError("Argument 'dtype' is required.")
         family = self._DTYPE_FAMILIES.get(token, [token])
+        from amx.search._catalog._db_profile_clause import build_db_profile_clause as _bdp
+
+        profile_clause, profile_binds = _bdp(self.db_profile_filter, column="ce.db_profile")
         # Build a single SQL OR-set so we run one query.
         with self.catalog._connect() as conn:  # noqa: SLF001 — internal helper
             placeholders = ", ".join(["?"] * len(family))
+            like_clause = " OR ".join(["LOWER(dtype) LIKE ?"] * len(family))
             query = f"""
-                SELECT schema_name, table_name, column_name, dtype, effective_description
+                SELECT db_profile, schema_name, table_name, column_name, dtype,
+                       effective_description
                 FROM (
                     SELECT
+                        ce.db_profile,
                         ce.schema_name,
                         ce.table_name,
                         ce.column_name,
@@ -2009,15 +2098,15 @@ class ToolBox:
                         cd.description_text AS effective_description
                     FROM catalog_entities ce
                     LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                    WHERE ce.db_profile = ?
+                    WHERE {profile_clause}
                       AND ce.entity_kind = 'column'
                       AND ce.dtype IS NOT NULL
                 ) WHERE LOWER(dtype) IN ({placeholders})
-                   OR {" OR ".join(["LOWER(dtype) LIKE ?"] * len(family))}
-                ORDER BY schema_name, table_name, column_name
+                   OR {like_clause}
+                ORDER BY db_profile, schema_name, table_name, column_name
                 LIMIT ?
             """
-            params: list[Any] = [self.db_profile]
+            params: list[Any] = list(profile_binds)
             params.extend(family)
             params.extend([f"%{f}%" for f in family])
             params.append(int(limit))
@@ -2049,6 +2138,7 @@ class ToolBox:
                 kind = "exact_dtype_match"
             results.append(
                 {
+                    "db_profile": str(r["db_profile"] or ""),
                     "schema": str(r["schema_name"] or ""),
                     "table": str(r["table_name"] or ""),
                     "column": str(r["column_name"] or ""),
@@ -2098,21 +2188,24 @@ class ToolBox:
                 # OR-of name LIKE patterns AND OR-of string dtype LIKE patterns
                 name_like_clause = " OR ".join("LOWER(column_name) LIKE ?" for _ in name_patterns)
                 dtype_like_clause = " OR ".join("LOWER(dtype) LIKE ?" for _ in string_dtypes_like)
+                profile_clause2, profile_binds2 = _bdp(
+                    self.db_profile_filter, column="ce.db_profile"
+                )
                 q = f"""
-                    SELECT ce.schema_name, ce.table_name, ce.column_name,
+                    SELECT ce.db_profile, ce.schema_name, ce.table_name, ce.column_name,
                            ce.dtype,
                            cd.description_text AS effective_description
                     FROM catalog_entities ce
                     LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                    WHERE ce.db_profile = ?
+                    WHERE {profile_clause2}
                       AND ce.entity_kind = 'column'
                       AND ce.dtype IS NOT NULL
                       AND ({name_like_clause})
                       AND ({dtype_like_clause})
-                    ORDER BY ce.schema_name, ce.table_name, ce.column_name
+                    ORDER BY ce.db_profile, ce.schema_name, ce.table_name, ce.column_name
                     LIMIT ?
                 """
-                params2: list[Any] = [self.db_profile]
+                params2: list[Any] = list(profile_binds2)
                 params2.extend(name_patterns)
                 params2.extend(string_dtypes_like)
                 params2.append(int(limit))
@@ -2128,6 +2221,7 @@ class ToolBox:
                     continue
                 results.append(
                     {
+                        "db_profile": str(r["db_profile"] or ""),
                         "schema": schema_n,
                         "table": table_n,
                         "column": column_n,
@@ -2170,8 +2264,12 @@ class ToolBox:
         if not target:
             raise _ToolError("Argument 'table' is required.")
         # Resolve to schema.table when only the table name was provided.
+        # Multi-profile scope: search across every configured profile;
+        # if the table exists in only one profile we anchor there. The
+        # cross-profile join expansion (joinable across profile X and
+        # profile Y) lands in PR-C as a dedicated tool.
         if "." not in target:
-            exact = self.catalog.find_tables_by_exact_name(self.db_profile, target, limit=5)
+            exact = self.catalog.find_tables_by_exact_name(self.db_profile_filter, target, limit=5)
             if not exact:
                 return {
                     "table": target,

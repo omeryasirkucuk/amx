@@ -31,6 +31,11 @@ def _make_toolbox_with_counters() -> tuple[ToolBox, dict[str, int]]:
     tb._tool_cache = {}
     tb._tool_cache_hits = 0
     tb._UNCACHED_TOOLS = frozenset()
+    # Multi-profile cache key uses self.db_profiles tuple — set to a
+    # single-profile scope so the bypass-init test fixture doesn't
+    # crash on AttributeError when invoke() builds the key.
+    tb.db_profiles = ["test"]
+    tb.db_profile = "test"
 
     counters = {"echo": 0, "fail_echo": 0, "non_json": 0}
 
