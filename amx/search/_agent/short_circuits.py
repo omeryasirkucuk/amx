@@ -18,9 +18,11 @@ answer instead:
 from __future__ import annotations
 
 import re
+import threading
 import time
 from typing import Any
 
+from amx.agents.orchestrator import RunCancelled
 from amx.search._agent._types import SearchPlan
 from amx.search.catalog import SearchAnswer
 from amx.utils.console import step_spinner
@@ -235,6 +237,7 @@ class ShortCircuitsMixin:
         question: str,
         clean_question: str,
         question_language: str,
+        cancel_token: threading.Event | None = None,
     ) -> SearchAnswer | None:
         """Run the tool-calling loop and return a SearchAnswer.
 
@@ -300,8 +303,16 @@ class ShortCircuitsMixin:
                     session_memory=prior_turns,
                     display=display if display.is_active else None,
                     db_profiles=list(self.db_profiles) if self.db_profiles else None,
+                    cancel_token=cancel_token,
                 )
             elapsed = round(time.monotonic() - t0, 4)
+        except RunCancelled:
+            # User pressed Ctrl-C; let the cancellation propagate so
+            # SearchAgent.ask can render the "Cancelled by user"
+            # answer instead of bailing into the legacy router (which
+            # would try to re-ask the LLM and ignore the user's
+            # interrupt).
+            raise
         except Exception as exc:
             log.warning("Tool agent failed (%s); falling back to legacy router.", exc)
             return None

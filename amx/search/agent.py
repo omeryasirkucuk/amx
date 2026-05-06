@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from amx.agents.orchestrator import RunCancelled
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
@@ -249,7 +251,20 @@ class SearchAgent(
         r"^\s*(?:neden|niye|niçin|nicin|nasıl|nasil)\s*[\.\?\!]*\s*$",
     )
 
-    def ask(self, question: str) -> SearchAnswer:
+    def ask(
+        self,
+        question: str,
+        *,
+        cancel_token: threading.Event | None = None,
+    ) -> SearchAnswer:
+        """Run one /ask turn.
+
+        ``cancel_token`` lets the CLI install a SIGINT handler that
+        sets the event when the user presses Ctrl-C, so the agent
+        loop bails between iterations even if the in-flight LLM HTTP
+        call is mid-stream. The web layer (Studio /api/ask) plugs in
+        its own JobRegistry-backed token for the same purpose.
+        """
         clean_question = (question or "").strip()
         question_language = _question_language_hint(clean_question)
         if not clean_question:
@@ -318,11 +333,33 @@ class SearchAgent(
             str(self.settings.get("use_tool_agent", "true") or "true").strip().lower() == "true"
         )
         if use_tool_agent:
-            tool_answer = self._answer_via_tool_agent(
-                question=question,
-                clean_question=clean_question,
-                question_language=question_language,
-            )
+            try:
+                tool_answer = self._answer_via_tool_agent(
+                    question=question,
+                    clean_question=clean_question,
+                    question_language=question_language,
+                    cancel_token=cancel_token,
+                )
+            except RunCancelled:
+                # User pressed Ctrl-C (CLI) or hit Cancel (Studio).
+                # Surface a clean SearchAnswer instead of bubbling the
+                # exception up to the REPL — that way the chat session
+                # stays open at the next prompt instead of dropping
+                # the user out of /search.
+                summary = (
+                    "Soru kullanıcı tarafından iptal edildi."
+                    if (question_language or "") == "turkish"
+                    else "Cancelled by user."
+                )
+                return SearchAnswer(
+                    intent="cancelled",
+                    question=question,
+                    rows=[],
+                    confidence="low",
+                    summary=summary,
+                    provenance=["user_cancelled"],
+                    details={"reason": "cancelled_by_user"},
+                )
             if tool_answer is not None:
                 return tool_answer
 
