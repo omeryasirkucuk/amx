@@ -1681,20 +1681,35 @@ class AMXConfig:
         self._autosave()
 
     def remove_db_profile(self, name: str) -> None:
+        """Remove a DB profile. The user can wipe the last one too —
+        AMX surfaces the empty-config state via prompts and gates
+        downstream features (``/ask``, browse) cleanly when there is
+        no profile to operate on. Refusing the deletion forced a
+        roundabout reset (add throwaway → activate → delete → delete
+        throwaway) that's no easier than letting the user clear and
+        re-add from scratch.
+        """
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")
-        if name == self.active_db_profile and len(self.db_profiles) == 1:
-            raise ValueError("Cannot remove the last DB profile")
         del self.db_profiles[name]
         # 0.11.0: also evict from the multi-pick scope to prevent ghost
         # selections after a profile is removed.
         if name in self.active_db_profiles:
             self.active_db_profiles = [n for n in self.active_db_profiles if n != name]
         if self.active_db_profile == name:
-            self.active_db_profile = next(iter(self.db_profiles.keys()))
-            self.db = self.db_profiles[self.active_db_profile]
-            if not self.active_db_profiles:
-                self.active_db_profiles = [self.active_db_profile]
+            # Promote the next available profile when there is one;
+            # otherwise clear the active pointer + reset cfg.db to an
+            # empty DBConfig so callers reading those fields don't see
+            # stale data from the just-deleted profile.
+            if self.db_profiles:
+                self.active_db_profile = next(iter(self.db_profiles.keys()))
+                self.db = self.db_profiles[self.active_db_profile]
+                if not self.active_db_profiles:
+                    self.active_db_profiles = [self.active_db_profile]
+            else:
+                self.active_db_profile = ""
+                self.db = DBConfig()
+                self.active_db_profiles = []
         self._autosave()
 
     def apply_active_llm_profile(self) -> None:
@@ -1732,14 +1747,27 @@ class AMXConfig:
         self._autosave()
 
     def remove_llm_profile(self, name: str) -> None:
+        """Remove an LLM profile. Symmetric with :meth:`remove_db_profile`
+        — the user can wipe the last one. ``/ask`` already gates on
+        :func:`SearchAgent._llm_available`; deleting the last LLM puts
+        AMX in the same state as a fresh install (no LLM configured),
+        and downstream surfaces (Studio /ask, CLI /search ask) show
+        the "configure an LLM profile" prompt.
+        """
         if name not in self.llm_profiles:
             raise KeyError(f"Unknown LLM profile: {name}")
-        if name == self.active_llm_profile and len(self.llm_profiles) == 1:
-            raise ValueError("Cannot remove the last LLM profile")
         del self.llm_profiles[name]
         if self.active_llm_profile == name:
-            self.active_llm_profile = next(iter(self.llm_profiles.keys()))
-            self.llm = replace(self.llm_profiles[self.active_llm_profile])
+            if self.llm_profiles:
+                self.active_llm_profile = next(iter(self.llm_profiles.keys()))
+                self.llm = replace(self.llm_profiles[self.active_llm_profile])
+            else:
+                # No remaining profiles → clear active pointer and reset
+                # cfg.llm to an empty LLMConfig. The /ask surfaces that
+                # state via the configure-llm 412 (Studio) and the
+                # `/search` discussion-requires-LLM message (CLI).
+                self.active_llm_profile = ""
+                self.llm = LLMConfig()
         if self.rag_llm_profile == name:
             self.rag_llm_profile = ""
         self._autosave()

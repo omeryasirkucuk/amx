@@ -98,11 +98,36 @@ def test_put_db_profile_drops_unknown_fields(client, auth_headers) -> None:
     assert response.status_code == 200
 
 
-def test_delete_db_profile_blocks_active(client, auth_headers, cfg) -> None:
+def test_delete_db_profile_active_promotes_next(client, auth_headers, cfg) -> None:
+    """Deleting the active profile when others exist promotes the
+    next remaining one. The user no longer has to manually activate
+    a different profile before they can clean up."""
     _set_db_profile(cfg, "prod", backend="postgresql", host="x")
+    _set_db_profile(cfg, "stage", backend="postgresql", host="y")
     cfg.active_db_profile = "prod"
     response = client.delete("/api/profiles/db/prod", headers=auth_headers)
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert "prod" not in cfg.db_profiles
+    # Active pointer migrated to the remaining profile.
+    assert cfg.active_db_profile == "stage"
+    body = response.json()
+    assert body["active"] == "stage"
+    assert body["remaining"] == 1
+
+
+def test_delete_db_profile_last_one_clears_active(client, auth_headers, cfg) -> None:
+    """User can wipe the only profile they have. The downstream
+    surfaces (browse sidebar, /ask configure-llm flow, etc.) handle
+    the empty-config state with friendly prompts."""
+    _set_db_profile(cfg, "only", backend="postgresql", host="x")
+    cfg.active_db_profile = "only"
+    response = client.delete("/api/profiles/db/only", headers=auth_headers)
+    assert response.status_code == 200
+    assert cfg.db_profiles == {}
+    assert cfg.active_db_profile == ""
+    body = response.json()
+    assert body["active"] is None
+    assert body["remaining"] == 0
 
 
 def test_delete_db_profile_removes_inactive(client, auth_headers, cfg) -> None:
@@ -112,6 +137,7 @@ def test_delete_db_profile_removes_inactive(client, auth_headers, cfg) -> None:
     response = client.delete("/api/profiles/db/stage", headers=auth_headers)
     assert response.status_code == 200
     assert "stage" not in cfg.db_profiles
+    assert cfg.active_db_profile == "prod"
 
 
 def test_activate_db_profile_404_for_unknown(client, auth_headers) -> None:
@@ -181,6 +207,38 @@ def test_llm_profile_activate(client, auth_headers, cfg) -> None:
     response = client.post("/api/profiles/llm/gpt4/activate", headers=auth_headers)
     assert response.status_code == 200
     assert cfg.active_llm_profile == "gpt4"
+
+
+def test_delete_llm_profile_active_promotes_next(client, auth_headers, cfg) -> None:
+    """Same as DB: deleting the active LLM with others present
+    promotes the next remaining profile so the user can clean up
+    without an extra activation roundtrip."""
+    _set_llm_profile(cfg, "gpt4", provider="openai", model="gpt-4o")
+    _set_llm_profile(cfg, "claude", provider="anthropic", model="claude-3")
+    cfg.active_llm_profile = "gpt4"
+    response = client.delete("/api/profiles/llm/gpt4", headers=auth_headers)
+    assert response.status_code == 200
+    assert "gpt4" not in cfg.llm_profiles
+    assert cfg.active_llm_profile == "claude"
+
+
+def test_delete_llm_profile_last_one_clears_active(client, auth_headers, cfg) -> None:
+    """User can wipe the only LLM profile. The /ask 412 pre-flight
+    (Studio) and ``_llm_available()`` check (CLI) both surface a
+    "configure an LLM profile" prompt for the resulting empty
+    state."""
+    _set_llm_profile(cfg, "only", provider="openai", model="gpt-4o")
+    cfg.active_llm_profile = "only"
+    response = client.delete("/api/profiles/llm/only", headers=auth_headers)
+    assert response.status_code == 200
+    assert cfg.llm_profiles == {}
+    assert cfg.active_llm_profile == ""
+    # cfg.llm reset to a default empty LLMConfig — no stale provider
+    # leaking from the just-deleted profile.
+    assert (cfg.llm.provider or "") == ""
+    body = response.json()
+    assert body["active"] is None
+    assert body["remaining"] == 0
 
 
 def test_doc_profile_listing(client, auth_headers, cfg) -> None:
