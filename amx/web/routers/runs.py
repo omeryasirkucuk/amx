@@ -619,9 +619,7 @@ def _process_scope_batch(
         if job.cancel.is_set():
             raise RunCancelled(f"Cancelled before schema {schema}")
         idx_global += 1
-        label = (
-            ", ".join(tables) if len(tables) <= 3 else f"{len(tables)} assets"
-        )
+        label = ", ".join(tables) if len(tables) <= 3 else f"{len(tables)} assets"
         emit(
             job.queue,
             "activity.added",
@@ -680,8 +678,7 @@ def _process_scope_batch(
                     "detail": f"{len(table_rows)} suggestion(s) (batch)",
                     "schema": schema,
                     "table": table,
-                    "results": column_details
-                    or [_review_result_to_event(r) for r in table_rows],
+                    "results": column_details or [_review_result_to_event(r) for r in table_rows],
                 },
             )
 
