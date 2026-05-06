@@ -56,6 +56,16 @@ class ToolBox:
     # state should add their name here.
     _UNCACHED_TOOLS: frozenset[str] = frozenset()
 
+    #: Per-profile live-DB tool fan-out timeout. If a single profile
+    #: takes longer than this to respond, its result is dropped from
+    #: the union and the LLM is told the profile timed out — other
+    #: profiles still come back. Picked deliberately well under the
+    #: 12s hard ceiling for the whole question.
+    _LIVE_FANOUT_TIMEOUT_SEC: float = 8.0
+    #: Cap on parallel workers for the fan-out. Caps at 8 so a user
+    #: with 30 profiles doesn't spawn 30 SQLAlchemy engines at once.
+    _LIVE_FANOUT_MAX_WORKERS: int = 8
+
     def __init__(
         self,
         cfg: AMXConfig,
@@ -63,6 +73,7 @@ class ToolBox:
         *,
         db_factory: Callable[[], DatabaseConnector] | None = None,
         db_profiles: list[str] | tuple[str, ...] | None = None,
+        db_connectors: dict[str, DatabaseConnector] | None = None,
     ) -> None:
         self.cfg = cfg
         self.catalog = catalog
@@ -98,6 +109,14 @@ class ToolBox:
         self._db_factory = db_factory or (lambda: DatabaseConnector(cfg.db))
         # Only build the live DB connector lazily — many tools never need it.
         self._db: DatabaseConnector | None = None
+        # Multi-profile live-DB fan-out: per-profile connectors keyed by
+        # name. Populated lazily on first tool call that targets a
+        # specific profile. Caller can prime the dict via
+        # ``db_connectors`` (Studio's _CONNECTOR_CACHE bridges through
+        # this so the SPA's browse-side warm engines are reused). All
+        # connectors are disposed in ``close()`` regardless of source.
+        self._connectors: dict[str, DatabaseConnector] = dict(db_connectors or {})
+        self._owned_connectors: set[str] = set()
         # In-question tool memoization. The 6-iteration LLM loop can
         # call ``describe_table(foo)`` three times in one question
         # (LLM thinks → calls describe_table → reads response → thinks
@@ -137,17 +156,129 @@ class ToolBox:
             self._db = self._db_factory()
         return self._db
 
+    def _connector_for_profile(self, profile: str) -> DatabaseConnector:
+        """Return a (lazy) live-DB connector bound to *profile*'s DBConfig.
+
+        Used by the multi-profile live-DB fan-out paths so each
+        profile's `list_schemas()` / `list_tables()` call goes against
+        its own SQLAlchemy engine. Connectors are cached for the
+        lifetime of this ToolBox (one ``/ask`` question) and disposed
+        in :meth:`close`.
+
+        Falls back to the anchor connector when *profile* matches the
+        anchor — keeps the cache small in the common single-profile
+        case.
+        """
+        name = (profile or "").strip()
+        if not name:
+            return self._live_db()
+        cached = self._connectors.get(name)
+        if cached is not None:
+            return cached
+        if name == self.db_profile:
+            # Anchor profile reuses the legacy ``self._db_factory``-built
+            # connector so existing single-profile tools and the
+            # multi-profile fan-out share one engine for the active row.
+            connector = self._live_db()
+            self._connectors[name] = connector
+            return connector
+        # Build a fresh DBConfig-bound connector for the requested
+        # profile. The catalog-side multi-profile clause expansion
+        # (PR-A) handled index queries; live-DB queries need a real
+        # connection per backend, so each profile gets its own.
+        base = self.cfg.db_profiles.get(name)
+        if base is None:
+            raise _ToolError(
+                f"Unknown DB profile {name!r}; configured profiles: "
+                f"{', '.join(sorted(self.cfg.db_profiles)) or '(none)'}"
+            )
+        connector = DatabaseConnector(base)
+        self._connectors[name] = connector
+        self._owned_connectors.add(name)
+        return connector
+
+    def _live_fanout(
+        self,
+        op: Callable[[DatabaseConnector], Any],
+        *,
+        profiles: list[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Run *op* against every profile in scope in parallel.
+
+        Returns a dict keyed by profile name where each value is one
+        of ``{"ok": True, "value": <op-result>}``,
+        ``{"ok": False, "error": "<message>"}``, or
+        ``{"ok": False, "timeout": True}``.
+
+        The fan-out caps concurrency at
+        :attr:`_LIVE_FANOUT_MAX_WORKERS` and times out individual
+        per-profile calls at :attr:`_LIVE_FANOUT_TIMEOUT_SEC`. A slow
+        profile NEVER blocks the others — its slot returns timeout
+        and the caller surfaces a partial-results note for the LLM.
+        """
+        from concurrent.futures import ThreadPoolExecutor, wait
+        from concurrent.futures import TimeoutError as _Timeout
+
+        targets = list(profiles) if profiles else list(self.db_profiles)
+        if not targets:
+            return {}
+        max_workers = min(self._LIVE_FANOUT_MAX_WORKERS, max(1, len(targets)))
+        results: dict[str, dict[str, Any]] = {}
+
+        def _runner(profile_name: str) -> dict[str, Any]:
+            try:
+                conn = self._connector_for_profile(profile_name)
+            except _ToolError as exc:
+                return {"ok": False, "error": str(exc)}
+            try:
+                value = op(conn)
+            except Exception as exc:
+                return {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+            return {"ok": True, "value": value}
+
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="amx-toolbox-fanout",
+        ) as pool:
+            future_map = {pool.submit(_runner, name): name for name in targets}
+            done, not_done = wait(future_map, timeout=self._LIVE_FANOUT_TIMEOUT_SEC)
+            for future in done:
+                name = future_map[future]
+                try:
+                    results[name] = future.result(timeout=0)
+                except _Timeout:
+                    results[name] = {"ok": False, "timeout": True}
+                except Exception as exc:
+                    results[name] = {"ok": False, "error": str(exc)}
+            for future in not_done:
+                name = future_map[future]
+                future.cancel()
+                results[name] = {"ok": False, "timeout": True}
+        return results
+
     def close(self) -> None:
         """Dispose the live DB connector. Each ``/ask`` question instantiates a
         fresh ``ToolBox``; without this call the SQLAlchemy engine + connection
         pool stay alive across REPL turns, leaking file descriptors until
         macOS / Linux ulimit kicks in (the user-reported
         ``OSError: [Errno 24] Too many open files`` after several turns).
+
+        Multi-profile fan-out: every connector ToolBox owned (i.e.
+        opened on demand for a non-anchor profile) is closed too. Caller-
+        supplied connectors via ``db_connectors=`` are NOT closed —
+        their lifetime belongs to the caller (Studio's connector cache).
         """
         if self._db is not None:
             with contextlib.suppress(Exception):
                 self._db.close()
             self._db = None
+        for name in list(self._owned_connectors):
+            connector = self._connectors.pop(name, None)
+            if connector is None:
+                continue
+            with contextlib.suppress(Exception):
+                connector.close()
+        self._owned_connectors.clear()
 
     def __enter__(self) -> ToolBox:
         return self
@@ -189,6 +320,15 @@ class ToolBox:
                                     "active profile has pinned."
                                 ),
                             },
+                            "db_profile": {
+                                "type": "string",
+                                "description": (
+                                    "Optional DB profile to target. Omit when the scope is "
+                                    "single-profile, OR when you want a multi-profile fan-out "
+                                    "(the tool then queries every profile in scope in parallel "
+                                    "and returns a per-profile breakdown)."
+                                ),
+                            },
                         },
                         "required": [],
                     },
@@ -203,7 +343,9 @@ class ToolBox:
                         "schema. Use this when the user asks 'what tables are under sap_test?', "
                         "'list all tables in sap_s6p', or to disambiguate a bare table name. "
                         "Pass ``catalog`` to scope the listing to a Unity-Catalog catalog the "
-                        "active profile has not pinned."
+                        "active profile has not pinned. Pass ``db_profile`` to target a "
+                        "specific profile when scope is multi-profile (otherwise all profiles "
+                        "in scope are queried in parallel and the result is per-profile)."
                     ),
                     "parameters": {
                         "type": "object",
@@ -218,6 +360,14 @@ class ToolBox:
                                     "Optional Unity-Catalog catalog (Databricks) or BigQuery "
                                     "project. Omit to use whatever the active profile has "
                                     "pinned."
+                                ),
+                            },
+                            "db_profile": {
+                                "type": "string",
+                                "description": (
+                                    "Optional DB profile to target. Omit for multi-profile "
+                                    "fan-out: every profile in scope is queried in parallel "
+                                    "and the result groups by profile."
                                 ),
                             },
                         },
@@ -313,6 +463,14 @@ class ToolBox:
                                     "BigQuery project. Omit to use whatever the active "
                                     "profile pins; the tool will auto-pick the single "
                                     "user catalog when no catalog is pinned."
+                                ),
+                            },
+                            "db_profile": {
+                                "type": "string",
+                                "description": (
+                                    "REQUIRED when scope is multi-profile and the table "
+                                    "exists in more than one profile (resolve ambiguity by "
+                                    "naming the profile). Optional otherwise."
                                 ),
                             },
                         },
@@ -1117,7 +1275,261 @@ class ToolBox:
             return user_catalogs[0], user_catalogs, all_catalogs
         return "", user_catalogs, all_catalogs
 
-    def _tool_list_schemas(self, catalog: str = "") -> dict[str, Any]:
+    def _list_schemas_on_profile(
+        self,
+        profile: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, Any]:
+        """Run ``list_schemas()`` against a specific named profile.
+
+        Used by the targeted single-profile dispatch path (LLM passed
+        ``db_profile=X``) and as the per-profile worker function for
+        the multi-profile fan-out. Returns the same payload shape as
+        the top-level tool with ``db_profile`` added.
+        """
+        try:
+            db = self._connector_for_profile(profile)
+        except _ToolError as exc:
+            return {
+                "db_profile": profile,
+                "error": str(exc),
+                "schemas": [],
+                "count": 0,
+            }
+        # Catalog resolution honours the per-profile DBConfig.
+        base = self.cfg.db_profiles.get(profile)
+        pinned_catalog = str(getattr(base, "catalog", "") or "").strip() if base else ""
+        explicit = (catalog or "").strip()
+        cat_arg = explicit or pinned_catalog
+        try:
+            with self._scoped_catalog(db, cat_arg):
+                schemas = [str(s) for s in db.list_schemas()]
+        except Exception as exc:
+            return {
+                "db_profile": profile,
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "schemas": [],
+                "count": 0,
+            }
+        database = (
+            cat_arg
+            or (getattr(base, "database", "") or "")
+            or (getattr(base, "catalog", "") or "")
+            or (getattr(base, "project", "") or "")
+            or "(no database pinned)"
+        )
+        payload: dict[str, Any] = {
+            "db_profile": profile,
+            "database": database,
+            "schemas": schemas,
+            "count": len(schemas),
+        }
+        if cat_arg:
+            payload["catalog"] = cat_arg
+        return payload
+
+    def _list_tables_on_profile(
+        self,
+        profile: str,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, Any]:
+        """Run ``list_tables(schema)`` (or ``list_assets``) against a
+        named profile. Same payload shape as the top-level tool with
+        ``db_profile`` added for cross-profile rendering.
+        """
+        try:
+            db = self._connector_for_profile(profile)
+        except _ToolError as exc:
+            return {
+                "db_profile": profile,
+                "schema": schema,
+                "found": False,
+                "error": str(exc),
+                "tables": [],
+                "count": 0,
+            }
+        base = self.cfg.db_profiles.get(profile)
+        pinned_catalog = str(getattr(base, "catalog", "") or "").strip() if base else ""
+        cat_arg = (catalog or "").strip() or pinned_catalog
+        try:
+            with self._scoped_catalog(db, cat_arg):
+                available = list(db.list_schemas())
+                match = next((s for s in available if str(s).lower() == schema.lower()), None)
+                if match is None:
+                    return {
+                        "db_profile": profile,
+                        "schema": schema,
+                        "catalog": cat_arg or None,
+                        "found": False,
+                        "available_schemas": [str(s) for s in available],
+                    }
+                items: list[dict[str, str]] = []
+                if hasattr(db, "list_assets"):
+                    for name, kind in db.list_assets(match):
+                        items.append({"name": str(name), "kind": str(kind)})
+                else:
+                    for name in db.list_tables(match):
+                        items.append({"name": str(name), "kind": "table"})
+        except Exception as exc:
+            return {
+                "db_profile": profile,
+                "schema": schema,
+                "found": False,
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "tables": [],
+                "count": 0,
+            }
+        return {
+            "db_profile": profile,
+            "schema": match,
+            "catalog": cat_arg or None,
+            "found": True,
+            "tables": items,
+            "count": len(items),
+        }
+
+    def _fanout_list_tables_in_schema(self, schema: str, *, catalog: str = "") -> dict[str, Any]:
+        """Parallel ``list_tables_in_schema`` across every profile in
+        scope. Profiles where the schema doesn't exist surface as
+        ``found: False`` with their visible schemas — the LLM can
+        then suggest the closest match per profile.
+        """
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        results: dict[str, dict[str, Any]] = {}
+        max_workers = min(self._LIVE_FANOUT_MAX_WORKERS, max(1, len(self.db_profiles)))
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="amx-toolbox-fanout-tables",
+        ) as pool:
+            future_map = {
+                pool.submit(self._list_tables_on_profile, name, schema, catalog=catalog): name
+                for name in self.db_profiles
+            }
+            done, not_done = wait(future_map, timeout=self._LIVE_FANOUT_TIMEOUT_SEC)
+            for future in done:
+                name = future_map[future]
+                try:
+                    results[name] = future.result(timeout=0)
+                except Exception as exc:
+                    results[name] = {
+                        "db_profile": name,
+                        "schema": schema,
+                        "found": False,
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                        "tables": [],
+                        "count": 0,
+                    }
+            for future in not_done:
+                name = future_map[future]
+                future.cancel()
+                results[name] = {
+                    "db_profile": name,
+                    "schema": schema,
+                    "found": False,
+                    "timeout": True,
+                    "error": (f"timed out after {self._LIVE_FANOUT_TIMEOUT_SEC:.0f}s"),
+                    "tables": [],
+                    "count": 0,
+                }
+        total = sum(int(p.get("count") or 0) for p in results.values())
+        found_in = [name for name, payload in results.items() if payload.get("found")]
+        return {
+            "multi_profile": True,
+            "schema": schema,
+            "scope": list(self.db_profiles),
+            "found_in": found_in,
+            "profiles": results,
+            "total_tables": total,
+        }
+
+    def _fanout_list_schemas(self, *, catalog: str = "") -> dict[str, Any]:
+        """Parallel ``list_schemas`` across every profile in scope.
+
+        Returns ``{"profiles": {...per-profile payload...},
+        "total_schemas", "profiles_with_errors"}``. Profiles that time
+        out / error are surfaced explicitly so the LLM can mention
+        which profiles answered and which didn't.
+        """
+
+        def _op(_conn: DatabaseConnector) -> dict[str, Any]:
+            # Hand-off: the actual per-profile work needs the profile
+            # NAME for catalog resolution, not just the connector. We
+            # bind it via a wrapper below since fan-out passes the
+            # connector positionally.
+            return {}  # pragma: no cover — replaced by closure below
+
+        results: dict[str, dict[str, Any]] = {}
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        max_workers = min(self._LIVE_FANOUT_MAX_WORKERS, max(1, len(self.db_profiles)))
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="amx-toolbox-fanout-schemas",
+        ) as pool:
+            future_map = {
+                pool.submit(self._list_schemas_on_profile, name, catalog=catalog): name
+                for name in self.db_profiles
+            }
+            done, not_done = wait(future_map, timeout=self._LIVE_FANOUT_TIMEOUT_SEC)
+            for future in done:
+                name = future_map[future]
+                try:
+                    results[name] = future.result(timeout=0)
+                except Exception as exc:
+                    results[name] = {
+                        "db_profile": name,
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                        "schemas": [],
+                        "count": 0,
+                    }
+            for future in not_done:
+                name = future_map[future]
+                future.cancel()
+                results[name] = {
+                    "db_profile": name,
+                    "error": (
+                        f"timed out after {self._LIVE_FANOUT_TIMEOUT_SEC:.0f}s — "
+                        "this profile didn't respond. Other profiles below."
+                    ),
+                    "schemas": [],
+                    "count": 0,
+                    "timeout": True,
+                }
+        total = sum(int(p.get("count") or 0) for p in results.values())
+        with_errors = [
+            name
+            for name, payload in results.items()
+            if "error" in payload or payload.get("timeout")
+        ]
+        return {
+            "multi_profile": True,
+            "scope": list(self.db_profiles),
+            "profiles": results,
+            "total_schemas": total,
+            "profiles_with_errors": with_errors,
+        }
+
+    def _tool_list_schemas(
+        self,
+        catalog: str = "",
+        db_profile: str = "",
+    ) -> dict[str, Any]:
+        # Multi-profile fan-out path: when the scope spans 2+ profiles
+        # AND the LLM didn't target a specific one via ``db_profile``,
+        # parallel-list schemas across every profile in scope. Each
+        # profile gets its own connector + per-call timeout so a slow
+        # backend never blocks the question.
+        targeted = (db_profile or "").strip()
+        if self.is_multi_profile and not targeted:
+            return self._fanout_list_schemas(catalog=catalog)
+        if targeted and targeted != self.db_profile:
+            # Single-target dispatch: use the named profile's connector
+            # + its DBConfig (which knows its own pinned catalog).
+            return self._list_schemas_on_profile(targeted, catalog=catalog)
         db = self._live_db()
         explicit = (catalog or "").strip()
         pinned_catalog = str(getattr(self.cfg.db, "catalog", "") or "").strip()
@@ -1178,10 +1590,20 @@ class ToolBox:
                 payload["auto_picked_catalog"] = cat_arg
         return payload
 
-    def _tool_list_tables_in_schema(self, schema: str, catalog: str = "") -> dict[str, Any]:
+    def _tool_list_tables_in_schema(
+        self,
+        schema: str,
+        catalog: str = "",
+        db_profile: str = "",
+    ) -> dict[str, Any]:
         target = (schema or "").strip()
         if not target:
             raise _ToolError("Argument 'schema' is required.")
+        targeted = (db_profile or "").strip()
+        if self.is_multi_profile and not targeted:
+            return self._fanout_list_tables_in_schema(target, catalog=catalog)
+        if targeted and targeted != self.db_profile:
+            return self._list_tables_on_profile(targeted, target, catalog=catalog)
         db = self._live_db()
         # Resolve the catalog: explicit > pinned > single-user-catalog
         # auto-pick. Without this, a Databricks UC backend without a
@@ -1602,12 +2024,26 @@ class ToolBox:
             "fuzzy_matches": fuzzy_matches,
         }
 
-    def _tool_describe_table(self, schema: str, table: str, catalog: str = "") -> dict[str, Any]:
+    def _tool_describe_table(
+        self,
+        schema: str,
+        table: str,
+        catalog: str = "",
+        db_profile: str = "",
+    ) -> dict[str, Any]:
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
         if not schema_name or not table_name:
             raise _ToolError("Both 'schema' and 'table' are required.")
-        db = self._live_db()
+        # Profile-targeted: route to the named profile's connector when
+        # the LLM passed db_profile (or, in multi-profile scope, when
+        # the table only exists on one profile and we resolved the
+        # ambiguity earlier via find_table_by_name).
+        targeted = (db_profile or "").strip()
+        if targeted and targeted != self.db_profile:
+            db = self._connector_for_profile(targeted)
+        else:
+            db = self._live_db()
         # Resolve the catalog for 3-level backends so describe_table
         # doesn't end up issuing ``DESCRIBE None.<schema>.<table>``
         # when the active profile didn't pin a catalog.
@@ -1730,6 +2166,10 @@ class ToolBox:
         }
         if cat_arg and not explicit and not str(getattr(self.cfg.db, "catalog", "") or "").strip():
             result["auto_picked_catalog"] = cat_arg
+        # Tag the answer with the resolved profile so multi-profile
+        # callers can render "this table on profile X has …" without
+        # the LLM having to track which dispatch went to which profile.
+        result["db_profile"] = targeted or self.db_profile
         return result
 
     @staticmethod
