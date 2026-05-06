@@ -6,8 +6,8 @@ Three job kinds are submitted from the UI:
   + LLM-suggest + write pending review for one or more tables.
 * ``apply`` — calls :func:`amx.agents.orchestrator.apply_review_results_to_db`
   for the pending queue or an explicit result list.
-* ``ask`` — runs the search agent (``LoopBasedAskAgent`` or
-  :class:`amx.search.service.SearchService`) and streams thinking deltas.
+* ``ask`` — runs :class:`amx.search.service.SearchService` and streams
+  thinking deltas.
 
 Every job carries:
 

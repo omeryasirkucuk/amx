@@ -5,12 +5,9 @@ from __future__ import annotations
 __all__ = [
     "AMXApplication",
     "AbstractEntity",
-    "AskToolbox",
-    "LoopBasedAskAgent",
+    "InferenceResult",
     "StateManager",
-    "ToolAskResponse",
     "UniversalMetadataAdapter",
-    "infer_table_metadata",
 ]
 
 
@@ -19,14 +16,6 @@ def __getattr__(name: str):
         from amx.core.application import AMXApplication
 
         return AMXApplication
-    if name in {"AskToolbox", "LoopBasedAskAgent", "ToolAskResponse"}:
-        from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent, ToolAskResponse
-
-        return {
-            "AskToolbox": AskToolbox,
-            "LoopBasedAskAgent": LoopBasedAskAgent,
-            "ToolAskResponse": ToolAskResponse,
-        }[name]
     if name in {"AbstractEntity", "UniversalMetadataAdapter"}:
         from amx.core.metadata import AbstractEntity, UniversalMetadataAdapter
 
@@ -38,8 +27,8 @@ def __getattr__(name: str):
         from amx.core.state import StateManager
 
         return StateManager
-    if name == "infer_table_metadata":
-        from amx.core.inference import infer_table_metadata
+    if name == "InferenceResult":
+        from amx.core.inference import InferenceResult
 
-        return infer_table_metadata
+        return InferenceResult
     raise AttributeError(name)

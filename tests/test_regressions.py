@@ -137,15 +137,13 @@ class CoreArchitectureTests(unittest.TestCase):
     def test_import_amx_exposes_headless_application(self) -> None:
         self.assertTrue(hasattr(AMXApplication, "load"))
 
-    def test_import_amx_init_run_analysis_is_headless_safe(self) -> None:
-        import amx
-
+    def test_application_load_run_analysis_is_headless_safe(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.yml"
             cfg = AMXConfig()
             cfg.save(str(cfg_path))
 
-            result = amx.init(str(cfg_path)).run_analysis()
+            result = AMXApplication.load(str(cfg_path)).run_analysis()
 
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "no_scope")
@@ -2957,41 +2955,15 @@ class TokenBudgetPreCheckTests(unittest.TestCase):
         self.assertEqual(dropped, 0)
 
 
-class AskPathDeprecationTests(unittest.TestCase):
-    """`LoopBasedAskAgent` (the deterministic tool-loop path that
-    predates `SearchAgent`) is being phased out. These tests pin the
-    deprecation contract: the warning fires once per process, the
-    canonical path is `SearchService` / `SearchAgent`."""
-
-    def test_loop_based_ask_agent_emits_deprecation_warning(self) -> None:
-        import warnings
-
-        from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent
-
-        # Reset the once-only flag so the test sees the warning even
-        # if a previous test in the same process already triggered it.
-        LoopBasedAskAgent._deprecation_warned = False
-
-        # Build a minimal AskToolbox stand-in. We only construct the
-        # class — answer() requires a populated catalog.
-        toolbox = AskToolbox.__new__(AskToolbox)
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always", DeprecationWarning)
-            LoopBasedAskAgent(toolbox)
-
-        deprecation_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
-        self.assertGreaterEqual(len(deprecation_warnings), 1)
-        message = str(deprecation_warnings[0].message)
-        self.assertIn("LoopBasedAskAgent", message)
-        self.assertIn("0.4.0", message)
-        self.assertIn("SearchService", message)
+class CanonicalAskPathTests(unittest.TestCase):
+    """The canonical ask path is `SearchService` routing through
+    `SearchAgent`. (The legacy `LoopBasedAskAgent` deterministic
+    tool-loop was removed in v0.13 along with `AskToolbox` and the
+    `ask_with_tools` AMXApplication method — see CHANGELOG.)"""
 
     def test_canonical_path_is_search_service(self) -> None:
         """Sanity-check that `SearchService` exists and routes through
-        `SearchAgent` under the hood. If this test fails because the
-        attribute names changed, update the deprecation message in
-        `LoopBasedAskAgent` to match."""
+        `SearchAgent` under the hood."""
         from amx.search.agent import SearchAgent
         from amx.search.service import SearchService
 

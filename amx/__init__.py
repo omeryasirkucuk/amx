@@ -7,15 +7,7 @@ __all__ = [
     "AbstractEntity",
     "UniversalMetadataAdapter",
     "__version__",
-    "init",
 ]
-
-
-def init(config_path: str | None = None):
-    """Initialize AMX as a headless library application."""
-    from amx.core.application import AMXApplication
-
-    return AMXApplication.load(config_path)
 
 
 def __getattr__(name: str):

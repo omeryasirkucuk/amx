@@ -1,12 +1,15 @@
 """Programmatic metadata inference entrypoints.
 
 Part of the **public API** — see ``docs/PUBLIC_API.md`` for the
-stability contract.
+stability contract. The public surface is :class:`InferenceResult`
+and :meth:`amx.core.AMXApplication.infer_metadata`. The free function
+``infer_table_metadata`` here is the internal implementation those two
+delegate to; it is not part of the stable contract.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import dataclass, field
 from typing import Any
 
 from amx.agents.orchestrator import Orchestrator
@@ -14,7 +17,44 @@ from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
 
-__all__ = ["infer_table_metadata"]
+__all__ = ["InferenceResult"]
+
+
+@dataclass(frozen=True)
+class InferenceResult:
+    """One inferred metadata suggestion for a table or column.
+
+    Returned from :meth:`amx.core.AMXApplication.infer_metadata`. The
+    field set is part of the public contract — additive changes only
+    across minor versions; existing fields keep their meaning across
+    upgrades.
+    """
+
+    schema: str
+    table: str
+    column: str | None
+    description: str
+    confidence: str
+    source: str
+    asset_kind: str = "table"
+    applied: bool = False
+    alternatives: tuple[str, ...] = field(default_factory=tuple)
+    logprob_score: float | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-friendly view (e.g. for CLI ``--json`` output)."""
+        return {
+            "schema": self.schema,
+            "table": self.table,
+            "column": self.column,
+            "description": self.description,
+            "confidence": self.confidence,
+            "source": self.source,
+            "asset_kind": self.asset_kind,
+            "applied": self.applied,
+            "alternatives": list(self.alternatives),
+            "logprob_score": self.logprob_score,
+        }
 
 
 def infer_table_metadata(
@@ -24,9 +64,15 @@ def infer_table_metadata(
     *,
     include_rag: bool = True,
     include_codebase: bool = False,
-) -> list[dict[str, Any]]:
-    """Infer metadata suggestions for a single table without invoking CLI commands."""
-    rag_store = None
+) -> list[InferenceResult]:
+    """Run the headless inference pipeline for one table.
+
+    Internal implementation behind
+    :meth:`amx.core.AMXApplication.infer_metadata`. Library users should
+    call the application method instead — direct imports of this
+    function are not part of the stable contract.
+    """
+    rag_store: Any = None
     if include_rag:
         try:
             from amx.docs.rag import RAGStore
@@ -37,7 +83,7 @@ def infer_table_metadata(
         except Exception:
             rag_store = None
 
-    code_report = None
+    code_report: Any = None
     if include_codebase:
         try:
             from amx.cli_support.commands.run import _resolve_codebase_for_run
@@ -55,10 +101,6 @@ def infer_table_metadata(
 
     db = DatabaseConnector(cfg.db)
     llm = LLMProvider(cfg.llm)
-    # When the user has set ``rag_llm_profile`` (via /use-rag-llm) we
-    # build a second provider pinned to that profile so the RAG agent
-    # uses it instead of the global one. Identity check vs cfg.llm —
-    # effective_rag_llm() returns the same object when no override.
     rag_cfg = cfg.effective_rag_llm()
     rag_llm = LLMProvider(rag_cfg) if rag_cfg is not cfg.llm else None
     orch = Orchestrator(
@@ -69,5 +111,19 @@ def infer_table_metadata(
         search_profile=cfg.active_db_profile or "default",
         rag_llm=rag_llm,
     )
-    results = orch.process_table(schema, table, interactive_review=False)
-    return [asdict(r) for r in results]
+    review_results = orch.process_table(schema, table, interactive_review=False)
+    return [
+        InferenceResult(
+            schema=r.schema,
+            table=r.table,
+            column=r.column,
+            description=r.final_description,
+            confidence=r.confidence.value if hasattr(r.confidence, "value") else str(r.confidence),
+            source=r.source,
+            asset_kind=r.asset_kind,
+            applied=r.applied,
+            alternatives=tuple(r.alternatives),
+            logprob_score=r.logprob_score,
+        )
+        for r in review_results
+    ]

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from amx.config import AMXConfig
-from amx.core.ask_agent import AskToolbox, LoopBasedAskAgent, ToolAskResponse
+from amx.core.inference import InferenceResult, infer_table_metadata
 from amx.core.state import StateManager
 from amx.search.catalog import SearchAnswer, SearchCatalog
 from amx.search.service import SearchService
@@ -48,14 +48,33 @@ class AMXApplication:
         )
 
     def ask(self, question: str) -> SearchAnswer:
+        """Run the unified ask pipeline (multi-stage retrieval + verification)."""
         return SearchService(self.config, self.catalog).ask(question)
-
-    def ask_with_tools(self, question: str) -> ToolAskResponse:
-        toolbox = AskToolbox(self.config, self.catalog)
-        return LoopBasedAskAgent(toolbox).answer(question)
 
     def explain(self, question: str) -> dict[str, Any]:
         return SearchService(self.config, self.catalog).explain(question)
+
+    def infer_metadata(
+        self,
+        schema: str,
+        table: str,
+        *,
+        include_rag: bool = True,
+        include_codebase: bool = False,
+    ) -> list[InferenceResult]:
+        """Headless metadata inference for a single table.
+
+        Returns one :class:`~amx.core.InferenceResult` per produced
+        suggestion (table-level + per-column). The pipeline matches
+        ``/run`` without the interactive review picker.
+        """
+        return infer_table_metadata(
+            self.config,
+            schema,
+            table,
+            include_rag=include_rag,
+            include_codebase=include_codebase,
+        )
 
     def run_analysis(
         self,
