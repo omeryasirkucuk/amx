@@ -66,9 +66,18 @@ class SessionMemoryMixin:
             return self._session_id
         if self._session_id is not None:
             return self._session_id
+        # Persist the multi-profile scope on the new session record so
+        # the Studio "/api/ask/sessions/{id}" GET (and the CLI's own
+        # follow-up turns) honour the same sticky scope without
+        # rebuilding it from cfg each time. ``self.db_profiles`` is the
+        # SearchAgent-collected scope (caller kwarg > config default).
+        scope_profiles: list[str] | None = None
+        if getattr(self, "db_profiles", None):
+            scope_profiles = list(self.db_profiles)
         sid = store.start_session(
             db_profile=self.db_profile,
             llm_profile=self._llm_profile,
+            scope_profiles=scope_profiles,
         )
         self._session_id = sid
         with contextlib.suppress(Exception):

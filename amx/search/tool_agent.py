@@ -391,6 +391,7 @@ def run_tool_agent(
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
+    db_profiles: list[str] | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -402,6 +403,13 @@ def run_tool_agent(
     ``display`` is forwarded to the LLM call so reasoning models can stream
     their thinking text into the live thinking panel; for models that don't
     expose reasoning, it's a no-op.
+
+    ``db_profiles`` is the multi-profile retrieval scope — every catalog
+    tool call (``search_tables_by_concept``, ``find_joinable_tables``, …)
+    expands its WHERE clause to ``db_profile IN (?, ?, …)`` so a single
+    question can union evidence from N profiles. Empty / ``None`` falls
+    back to ``cfg.active_db_profile`` (legacy single-profile behaviour) so
+    pre-multi-profile callers keep working unchanged.
 
     The remaining kwargs are additive hooks AMX Studio's
     ``/api/ask`` SSE endpoint plugs into:
@@ -426,7 +434,7 @@ def run_tool_agent(
     # pool) is disposed at the end of every question. Without this, each
     # ``/ask`` turn leaks a few file descriptors; after enough turns the
     # process hits ``OSError: Too many open files`` (the user-reported case).
-    with ToolBox(cfg, catalog) as toolbox:
+    with ToolBox(cfg, catalog, db_profiles=db_profiles) as toolbox:
         return _run_tool_loop(
             toolbox=toolbox,
             cfg=cfg,

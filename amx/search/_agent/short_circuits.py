@@ -286,6 +286,11 @@ class ShortCircuitsMixin:
             # the user sees real thinking content rather than a blank
             # spinner. The panel clears the moment the loop returns.
             with step_spinner("Search Agent: thinking with tools"):
+                # Multi-profile scope (0.13+): SearchAgent collects the
+                # active profile list at construction time
+                # (cfg.effective_db_profiles or the explicit kwarg), and
+                # forwards it through to the tool agent so catalog
+                # search/find tools span every profile in scope.
                 result = run_tool_agent(
                     cfg=self.cfg,
                     catalog=self.catalog,
@@ -294,6 +299,7 @@ class ShortCircuitsMixin:
                     answer_language=question_language,
                     session_memory=prior_turns,
                     display=display if display.is_active else None,
+                    db_profiles=list(self.db_profiles) if self.db_profiles else None,
                 )
             elapsed = round(time.monotonic() - t0, 4)
         except Exception as exc:

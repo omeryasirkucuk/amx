@@ -300,28 +300,36 @@ class SearchMixin:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def known_databases(self, db_profile: str) -> list[dict[str, Any]]:
+    def known_databases(self, db_profile: DBProfileFilter) -> list[dict[str, Any]]:
+        """Distinct database names indexed for the given scope.
+
+        ``db_profile`` accepts a single name (str) or a sequence of
+        names — multi-profile callers union the listing across all
+        configured profiles.
+        """
+        clause, binds = build_db_profile_clause(db_profile)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT database_name, COUNT(*) AS entity_count
                 FROM catalog_entities
-                WHERE db_profile = ? AND COALESCE(database_name, '') != ''
+                WHERE {clause} AND COALESCE(database_name, '') != ''
                 GROUP BY database_name
                 ORDER BY database_name
                 """,
-                (db_profile,),
+                tuple(binds),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def known_schemas(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         *,
         database_name: str | None = None,
     ) -> list[dict[str, Any]]:
-        params: list[Any] = [db_profile]
-        where = ["db_profile = ?", "entity_kind = 'table'", "COALESCE(schema_name, '') != ''"]
+        clause, binds = build_db_profile_clause(db_profile)
+        params: list[Any] = list(binds)
+        where = [clause, "entity_kind = 'table'", "COALESCE(schema_name, '') != ''"]
         if database_name:
             where.append("LOWER(database_name) = LOWER(?)")
             params.append(database_name)
@@ -329,11 +337,12 @@ class SearchMixin:
             SELECT
                 schema_name,
                 MIN(database_name) AS database_name,
+                MIN(db_profile) AS db_profile,
                 COUNT(*) AS table_count
             FROM catalog_entities
             WHERE {" AND ".join(where)}
-            GROUP BY schema_name
-            ORDER BY schema_name
+            GROUP BY schema_name, db_profile
+            ORDER BY schema_name, db_profile
         """
         with self._connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
@@ -341,13 +350,14 @@ class SearchMixin:
 
     def count_tables(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         *,
         schema_name: str | None = None,
         database_name: str | None = None,
     ) -> int:
-        params: list[Any] = [db_profile]
-        where = ["db_profile = ?", "entity_kind = 'table'"]
+        clause, binds = build_db_profile_clause(db_profile)
+        params: list[Any] = list(binds)
+        where = [clause, "entity_kind = 'table'"]
         if schema_name:
             where.append("LOWER(schema_name) = LOWER(?)")
             params.append(schema_name)
@@ -361,15 +371,22 @@ class SearchMixin:
 
     def schema_inventory(
         self,
-        db_profile: str,
+        db_profile: DBProfileFilter,
         *,
         schema_name: str | None = None,
         database_name: str | None = None,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        """Return table-level structural inventory with column counts."""
-        params: list[Any] = [db_profile]
-        where = ["t.db_profile = ?", "t.entity_kind = 'table'"]
+        """Return table-level structural inventory with column counts.
+
+        ``db_profile`` is a :class:`DBProfileFilter` — a single name or a
+        sequence. Multi-profile callers get rows from every requested
+        profile in one SQL pass; the result row carries ``db_profile``
+        so callers can route per-profile.
+        """
+        clause, binds = build_db_profile_clause(db_profile, column="t.db_profile")
+        params: list[Any] = list(binds)
+        where = [clause, "t.entity_kind = 'table'"]
         if schema_name:
             where.append("LOWER(t.schema_name) = LOWER(?)")
             params.append(schema_name)
@@ -379,6 +396,7 @@ class SearchMixin:
         query = f"""
             SELECT
                 t.id,
+                t.db_profile,
                 t.database_name,
                 t.schema_name,
                 t.table_name,
@@ -397,7 +415,7 @@ class SearchMixin:
             LEFT JOIN catalog_descriptions cd ON cd.id = c.effective_description_id
             WHERE {" AND ".join(where)}
             GROUP BY t.id
-            ORDER BY t.schema_name, t.table_name
+            ORDER BY t.db_profile, t.schema_name, t.table_name
             LIMIT ?
         """
         params.append(max(1, int(limit)))
