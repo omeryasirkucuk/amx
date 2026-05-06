@@ -58,3 +58,21 @@ def test_context_handles_blank_profile_state(client, auth_headers, cfg) -> None:
     assert payload["active_llm_profile"] is None
     assert payload["current_schema"] is None
     assert payload["current_table"] is None
+
+
+def test_context_reports_batch_support_for_openai(client, auth_headers, cfg) -> None:
+    """OpenAI is in amx.llm.batch._PROVIDER_MAP, so /api/context must
+    advertise batch support — the SPA disables the RunNew "Batch mode"
+    toggle when this is False."""
+    cfg.llm.provider = "openai"
+    response = client.get("/api/context", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["llm_supports_batch"] is True
+
+
+def test_context_reports_no_batch_for_ollama(client, auth_headers, cfg) -> None:
+    """Ollama has no Batch API implementation; the toggle stays disabled."""
+    cfg.llm.provider = "ollama"
+    response = client.get("/api/context", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["llm_supports_batch"] is False
