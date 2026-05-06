@@ -67,6 +67,24 @@ def _litellm() -> ModuleType:
         # so the underlying httpx client picks them up at construction time.
         _configure_ssl_environment()
 
+        # Silence LiteLLM's loggers BEFORE the import so the cost-map
+        # fetch warning ("Failed to fetch remote model cost map …
+        # SSL: CERTIFICATE_VERIFY_FAILED … falling back to local
+        # backup") doesn't leak through the CLI's clean prompt. The
+        # warning is informational — LiteLLM ships a local backup and
+        # uses it on fetch failure — but on corporate networks with
+        # MITM TLS proxies it fires every single import and clutters
+        # the chat. Setting LITELLM_LOCAL_MODEL_COST_MAP=True skips
+        # the network call entirely; pinning the loggers handles any
+        # other start-up chatter LiteLLM emits.
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        for logger_name in ("LiteLLM", "litellm"):
+            ext_logger = logging.getLogger(logger_name)
+            ext_logger.handlers.clear()
+            ext_logger.addHandler(logging.NullHandler())
+            ext_logger.propagate = False
+            ext_logger.setLevel(logging.CRITICAL + 1)
+
         import litellm as lm
 
         for logger_name in ("LiteLLM", "litellm"):
