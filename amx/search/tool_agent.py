@@ -141,6 +141,12 @@ def _agent_system_prompt(
     # connected" when the user asks cross-DB questions. ``in_scope`` flags
     # which profiles the current question is allowed to retrieve from —
     # the LLM should only return data from those.
+    #
+    # The ``→ <name>`` after the backend is the profile's PINNED default
+    # database/catalog/project (not the only one reachable). Pinned
+    # values are connection-time defaults; each profile can list MANY
+    # databases/catalogs via ``list_databases`` — the LLM must not
+    # treat the pinned name as the full reach.
     in_scope = set(scope_profiles or [])
     profile_lines: list[str] = []
     active_name = cfg.active_db_profile or "default"
@@ -153,7 +159,9 @@ def _agent_system_prompt(
         marker = f" ({', '.join(markers)})" if markers else ""
         db_target = db_cfg.database or db_cfg.catalog or db_cfg.project or "?"
         backend = db_cfg.backend or "?"
-        profile_lines.append(f"  - {profile_name}{marker}: {backend} → {db_target}")
+        profile_lines.append(
+            f"  - {profile_name}{marker}: {backend} (default db/catalog: {db_target})"
+        )
     profiles_block = (
         "\n".join(profile_lines)
         if profile_lines
@@ -236,13 +244,23 @@ def _agent_system_prompt(
         "  present in a list_schemas response, just mention briefly which catalog\n"
         "  the schemas live in (one sentence) and continue with the user's actual\n"
         "  question — don't dwell.\n"
-        "* User asks 'which databases / hangi veritabanları' → call list_databases.\n"
+        "* User asks 'which databases / hangi veritabanları / what databases do\n"
+        "  I have / show me all databases' → call list_databases. The tool fans\n"
+        "  out per profile and returns the FULL list of databases (or catalogs\n"
+        "  on 3-level backends) reachable through each connection — NOT just\n"
+        "  the one pinned in each profile's config. When composing the answer,\n"
+        "  enumerate every entry per profile, grouped by profile name, with\n"
+        "  per-profile counts. If a profile errored / timed out, mention it\n"
+        "  honestly — don't pretend the partial result is the full picture.\n"
+        "  Do NOT just regurgitate the 'default db/catalog' shown in the\n"
+        "  profiles header above; that's the connection-time default, not the\n"
+        "  full reach.\n"
         "* User asks 'which catalogs / hangi cataloglar / show catalogs' → call list_catalogs.\n"
         "  Same tool also rescues 'show me tables' on a catalog-less Databricks profile.\n"
         "* User asks 'which databases live on this server / show databases / hangi\n"
         "  databaseler var bu sunucuda' on a 2-level backend (PostgreSQL, Snowflake,\n"
         "  MySQL, MSSQL, Redshift, ClickHouse) → call list_server_databases. Different\n"
-        "  from list_databases (which lists AMX DB profiles).\n"
+        "  from list_databases (which on multi-profile fans out across every profile).\n"
         "* User asks about Databricks Volumes ('any volumes', 'managed/external\n"
         "  volumes', 'volumes under <schema>', 'volumelar var mı', 'unity catalog\n"
         "  volume', 'storage volumes') → call list_volumes. Volumes are NOT exposed\n"
