@@ -6,6 +6,45 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### BREAKING CHANGE — Python library API cleanup
+
+The `amx.core` library surface (the `from amx.core import …` API used
+from custom scripts and notebooks) has been simplified to a single
+clean shape. Pre-1.0 best-effort contract — the listed names go away
+without a deprecation cycle in this release.
+
+**Removed**:
+
+* `amx.init(config_path)` — duplicate of `AMXApplication.load(config_path)`. Use `AMXApplication.load(...)` directly.
+* `AMXApplication.ask_with_tools(question)` — second ask path that routed through the deprecated `LoopBasedAskAgent`. Use `app.ask(question)` (the canonical path through `SearchService` → `SearchAgent`).
+* `LoopBasedAskAgent`, `AskToolbox`, `ToolAskResponse`, `ToolResult`, `ReasoningTraceStep` — all removed along with the `amx.core.ask_agent` module. Deprecated since 0.3.0.
+* `infer_table_metadata(cfg, schema, table, …)` as a public free function — no longer in `amx.core.__all__`. The function still exists internally for the CLI; library users should call `app.infer_metadata(schema, table, …)` instead.
+
+**Added**:
+
+* `AMXApplication.infer_metadata(schema, table, *, include_rag=True, include_codebase=False) -> list[InferenceResult]` — typed application method for one-call headless metadata inference.
+* `amx.core.InferenceResult` — frozen dataclass returned per suggestion (`schema`, `table`, `column`, `description`, `confidence`, `source`, `asset_kind`, `applied`, `alternatives`, `logprob_score`). Replaces the previous `list[dict[str, Any]]` return shape with a stable typed surface.
+
+**Migration**:
+
+```python
+# Before
+import amx
+app = amx.init("~/.amx/config.yml")
+results = amx.core.infer_table_metadata(
+    app.config, "sales", "orders", include_rag=True, include_codebase=False
+)
+for s in results:
+    print(s["column"], s["confidence"], s["description"])
+
+# After
+from amx.core import AMXApplication
+app = AMXApplication.load("~/.amx/config.yml")
+results = app.infer_metadata("sales", "orders", include_rag=True, include_codebase=False)
+for s in results:
+    print(s.column, s.confidence, s.description)
+```
+
 ### Changed — AMX Studio launch (`/studio`)
 
 The local web UI is now **AMX Studio**. The slash command, the Click

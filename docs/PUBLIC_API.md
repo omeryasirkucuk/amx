@@ -19,7 +19,6 @@ Anything **not** listed in this document is **internal**. Importing it works tod
 | Symbol | Kind | Stability |
 |---|---|---|
 | `amx.__version__` | `str` | Stable |
-| `amx.init(config_path: str \| None = None) -> AMXApplication` | function | Stable |
 | `amx.AMXApplication` | class (lazy re-export) | Stable |
 | `amx.AbstractEntity` | class (lazy re-export) | Stable |
 | `amx.UniversalMetadataAdapter` | class (lazy re-export) | Stable |
@@ -33,13 +32,21 @@ Every name listed in `amx/core/__init__.py.__all__` is part of the public contra
 | Symbol | Kind | What it does |
 |---|---|---|
 | `amx.core.AMXApplication` | dataclass | Composable runtime that owns a config, a history store, and the active agents. Built via `AMXApplication.load(config_path)` for the typical case. |
-| `amx.core.AskToolbox` | dataclass | Tool registry the loop-based ask agent calls into (schema explorer, catalog, etc.). |
-| `amx.core.LoopBasedAskAgent` | class | Headless re-implementation of `/ask` for scripts and notebooks. |
-| `amx.core.ToolAskResponse` | dataclass | Structured response from the loop-based ask agent (answer, intent, tool trace, confidence). |
+| `amx.core.InferenceResult` | dataclass | Typed metadata-inference result returned from `AMXApplication.infer_metadata`. Fields: `schema`, `table`, `column`, `description`, `confidence`, `source`, `asset_kind`, `applied`, `alternatives`, `logprob_score`. |
 | `amx.core.AbstractEntity` | dataclass | Backend-neutral entity abstraction used by the Universal Metadata Interface. |
 | `amx.core.UniversalMetadataAdapter` | class | Maps backend-specific column / table profiles into `AbstractEntity`. |
 | `amx.core.StateManager` | class | Write-through persistence for config + SQLite-backed state across sessions. |
-| `amx.core.infer_table_metadata(cfg, schema, table, *, include_rag, include_codebase)` | function | One-call programmatic metadata inference. Returns a list of suggestion dicts ready for review. |
+
+### `AMXApplication` methods
+
+| Method | Returns | What it does |
+|---|---|---|
+| `AMXApplication.load(config_path=None)` | `AMXApplication` | Classmethod factory; loads a config and initializes the history store + search catalog. The single canonical constructor. |
+| `app.ask(question)` | `SearchAnswer` | Runs the unified ask pipeline (multi-stage retrieval, live probes, verification, synthesis). Routes through `SearchService` → `SearchAgent`. |
+| `app.explain(question)` | `dict[str, Any]` | Same pipeline as `ask` but returns the structured explanation payload (plan, retrieval, verification, trace). |
+| `app.infer_metadata(schema, table, *, include_rag=True, include_codebase=False)` | `list[InferenceResult]` | Headless metadata inference for one table. One-call equivalent of `/run` without the interactive review picker. |
+| `app.run_analysis(scope=None, *, apply=False)` | `dict[str, Any]` | Headless-safe analysis entrypoint; returns a structured `skipped` result if no scope is provided rather than opening interactive prompts. |
+| `app.state` | `StateManager` | Property — write-through config / SQLite state for the active profile namespace. |
 
 ### CLI
 
@@ -68,12 +75,13 @@ Everything else. Highlights:
 | `amx.cli`, `amx.cli_support.*` | CLI plumbing, refactored frequently |
 | `amx.cli_*` (top-level shims like `amx.cli_db`, `amx.cli_run`) | Backwards-compat shims that re-export from `amx.cli_support.commands.*`; will be removed in a future major release. Use the underlying modules only at your own risk; prefer `amx.core.*` for programmatic access. |
 | `amx.agents.*` | Profile / RAG / Code agent internals. The orchestrator decides what gets called and how — directly instantiating these from user code couples you to the agent contract. |
+| `amx.core.inference.infer_table_metadata` | Internal implementation behind `AMXApplication.infer_metadata`. Use the application method. |
 | `amx.search._agent.*`, `amx.search._catalog.*` | Already underscore-prefixed. Do not import. |
 | `amx.search.agent`, `amx.search.catalog`, `amx.search.service` | Public-shaped names but not part of the contract — use `amx.core.AMXApplication` to get a configured `SearchService`. |
 | `amx.db.*`, `amx.llm.*`, `amx.docs.*`, `amx.codebase.*` | Backend adapters; tightly coupled to the active config. |
-| `amx.storage.*` | History store implementation. `amx.core.AMXApplication` exposes the configured store via `app.history_store`. |
+| `amx.storage.*` | History store implementation. `amx.core.AMXApplication.store` exposes the configured store. |
 | `amx.utils.*` | Internal helpers (Rich console wrappers, logging, token counting). |
-| `amx.config.AMXConfig` | Used internally; configure programmatically by passing a path to `amx.init(...)` or by editing `~/.amx/config.yml`. The dataclass shape is **not** stable. |
+| `amx.config.AMXConfig` | Used internally; configure programmatically by passing a path to `AMXApplication.load(...)` or by editing `~/.amx/config.yml`. The dataclass shape is **not** stable. |
 
 ---
 
@@ -81,23 +89,25 @@ Everything else. Highlights:
 
 ```python
 # Good — uses only public surface.
-from amx.core import AMXApplication, infer_table_metadata
+from amx.core import AMXApplication
 
 app = AMXApplication.load("~/.amx/config.yml")
-suggestions = infer_table_metadata(
-    app.config, "sales", "orders", include_rag=True, include_codebase=False
+suggestions = app.infer_metadata(
+    "sales", "orders", include_rag=True, include_codebase=False
 )
+for s in suggestions:
+    print(s.column, s.confidence, s.description)
 ```
 
 ```python
 # Risky — imports an internal symbol whose location may move.
-from amx.search.service import SearchService   # internal
-from amx.agents.orchestrator import Orchestrator   # internal
+from amx.search.service import SearchService           # internal
+from amx.agents.orchestrator import Orchestrator       # internal
 
 # The replacement when this breaks:
 from amx.core import AMXApplication
 app = AMXApplication.load(...)
-service = app.search_service          # configured for you
+answer = app.ask("which tables store dates?")
 ```
 
 ---
