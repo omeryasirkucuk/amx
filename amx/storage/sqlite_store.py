@@ -327,10 +327,20 @@ class SQLiteHistoryStore:
                     title TEXT,
                     turn_count INTEGER NOT NULL DEFAULT 0,
                     total_tokens INTEGER NOT NULL DEFAULT 0,
-                    compaction_state_json TEXT
+                    compaction_state_json TEXT,
+                    scope_profiles_json TEXT,
+                    focus_profile TEXT
                 )
                 """
             )
+            # Backwards-compatible migration for older history DBs created
+            # before multi-profile ask shipped (PR ask-multi-profile-A).
+            for stmt in (
+                "ALTER TABLE chat_sessions ADD COLUMN scope_profiles_json TEXT",
+                "ALTER TABLE chat_sessions ADD COLUMN focus_profile TEXT",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(stmt)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_sessions_profile_active "
                 "ON chat_sessions(db_profile, llm_profile, last_active_at DESC)"

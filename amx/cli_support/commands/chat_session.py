@@ -61,13 +61,69 @@ def register_chat_session_commands(
         if store is None:
             error("History store is not initialized; cannot start a session.")
             return
+        # Multi-profile scope: seed the new session with whatever
+        # cfg.effective_db_profiles() resolves to (cfg.active_db_profiles
+        # set by /use-db, or the legacy single-active fallback). The
+        # /ask-scope command can override this for the chat without
+        # touching the persisted config-level scope.
+        try:
+            scope_profiles = list(cfg.effective_db_profiles()) or None
+        except Exception:
+            scope_profiles = None
         sid = store.start_session(
             db_profile=cfg.active_db_profile or "default",
             llm_profile=cfg.active_llm_profile or "default",
             title=title,
+            scope_profiles=scope_profiles,
         )
         cfg.active_chat_session_id = sid
         success(f"Started chat session #{sid}." + (f" Title: {title!r}." if title else ""))
+
+    @session.command("scope")
+    @click.argument("profiles", nargs=-1)
+    @pass_config
+    def session_scope(cfg: AMXConfig, profiles: tuple[str, ...]) -> None:
+        """Show or set the sticky scope for the active chat session.
+
+        ``/session scope`` (no args) prints the current scope. ``/session
+        scope clear`` resets to the config default. ``/session scope
+        prod_pg analytics_bq`` pins multi-profile scope only for THIS
+        chat (separate from the persisted ``/use-db`` scope).
+        """
+        store = _store()
+        if store is None:
+            error("History store is not initialized; cannot manage scope.")
+            return
+        sid = getattr(cfg, "active_chat_session_id", None) or 0
+        if not sid:
+            error("No active chat session. Run `/session new` first.")
+            return
+        if not profiles:
+            current = store.get_scope(int(sid))
+            if current:
+                info(f"Sticky scope for session #{sid}: {', '.join(current)}")
+            else:
+                info(
+                    f"Session #{sid} uses the config default ({len(cfg.db_profiles)} "
+                    f"profile{'s' if len(cfg.db_profiles) != 1 else ''})."
+                )
+            return
+        if profiles == ("clear",):
+            store.update_scope(int(sid), scope_profiles=None)
+            success(f"Cleared sticky scope on session #{sid}; back to config default.")
+            return
+        unknown = [p for p in profiles if p not in cfg.db_profiles]
+        if unknown:
+            error(
+                f"Unknown DB profile(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(sorted(cfg.db_profiles)) or '(none)'}."
+            )
+            return
+        store.update_scope(int(sid), scope_profiles=list(profiles))
+        success(
+            f"Sticky scope on session #{sid}: {', '.join(profiles)}. "
+            "Subsequent /ask questions in this chat use this scope."
+        )
 
     @session.command("list")
     @click.option(

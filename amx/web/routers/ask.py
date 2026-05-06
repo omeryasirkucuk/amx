@@ -50,8 +50,69 @@ class AskRequest(BaseModel):
     )
     db_profile: str | None = Field(
         default=None,
-        description="Override the active DB profile for retrieval scope.",
+        description=(
+            "Anchor profile for chat session metadata (history rows, LLM "
+            "settings). The actual retrieval scope is the list in "
+            "``scope_profiles`` or, when omitted, the session's sticky scope "
+            "(see PATCH /api/ask/sessions/{id}). Kept for back-compat with "
+            "pre-multi-profile clients."
+        ),
     )
+    scope_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "Multi-profile retrieval scope for THIS question. When provided, "
+            "overrides the session's sticky scope without persisting. To set "
+            "a sticky scope across the whole chat, PATCH /api/ask/sessions/"
+            "{id} instead."
+        ),
+    )
+
+
+class UpdateSessionRequest(BaseModel):
+    """Body for ``PATCH /api/ask/sessions/{id}`` — sticky scope update.
+
+    ``scope_profiles=None`` clears the override and the session falls back
+    to ``cfg.db_profiles.keys()``. ``focus_profile`` is informational
+    (auto-detected from prior turns) and persisted for cross-tab display.
+    """
+
+    scope_profiles: list[str] | None = None
+    focus_profile: str | None = None
+
+
+def _resolve_ask_scope(
+    cfg: AMXConfig,
+    body_scope: list[str] | None,
+    session_scope: list[str] | None,
+) -> list[str]:
+    """Pick the effective scope for a single ask request.
+
+    Precedence: per-question body > session sticky > config default.
+    Returns the dedup'd, valid list of DB profile names.
+    """
+    candidates: list[str] = []
+    if body_scope is not None:
+        candidates = list(body_scope)
+    elif session_scope is not None:
+        candidates = list(session_scope)
+    else:
+        # Default: every saved DB profile in the config. The user picked
+        # this in PR-A planning — Studio is multi-profile by default.
+        candidates = list(cfg.db_profiles.keys())
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in candidates:
+        clean = (name or "").strip()
+        if not clean or clean in seen:
+            continue
+        if clean not in cfg.db_profiles:
+            # Drop ghost profiles (config edited mid-session) silently —
+            # the agent operates only on profiles that exist now.
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out
 
 
 @router.post("")
@@ -67,13 +128,29 @@ def submit_ask(
 
     session_id = body.session_id
     store = _session_store_or_none()
+
+    # Pull the session's sticky scope (set via PATCH /api/ask/sessions/{id})
+    # so an /ask without an explicit scope_profiles in the body still
+    # honours what the user picked in the dropdown for THIS chat.
+    session_scope: list[str] | None = None
+    if store is not None and session_id is not None:
+        try:
+            session_scope = store.get_scope(int(session_id))
+        except Exception:
+            session_scope = None
+
     if store is not None and session_id is None:
+        # First message of a new session — also seed the sticky scope so
+        # the SPA can resume cleanly if the page is reloaded.
+        initial_scope = list(body.scope_profiles) if body.scope_profiles is not None else None
         try:
             session_id = store.start_session(
                 db_profile=db_profile,
                 llm_profile=llm_profile,
                 title=body.question[:80],
+                scope_profiles=initial_scope,
             )
+            session_scope = initial_scope
         except Exception:
             session_id = None
     if store is not None and session_id is not None:
@@ -83,15 +160,56 @@ def submit_ask(
             # Persistence is best-effort — never fail the SSE handshake.
             pass
 
+    scope_profiles = _resolve_ask_scope(cfg, body.scope_profiles, session_scope)
+
     job = jobs.new_job("ask")
     thread = threading.Thread(
         target=_ask_worker,
-        args=(cfg, job, body.question, session_id, db_profile),
+        args=(cfg, job, body.question, session_id, db_profile, scope_profiles),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
     )
     thread.start()
-    return {"job_id": job.id, "session_id": session_id, "status": job.status}
+    return {
+        "job_id": job.id,
+        "session_id": session_id,
+        "status": job.status,
+        "scope_profiles": list(scope_profiles),
+    }
+
+
+@router.patch("/sessions/{session_id}")
+def update_session(
+    session_id: int,
+    body: UpdateSessionRequest,
+) -> dict[str, Any]:
+    """Update sticky scope (and optionally focus_profile) on a chat
+    session. The Studio dropdown writes through here so the new scope
+    persists across page reloads and shows on the CLI's ``/ask-scope``
+    output if the user inspects the same session.
+    """
+    store = _session_store_or_none()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat history isn't available — initialise the history store first.",
+        )
+    if store.get_session(session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No chat session {session_id}.",
+        )
+    store.update_scope(
+        session_id,
+        scope_profiles=body.scope_profiles,
+        focus_profile=body.focus_profile,
+    )
+    return {
+        "ok": True,
+        "session_id": int(session_id),
+        "scope_profiles": body.scope_profiles,
+        "focus_profile": body.focus_profile,
+    }
 
 
 # NOTE: ``/sessions`` routes are declared BEFORE the ``/{job_id}``
@@ -239,10 +357,17 @@ def _ask_worker(
     question: str,
     session_id: int | None,
     db_profile: str,
+    scope_profiles: list[str],
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
-    turn to chat_sessions on success."""
+    turn to chat_sessions on success.
+
+    ``scope_profiles`` is the resolved retrieval scope for this turn
+    (per-question body override > session sticky > config default).
+    Passed through to ``run_tool_agent`` which threads it into every
+    catalog tool call.
+    """
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Thinking"})
     emit(job.queue, "activity.begin", {"idx": 0})
@@ -296,6 +421,7 @@ def _ask_worker(
             on_thinking_delta=_on_thinking,
             on_tool_call=_on_tool_call,
             cancel_token=job.cancel,
+            db_profiles=list(scope_profiles) if scope_profiles else None,
         )
     except RunCancelled:
         job.status = "cancelled"

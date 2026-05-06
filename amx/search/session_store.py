@@ -88,16 +88,26 @@ class ChatSessionStore:
         db_profile: str,
         llm_profile: str,
         title: str | None = None,
+        scope_profiles: list[str] | None = None,
     ) -> int:
+        """Open a new chat session row.
+
+        ``scope_profiles`` is the multi-profile ask scope sticky for this
+        session — Studio's dropdown and CLI's ``/ask-scope`` write through
+        :meth:`update_scope`. Empty / ``None`` means "use config default
+        (every saved DB profile)".
+        """
         now = time.time()
+        scope_json = json.dumps(list(scope_profiles)) if scope_profiles else None
         with self._history._lock, self._history._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO chat_sessions
-                    (db_profile, llm_profile, started_at, last_active_at, title)
-                VALUES (?, ?, ?, ?, ?)
+                    (db_profile, llm_profile, started_at, last_active_at, title,
+                     scope_profiles_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (str(db_profile), str(llm_profile), now, now, title),
+                (str(db_profile), str(llm_profile), now, now, title, scope_json),
             )
             return int(cur.lastrowid or 0)
 
@@ -115,6 +125,49 @@ class ChatSessionStore:
                 (int(session_id),),
             ).fetchone()
         return dict(row) if row else None
+
+    def update_scope(
+        self,
+        session_id: int,
+        *,
+        scope_profiles: list[str] | None,
+        focus_profile: str | None = None,
+    ) -> None:
+        """Replace the sticky scope on an existing session.
+
+        ``scope_profiles=None`` clears the override and falls back to
+        config default. ``focus_profile`` is the auto-detected
+        conversation focus (computed in tool_agent); the SPA stores it
+        for read-only display.
+        """
+        scope_json = json.dumps(list(scope_profiles)) if scope_profiles is not None else None
+        with self._history._lock, self._history._connect() as conn:
+            conn.execute(
+                "UPDATE chat_sessions SET scope_profiles_json = ?, "
+                "focus_profile = ?, last_active_at = ? WHERE id = ?",
+                (scope_json, focus_profile, time.time(), int(session_id)),
+            )
+
+    def get_scope(self, session_id: int) -> list[str] | None:
+        """Return the sticky scope for *session_id* or ``None`` when
+        unset (caller should fall back to config default)."""
+        with self._history._connect() as conn:
+            row = conn.execute(
+                "SELECT scope_profiles_json FROM chat_sessions WHERE id = ?",
+                (int(session_id),),
+            ).fetchone()
+        if not row:
+            return None
+        raw = row["scope_profiles_json"]
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(value, list):
+            return None
+        return [str(name).strip() for name in value if str(name).strip()]
 
     def list_sessions(
         self,
