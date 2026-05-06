@@ -115,3 +115,57 @@ def test_prompt_directs_single_paragraph_for_short_answers() -> None:
     prompt = _agent_system_prompt(cfg, ["public"])
     # The 'short answer' threshold is documented.
     assert "Short answer" in prompt or "short answer" in prompt
+
+
+def test_prompt_unpinned_2level_profile_is_normal_not_blocker() -> None:
+    """Regression guard: an unpinned 2-level profile (PostgreSQL etc.
+    without a pinned `database`) is a fully-supported state — Studio's
+    multi-profile browse already handles it. The prompt must NOT
+    instruct the LLM to ask the user to /use-db <db> or /edit. The
+    only mention of those phrases should be in the explicit
+    'NEVER ask the user to …' negation."""
+    from amx.config import DBConfig
+
+    cfg = AMXConfig()
+    cfg.db = DBConfig(backend="postgresql", host="pg.local", database="")
+    prompt = _agent_system_prompt(cfg, [])
+    # Every mention of the forbidden phrasing must be NEGATED — never
+    # surface as a positive instruction.
+    for phrase in ("switch via /use-db", "pin one with /edit"):
+        for occurrence in _find_all(prompt, phrase):
+            window = prompt[max(0, occurrence - 40) : occurrence]
+            assert "NEVER" in window or "not " in window.lower(), (
+                f"Phrase {phrase!r} appeared as a positive instruction: {window!r}"
+            )
+    # The new permissive phrasing must be present.
+    assert "no database pinned" in prompt
+    assert "with_counts=true" in prompt
+    assert "list_databases" in prompt
+    assert "blocker, not an answer" in prompt
+
+
+def _find_all(haystack: str, needle: str) -> list[int]:
+    out: list[int] = []
+    start = 0
+    while True:
+        idx = haystack.find(needle, start)
+        if idx == -1:
+            return out
+        out.append(idx)
+        start = idx + 1
+
+
+def test_prompt_anti_hallucination_profile_boundary_rule() -> None:
+    """Each profile has its OWN pinned_database / pinned_catalog (or
+    none). The Studio bug 'postgre (amx_test.public): 0 tables' came
+    from the LLM applying dbr's catalog name to postgre's row. The
+    prompt must explicitly forbid that name bleed."""
+    cfg = AMXConfig()
+    prompt = _agent_system_prompt(cfg, ["public"])
+    # The rule's keyword anchor.
+    assert "Profile-boundary discipline" in prompt
+    assert "pinned_database" in prompt
+    assert "pinned_catalog" in prompt
+    # Concrete forbidden case (one profile's catalog applied to another).
+    lower = prompt.lower()
+    assert "never copy" in lower or "do not write" in lower or "never apply" in lower

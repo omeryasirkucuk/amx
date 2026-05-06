@@ -158,3 +158,124 @@ def test_list_databases_single_profile_scope(cfg_two_profiles) -> None:
     assert result["scope"] == ["test-postgre"]
     assert result["count"] == 1
     assert result["profiles"]["test-postgre"]["databases"] == ["a", "b", "c"]
+
+
+def test_list_databases_with_counts_returns_schema_and_table_counts(
+    cfg_two_profiles, monkeypatch
+) -> None:
+    """``with_counts=True`` enriches each database/catalog entry with
+    ``schema_count`` + ``table_count``, plus per-profile and grand
+    totals so the LLM can compose the STATS-EXAMPLE-DRILL stats line
+    in one tool call. This is the answer to 'which tables can we
+    reach' on an unpinned 2-level profile — no follow-up tool needed.
+    """
+    # Stub the count helper so we don't open real connections.
+    counts: dict[tuple[str, str, bool], dict[str, int]] = {
+        ("test-postgre", "bird_train_desc", False): {"schema_count": 70, "table_count": 2451},
+        ("test-postgre", "postgres", False): {"schema_count": 1, "table_count": 0},
+        ("test-postgre", "analytics", False): {"schema_count": 4, "table_count": 142},
+        ("dbr", "amx_test", True): {"schema_count": 12, "table_count": 88},
+        ("dbr", "main", True): {"schema_count": 5, "table_count": 33},
+    }
+
+    def _fake_count_database_assets(self, profile_name, target, supports_catalogs):
+        return counts.get((profile_name, target, supports_catalogs), {})
+
+    monkeypatch.setattr(
+        ToolBox, "_count_database_assets", _fake_count_database_assets, raising=True
+    )
+
+    box = ToolBox(
+        cfg_two_profiles,
+        MagicMock(),
+        db_profiles=["dbr", "test-postgre"],
+        db_connectors={
+            "dbr": _stub_databricks_connector(["amx_test", "main"]),
+            "test-postgre": _stub_pg_connector(["bird_train_desc", "postgres", "analytics"]),
+        },
+    )
+    result = box._tool_list_databases(with_counts=True)
+
+    assert result["with_counts"] is True
+
+    pg = result["profiles"]["test-postgre"]
+    # The shape switches from list[str] to list[dict].
+    assert pg["databases"] == [
+        {"name": "bird_train_desc", "schema_count": 70, "table_count": 2451},
+        {"name": "postgres", "schema_count": 1, "table_count": 0},
+        {"name": "analytics", "schema_count": 4, "table_count": 142},
+    ]
+    # Per-profile rollup the LLM uses for the stats line.
+    assert pg["total_schemas"] == 70 + 1 + 4
+    assert pg["total_tables"] == 2451 + 0 + 142
+
+    dbr = result["profiles"]["dbr"]
+    assert dbr["catalogs"] == [
+        {"name": "amx_test", "schema_count": 12, "table_count": 88},
+        {"name": "main", "schema_count": 5, "table_count": 33},
+    ]
+    assert dbr["total_schemas"] == 12 + 5
+    assert dbr["total_tables"] == 88 + 33
+
+    # Grand totals across every profile in scope.
+    assert result["grand_total_schemas"] == 75 + 17
+    assert result["grand_total_tables"] == 2593 + 121
+
+
+def test_list_databases_with_counts_skips_system_catalogs(cfg_two_profiles, monkeypatch) -> None:
+    """Databricks workspaces have system catalogs (system, samples,
+    workspace, hive_metastore) alongside user catalogs. Each scoped
+    ``list_assets_bulk`` call is ~1-2s on Databricks, so enriching
+    every catalog including the system ones blew through the 8s
+    per-profile timeout in the user's bug report. The fix: skip
+    count-enrichment for system catalogs, but still surface them in
+    the names list with ``system_catalog: True`` so the LLM knows the
+    full reach. Reported: dbr profile timed out after 8s when it had
+    4 catalogs visible."""
+    counts_called: list[str] = []
+
+    def _fake_count(self, profile_name, target, supports_catalogs):
+        counts_called.append(target)
+        return {"schema_count": 1, "table_count": 1}
+
+    monkeypatch.setattr(ToolBox, "_count_database_assets", _fake_count, raising=True)
+
+    box = ToolBox(
+        cfg_two_profiles,
+        MagicMock(),
+        db_profiles=["dbr"],
+        db_connectors={
+            # The four-catalog scenario from the user's screenshot.
+            "dbr": _stub_databricks_connector(["amx_test", "samples", "system", "workspace"]),
+        },
+    )
+    result = box._tool_list_databases(with_counts=True)
+
+    # Counts were ONLY computed for the user catalog.
+    assert counts_called == ["amx_test"]
+
+    catalogs = result["profiles"]["dbr"]["catalogs"]
+    # User catalog: enriched.
+    assert {"name": "amx_test", "schema_count": 1, "table_count": 1} in catalogs
+    # System catalogs: surfaced without counts, marked.
+    for sys_cat in ("samples", "system", "workspace"):
+        assert {"name": sys_cat, "system_catalog": True} in catalogs
+
+
+def test_list_databases_with_counts_default_off(cfg_two_profiles) -> None:
+    """Default ``with_counts=False`` returns the legacy name-only
+    shape so callers that just want a quick name list don't pay the
+    per-database fan-out cost."""
+    box = ToolBox(
+        cfg_two_profiles,
+        MagicMock(),
+        db_profiles=["test-postgre"],
+        db_connectors={
+            "test-postgre": _stub_pg_connector(["a", "b"]),
+        },
+    )
+    result = box._tool_list_databases()
+    assert result["with_counts"] is False
+    assert result["profiles"]["test-postgre"]["databases"] == ["a", "b"]
+    assert "grand_total_schemas" not in result
+    assert "grand_total_tables" not in result
