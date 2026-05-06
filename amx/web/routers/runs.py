@@ -347,13 +347,35 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             pass
         return
 
+    # Batch mode is only honored when the active provider has a batch
+    # implementation registered. Otherwise we silently fall through to
+    # chat — same contract as the CLI's _resolve_completion_mode, but
+    # without an interactive prompt: we surface the fallback as an SSE
+    # event so the SPA can show a banner.
+    use_batch = bool(body.batch_mode) and llm.supports_batch
+    if body.batch_mode and not llm.supports_batch:
+        from amx.llm.batch import supported_providers
+
+        emit(
+            job.queue,
+            "run.mode.fallback",
+            {
+                "requested": "batch",
+                "actual": "chat",
+                "reason": (
+                    f"Provider '{cfg.llm.provider}' does not support batch mode "
+                    f"(supported: {', '.join(supported_providers())})."
+                ),
+            },
+        )
+
     run_id: int | None = None
     hs = history_store()
     if hs is not None:
         try:
             run_id = hs.create_run(
                 command="analyze.run",
-                mode="chat",
+                mode="batch" if use_batch else "chat",
                 db_backend=effective_backend,
                 db_profile=effective_profile,
                 llm_provider=cfg.llm.provider,
@@ -369,6 +391,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     "missing_only": bool(body.missing_only),
                     "applied_flag": bool(body.apply),
                     "trigger": "studio",
+                    "batch_mode": use_batch,
                 },
             )
             emit(job.queue, "run.created", {"run_id": int(run_id)})
@@ -389,62 +412,74 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     final_status = "success"
 
     try:
-        idx_global = 0
-        for schema, tables in scope.items():
-            for table in tables:
-                idx_global += 1
-                if job.cancel.is_set():
-                    raise RunCancelled(f"Cancelled before {schema}.{table}")
-                asset_path = f"{schema}.{table}"
-                emit(
-                    job.queue,
-                    "activity.added",
-                    {
-                        "idx": idx_global,
-                        "label": asset_path,
-                        "kind": "table",
-                        "done": idx_global - 1,
-                        "total": total_assets,
-                    },
-                )
-                emit(job.queue, "activity.begin", {"idx": idx_global})
-                try:
-                    table_results = orchestrator.process_table(
-                        schema,
-                        table,
-                        interactive_review=False,
-                        auto_apply=False,
-                    )
-                except RunCancelled:
-                    raise
-                except Exception as exc:
-                    failed_assets.append((asset_path, str(exc)))
-                    log.warning("Table %s failed: %s", asset_path, exc)
+        if use_batch:
+            _process_scope_batch(
+                orchestrator=orchestrator,
+                scope=scope,
+                job=job,
+                hs=hs,
+                run_id=run_id,
+                total_assets=total_assets,
+                processed_assets=processed_assets,
+                failed_assets=failed_assets,
+            )
+        else:
+            idx_global = 0
+            for schema, tables in scope.items():
+                for table in tables:
+                    idx_global += 1
+                    if job.cancel.is_set():
+                        raise RunCancelled(f"Cancelled before {schema}.{table}")
+                    asset_path = f"{schema}.{table}"
                     emit(
                         job.queue,
-                        "activity.fail",
-                        {"idx": idx_global, "detail": f"{exc.__class__.__name__}: {exc}"},
+                        "activity.added",
+                        {
+                            "idx": idx_global,
+                            "label": asset_path,
+                            "kind": "table",
+                            "done": idx_global - 1,
+                            "total": total_assets,
+                        },
                     )
-                    continue
-                processed_assets.append(asset_path)
-                # Pull the persisted alternatives for THIS table so
-                # the live SPA shows the same per-column richness the
-                # CLI's Rich preview does. Cheap one-shot fetch:
-                # filtering by (schema, table) in Python is fine since
-                # run_results.* for a single table is small.
-                column_details = _column_details_for_table(hs, run_id, schema, table)
-                emit(
-                    job.queue,
-                    "activity.complete",
-                    {
-                        "idx": idx_global,
-                        "detail": f"{len(table_results)} suggestion(s)",
-                        "schema": schema,
-                        "table": table,
-                        "results": column_details
-                        or [_review_result_to_event(r) for r in table_results],
-                    },
-                )
+                    emit(job.queue, "activity.begin", {"idx": idx_global})
+                    try:
+                        table_results = orchestrator.process_table(
+                            schema,
+                            table,
+                            interactive_review=False,
+                            auto_apply=False,
+                        )
+                    except RunCancelled:
+                        raise
+                    except Exception as exc:
+                        failed_assets.append((asset_path, str(exc)))
+                        log.warning("Table %s failed: %s", asset_path, exc)
+                        emit(
+                            job.queue,
+                            "activity.fail",
+                            {"idx": idx_global, "detail": f"{exc.__class__.__name__}: {exc}"},
+                        )
+                        continue
+                    processed_assets.append(asset_path)
+                    # Pull the persisted alternatives for THIS table so
+                    # the live SPA shows the same per-column richness the
+                    # CLI's Rich preview does. Cheap one-shot fetch:
+                    # filtering by (schema, table) in Python is fine since
+                    # run_results.* for a single table is small.
+                    column_details = _column_details_for_table(hs, run_id, schema, table)
+                    emit(
+                        job.queue,
+                        "activity.complete",
+                        {
+                            "idx": idx_global,
+                            "detail": f"{len(table_results)} suggestion(s)",
+                            "schema": schema,
+                            "table": table,
+                            "results": column_details
+                            or [_review_result_to_event(r) for r in table_results],
+                        },
+                    )
     except RunCancelled:
         job.status = "cancelled"
         final_status = "cancelled"
@@ -555,6 +590,97 @@ def _fail_job(job: Job, message: str) -> None:
     job.ended_at = time.time()
     emit(job.queue, "activity.fail", {"idx": 0, "detail": message})
     emit_terminal(job.queue, "job.failed", {"error": message})
+
+
+def _process_scope_batch(
+    *,
+    orchestrator: Orchestrator,
+    scope: dict[str, list[str]],
+    job: Job,
+    hs: Any,
+    run_id: int | None,
+    total_assets: int,
+    processed_assets: list[str],
+    failed_assets: list[tuple[str, str]],
+) -> None:
+    """Run the scope through the provider's Batch API, one schema at a time.
+
+    The CLI's run_loop submits one batch per schema (see
+    ``cli_support/commands/_analyze/run_loop.py:120``); we mirror that
+    grouping so the SSE stream reports per-schema progress and the
+    user sees a turnaround that reflects the underlying batch jobs.
+    Within a schema there's no per-table progress because the batch
+    completes as a unit — we emit one ``activity.added`` per schema
+    plus one ``activity.complete`` when its results return.
+    """
+    asset_kinds_cache: dict[tuple[str, str], Any] = {}
+    idx_global = 0
+    for schema, tables in scope.items():
+        if job.cancel.is_set():
+            raise RunCancelled(f"Cancelled before schema {schema}")
+        idx_global += 1
+        label = ", ".join(tables) if len(tables) <= 3 else f"{len(tables)} assets"
+        emit(
+            job.queue,
+            "activity.added",
+            {
+                "idx": idx_global,
+                "label": f"{schema} ({label})",
+                "kind": "schema",
+                "done": idx_global - 1,
+                "total": len(scope),
+                "asset_count": len(tables),
+            },
+        )
+        emit(job.queue, "activity.begin", {"idx": idx_global})
+        try:
+            asset_kinds = {
+                t: asset_kinds_cache.setdefault(
+                    (schema, t), orchestrator.db.resolve_asset_kind(schema, t)
+                )
+                for t in tables
+            }
+            schema_results = orchestrator.process_tables_batch_mode(
+                schema, list(tables), asset_kinds=asset_kinds
+            )
+        except RunCancelled:
+            raise
+        except Exception as exc:
+            for table in tables:
+                failed_assets.append((f"{schema}.{table}", str(exc)))
+            log.warning("Batch run for schema %s failed: %s", schema, exc)
+            emit(
+                job.queue,
+                "activity.fail",
+                {"idx": idx_global, "detail": f"{exc.__class__.__name__}: {exc}"},
+            )
+            continue
+
+        for table in tables:
+            processed_assets.append(f"{schema}.{table}")
+
+        # Stream per-table previews so the run-detail page renders the
+        # same rich list as a chat-mode run. We pull from the persisted
+        # history rows when available; otherwise fall back to the
+        # in-memory ReviewResult list filtered by table.
+        results_by_table: dict[str, list[Any]] = {}
+        for r in schema_results:
+            results_by_table.setdefault(getattr(r, "table", ""), []).append(r)
+
+        for table in tables:
+            column_details = _column_details_for_table(hs, run_id, schema, table)
+            table_rows = results_by_table.get(table, [])
+            emit(
+                job.queue,
+                "activity.complete",
+                {
+                    "idx": idx_global,
+                    "detail": f"{len(table_rows)} suggestion(s) (batch)",
+                    "schema": schema,
+                    "table": table,
+                    "results": column_details or [_review_result_to_event(r) for r in table_rows],
+                },
+            )
 
 
 def _column_details_for_table(

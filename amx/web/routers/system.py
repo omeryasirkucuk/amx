@@ -56,6 +56,22 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
     """
     db = getattr(cfg, "db", None)
     llm = getattr(cfg, "llm", None)
+
+    # Whether the active provider has a registered Batch API impl.
+    # Drives the RunNew "Batch mode" toggle's disabled state — checking
+    # the static provider list here saves the SPA from a second
+    # round-trip and keeps the truth in the same place as
+    # LLMProvider.supports_batch (amx.llm.batch).
+    supports_batch = False
+    provider = getattr(llm, "provider", "") or ""
+    if provider:
+        try:
+            from amx.llm.batch import supported_providers
+
+            supports_batch = provider in supported_providers()
+        except Exception:  # pragma: no cover - defensive
+            supports_batch = False
+
     return ContextResponse(
         active_db_profile=cfg.active_db_profile or None,
         active_db_profiles=list(getattr(cfg, "active_db_profiles", []) or []),
@@ -65,6 +81,7 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
         current_schema=getattr(cfg, "current_schema", None) or None,
         current_table=getattr(cfg, "current_table", None) or None,
         db_backend=getattr(db, "backend", None) or None,
-        llm_provider=getattr(llm, "provider", None) or None,
+        llm_provider=provider or None,
         llm_model=getattr(llm, "model", None) or None,
+        llm_supports_batch=supports_batch,
     )

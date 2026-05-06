@@ -47,6 +47,7 @@ class ContextResponse(BaseModel):
     db_backend: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    llm_supports_batch: bool = False
 
 
 class ErrorResponse(BaseModel):
