@@ -690,23 +690,54 @@ def _run_ask_repl(
         # on the first question.
         os.environ.pop("AMX_CHAT_SESSION_ID", None)
 
+    ask_kb = KeyBindings()
+
+    @ask_kb.add("escape", eager=True)
+    def _(event) -> None:  # type: ignore[no-untyped-def]
+        # Esc with text in the buffer clears the line; on an empty
+        # prompt it leaves ask mode (mirrors the main session's Esc-back
+        # convention so users don't have to remember /exit).
+        buf = event.app.current_buffer
+        if buf.text:
+            buf.reset()
+        else:
+            event.app.exit(result="__amx_ask_exit__")
+
+    @ask_kb.add("c-c")
+    def _(event) -> None:  # type: ignore[no-untyped-def]
+        # Ctrl-C with text clears the line; on an empty prompt it
+        # leaves ask mode rather than re-drawing a fresh ask> forever.
+        buf = event.app.current_buffer
+        if buf.text:
+            buf.reset()
+        else:
+            event.app.exit(result="__amx_ask_exit__")
+
     inner = PromptSession(
         message=HTML("<ansicyan><b>ask&gt;</b></ansicyan> "),
         mouse_support=False,
+        key_bindings=ask_kb,
     )
     while True:
         try:
-            line = inner.prompt().strip()
+            raw = inner.prompt()
         except EOFError:
             # Ctrl-D on an empty ask prompt drops back to the main session.
             console.print()
             success("Left ask mode.")
             return
         except KeyboardInterrupt:
-            # Ctrl-C resets the input line; /exit leaves ask mode.
+            # Defensive: the c-c binding above handles Ctrl-C, but if a
+            # nested context re-raises we still want to exit cleanly.
             console.print()
-            continue
+            success("Left ask mode.")
+            return
 
+        if raw == "__amx_ask_exit__":
+            success("Left ask mode.")
+            return
+
+        line = (raw or "").strip()
         if not line:
             continue
         # Allow the user to escape the REPL with familiar slash verbs without

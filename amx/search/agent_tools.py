@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Callable
+from dataclasses import replace as _dc_replace
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -684,9 +685,33 @@ class ToolBox:
                         "profile's config. When composing the answer, list ALL entries "
                         "per profile, grouped by profile name; cite per-profile counts. "
                         "Profiles that errored / timed out are reported in "
-                        "``profiles_with_errors`` so the caveat is honest."
+                        "``profiles_with_errors`` so the caveat is honest.\n\n"
+                        "Set ``with_counts=true`` when the user asks 'which tables can "
+                        "we reach', 'how many tables / schemas do I have', or any "
+                        "coverage / rollup question — each database/catalog entry is "
+                        "then ``{name, schema_count, table_count}`` and the result "
+                        "gains per-profile ``total_schemas`` / ``total_tables`` plus "
+                        "grand totals ``grand_total_schemas`` / ``grand_total_tables``. "
+                        "Use these numbers DIRECTLY for the STATS-EXAMPLE-DRILL stats "
+                        "line — no follow-up tool call needed. Skip ``with_counts`` "
+                        "when the user only asks for names ('list my databases'); the "
+                        "count fan-out is per-database and adds latency."
                     ),
-                    "parameters": {"type": "object", "properties": {}, "required": []},
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "with_counts": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true, enrich every database/catalog entry "
+                                    "with ``schema_count`` + ``table_count`` and "
+                                    "compute per-profile and grand totals. Default "
+                                    "false (names only)."
+                                ),
+                            },
+                        },
+                        "required": [],
+                    },
                 },
             },
             {
@@ -1435,6 +1460,32 @@ class ToolBox:
             return user_catalogs[0], user_catalogs, all_catalogs
         return "", user_catalogs, all_catalogs
 
+    # 3-level backends use a (catalog, schema, table) namespace; everything
+    # else is 2-level (database, schema, table). The /ask tool uses this to
+    # decide whether an unpinned profile is operating in "browse the server"
+    # mode (2-level, common) vs "auto-pick the only user catalog" (3-level).
+    _THREE_LEVEL_BACKENDS: frozenset[str] = frozenset({"databricks", "bigquery"})
+
+    def _profile_unpinned_two_level(self, profile: str) -> bool:
+        """``True`` when *profile* is a 2-level backend with no database pinned.
+
+        That state is fully supported (Studio's browse sidebar handles it
+        via per-database lazy loading), but the live-DB tools must NOT
+        silently fall through to the maintenance database — they would
+        list ``public`` from ``postgres`` (the bootstrap DB), which is
+        almost never what the user wants. Detected at metadata level so
+        we can refuse-with-hint before opening a connection on the wrong
+        database.
+        """
+        base = self.cfg.db_profiles.get(profile)
+        if base is None:
+            return False
+        backend = (str(getattr(base, "backend", "") or "")).lower()
+        if backend in self._THREE_LEVEL_BACKENDS:
+            return False
+        pinned_db = str(getattr(base, "database", "") or "").strip()
+        return not pinned_db
+
     def _list_schemas_on_profile(
         self,
         profile: str,
@@ -1447,19 +1498,45 @@ class ToolBox:
         ``db_profile=X``) and as the per-profile worker function for
         the multi-profile fan-out. Returns the same payload shape as
         the top-level tool with ``db_profile`` added.
+
+        Every payload carries ``pinned_database`` + ``pinned_catalog`` so
+        the LLM can see EACH profile's pinned scope independently — that
+        defends against cross-profile name bleed (one profile's pinned
+        catalog being applied to another profile's row).
         """
+        base = self.cfg.db_profiles.get(profile)
+        pinned_database = str(getattr(base, "database", "") or "").strip() if base else ""
+        pinned_catalog = str(getattr(base, "catalog", "") or "").strip() if base else ""
+        # 2-level profile with no DB pinned: refuse with a hint instead of
+        # falling through to the bootstrap DB. The LLM should call
+        # list_databases(with_counts=true) for the cross-DB rollup, or
+        # narrow with database= per call.
+        if self._profile_unpinned_two_level(profile):
+            return {
+                "db_profile": profile,
+                "pinned_database": pinned_database or None,
+                "pinned_catalog": pinned_catalog or None,
+                "unpinned": True,
+                "error": (
+                    "This 2-level profile has no database pinned. Call "
+                    "list_databases(with_counts=true) to enumerate every reachable "
+                    "database with schema/table rollups, or pass `database=` to scope "
+                    "this listing to one database."
+                ),
+                "schemas": [],
+                "count": 0,
+            }
         try:
             db = self._connector_for_profile(profile)
         except _ToolError as exc:
             return {
                 "db_profile": profile,
+                "pinned_database": pinned_database or None,
+                "pinned_catalog": pinned_catalog or None,
                 "error": str(exc),
                 "schemas": [],
                 "count": 0,
             }
-        # Catalog resolution honours the per-profile DBConfig.
-        base = self.cfg.db_profiles.get(profile)
-        pinned_catalog = str(getattr(base, "catalog", "") or "").strip() if base else ""
         explicit = (catalog or "").strip()
         cat_arg = explicit or pinned_catalog
         try:
@@ -1468,19 +1545,23 @@ class ToolBox:
         except Exception as exc:
             return {
                 "db_profile": profile,
+                "pinned_database": pinned_database or None,
+                "pinned_catalog": pinned_catalog or None,
                 "error": f"{exc.__class__.__name__}: {exc}",
                 "schemas": [],
                 "count": 0,
             }
         database = (
             cat_arg
-            or (getattr(base, "database", "") or "")
-            or (getattr(base, "catalog", "") or "")
+            or pinned_database
+            or pinned_catalog
             or (getattr(base, "project", "") or "")
             or "(no database pinned)"
         )
         payload: dict[str, Any] = {
             "db_profile": profile,
+            "pinned_database": pinned_database or None,
+            "pinned_catalog": pinned_catalog or None,
             "database": database,
             "schemas": schemas,
             "count": len(schemas),
@@ -1499,20 +1580,45 @@ class ToolBox:
         """Run ``list_tables(schema)`` (or ``list_assets``) against a
         named profile. Same payload shape as the top-level tool with
         ``db_profile`` added for cross-profile rendering.
+
+        Every payload carries ``pinned_database`` + ``pinned_catalog`` so
+        the LLM can see EACH profile's pinned scope independently and
+        won't bleed one profile's catalog onto another's row.
         """
+        base = self.cfg.db_profiles.get(profile)
+        pinned_database = str(getattr(base, "database", "") or "").strip() if base else ""
+        pinned_catalog = str(getattr(base, "catalog", "") or "").strip() if base else ""
+        # 2-level + unpinned: refuse-with-hint rather than silently
+        # listing the bootstrap DB's schemas.
+        if self._profile_unpinned_two_level(profile):
+            return {
+                "db_profile": profile,
+                "pinned_database": pinned_database or None,
+                "pinned_catalog": pinned_catalog or None,
+                "schema": schema,
+                "found": False,
+                "unpinned": True,
+                "error": (
+                    "This 2-level profile has no database pinned. Call "
+                    "list_databases(with_counts=true) to see what's reachable, "
+                    "or pass `database=` to scope this listing to one database."
+                ),
+                "tables": [],
+                "count": 0,
+            }
         try:
             db = self._connector_for_profile(profile)
         except _ToolError as exc:
             return {
                 "db_profile": profile,
+                "pinned_database": pinned_database or None,
+                "pinned_catalog": pinned_catalog or None,
                 "schema": schema,
                 "found": False,
                 "error": str(exc),
                 "tables": [],
                 "count": 0,
             }
-        base = self.cfg.db_profiles.get(profile)
-        pinned_catalog = str(getattr(base, "catalog", "") or "").strip() if base else ""
         cat_arg = (catalog or "").strip() or pinned_catalog
         try:
             with self._scoped_catalog(db, cat_arg):
@@ -1521,6 +1627,8 @@ class ToolBox:
                 if match is None:
                     return {
                         "db_profile": profile,
+                        "pinned_database": pinned_database or None,
+                        "pinned_catalog": pinned_catalog or None,
                         "schema": schema,
                         "catalog": cat_arg or None,
                         "found": False,
@@ -1536,6 +1644,8 @@ class ToolBox:
         except Exception as exc:
             return {
                 "db_profile": profile,
+                "pinned_database": pinned_database or None,
+                "pinned_catalog": pinned_catalog or None,
                 "schema": schema,
                 "found": False,
                 "error": f"{exc.__class__.__name__}: {exc}",
@@ -1544,6 +1654,8 @@ class ToolBox:
             }
         return {
             "db_profile": profile,
+            "pinned_database": pinned_database or None,
+            "pinned_catalog": pinned_catalog or None,
             "schema": match,
             "catalog": cat_arg or None,
             "found": True,
@@ -2567,7 +2679,97 @@ class ToolBox:
             "include_system": bool(include_system),
         }
 
-    def _tool_list_databases(self) -> dict[str, Any]:
+    def _count_database_assets(
+        self,
+        profile_name: str,
+        target: str,
+        supports_catalogs: bool,
+    ) -> dict[str, Any]:
+        """Return ``{"schema_count": N, "table_count": M}`` for *target*.
+
+        For 3-level backends (Databricks, BigQuery), the per-profile
+        connector is reused with ``_scoped_catalog`` to pin the catalog
+        — opening a fresh ``DatabaseConnector`` per catalog would
+        retrigger the SQL-warehouse cold-start (~2s per catalog on
+        Databricks) and easily blow the 8s per-profile fan-out budget.
+
+        For 2-level backends, the database lives in the connection
+        string, so a fresh connector is unavoidable; that's cheap on
+        PostgreSQL / Snowflake / MySQL.
+
+        ``list_assets_bulk`` is used when the adapter supports it
+        (single round trip); otherwise we sum ``list_tables(schema)``
+        per schema. Failures degrade gracefully: keys are omitted from
+        the returned dict when the count couldn't be computed, so the
+        caller can still surface the database name without numbers.
+        """
+        base = self.cfg.db_profiles.get(profile_name)
+        if base is None:
+            return {}
+
+        # 3-level: reuse the existing per-profile connector via
+        # _scoped_catalog. The connector's engine is already warm.
+        if supports_catalogs:
+            try:
+                conn = self._connector_for_profile(profile_name)
+            except _ToolError:
+                return {}
+            try:
+                with self._scoped_catalog(conn, target):
+                    try:
+                        schemas = [str(s) for s in conn.list_schemas()]
+                    except Exception:
+                        return {}
+                    out: dict[str, Any] = {"schema_count": len(schemas)}
+                    table_count: int | None = None
+                    try:
+                        bulk = conn.list_assets_bulk(target)
+                    except Exception:
+                        bulk = None
+                    if bulk is not None:
+                        table_count = len(bulk)
+                    if table_count is None:
+                        table_count = 0
+                        for s in schemas:
+                            try:
+                                table_count += len(conn.list_tables(s))
+                            except Exception:
+                                continue
+                    out["table_count"] = table_count
+                    return out
+            except Exception:
+                return {}
+
+        # 2-level: database lives in the connection string; open a fresh
+        # connector scoped to the target database.
+        try:
+            scoped_cfg = _dc_replace(base, database=target)
+        except TypeError:
+            return {}
+        scoped_conn: DatabaseConnector | None = None
+        try:
+            scoped_conn = DatabaseConnector(scoped_cfg)
+            try:
+                schemas = [str(s) for s in scoped_conn.list_schemas()]
+            except Exception:
+                return {}
+            out = {"schema_count": len(schemas)}
+            table_count = 0
+            for s in schemas:
+                try:
+                    table_count += len(scoped_conn.list_tables(s))
+                except Exception:
+                    continue
+            out["table_count"] = table_count
+            return out
+        except Exception:
+            return {}
+        finally:
+            if scoped_conn is not None:
+                with contextlib.suppress(Exception):
+                    scoped_conn.close()
+
+    def _tool_list_databases(self, *, with_counts: bool = False) -> dict[str, Any]:
         """List EVERY database (or catalog) reachable across the
         configured DB profiles — not just the one each profile has
         pinned.
@@ -2586,12 +2788,21 @@ class ToolBox:
         Per-profile fan-out runs through the same ThreadPoolExecutor
         the live-DB tools use (cap 8 workers, 8s per-profile timeout)
         so a slow / unreachable profile doesn't block the others.
+
+        ``with_counts``: when True, each database/catalog entry becomes
+        ``{name, schema_count, table_count}`` so the LLM can answer
+        "which tables can we reach" with the STATS-EXAMPLE-DRILL pattern
+        in one turn (no follow-up tool call to get totals). Bulk-listing
+        is preferred when the backend supports it; otherwise we fan
+        out ``list_tables`` per schema. The 8s per-profile timeout
+        still applies, so very large workspaces may surface partial
+        counts.
         """
         from concurrent.futures import ThreadPoolExecutor, wait
 
         targets = list(self.db_profiles)
         if not targets:
-            return {"profiles": {}, "count": 0, "scope": []}
+            return {"profiles": {}, "count": 0, "scope": [], "with_counts": with_counts}
 
         def _per_profile(profile_name: str) -> dict[str, Any]:
             base = self.cfg.db_profiles.get(profile_name)
@@ -2622,9 +2833,41 @@ class ToolBox:
             }
             try:
                 if supports_catalogs:
-                    payload["catalogs"] = [str(c) for c in conn.list_catalogs()]
+                    catalogs = [str(c) for c in conn.list_catalogs()]
+                    if with_counts:
+                        # System catalogs (system, samples, workspace,
+                        # hive_metastore, …) carry the workspace's own
+                        # tooling, NOT user data — skip count-enrichment
+                        # for them. Without this filter a Databricks
+                        # workspace with 4+ system catalogs blew through
+                        # the 8s per-profile timeout (each scoped
+                        # list_assets_bulk is ~1-2s on Databricks).
+                        # System catalogs are still surfaced (with no
+                        # counts) so the LLM knows the full reach.
+                        user_cats = set(self._user_catalogs(catalogs))
+                        enriched: list[dict[str, Any]] = []
+                        for c in catalogs:
+                            entry: dict[str, Any] = {"name": c}
+                            if c in user_cats:
+                                entry.update(self._count_database_assets(profile_name, c, True))
+                            else:
+                                entry["system_catalog"] = True
+                            enriched.append(entry)
+                        payload["catalogs"] = enriched
+                    else:
+                        payload["catalogs"] = catalogs
                 else:
-                    payload["databases"] = [str(d) for d in conn.list_databases()]
+                    databases = [str(d) for d in conn.list_databases()]
+                    if with_counts:
+                        payload["databases"] = [
+                            {
+                                "name": d,
+                                **self._count_database_assets(profile_name, d, False),
+                            }
+                            for d in databases
+                        ]
+                    else:
+                        payload["databases"] = databases
             except Exception as exc:
                 payload["error"] = f"{exc.__class__.__name__}: {exc}"
             return payload
@@ -2668,13 +2911,33 @@ class ToolBox:
             for name, payload in per_profile.items()
             if payload.get("error") or payload.get("timeout")
         ]
-        return {
+        result: dict[str, Any] = {
             "scope": targets,
             "profiles": per_profile,
             "total_reachable": total_dbs,
             "profiles_with_errors": with_errors,
             "count": len(per_profile),
+            "with_counts": with_counts,
         }
+        if with_counts:
+            # Per-profile and grand totals so the LLM can compose the
+            # STATS-EXAMPLE-DRILL line without re-summing dicts itself.
+            grand_schemas = 0
+            grand_tables = 0
+            for payload in per_profile.values():
+                p_schemas = 0
+                p_tables = 0
+                for entry in (payload.get("databases") or []) + (payload.get("catalogs") or []):
+                    if isinstance(entry, dict):
+                        p_schemas += int(entry.get("schema_count") or 0)
+                        p_tables += int(entry.get("table_count") or 0)
+                payload["total_schemas"] = p_schemas
+                payload["total_tables"] = p_tables
+                grand_schemas += p_schemas
+                grand_tables += p_tables
+            result["grand_total_schemas"] = grand_schemas
+            result["grand_total_tables"] = grand_tables
+        return result
 
     # ------------------------------------------------------------ dtype family
     # Map a user-supplied dtype token to a concrete SQL-LIKE pattern set so

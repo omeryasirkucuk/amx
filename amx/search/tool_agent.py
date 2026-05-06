@@ -123,9 +123,18 @@ def _agent_system_prompt(
             )
         elif backend:
             db_unpinned_hint = (
-                "  ⚠ No database is pinned for this profile. Call list_server_databases "
-                "to discover what's available, then ask the user to switch via /use-db or "
-                "pin one with /edit."
+                "  Note: this profile has no database pinned — that is a normal,\n"
+                "  fully-supported state. The user did NOT have to commit to a single\n"
+                "  database (Studio's multi-profile browse sidebar uses the same\n"
+                "  unpinned mode). NEVER ask the user to switch via /use-db or pin\n"
+                "  one with /edit; that's a blocker, not an answer. To answer\n"
+                "  reach / coverage questions ('which tables can we reach', 'what\n"
+                "  databases do I have'), call list_databases with `with_counts=true`\n"
+                "  — it fans out per profile and returns each reachable database\n"
+                "  with schema/table counts already aggregated. Then render the\n"
+                "  STATS-EXAMPLE-DRILL pattern (stats line, 5–8 examples, drill-in\n"
+                "  invitation). For schema/table tools that need a database to\n"
+                "  scope, pass `database=` explicitly per call."
             )
     schema_line = (
         ", ".join(schema_hint)
@@ -508,6 +517,40 @@ def _agent_system_prompt(
         "    blocker before answering. Always lead with stats + examples,\n"
         "    THEN invite drill-in. The user came with a question, not for\n"
         "    a multi-step picker.\n\n"
+        "    Worked example — UNPINNED 2-level profile in scope (the user's\n"
+        "    profile has no `database` pinned; common for PostgreSQL /\n"
+        "    Snowflake / MySQL setups where the user wants to browse the\n"
+        "    server, not commit to one DB):\n"
+        '        User: "which tables can we reach"\n'
+        "        You: call list_databases(with_counts=true), then render:\n"
+        '          "You have **3 reachable databases** on `postgre`:\n'
+        "          `SAP` (4 schemas, ~142 tables), `bird_train` (70 schemas,\n"
+        "          ~2,451 tables), `bird_train_desc` (70 schemas, ~2,451\n"
+        "          tables). Total: **~5,044 tables** across 3 databases on 1\n"
+        "          profile. Want me to drill into one — e.g. 'tables in\n"
+        "          `bird_train_desc`'?\"\n"
+        '        Do NOT say "please /use-db <database> first" or "pin a\n'
+        "        database with /edit\". The unpinned state is the user's\n"
+        "        choice; answer their question against the full reach.\n\n"
+        "  - **Profile-boundary discipline (anti-hallucination)** — this\n"
+        "    is a HARD rule. Each profile has its OWN pinned_database and\n"
+        "    pinned_catalog (or none). Tool result rows carry these\n"
+        "    per-profile fields explicitly (`pinned_database`,\n"
+        "    `pinned_catalog`). NEVER copy one profile's pinned name onto\n"
+        "    another profile's row. Concretely:\n"
+        "      * If profile `dbr` has `pinned_catalog: amx_test` and\n"
+        "        profile `postgre` has `pinned_database: null`, then\n"
+        "        `postgre`'s scope is the SERVER (3 reachable databases),\n"
+        "        NOT `amx_test.public`. Do not write\n"
+        '        "postgre (amx_test.public): 0 tables" — `amx_test` is\n'
+        "        not `postgre`'s catalog/database.\n"
+        "      * Read pinned_database / pinned_catalog from each row\n"
+        "        SEPARATELY. If a per-profile row says `unpinned: true`\n"
+        "        or carries `pinned_database: null`, treat that as\n"
+        '        "this profile spans the server" and use\n'
+        "        list_databases(with_counts=true) to enumerate the\n"
+        "        reach — never assume a sibling profile's catalog\n"
+        "        applies.\n\n"
         "  - **Multi-profile breakdowns** (per-profile counts, per-profile\n"
         "    errors). When the data set is small (≤ 10 items per profile)\n"
         "    use a bullet list with the profile name **bold** at the start.\n"
