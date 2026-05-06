@@ -202,19 +202,26 @@ def upsert_db(
 
 @router.delete("/db/{name}")
 def delete_db(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Delete a DB profile. The active profile and the last remaining
+    profile can both be deleted — Studio surfaces the empty-config
+    state via the browse sidebar's "no profiles yet" empty state and
+    the /ask 412 ``configure-llm`` flow. Refusing the deletion forced
+    a roundabout reset; matching the CLI's ``/remove-db-profile``
+    behaviour means the SPA stops requiring users to first add a
+    decoy profile + activate it before they can clean up."""
     if name not in cfg.db_profiles:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No DB profile named {name!r}.",
         )
-    if name == (cfg.active_db_profile or ""):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete the active DB profile. Activate another profile first.",
-        )
-    del cfg.db_profiles[name]
+    cfg.remove_db_profile(name)
     cfg.save()
-    return {"ok": True, "name": name, "remaining": len(cfg.db_profiles)}
+    return {
+        "ok": True,
+        "name": name,
+        "remaining": len(cfg.db_profiles),
+        "active": cfg.active_db_profile or None,
+    }
 
 
 @router.post("/db/{name}/activate")
@@ -295,19 +302,25 @@ def upsert_llm(
 
 @router.delete("/llm/{name}")
 def delete_llm(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Delete an LLM profile. The active profile and the last
+    remaining profile can both be deleted — /ask gates on
+    :func:`SearchAgent._llm_available` (CLI) and the configure-llm
+    412 pre-flight (Studio), so an empty config surfaces a friendly
+    "configure an LLM profile" prompt rather than failing silently.
+    """
     if name not in cfg.llm_profiles:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No LLM profile named {name!r}.",
         )
-    if name == (cfg.active_llm_profile or ""):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete the active LLM profile. Activate another first.",
-        )
-    del cfg.llm_profiles[name]
+    cfg.remove_llm_profile(name)
     cfg.save()
-    return {"ok": True, "name": name, "remaining": len(cfg.llm_profiles)}
+    return {
+        "ok": True,
+        "name": name,
+        "remaining": len(cfg.llm_profiles),
+        "active": cfg.active_llm_profile or None,
+    }
 
 
 @router.post("/llm/{name}/activate")
