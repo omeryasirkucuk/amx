@@ -673,9 +673,18 @@ class ToolBox:
                 "function": {
                     "name": "list_databases",
                     "description": (
-                        "List the databases the agent currently has access to (one per active "
-                        "DB profile). Use this only when the user explicitly asks 'which "
-                        "databases do we have?' / 'hangi veritabanları var?'."
+                        "List EVERY database (or catalog, on 3-level backends) reachable "
+                        "across the configured DB profiles. Fans out per profile in "
+                        "parallel and returns ``profiles: {name: {databases|catalogs, "
+                        "pinned_database, pinned_catalog, supports_catalogs}}``. Use "
+                        "this when the user asks 'which databases do I have?', 'hangi "
+                        "veritabanları var?', 'show me all databases', 'what's in each "
+                        "profile?'. The result enumerates the full reach of every "
+                        "connection — NOT just the database currently pinned in each "
+                        "profile's config. When composing the answer, list ALL entries "
+                        "per profile, grouped by profile name; cite per-profile counts. "
+                        "Profiles that errored / timed out are reported in "
+                        "``profiles_with_errors`` so the caveat is honest."
                     ),
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
@@ -2559,18 +2568,113 @@ class ToolBox:
         }
 
     def _tool_list_databases(self) -> dict[str, Any]:
-        rows = []
-        for profile_name, db_cfg in sorted(self.cfg.db_profiles.items()):
-            db_name = db_cfg.database or db_cfg.catalog or db_cfg.project or ""
-            rows.append(
-                {
-                    "profile": profile_name,
-                    "database": db_name,
-                    "backend": db_cfg.backend or "",
-                    "is_active": profile_name == (self.cfg.active_db_profile or "default"),
+        """List EVERY database (or catalog) reachable across the
+        configured DB profiles — not just the one each profile has
+        pinned.
+
+        For each profile in scope:
+        - 3-level backend (Databricks UC, BigQuery) → ``list_catalogs``
+          on that connector returns every catalog the role can see.
+        - 2-level backend (PostgreSQL, Snowflake, MySQL, …) →
+          ``list_databases`` returns every server-side database.
+
+        The legacy single-pinned-db output ("dbr → amx_test") was
+        misleading — when the user asks "which databases do I have"
+        they expect to see the full reach of each connection, not the
+        currently-pinned default. The tool now answers that literally.
+
+        Per-profile fan-out runs through the same ThreadPoolExecutor
+        the live-DB tools use (cap 8 workers, 8s per-profile timeout)
+        so a slow / unreachable profile doesn't block the others.
+        """
+        from concurrent.futures import ThreadPoolExecutor, wait
+
+        targets = list(self.db_profiles)
+        if not targets:
+            return {"profiles": {}, "count": 0, "scope": []}
+
+        def _per_profile(profile_name: str) -> dict[str, Any]:
+            base = self.cfg.db_profiles.get(profile_name)
+            backend = (str(getattr(base, "backend", "") or "") if base else "").lower()
+            try:
+                conn = self._connector_for_profile(profile_name)
+            except _ToolError as exc:
+                return {
+                    "db_profile": profile_name,
+                    "backend": backend,
+                    "error": str(exc),
+                    "databases": [],
+                    "catalogs": [],
                 }
-            )
-        return {"databases": rows, "count": len(rows)}
+            try:
+                supports_catalogs = bool(conn.supports_catalogs())
+            except Exception:
+                supports_catalogs = False
+            payload: dict[str, Any] = {
+                "db_profile": profile_name,
+                "backend": backend,
+                "supports_catalogs": supports_catalogs,
+                "pinned_database": (str(getattr(base, "database", "") or "") if base else "")
+                or None,
+                "pinned_catalog": (str(getattr(base, "catalog", "") or "") if base else "") or None,
+                "databases": [],
+                "catalogs": [],
+            }
+            try:
+                if supports_catalogs:
+                    payload["catalogs"] = [str(c) for c in conn.list_catalogs()]
+                else:
+                    payload["databases"] = [str(d) for d in conn.list_databases()]
+            except Exception as exc:
+                payload["error"] = f"{exc.__class__.__name__}: {exc}"
+            return payload
+
+        max_workers = min(self._LIVE_FANOUT_MAX_WORKERS, max(1, len(targets)))
+        per_profile: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="amx-toolbox-fanout-databases",
+        ) as pool:
+            future_map = {pool.submit(_per_profile, name): name for name in targets}
+            done, not_done = wait(future_map, timeout=self._LIVE_FANOUT_TIMEOUT_SEC)
+            for future in done:
+                name = future_map[future]
+                try:
+                    per_profile[name] = future.result(timeout=0)
+                except Exception as exc:
+                    per_profile[name] = {
+                        "db_profile": name,
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                        "databases": [],
+                        "catalogs": [],
+                    }
+            for future in not_done:
+                name = future_map[future]
+                future.cancel()
+                per_profile[name] = {
+                    "db_profile": name,
+                    "timeout": True,
+                    "error": (f"timed out after {self._LIVE_FANOUT_TIMEOUT_SEC:.0f}s"),
+                    "databases": [],
+                    "catalogs": [],
+                }
+
+        total_dbs = sum(
+            len(p.get("databases") or []) + len(p.get("catalogs") or [])
+            for p in per_profile.values()
+        )
+        with_errors = [
+            name
+            for name, payload in per_profile.items()
+            if payload.get("error") or payload.get("timeout")
+        ]
+        return {
+            "scope": targets,
+            "profiles": per_profile,
+            "total_reachable": total_dbs,
+            "profiles_with_errors": with_errors,
+            "count": len(per_profile),
+        }
 
     # ------------------------------------------------------------ dtype family
     # Map a user-supplied dtype token to a concrete SQL-LIKE pattern set so
