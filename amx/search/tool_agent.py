@@ -71,11 +71,24 @@ class ToolAgentResult:
         }
 
 
-def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
+def _agent_system_prompt(
+    cfg: AMXConfig,
+    schema_hint: list[str],
+    *,
+    scope_profiles: list[str] | None = None,
+    focus_profile: str | None = None,
+) -> str:
     """The single system prompt the LLM sees throughout the loop.
 
     Includes live ground-truth (databases, schemas) so the model can route
     without us having to regex-classify the question.
+
+    ``scope_profiles`` is the multi-profile retrieval scope (every
+    profile the LLM is allowed to surface data from for THIS turn).
+    When 2+ entries, a multi-profile guidance block is injected.
+    ``focus_profile`` is the auto-detected conversation focus computed
+    from prior turns; the LLM uses it as a soft default when the
+    user's question is ambiguous about which profile to look at.
     """
     db_name = cfg.db.database or cfg.db.catalog or cfg.db.project or "(active database)"
     db_unpinned_hint = ""
@@ -108,11 +121,19 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
 
     # Build a one-line summary of every connected DB profile so the model
     # can mention "this lives in your SAP profile; you also have WAREHOUSE
-    # connected" when the user asks cross-DB questions.
+    # connected" when the user asks cross-DB questions. ``in_scope`` flags
+    # which profiles the current question is allowed to retrieve from —
+    # the LLM should only return data from those.
+    in_scope = set(scope_profiles or [])
     profile_lines: list[str] = []
     active_name = cfg.active_db_profile or "default"
     for profile_name, db_cfg in sorted(cfg.db_profiles.items()):
-        marker = " (active)" if profile_name == active_name else ""
+        markers: list[str] = []
+        if profile_name == active_name:
+            markers.append("active")
+        if in_scope and profile_name in in_scope:
+            markers.append("in scope")
+        marker = f" ({', '.join(markers)})" if markers else ""
         db_target = db_cfg.database or db_cfg.catalog or db_cfg.project or "?"
         backend = db_cfg.backend or "?"
         profile_lines.append(f"  - {profile_name}{marker}: {backend} → {db_target}")
@@ -121,6 +142,39 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         if profile_lines
         else "  (none configured — only the active connection is reachable)"
     )
+
+    # Multi-profile guidance block.
+    scope_block = ""
+    focus_block = ""
+    if scope_profiles and len(scope_profiles) > 1:
+        scope_block = (
+            "\nMULTI-PROFILE MODE — the question can touch any of "
+            f"{len(scope_profiles)} profiles: {', '.join(scope_profiles)}.\n"
+            "Catalog tools (search_tables_by_concept, search_columns_by_concept, "
+            "find_table_by_name, find_columns_by_dtype, find_joinable_tables) "
+            "automatically span every profile in scope. Live-DB tools "
+            "(list_schemas, list_tables_in_schema) fan out across profiles in "
+            "parallel and return per-profile breakdowns. Profile-targeted tools "
+            "(describe_table, sample_column_values, profile_table) take a "
+            "``db_profile`` argument — pass it to disambiguate the same-named "
+            "table across profiles.\n"
+            "EVERY citation must include the db_profile so the user knows where "
+            "the data lives. Tool result rows already carry it — just surface it.\n"
+            "When you need cross-profile JOIN candidates ('what can I join this "
+            "table with from a different DB?'), call "
+            "find_joinable_across_profiles — it scores name + dtype + vector "
+            "similarity + FK signals across every profile in scope and returns "
+            "ranked candidates.\n"
+        )
+    if focus_profile:
+        focus_block = (
+            f"\nCONVERSATION FOCUS — the user has been mostly working with "
+            f"profile **{focus_profile}** in this chat. Default to that "
+            "profile when the question is ambiguous about scope. The user can "
+            "still ask cross-profile questions explicitly ('compare across all "
+            "profiles', 'is this in any other profile') — switch context "
+            "smoothly when they do.\n"
+        )
 
     return (
         "You are AMX's metadata-search assistant. Answer the user's question by calling the "
@@ -133,9 +187,9 @@ def _agent_system_prompt(cfg: AMXConfig, schema_hint: list[str]) -> str:
         f"User's language preference: {metadata_lang}\n"
         "Connected DB profiles:\n"
         f"{profiles_block}\n"
-        "Tools currently target the ACTIVE profile only — if the user asks about another "
-        "profile, mention which profiles you can see and ask them to switch with `/use-db <name>`.\n\n"
-        "Routing guidance — choose the smallest correct path:\n"
+        + scope_block
+        + focus_block
+        + "\nRouting guidance — choose the smallest correct path:\n"
         "* User names an exact identifier ('vbrk', 'adrc') → call find_table_by_name first; if it\n"
         "  returns one match, call describe_table on it. If multiple, surface ALL matches and ask.\n"
         "* User asks 'tables in <schema>' / 'tables under <schema>' / 'list tables of <schema>' → \n"
@@ -449,6 +503,41 @@ def run_tool_agent(
         )
 
 
+def _compute_focus_profile(
+    session_memory: list[dict[str, Any]] | None,
+    scope: list[str],
+) -> str | None:
+    """Detect the conversation's focus profile from prior turns.
+
+    Heuristic: scan the last ~3 assistant turns' answer text for
+    ``db_profile=NAME`` or ``profile NAME`` mentions. If one profile
+    accounts for ≥60% of the mentions, return it. Otherwise return
+    ``None`` and let the LLM pick. Lightweight on purpose — we don't
+    re-parse tool_call traces (those aren't carried in session_memory)
+    so the heuristic operates on what the LLM has already said.
+
+    Skipped entirely when scope is single-profile (focus is implicit).
+    """
+    if not scope or len(scope) < 2 or not session_memory:
+        return None
+    last_turns = [t for t in session_memory if t.get("role") == "assistant"][-3:]
+    if not last_turns:
+        return None
+    counts: dict[str, int] = dict.fromkeys(scope, 0)
+    text_blob = " ".join(str(t.get("content") or "") for t in last_turns).lower()
+    for name in scope:
+        # Word-boundary-ish: name surrounded by whitespace, punctuation, or quotes.
+        # Cheap substring count is correct enough for short profile names.
+        counts[name] = text_blob.count(name.lower())
+    total = sum(counts.values())
+    if total < 2:  # too few mentions → don't bias
+        return None
+    top_name, top_count = max(counts.items(), key=lambda kv: kv[1])
+    if top_count == 0 or top_count / total < 0.60:
+        return None
+    return top_name
+
+
 def _run_tool_loop(
     *,
     toolbox: ToolBox,
@@ -471,8 +560,23 @@ def _run_tool_loop(
     except Exception:
         schemas_hint = []
 
+    # Multi-profile system-prompt enrichment: scope (which profiles the
+    # LLM may surface) + focus (which the conversation has gravitated
+    # toward over recent turns). Both are advisory — tool_box catalog
+    # calls already enforce scope; focus only nudges the LLM's framing.
+    scope_profiles: list[str] = list(toolbox.db_profiles)
+    focus_profile = _compute_focus_profile(session_memory, scope_profiles)
+
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _agent_system_prompt(cfg, schemas_hint)}
+        {
+            "role": "system",
+            "content": _agent_system_prompt(
+                cfg,
+                schemas_hint,
+                scope_profiles=scope_profiles,
+                focus_profile=focus_profile,
+            ),
+        }
     ]
     # Inject prior conversation context so follow-ups resolve.
     for turn in session_memory or []:

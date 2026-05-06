@@ -27,6 +27,12 @@ interface UiSlice {
   lastOpened: LastOpened | null;
   rememberOpenedTable: (schema: string | null, table: string | null) => void;
   rememberOpenedScope: (last: LastOpened) => void;
+  /** Per-chat-session sticky DB scope for /ask. Keyed by session id;
+   *  ``null`` value means "all profiles". A new chat ("+ New") drops
+   *  the entry so the next session starts clean. */
+  askScopeBySession: Record<string, string[] | null>;
+  setAskScope: (sessionKey: string, scope: string[] | null) => void;
+  clearAskScope: (sessionKey: string) => void;
 }
 
 export const useUi = create<UiSlice>((set) => ({
@@ -43,5 +49,16 @@ export const useUi = create<UiSlice>((set) => ({
       lastOpened: last,
       lastOpenedSchema: last.schema,
       lastOpenedTable: last.table,
+    }),
+  askScopeBySession: {},
+  setAskScope: (sessionKey, scope) =>
+    set((state) => ({
+      askScopeBySession: { ...state.askScopeBySession, [sessionKey]: scope },
+    })),
+  clearAskScope: (sessionKey) =>
+    set((state) => {
+      const next = { ...state.askScopeBySession };
+      delete next[sessionKey];
+      return { askScopeBySession: next };
     }),
 }));

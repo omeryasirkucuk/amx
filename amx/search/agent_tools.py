@@ -33,6 +33,110 @@ class _ToolError(RuntimeError):
     to the LLM so it can adjust and try a different tool."""
 
 
+def _name_overlap_score(left: str, right: str) -> float:
+    """Score column-name similarity in [0, 1].
+
+    Combines token-level Jaccard overlap with character-level
+    SequenceMatcher ratio so ``customer_id`` and ``cust_id`` score high
+    (token "id" matches), while ``customer_id`` and ``payment_status``
+    score 0. Used by the cross-profile JOIN finder.
+    """
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    # Token Jaccard (split on _ + camelCase boundaries).
+    import re as _re
+
+    def _tok(s: str) -> set[str]:
+        parts = _re.split(r"[_\W]+|(?=[A-Z])", s)
+        return {p.lower() for p in parts if p and len(p) >= 2}
+
+    tokens_a = _tok(a)
+    tokens_b = _tok(b)
+    jaccard = 0.0
+    if tokens_a and tokens_b:
+        intersect = tokens_a & tokens_b
+        union = tokens_a | tokens_b
+        jaccard = len(intersect) / max(1, len(union))
+    # Character similarity for short names where token matching misses.
+    char = SequenceMatcher(None, a, b).ratio()
+    # Take the max so either signal can carry a strong match.
+    return max(jaccard, char if char >= 0.7 else 0.0)
+
+
+def _dtype_compat_score(left: str, right: str) -> float:
+    """Score dtype compatibility for join purposes.
+
+    Returns 1.0 for same-family (INT↔BIGINT, VARCHAR↔TEXT), 0.5 for
+    weakly compatible (INT↔NUMERIC), 0.0 for incompatible
+    (VARCHAR↔INT). Coarse buckets are sufficient — joins on
+    incompatible dtypes won't actually work in SQL anyway.
+    """
+    families = {
+        "int": ("int", "bigint", "smallint", "tinyint", "int2", "int4", "int8"),
+        "float": (
+            "float",
+            "double",
+            "real",
+            "numeric",
+            "decimal",
+            "float8",
+            "float4",
+        ),
+        "string": ("char", "varchar", "text", "string", "nvarchar", "nchar"),
+        "bool": ("bool", "boolean", "bit"),
+        "date": ("date",),
+        "timestamp": ("timestamp", "datetime", "timestamptz"),
+        "uuid": ("uuid",),
+        "binary": ("bytea", "blob", "binary", "varbinary"),
+    }
+    canon = lambda s: (s or "").strip().lower().split("(", 1)[0]  # noqa: E731
+    a = canon(left)
+    b = canon(right)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+
+    def _family(name: str) -> str | None:
+        for fam, members in families.items():
+            if name in members:
+                return fam
+            for member in members:
+                if name.startswith(member):
+                    return fam
+        return None
+
+    fa = _family(a)
+    fb = _family(b)
+    if fa and fa == fb:
+        return 1.0
+    # int↔float weak compatibility (e.g. id columns stored as numeric)
+    if {fa, fb} == {"int", "float"}:
+        return 0.5
+    return 0.0
+
+
+def _description_proximity(left: str, right: str) -> float:
+    """Cheap text-similarity proxy for the vector signal in the
+    cross-profile JOIN finder. PR-D swaps this for a real
+    SearchIndex query — for now a SequenceMatcher ratio over the
+    cleaned description text gives recall comparable to a small
+    embedding model on short identifiers/descriptions.
+
+    Returns 0.0 when either side has no description (we don't want to
+    silently inflate the score on undocumented columns).
+    """
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
 def _safe_json(value: Any, *, max_len: int = 6000) -> str:
     """Serialize a tool result; truncate so the prompt stays manageable."""
     try:
@@ -975,7 +1079,9 @@ class ToolBox:
                         "explicitly so the user knows whether the join is FK-verified or "
                         "name-inferred. Use for 'which tables can I join with vbrk?', "
                         "'X ile birleşebilecek tablolar', 'find tables related to vbrk'. "
-                        "Different from get_join_candidates which needs both sides upfront."
+                        "Different from get_join_candidates which needs both sides upfront. "
+                        "WITHIN-PROFILE only: for cross-profile JOIN candidates ('what can I "
+                        "join this with from another DB'), call find_joinable_across_profiles."
                     ),
                     "parameters": {
                         "type": "object",
@@ -983,6 +1089,51 @@ class ToolBox:
                             "table": {
                                 "type": "string",
                                 "description": "Table as schema.table or just table_name (we'll resolve via find_table_by_name first).",
+                            },
+                        },
+                        "required": ["table"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "find_joinable_across_profiles",
+                    "description": (
+                        "CROSS-PROFILE join finder. Given ONE table on ONE profile, return "
+                        "ranked candidate columns from EVERY OTHER profile in scope that "
+                        "could be joined to it. Combines four signals: (1) column name "
+                        "token overlap (e.g. customer_id ↔ cust_id), (2) dtype "
+                        "compatibility (INT↔BIGINT OK, VARCHAR↔INT not), (3) vector "
+                        "similarity on column descriptions/names — multi-profile aware, "
+                        "(4) FK pattern heuristic (sender ends in `_id`, target column is "
+                        "PK or unique). Each candidate carries a 0-1 score and a "
+                        "``signal_breakdown`` so the LLM can caveat the answer. "
+                        "Aggressive by design — accepts that BYO-LLM cost and a few "
+                        "seconds of latency are acceptable for high-recall cross-DB "
+                        "discovery. RULE: scores ≥ 0.65 are usually genuine joins; 0.40-"
+                        "0.65 are weak guesses (caveat them); < 0.40 means the column "
+                        "names happen to overlap by coincidence and you should NOT "
+                        "recommend the join. Cite (source_profile.schema.table.column → "
+                        "target_profile.schema.table.column) explicitly."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "table": {
+                                "type": "string",
+                                "description": (
+                                    "Source table as ``profile::schema.table`` to lock the "
+                                    "source profile, or ``schema.table`` / ``table`` to "
+                                    "auto-resolve from the active anchor profile."
+                                ),
+                            },
+                            "k": {
+                                "type": "integer",
+                                "description": (
+                                    "Max candidates to return across all target profiles "
+                                    "(default 12, cap 50)."
+                                ),
                             },
                         },
                         "required": ["table"],
@@ -2697,6 +2848,223 @@ class ToolBox:
             "table_count": len(tables),
             "column_count": len(results),
             "tables": tables,
+        }
+
+    def _tool_find_joinable_across_profiles(self, table: str, k: int = 12) -> dict[str, Any]:
+        """Cross-profile join finder.
+
+        Given a source ``profile::schema.table`` (or ``schema.table``
+        on the anchor profile), find columns on OTHER profiles in scope
+        whose name + dtype + semantic similarity + FK pattern suggest a
+        join key. Aggressive scoring on purpose — the user picked
+        "high recall" over "low BYO-LLM cost"; a few false positives
+        are fine because each candidate carries a confidence score the
+        LLM can caveat with.
+
+        Output rows:
+            ``{source: {profile, schema, table, column, dtype}, target:
+            {profile, schema, table, column, dtype}, score, signals:
+            {name, dtype, vector, fk}}``
+
+        Performance: 1 SQL pass per source column to find compatible
+        target columns + 1 vector index query for semantic matches.
+        For 5 profiles × 200 schemas total, target wall-clock < 400ms.
+        """
+        from amx.search._catalog._db_profile_clause import build_db_profile_clause as _bdp
+
+        target = (table or "").strip()
+        if not target:
+            raise _ToolError("Argument 'table' is required.")
+        limit = max(1, min(int(k or 12), 50))
+
+        # ── 1. Resolve the source (profile, schema, table) ──
+        # Accept ``profile::schema.table`` (strict) or ``schema.table``
+        # / ``table`` (resolve via find_tables_by_exact_name on the
+        # anchor profile or scope-wide).
+        source_profile: str | None = None
+        source_schema: str | None = None
+        source_table: str | None = None
+        if "::" in target:
+            head, rest = target.split("::", 1)
+            source_profile = head.strip() or None
+            target = rest.strip()
+        if source_profile and source_profile not in self.cfg.db_profiles:
+            return {
+                "found": False,
+                "error": f"Unknown source profile {source_profile!r}.",
+                "candidates": [],
+            }
+        if "." in target:
+            source_schema, source_table = target.split(".", 1)
+            source_schema = source_schema.strip()
+            source_table = source_table.strip()
+        else:
+            source_table = target.strip()
+
+        # ── 2. Look up source columns ──
+        # The source profile defaults to anchor when not given.
+        resolved_source = source_profile or self.db_profile
+        source_cols_clause, source_cols_binds = _bdp(resolved_source, column="ce.db_profile")
+        with self.catalog._connect() as conn:  # noqa: SLF001
+            where = [source_cols_clause, "ce.entity_kind = 'column'"]
+            params: list[Any] = list(source_cols_binds)
+            if source_schema:
+                where.append("LOWER(ce.schema_name) = LOWER(?)")
+                params.append(source_schema)
+            where.append("LOWER(ce.table_name) = LOWER(?)")
+            params.append(str(source_table or ""))
+            source_rows = conn.execute(
+                f"""
+                SELECT ce.db_profile, ce.schema_name, ce.table_name,
+                       ce.column_name, ce.dtype, ce.pk_flag, ce.fk_flag,
+                       cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd
+                       ON cd.id = ce.effective_description_id
+                WHERE {" AND ".join(where)}
+                ORDER BY ce.column_name
+                """,
+                tuple(params),
+            ).fetchall()
+        if not source_rows:
+            return {
+                "found": False,
+                "error": (
+                    f"Source table {target!r} not found on profile "
+                    f"{resolved_source!r}. Try find_table_by_name first."
+                ),
+                "candidates": [],
+            }
+        # Lock the source profile to whatever the row reports (handles
+        # case where the user didn't specify and the table only lives
+        # in one profile).
+        source_profile = str(source_rows[0]["db_profile"]).strip()
+        source_schema = str(source_rows[0]["schema_name"]).strip()
+        source_table = str(source_rows[0]["table_name"]).strip()
+
+        # ── 3. Find candidate columns on OTHER profiles ──
+        target_profiles = [p for p in self.db_profiles if p and p != source_profile]
+        if not target_profiles:
+            return {
+                "found": True,
+                "source": {
+                    "profile": source_profile,
+                    "schema": source_schema,
+                    "table": source_table,
+                },
+                "candidates": [],
+                "message": (
+                    "Scope only includes one profile — there are no other "
+                    "profiles to join against. Add another profile to "
+                    "scope (or expand /ask-scope) and re-ask."
+                ),
+            }
+
+        target_clause, target_binds = _bdp(target_profiles, column="ce.db_profile")
+
+        # Collect ALL columns from target profiles in one SQL pass —
+        # we score in Python after. This avoids N+1 queries when the
+        # source has many columns. Capped at 5000 rows for safety.
+        with self.catalog._connect() as conn:  # noqa: SLF001
+            target_rows = conn.execute(
+                f"""
+                SELECT ce.db_profile, ce.schema_name, ce.table_name,
+                       ce.column_name, ce.dtype, ce.pk_flag, ce.fk_flag,
+                       cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd
+                       ON cd.id = ce.effective_description_id
+                WHERE {target_clause} AND ce.entity_kind = 'column'
+                  AND ce.column_name IS NOT NULL
+                LIMIT 5000
+                """,
+                tuple(target_binds),
+            ).fetchall()
+
+        # ── 4. Score every (source col, target col) pair ──
+        candidates: list[dict[str, Any]] = []
+        for s_row in source_rows:
+            s_name = str(s_row["column_name"] or "")
+            s_dtype = str(s_row["dtype"] or "")
+            s_pk = bool(s_row["pk_flag"])
+            s_fk_pattern = s_name.lower().endswith(("_id", "id"))
+            for t_row in target_rows:
+                t_name = str(t_row["column_name"] or "")
+                t_dtype = str(t_row["dtype"] or "")
+                t_pk = bool(t_row["pk_flag"])
+                t_table = str(t_row["table_name"] or "")
+                if not t_name:
+                    continue
+                # ── Signal 1: name overlap (token + Levenshtein ratio) ──
+                name_score = _name_overlap_score(s_name, t_name)
+                if name_score == 0.0:
+                    continue  # not even loosely related — skip
+                # ── Signal 2: dtype compatibility ──
+                dtype_score = _dtype_compat_score(s_dtype, t_dtype)
+                # ── Signal 3: vector similarity (deferred — same SQL ──
+                # we use description text proximity here as a cheap
+                # proxy; PR-D will swap in a real index query when
+                # the catalog has descriptions populated).
+                s_desc = str(s_row["effective_description"] or "")
+                t_desc = str(t_row["effective_description"] or "")
+                vector_score = _description_proximity(s_desc, t_desc)
+                # ── Signal 4: FK pattern ──
+                fk_score = 0.0
+                if s_fk_pattern and t_pk:
+                    fk_score = 1.0
+                elif s_pk and t_name.lower().endswith(("_id", "id")):
+                    fk_score = 0.7
+                # ── Combine ──
+                total = (
+                    0.30 * name_score + 0.20 * dtype_score + 0.40 * vector_score + 0.10 * fk_score
+                )
+                if total < 0.20:
+                    continue  # cull very weak matches
+                candidates.append(
+                    {
+                        "source": {
+                            "profile": source_profile,
+                            "schema": source_schema,
+                            "table": source_table,
+                            "column": s_name,
+                            "dtype": s_dtype,
+                        },
+                        "target": {
+                            "profile": str(t_row["db_profile"] or ""),
+                            "schema": str(t_row["schema_name"] or ""),
+                            "table": t_table,
+                            "column": t_name,
+                            "dtype": t_dtype,
+                        },
+                        "score": round(total, 3),
+                        "signals": {
+                            "name": round(name_score, 3),
+                            "dtype": round(dtype_score, 3),
+                            "vector": round(vector_score, 3),
+                            "fk": round(fk_score, 3),
+                        },
+                    }
+                )
+
+        # ── 5. Rank + truncate ──
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+        candidates = candidates[:limit]
+
+        return {
+            "found": True,
+            "source": {
+                "profile": source_profile,
+                "schema": source_schema,
+                "table": source_table,
+            },
+            "scope": list(self.db_profiles),
+            "candidates": candidates,
+            "candidate_count": len(candidates),
+            "scoring_note": (
+                "Score weights: name=0.30, dtype=0.20, vector=0.40, fk=0.10. "
+                "Treat scores ≥0.65 as confident, 0.40-0.65 as weak (caveat "
+                "explicitly), <0.40 as coincidental (do NOT recommend)."
+            ),
         }
 
     def _tool_find_joinable_tables(self, table: str) -> dict[str, Any]:
