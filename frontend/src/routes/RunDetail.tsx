@@ -126,6 +126,19 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     enabled: true,
   });
 
+  // The moment the worker assigns a numeric run id, hand off to
+  // PersistedRunView. That view subscribes to the same SSE stream
+  // (via live_job_id) AND mounts the full results editor, so the
+  // user can edit alternatives / pick / apply while the worker is
+  // still running. Without this redirect the live page is read-only
+  // and users had to navigate away to the Runs list to act on the
+  // suggestions — exactly the regression reported on PR #219.
+  useEffect(() => {
+    if (resolvedRunId != null) {
+      navigate(`/runs/${resolvedRunId}`, { replace: true });
+    }
+  }, [resolvedRunId, navigate]);
+
   // 1 Hz wall-clock so the live banner's elapsed timer updates in
   // real time without re-rendering on every SSE event.
   useEffect(() => {
@@ -969,19 +982,23 @@ function ResultsTab({
             }
           }}
           onTerminal={() => {
-            // Refresh twice: the worker writes both row.applied_at
+            // Refresh three times: the worker writes both row.applied_at
             // and the pending file, but the SSE terminal event can
-            // arrive a tick before the SQLite write has been
-            // observed by a fresh GET. Two invalidations 1 s apart
-            // make the post-apply state stick visually.
+            // arrive a tick before the SQLite write has been observed
+            // by a fresh GET. Three invalidations (now / 1.2s / 3s)
+            // cover the FS sync window even on slower disks. Add
+            // ``run`` to flush the run-row metrics card on top.
             const refresh = () => {
               queryClient.invalidateQueries({ queryKey: ["pending"] });
+              queryClient.invalidateQueries({ queryKey: ["run", runId] });
               queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
               queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
               queryClient.invalidateQueries({ queryKey: ["stats"] });
+              queryClient.invalidateQueries({ queryKey: ["apply-events"] });
             };
             refresh();
             window.setTimeout(refresh, 1200);
+            window.setTimeout(refresh, 3000);
             toast.push({
               title: "Apply finished",
               description: "Pending queue and applied badges refreshed.",
