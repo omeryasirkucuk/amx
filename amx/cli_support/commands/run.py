@@ -296,6 +296,27 @@ def register_analyze_commands(
             backend=db.backend,
         )
 
+        # Build the audit context once so each successful COMMENT
+        # write lands in apply_events with the correct attribution.
+        # The history_store call is best-effort: if the store is
+        # disabled (private mode, init failed), audit_log stays None
+        # and apply_review_results_to_db treats the audit hooks as
+        # no-ops. Hostname and applied_by are read from the
+        # standard library so we don't need to depend on amx.config
+        # for what is essentially environment metadata.
+        import getpass
+        import socket
+
+        audit_log_handle = history_store()
+        try:
+            applied_by = getpass.getuser()
+        except Exception:
+            applied_by = ""
+        try:
+            hostname = socket.gethostname()
+        except Exception:
+            hostname = ""
+
         try:
             applied_count = apply_review_results_to_db(
                 db,
@@ -303,6 +324,10 @@ def register_analyze_commands(
                 on_applied=_on_applied,
                 on_failed=_on_failed,
                 on_progress=_on_progress if pending else None,
+                audit_log=audit_log_handle,
+                audit_profile=getattr(cfg.db, "name", "") or "",
+                audit_user=applied_by,
+                audit_host=hostname,
             )
         finally:
             if pending:
