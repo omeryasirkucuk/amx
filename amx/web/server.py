@@ -135,6 +135,17 @@ def create_app(
     # JS/CSS chunks pick up StaticFiles' cache headers. PR-B is what
     # actually populates ``static/assets/`` — pre-PR-B installs hit
     # the placeholder fallback below instead.
+    #
+    # Cache policy is critical for the SPA's dynamic-import flow.
+    # Hashed files (``/assets/*-<hash>.js``) are content-addressed —
+    # the filename changes whenever the content changes — so we mark
+    # them ``immutable`` with a long max-age. ``index.html`` is the
+    # opposite: it is the only file whose URL never changes but whose
+    # contents change every build (the entry-chunk reference flips to
+    # the new hash). Without an explicit ``no-cache`` on it, browsers
+    # cache the old ``index.html`` and the dynamic ``import()`` later
+    # tries to fetch the previous chunk by name and 404s with
+    # ``Failed to fetch dynamically imported module``.
     assets_dir = root / "assets"
     if assets_dir.exists():
         app.mount(
@@ -142,6 +153,18 @@ def create_app(
             StaticFiles(directory=str(assets_dir), check_dir=False),
             name="assets",
         )
+
+    # ``index.html`` is the only file whose URL never changes but
+    # whose contents flip every build (the entry-chunk reference
+    # points at a new hash). Without an explicit no-cache header,
+    # browsers cache the old ``index.html`` and the dynamic
+    # ``import()`` later tries to fetch the previous chunk by name
+    # and 404s with ``Failed to fetch dynamically imported module``.
+    # Hashed assets under ``/assets/*`` are safe — Vite's content-
+    # addressed filenames mean a stale cache hit just serves the
+    # right bytes — so the StaticFiles mount above keeps its
+    # default behaviour.
+    _NO_CACHE_HEADER = "no-cache, no-store, must-revalidate"
 
     @app.get("/", include_in_schema=False)
     @app.get("/{full_path:path}", include_in_schema=False)
@@ -155,16 +178,19 @@ def create_app(
         if full_path:
             candidate = root / full_path
             if candidate.is_file():
-                return FileResponse(candidate)
+                return FileResponse(
+                    candidate, headers={"Cache-Control": _NO_CACHE_HEADER}
+                )
         index = root / "index.html"
         if index.is_file():
-            return FileResponse(index)
+            return FileResponse(index, headers={"Cache-Control": _NO_CACHE_HEADER})
         # Pre-PR-B placeholder when the SPA bundle isn't on disk yet.
         # PR-A ships with this fallback so the launcher works end-to-
         # end without a built frontend.
         return Response(
             content=_PLACEHOLDER_HTML,
             media_type="text/html; charset=utf-8",
+            headers={"Cache-Control": _NO_CACHE_HEADER},
         )
 
     return app
