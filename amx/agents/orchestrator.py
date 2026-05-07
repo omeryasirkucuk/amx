@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 import threading
 from collections import defaultdict
@@ -361,6 +362,46 @@ class _OldCommentReader:
             return None
 
 
+@contextlib.contextmanager
+def _savepoint_or_passthrough(conn: Any):
+    """Per-row SAVEPOINT context.
+
+    PostgreSQL aborts the entire transaction when one statement
+    fails; without a savepoint, every subsequent COMMENT in the same
+    apply batch fails with ``InFailedSqlTransaction``. SQLAlchemy's
+    ``conn.begin_nested()`` issues ``SAVEPOINT`` and rolls just that
+    savepoint back on exception, leaving the outer tx alive.
+
+    Some adapters / test fakes don't implement ``begin_nested``; fall
+    back to a passthrough so they keep working as they did before
+    (Postgres is the only common backend with the cascade behaviour).
+    """
+    nested = getattr(conn, "begin_nested", None)
+    if not callable(nested):
+        yield None
+        return
+    try:
+        cm = nested()
+    except Exception:
+        # Some fakes raise on construction — be conservative and skip
+        # the savepoint, falling back to the legacy single-tx path.
+        yield None
+        return
+    enter = getattr(cm, "__enter__", None)
+    exit_ = getattr(cm, "__exit__", None)
+    if not callable(enter) or not callable(exit_):
+        yield None
+        return
+    enter()
+    try:
+        yield cm
+    except BaseException as exc:
+        if not exit_(type(exc), exc, exc.__traceback__):
+            raise
+    else:
+        exit_(None, None, None)
+
+
 def apply_review_results_to_db(
     db: DatabaseConnector,
     results: list[ReviewResult],
@@ -498,14 +539,23 @@ def apply_review_results_to_db(
                     pre_old: list[str | None] = []
                     if old_reader is not None:
                         pre_old = [old_reader.read(item, kind) for item in group]
+                    # Wrap the batch in a SAVEPOINT so a failed batch
+                    # (or a failed individual statement inside the
+                    # batch on PostgreSQL, which would otherwise abort
+                    # the outer tx and cascade-fail every subsequent
+                    # row with ``InFailedSqlTransaction``) only rolls
+                    # back its own savepoint and leaves the per-row
+                    # fallback path usable.
                     try:
                         if on_progress is not None:
                             on_progress(
                                 group[0], "started", index + 1, total, f"batch:{len(group)}"
                             )
-                        if db.apply_column_comments_batch(
-                            r.schema, r.table, batched_comments, conn=conn
-                        ):
+                        with _savepoint_or_passthrough(conn):
+                            applied_batch = db.apply_column_comments_batch(
+                                r.schema, r.table, batched_comments, conn=conn
+                            )
+                        if applied_batch:
                             for offset, item in enumerate(group, start=1):
                                 applied += 1
                                 if on_progress is not None:
@@ -545,14 +595,21 @@ def apply_review_results_to_db(
             try:
                 if on_progress is not None:
                     on_progress(r, "started", index + 1, total, "")
-                db.apply_comment(
-                    schema=r.schema,
-                    table=r.table,
-                    column=r.column,
-                    comment=r.final_description,
-                    asset_kind=kind,
-                    conn=conn,
-                )
+                # Per-row SAVEPOINT: keeps a single failed COMMENT (eg.
+                # "schema does not exist" on Postgres) from poisoning
+                # the rest of the batch with InFailedSqlTransaction.
+                # The savepoint auto-rolls back on exception when used
+                # as a context manager, so the outer tx stays alive
+                # for the next row.
+                with _savepoint_or_passthrough(conn):
+                    db.apply_comment(
+                        schema=r.schema,
+                        table=r.table,
+                        column=r.column,
+                        comment=r.final_description,
+                        asset_kind=kind,
+                        conn=conn,
+                    )
                 applied += 1
                 if on_progress is not None:
                     on_progress(r, "applied", index + 1, total, "")
@@ -572,6 +629,12 @@ def apply_review_results_to_db(
                     on_progress(r, "failed", index + 1, total, str(exc))
                 if on_failed is not None:
                     on_failed(r, exc)
+                # Surface the proximate cause (eg. schema/table not
+                # found) instead of the cascade noise. Postgres
+                # ``InFailedSqlTransaction`` errors used to dominate
+                # the log when one row failed inside a single tx;
+                # SAVEPOINTs above kill that cascade, but we still
+                # render the original error message cleanly.
                 error(
                     f"Failed to apply comment on {r.schema}.{r.table or ''}.{r.column or ''} ({r.asset_kind}): {exc}"
                 )
