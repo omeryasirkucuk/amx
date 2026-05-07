@@ -259,6 +259,11 @@ _CODE_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/code-scan", "code", "Scan codebase + save (/code-scan [path] [--code-profile NAME])"
     ),
+    SlashCommand(
+        "/code-search",
+        "code",
+        "Similarity search over amx_code (/code-search <text> [--code-profile NAME], no LLM)",
+    ),
     SlashCommand("/code-refresh", "code", "Clear cache + semantic code index"),
     SlashCommand("/code-results", "code", "Show last cached scan results"),
     SlashCommand("/code-analyze", "code", "Run Code Agent standalone (/code-analyze [TABLE …])"),
