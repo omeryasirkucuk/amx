@@ -1,7 +1,7 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, SkipForward, Timer } from "lucide-react";
+import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
 
 import { apiFetch, api } from "../lib/api";
 import { useEventSource, type SseEvent } from "../lib/sse";
@@ -9,11 +9,13 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import JobProgress from "../components/JobProgress";
 import StatusPill from "../components/StatusPill";
+import RerunDialog from "../components/RerunDialog";
 import { cn } from "../lib/cn";
 import {
   AlertDialog,
   Badge,
   Button,
+  Checkbox,
   IconButton,
   InlineEditText,
   Tab as TabTrigger,
@@ -65,6 +67,14 @@ interface ResultRow {
   chosen_description: string | null;
   evaluation: string | null;
   applied_at: number | null;
+  /** Re-Run versioning fields. ``rerun_seq`` is 0 for originals,
+   *  1+ for successive re-runs. ``parent_result_id`` chains a re-run
+   *  back to the original (NULL on originals). ``user_instructions``
+   *  is the optional free-text addendum the user typed in the
+   *  re-run modal. */
+  parent_result_id?: number | null;
+  rerun_seq?: number;
+  user_instructions?: string | null;
 }
 
 interface ResultsResponse {
@@ -813,6 +823,23 @@ function ResultsTab({
   const queryClient = useQueryClient();
   const toast = useToast();
   const [activeApplyJob, setActiveApplyJob] = useState<string | null>(null);
+  // Multi-select Re-Run state. ``multiSelectMode`` flips the per-row
+  // checkbox on; ``selectedIds`` is the set of result_ids the user
+  // picked. The bulk dialog opens with ``bulkRerunOpen``; once the
+  // worker responds the SPA tails ``bulkRerunJobId`` via SSE so the
+  // toast / invalidations only fire once the run is actually done.
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkRerunOpen, setBulkRerunOpen] = useState(false);
+  const [bulkRerunJobId, setBulkRerunJobId] = useState<string | null>(null);
+  const toggleSelected = useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   // Old runs (pre-PR #224) didn't persist database/catalog onto the
   // run row, so apply used to fall back to the active profile's
   // default DB and produce ``schema does not exist`` errors when the
@@ -1126,6 +1153,59 @@ function ResultsTab({
         />
       )}
 
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          leadingIcon={<RefreshCw size={12} />}
+          onClick={() => {
+            setMultiSelectMode((v) => {
+              const next = !v;
+              if (!next) setSelectedIds(new Set());
+              return next;
+            });
+          }}
+        >
+          {multiSelectMode ? "Cancel selection" : "Select multiple to re-run"}
+        </Button>
+        {multiSelectMode && selectedIds.size > 0 && (
+          <>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setBulkRerunOpen(true)}
+              disabled={!!bulkRerunJobId}
+            >
+              Re-Run selected ({selectedIds.size})
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear
+            </Button>
+          </>
+        )}
+        {bulkRerunJobId && (
+          <span className="inline-flex items-center gap-1 text-xs text-ink-muted">
+            <Loader2 size={12} className="animate-spin" /> Bulk re-run running…
+          </span>
+        )}
+      </div>
+      <BulkRerunOrchestrator
+        open={bulkRerunOpen}
+        onOpenChange={setBulkRerunOpen}
+        rows={rows}
+        selectedIds={selectedIds}
+        bulkRerunJobId={bulkRerunJobId}
+        setBulkRerunJobId={setBulkRerunJobId}
+        onBulkDone={() => {
+          setSelectedIds(new Set());
+          setMultiSelectMode(false);
+          queryClient.invalidateQueries({ queryKey: ["history", "run-results"] });
+        }}
+      />
       {grouped.map(({ key, rows: tableRows }) => (
         <Card key={key}>
           <CardHeader
@@ -1170,6 +1250,9 @@ function ResultsTab({
                       skipPending.isPending ||
                       restorePending.isPending
                     }
+                    multiSelectMode={multiSelectMode}
+                    isSelected={selectedIds.has(r.id)}
+                    onToggleSelected={toggleSelected}
                   />
                 );
               })}
@@ -1178,6 +1261,96 @@ function ResultsTab({
         </Card>
       ))}
     </div>
+  );
+}
+
+// Multi-select bulk Re-Run wrapper. Owns the modal + the SSE
+// listener for the bulk job; keeps that bookkeeping out of the host
+// component so ``ResultsTab`` only has to forward state, not re-run
+// the lifecycle effect on every render.
+function BulkRerunOrchestrator({
+  open,
+  onOpenChange,
+  rows,
+  selectedIds,
+  bulkRerunJobId,
+  setBulkRerunJobId,
+  onBulkDone,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  rows: ResultRow[];
+  selectedIds: Set<number>;
+  bulkRerunJobId: string | null;
+  setBulkRerunJobId: (v: string | null) => void;
+  onBulkDone: () => void;
+}) {
+  const { push: pushToast } = useToast();
+  const targets = useMemo(
+    () =>
+      rows
+        .filter((r) => selectedIds.has(r.id))
+        .map((r) => ({
+          resultId: r.id,
+          label:
+            [r.schema_name, r.table_name, r.column_name]
+              .filter(Boolean)
+              .join(".") || `result #${r.id}`,
+        })),
+    [rows, selectedIds],
+  );
+  const sse = useEventSource({
+    path: bulkRerunJobId ? `/api/runs/${encodeURIComponent(bulkRerunJobId)}/events` : "",
+    enabled: !!bulkRerunJobId,
+  });
+  useEffect(() => {
+    if (!bulkRerunJobId) return;
+    const terminal = sse.events.find(
+      (e) =>
+        e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
+    );
+    if (!terminal) return;
+    if (terminal.type === "job.done") {
+      const summary = (terminal as unknown as { summary?: { successful?: number; total?: number; new_run_id?: number } }).summary;
+      pushToast({
+        tone: "success",
+        title: "Bulk re-run complete",
+        description: summary
+          ? `${summary.successful}/${summary.total} target(s) succeeded under run #${summary.new_run_id ?? "?"}.`
+          : "Re-run finished.",
+      });
+    } else if (terminal.type === "job.failed") {
+      const errMsg = (terminal as unknown as { error?: string }).error;
+      pushToast({
+        tone: "error",
+        title: "Bulk re-run failed",
+        description: errMsg || "The worker reported an error.",
+      });
+    } else {
+      pushToast({ tone: "warning", title: "Bulk re-run cancelled" });
+    }
+    setBulkRerunJobId(null);
+    onBulkDone();
+    // ``sse.events`` is what changes — depending on every prop here
+    // would re-fire the toast on every keystroke elsewhere on the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sse.events, bulkRerunJobId]);
+
+  return (
+    <RerunDialog
+      open={open}
+      onClose={() => onOpenChange(false)}
+      targets={targets}
+      onSubmitted={(jobId) => {
+        setBulkRerunJobId(jobId);
+        onOpenChange(false);
+      }}
+      contextSummary={
+        targets.length === 0
+          ? "Select rows in the lists below before opening this dialog."
+          : undefined
+      }
+    />
   );
 }
 
@@ -1196,6 +1369,9 @@ function ResultRowItemImpl({
   skipRow,
   restoreRow,
   isMutating,
+  multiSelectMode = false,
+  isSelected = false,
+  onToggleSelected,
 }: {
   row: ResultRow;
   pendingEntry?: PendingEntry;
@@ -1203,6 +1379,12 @@ function ResultRowItemImpl({
   skipRow: () => void;
   restoreRow: (description: string) => void;
   isMutating: boolean;
+  /** When true, render a leading checkbox for bulk-rerun selection. */
+  multiSelectMode?: boolean;
+  /** Current checkbox state — managed by the parent's selectedIds Set. */
+  isSelected?: boolean;
+  /** Toggle this row's membership in the parent's selectedIds Set. */
+  onToggleSelected?: (id: number) => void;
 }) {
   const sourceAlts = pendingEntry
     ? normalizeAlternativeStrings(pendingEntry.alternatives)
@@ -1215,6 +1397,7 @@ function ResultRowItemImpl({
   const queued = !applied && !!pendingEntry;
   const skipped = !applied && !pendingEntry;
   const editable = queued;
+  const rerunSeq = row.rerun_seq ?? 0;
   const statusTone: "positive" | "neutral" | "warning" = applied
     ? "positive"
     : queued
@@ -1228,22 +1411,111 @@ function ResultRowItemImpl({
         ? "skipped"
         : (row.evaluation || "pending");
 
+  // Re-Run state lives per-row. ``rerunJobId`` becomes non-null after
+  // the modal submits successfully; the SSE hook below tails the job
+  // until ``job.done`` arrives, then invalidates the run-results query
+  // so the new alternatives appear in place.
+  const queryClient = useQueryClient();
+  const { push: pushToast } = useToast();
+  const [rerunOpen, setRerunOpen] = useState(false);
+  const [rerunJobId, setRerunJobId] = useState<string | null>(null);
+  const rerunSse = useEventSource({
+    path: rerunJobId ? `/api/runs/${encodeURIComponent(rerunJobId)}/events` : "",
+    enabled: !!rerunJobId,
+  });
+  useEffect(() => {
+    if (!rerunJobId) return;
+    const terminal = rerunSse.events.find((e) =>
+      e.type === "job.done" || e.type === "job.failed" || e.type === "job.cancelled",
+    );
+    if (!terminal) return;
+    if (terminal.type === "job.done") {
+      const summary = (terminal as unknown as { summary?: { new_run_id?: number } }).summary;
+      const newRunId = summary?.new_run_id;
+      pushToast({
+        tone: "success",
+        title: "Re-run complete",
+        description: newRunId
+          ? `New alternatives saved under run #${newRunId}.`
+          : "New alternatives saved.",
+      });
+    } else if (terminal.type === "job.failed") {
+      const errMsg = (terminal as unknown as { error?: string }).error;
+      pushToast({
+        tone: "error",
+        title: "Re-run failed",
+        description: errMsg || "The worker reported an error.",
+      });
+    } else {
+      pushToast({ tone: "warning", title: "Re-run cancelled" });
+    }
+    queryClient.invalidateQueries({ queryKey: ["history", "run-results"] });
+    queryClient.invalidateQueries({ queryKey: ["history", "result-chain", row.id] });
+    setRerunJobId(null);
+    // ``rerunSse.events`` is the only changing dependency we care
+    // about — adding the others would re-fire the toast on every
+    // re-render of the row.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rerunSse.events, rerunJobId]);
+
+  const rerunBusy = !!rerunJobId && !rerunSse.closed;
+  const rerunLabel = (() => {
+    const parts: string[] = [];
+    if (row.schema_name) parts.push(row.schema_name);
+    if (row.table_name) parts.push(row.table_name);
+    if (row.column_name) parts.push(row.column_name);
+    return parts.join(".") || "(unnamed)";
+  })();
+
   return (
     <li className="px-5 py-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        {multiSelectMode && (
+          <Checkbox
+            checked={isSelected}
+            onChange={() => onToggleSelected?.(row.id)}
+            aria-label={`Select ${rerunLabel} for bulk re-run`}
+            className="mr-1"
+          />
+        )}
         <span className="font-mono text-ink">
           {row.column_name ?? <em className="text-ink-dim">(table)</em>}
         </span>
         <ConfidencePill value={row.confidence} score={row.logprob_score} />
         <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
         <LogprobBadge score={row.logprob_score} />
-        {editable && (
-          <span className="ml-auto inline-flex items-center gap-2">
-            {row.source && (
-              <span className="text-[10px] uppercase tracking-wider text-ink-dim">
-                {row.source}
-              </span>
-            )}
+        {rerunSeq > 0 && (
+          <span
+            title={
+              row.user_instructions
+                ? `Re-run version ${rerunSeq}. User added: "${row.user_instructions}"`
+                : `Re-run version ${rerunSeq}.`
+            }
+          >
+            <Badge tone="info">v{rerunSeq + 1}</Badge>
+          </span>
+        )}
+        <span className="ml-auto inline-flex items-center gap-2">
+          {row.source && (
+            <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+              {row.source}
+            </span>
+          )}
+          <IconButton
+            icon={
+              rerunBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />
+            }
+            label={
+              rerunBusy
+                ? "Re-running…"
+                : "Re-Run this item with optional new instructions"
+            }
+            size="sm"
+            variant="ghost"
+            onClick={() => setRerunOpen(true)}
+            disabled={isMutating || rerunBusy}
+          />
+          {editable && (
             <IconButton
               icon={<SkipForward size={12} />}
               label="Skip — remove from pending queue"
@@ -1252,14 +1524,15 @@ function ResultRowItemImpl({
               onClick={skipRow}
               disabled={isMutating}
             />
-          </span>
-        )}
-        {!editable && row.source && (
-          <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">
-            {row.source}
-          </span>
-        )}
+          )}
+        </span>
       </div>
+      <RerunDialog
+        open={rerunOpen}
+        onClose={() => setRerunOpen(false)}
+        targets={[{ resultId: row.id, label: rerunLabel }]}
+        onSubmitted={(jobId) => setRerunJobId(jobId)}
+      />
       {editable && (
         <div className="mt-2 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1.5 text-xs">
           <div className="mb-0.5 text-[10px] uppercase tracking-wider text-ink-dim">

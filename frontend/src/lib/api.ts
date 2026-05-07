@@ -413,4 +413,63 @@ export const api = {
     apiFetch<{ ok: boolean; job_id: string }>(`/api/runs/${encodeURIComponent(jobId)}/cancel`, {
       method: "POST",
     }),
+  /** Spawn a re-run for one or many ``run_results`` rows.
+   *
+   * Caller subscribes to ``/api/runs/{job_id}/events`` for SSE
+   * progress; ``job.done.summary.outcomes`` carries the new alternatives
+   * once finished. ``user_instructions`` is appended to the existing
+   * agent prompts — original DB / docs / code context is preserved.
+   */
+  rerunItems: (body: {
+    result_ids: number[];
+    user_instructions?: string | null;
+    temperature_override?: number | null;
+  }) =>
+    apiFetch<{ job_id: string; status: string; new_run_id?: number | null }>(
+      "/api/runs/rerun-item",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          result_ids: body.result_ids,
+          user_instructions: body.user_instructions ?? null,
+          temperature_override: body.temperature_override ?? null,
+        }),
+      },
+    ),
+  /** Fetch the full re-run chain for one ``run_results`` row.
+   *
+   * Used by the version-history drawer when the user clicks a "v2/v3"
+   * badge on an item. Returns the original + every child re-run row
+   * ordered by ``rerun_seq`` ASC so the drawer can render them as a
+   * timeline.
+   */
+  resultHistory: (resultId: number) =>
+    apiFetch<{ result_id: number; chain: ResultRow[]; count: number }>(
+      `/api/history/results/${resultId}/history`,
+    ),
 };
+
+/** Shape of one row in the re-run chain returned by ``resultHistory``.
+ *
+ * Mirrors the backend ``run_results`` schema; alternatives are already
+ * parsed JSON arrays. ``parent_result_id`` / ``rerun_seq`` /
+ * ``user_instructions`` are populated for re-run children only.
+ */
+export interface ResultRow {
+  id: number;
+  run_id: number;
+  schema_name: string;
+  table_name: string;
+  column_name: string | null;
+  asset_kind: string;
+  confidence: string;
+  source: string;
+  logprob_score: number | null;
+  alternatives_json: unknown;
+  chosen_description: string | null;
+  evaluation: string | null;
+  applied_at: number | null;
+  parent_result_id: number | null;
+  rerun_seq: number;
+  user_instructions: string | null;
+}
