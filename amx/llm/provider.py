@@ -242,10 +242,24 @@ PROVIDER_ENV_KEY = {
     "databricks_serving": "DATABRICKS_TOKEN",
 }
 
-# OpenAI "reasoning" models (gpt-5*, o-series) may spend the whole max_tokens budget on
-# internal reasoning, leaving message.content empty with finish_reason=length.
-# Floor output budget + optional reasoning_effort (LiteLLM passes through to the API).
-_DEFAULT_REASONING_FLOOR = 16_384
+# OpenAI "reasoning" models (gpt-5*, o-series), Anthropic extended-thinking
+# Claude, DeepSeek-reasoner, and OpenRouter's reasoning routes (Kimi K2.x
+# thinking variants, Qwen3-thinking, GLM-4.6-thinking …) may spend the
+# whole max_tokens budget on internal reasoning, leaving message.content
+# empty with finish_reason=length. Floor output budget + optional
+# reasoning_effort (LiteLLM passes through to the API). Bumped from
+# 16_384 → 32_768 in 2026-05 because Kimi K2.x and Claude Sonnet/Opus 4
+# extended thinking routinely spend 8-16k tokens on thoughts before the
+# first visible character.
+_DEFAULT_REASONING_FLOOR = 32_768
+
+# Hard cap for the auto-recovery path (see ``chat`` finish=length branch).
+# When a reasoning route returns 0 visible characters and consumed every
+# allotted output token, AMX retries the call once with ``max_tokens × 4``
+# bounded by this cap so the user gets a usable response without having
+# to set ``AMX_LLM_MIN_MAX_TOKENS`` manually for every new reasoning
+# model that ships.
+_REASONING_AUTO_RETRY_CAP = 131_072
 
 
 @dataclass
@@ -684,14 +698,26 @@ def _supports_thinking(provider: str, model: str) -> bool:
         # routes for non-OpenAI reasoning models OpenRouter fronts.
         if _is_openai_reasoning_style_model(model):
             return True
+        # Generic "thinking" / "reasoner" / "reasoning" substring match
+        # so newly-launched reasoning routes are caught automatically
+        # without code changes — every major lab now uses one of these
+        # tokens in the route name (kimi-thinking, qwen3-thinking,
+        # glm-4.6-thinking, deepseek-reasoner, …). False positives on
+        # non-reasoning models that happen to contain the substring are
+        # harmless: the only effect is a higher max_tokens floor.
+        if any(tok in m for tok in ("thinking", "reasoner", "reasoning")):
+            return True
         return any(
             tag in m
             for tag in (
                 "claude-sonnet-4",
                 "claude-opus-4",
                 "claude-3-7-sonnet",
-                "deepseek-reasoner",
-                "kimi-k2-thinking",
+                # Kimi K2.x — every 2.x point release ships a thinking
+                # mode by default (k2.6, k2.7, …). Match the family
+                # rather than each version so we don't have to keep up.
+                "kimi-k2",
+                "kimi-2",
             )
         )
     return False
@@ -1106,6 +1132,10 @@ class LLMProvider:
         on_thinking: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        # ``_amx_rerun_attempt`` is consumed by the auto-retry path below
+        # (length+empty reasoning failure). Pull it out of kwargs before
+        # the dict reaches LiteLLM, which would 400 on an unknown param.
+        _retry_attempt = int(kwargs.pop("_amx_rerun_attempt", 0) or 0)
         model = self.model_name
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
@@ -1209,10 +1239,11 @@ class LLMProvider:
 
         # Reasoning models: raise floor so visible content can appear after thinking tokens.
         # Applies to every provider/model the streaming path treats as a reasoning route
-        # (OpenRouter's kimi-k2-thinking, Anthropic extended-thinking, deepseek-reasoner,
-        # OpenAI o-series / gpt-5). Without this, non-streamed callers (profile / code /
-        # rag agents in CHAT mode) keep the regular 4096 budget and routinely truncate
-        # with finish_reason=length once the model has spent it on internal thinking.
+        # (OpenRouter's Kimi K2.x family, generic *-thinking / *-reasoner / *-reasoning
+        # routes, Anthropic extended-thinking, deepseek-reasoner, OpenAI o-series / gpt-5).
+        # Without this, non-streamed callers (profile / code / rag agents in CHAT mode)
+        # keep the LLMConfig.max_tokens budget and routinely truncate with
+        # finish_reason=length once the model has spent it on internal thinking.
         if _supports_thinking(self.cfg.provider, model):
             floor = int(os.getenv("AMX_LLM_MIN_MAX_TOKENS", str(_DEFAULT_REASONING_FLOOR)))
             if mt < floor:
@@ -1469,21 +1500,52 @@ class LLMProvider:
             #     openrouter/tencent/hy3-preview:free). Treat as fatal so
             #     the run aborts after one attempt with a clear message.
             if not content:
+                # Auto-recovery path: a reasoning route burned every token
+                # on internal thinking. Before surfacing this as a fatal
+                # error to the user, retry the call once with a much larger
+                # ``max_tokens`` budget — modern reasoning models often
+                # need 32-64k tokens of headroom before emitting visible
+                # output, and the user shouldn't have to set an env var
+                # for every newly-released route. Bounded by
+                # ``_REASONING_AUTO_RETRY_CAP`` so a runaway model can't
+                # drain a credit balance.
+                if _retry_attempt == 0 and mt < _REASONING_AUTO_RETRY_CAP:
+                    bumped = min(_REASONING_AUTO_RETRY_CAP, max(mt * 4, mt + 32_768))
+                    log.warning(
+                        "LLM `%s` returned 0 visible chars at max_tokens=%d "
+                        "(reasoning budget exhausted). Auto-retrying once with "
+                        "max_tokens=%d before failing.",
+                        model,
+                        mt,
+                        bumped,
+                    )
+                    return self.chat(
+                        messages,
+                        temperature=temperature,
+                        max_tokens=bumped,
+                        use_logprobs=use_logprobs,
+                        on_thinking=on_thinking,
+                        _amx_rerun_attempt=_retry_attempt + 1,
+                        **kwargs,
+                    )
                 raise FatalLLMError(
                     (
                         f"Model `{model}` returned 0 visible characters and used all "
-                        f"{mt} output tokens — this almost always means a reasoning "
-                        "model burnt the budget on internal thinking. AMX needs visible "
-                        "JSON output. Try a non-reasoning model like "
-                        "`openrouter/openai/gpt-4o-mini`, "
-                        "`openrouter/anthropic/claude-3-5-haiku`, or "
-                        "`openrouter/google/gemini-1.5-flash` under /llm. "
-                        "If you must use this model, raise max_tokens dramatically "
-                        "(e.g. AMX_LLM_MIN_MAX_TOKENS=32000) AND set "
-                        "AMX_REASONING_EFFORT=minimal."
+                        f"{mt} output tokens even after AMX auto-retried with a "
+                        "larger budget — the model is spending its entire output "
+                        "allowance on internal reasoning and never gets to visible "
+                        "JSON. Pick a non-reasoning model under /llm, e.g.: "
+                        "`openrouter/anthropic/claude-haiku-4.5`, "
+                        "`openrouter/google/gemini-2.5-flash`, "
+                        "`openrouter/openai/gpt-5.4-mini`, or "
+                        "`openrouter/deepseek/deepseek-chat-v4`. "
+                        "If you must keep this model, raise max_tokens via "
+                        "/max-tokens (CLI) or Settings → LLM (Studio), or set "
+                        "AMX_LLM_MIN_MAX_TOKENS=65536 AMX_REASONING_EFFORT=minimal."
                     ),
                     original_message=(
-                        f"finish_reason=length, content_chars=0, max_tokens={mt}, model={model}"
+                        f"finish_reason=length, content_chars=0, max_tokens={mt}, "
+                        f"model={model}, retry_attempt={_retry_attempt}"
                     ),
                 )
             raise LLMTruncationError(

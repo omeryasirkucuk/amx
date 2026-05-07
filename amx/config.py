@@ -997,7 +997,15 @@ class LLMConfig(_ObservableConfig):
     api_key: str = ""
     api_base: str | None = None
     temperature: float = 0.2
-    max_tokens: int = 4096  # reduced from 16384; reasoning models raise this automatically
+    # Default output-token budget for a single LLM call. Bumped from 4096
+    # in 2026-05 because modern frontier and budget models alike happily
+    # produce 8–16k tokens of structured output, and the previous cap
+    # silently truncated AMX runs against any model with a hidden reasoning
+    # phase — most painfully on Kimi K2.x and similar OpenRouter routes
+    # where the agent burned every token on internal thinking and emitted
+    # nothing visible. Users who care about cost should lower this in their
+    # profile; AMX defaults to "user knows what they're doing".
+    max_tokens: int = 16_384
     completion_mode: str = "chat_completions"  # "chat_completions" | "batch"
     n_alternatives: int = 3  # how many description alternatives per column (1–5)
     column_batch_size: int = 10  # how many columns to process in one LLM call
@@ -1044,7 +1052,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         api_key=str(m.get("api_key", "")),
         api_base=m.get("api_base"),
         temperature=float(m.get("temperature", 0.2)),
-        max_tokens=int(m.get("max_tokens", 4096)),
+        max_tokens=int(m.get("max_tokens", 16_384)),
         completion_mode=str(m.get("completion_mode", "chat_completions")),
         n_alternatives=max(1, min(5, n_alt)),
         column_batch_size=int(m.get("column_batch_size", 10)),

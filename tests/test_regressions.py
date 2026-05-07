@@ -1538,7 +1538,10 @@ class HistoryFormattingTests(unittest.TestCase):
 
 class ProfileHelperTests(unittest.TestCase):
     def test_default_model_includes_openrouter(self) -> None:
-        self.assertEqual(default_model("openrouter"), "openai/gpt-4o-mini")
+        # Default updated 2026-05 from gpt-4o-mini to claude-haiku-4.5
+        # — see ``default_model`` in profiles.py for the rationale (cheap,
+        # fast, non-reasoning, top of the budget tier).
+        self.assertEqual(default_model("openrouter"), "anthropic/claude-haiku-4.5")
 
     def test_openrouter_model_normalization_strips_duplicate_provider_prefix(self) -> None:
         self.assertEqual(
