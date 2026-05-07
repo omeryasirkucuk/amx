@@ -50,13 +50,22 @@ from amx.cli_support.commands.profiles import (
     cmd_add_llm_profile as _cmd_add_llm_profile,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_ask_context as _cmd_ask_context,
+)
+from amx.cli_support.commands.profiles import (
     cmd_batch_context_columns as _cmd_batch_context_columns,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_code_link as _cmd_code_link,
 )
 from amx.cli_support.commands.profiles import (
     cmd_code_profiles as _cmd_code_profiles,
 )
 from amx.cli_support.commands.profiles import (
     cmd_description_verbosity as _cmd_description_verbosity,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_doc_link as _cmd_doc_link,
 )
 from amx.cli_support.commands.profiles import (
     cmd_doc_profiles as _cmd_doc_profiles,
@@ -867,6 +876,11 @@ def _handle_session_builtin(
             return True
         _cmd_remove_doc_profile(cfg, parts[1:])
         return True
+    if head == "doc-link":
+        if not _require_namespace(head, namespace, "docs", "doc-link"):
+            return True
+        _cmd_doc_link(cfg, parts[1:])
+        return True
     if head == "code-profiles":
         if not _require_namespace(head, namespace, "code", "code-profiles"):
             return True
@@ -886,6 +900,18 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "code", "remove-code-profile"):
             return True
         _cmd_remove_code_profile(cfg, parts[1:])
+        return True
+    if head == "code-link":
+        if not _require_namespace(head, namespace, "code", "code-link"):
+            return True
+        _cmd_code_link(cfg, parts[1:])
+        return True
+    if head == "ask-context":
+        # /ask-context lives under /search (the same namespace as /ask)
+        # so the user can run it mid-session without switching contexts.
+        if not _require_namespace(head, namespace, "search", "ask-context"):
+            return True
+        _cmd_ask_context(cfg)
         return True
     if head == "db-profiles":
         if not _require_namespace(head, namespace, "db", "db-profiles"):

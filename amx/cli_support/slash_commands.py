@@ -181,6 +181,11 @@ _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/remove-doc-profile", "docs", "Remove document profile (/remove-doc-profile <name>)"
     ),
+    SlashCommand(
+        "/doc-link",
+        "docs",
+        "Link doc profile → DB profile(s) (/doc-link <doc-profile> [--db NAME …] [--clear])",
+    ),
     SlashCommand("/scan", "docs", "Scan documents (/scan [--doc-profile NAME] [paths...])"),
     SlashCommand("/ingest", "docs", "Ingest (/ingest [--doc-profile NAME] [--refresh] [paths...])"),
     SlashCommand("/search-docs", "docs", "Similarity search (/search-docs <text>, no LLM)"),
@@ -247,6 +252,11 @@ _CODE_COMMANDS: tuple[SlashCommand, ...] = (
         "/remove-code-profile", "code", "Remove codebase profile (/remove-code-profile <name>)"
     ),
     SlashCommand(
+        "/code-link",
+        "code",
+        "Link code profile → DB profile(s) (/code-link <code-profile> [--db NAME …] [--clear])",
+    ),
+    SlashCommand(
         "/code-scan", "code", "Scan codebase + save (/code-scan [path] [--code-profile NAME])"
     ),
     SlashCommand("/code-refresh", "code", "Clear cache + semantic code index"),
@@ -298,6 +308,11 @@ _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
     # Status
     SlashCommand("/status", "search", "Show catalog/index status"),
     SlashCommand("/sources", "search", "Show evidence sources and settings"),
+    SlashCommand(
+        "/ask-context",
+        "search",
+        "Show which doc/code profiles /ask will pull in for the current DB scope",
+    ),
     # Configure
     SlashCommand("/config", "search", "Show/set search config (/config [key] [value])"),
     SlashCommand(

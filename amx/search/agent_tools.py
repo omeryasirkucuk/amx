@@ -1199,6 +1199,87 @@ class ToolBox:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_docs",
+                    "description": (
+                        "Semantic search over user-ingested documentation (markdown, "
+                        "PDF, DOCX, HTML, RST, txt) — the doc RAG. Use this when the "
+                        "user asks about business meaning, process descriptions, "
+                        "design intent, KPI definitions, or anything the **schema "
+                        "alone cannot answer** (e.g. 'how is churn defined?', 'what "
+                        "does the contracts table represent?'). Scope is automatic: "
+                        "doc profiles linked to the current DB scope (or all global "
+                        "profiles when none are linked). When the resolved scope "
+                        "yields zero indexed chunks, the tool returns "
+                        '``reason: "no_docs_for_scope"`` — surface that fact, do '
+                        "NOT invent business descriptions. Each hit carries "
+                        "``source`` (file path) so cite it in the answer."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "Natural-language question or topic. Pass the "
+                                    "user's words (translated if helpful) — the RAG "
+                                    "store handles tokenisation."
+                                ),
+                            },
+                            "n_results": {
+                                "type": "integer",
+                                "description": "Top-N chunks to return (default 5, max 10).",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_code",
+                    "description": (
+                        "Semantic search over the user's scanned codebase (the "
+                        "``amx_code`` Chroma index). Use this when the user asks "
+                        "**where / how a table or column is used in code** — read "
+                        "vs write callsites, ETL job names, file:line references, "
+                        "transformation logic. Scope is automatic: code profiles "
+                        "linked to the current DB scope. Empty scope returns "
+                        '``reason: "no_code_for_scope"``. Each hit carries '
+                        "``source`` (file path) and may carry ``table`` metadata.\n"
+                        "DO NOT use this tool to write a long code review or to "
+                        "summarise transformations across many files — for "
+                        "table-level deep analysis suggest the user run "
+                        "``/code-analyze --tables <X>`` (CLI) or open the Code "
+                        "Analyze page in Studio. Keep your answer to citing the "
+                        "snippets this tool returned."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Natural-language code-intent query.",
+                            },
+                            "n_results": {
+                                "type": "integer",
+                                "description": "Top-N snippets (default 5, max 10).",
+                            },
+                            "table_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Optional table name to bias the search "
+                                    "towards snippets that mention that table."
+                                ),
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
         ]
 
     # ------------------------------------------------------------------ invoke
@@ -4984,5 +5065,152 @@ class ToolBox:
             "note": (
                 "Resume any ended session in the CLI with `/session resume <id>`. "
                 "Active sessions (is_active=true) are the currently-open thread."
+            ),
+        }
+
+    # ------------------------------------------------------------------ doc/code RAG
+    def _tool_search_docs(self, query: str, n_results: int = 5) -> dict[str, Any]:
+        from amx.search._agent.scope import resolve_doc_profiles_for_scope
+
+        q = (query or "").strip()
+        if not q:
+            return {"hits": [], "count": 0, "reason": "empty_query"}
+        n = max(1, min(int(n_results or 5), 10))
+
+        profiles = resolve_doc_profiles_for_scope(self.cfg, self.db_profiles)
+        if not profiles:
+            return {
+                "hits": [],
+                "count": 0,
+                "reason": "no_docs_for_scope",
+                "scope_dbs": list(self.db_profiles),
+            }
+
+        # Build the source-filter list from every in-scope doc profile's
+        # configured source paths. A single RAGStore handles the union;
+        # source_filters scopes ``query()`` to chunks whose ``source`` /
+        # ``source_root`` metadata starts with one of these prefixes.
+        source_paths: list[str] = []
+        for prof in profiles:
+            for path in self.cfg.doc_profiles.get(prof, []) or []:
+                if path and path not in source_paths:
+                    source_paths.append(path)
+
+        try:
+            from amx.docs.rag import RAGStore
+
+            store = RAGStore(source_filters=source_paths)
+            if store.filtered_doc_count() == 0:
+                return {
+                    "hits": [],
+                    "count": 0,
+                    "reason": "no_docs_for_scope",
+                    "doc_profiles": profiles,
+                    "scope_dbs": list(self.db_profiles),
+                }
+            raw_hits = store.query(q, n_results=n)
+        except Exception as exc:
+            return {"hits": [], "count": 0, "error": f"rag_query_failed: {exc}"}
+
+        hits: list[dict[str, Any]] = []
+        for h in raw_hits:
+            meta = h.get("metadata") or {}
+            text = str(h.get("text") or "")
+            # Token-budget hygiene: every snippet capped at ~1.2K chars
+            # so a /ask question pulling 5 hits never blows past 6KB —
+            # well inside the 60K floor budget.
+            if len(text) > 1200:
+                text = text[:1200] + "…"
+            hits.append(
+                {
+                    "source": meta.get("source") or meta.get("source_root") or "",
+                    "source_type": meta.get("source_type") or "",
+                    "snippet": text,
+                    "distance": h.get("distance"),
+                }
+            )
+        return {
+            "hits": hits,
+            "count": len(hits),
+            "doc_profiles": profiles,
+            "scope_dbs": list(self.db_profiles),
+        }
+
+    def _tool_search_code(
+        self,
+        query: str,
+        n_results: int = 5,
+        table_filter: str | None = None,
+    ) -> dict[str, Any]:
+        from amx.search._agent.scope import resolve_code_profiles_for_scope
+
+        q = (query or "").strip()
+        tbl = (table_filter or "").strip()
+        if not q and not tbl:
+            return {"hits": [], "count": 0, "reason": "empty_query"}
+        n = max(1, min(int(n_results or 5), 10))
+
+        profiles = resolve_code_profiles_for_scope(self.cfg, self.db_profiles)
+        if not profiles:
+            return {
+                "hits": [],
+                "count": 0,
+                "reason": "no_code_for_scope",
+                "scope_dbs": list(self.db_profiles),
+            }
+
+        source_paths: list[str] = []
+        for prof in profiles:
+            path = self.cfg.code_profiles.get(prof, "") or ""
+            if path and path not in source_paths:
+                source_paths.append(path)
+
+        # Bias the query string with the table name when the LLM wants
+        # callsite-style results — the underlying Chroma collection is
+        # text-only, so concatenating ``"<query> <table>"`` is the
+        # cheapest way to lift table-mentioning chunks without a where
+        # clause (codebase metadata is path-shaped, not table-shaped).
+        composite = f"{q} {tbl}".strip() if tbl else q
+
+        try:
+            from amx.codebase.code_rag import code_collection_count, query_code_snippets
+
+            if code_collection_count(source_filters=source_paths) == 0:
+                return {
+                    "hits": [],
+                    "count": 0,
+                    "reason": "no_code_for_scope",
+                    "code_profiles": profiles,
+                    "scope_dbs": list(self.db_profiles),
+                }
+            raw_hits = query_code_snippets(composite, n_results=n, source_filters=source_paths)
+        except Exception as exc:
+            return {"hits": [], "count": 0, "error": f"code_query_failed: {exc}"}
+
+        hits: list[dict[str, Any]] = []
+        for h in raw_hits:
+            meta = h.get("metadata") or {}
+            text = str(h.get("text") or "")
+            if len(text) > 1200:
+                text = text[:1200] + "…"
+            hits.append(
+                {
+                    "source": meta.get("source") or meta.get("rel_path") or "",
+                    "rel_path": meta.get("rel_path") or "",
+                    "symbol": meta.get("symbol") or meta.get("kind") or "",
+                    "snippet": text,
+                    "distance": h.get("distance"),
+                }
+            )
+        return {
+            "hits": hits,
+            "count": len(hits),
+            "code_profiles": profiles,
+            "scope_dbs": list(self.db_profiles),
+            "deep_analysis_hint": (
+                "If the user asks for a comprehensive review of how a table is "
+                "used across the codebase, recommend `/code-analyze --tables <X>` "
+                "(CLI) or the Code Analyze page in Studio rather than "
+                "summarising every snippet here."
             ),
         }
