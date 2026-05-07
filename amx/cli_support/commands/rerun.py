@@ -30,8 +30,17 @@ from amx.agents._orchestrator.rerun import rerun_items
 from amx.agents.rerun_context import RerunContextError
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
-from amx.utils.console import error, heading, info, render_table, success, warn
+from amx.utils.console import (
+    error,
+    heading,
+    info,
+    render_table,
+    render_token_summary,
+    success,
+    warn,
+)
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import tracker as token_tracker
 
 LogEvent = Callable[..., None]
 log = get_logger("cli.rerun")
@@ -272,6 +281,12 @@ def register_rerun_command(
             raise click.ClickException(str(exc)) from exc
 
         _print_outcomes(outcomes, new_run_id=int(new_run_id))
+        # Mirror the analyze flow's end-of-run table so re-run users
+        # see the same per-step token + USD cost breakdown the bulk
+        # path emits. ``rerun_items`` reset the tracker on entry, so
+        # ``token_tracker.summary()`` here is exactly the per-call
+        # accounting for this re-run alone.
+        render_token_summary(token_tracker)
         successful = sum(1 for o in outcomes if not o.error)
         log_event(
             event_type="rerun",

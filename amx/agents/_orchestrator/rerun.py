@@ -48,6 +48,7 @@ from amx.db.connector import AssetKind
 from amx.llm.provider import LLMProvider
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import tracker as token_tracker
 
 log = get_logger("agents._orchestrator.rerun")
 
@@ -573,6 +574,11 @@ def rerun_items(
 
     outcomes: list[RerunOutcome] = []
     started = time.monotonic()
+    # Reset the module-level singleton so the per-step tokens + USD
+    # cost we attribute to this re-run are not contaminated by an
+    # earlier analyze.run that left records behind in the same
+    # process (Studio worker thread, long-lived CLI session).
+    token_tracker.reset()
     try:
         for idx, target in enumerate(targets, start=1):
             if cancel_token is not None and cancel_token.is_set():
@@ -759,20 +765,28 @@ def rerun_items(
                     )
 
         # finish_run records duration + per-outcome counts so /history
-        # can show the re-run alongside normal analyze.run rows.
+        # can show the re-run alongside normal analyze.run rows. Mirror
+        # analyze_flow's tokens={} payload so the re-run also surfaces
+        # frozen USD cost in the run-detail page and in /usage.
         successful = sum(1 for o in outcomes if not o.error)
         hs.finish_run(
             int(new_run_id),
             status="success" if successful == len(outcomes) else "partial",
             metrics={
                 "duration_sec": round(time.monotonic() - started, 3),
+                "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
                 "total_assets": len(outcomes),
                 "processed_assets_count": successful,
                 "failed_assets_count": len(outcomes) - successful,
                 "trigger": "rerun",
                 "parent_run_id": parent_run_id,
             },
-            tokens={},
+            tokens={
+                "total_tokens": token_tracker.total_tokens,
+                "total_cost_usd": round(token_tracker.total_cost_usd, 8),
+                "summary": token_tracker.summary(),
+                "records": token_tracker.records(),
+            },
             results={"new_result_ids": [o.new_result_id for o in outcomes if o.new_result_id]},
             error_text="",
         )

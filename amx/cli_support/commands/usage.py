@@ -76,25 +76,58 @@ def _aggregate_runs(
         except Exception:
             continue
         records = payload.get("records") or []
-        if not records:
-            continue
         prompt_total = 0
         completion_total = 0
         frozen_cost_total = 0.0
         seen_cost_field = False
         sources_seen: set[str] = set()
-        for record in records:
-            if not isinstance(record, dict):
-                continue
-            prompt_total += int(record.get("prompt_tokens") or 0)
-            completion_total += int(record.get("completion_tokens") or 0)
-            if "input_cost_usd" in record or "output_cost_usd" in record:
+        if records:
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                prompt_total += int(record.get("prompt_tokens") or 0)
+                completion_total += int(record.get("completion_tokens") or 0)
+                if "input_cost_usd" in record or "output_cost_usd" in record:
+                    seen_cost_field = True
+                    frozen_cost_total += float(record.get("input_cost_usd") or 0.0)
+                    frozen_cost_total += float(record.get("output_cost_usd") or 0.0)
+                src = record.get("price_source")
+                if src:
+                    sources_seen.add(str(src))
+        else:
+            # Older runs (pre-2026-05) only persisted ``summary`` and
+            # ``total_tokens`` into ``tokens_json`` — no per-call
+            # ``records[]``. Fall back to the summary tuples so those
+            # runs still surface in /usage instead of disappearing
+            # into an "(empty)" view that confuses the user. Cost is
+            # picked up from the optional 5th element of the tuple
+            # (set by newer TokenTracker.summary() outputs); when
+            # absent the bucket renders ``$ — (frozen)``.
+            for row in payload.get("summary") or []:
+                if not isinstance(row, (list, tuple)) or len(row) < 4:
+                    continue
+                prompt_total += int(row[1] or 0)
+                completion_total += int(row[2] or 0)
+                if len(row) >= 5:
+                    cost_val = float(row[4] or 0.0)
+                    if cost_val > 0:
+                        seen_cost_field = True
+                        frozen_cost_total += cost_val
+            # ``total_tokens`` is the most permissive fallback — when
+            # ``summary`` is also missing we still know the run did
+            # *some* work and want it counted (input/output split is
+            # unknown but the row is no longer invisible).
+            if prompt_total == 0 and completion_total == 0:
+                fallback_total = int(payload.get("total_tokens") or 0)
+                if fallback_total > 0:
+                    prompt_total = fallback_total
+            # The old payload may also carry a top-level
+            # ``total_cost_usd`` even without per-call records — pick
+            # it up so older Studio runs surface a frozen cost row.
+            top_cost = payload.get("total_cost_usd")
+            if not seen_cost_field and isinstance(top_cost, (int, float)) and float(top_cost) > 0:
                 seen_cost_field = True
-                frozen_cost_total += float(record.get("input_cost_usd") or 0.0)
-                frozen_cost_total += float(record.get("output_cost_usd") or 0.0)
-            src = record.get("price_source")
-            if src:
-                sources_seen.add(str(src))
+                frozen_cost_total += float(top_cost)
         if prompt_total == 0 and completion_total == 0:
             continue
         bucket = per.setdefault(
