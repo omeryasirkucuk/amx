@@ -187,6 +187,28 @@ export interface RecentRunsResponse {
   count: number;
 }
 
+export interface ApplyEvent {
+  id: number;
+  applied_at: number;
+  run_id: number | null;
+  result_id: number | null;
+  profile_name: string;
+  schema_name: string;
+  table_name: string;
+  column_name: string | null;
+  asset_kind: string;
+  old_comment: string | null;
+  new_comment: string;
+  applied_by: string;
+  hostname: string;
+  sql_template: string;
+}
+
+export interface ApplyEventsResponse {
+  events: ApplyEvent[];
+  count: number;
+}
+
 /**
  * Backend returns total_runs / success_runs / failed_runs /
  * ready_for_review_runs. Older callers in this file used the shorter
@@ -257,6 +279,19 @@ export const api = {
     const params = new URLSearchParams({ limit: String(limit) });
     if (command) params.set("command", command);
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
+  },
+  applyEvents: (params: {
+    runId?: number | null;
+    profileName?: string | null;
+    limit?: number;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.runId != null) qs.set("run_id", String(params.runId));
+    if (params.profileName) qs.set("profile_name", params.profileName);
+    qs.set("limit", String(params.limit ?? 100));
+    return apiFetch<ApplyEventsResponse>(
+      `/api/history/apply-events?${qs.toString()}`,
+    );
   },
   setDatabaseComment: (scope: Scope, comment: string) =>
     apiFetch<{ comment: string }>(withScope("/api/comments/database", scope), {

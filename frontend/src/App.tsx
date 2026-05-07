@@ -26,6 +26,7 @@ const Ask = lazy(() => import("./routes/Ask"));
 const Pending = lazy(() => import("./routes/Pending"));
 const Settings = lazy(() => import("./routes/Settings"));
 const System = lazy(() => import("./routes/System"));
+const Audit = lazy(() => import("./routes/Audit"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
 // loopback land in milliseconds, so a heavy skeleton would flash
@@ -70,6 +71,7 @@ export default function App() {
               <Route path="runs/:runId" element={<RunDetail />} />
               <Route path="ask" element={<Ask />} />
               <Route path="pending" element={<Pending />} />
+              <Route path="audit" element={<Audit />} />
               <Route path="settings" element={<Settings />} />
               <Route path="system" element={<System />} />
               <Route path="*" element={<Navigate to="/" replace />} />

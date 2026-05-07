@@ -95,3 +95,66 @@ def test_recent_events(client, auth_headers, stub_store) -> None:
     response = client.get("/api/history/events?limit=5", headers=auth_headers)
     assert response.status_code == 200
     stub_store.list_recent_events.assert_called_once_with(limit=5)
+
+
+def test_apply_events_default(client, auth_headers, stub_store) -> None:
+    """Default call (no filters) returns the global apply timeline."""
+    stub_store.list_apply_events.return_value = [
+        {
+            "id": 9,
+            "applied_at": 1.0,
+            "schema_name": "public",
+            "table_name": "orders",
+            "column_name": "id",
+            "new_comment": "Order id.",
+            "applied_by": "omer",
+            "hostname": "laptop",
+        }
+    ]
+    response = client.get("/api/history/apply-events", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["events"][0]["new_comment"] == "Order id."
+    stub_store.list_apply_events.assert_called_once_with(run_id=None, profile_name=None, limit=100)
+
+
+def test_apply_events_filtered_by_run_id(client, auth_headers, stub_store) -> None:
+    stub_store.list_apply_events.return_value = []
+    response = client.get(
+        "/api/history/apply-events?run_id=42&limit=10",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    stub_store.list_apply_events.assert_called_once_with(run_id=42, profile_name=None, limit=10)
+
+
+def test_apply_events_filtered_by_profile_name(client, auth_headers, stub_store) -> None:
+    stub_store.list_apply_events.return_value = []
+    response = client.get(
+        "/api/history/apply-events?profile_name=prod_pg",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    stub_store.list_apply_events.assert_called_once_with(
+        run_id=None, profile_name="prod_pg", limit=100
+    )
+
+
+def test_apply_events_503_when_store_missing(client, auth_headers, monkeypatch) -> None:
+    """Same behaviour as every other /api/history/* route — store
+    isn't initialised yet → 503 with the standard hint."""
+    monkeypatch.setattr(history_router, "history_store", lambda: None)
+    response = client.get("/api/history/apply-events", headers=auth_headers)
+    assert response.status_code == 503
+    assert "history store" in response.json()["detail"].lower()
+
+
+def test_apply_events_limit_is_capped(client, auth_headers, stub_store) -> None:
+    """``limit`` is bounded ``ge=1, le=500`` so callers can't ask for
+    a million rows by accident."""
+    stub_store.list_apply_events.return_value = []
+    over_limit = client.get("/api/history/apply-events?limit=10000", headers=auth_headers)
+    assert over_limit.status_code == 422
+    under_limit = client.get("/api/history/apply-events?limit=0", headers=auth_headers)
+    assert under_limit.status_code == 422

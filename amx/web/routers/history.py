@@ -139,6 +139,25 @@ def list_recent_events(
     return {"events": rows, "count": len(rows)}
 
 
+@router.get("/apply-events")
+def list_apply_events(
+    run_id: int | None = Query(default=None, description="Filter to a specific run."),
+    profile_name: str | None = Query(default=None, description="Filter to a specific DB profile."),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    """Apply-events audit trail.
+
+    One row per successful COMMENT write; populated by
+    ``apply_review_results_to_db`` (CLI ``/analyze apply``, Studio
+    ``/api/runs/{id}/apply``). Newest-first, optional filters by run
+    or profile so the Recent Applies panel can pivot. Falls back to
+    a 503 when the store isn't initialised yet — the SPA shows the
+    same hint as the other /api/history/* endpoints.
+    """
+    rows = _store().list_apply_events(run_id=run_id, profile_name=profile_name, limit=limit)
+    return {"events": rows, "count": len(rows)}
+
+
 class CompareRequest(BaseModel):
     run_ids: list[int] = Field(..., min_length=1, description="Runs to compare side-by-side.")
 
