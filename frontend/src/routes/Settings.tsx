@@ -1243,10 +1243,30 @@ function DocProfileWizard({
   const [name, setName] = useState(editingName ?? "");
   const [text, setText] = useState(existingPaths.join("\n"));
   const [linkedDbs, setLinkedDbs] = useState<string[]>(existingLinkedDbs);
+  // Buffered drag-drop files. Held client-side until Save so the user
+  // can stage uploads without committing a half-built profile, and so
+  // the same flow works for both create (no profile yet) and edit.
+  // After PUT succeeds we POST these to /api/docs/upload, which
+  // auto-creates the profile if it didn't exist on the backend.
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploadingNote, setUploadingNote] = useState<string | null>(null);
+
+  const addFiles = (incoming: FileList | File[]) => {
+    const next: File[] = [...pendingFiles];
+    for (let i = 0; i < (incoming as FileList).length; i += 1) {
+      const f = (incoming as FileList)[i] ?? (incoming as File[])[i];
+      if (f && !next.some((p) => p.name === f.name && p.size === f.size)) {
+        next.push(f);
+      }
+    }
+    setPendingFiles(next);
+  };
 
   const save = useMutation({
-    mutationFn: () =>
-      apiFetch(`/api/profiles/docs/${encodeURIComponent(name)}`, {
+    mutationFn: async () => {
+      await apiFetch(`/api/profiles/docs/${encodeURIComponent(name)}`, {
         method: "PUT",
         body: JSON.stringify({
           paths: text
@@ -1255,10 +1275,35 @@ function DocProfileWizard({
             .filter(Boolean),
           linked_db_profiles: linkedDbs,
         }),
-      }),
+      });
+      if (pendingFiles.length === 0) return;
+      setUploadingNote(
+        `Uploading ${pendingFiles.length} file${
+          pendingFiles.length === 1 ? "" : "s"
+        }…`,
+      );
+      const fd = new FormData();
+      fd.append("profile", name);
+      fd.append("ingest", "true");
+      for (const f of pendingFiles) fd.append("files", f);
+      const resp = await fetch("/api/docs/upload", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(errText || `Upload failed: HTTP ${resp.status}`);
+      }
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["profiles", "docs"] });
+      setUploadingNote(null);
       onClose();
+    },
+    onError: (e) => {
+      setUploadError(e instanceof Error ? e.message : String(e));
+      setUploadingNote(null);
     },
   });
 
@@ -1303,10 +1348,91 @@ function DocProfileWizard({
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            rows={8}
+            rows={6}
             placeholder={"/abs/path/to/docs\nhttps://example.com/handbook.pdf\ns3://bucket/key/"}
             className="w-full rounded-md border border-surface-border bg-surface px-3 py-2 font-mono text-xs"
           />
+        </Field>
+        <Field label="Or drop files (optional)">
+          <p className="mb-2 text-[11px] text-ink-dim">
+            PDF, DOCX, MD, TXT, CSV, HTML, RST, JSON, YAML accepted. Files
+            land under <code>~/.amx/uploads/{name || "<profile>"}/</code> and
+            ingest immediately when you save the profile.
+          </p>
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+            }}
+            className={
+              "rounded-md border border-dashed px-3 py-3 text-xs transition " +
+              (dragOver
+                ? "border-accent bg-accent-soft text-accent-ink"
+                : "border-surface-border text-ink-dim hover:border-accent/40")
+            }
+          >
+            <label className="flex cursor-pointer items-center justify-between gap-2">
+              <span>
+                {pendingFiles.length === 0
+                  ? "Drag-drop files here, or click to browse."
+                  : `${pendingFiles.length} file${
+                      pendingFiles.length === 1 ? "" : "s"
+                    } staged — drop more or click to add.`}
+              </span>
+              <input
+                type="file"
+                multiple
+                onChange={(e) => {
+                  if (e.target.files?.length) addFiles(e.target.files);
+                  e.target.value = "";
+                }}
+                className="hidden"
+                accept=".md,.markdown,.txt,.pdf,.docx,.doc,.csv,.tsv,.html,.htm,.rst,.rtf,.json,.yaml,.yml"
+              />
+              <span className="rounded bg-surface-subtle px-2 py-0.5 text-[10px]">
+                Browse
+              </span>
+            </label>
+          </div>
+          {pendingFiles.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-[11px] text-ink-muted">
+              {pendingFiles.map((f, idx) => (
+                <li
+                  key={`${f.name}-${idx}`}
+                  className="flex items-center justify-between gap-2 rounded bg-surface-subtle px-2 py-1"
+                >
+                  <span className="truncate font-mono">
+                    {f.name}{" "}
+                    <span className="text-ink-dim">
+                      ({(f.size / 1024).toFixed(1)} KB)
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPendingFiles(pendingFiles.filter((_, i) => i !== idx))
+                    }
+                    className="rounded p-0.5 text-ink-dim hover:bg-critical/10 hover:text-critical"
+                    title="Remove"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {uploadingNote && (
+            <p className="mt-1 text-[11px] text-ink-muted">{uploadingNote}</p>
+          )}
+          {uploadError && (
+            <p className="mt-1 text-[11px] text-critical">{uploadError}</p>
+          )}
         </Field>
         <LinkedDbsField selected={linkedDbs} onChange={setLinkedDbs} kind="doc" />
         {save.isError && (
