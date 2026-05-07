@@ -705,32 +705,98 @@ class Orchestrator:
 
         return desc, conf, reasoning
 
-    def _run_enabled_agents(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+    def _run_enabled_agents(
+        self,
+        ctx: AgentContext,
+        *,
+        cancel_token: threading.Event | None = None,
+    ) -> tuple[list[MetadataSuggestion], dict[str, str]]:
+        """Run the enabled sub-agents and collect suggestions + per-agent
+        statuses.
+
+        Returns
+        -------
+        ``(suggestions, statuses)`` where ``suggestions`` is the
+        flattened evidence list (legacy shape) and ``statuses`` maps
+        each sub-agent label to one of ``"ok"`` / ``"failed"`` /
+        ``"cancelled"``. The caller decides whether to surface the
+        per-agent status in the run record / SSE stream — keeping the
+        breakdown out of the merge step here so the merge logic stays
+        agnostic of which agents fired.
+
+        Cancellation
+        ------------
+        When ``cancel_token`` is set during the fan-out:
+
+        * not-yet-started futures are dropped via
+          ``ThreadPoolExecutor.shutdown(cancel_futures=True)`` (Python
+          3.9+);
+        * already-running futures keep running until the next phase
+          boundary inside the agent — cooperative cancellation inside
+          the LLM call is a follow-up PR;
+        * any sub-agent that observed the cancel via ``RunCancelled``
+          is marked ``"cancelled"`` instead of ``"failed"`` so the
+          caller can distinguish "user clicked cancel" from "agent
+          crashed".
+
+        ``RunCancelled`` is re-raised after marking statuses so the
+        caller's per-table loop can stop processing further tables.
+        """
         jobs: list[tuple[str, object]] = [("profile", self.profile_agent)]
         if self.rag_agent:
             jobs.append(("rag", self.rag_agent))
         if self.code_agent:
             jobs.append(("code", self.code_agent))
+
+        statuses: dict[str, str] = {label: "skipped" for label, _ in jobs}
         if not jobs:
-            return []
+            return [], statuses
+
         if len(jobs) == 1:
             label, agent = jobs[0]
             try:
-                return agent.run(ctx)
+                result = agent.run(ctx) or []
+                statuses[label] = "ok"
+                return result, statuses
+            except RunCancelled:
+                statuses[label] = "cancelled"
+                raise
             except Exception as exc:
+                statuses[label] = "failed"
                 warn(f"{label.upper()} agent failed: {exc}")
-                return []
+                return [], statuses
 
         out: list[MetadataSuggestion] = []
-        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
-            fut_to_label = {ex.submit(agent.run, ctx): label for label, agent in jobs}
+        cancel_observed = False
+        pool = ThreadPoolExecutor(max_workers=len(jobs))
+        try:
+            fut_to_label = {pool.submit(agent.run, ctx): label for label, agent in jobs}
             for fut in as_completed(fut_to_label):
                 label = fut_to_label[fut]
                 try:
                     out.extend(fut.result() or [])
+                    statuses[label] = "ok"
+                except RunCancelled:
+                    statuses[label] = "cancelled"
+                    cancel_observed = True
                 except Exception as exc:
+                    statuses[label] = "failed"
                     warn(f"{label.upper()} agent failed: {exc}")
-        return out
+        finally:
+            # ``cancel_futures=True`` drops anything that has not started
+            # running yet. Already-running workers keep going — we can
+            # only short-circuit them once cooperative cancel reaches
+            # the LLM call (next PR).
+            pool.shutdown(wait=True, cancel_futures=True)
+
+        # If the caller's token flipped to set during the fan-out, we
+        # must re-raise so the per-table loop stops scheduling further
+        # tables. Otherwise the cancel only takes effect at the next
+        # phase boundary (one extra table of latency).
+        if cancel_observed or (cancel_token is not None and cancel_token.is_set()):
+            raise RunCancelled("cancellation observed during agent fan-out")
+
+        return out, statuses
 
     def _build_context(self, profile: TableProfile) -> AgentContext:
         db_name = self.db.cfg.database or self.db.cfg.project or self.db.cfg.catalog or "N/A"

@@ -81,6 +81,10 @@ class TableProcessor:
         self.auto_apply = auto_apply
         self.interactive_review = interactive_review
         self.cancel_token = cancel_token
+        # Populated by ``_run_agents_and_persist`` once the agent fan-out
+        # returns. Maps sub-agent label → "ok" / "failed" / "cancelled" /
+        # "skipped". Read by Studio SSE / run history when present.
+        self.last_agent_statuses: dict[str, str] = {}
 
     # ── Cancellation ───────────────────────────────────────────────────
 
@@ -286,9 +290,17 @@ class TableProcessor:
             info(f"Code Agent: {num_cols} columns to check against codebase")
 
         t0 = time.monotonic()
-        all_suggestions = self.orch._run_enabled_agents(ctx)
+        all_suggestions, agent_statuses = self.orch._run_enabled_agents(
+            ctx, cancel_token=self.cancel_token
+        )
         t1 = time.monotonic()
         info(f"Agent processing took {t1 - t0:.1f}s")
+        # Stash per-agent statuses on the processor so callers (Studio
+        # SSE, run history persistence) can pivot on them without
+        # threading another return tuple through this layer. Keeping
+        # the field optional means downstream code can continue to
+        # treat ``_run_agents_and_persist`` as a two-tuple.
+        self.last_agent_statuses = agent_statuses
 
         profile_diagnostics = self.orch.profile_agent.consume_diagnostics()
         for message in dict.fromkeys(profile_diagnostics):
