@@ -1594,9 +1594,112 @@ function SearchCodeBox() {
   );
 }
 
+function CodeAnalyzeModal({
+  open,
+  onClose,
+  codeProfile,
+  onJobStarted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  codeProfile: string;
+  onJobStarted: (jobId: string, label: string) => void;
+}) {
+  const [schema, setSchema] = useState("");
+  const [tablesText, setTablesText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const run = useMutation({
+    mutationFn: () => {
+      const tables = tablesText
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return apiFetch<{ job_id: string; tables: string[] }>(
+        "/api/code/analyze",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            schema,
+            tables,
+            code_profile: codeProfile,
+          }),
+        },
+      );
+    },
+    onSuccess: (resp) => {
+      onJobStarted(
+        resp.job_id,
+        `Code Analyze ${codeProfile} (${resp.tables.length} table${
+          resp.tables.length === 1 ? "" : "s"
+        })`,
+      );
+      onClose();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : String(e)),
+  });
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Code Analyze — ${codeProfile}`}
+      description="Run the Code Agent against the cached /code-scan for the listed tables. Results write to ~/.amx/code_agent_results.json — the next /run will pick them up automatically."
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md bg-surface-subtle px-3 py-1.5 text-sm text-ink-muted hover:bg-surface-border"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              run.mutate();
+            }}
+            disabled={!schema.trim() || !tablesText.trim() || run.isPending}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+          >
+            {run.isPending ? "Starting…" : "Run analyze"}
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Schema">
+          <input
+            type="text"
+            value={schema}
+            onChange={(e) => setSchema(e.target.value)}
+            placeholder="e.g. sales"
+            className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+          />
+        </Field>
+        <Field label="Tables (comma- or newline-separated)">
+          <textarea
+            value={tablesText}
+            onChange={(e) => setTablesText(e.target.value)}
+            rows={4}
+            placeholder={"orders\ncustomers\n..."}
+            className="w-full rounded-md border border-surface-border bg-surface px-3 py-2 font-mono text-xs"
+          />
+        </Field>
+        {error && (
+          <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
+            {error}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 function CodeProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [activeOp, setActiveOp] = useState<{ jobId: string; label: string } | null>(null);
 
   const profiles = useQuery({
@@ -1714,6 +1817,15 @@ function CodeProfilesSection() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => setAnalyzing(p.name)}
+                      disabled={!!activeOp}
+                      className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-accent-soft hover:text-accent-ink disabled:opacity-50"
+                      title="Run the Code Agent against /code-scan output for selected tables"
+                    >
+                      Analyze
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setEditing({ name: p.name })}
                       className="rounded-md p-1 text-ink-dim hover:bg-surface-subtle hover:text-ink"
                       title="Edit"
@@ -1759,6 +1871,14 @@ function CodeProfilesSection() {
               : []
           }
           onClose={() => setEditing(null)}
+        />
+      )}
+      {analyzing && (
+        <CodeAnalyzeModal
+          open
+          codeProfile={analyzing}
+          onClose={() => setAnalyzing(null)}
+          onJobStarted={(jobId, label) => setActiveOp({ jobId, label })}
         />
       )}
     </>
