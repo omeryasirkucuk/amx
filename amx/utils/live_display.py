@@ -93,6 +93,11 @@ class LiveDisplay:
 
         self._total_tokens_in: int = 0
         self._total_tokens_out: int = 0
+        # Running USD cost across this session, summed from per-call
+        # ``ModelPrice``-resolved figures by ``add_session_tokens``.
+        # Rendered in the header next to the token total so users see
+        # both pressure dimensions in the same eye-line.
+        self._total_cost_usd: float = 0.0
 
         # Reentrancy counter for ``pause()`` / ``resume()``. Nested
         # contexts (e.g. TableProcessor pauses for human review which
@@ -128,6 +133,7 @@ class LiveDisplay:
         self._session_start = time.monotonic()
         self._total_tokens_in = 0
         self._total_tokens_out = 0
+        self._total_cost_usd = 0.0
         # ``transient=True`` clears the WHOLE live region (header + thinking
         # spinner + pipeline tree) when ``stop()`` runs. Without this, every
         # height change in the renderable left a frame behind in the scroll
@@ -311,10 +317,27 @@ class LiveDisplay:
                 self._activities[idx].tokens_used = tokens_used
         self._refresh()
 
-    def add_session_tokens(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
+    def add_session_tokens(
+        self,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_delta_usd: float = 0.0,
+    ) -> None:
+        """Accumulate one LLM call's tokens + cost into the live header.
+
+        ``cost_delta_usd`` is the freshly-computed USD figure from
+        :func:`amx.llm.pricing.compute_cost` (zero when no price is
+        known for the model). Called by
+        :meth:`amx.utils.token_tracker.TokenTracker.record` right after
+        every LLM round-trip.
+        """
         with self._lock:
             self._total_tokens_in += input_tokens
             self._total_tokens_out += output_tokens
+            try:
+                self._total_cost_usd += float(cost_delta_usd or 0.0)
+            except (TypeError, ValueError):
+                pass
         self._refresh()
 
     # ── Thinking state ────────────────────────────────────────────────────
@@ -394,7 +417,14 @@ class LiveDisplay:
         right = " │ ".join(ctx_parts) if ctx_parts else ""
 
         tokens_total = self._total_tokens_in + self._total_tokens_out
-        tok_str = f"[dim]↓ {tokens_total:,} tokens[/dim]" if tokens_total else ""
+        if tokens_total:
+            cost = self._total_cost_usd
+            if cost > 0:
+                tok_str = f"[dim]↓ {tokens_total:,} tokens · ${cost:,.4f}[/dim]"
+            else:
+                tok_str = f"[dim]↓ {tokens_total:,} tokens[/dim]"
+        else:
+            tok_str = ""
 
         header_text = Text.from_markup(f"  {left}  {right}  {time_str}  {tok_str}")
         return Panel(header_text, box=box.HEAVY, style="dim", height=3)

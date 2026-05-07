@@ -39,6 +39,11 @@ interface RunDetailPayload {
   metrics?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   llm_model?: string | null;
+  /** Provider attached to the LLM model recorded for this run.
+   *  Carried by the backend so the run-detail Cost row can resolve a
+   *  live price lookup without a second round-trip to fetch profile
+   *  metadata. */
+  llm_provider?: string | null;
   duration_sec?: number | null;
   /** DB scope the run was rooted at — the apply path needs these
       to land COMMENT statements on the same database the user
@@ -759,6 +764,7 @@ function SummaryTab({ run }: { run: RunDetailPayload | undefined }) {
       <Card>
         <CardHeader title="Metrics" />
         <CardBody className="space-y-2 text-sm">
+          <CostRow run={run} />
           {Object.entries(m).length === 0 ? (
             <div className="text-ink-dim">No metrics recorded.</div>
           ) : (
@@ -773,6 +779,105 @@ function SummaryTab({ run }: { run: RunDetailPayload | undefined }) {
         </CardBody>
       </Card>
     </div>
+  );
+}
+
+/** Cost summary row inside the Metrics card.
+ *
+ * Reads ``tokens_json.total_cost_usd`` (frozen at run time) for the
+ * default render. The ``Recompute`` button resolves today's price for
+ * the run's (provider, model) and projects the same recorded token
+ * totals against it so users can see "with current prices, this run
+ * would cost Y" without re-running anything.
+ */
+function CostRow({ run }: { run: RunDetailPayload }) {
+  const tokens = (run.tokens_json ?? {}) as Record<string, unknown>;
+  const frozenCost =
+    typeof tokens.total_cost_usd === "number" ? tokens.total_cost_usd : null;
+  const totalTokens =
+    typeof tokens.total_tokens === "number" ? tokens.total_tokens : null;
+  const provider = run.llm_provider ?? "";
+  const model = run.llm_model ?? "";
+  const [liveCost, setLiveCost] = useState<number | null>(null);
+  const [liveSource, setLiveSource] = useState<string>("");
+  const [recomputing, setRecomputing] = useState(false);
+
+  const recompute = async () => {
+    if (!provider || !model || totalTokens == null) return;
+    setRecomputing(true);
+    try {
+      const price = await api.lookupPrice(provider, model);
+      // The API returns rates per 1M tokens. We split tokens evenly
+      // here only as a fallback hint; a more accurate live recompute
+      // would walk records[]. For this card we use the per-record
+      // arrays when available.
+      const records = (tokens.records ?? []) as Array<{
+        prompt_tokens?: number;
+        completion_tokens?: number;
+      }>;
+      let inputTokens = 0;
+      let outputTokens = 0;
+      for (const r of records) {
+        inputTokens += Number(r.prompt_tokens ?? 0);
+        outputTokens += Number(r.completion_tokens ?? 0);
+      }
+      const cost =
+        (inputTokens / 1_000_000) * price.input_per_mtok +
+        (outputTokens / 1_000_000) * price.output_per_mtok;
+      setLiveCost(cost);
+      setLiveSource(price.source);
+    } finally {
+      setRecomputing(false);
+    }
+  };
+
+  if (frozenCost == null && liveCost == null) {
+    return (
+      <Row label="Cost">
+        <span className="text-xs text-ink-dim">
+          {totalTokens != null
+            ? "no cost data — pre-cost run, recompute below"
+            : "—"}
+          {totalTokens != null && (
+            <button
+              type="button"
+              onClick={recompute}
+              disabled={recomputing}
+              className="ml-2 rounded border border-surface-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-ink-muted hover:border-accent hover:text-accent disabled:opacity-50"
+            >
+              {recomputing ? "Recomputing…" : "Recompute"}
+            </button>
+          )}
+        </span>
+      </Row>
+    );
+  }
+
+  const display = liveCost != null ? liveCost : (frozenCost as number);
+  const sourceLabel =
+    liveCost != null
+      ? `live · ${liveSource || "?"}`
+      : "frozen at run time";
+
+  return (
+    <Row label="Cost">
+      <span className="inline-flex items-center gap-2 font-mono text-xs">
+        <span>${display.toFixed(4)}</span>
+        <span className="text-[10px] uppercase tracking-wider text-ink-dim">
+          ({sourceLabel})
+        </span>
+        {provider && model && (
+          <button
+            type="button"
+            onClick={recompute}
+            disabled={recomputing}
+            className="rounded border border-surface-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-ink-muted hover:border-accent hover:text-accent disabled:opacity-50"
+          >
+            {recomputing ? "…" : liveCost != null ? "Refresh" : "Recompute"}
+          </button>
+        )}
+      </span>
+    </Row>
   );
 }
 

@@ -36,9 +36,19 @@ def doctor(
 
 
 @router.get("/usage")
-def usage(window: str = Query(default="7d")) -> dict[str, Any]:
-    """Aggregate token consumption + approximate cost per (provider, model)."""
+def usage(
+    window: str = Query(default="7d"),
+    live: bool = Query(default=False),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Aggregate token consumption + USD cost per (provider, model).
+
+    ``live=true`` recomputes cost against today's prices instead of the
+    frozen-at-runtime values stored in ``analysis_runs.tokens_json``,
+    matching the CLI ``/usage --live`` flag.
+    """
     from amx.cli_support.commands import usage as usage_cli
+    from amx.llm.pricing import compute_cost, lookup_price
     from amx.storage.sqlite_store import history_store
 
     label, window_sec = usage_cli._normalize_window(window)
@@ -48,7 +58,14 @@ def usage(window: str = Query(default="7d")) -> dict[str, Any]:
             "window": label,
             "window_sec": window_sec,
             "rows": [],
-            "totals": {"runs": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "totals": {
+                "runs": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+            },
+            "live": bool(live),
             "message": "History store isn't initialised yet.",
         }
     runs = hs.list_recent_runs(limit=10_000)
@@ -58,9 +75,27 @@ def usage(window: str = Query(default="7d")) -> dict[str, Any]:
     per_model, counted = usage_cli._aggregate_runs(runs)
 
     rows: list[dict[str, Any]] = []
-    totals = {"runs": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    totals = {
+        "runs": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+    }
     for (provider, model), bucket in sorted(per_model.items()):
-        cost = usage_cli._format_cost(model, bucket["input_tokens"], bucket["output_tokens"])
+        if live:
+            price = lookup_price(cfg, provider=provider, model=model)
+            _i, _o, total_cost = compute_cost(
+                prompt_tokens=int(bucket["input_tokens"]),
+                completion_tokens=int(bucket["output_tokens"]),
+                price=price,
+            )
+            cost_known = price.source != "unknown"
+            sources_label = price.source
+        else:
+            total_cost = float(bucket["frozen_cost_usd"])
+            cost_known = bool(bucket["frozen_cost_known"])
+            sources_label = ", ".join(sorted(bucket["sources"])) if bucket["sources"] else ""
         rows.append(
             {
                 "provider": provider,
@@ -69,11 +104,14 @@ def usage(window: str = Query(default="7d")) -> dict[str, Any]:
                 "input_tokens": int(bucket["input_tokens"]),
                 "output_tokens": int(bucket["output_tokens"]),
                 "total_tokens": int(bucket["total_tokens"]),
-                "cost_usd": cost,
+                "cost_usd": float(total_cost) if cost_known else None,
+                "source": sources_label,
             }
         )
         for k in ("runs", "input_tokens", "output_tokens", "total_tokens"):
             totals[k] += int(bucket[k])
+        if cost_known:
+            totals["cost_usd"] += float(total_cost)
 
     return {
         "window": label,
@@ -81,6 +119,7 @@ def usage(window: str = Query(default="7d")) -> dict[str, Any]:
         "counted_runs": counted,
         "rows": rows,
         "totals": totals,
+        "live": bool(live),
     }
 
 

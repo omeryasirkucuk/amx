@@ -3419,30 +3419,50 @@ class UsageCommandTests(unittest.TestCase):
         self.assertEqual(label, "7d")
 
     def test_lookup_pricing_exact_match(self) -> None:
-        from amx.cli_support.commands.usage import _lookup_pricing
+        # Old hardcoded ``_lookup_pricing`` is gone (2026-05); the live
+        # pricing module is the single source of truth. We probe its
+        # bundled fallback so the test stays offline-safe while still
+        # asserting that "ask for gpt-4o-mini, get a known price" works.
+        from amx.llm.pricing import lookup_price, reset_state_for_tests
 
-        pricing = _lookup_pricing("gpt-4o-mini")
-        self.assertIsNotNone(pricing)
-        self.assertEqual(pricing[0], 0.15)
+        reset_state_for_tests()
+        price = lookup_price(None, provider="openai", model="gpt-4o-mini")
+        self.assertNotEqual(price.source, "unknown")
+        self.assertGreater(price.input_per_mtok, 0.0)
 
     def test_lookup_pricing_strips_provider_prefix(self) -> None:
-        from amx.cli_support.commands.usage import _lookup_pricing
+        from amx.llm.pricing import lookup_price, reset_state_for_tests
 
-        # OpenRouter-style namespacing
-        self.assertIsNotNone(_lookup_pricing("openai/gpt-4o"))
-        self.assertIsNotNone(_lookup_pricing("openrouter/openai/gpt-4o"))
+        reset_state_for_tests()
+        # OpenRouter-style namespacing should still resolve via the
+        # candidate-key normalization in ``_normalize_model_id``.
+        self.assertNotEqual(
+            lookup_price(None, provider="openai", model="openai/gpt-4o").source,
+            "unknown",
+        )
+        self.assertNotEqual(
+            lookup_price(None, provider="openrouter", model="openrouter/openai/gpt-4o").source,
+            "unknown",
+        )
 
     def test_lookup_pricing_strips_dated_suffix(self) -> None:
-        from amx.cli_support.commands.usage import _lookup_pricing
+        from amx.llm.pricing import lookup_price, reset_state_for_tests
 
-        # claude-sonnet-4 priced; claude-sonnet-4-20250514 should also resolve
-        self.assertIsNotNone(_lookup_pricing("claude-sonnet-4-20250514"))
+        reset_state_for_tests()
+        # ``claude-sonnet-4`` is in the bundled fallback; the dated
+        # variant ``claude-sonnet-4-20250514`` must still resolve via
+        # suffix stripping.
+        price = lookup_price(None, provider="anthropic", model="claude-sonnet-4-20250514")
+        self.assertNotEqual(price.source, "unknown")
 
-    def test_lookup_pricing_unknown_returns_none(self) -> None:
-        from amx.cli_support.commands.usage import _lookup_pricing
+    def test_lookup_pricing_unknown_returns_zero_with_unknown_source(self) -> None:
+        from amx.llm.pricing import lookup_price, reset_state_for_tests
 
-        self.assertIsNone(_lookup_pricing("totally-not-a-model"))
-        self.assertIsNone(_lookup_pricing(""))
+        reset_state_for_tests()
+        unknown = lookup_price(None, provider="alien", model="totally-not-a-model")
+        self.assertEqual(unknown.source, "unknown")
+        self.assertEqual(unknown.input_per_mtok, 0.0)
+        self.assertEqual(unknown.output_per_mtok, 0.0)
 
     def test_aggregate_runs_groups_by_provider_model(self) -> None:
         from amx.cli_support.commands.usage import _aggregate_runs
@@ -3503,15 +3523,18 @@ class UsageCommandTests(unittest.TestCase):
         self.assertEqual(per, {})
 
     def test_format_cost_for_known_and_unknown_models(self) -> None:
+        # The new helper renders an already-computed USD figure. The
+        # actual computation lives in :func:`amx.llm.pricing.compute_cost`,
+        # which we cover separately in ``tests/test_pricing.py``. Here
+        # we pin only the formatting contract: known + > 0 -> dollars,
+        # known + 0 -> "$0.00", known + sub-0.0001 -> "<$0.0001",
+        # unknown -> em-dash.
         from amx.cli_support.commands.usage import _format_cost
 
-        # gpt-4o is $2.50 input / $10.00 output per 1M tokens.
-        # 1_000_000 in / 500_000 out → $2.50 + $5.00 = $7.50
-        self.assertEqual(_format_cost("gpt-4o", 1_000_000, 500_000), "$7.50")
-        # Unknown model gets em-dash
-        self.assertEqual(_format_cost("totally-fake", 1000, 500), "—")
-        # Sub-cent rounds to "<$0.01"
-        self.assertEqual(_format_cost("gpt-4o-mini", 100, 0), "<$0.01")
+        self.assertEqual(_format_cost(7.50, known=True), "$7.5000")
+        self.assertEqual(_format_cost(0.00009, known=True), "<$0.0001")
+        self.assertEqual(_format_cost(0.0, known=True), "$0.00")
+        self.assertEqual(_format_cost(123.456, known=False), "—")
 
     def test_cmd_usage_with_no_history_store_warns(self) -> None:
         from amx.cli_support.commands.usage import cmd_usage

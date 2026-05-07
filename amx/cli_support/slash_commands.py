@@ -237,6 +237,17 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "llm",
         "Show/set LLM output token budget (/max-tokens [N]) — reasoning models keep their floor",
     ),
+    SlashCommand(
+        "/cost",
+        "llm",
+        "Show/set per-1M-token cost override for the active profile "
+        "(/cost [<input> <output> | reset])",
+    ),
+    SlashCommand(
+        "/refresh-prices",
+        "llm",
+        "Re-fetch LLM prices from LiteLLM + OpenRouter (24h cache)",
+    ),
     # Batching (throughput)
     SlashCommand(
         "/llm-batch-size", "llm", "Show/set number of columns per LLM call (/llm-batch-size [N])"

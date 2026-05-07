@@ -238,7 +238,7 @@ def run_equivalence_pass(
             continue
 
         with contextlib.suppress(Exception):
-            tracker.record("equivalence_agent", 0, result.usage)
+            tracker.record_for("equivalence_agent", 0, llm, result.usage)
 
         raw = (result.content or "").strip()
         if not raw:

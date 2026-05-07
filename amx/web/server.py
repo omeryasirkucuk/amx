@@ -30,6 +30,7 @@ from amx.web.routers import (
     history,
     live_db,
     pending,
+    pricing,
     profiles,
     rerun,
     runs,
@@ -109,6 +110,7 @@ def create_app(
     app.include_router(system_ops.router)
     app.include_router(code_ops.router)
     app.include_router(generate.router)
+    app.include_router(pricing.router)
     app.include_router(rerun.router)
 
     # Re-Run snapshots are short-lived (worker deletes them in finally).
