@@ -813,6 +813,29 @@ function ResultsTab({
   const queryClient = useQueryClient();
   const toast = useToast();
   const [activeApplyJob, setActiveApplyJob] = useState<string | null>(null);
+  // Old runs (pre-PR #224) didn't persist database/catalog onto the
+  // run row, so apply used to fall back to the active profile's
+  // default DB and produce ``schema does not exist`` errors when the
+  // active profile pinned a different DB than the run was actually
+  // scoped to. Let the user override here when the run's scope is
+  // missing — defaults to the persisted value when present.
+  const [overrideDatabase, setOverrideDatabase] = useState<string>(
+    scope.database ?? "",
+  );
+  // Catalog override is reserved for Databricks/BigQuery profiles; the
+  // run-detail picker focuses on database (Postgres-shape) for now,
+  // since that's where the real-world breakage occurred. Catalog stays
+  // pinned to whatever the run row already has.
+  const [overrideCatalog] = useState<string>(scope.catalog ?? "");
+  const dbCandidates = useQuery({
+    queryKey: ["live", "databases", scope.db_profile],
+    queryFn: () =>
+      apiFetch<{ databases: string[] }>(
+        `/api/live/databases?profile=${encodeURIComponent(scope.db_profile ?? "")}`,
+      ),
+    enabled: !!scope.db_profile && !scope.database,
+    retry: false,
+  });
 
   const pending = useQuery({
     queryKey: ["pending"],
@@ -831,20 +854,28 @@ function ResultsTab({
   }, [pending.data]);
 
   const queueApply = useMutation({
-    mutationFn: () =>
-      apiFetch<{ job_id: string; status: string }>("/api/pending/apply", {
-        method: "POST",
-        body: JSON.stringify({
-          // Pin the apply to the run's own scope. Without this the
-          // worker falls back to cfg.active_db_profile + its pinned
-          // database, which produces ``schema "X" does not exist``
-          // errors when the active profile points elsewhere than
-          // the database the run was rooted in.
-          db_profile: scope.db_profile ?? undefined,
-          database: scope.database ?? undefined,
-          catalog: scope.catalog ?? undefined,
-        }),
-      }),
+    mutationFn: () => {
+      // Use the persisted scope when available; otherwise fall back
+      // to the override picker the user filled out for old runs.
+      const effDb = (scope.database || overrideDatabase || "").trim();
+      const effCat = (scope.catalog || overrideCatalog || "").trim();
+      return apiFetch<{ job_id: string; status: string }>(
+        "/api/pending/apply",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            // Pin the apply to the run's own scope. Without this the
+            // worker falls back to cfg.active_db_profile + its pinned
+            // database, which produces ``schema "X" does not exist``
+            // errors when the active profile points elsewhere than
+            // the database the run was rooted in.
+            db_profile: scope.db_profile ?? undefined,
+            database: effDb || undefined,
+            catalog: effCat || undefined,
+          }),
+        },
+      );
+    },
     onSuccess: (result) => {
       setActiveApplyJob(result.job_id);
       toast.push({
@@ -975,6 +1006,16 @@ function ResultsTab({
         : "Nothing to apply"
       : `Apply pending queue (${queuedCount})`;
 
+  // Apply needs a database (or catalog for 3-level backends). Old
+  // runs that didn't persist this on the row become un-appliable
+  // unless the user names the target — block the button until they do.
+  const hasDatabaseScope = !!(
+    (scope.database && scope.database.trim()) ||
+    overrideDatabase.trim() ||
+    (scope.catalog && scope.catalog.trim()) ||
+    overrideCatalog.trim()
+  );
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -990,12 +1031,60 @@ function ResultsTab({
           size="md"
           leadingIcon={<PlayCircle size={14} />}
           loading={queueApply.isPending}
-          disabled={!!activeApplyJob || nothingToApply || queueApply.isPending}
+          disabled={
+            !!activeApplyJob ||
+            nothingToApply ||
+            queueApply.isPending ||
+            !hasDatabaseScope
+          }
           onClick={() => queueApply.mutate()}
+          title={
+            !hasDatabaseScope
+              ? "Pick a target database below — this run didn't capture one."
+              : undefined
+          }
         >
           {applyLabel}
         </Button>
       </div>
+      {!scope.database && !scope.catalog && scope.db_profile && (
+        <Card>
+          <CardBody className="space-y-2 px-4 py-3 text-xs">
+            <p className="text-ink-muted">
+              This run didn't capture the target database (older run, or
+              applied before PR #224). Pick the database the schemas live
+              in so apply targets it directly — otherwise the COMMENTs
+              would land in the active profile's default and produce
+              <span className="font-mono"> schema "…" does not exist</span>{" "}
+              errors.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-ink-dim">Profile:</span>
+              <span className="font-mono">{scope.db_profile}</span>
+              <span className="text-ink-dim">·</span>
+              <span className="text-ink-dim">Database:</span>
+              <input
+                type="text"
+                value={overrideDatabase}
+                onChange={(e) => setOverrideDatabase(e.target.value)}
+                placeholder="e.g. car_retails_db"
+                list={`db-suggestions-${runId}`}
+                className="rounded-md border border-surface-border bg-surface px-2 py-1 font-mono text-xs"
+              />
+              <datalist id={`db-suggestions-${runId}`}>
+                {(dbCandidates.data?.databases ?? []).map((d) => (
+                  <option key={d} value={d} />
+                ))}
+              </datalist>
+              {(dbCandidates.data?.databases ?? []).length > 0 && (
+                <span className="text-[10px] text-ink-dim">
+                  ({dbCandidates.data!.databases.length} reachable)
+                </span>
+              )}
+            </div>
+          </CardBody>
+        </Card>
+      )}
 
       {activeApplyJob && (
         <JobProgress
