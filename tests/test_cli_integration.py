@@ -101,6 +101,78 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         clear_pending.assert_called_once()
         fake_history.record_applied.assert_called_once_with(17)
 
+    def test_analyze_apply_dry_run_does_not_write(self) -> None:
+        """``--dry-run`` previews SQL templates without touching the
+        database. Pending file must stay intact, no record_applied
+        calls fire, and the live DB writeback path is bypassed."""
+        runner = CliRunner()
+        fake_history = Mock()
+        pending = [
+            SimpleNamespace(
+                table="orders",
+                column="id",
+                final_description="Order identifier",
+                result_id=17,
+            )
+        ]
+
+        class FakeDatabaseConnector:
+            def __init__(self, cfg):
+                self.cfg = cfg
+                self.backend = getattr(cfg, "backend", "unknown")
+
+            def test_connection(self) -> bool:
+                return True
+
+        previewed: list[tuple[str, str]] = []
+
+        def fake_apply_review_results_to_db(db, rows, **kwargs):
+            # Real implementation runs the preview loop; the test
+            # double simulates one ``preview`` callback per row so the
+            # CLI's ``Dry-run complete: N comment(s) previewed``
+            # message can be asserted.
+            assert kwargs.get("dry_run") is True, "dry_run flag must reach the orchestrator"
+            on_progress = kwargs.get("on_progress")
+            for idx, row in enumerate(rows, start=1):
+                previewed.append((row.table, row.column))
+                if on_progress is not None:
+                    on_progress(
+                        row,
+                        "preview",
+                        idx,
+                        len(rows),
+                        f"COMMENT ON COLUMN {row.table}.{row.column} IS :cmt",
+                    )
+            return 0
+
+        with (
+            patch("amx.pending_review.load_pending", return_value=pending),
+            patch("amx.pending_review.clear_pending") as clear_pending,
+            patch("amx.db.connector.DatabaseConnector", FakeDatabaseConnector),
+            patch(
+                "amx.agents.orchestrator.apply_review_results_to_db",
+                side_effect=fake_apply_review_results_to_db,
+            ),
+            patch("amx.cli_support.commands.run.history_store", return_value=fake_history),
+        ):
+            result = runner.invoke(
+                main,
+                ["--config", "test-config.yml", "analyze", "apply", "--dry-run"],
+                env={"AMX_SESSION_CHILD": "1"},
+                catch_exceptions=False,
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Preview pending metadata writes (dry-run)", result.output)
+        self.assertIn("Dry-run complete", result.output)
+        self.assertIn("COMMENT ON COLUMN orders.id IS :cmt", result.output)
+        # Pending file must NOT be cleared — dry-run is non-destructive.
+        clear_pending.assert_not_called()
+        # No record_applied calls — we never wrote anything.
+        fake_history.record_applied.assert_not_called()
+        # Adapter was consulted for every row in the pending list.
+        self.assertEqual(previewed, [("orders", "id")])
+
     def test_analyze_run_routes_through_cli_analyze_flow_module(self) -> None:
         runner = CliRunner()
 
