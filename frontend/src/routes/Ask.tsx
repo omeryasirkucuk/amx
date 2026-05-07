@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, Plus, Sparkles } from "lucide-react";
+import { CircleStop, Plus, Settings as SettingsIcon, Sparkles } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import PageHeader from "../components/PageHeader";
 import AskChat, { type SubmittedTurn } from "../components/AskChat";
 import { Card, CardBody, CardHeader } from "../components/Card";
-import { apiFetch } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import { Skeleton, Tooltip, useToast } from "../components/ui";
 
@@ -59,6 +60,17 @@ export default function Ask() {
   const [seedToken, setSeedToken] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<number | null>(null);
+
+  // Pre-flight: gate the chat surface on a configured LLM. Without
+  // this the user can type a question, click submit, and only then
+  // get a 412 ``configure-llm`` error — historically that error was
+  // rendered as ``[object Object]`` because apiFetch couldn't parse
+  // FastAPI's nested-detail shape. Surfacing the gap upfront with a
+  // single CTA avoids the dead-end submit entirely.
+  const ctx = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
+  const llmReady = !!(
+    ctx.data?.llm_provider && ctx.data?.llm_model && ctx.data?.active_llm_profile
+  );
 
   const sessions = useQuery({
     queryKey: ["ask-sessions"],
@@ -237,25 +249,76 @@ export default function Ask() {
           </CardBody>
         </Card>
 
-        <AskChat
-          selectedSessionId={selectedSessionId}
-          seedTurns={seedTurns}
-          seedToken={seedToken}
-          onSessionAssigned={handleSessionAssigned}
-          onResumeStale={() => {
-            // The AskChat detected a stored "in-flight" job that has
-            // already terminated (worker finished while the user was
-            // away, or the CLI process restarted). Pull the session
-            // detail again so the assistant turn the worker just
-            // persisted lands in the chat history.
-            if (selectedSessionId != null) {
-              void openSession(selectedSessionId);
-            } else {
-              queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+        {ctx.isLoading ? (
+          <Card>
+            <CardBody className="space-y-2 px-6 py-8">
+              <Skeleton className="h-3 w-1/3" />
+              <Skeleton className="h-3 w-2/3" />
+            </CardBody>
+          </Card>
+        ) : llmReady ? (
+          <AskChat
+            selectedSessionId={selectedSessionId}
+            seedTurns={seedTurns}
+            seedToken={seedToken}
+            onSessionAssigned={handleSessionAssigned}
+            onResumeStale={() => {
+              // The AskChat detected a stored "in-flight" job that has
+              // already terminated (worker finished while the user was
+              // away, or the CLI process restarted). Pull the session
+              // detail again so the assistant turn the worker just
+              // persisted lands in the chat history.
+              if (selectedSessionId != null) {
+                void openSession(selectedSessionId);
+              } else {
+                queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+              }
+            }}
+          />
+        ) : (
+          <NoLlmProfileCard
+            title="Configure an LLM before asking"
+            description={
+              ctx.data?.llm_provider
+                ? "The active LLM profile has no model selected — Studio needs both a provider and a model to answer."
+                : "No LLM profile is active yet. Add one in Settings → LLM and Studio will route questions through it."
             }
-          }}
-        />
+          />
+        )}
       </div>
     </>
+  );
+}
+
+/** Friendly inline panel rendered in place of the chat surface (or
+ *  the run form) when the active LLM profile is missing or
+ *  incomplete. The CTA deep-links to Settings → LLM so the user is
+ *  one click away from fixing it. */
+function NoLlmProfileCard({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <Card>
+      <CardBody className="px-6 py-8">
+        <div className="flex items-start gap-3">
+          <SettingsIcon size={18} className="mt-0.5 flex-none text-warning" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <p className="text-sm font-semibold text-ink">{title}</p>
+            <p className="text-sm text-ink-muted">{description}</p>
+            <Link
+              to="/settings?tab=llm"
+              className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-soft transition hover:opacity-90"
+            >
+              <SettingsIcon size={12} />
+              Open LLM settings
+            </Link>
+          </div>
+        </div>
+      </CardBody>
+    </Card>
   );
 }

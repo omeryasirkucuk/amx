@@ -46,8 +46,32 @@ export async function apiFetch<T>(
     let hint: string | undefined;
     try {
       const parsed = JSON.parse(text);
-      detail = String(parsed.detail ?? text);
-      hint = parsed.hint ? String(parsed.hint) : undefined;
+      // FastAPI puts HTTPException payload under ``detail``. When the
+      // route raises ``HTTPException(detail=str)`` the body is
+      // ``{detail: "..."}``; when the route raises with a dict
+      // (e.g. /api/ask 412 ships ``{message, hint}`` so the SPA can
+      // render a "Open LLM settings" CTA) the body is
+      // ``{detail: {message, hint}}``. Without this branch the dict
+      // path stringifies to ``[object Object]`` and the hint never
+      // surfaces.
+      const rawDetail = parsed.detail;
+      if (rawDetail && typeof rawDetail === "object") {
+        const message = (rawDetail as { message?: unknown }).message;
+        const detailHint = (rawDetail as { hint?: unknown }).hint;
+        detail =
+          typeof message === "string" && message
+            ? message
+            : JSON.stringify(rawDetail);
+        if (typeof detailHint === "string" && detailHint) {
+          hint = detailHint;
+        }
+      } else if (rawDetail != null) {
+        detail = String(rawDetail);
+      }
+      // Some endpoints also include hint at the top level (legacy).
+      if (!hint && parsed.hint) {
+        hint = String(parsed.hint);
+      }
     } catch {
       /* response wasn't JSON; keep the raw text */
     }
