@@ -1,0 +1,64 @@
+# Dependabot configuration.
+#
+# All updates open as PRs against main; merging is manual so a human
+# reviews any version bump before it lands. Commit-message prefixes
+# use ``build`` / ``ci`` — both are allowed by ``commit_parser_options``
+# in pyproject.toml but neither is in ``minor_tags`` or ``patch_tags``,
+# so dependabot PRs do not trigger a python-semantic-release version
+# bump on merge.
+
+version: 2
+updates:
+  # Python runtime + dev/test/perf extras (everything in pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  # Studio SPA dependencies under frontend/
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "javascript"
+    groups:
+      npm-deps:
+        patterns: ["*"]
+
+  # GitHub Actions used in .github/workflows/*
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
