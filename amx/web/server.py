@@ -178,9 +178,7 @@ def create_app(
         if full_path:
             candidate = root / full_path
             if candidate.is_file():
-                return FileResponse(
-                    candidate, headers={"Cache-Control": _NO_CACHE_HEADER}
-                )
+                return FileResponse(candidate, headers={"Cache-Control": _NO_CACHE_HEADER})
         index = root / "index.html"
         if index.is_file():
             return FileResponse(index, headers={"Cache-Control": _NO_CACHE_HEADER})
