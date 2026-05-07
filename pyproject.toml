@@ -87,6 +87,11 @@ docs = [
     "pypdf>=4.0",
     "openpyxl>=3.1",
     "python-docx>=1.1",
+    # CVE-2026-41066 was disclosed against lxml<6.1.0 in 2026-05.
+    # ``unstructured`` pulls lxml transitively without pinning a
+    # secure floor, so we pin one here. Drop this constraint once
+    # ``unstructured``'s own pin catches up.
+    "lxml>=6.1.0",
 ]
 studio = [
     "fastapi>=0.110",
@@ -173,6 +178,9 @@ all = [
     "pypdf>=4.0",
     "openpyxl>=3.1",
     "python-docx>=1.1",
+    # CVE-2026-41066 floor — see comment on the same pin in the
+    # ``docs`` extra above.
+    "lxml>=6.1.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "sse-starlette>=2.0",

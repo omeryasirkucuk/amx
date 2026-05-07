@@ -63,6 +63,7 @@ const NAMED_EVENTS = [
   "tool.result",
   "answer.final",
   "tokens",
+  "tokens.snapshot",
 ] as const;
 
 export function useEventSource({
