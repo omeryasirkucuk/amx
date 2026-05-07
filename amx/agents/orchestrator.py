@@ -274,6 +274,7 @@ def apply_review_results_to_db(
     on_failed: Callable[[ReviewResult, Exception], None] | None = None,
     on_progress: Callable[[ReviewResult, str, int, int, str], None] | None = None,
     cancel_token: threading.Event | None = None,
+    dry_run: bool = False,
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database.
 
@@ -282,6 +283,15 @@ def apply_review_results_to_db(
     transaction commits whatever was applied so far — matching the
     CLI's Ctrl-C behaviour, and avoiding a multi-minute rollback that
     would discard the user's already-confirmed work.
+
+    ``dry_run=True`` short-circuits before any DB connection is opened.
+    Each row that *would* be applied is reported through ``on_progress``
+    with ``status="preview"`` and a ``detail`` string carrying the SQL
+    template the adapter would execute (with the comment text bound
+    via the ``:cmt`` parameter, never inlined). The function still
+    returns ``0`` because nothing was actually applied — callers can
+    distinguish "preview" from "applied" by inspecting the progress
+    callbacks, not by trusting the return value.
     """
     applied = 0
     # Filter out fallback placeholders BEFORE we hit the DB. They're a UI
@@ -296,6 +306,41 @@ def apply_review_results_to_db(
     ]
     if not pending:
         return 0
+
+    if dry_run:
+        # Pure preview path — no transaction, no DB writes. We only
+        # render the SQL template each row would execute and forward
+        # it to the progress callback so the caller can show users
+        # exactly what /apply would do.
+        total_preview = len(pending)
+        for idx, r in enumerate(pending, start=1):
+            if cancel_token is not None and cancel_token.is_set():
+                break
+            try:
+                kind = AssetKind(r.asset_kind) if r.asset_kind else AssetKind.TABLE
+            except ValueError:
+                kind = AssetKind.TABLE
+            try:
+                sql = db.preview_comment_sql(
+                    schema=r.schema,
+                    table=r.table,
+                    column=r.column,
+                    asset_kind=kind,
+                )
+            except Exception as exc:
+                # Adapter glue should never raise from preview_comment_sql,
+                # but if it does we tag the row as a preview-failure and
+                # keep going — partial preview is still useful to the user.
+                if on_progress is not None:
+                    on_progress(r, "preview_failed", idx, total_preview, str(exc))
+                continue
+            detail = sql or "(unsupported by backend — would be skipped)"
+            if on_progress is not None:
+                on_progress(r, "preview", idx, total_preview, detail)
+        # Caller receives 0 — nothing was written. Use the progress
+        # callback to count "would-apply" rows when needed.
+        return 0
+
     with db.engine.begin() as conn:
         total = len(pending)
         index = 0

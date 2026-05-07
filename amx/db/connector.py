@@ -1176,6 +1176,52 @@ class DatabaseConnector:
         final_sql, params = self._adapter.comment_sql_with_params(stmt, comment)
         conn.execute(text(final_sql), params)
 
+    def preview_comment_sql(
+        self,
+        *,
+        schema: str,
+        table: str = "",
+        column: str | None = None,
+        asset_kind: AssetKind = AssetKind.TABLE,
+    ) -> str | None:
+        """Return the SQL template that ``apply_comment`` would execute.
+
+        Used by dry-run flows to show users what would be written
+        without touching the database. Returns ``None`` when the
+        active backend cannot accept a comment for the requested
+        asset kind (mirrors the ``UnsupportedDatabaseOperation``
+        branches in :meth:`apply_comment`).
+
+        The returned string still contains the ``:cmt`` parameter
+        placeholder — the comment text is intentionally not inlined
+        so dry-run preview never has to escape user-provided strings
+        into a SQL literal.
+        """
+        if asset_kind == AssetKind.SCHEMA:
+            if not self.capabilities.schema_comments:
+                return None
+            return self._adapter.set_schema_comment_sql(schema)
+        if asset_kind == AssetKind.DATABASE:
+            if not self.capabilities.database_comments:
+                return None
+            return self._adapter.set_database_comment_sql()
+        if column is None:
+            keyword = asset_kind.comment_keyword
+            if keyword not in self.capabilities.comment_asset_keywords:
+                return None
+            if asset_kind == AssetKind.VIEW and not self.capabilities.view_comments:
+                return None
+            if (
+                asset_kind == AssetKind.MATERIALIZED_VIEW
+                and not self.capabilities.materialized_view_comments
+            ):
+                return None
+            return self._adapter.set_table_comment_sql(schema, table, keyword)
+        # Column comment
+        if not self.capabilities.column_comments:
+            return None
+        return self._adapter.set_column_comment_sql(schema, table, column)
+
     def apply_column_comments_batch(
         self,
         schema: str,
