@@ -57,7 +57,20 @@ def test_index_is_not_authenticated(client) -> None:
     without a token."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "AMX" in response.text and "Agentic Metadata Extractor" in response.text
+    assert "AMX Studio" in response.text
+
+
+def test_index_html_is_no_cache(client) -> None:
+    """``index.html`` must not be cached by the browser. Vite's
+    content-addressed asset chunks live behind hashed filenames; if
+    the SPA shell is cached, dynamic ``import()`` calls later 404 on
+    the previous chunk hashes and the page hard-crashes with
+    ``Failed to fetch dynamically imported module``. Pin the no-cache
+    contract so a future server tweak cannot regress it silently.
+    """
+    response = client.get("/")
+    cache_control = response.headers.get("cache-control", "")
+    assert "no-cache" in cache_control or "no-store" in cache_control
 
 
 def test_spa_route_falls_back_to_index(client) -> None:
@@ -65,7 +78,7 @@ def test_spa_route_falls_back_to_index(client) -> None:
     not a 404, so the React Router can take over."""
     response = client.get("/runs/42")
     assert response.status_code == 200
-    assert "AMX" in response.text and "Agentic Metadata Extractor" in response.text
+    assert "AMX Studio" in response.text
 
 
 def test_generate_token_is_unique() -> None:
