@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
+import os
 import sys
 import uuid
 from contextvars import ContextVar
@@ -25,6 +27,39 @@ from typing import Any
 
 LOG_DIR = Path.home() / ".amx" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Log rotation ─────────────────────────────────────────────────────
+#
+# Long-running Studio sessions used to grow ``~/.amx/logs/amx.log``
+# without bound. The rotating handler caps the active file at
+# ``LOG_MAX_BYTES`` and keeps ``LOG_BACKUP_COUNT`` archives alongside
+# it, so the on-disk footprint is bounded at roughly
+# ``LOG_MAX_BYTES * (1 + LOG_BACKUP_COUNT)``.
+#
+# Defaults are conservative — 10 MB × 5 archives ≈ 60 MB ceiling — and
+# overridable per-environment via ``AMX_LOG_MAX_BYTES`` and
+# ``AMX_LOG_BACKUP_COUNT`` for users who want more retained history or
+# tighter caps. Rotation is on-write so the active file is always
+# ``amx.log``; archives become ``amx.log.1`` … ``amx.log.N``.
+
+_DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+_DEFAULT_LOG_BACKUP_COUNT = 5
+
+
+def _int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    """Read a non-negative int from the environment, fall back on parse errors."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+LOG_MAX_BYTES = _int_env("AMX_LOG_MAX_BYTES", _DEFAULT_LOG_MAX_BYTES, minimum=1024)
+LOG_BACKUP_COUNT = _int_env("AMX_LOG_BACKUP_COUNT", _DEFAULT_LOG_BACKUP_COUNT, minimum=0)
 
 # Written when the profile agent cannot parse an LLM reply (debugging).
 LAST_PROFILE_RESPONSE_FILE = LOG_DIR / "last_profile_agent_response.txt"
@@ -140,7 +175,18 @@ def get_logger(name: str) -> logging.Logger:
         # (cp1252), and any log message containing →, —, … — including
         # ones produced by the human formatter itself — raises
         # UnicodeEncodeError on emit.
-        fh = logging.FileHandler(LOG_DIR / "amx.log", encoding="utf-8")
+        #
+        # ``RotatingFileHandler`` caps the active log at
+        # ``LOG_MAX_BYTES`` and keeps ``LOG_BACKUP_COUNT`` archives.
+        # Set ``LOG_BACKUP_COUNT=0`` to keep one bounded file with no
+        # rollovers (matches the legacy single-file behaviour while
+        # still capping disk usage).
+        fh = logging.handlers.RotatingFileHandler(
+            LOG_DIR / "amx.log",
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(JsonFormatter())
         logger.addHandler(fh)
@@ -149,3 +195,42 @@ def get_logger(name: str) -> logging.Logger:
         sh.setFormatter(_human_fmt)
         logger.addHandler(sh)
     return logger
+
+
+# ── Structured events ────────────────────────────────────────────────
+
+
+def log_event(event_type: str, /, **fields: Any) -> None:
+    """Write a structured event line to the rotating JSON log.
+
+    Each call emits one ``INFO``-level record on the ``amx.events``
+    logger. ``JsonFormatter`` already serialises ``ts``, ``level``,
+    ``logger``, ``request_id``, and the rendered message; the message
+    itself is the JSON-encoded ``{event, ...fields}`` payload so log
+    shippers can pivot on the event type without re-parsing the text.
+
+    This helper is intentionally thin and free of subscribers — it only
+    writes to the rotating file. Real-time fan-out for AMX Studio
+    continues to flow through :mod:`amx.web.progress_bus` (SSE).
+
+    Examples
+    --------
+    >>> log_event("run.start", profile="prod_pg", scope="public.transactions",
+    ...           backend="postgresql", model="claude-opus-4-7")
+    >>> log_event("run.cancellation.requested", run_id="abcd1234")
+    >>> log_event("run.agent.failed", run_id="abcd1234", agent="rag",
+    ...           reason="timeout")
+
+    Parameters
+    ----------
+    event_type:
+        Dot-separated event name (e.g. ``run.start``,
+        ``run.agent.failed``, ``run.cancellation.completed``).
+    fields:
+        JSON-serialisable key/value pairs describing the event.
+    """
+    logger = get_logger("events")
+    payload: dict[str, Any] = {"event": event_type}
+    if fields:
+        payload.update(fields)
+    logger.info(json.dumps(payload, ensure_ascii=False, default=str))
