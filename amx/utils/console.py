@@ -180,6 +180,25 @@ def info(text: str) -> None:
     console.print(f"[info]ℹ  {_markup_escape(text)}[/info]")
 
 
+def info_styled(label: str, value: str, *, value_style: str = "bold #fb923c") -> None:
+    """``info()`` with the *value* visually emphasized.
+
+    Renders ``ℹ  <label>: <styled value>``. Both ``label`` and ``value``
+    are :func:`escape`'d so user-controlled substrings (profile names,
+    DB identifiers, etc.) cannot inject Rich markup.
+
+    Use this instead of ``info(f"... [bold]{x}[/]")`` — the plain
+    :func:`info` helper escapes the whole string and turns those tags
+    into literal text that leaks to the terminal.
+    """
+    if is_quiet():
+        return
+    console.print(
+        f"[info]ℹ  {_markup_escape(label)}: "
+        f"[{value_style}]{_markup_escape(value)}[/{value_style}][/info]"
+    )
+
+
 def info_markdown(text: str) -> None:
     """Render an LLM-style answer with markdown (bold, code, tables, lists).
 

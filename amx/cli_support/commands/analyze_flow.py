@@ -18,6 +18,7 @@ from amx.utils.console import (
     error,
     heading,
     info,
+    info_styled,
     render_table,
     step_spinner,
     warn,
@@ -145,7 +146,7 @@ def _maybe_modify_profiles_before_run(
     if db_names:
         db_choice = ask_choice("Select DB profile", db_names, default=cfg.active_db_profile)
         cfg.set_active_db_profile(db_choice)
-        info(f"Active DB: [bold #fb923c]{db_choice}[/]")
+        info_styled("Active DB", db_choice)
         db = DatabaseConnector(cfg.db)
         with step_spinner("Testing new database connection..."):
             if not db.test_connection():
@@ -156,7 +157,7 @@ def _maybe_modify_profiles_before_run(
     if llm_names:
         llm_choice = ask_choice("Select LLM profile", llm_names, default=cfg.active_llm_profile)
         cfg.set_active_llm_profile(llm_choice)
-        info(f"Active LLM: [bold #fb923c]{llm_choice}[/]")
+        info_styled("Active LLM", llm_choice)
         llm = LLMProvider(cfg.llm)
 
     doc_names = list(cfg.doc_profiles.keys())
@@ -168,7 +169,7 @@ def _maybe_modify_profiles_before_run(
             default=cfg.active_doc_profile or DISABLED_PROFILE,
         )
         cfg.active_doc_profile = doc_choice
-        info(f"Active Docs: [bold #fb923c]{doc_choice}[/]")
+        info_styled("Active Docs", doc_choice)
 
     code_names = list(cfg.code_profiles.keys())
     if code_names:
@@ -179,7 +180,7 @@ def _maybe_modify_profiles_before_run(
             default=cfg.active_code_profile or DISABLED_PROFILE,
         )
         cfg.active_code_profile = code_choice
-        info(f"Active Code: [bold #fb923c]{code_choice}[/]")
+        info_styled("Active Code", code_choice)
 
     cfg.save()
     info("Profile selections saved to config.yml.")

@@ -33,6 +33,7 @@ from amx.utils.console import (
     error,
     info,
     info_markdown,
+    info_styled,
     render_table,
     success,
     warn,
@@ -815,7 +816,7 @@ def _interactive_sync_scope(
             default=cfg.active_db_profile or sorted(cfg.db_profiles.keys())[0],
         )
         cfg.set_active_db_profile(selected)
-        info(f"Active DB: [bold #fb923c]{selected}[/]")
+        info_styled("Active DB", selected)
     db = DatabaseConnector(cfg.db)
     scope = _finalize_scope(
         cfg,

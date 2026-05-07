@@ -19,6 +19,7 @@ from amx.utils.console import (
     error,
     heading,
     info,
+    info_styled,
     render_table,
     success,
     warn,
@@ -218,8 +219,8 @@ def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
     """Show or set the LLM sampling temperature for the active profile."""
     if not rest:
         current = getattr(cfg.llm, "temperature", 0.2)
-        info(f"Current LLM temperature: [bold]{current:.2f}[/]")
-        info("Run [#22d3ee]/temperature <value>[/#22d3ee] to change (e.g. 0.7). Range: 0.0-2.0.")
+        info_styled("Current LLM temperature", f"{current:.2f}", value_style="bold")
+        info("Run /temperature <value> to change (e.g. 0.7). Range: 0.0-2.0.")
         return
 
     try:
