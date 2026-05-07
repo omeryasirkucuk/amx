@@ -653,4 +653,192 @@ def register_history_commands(
 
         _mark_run_success()
 
+    @history.command("rollback")
+    @click.argument("run_id", type=int)
+    @click.option(
+        "--yes",
+        "-y",
+        "skip_confirm",
+        is_flag=True,
+        default=False,
+        help="Skip the confirmation prompt (scripted use).",
+    )
+    @pass_config
+    def history_rollback(cfg: AMXConfig, run_id: int, skip_confirm: bool) -> None:
+        """Restore the COMMENTs that ``run_id`` overwrote.
+
+        Replays ``apply_events`` rows for ``RUN_ID`` in **reverse**
+        order, writing each row's ``old_comment`` back to the
+        database via ``db.apply_comment``. Rows whose ``old_comment``
+        is ``None`` (the audit row never captured the prior text —
+        adapter without a read API, or the pre-write read failed)
+        are skipped with a warning, **not** silently overwritten
+        with garbage.
+
+        DBA-written comments are restored verbatim because the audit
+        log records "what was on the asset before the apply",
+        independent of who originally wrote it.
+        """
+        from amx.db.connector import AssetKind, DatabaseConnector
+
+        hs = history_store()
+        if hs is None:
+            error(
+                "History store isn't initialized; nothing to roll back. "
+                "Run `/setup` or `/history-store enable` first."
+            )
+            log_event(
+                event_type="history_rollback",
+                status="failed",
+                command="history.rollback",
+                details={"run_id": run_id, "reason": "no_history_store"},
+            )
+            return
+
+        try:
+            events = hs.list_apply_events(run_id=run_id, limit=10_000)
+        except Exception as exc:
+            error(f"Could not read apply_events for run #{run_id}: {exc}")
+            log_event(
+                event_type="history_rollback",
+                status="failed",
+                command="history.rollback",
+                details={"run_id": run_id, "reason": "list_failed", "error": str(exc)},
+            )
+            return
+
+        if not events:
+            warn(
+                f"No apply events recorded for run #{run_id}. "
+                "Either the run never wrote anything, or it predates the audit log."
+            )
+            log_event(
+                event_type="history_rollback",
+                status="skipped",
+                command="history.rollback",
+                details={"run_id": run_id, "reason": "no_events"},
+            )
+            return
+
+        restorable = [e for e in events if e.get("old_comment") is not None]
+        skipped = [e for e in events if e.get("old_comment") is None]
+
+        heading(f"Rollback run #{run_id}")
+        info(
+            f"Found {len(events)} apply event(s); "
+            f"{len(restorable)} restorable, {len(skipped)} skipped (original unknown)."
+        )
+        if restorable:
+            preview_rows = []
+            for e in restorable[:10]:
+                asset = ".".join(
+                    p
+                    for p in (e.get("schema_name"), e.get("table_name"), e.get("column_name"))
+                    if p
+                )
+                preview_rows.append(
+                    [
+                        asset,
+                        (e.get("new_comment") or "")[:48],
+                        (e.get("old_comment") or "")[:48],
+                    ]
+                )
+            render_table(
+                "Will restore (sample)" if len(restorable) > 10 else "Will restore",
+                ["Asset", "Current (will be replaced)", "Restoring to"],
+                preview_rows,
+            )
+
+        if not restorable:
+            warn(
+                "Nothing to restore. All events have ``old_comment=None`` — "
+                "the original text was never captured (apply ran before "
+                "PR-12b2, or the adapter doesn't expose a read API)."
+            )
+            log_event(
+                event_type="history_rollback",
+                status="skipped",
+                command="history.rollback",
+                details={"run_id": run_id, "reason": "no_restorable_events"},
+            )
+            return
+
+        if not skip_confirm and not confirm(
+            f"Restore {len(restorable)} comment(s) by overwriting current values?",
+            default=False,
+        ):
+            info("Cancelled.")
+            log_event(
+                event_type="history_rollback",
+                status="cancelled",
+                command="history.rollback",
+                details={"run_id": run_id, "restorable": len(restorable)},
+            )
+            return
+
+        db = DatabaseConnector(cfg.db)
+        if not db.test_connection():
+            error("Cannot connect to database.")
+            log_event(
+                event_type="history_rollback",
+                status="failed",
+                command="history.rollback",
+                details={"run_id": run_id, "reason": "db_connect_failed"},
+            )
+            return
+
+        # Apply rollbacks in reverse application order so a series of
+        # writes to the same asset in one run unwinds in the right
+        # direction (last-write-wins forward → first-write-wins back).
+        ordered = sorted(
+            restorable,
+            key=lambda e: e.get("applied_at") or 0,
+            reverse=True,
+        )
+
+        restored = 0
+        failed: list[tuple[str, str]] = []
+        with db.engine.begin() as conn:
+            for event in ordered:
+                schema = event.get("schema_name") or ""
+                table = event.get("table_name") or ""
+                column = event.get("column_name")
+                kind_label = (event.get("asset_kind") or "table").lower()
+                try:
+                    kind = AssetKind(kind_label)
+                except ValueError:
+                    kind = AssetKind.TABLE
+                asset_path = ".".join(p for p in (schema, table, column) if p)
+                try:
+                    db.apply_comment(
+                        schema=schema,
+                        table=table,
+                        column=column,
+                        comment=event.get("old_comment") or "",
+                        asset_kind=kind,
+                        conn=conn,
+                    )
+                    restored += 1
+                    info(f"  ✓ {asset_path}")
+                except Exception as exc:
+                    failed.append((asset_path, str(exc)))
+                    warn(f"  ✗ {asset_path}: {exc}")
+
+        if failed:
+            warn(f"Restored {restored} of {len(ordered)}; {len(failed)} failed.")
+        else:
+            success(f"Restored {restored} comment(s) from run #{run_id}.")
+
+        log_event(
+            event_type="history_rollback",
+            status="success" if not failed else "partial",
+            command="history.rollback",
+            details={
+                "run_id": run_id,
+                "restored": restored,
+                "skipped": len(skipped),
+                "failed": len(failed),
+            },
+        )
+
     return history
