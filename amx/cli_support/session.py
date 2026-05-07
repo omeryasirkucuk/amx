@@ -62,6 +62,9 @@ from amx.cli_support.commands.profiles import (
     cmd_code_profiles as _cmd_code_profiles,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_cost as _cmd_cost,
+)
+from amx.cli_support.commands.profiles import (
     cmd_description_verbosity as _cmd_description_verbosity,
 )
 from amx.cli_support.commands.profiles import (
@@ -87,6 +90,9 @@ from amx.cli_support.commands.profiles import (
 )
 from amx.cli_support.commands.profiles import (
     cmd_prompt_detail as _cmd_prompt_detail,
+)
+from amx.cli_support.commands.profiles import (
+    cmd_refresh_prices as _cmd_refresh_prices,
 )
 from amx.cli_support.commands.profiles import (
     cmd_remove_code_profile as _cmd_remove_code_profile,
@@ -863,6 +869,16 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "max-tokens"):
             return True
         _cmd_max_tokens(cfg, parts[1:])
+        return True
+    if head == "cost":
+        if not _require_namespace(head, namespace, "llm", "cost"):
+            return True
+        _cmd_cost(cfg, parts[1:])
+        return True
+    if head in ("refresh-prices", "refresh_prices"):
+        if not _require_namespace(head, namespace, "llm", "refresh-prices"):
+            return True
+        _cmd_refresh_prices(cfg, parts[1:])
         return True
     if head == "doc-profiles":
         if not _require_namespace(head, namespace, "docs", "doc-profiles"):
