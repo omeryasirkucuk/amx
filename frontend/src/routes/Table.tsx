@@ -99,11 +99,15 @@ export default function Table() {
     mutationFn: () => api.generateTableDescription(scope!, schema, table),
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: ["live-snapshot"] });
+      const altCount = result.alternatives_count ?? 1;
       toast.push({
         title: result.run_id
           ? `Queued for review (Run #${result.run_id})`
           : "Description queued for review",
-        description: "Approve from the Pending page to write it to the live database.",
+        description:
+          altCount > 1
+            ? `${altCount} alternatives generated (${result.verbosity}). Pick one and approve from the Pending page.`
+            : "Approve from the Pending page to write it to the live database.",
         tone: "success",
         duration: 3200,
       });
@@ -121,11 +125,15 @@ export default function Table() {
       api.generateColumnDescription(scope!, schema, table, column),
     onSuccess: (result, column) => {
       qc.invalidateQueries({ queryKey: ["live-snapshot"] });
+      const altCount = result.alternatives_count ?? 1;
       toast.push({
         title: result.run_id
           ? `Column queued for review (Run #${result.run_id})`
           : "Column description queued for review",
-        description: `${schema}.${table}.${column} — approve from /pending.`,
+        description:
+          altCount > 1
+            ? `${schema}.${table}.${column} — ${altCount} alternatives (${result.verbosity}); pick one in /pending.`
+            : `${schema}.${table}.${column} — approve from /pending.`,
         tone: "success",
         duration: 3000,
       });
