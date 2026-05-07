@@ -1036,6 +1036,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "run-apply": ["analyze", "run", "--apply"],
         "apply": ["analyze", "apply"],
         "code-scan": ["code", "scan"],
+        "code-search": ["code", "search"],
         "code-refresh": ["code", "refresh"],
         "code-results": ["code", "results"],
         "code-analyze": ["code", "analyze"],

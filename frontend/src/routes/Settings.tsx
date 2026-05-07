@@ -1373,6 +1373,114 @@ function SearchDocsBox() {
   );
 }
 
+interface CodeSearchHit {
+  source: string;
+  rel_path: string;
+  symbol: string;
+  distance: number;
+  preview: string;
+}
+
+interface CodeSearchResponse {
+  hits: CodeSearchHit[];
+  count: number;
+  message?: string;
+}
+
+function SearchCodeBox() {
+  const [query, setQuery] = useState("");
+  const [submitted, setSubmitted] = useState("");
+
+  const search = useQuery({
+    queryKey: ["code-search", submitted],
+    queryFn: () =>
+      apiFetch<CodeSearchResponse>(
+        `/api/code/search?q=${encodeURIComponent(submitted)}&n=8`,
+      ),
+    enabled: submitted.length > 0,
+    retry: false,
+  });
+
+  return (
+    <Card className="mb-4">
+      <CardHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            <CodeIcon size={14} className="text-accent" />
+            Search code
+          </span>
+        }
+        description="Embedding-only Chroma similarity over every snippet you've indexed via /code-scan. No LLM call — instant. For a comprehensive table-level review, use Code Analyze (CLI: /code-analyze)."
+      />
+      <CardBody className="space-y-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setSubmitted(query.trim());
+          }}
+          className="flex gap-2"
+        >
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="e.g. where is customers written, ETL job for orders…"
+            className="flex-1 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+          />
+          <button
+            type="submit"
+            disabled={!query.trim() || search.isFetching}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+          >
+            {search.isFetching ? "Searching…" : "Search"}
+          </button>
+        </form>
+        {search.error && (
+          <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
+            {(search.error as Error).message}
+          </div>
+        )}
+        {search.data && (
+          <div className="space-y-2">
+            {search.data.message && (
+              <p className="text-xs text-warning">{search.data.message}</p>
+            )}
+            {search.data.hits.length === 0 ? (
+              <p className="text-xs text-ink-dim">No matches.</p>
+            ) : (
+              <ul className="space-y-2">
+                {search.data.hits.map((hit, idx) => (
+                  <li
+                    key={`${hit.source}-${idx}`}
+                    className="rounded-md border border-surface-border bg-surface px-3 py-2"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="truncate font-mono text-ink-muted">
+                        {hit.source}
+                        {hit.symbol ? (
+                          <span className="ml-2 text-accent-ink">
+                            · {hit.symbol}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="font-mono text-ink-dim">
+                        d={hit.distance.toFixed(3)}
+                      </span>
+                    </div>
+                    <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-ink-muted">
+                      {hit.preview}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 function CodeProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
@@ -1409,6 +1517,7 @@ function CodeProfilesSection() {
 
   return (
     <>
+      <SearchCodeBox />
       {activeOp && (
         <div className="mb-4">
           <JobProgress

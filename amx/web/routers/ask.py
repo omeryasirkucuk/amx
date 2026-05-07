@@ -246,6 +246,91 @@ def update_session(
 # a job id. Order matters here.
 
 
+@router.get("/context")
+def ask_context(
+    scope_profiles: str | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """What doc/code profiles will ``/ask`` pull in for the given DB
+    scope? Drives the AskChat scope rozeti so the user sees what's
+    really in play before asking. Mirrors the CLI's ``/ask-context``.
+
+    ``scope_profiles`` is a comma-separated DB profile list. Omit to
+    fall back to the user's current ``cfg.active_db_profiles`` (i.e.
+    Studio's session sticky scope). Counts come from the live Chroma
+    collection — they reflect what's indexed right now.
+    """
+    from amx.search._agent.scope import (
+        resolve_code_profiles_for_scope,
+        resolve_doc_profiles_for_scope,
+    )
+
+    if scope_profiles is None:
+        scope_dbs = list(cfg.active_db_profiles or [])
+        if not scope_dbs and cfg.active_db_profile:
+            scope_dbs = [cfg.active_db_profile]
+    else:
+        scope_dbs = [s.strip() for s in scope_profiles.split(",") if s.strip()]
+
+    doc_names = resolve_doc_profiles_for_scope(cfg, scope_dbs)
+    code_names = resolve_code_profiles_for_scope(cfg, scope_dbs)
+
+    # Lazy doc-count: only spin up the Chroma client when there's at
+    # least one in-scope doc profile. The cold path (no docs configured)
+    # avoids the ~80ms Chroma init.
+    docs_payload: list[dict[str, Any]] = []
+    if doc_names:
+        try:
+            from amx.docs.rag import RAGStore
+        except Exception:
+            RAGStore = None  # type: ignore[assignment]
+        for name in doc_names:
+            paths = list(cfg.doc_profiles.get(name, []) or [])
+            count = 0
+            if RAGStore is not None and paths:
+                try:
+                    count = RAGStore(source_filters=paths).filtered_doc_count()
+                except Exception:
+                    count = 0
+            docs_payload.append(
+                {
+                    "name": name,
+                    "linked_db_profiles": list(cfg.doc_profile_linked_dbs.get(name, []) or []),
+                    "paths": paths,
+                    "indexed_chunks": int(count),
+                }
+            )
+
+    code_payload: list[dict[str, Any]] = []
+    if code_names:
+        try:
+            from amx.codebase.code_rag import code_collection_count
+        except Exception:
+            code_collection_count = None  # type: ignore[assignment]
+        for name in code_names:
+            path = (cfg.code_profiles.get(name) or "").strip()
+            count = 0
+            if code_collection_count is not None and path:
+                try:
+                    count = code_collection_count(source_filters=[path])
+                except Exception:
+                    count = 0
+            code_payload.append(
+                {
+                    "name": name,
+                    "linked_db_profiles": list(cfg.code_profile_linked_dbs.get(name, []) or []),
+                    "path": path,
+                    "indexed_snippets": int(count),
+                }
+            )
+
+    return {
+        "scope_db_profiles": scope_dbs,
+        "doc_profiles": docs_payload,
+        "code_profiles": code_payload,
+    }
+
+
 @router.get("/sessions")
 def list_sessions(
     limit: int = 20,
