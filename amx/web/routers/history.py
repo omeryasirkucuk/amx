@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from amx.storage.sqlite_store import history_store
+from amx.web.deps import get_jobs
+from amx.web.jobs import JobRegistry
 
 router = APIRouter(prefix="/api/history", tags=["history"])
 
@@ -57,15 +59,32 @@ def list_recent_runs(
 
 
 @router.get("/runs/{run_id}")
-def get_run(run_id: int) -> dict[str, Any]:
+def get_run(
+    run_id: int,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> dict[str, Any]:
     """Full row + parsed JSON payloads (scope, metrics, tokens,
-    results, settings) for one run."""
+    results, settings) for one run.
+
+    ``live_job_id`` is non-null when this run still has a worker
+    thread alive in the job registry — the SPA uses it to subscribe
+    to ``/api/runs/{job_id}/events`` and stream per-asset progress
+    while the user is on the run-detail page (otherwise a
+    long-running run looks frozen until the worker exits).
+    """
     row = _store().get_run(run_id)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No run with id {run_id}.",
         )
+    live_job_id: str | None = None
+    for job in jobs.list():
+        if job.kind == "run" and job.run_id == run_id and job.status in ("queued", "running"):
+            live_job_id = job.id
+            break
+    row = dict(row)
+    row["live_job_id"] = live_job_id
     return row
 
 
