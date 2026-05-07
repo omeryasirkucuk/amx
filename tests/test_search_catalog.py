@@ -562,10 +562,10 @@ class SearchCatalogTests(unittest.TestCase):
         cfg = self._search_cfg()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"unsupported","out_of_domain":true,"normalized_question":"nasilsin","search_mode":"unsupported","entity_hints":[],"needs_typo_recovery":false,"reason":"small talk"}'
+                '{"intent":"unsupported","out_of_domain":true,"normalized_question":"what is the weather today","search_mode":"unsupported","entity_hints":[],"needs_typo_recovery":false,"reason":"out of domain"}'
             )
             service = SearchService(cfg, self.catalog)
-            answer = service.ask("nasılsın")
+            answer = service.ask("what is the weather today")
         self.assertEqual(answer.intent, "unsupported")
         self.assertEqual(answer.rows, [])
         self.assertEqual(answer.details.get("reason"), "out_of_domain")
@@ -685,55 +685,15 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertIn("date related columns", answer.details["plan"]["search_queries"])
         self.assertEqual(answer.details["answer_strategy"], "deterministic")
 
-    def test_table_scoped_comment_question_runs_agent_planned_live_probe(self) -> None:
-        self.catalog.sync_table_profile(
-            db_profile="default",
-            db_backend="postgresql",
-            database_name="SAP",
-            profile=self._adrc_profile(),
-            query_usage={},
-        )
-        cfg = self._search_cfg()
-        fake_db = type(
-            "FakeDB",
-            (),
-            {
-                "get_column_comments": lambda self, schema, table: {
-                    "addrnumber": "Address number",
-                    "name1": "Name line",
-                    "city1": None,
-                },
-                "column_comments_probe_query": lambda self, schema, table: (
-                    "SELECT column_name, comment FROM metadata WHERE table_name = :table"
-                ),
-            },
-        )()
-        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
-            _FakeLLMProvider.queue(
-                '{"intent":"find_columns","out_of_domain":false,"normalized_question":"are all adrc columns commented","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"column","entity_hints":["adrc"],"search_queries":["adrc tablosunda commentler tum kolonlar icin girili mi","are all ADRC columns commented"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"metadata completeness question"}',
-                '{"needs_live_probe":false,"reason":"The retrieved rows may be enough.","operations":[]}',
-            )
-            with patch.object(SearchService, "_inventory_db", return_value=fake_db):
-                service = SearchService(cfg, self.catalog)
-                answer = service.ask(
-                    "adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?"
-                )
-
-        self.assertEqual(answer.confidence, "high")
-        self.assertIn("Hayir", answer.summary)
-        self.assertIn("`city1`", answer.summary)
-        self.assertIn("SELECT column_name, comment", answer.summary)
-        self.assertEqual(
-            answer.details["retrieval"]["live_probe"]["operations"][0]["operation"],
-            "column_comments",
-        )
-        self.assertIn(
-            "Default live probe",
-            answer.details["retrieval"]["live_probe"]["operations"][0]["rationale"],
-        )
-        self.assertIn("agent-planned live metadata probe", answer.provenance)
-        self.assertTrue(answer.details["executed_actions"])
-        self.assertEqual(answer.details["executed_actions"][0]["operation"], "column_comments")
+    # ``test_table_scoped_comment_question_runs_agent_planned_live_probe``
+    # was removed in the English-only purge. The test asserted that a
+    # Turkish comment-coverage question routed to the column_comments
+    # live-probe path. With multilingual input handling and the
+    # plan-shape stopword list both retuned for English-only, the same
+    # question now reroutes to ``table_explain`` (catalog-confirmed
+    # subject "adrc" + "table" token in the question), which fires a
+    # ``table_metadata_snapshot`` probe instead. Coverage of the
+    # explicit-mention path moved to the test below.
 
     def test_explicit_table_mention_wins_over_fuzzy_catalog_candidate_for_live_probe(self) -> None:
         self.catalog.sync_table_profile(
@@ -755,6 +715,17 @@ class SearchCatalogTests(unittest.TestCase):
             def column_comments_probe_query(self, schema: str, table: str) -> str:
                 return f"comments probe for {schema}.{table}"
 
+            def table_metadata_probe_query(self, schema: str, table: str) -> str:
+                return f"metadata probe for {schema}.{table}"
+
+            def get_table_metadata_snapshot(self, schema: str, table: str) -> dict:
+                return {
+                    "schema": schema,
+                    "table": table,
+                    "table_comment": "",
+                    "columns": [],
+                }
+
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
                 '{"intent":"find_columns","out_of_domain":false,"normalized_question":"are all adrc columns commented","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"column","entity_hints":["adr6"],"search_queries":["are all adrc columns commented"],"needs_typo_recovery":false,"answer_language":"english","reason":"metadata completeness question"}',
@@ -762,9 +733,7 @@ class SearchCatalogTests(unittest.TestCase):
             )
             with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
                 service = SearchService(cfg, self.catalog)
-                answer = service.ask(
-                    "adrc tablosunda commentler tüm kolonlar için girili vaziyette mi?"
-                )
+                answer = service.ask("are all the adrc table columns commented?")
 
         self.assertIn("`sap_s6p.adrc`", answer.summary)
         self.assertEqual(
@@ -821,15 +790,15 @@ class SearchCatalogTests(unittest.TestCase):
 
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what is adrc table","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adr6"],"search_queries":["adrc tablosu nedir","what is ADRC table"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"table explanation"}',
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what is adrc table","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adr6"],"search_queries":["what is ADRC table"],"needs_typo_recovery":false,"answer_language":"english","reason":"table explanation"}',
                 '{"needs_live_probe":false,"reason":"catalog rows are enough","operations":[]}',
             )
             with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
                 service = SearchService(cfg, self.catalog)
-                answer = service.ask("adrc tablosu nedir")
+                answer = service.ask("what is the adrc table")
 
         self.assertIn("`sap_s6p.adrc`", answer.summary)
-        self.assertIn("**4** kolon", answer.summary)
+        self.assertIn("**4** columns", answer.summary)
         self.assertNotIn("adr6", answer.summary.lower())
         self.assertEqual(answer.confidence, "high")
         self.assertEqual(answer.details["retrieval"]["resolved_tables"], ["sap_s6p.adrc"])
@@ -855,20 +824,18 @@ class SearchCatalogTests(unittest.TestCase):
 
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what is adrc table","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adr6"],"search_queries":["adrc tablosu nedir","what is ADRC table"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"table explanation"}'
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"what is adrc table","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adr6"],"search_queries":["what is ADRC table"],"needs_typo_recovery":false,"answer_language":"english","reason":"table explanation"}'
             )
             with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
                 service = SearchService(cfg, self.catalog)
-                answer = service.ask("adrc tablosu nedir")
+                answer = service.ask("what is the adrc table")
 
-        # Updated wording: deterministic answer now phrases the result as
-        # "<name> adında bir tablo bu DB profili için katalog veya canlı
-        # metadata'da bulunamadı" instead of the older
-        # "exact olarak dogrulayamadim". Either phrasing satisfies the
-        # contract — we surface a "not-found" answer and never substitute a
-        # similar-name candidate. Keep the candidate hint assertion so we
-        # still verify the fuzzy match is OFFERED (not used).
-        self.assertIn("bulunamadı", answer.summary)
+        # The deterministic answer phrases the result as "I could not find a
+        # table named X in this DB profile's catalog or live metadata" —
+        # we surface a not-found answer and never substitute a similar-name
+        # candidate. Keep the candidate hint assertion so we still verify
+        # the fuzzy match is OFFERED (not used).
+        self.assertIn("could not find", answer.summary)
         self.assertIn("`sap_s6p.adr6`", answer.summary)
         self.assertEqual(answer.rows, [])
         self.assertEqual(answer.confidence, "low")
@@ -924,26 +891,26 @@ class SearchCatalogTests(unittest.TestCase):
 
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"city related column names","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adrc"],"search_queries":["city ile alakali tum kolon isimlerini getir","city related column names"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"misclassified from memory"}',
-                "City ile alakali kolonlar: `sap_s6p.adrc.city1` ve `sap_s6p.adrc.city2`.",
+                '{"intent":"explain_table","out_of_domain":false,"normalized_question":"city related column names","search_mode":"table_explain","question_class":"table_understanding","target_entity":"table","entity_hints":["adrc"],"search_queries":["city related column names"],"needs_typo_recovery":false,"answer_language":"english","reason":"misclassified from memory"}',
+                "Columns related to city: `sap_s6p.adrc.city1` and `sap_s6p.adrc.city2`.",
             )
             with patch.object(SearchService, "_inventory_db", return_value=FakeDB()):
                 service = SearchService(cfg, self.catalog)
                 service._agent._remember(
                     {
-                        "question": "adrc tablosu nedir",
+                        "question": "what is the adrc table",
                         "intent": "explain_table",
                         "topic": "what is adrc table",
                         "tables": ["sap_s6p.adrc"],
                         "columns": [],
                     }
                 )
-                second = service.ask("city ile alakalı tüm kolon isimlerini getir")
+                second = service.ask("list all column names related to city")
 
         self.assertEqual(second.details["plan"]["search_mode"], "semantic_concept")
         self.assertEqual(second.details["plan"]["target_entity"], "column")
         self.assertFalse(second.details["retrieval"].get("live_probe", {}).get("executed", False))
-        self.assertNotIn("Canli DB metadata'sina gore", second.summary)
+        self.assertNotIn("Live DB metadata", second.summary)
         self.assertEqual(second.details["retrieval"]["result_kind"], "exact_column_name_matches")
         self.assertTrue(second.rows)
         column_names = {str(row.get("column_name") or "").lower() for row in second.rows}
@@ -989,11 +956,11 @@ class SearchCatalogTests(unittest.TestCase):
         )()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"list_schemas","out_of_domain":false,"normalized_question":"which schemas contain adr6","search_mode":"list_schemas","question_class":"inventory","entity_hints":["adr6"],"search_queries":["adr6 tablosu hangi semalarda var","which schemas contain adr6"],"needs_typo_recovery":false,"answer_language":"english","reason":"schema inventory"}'
+                '{"intent":"list_schemas","out_of_domain":false,"normalized_question":"which schemas contain adr6","search_mode":"list_schemas","question_class":"inventory","entity_hints":["adr6"],"search_queries":["which schemas contain adr6"],"needs_typo_recovery":false,"answer_language":"english","reason":"schema inventory"}'
             )
             with patch.object(SearchService, "_inventory_db", return_value=fake_db):
                 service = SearchService(cfg, self.catalog)
-                answer = service.ask("adr6 tablosu hangi şemalarda var")
+                answer = service.ask("which schemas contain the adr6 table")
         self.assertEqual(answer.details["plan"]["answer_language"], "english")
         self.assertIn("schemas", answer.summary.lower())
 
@@ -1013,11 +980,11 @@ class SearchCatalogTests(unittest.TestCase):
         cfg = self._search_cfg()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"request_type":"metadata_discovery","intent":"find_tables","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"semantic guess","decision_confidence":"medium","needs_clarification":false}',
-                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}',
+                '{"request_type":"metadata_discovery","intent":"find_tables","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["are any tables in our databases missing comments","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"english","reason":"semantic guess","decision_confidence":"medium","needs_clarification":false}',
+                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["are any tables in our databases missing comments","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"english","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}',
             )
             service = SearchService(cfg, self.catalog)
-            answer = service.ask("veri tabanlarımızda comment kısmı eksik olanlar var mı")
+            answer = service.ask("are any tables in our databases missing comments")
         self.assertEqual(answer.intent, "check_coverage")
         self.assertEqual(answer.details["reason"], "redirect_to_analyze")
 
@@ -1025,31 +992,17 @@ class SearchCatalogTests(unittest.TestCase):
         cfg = self._search_cfg()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["veri tabanlarımızda comment kısmı eksik olanlar var mı","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
+                '{"request_type":"coverage_audit","intent":"check_coverage","out_of_domain":false,"normalized_question":"tables with missing comments","search_mode":"check_coverage","question_class":"inventory","target_entity":"database","entity_hints":[],"search_queries":["are any tables in our databases missing comments","tables with missing comments"],"needs_typo_recovery":false,"answer_language":"english","reason":"broad missing-comment coverage request","decision_confidence":"high","needs_clarification":false}'
             )
             service = SearchService(cfg, self.catalog)
-            answer = service.ask("veri tabanlarımızda comment kısmı eksik olanlar var mı")
+            answer = service.ask("are any tables in our databases missing comments")
         self.assertEqual(answer.intent, "check_coverage")
         self.assertEqual(answer.details["reason"], "redirect_to_analyze")
 
-    def test_japanese_question_uses_japanese_answer_language(self) -> None:
-        self.catalog.sync_table_profile(
-            db_profile="default",
-            db_backend="postgresql",
-            database_name="SAP",
-            profile=self._address_profile(),
-            query_usage={},
-        )
-        cfg = self._search_cfg()
-        with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
-            _FakeLLMProvider.queue(
-                '{"intent":"find_tables","out_of_domain":false,"normalized_question":"tables containing address details","search_mode":"semantic_concept","question_class":"semantic_discovery","target_entity":"table","entity_hints":[],"search_queries":["住所の詳細を含むテーブル","tables containing address details"],"needs_typo_recovery":false,"answer_language":"japanese","reason":"table discovery","decision_confidence":"high","needs_clarification":false}',
-                "住所情報に関連する候補として `sap.adr6` が見つかりました。",
-            )
-            service = SearchService(cfg, self.catalog)
-            answer = service.ask("住所の詳細を含むテーブルはどれですか？")
-        self.assertEqual(answer.details["plan"]["answer_language"], "japanese")
-        self.assertIn("`sap.adr6`", answer.summary)
+    # Multilingual answer-language behavior was removed in the
+    # English-only purge; the corresponding Japanese-input test was
+    # deleted because ``_align_answer_language`` now always pins the
+    # plan to ``english`` regardless of input locale.
 
     def test_count_tables_question_is_not_out_of_domain(self) -> None:
         cfg = self._search_cfg()
@@ -1130,11 +1083,11 @@ class SearchCatalogTests(unittest.TestCase):
         cfg.current_schema = "sap_s6p"
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             _FakeLLMProvider.queue(
-                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"tables with address details","search_mode":"count_tables","question_class":"inventory","target_entity":"aggregate","entity_hints":[],"search_queries":["icinde adres detaylari olan tum tablolari soyler misin","tables with address details"],"needs_typo_recovery":false,"answer_language":"turkish","reason":"misclassified inventory"}',
-                "`sap_s6p.adr6` ve `sap_s6p.adrt` adres detaylariyla ilgili tablolar olarak gorunuyor.",
+                '{"intent":"count_tables","out_of_domain":false,"normalized_question":"tables with address details","search_mode":"count_tables","question_class":"inventory","target_entity":"aggregate","entity_hints":[],"search_queries":["could you list all tables with address details","tables with address details"],"needs_typo_recovery":false,"answer_language":"english","reason":"misclassified inventory"}',
+                "`sap_s6p.adr6` and `sap_s6p.adrt` look like tables related to address details.",
             )
             service = SearchService(cfg, self.catalog)
-            answer = service.ask("içinde adres detayları olan tüm tabloları söyler misin?")
+            answer = service.ask("could you list all tables that contain address details?")
         self.assertEqual(answer.details["plan"]["question_class"], "semantic_discovery")
         self.assertEqual(answer.details["plan"]["target_entity"], "table")
         self.assertNotEqual(answer.intent, "count_tables")
@@ -1734,27 +1687,27 @@ class SearchCatalogTests(unittest.TestCase):
         self.assertIn("12 columns", answer.summary)
 
     def test_chitchat_short_circuits_without_llm_call(self) -> None:
-        """Greetings like 'nasılsın' / 'hi' must not reach the planner."""
+        """Greetings like 'hi' / 'thanks' must not reach the planner."""
         cfg = self._search_cfg()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             # Queue NO LLM responses — if the planner is invoked the test fails.
             _FakeLLMProvider.queue()
             service = SearchService(cfg, self.catalog)
-            answer_tr = service.ask("nasılsın")
-            answer_en = service.ask("hi")
-        self.assertEqual(answer_tr.intent, "chitchat")
-        self.assertEqual(answer_en.intent, "chitchat")
-        self.assertEqual(answer_tr.confidence, "high")
-        self.assertEqual(answer_en.confidence, "high")
+            answer_thanks = service.ask("thanks")
+            answer_hi = service.ask("hi")
+        self.assertEqual(answer_thanks.intent, "chitchat")
+        self.assertEqual(answer_hi.intent, "chitchat")
+        self.assertEqual(answer_thanks.confidence, "high")
+        self.assertEqual(answer_hi.confidence, "high")
         # Sanity: replies must mention what AMX actually does.
-        self.assertIn("metadata", answer_tr.summary.lower())
-        self.assertIn("metadata", answer_en.summary.lower())
+        self.assertIn("metadata", answer_thanks.summary.lower())
+        self.assertIn("metadata", answer_hi.summary.lower())
         # No LLM calls were made.
         self.assertEqual(_FakeLLMProvider.calls, [])
 
     @pytest.mark.integration
     def test_meta_query_returns_prior_question_from_session_store(self) -> None:
-        """'bir önceki sorum neydi' must answer from session memory."""
+        """A 'what was my previous question' query must answer from session memory."""
         cfg = self._search_cfg()
         with patch("amx.search.service.LLMProvider", _FakeLLMProvider):
             # First a real question, then the meta-query.

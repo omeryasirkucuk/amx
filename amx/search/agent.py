@@ -184,7 +184,7 @@ class SearchAgent(
     # Tokens that — alone or in a short greeting — should not be sent to the
     # LLM-driven planner. ``_handle_chitchat`` short-circuits these with a
     # one-line friendly redirect so the user doesn't get a confusing
-    # "Could you clarify the exact scope?" reply for "nasılsın".
+    # "Could you clarify the exact scope?" reply for "hi".
     _CHITCHAT_TOKENS: frozenset[str] = frozenset(
         {
             "hi",
@@ -194,38 +194,12 @@ class SearchAgent(
             "yo",
             "sup",
             "howdy",
-            "merhaba",
-            "selam",
-            "slm",
-            "naber",
-            "nbr",
-            "nasilsin",
-            "nasılsın",
-            "iyimisin",
-            "iyi",
-            "misin",
-            "musun",
-            "musunuz",
-            "miydin",
-            "iyiydin",
-            "teşekkür",
-            "teşekkürler",
-            "tesekkur",
-            "tesekkurler",
-            "teşekkurler",
             "thanks",
             "thank",
             "ty",
             "thx",
             "ok",
             "okay",
-            "tamam",
-            "günaydın",
-            "gunaydin",
-            "günler",
-            "gunler",
-            "akşamlar",
-            "aksamlar",
             "good",
             "morning",
             "evening",
@@ -242,13 +216,9 @@ class SearchAgent(
     # PRIOR answer. Without a deterministic handler, the LLM planner reads
     # them as fresh questions with no scope and falls into clarification.
     _AFFIRM_FOLLOWUP_RE: tuple[str, ...] = (
-        # English
         r"^\s*(?:are\s+you\s+sure|you\s+sure|really|seriously|sure\?+)\s*[\.\?\!]*\s*$",
         r"^\s*(?:is\s+that\s+(?:right|correct|true)|you\s+positive|positive\?+)\s*[\.\?\!]*\s*$",
         r"^\s*(?:why|why\??|how\s+come|how)\s*[\.\?\!]*\s*$",
-        # Turkish
-        r"^\s*(?:emin\s+misin|gercekten\s+mi|gerçekten\s+mi|kesin\s+mi|öyle\s+mi|oyle\s+mi|sahi\s+mi|hadi\s+ya)\s*[\.\?\!]*\s*$",
-        r"^\s*(?:neden|niye|niçin|nicin|nasıl|nasil)\s*[\.\?\!]*\s*$",
     )
 
     def ask(
@@ -284,9 +254,7 @@ class SearchAgent(
                 rows=[],
                 confidence="low",
                 summary=(
-                    "`/search` tartisma modu aktif bir LLM profili gerektirir. Once `/llm` altinda bir profil tanimlayin."
-                    if question_language == "turkish"
-                    else "`/search` discussion requires an active LLM profile. Configure one under `/llm` first."
+                    "`/search` discussion requires an active LLM profile. Configure one under `/llm` first."
                 ),
                 provenance=[],
                 details={"reason": "no_llm"},
@@ -311,8 +279,8 @@ class SearchAgent(
         # Deterministic short-circuits for things the LLM-driven planner
         # tends to fumble: greetings/chitchat (returns clarification by
         # default, which is unfriendly) and meta-queries about the chat
-        # itself ("what was my previous question?", "bir önceki sorum
-        # neydi"). Both are answered locally before any LLM call.
+        # itself ("what was my previous question?"). Both are answered
+        # locally before any LLM call.
         chitchat = self._handle_chitchat(clean_question, question_language)
         if chitchat is not None:
             return chitchat
@@ -346,17 +314,12 @@ class SearchAgent(
                 # exception up to the REPL — that way the chat session
                 # stays open at the next prompt instead of dropping
                 # the user out of /search.
-                summary = (
-                    "Soru kullanıcı tarafından iptal edildi."
-                    if (question_language or "") == "turkish"
-                    else "Cancelled by user."
-                )
                 return SearchAnswer(
                     intent="cancelled",
                     question=question,
                     rows=[],
                     confidence="low",
-                    summary=summary,
+                    summary="Cancelled by user.",
                     provenance=["user_cancelled"],
                     details={"reason": "cancelled_by_user"},
                 )
@@ -414,10 +377,9 @@ class SearchAgent(
             should_clarify = False
             plan = self._align_plan_shape(plan, clean_question)
         if should_clarify:
-            clarification = plan.clarification_question.strip() or (
-                "Could you clarify the exact scope (database/schema/table) so I can route this correctly?"
-                if (plan.answer_language or "english").lower() == "english"
-                else "Dogru yonlendirme icin tam kapsami (veritabani/sema/tablo) netlestirebilir misiniz?"
+            clarification = (
+                plan.clarification_question.strip()
+                or "Could you clarify the exact scope (database/schema/table) so I can route this correctly?"
             )
             return SearchAnswer(
                 intent="clarification",
@@ -464,9 +426,7 @@ class SearchAgent(
                     rows=[],
                     confidence="low",
                     summary=(
-                        "Bu soru veritabanı veya kod metadata konseptine uymuyor gibi görünüyor. Aramalar tablo, kolon ve yapı detayları üzerinde çalışır."
-                        if plan.answer_language == "turkish"
-                        else "This request doesn't appear related to database or code metadata. Search applies to tables, columns, and structural details."
+                        "This request doesn't appear related to database or code metadata. Search applies to tables, columns, and structural details."
                     ),
                     provenance=[],
                     details={
@@ -485,9 +445,7 @@ class SearchAgent(
                 rows=[],
                 confidence="high",
                 summary=(
-                    "Veritabanında henüz açıklama girilmemiş (comment eksik olan) tabloları ve kolonları listelemek / denetlemek için sistemin `/analyze pending` komutunu kullanmanız gerekir. Arama (Search) modülü sadece halihazırda var olan metadataları bulmaya odaklanır."
-                    if plan.answer_language == "turkish"
-                    else "To scan the database for tables or columns missing comments, please use the `/analyze pending` command. Search is optimized for finding actual metadata content, not hunting for blanks."
+                    "To scan the database for tables or columns missing comments, please use the `/analyze pending` command. Search is optimized for finding actual metadata content, not hunting for blanks."
                 ),
                 provenance=["system_rules"],
                 details={
@@ -521,9 +479,7 @@ class SearchAgent(
                 rows=[],
                 confidence="low",
                 summary=(
-                    "`/search` katalogu bos. Metadata sorulari icin once `/search sync` veya `/search rebuild` calistirin."
-                    if plan.answer_language == "turkish"
-                    else "`/search` catalog is empty. Run `/search sync` or `/search rebuild` before asking metadata questions."
+                    "`/search` catalog is empty. Run `/search sync` or `/search rebuild` before asking metadata questions."
                 ),
                 provenance=[],
                 details={
@@ -624,7 +580,7 @@ class SearchAgent(
         answer_text = None
         allow_language_optimized_deterministic = (
             plan.answer_language or "english"
-        ).strip().lower() in {"english", "turkish"}
+        ).strip().lower() == "english"
         if allow_language_optimized_deterministic:
             answer_text = self._deterministic_target_resolution_answer(
                 plan, retrieval_details, live_probe
