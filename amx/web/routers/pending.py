@@ -232,6 +232,12 @@ def restore(body: RestoreRequest) -> dict[str, Any]:
         confidence=confidence,
         source=body.source,
         asset_kind=body.asset_kind,
+        # ReviewResult.applied defaults to False, but save_pending() drops
+        # any row with applied=False on the way out — without this the
+        # restore looked successful (200 OK + "Restored" toast) yet the
+        # pending file silently lost the new row, so the SPA's "Apply
+        # pending queue" button stayed at "Nothing to apply".
+        applied=True,
         result_id=body.result_id,
         alternatives=list(body.alternatives or []),
         logprob_score=body.logprob_score,

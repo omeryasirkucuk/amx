@@ -38,8 +38,16 @@ def stub_pending(monkeypatch, tmp_path):
         return list(state)
 
     def fake_save_pending(results) -> None:
+        # Mirror the real ``save_pending`` filter — only ``applied=True``
+        # rows with non-empty descriptions land on disk. Without this
+        # the stub silently masks bugs where a caller forgets to set
+        # ``applied=True`` (caught by the restore-persists test below).
         state.clear()
-        state.extend(results)
+        state.extend(
+            r
+            for r in results
+            if getattr(r, "applied", False) and (getattr(r, "final_description", "") or "").strip()
+        )
 
     def fake_clear_pending() -> None:
         state.clear()
@@ -315,6 +323,65 @@ def test_pending_preview_empty_queue(client, auth_headers, stub_pending) -> None
     response = client.post("/api/pending/preview", headers=auth_headers)
     assert response.status_code == 200
     assert response.json() == {"events": [], "count": 0}
+
+
+def test_pending_restore_persists_row(client, auth_headers, stub_pending) -> None:
+    """``POST /api/pending/restore`` must actually land the row in the
+    queue. The bug it pins: ReviewResult.applied defaults to False and
+    ``save_pending`` drops applied=False rows, so an early version of
+    this endpoint silently 200 OK'd the request without persisting the
+    row — the SPA's "Apply pending queue (N)" stayed at zero.
+    """
+    response = client.post(
+        "/api/pending/restore",
+        headers=auth_headers,
+        json={
+            "schema": "public",
+            "table": "orders",
+            "column": "id",
+            "result_id": 4242,
+            "final_description": "Order primary key.",
+            "confidence": "high",
+            "asset_kind": "table",
+            "alternatives": ["Order primary key.", "Unique order id."],
+            "logprob_score": 0.95,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["already_present"] is False
+    assert body["count"] == 1
+
+    listing = client.get("/api/pending", headers=auth_headers).json()
+    assert listing["count"] == 1
+    saved = listing["pending"][0]
+    assert saved["result_id"] == 4242
+    assert saved["final_description"] == "Order primary key."
+    assert saved["applied"] is True
+
+
+def test_pending_restore_idempotent_by_result_id(client, auth_headers, stub_pending) -> None:
+    """A second restore for the same result_id must report
+    ``already_present`` and not duplicate the row."""
+    body = {
+        "schema": "public",
+        "table": "orders",
+        "column": "id",
+        "result_id": 9001,
+        "final_description": "Order primary key.",
+        "confidence": "high",
+        "asset_kind": "table",
+        "alternatives": [],
+        "logprob_score": None,
+    }
+    first = client.post("/api/pending/restore", headers=auth_headers, json=body)
+    second = client.post("/api/pending/restore", headers=auth_headers, json=body)
+    assert first.status_code == 200
+    assert first.json()["already_present"] is False
+    assert second.status_code == 200
+    assert second.json()["already_present"] is True
+    listing = client.get("/api/pending", headers=auth_headers).json()
+    assert listing["count"] == 1
 
 
 def _drain_sse(client, path: str, auth_headers, timeout: float = 3.0):
