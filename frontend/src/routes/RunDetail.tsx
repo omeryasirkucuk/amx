@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, SkipForward, Timer } from "lucide-react";
@@ -907,7 +907,15 @@ function ResultsTab({
   );
 }
 
-function ResultRowItem({
+// ``React.memo`` skips a re-render when none of the row props
+// reference-changed. Without this every keystroke into another
+// row's edit field, every pending mutation, and every parent state
+// flip cascaded a re-render across all rows — measurable lag on
+// run detail pages with 200+ rows. The default shallow comparison
+// is fine because the parent already memoises ``pendingByResultId``
+// and the callback closures are recreated only when the underlying
+// mutation hooks change.
+function ResultRowItemImpl({
   row,
   pendingEntry,
   pickAlternative,
@@ -1056,6 +1064,12 @@ function ResultRowItem({
     </li>
   );
 }
+
+// Public name kept the same so import sites and inspector traces are
+// unaffected by the memo wrapping. Default shallow prop equality
+// catches the wins we care about — same row id + same pendingEntry
+// object reference + same callbacks → bail out of re-render.
+const ResultRowItem = memo(ResultRowItemImpl);
 
 function LogprobBadge({ score }: { score: number | null }) {
   if (score == null) {
