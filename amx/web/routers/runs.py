@@ -44,7 +44,7 @@ from amx.agents.orchestrator import (
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
-from amx.pending_review import load_pending, save_pending
+from amx.pending_review import clear_pending, load_pending, save_pending
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import quiet_console
 from amx.utils.logging import get_logger
@@ -394,6 +394,10 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     "batch_mode": use_batch,
                 },
             )
+            # Bind the persistent run id to the live Job so the run
+            # detail page can find this still-running worker by
+            # numeric run id (Runs list → click row → /runs/{id}).
+            job.run_id = int(run_id)
             emit(job.queue, "run.created", {"run_id": int(run_id)})
         except Exception as exc:
             log.warning("Could not persist run history: %s", exc)
@@ -779,10 +783,37 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         emit_terminal(job.queue, "job.failed", {"error": job.error})
         return
+    # Mirror the CLI's apply path: every successful row records its
+    # applied_at timestamp + clears the rejection_reason so the SPA's
+    # "queued" badge flips to "applied" after invalidateQueries; every
+    # failed row records the rejection_reason. Without these the
+    # Studio-initiated apply succeeded against the live DB but the
+    # run_results SQLite row stayed ``applied_at=null`` and the badge
+    # was stuck on "queued" indefinitely.
+    from amx.storage.sqlite_store import history_store as _history_store
+
+    hs = _history_store()
+
+    def _on_applied(r: ReviewResult) -> None:
+        if hs is not None and r.result_id is not None:
+            try:
+                hs.record_applied(r.result_id)
+            except Exception:
+                pass
+
+    def _on_failed(r: ReviewResult, exc: Exception) -> None:
+        if hs is not None and r.result_id is not None:
+            try:
+                hs.record_db_apply_failure(r.result_id, str(exc))
+            except Exception:
+                pass
+
     try:
         applied = apply_review_results_to_db(
             db,
             results,
+            on_applied=_on_applied,
+            on_failed=_on_failed,
             on_progress=_build_progress_callback(job),
             cancel_token=job.cancel,
         )
@@ -823,6 +854,17 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         )
         emit_terminal(job.queue, "job.cancelled", {"summary": job.summary})
         return
+
+    # Clear the on-disk pending queue when the apply consumed it (i.e.
+    # body.results was None so we loaded from disk). Mirrors the CLI's
+    # ``clear_pending()`` after ``apply_review_results_to_db``. Skip
+    # clearing when the caller passed an explicit subset — clearing
+    # would silently drop entries the user hadn't approved yet.
+    if body.results is None:
+        try:
+            clear_pending()
+        except Exception:
+            pass
 
     job.status = "done"
     job.summary = {"applied": int(applied), "total": len(results)}
