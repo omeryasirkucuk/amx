@@ -147,6 +147,15 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     total_tokens: number;
     total_cost_usd: number;
   } | null>(null);
+  // Per-step running totals derived from activity.complete events
+  // when the SSE payload included a ``results`` array. Lets the
+  // Tokens & cost card render an Input / Output / Total breakdown
+  // even before the run hits ``finish_run`` (the persisted Metrics
+  // card does not exist yet at this point).
+  const [tokensBreakdown, setTokensBreakdown] = useState<{
+    input: number;
+    output: number;
+  }>({ input: 0, output: 0 });
   const [startTime] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
 
@@ -154,6 +163,34 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     path: `/api/runs/${jobId}/events`,
     enabled: true,
   });
+
+  // REST-side fallback for the ``run.created`` SSE event. EventSource
+  // does not replay missed events on reconnect, and ``hs.create_run``
+  // exceptions in the worker are caught + logged but never re-emitted.
+  // Either case used to leave LiveRunStream stuck on "Run · starting…"
+  // forever. Polling the registry every 2s — and once on terminal
+  // close — gives us the same numeric ``run_id`` ``run.created`` would
+  // have, so the redirect to ``PersistedRunView`` (where the editor
+  // lives) becomes reliable.
+  const jobInfo = useQuery({
+    queryKey: ["job", jobId],
+    queryFn: () => apiFetch<{ run_id: number | null; status: string }>(
+      `/api/runs/${jobId}`,
+    ),
+    refetchInterval: closed ? false : 2000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  // Promote the registry-side ``run_id`` into local state so both
+  // the SSE handler and the polling fallback feed the same redirect
+  // effect. Whichever lands first wins; the other is a no-op.
+  useEffect(() => {
+    const fromRegistry = jobInfo.data?.run_id;
+    if (typeof fromRegistry === "number" && resolvedRunId == null) {
+      setResolvedRunId(fromRegistry);
+    }
+  }, [jobInfo.data, resolvedRunId]);
 
   // The moment the worker assigns a numeric run id, hand off to
   // PersistedRunView. That view subscribes to the same SSE stream
@@ -220,6 +257,10 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           total_tokens: Number(event.total_tokens ?? 0),
           total_cost_usd: Number(event.total_cost_usd ?? 0),
         });
+        setTokensBreakdown({
+          input: Number(event.input_tokens ?? 0),
+          output: Number(event.output_tokens ?? 0),
+        });
       }
     }
   }, [events]);
@@ -275,7 +316,21 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   return (
     <>
       <PageHeader
-        title={resolvedRunId ? `Run #${resolvedRunId}` : "Run · starting…"}
+        title={
+          resolvedRunId
+            ? `Run #${resolvedRunId}`
+            : closed
+              ? terminalKind === "job.done"
+                ? "Run · ended"
+                : terminalKind === "job.cancelled"
+                  ? "Run · cancelled"
+                  : terminalKind === "job.failed"
+                    ? "Run · failed"
+                    : "Run · ended"
+              : activities.length > 0
+                ? "Run · running…"
+                : "Run · starting…"
+        }
         breadcrumbs={[
           { label: "Runs", to: "/runs" },
           { label: resolvedRunId ? `#${resolvedRunId}` : "live" },
@@ -343,6 +398,46 @@ function LiveRunStream({ jobId }: { jobId: string }) {
         description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
         confirmLabel="Cancel run"
       />
+      {tokensSnapshot && tokensSnapshot.total_tokens > 0 && (
+        <Card className="mb-4">
+          <CardHeader title="Tokens & cost" description="Running totals while the worker streams. Frozen at run end into the persisted Metrics card." />
+          <CardBody>
+            <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
+              <Row label="Input">
+                <span className="font-mono tabular-nums text-xs">
+                  ↑ {tokensBreakdown.input.toLocaleString()}
+                </span>
+              </Row>
+              <Row label="Output">
+                <span className="font-mono tabular-nums text-xs">
+                  ↓ {tokensBreakdown.output.toLocaleString()}
+                </span>
+              </Row>
+              <Row label="Total">
+                <span className="font-mono tabular-nums text-xs font-semibold">
+                  {tokensSnapshot.total_tokens.toLocaleString()}
+                </span>
+              </Row>
+              <Row label="Cost">
+                <span className="font-mono tabular-nums text-xs">
+                  {tokensSnapshot.total_cost_usd > 0 ? (
+                    <span className="text-positive">
+                      ${tokensSnapshot.total_cost_usd.toFixed(4)}
+                    </span>
+                  ) : (
+                    <span
+                      className="text-ink-dim"
+                      title="No price recorded for this model — set a custom override via /cost or run /refresh-prices."
+                    >
+                      —
+                    </span>
+                  )}
+                </span>
+              </Row>
+            </div>
+          </CardBody>
+        </Card>
+      )}
       <Card>
         <CardHeader
           title="Progress"
