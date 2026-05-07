@@ -60,11 +60,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   users gain access to the full edit / pick / apply controls
   immediately. ([#219], [#221])
 - **Studio drag-drop `Docs` empty-state hint** and a
-  `cli_support/hints.py` helper that prints "Studio'da Settings →
-  Docs altında dosyaları sürükle-bırak ile de ekleyebilirsiniz." at
-  the end of `/doc-add` so terminal users discover the visual
-  surface. Same helper powers the `/code-search` and `/code-analyze`
-  studio hints. ([#214])
+  `cli_support/hints.py` helper that prints "In Studio, Settings →
+  Docs lets you drag-and-drop files to add them." at the end of
+  `/doc-add` so terminal users discover the visual surface. Same
+  helper powers the `/code-search` and `/code-analyze` studio hints.
+  ([#214])
 - **Cold-path bench guard.** `tests/perf/bench_ask_no_context.py`
   pins the four no-context guarantees the doc/code RAG plumbing
   introduced (search_docs / search_code short-circuit, scope
@@ -440,8 +440,7 @@ unified:
 * **Ctrl-C cancels `/ask` cleanly.** First press sets a `cancel_token`
   the agent loop polls between iterations; second press also raises
   `KeyboardInterrupt` for stuck socket I/O. The chat surfaces
-  "Cancelled by user." (TR: "Soru kullanıcı tarafından iptal edildi.")
-  rather than draining the question to completion.
+  "Cancelled by user." rather than draining the question to completion.
 * **LiteLLM startup chatter silenced.** Corp-network TLS proxies no
   longer surface a "Failed to fetch remote model cost map" warning on
   every `/ask` — `LITELLM_LOCAL_MODEL_COST_MAP=True` skips the GitHub
@@ -1777,7 +1776,7 @@ A new `list_volumes` tool wraps `db.list_volumes(schema, catalog)`:
   Snowflake / etc.) so the LLM doesn't invent a SHOW VOLUMES query.
 
 System prompt routing now points the LLM at `list_volumes` for "any
-volumes / managed/external volumes / volumelar var mı / unity catalog
+volumes / managed/external volumes / unity catalog
 volume" questions and forbids the previous "I can't see volumes"
 fallback on Databricks.
 
@@ -1969,8 +1968,8 @@ Three coordinated changes:
   now (no `list_projects`).
 - **`/schema` and `/table` removed.** They wrote
   `cfg.current_schema` / `cfg.current_table` blindly, with no
-  connectivity check, and were the reason the "olmayan bir şeye
-  bağlan" footgun stayed reachable. The fields stay (tests and
+  connectivity check, and were the reason the "connect to something
+  that doesn't exist" footgun stayed reachable. The fields stay (tests and
   `/run`'s default scope still read them) — only the slash
   commands go. The standard scope path is now positional (`/run
   <schema> <table>`) or the existing `finalize_scope` interactive
@@ -2289,7 +2288,7 @@ normal output streams to the user's terminal) and continues the
 wizard once the driver loads. The user never has to drop out of the
 wizard, look up the extras name, type the install command, and
 restart from scratch — the loop the 0.12.2 user reported as
-"şaka mı yapıyorsun?".
+"are you kidding me?".
 
 `sys.executable -m pip` is always used (not bare `pip`) so the
 install lands in the same interpreter that's running AMX — the
@@ -2882,7 +2881,7 @@ Two new tools registered with the search agent's tool registry — visible to th
 - **`list_past_runs(schema?, table?, command?, limit?)`** — queries `~/.amx/history.db` via the same `find_runs_for_scope` path `/history compare` uses. Returns a compact dict per run: `run_id`, `started_at_epoch`, `duration_sec`, `model_processing_sec`, `status`, `command`, `scope`, `db_profile`, `llm_profile`, `llm_model`, `doc_profile`, `code_profile`, `settings` (the full snapshot from PR #59), `selected_count` / `processed_count` / `applied_count`, `total_tokens`. Lightweight enough to land 10–50 rows in the LLM context without blowing the budget.
 - **`describe_run(run_id, include_results=true)`** — full record for one run: settings, metrics, tokens, plus every saved per-column suggestion (top description, alternatives list, confidence band, logprob_score, token_count, model_version, chosen_description, evaluation). Used after `list_past_runs` narrows the candidate set.
 
-Plus the planner system prompt grew a routing rule: ANY question about the user's own history (`compare my last 3 runs`, `which settings did I use yesterday`, `has this table been analyzed before`, multilingual variants like `son 3 koşumu karşılaştır`) routes to `list_past_runs` first, then `describe_run`. The "I don't have access to your past runs" response is explicitly forbidden — the access exists.
+Plus the planner system prompt grew a routing rule: ANY question about the user's own history (`compare my last 3 runs`, `which settings did I use yesterday`, `has this table been analyzed before`) routes to `list_past_runs` first, then `describe_run`. The "I don't have access to your past runs" response is explicitly forbidden — the access exists.
 
 **6 new tests** lock the tool surface: compact payload shape with settings, command-filter validation, missing-store fallback (graceful note instead of crash), describe_run round-trip with results + alternatives, invalid run_id error path, and a registry test that fails the build if either tool drops out of `ToolBox.schemas()`.
 

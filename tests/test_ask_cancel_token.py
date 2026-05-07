@@ -125,11 +125,11 @@ def test_run_cancelled_message_in_turkish_for_turkish_question(cfg_minimal) -> N
                     with patch.object(agent, "_answer_via_tool_agent", side_effect=boom):
                         with patch.object(agent, "_ensure_session_id", return_value=None):
                             answer = agent.ask(
-                                "satışları olan tabloları göster",
+                                "show me tables that have sales data",
                                 cancel_token=threading.Event(),
                             )
     assert answer.intent == "cancelled"
-    assert "iptal" in answer.summary.lower()
+    assert "cancel" in answer.summary.lower()
 
 
 def test_search_agent_ask_works_without_cancel_token(cfg_minimal) -> None:

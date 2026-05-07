@@ -79,8 +79,8 @@ def register_docs_commands(
         directory into the doc profile, and unless ``--no-ingest`` is
         set, immediately runs the same ingest pipeline ``/ingest`` uses.
 
-        💡 Tip: Studio'da Settings → Docs altında dosyaları **sürükle-
-        bırak** ile de ekleyebilirsiniz.
+        💡 Tip: in Studio, Settings → Docs lets you add files via
+        **drag-and-drop**.
         """
         from amx.cli_support.hints import studio_hint
         from amx.docs.rag import RAGStore

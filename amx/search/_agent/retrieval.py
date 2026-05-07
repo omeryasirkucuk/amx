@@ -24,7 +24,6 @@ Calls back into planning + resolution mixins via ``self.``.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from amx.agents.tools import SchemaExplorer
@@ -228,22 +227,11 @@ class RetrievalMixin:
         metadata_terms = {
             "comment",
             "comments",
-            "commentler",
-            "yorum",
-            "yorumlar",
             "description",
             "descriptions",
-            "açıklama",
-            "aciklama",
             "metadata",
         }
-        short_verification_tokens = {"mi", "mı", "mu", "mü"}
         verification_terms = {
-            "var mı",
-            "girili",
-            "dolu",
-            "tüm",
-            "tum",
             "all",
             "every",
             "whether",
@@ -253,11 +241,8 @@ class RetrievalMixin:
             "complete",
             "coverage",
         }
-        tokens = set(re.findall(r"\w+", sample, flags=re.UNICODE))
-        return (
-            any(term in sample for term in metadata_terms)
-            or any(term in sample for term in verification_terms)
-            or bool(tokens.intersection(short_verification_tokens))
+        return any(term in sample for term in metadata_terms) or any(
+            term in sample for term in verification_terms
         )
 
     def _default_live_probe_operations(
@@ -271,13 +256,8 @@ class RetrievalMixin:
             for term in (
                 "comment",
                 "comments",
-                "commentler",
-                "yorum",
-                "yorumlar",
                 "description",
                 "descriptions",
-                "açıklama",
-                "aciklama",
             )
         )
         operation = "column_comments" if comments_question else "table_metadata_snapshot"

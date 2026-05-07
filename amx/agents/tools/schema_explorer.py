@@ -33,14 +33,6 @@ class SchemaExplorer:
         "stores",
         "value",
         "values",
-        "bir",
-        "ve",
-        "ile",
-        "icin",
-        "için",
-        "olan",
-        "tablo",
-        "kolon",
     }
 
     def __init__(

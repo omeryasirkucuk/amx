@@ -11,17 +11,16 @@ from amx.utils.console import console
 
 #: Per-feature hint copy. Keys are stable so docs can reference them.
 _STUDIO_HINTS: dict[str, str] = {
-    "doc-add": (
-        "Studio'da Settings → Docs altında dosyaları sürükle-bırak ile de ekleyebilirsiniz."
-    ),
+    "doc-add": ("In Studio, Settings → Docs lets you drag-and-drop files to add them."),
     "code-search": (
-        "Studio'da Settings → Code altında 'Search code' kutusu aynı "
-        "sonuçları interaktif kart olarak gösterir."
+        "In Studio, the 'Search code' box under Settings → Code shows the "
+        "same results as interactive cards."
     ),
     "code-analyze": (
-        "Studio'da Code → Analyze sayfasından bu işi tablo seçimiyle interaktif yürütebilirsiniz."
+        "In Studio, the Code → Analyze page lets you run this job "
+        "interactively with table selection."
     ),
-    "ask-context": ("Studio'da AskChat üst banner'ı bu kapsamı küçük rozetle gösterir."),
+    "ask-context": ("In Studio, the AskChat top banner shows this scope as a small badge."),
 }
 
 

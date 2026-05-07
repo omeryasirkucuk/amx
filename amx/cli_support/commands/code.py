@@ -303,8 +303,8 @@ def register_code_commands(
         question. The output prints file:line + snippet so the user can
         jump directly into their editor.
 
-        💡 Studio'da Settings → Code altında ``Search`` kutusu aynı
-        sonuçları interaktif kart olarak gösterir.
+        💡 In Studio, the ``Search`` box under Settings → Code shows the
+        same results as interactive cards.
         """
         from amx.cli_support.hints import studio_hint
         from amx.codebase.code_rag import code_collection_count, query_code_snippets

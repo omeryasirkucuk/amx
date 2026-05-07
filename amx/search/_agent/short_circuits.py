@@ -40,7 +40,7 @@ class ShortCircuitsMixin:
         Without this short-circuit the LLM planner sometimes flags the input
         as ``needs_clarification=True``, yielding "Could you clarify the
         exact scope (database/schema/table)?" — a confusing reply when the
-        user just typed "nasılsın".
+        user just typed "hi".
         """
         sample = (question or "").strip().lower()
         if not sample:
@@ -51,18 +51,11 @@ class ShortCircuitsMixin:
             return None
         if not all(word in self._CHITCHAT_TOKENS for word in words):
             return None
-        if (question_language or "").lower() == "turkish":
-            summary = (
-                "Merhaba! Ben AMX'in metadata arama asistanıyım — sohbete eşlik etmem yerine "
-                "veritabanı şeması/kolonları/tabloları hakkında sorularınızı cevaplamak için varım. "
-                "Örnek: `vbrk tablosu nedir?`, `pricing ile ilgili tablolar hangileri?`."
-            )
-        else:
-            summary = (
-                "Hi! I'm AMX's metadata search assistant — I'm built to answer questions about "
-                "your database schemas, tables, and columns rather than chat. "
-                "Try: `what is the vbrk table?`, `which tables relate to pricing?`."
-            )
+        summary = (
+            "Hi! I'm AMX's metadata search assistant — I'm built to answer questions about "
+            "your database schemas, tables, and columns rather than chat. "
+            "Try: `what is the vbrk table?`, `which tables relate to pricing?`."
+        )
         self._record_short_circuit_assistant(summary=summary, intent="chitchat")
         return SearchAnswer(
             intent="chitchat",
@@ -107,21 +100,17 @@ class ShortCircuitsMixin:
     def _handle_meta_query(self, question: str, question_language: str) -> SearchAnswer | None:
         """Answer questions ABOUT the conversation itself (no LLM call).
 
-        Patterns: "what was my previous question?", "what did I ask?",
-        "bir önceki sorum neydi", "ben ne sormuştum". Resolves against
-        ``ChatSessionStore.recent_turns`` so the user gets the literal prior
-        question text rather than a clarification prompt.
+        Patterns: "what was my previous question?", "what did I ask?".
+        Resolves against ``ChatSessionStore.recent_turns`` so the user gets
+        the literal prior question text rather than a clarification prompt.
         """
         sample = (question or "").strip().lower()
         if not sample:
             return None
         meta_patterns = (
-            r"\b(?:bir\s+)?(?:o)?(?:n|ö)nce(?:ki)?\s+sor(?:u(?:m|n)?|ulardan)\b",
-            r"\bben\s+ne\s+sor(?:du|mu[sş]tum|du[mn])\b",
-            r"\b(?:son|previous|prior|last)\s+(?:question|sor(?:u|um))\b",
+            r"\b(?:previous|prior|last)\s+question\b",
             r"\bwhat\s+(?:did|was)\s+(?:i|my)\s+(?:last\s+|previous\s+|prior\s+)?(?:question|ask)\b",
             r"\bwhat\s+have\s+i\s+(?:asked|been\s+asking)\b",
-            r"\bne\s+sor(?:du(?:m|n)|mu[sş]tum)\b",
         )
         if not any(re.search(p, sample) for p in meta_patterns):
             return None
@@ -138,19 +127,10 @@ class ShortCircuitsMixin:
             # we want the one BEFORE it.
             if len(user_turns) >= 2:
                 prior_question = str(user_turns[-2].get("question") or "").strip()
-        is_turkish = (question_language or "").lower() == "turkish"
         if not prior_question:
-            summary = (
-                "Bu oturumdaki ilk sorunuz; daha önce hiçbir soru kaydedilmemiş."
-                if is_turkish
-                else "This is the first question in this session; no prior question is on record."
-            )
+            summary = "This is the first question in this session; no prior question is on record."
         else:
-            summary = (
-                f'Bir önceki sorunuz: "{prior_question}"'
-                if is_turkish
-                else f'Your previous question was: "{prior_question}"'
-            )
+            summary = f'Your previous question was: "{prior_question}"'
         self._record_short_circuit_assistant(summary=summary, intent="meta_query")
         return SearchAnswer(
             intent="meta_query",
@@ -173,11 +153,10 @@ class ShortCircuitsMixin:
     ) -> SearchAnswer | None:
         """Restate the prior assistant turn when the user pushes back briefly.
 
-        The user types "Are you sure?" / "emin misin?" / "really?" — these are
-        too short for the planner to map to anything meaningful and we don't
-        want to fall through to "Could you clarify the exact scope?". Pull
-        the last assistant turn out of the session store and re-confirm it
-        verbatim.
+        The user types "Are you sure?" / "really?" — these are too short for
+        the planner to map to anything meaningful and we don't want to fall
+        through to "Could you clarify the exact scope?". Pull the last
+        assistant turn out of the session store and re-confirm it verbatim.
         """
         sample = (question or "").strip().lower()
         if not sample:
@@ -203,17 +182,10 @@ class ShortCircuitsMixin:
                     break
         if not prior_assistant:
             return None
-        is_turkish = (question_language or "").lower() == "turkish"
-        if is_turkish:
-            summary = (
-                "Eminim — önceki cevap canlı veritabanı metadata'sından geldi. Yeniden: "
-                + prior_assistant
-            )
-        else:
-            summary = (
-                "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
-                + prior_assistant
-            )
+        summary = (
+            "Yes, I'm sure — the previous answer came from live database metadata. To restate: "
+            + prior_assistant
+        )
         self._record_short_circuit_assistant(summary=summary, intent="reaffirmation")
         return SearchAnswer(
             intent="reaffirmation",

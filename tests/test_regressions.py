@@ -4237,7 +4237,7 @@ class PerProfileCollectionTests(unittest.TestCase):
 
         from amx.search.index import _collection_name_for
 
-        name = _collection_name_for("müşteri / prod tablosu 🚀")
+        name = _collection_name_for("naïve / prod table 🚀")
         self.assertTrue(re.match(r"^[a-zA-Z0-9._-]{3,63}$", name))
 
     def test_search_index_routes_upsert_per_profile(self) -> None:
