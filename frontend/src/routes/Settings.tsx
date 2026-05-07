@@ -20,7 +20,7 @@ import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
 import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
-import { apiFetch } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import { InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 
@@ -688,6 +688,24 @@ function LlmProfileWizard({
   const showApiBase = !!chosenProvider?.needs_base;
   const showApiKey = !!chosenProvider?.needs_key;
 
+  // Live "what would AMX bill if we did NOT have a custom override?"
+  // hint, fetched as the user types into the model field. Shown above
+  // the custom-cost inputs so users see exactly what their override
+  // is replacing — a profile pointed at "openai/gpt-4o" with no
+  // override should render "Auto-detected: $2.50 / $10.00 per 1M
+  // (litellm)" so the price source is never a black box.
+  // Pricing lookup is forced to bypass the user override (we want the
+  // *fetched* rate, not whatever the user just typed) by passing no
+  // ``profile_name`` — the backend then walks the resolution chain
+  // skipping the override layer for that profile.
+  const liveModelPrice = useQuery({
+    queryKey: ["pricing", "model", provider, model],
+    queryFn: () => api.lookupPrice(provider, model),
+    enabled: Boolean(provider && model.trim().length > 0),
+    retry: false,
+    staleTime: 60_000,
+  });
+
   const save = useMutation({
     mutationFn: () => {
       const body: Record<string, unknown> = {
@@ -842,6 +860,14 @@ function LlmProfileWizard({
               className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
             />
           </Field>
+          <div className="col-span-2">
+            <PriceHint
+              loading={liveModelPrice.isFetching}
+              data={liveModelPrice.data}
+              error={liveModelPrice.error as Error | null}
+              hasModel={!!model.trim()}
+            />
+          </div>
           <Field
             label="Custom input cost (USD / 1M tokens)"
             hint="Override the auto-detected price. Leave blank to use LiteLLM / OpenRouter / bundled prices. Both rates must be set together — a half-override is treated as no override."
@@ -972,6 +998,74 @@ function LlmProfileWizard({
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Live "auto-detected price" hint above the custom-cost inputs.
+ *
+ * Renders the pricing engine's resolution result for the (provider,
+ * model) the user is editing — *without* their custom override layered
+ * on top — so the user always sees the rate their override is replacing.
+ *
+ * Five visual states:
+ *  - no model typed yet -> a soft instruction to fill the model field
+ *  - loading            -> dim placeholder while the API call is in flight
+ *  - error              -> compact red strip + the API's detail message
+ *  - source != unknown  -> "Auto-detected: $X / $Y per 1M (litellm)"
+ *  - source == unknown  -> warning tone + nudge to /refresh-prices or set custom
+ */
+function PriceHint({
+  loading,
+  data,
+  error,
+  hasModel,
+}: {
+  loading: boolean;
+  data: { input_per_mtok: number; output_per_mtok: number; source: string } | undefined;
+  error: Error | null;
+  hasModel: boolean;
+}) {
+  if (!hasModel) {
+    return (
+      <div className="rounded-md border border-dashed border-surface-border px-3 py-2 text-[11px] text-ink-dim">
+        Fill the model field above to see the auto-detected price.
+      </div>
+    );
+  }
+  if (loading) {
+    return (
+      <div className="rounded-md border border-surface-border bg-surface-subtle/40 px-3 py-2 text-[11px] text-ink-dim">
+        Looking up auto-detected price…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-md border border-critical/40 bg-critical-soft/40 px-3 py-2 text-[11px] text-critical">
+        Could not look up price: {error.message}
+      </div>
+    );
+  }
+  if (!data) return null;
+  if (data.source === "unknown") {
+    return (
+      <div className="rounded-md border border-warning/40 bg-warning-soft/40 px-3 py-2 text-[11px] text-warning">
+        No price entry found for this model. Run <code className="font-mono">/refresh-prices</code>{" "}
+        from the CLI (or click ↻ in the TopBar pricing badge) to re-pull the LiteLLM /
+        OpenRouter tables, or set both custom rates below to bill it explicitly.
+      </div>
+    );
+  }
+  const sourceLabel =
+    data.source === "user_override"
+      ? "your override"
+      : data.source;
+  return (
+    <div className="rounded-md border border-info/40 bg-info-soft/40 px-3 py-2 text-[11px] text-info">
+      Auto-detected: <span className="font-mono">${data.input_per_mtok.toFixed(4)}</span> /{" "}
+      <span className="font-mono">${data.output_per_mtok.toFixed(4)}</span> per 1M tokens (
+      <span className="font-medium">{sourceLabel}</span>). Set both inputs below to override.
+    </div>
   );
 }
 
