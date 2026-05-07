@@ -551,10 +551,18 @@ def execute_analyze_run(
     try:
         token_tracker.reset()
 
-        if not cfg.llm.provider or not cfg.llm.model:
+        if not cfg.llm_profiles:
             error(
-                "No active LLM profile is configured. "
-                "Use `/llm` then `/add-llm-profile`, or run `/setup`."
+                "No LLM profile is configured. Run `/add-llm-profile` (or `/setup`) "
+                "to add one before generating metadata."
+            )
+            sys.exit(1)
+        if not cfg.llm.provider or not cfg.llm.model:
+            active = cfg.active_llm_profile or "(none)"
+            error(
+                f"Active LLM profile '{active}' is incomplete (provider/model unset). "
+                "Run `/llm` to pick one of the configured profiles, or "
+                "`/add-llm-profile` to add a new one."
             )
             sys.exit(1)
 

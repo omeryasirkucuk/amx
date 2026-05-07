@@ -887,6 +887,27 @@ def register_search_commands(
         db_profile: tuple[str, ...],
         question: tuple[str, ...],
     ) -> None:
+        # Pre-flight: bail with a clear, actionable message when no
+        # LLM is configured. Without this, the search agent enters
+        # the planner loop, fails inside the first LiteLLM call with a
+        # cryptic provider-side stack trace, and leaves the user
+        # wondering whether the issue is the question or the setup.
+        # Mirrors the analogous guard in analyze_flow.py for /run.
+        if not cfg.llm_profiles:
+            error(
+                "No LLM profile is configured. Run `/add-llm-profile` (or `/setup`) "
+                "to add one before asking a question."
+            )
+            return
+        if not cfg.llm.provider or not cfg.llm.model:
+            active = cfg.active_llm_profile or "(none)"
+            error(
+                f"Active LLM profile '{active}' is incomplete (provider/model unset). "
+                "Run `/llm` to pick one of the configured profiles, or "
+                "`/add-llm-profile` to add a new one."
+            )
+            return
+
         # 0.11.0: --db-profile (multi) lets the user override the
         # persisted active scope for a single question. Validate names
         # against configured profiles before constructing the service —
