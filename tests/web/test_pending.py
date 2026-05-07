@@ -226,6 +226,97 @@ def test_pending_apply_streams_via_apply_events_endpoint(
     assert types[-1] == "job.done"
 
 
+def test_pending_preview_returns_sql_per_row(
+    client, auth_headers, stub_pending, monkeypatch
+) -> None:
+    """``POST /api/pending/preview`` runs ``apply_review_results_to_db``
+    in dry_run mode and returns one item per pending row with the
+    rendered SQL template."""
+    from amx.web.routers import pending as pending_router
+
+    rr = stub_pending["ReviewResult"](
+        schema="public",
+        table="orders",
+        column="id",
+        final_description="Order id.",
+        confidence=stub_pending["Confidence"].HIGH,
+        source="manual",
+        applied=True,
+    )
+    stub_pending["push"](rr)
+
+    def fake_apply(db, results, *, on_progress=None, dry_run=False, **_kw) -> int:
+        assert dry_run is True, "preview must call dry_run=True"
+        if on_progress:
+            on_progress(
+                results[0],
+                "preview",
+                1,
+                1,
+                "COMMENT ON COLUMN public.orders.id IS :cmt",
+            )
+        return 0
+
+    monkeypatch.setattr(pending_router, "apply_review_results_to_db", fake_apply, raising=False)
+    monkeypatch.setattr("amx.agents.orchestrator.apply_review_results_to_db", fake_apply)
+    monkeypatch.setattr("amx.db.connector.DatabaseConnector", lambda cfg: MagicMock())
+
+    response = client.post("/api/pending/preview", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["events"][0]["sql_template"].startswith("COMMENT ON COLUMN")
+    assert payload["events"][0]["new_comment"] == "Order id."
+
+
+def test_pending_preview_handles_unsupported_assets(
+    client, auth_headers, stub_pending, monkeypatch
+) -> None:
+    """When the adapter cannot accept a comment for the asset kind,
+    ``preview`` reports a ``skipped_reason`` instead of ``sql_template``."""
+    from amx.web.routers import pending as pending_router
+
+    rr = stub_pending["ReviewResult"](
+        schema="public",
+        table="orders",
+        column=None,
+        final_description="Order header.",
+        confidence=stub_pending["Confidence"].HIGH,
+        source="manual",
+        applied=True,
+        asset_kind="materialized_view",
+    )
+    stub_pending["push"](rr)
+
+    def fake_apply(db, results, *, on_progress=None, dry_run=False, **_kw) -> int:
+        if on_progress:
+            on_progress(
+                results[0],
+                "preview",
+                1,
+                1,
+                "(unsupported by backend — would be skipped)",
+            )
+        return 0
+
+    monkeypatch.setattr(pending_router, "apply_review_results_to_db", fake_apply, raising=False)
+    monkeypatch.setattr("amx.agents.orchestrator.apply_review_results_to_db", fake_apply)
+    monkeypatch.setattr("amx.db.connector.DatabaseConnector", lambda cfg: MagicMock())
+
+    response = client.post("/api/pending/preview", headers=auth_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["events"][0]["skipped_reason"].startswith("(unsupported")
+    assert "sql_template" not in payload["events"][0]
+
+
+def test_pending_preview_empty_queue(client, auth_headers, stub_pending) -> None:
+    """No pending rows → preview returns an empty list, not an error."""
+    response = client.post("/api/pending/preview", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json() == {"events": [], "count": 0}
+
+
 def _drain_sse(client, path: str, auth_headers, timeout: float = 3.0):
     url = f"{path}?t=test-studio-token-abc123"
     events: list[dict[str, Any]] = []
