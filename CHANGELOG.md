@@ -6,6 +6,144 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- **`amx /history rollback <run_id>`** — undo a past `/apply` by restoring the
+  COMMENTs each affected asset had immediately before the run. Backed by the
+  new `apply_events` audit table; replays in reverse time order inside a
+  single transaction; honours DBA-written originals (the audit captures
+  whatever was on the asset, independent of who authored it). `--yes` skips
+  the confirm prompt for scripted use. Rows whose prior text was unrecoverable
+  (apply ran before this audit log existed, or adapter doesn't expose a
+  comment-read API) are reported as skipped instead of overwritten with
+  garbage. ([#198], [#201], [#209], [#210])
+- **`amx /analyze apply --dry-run`** — preview the `COMMENT ON …` statements
+  every queued row would execute without opening a write transaction. The
+  pending file is left untouched so you can re-run for real after reviewing.
+  Same dry-run path is reachable from Studio via the new **Preview SQL**
+  button on `/pending`. ([#197], [#200], [#206])
+- **AMX Studio Audit page (`/audit`)** — newest-first timeline of every
+  COMMENT successfully written. Filter by run id or DB profile; each row
+  shows the new comment, the prior text (strikethrough on overrides), and
+  attribution (profile, run id, applied_by, hostname). Auto-refetch every
+  30 s + on window focus. ([#205])
+- **`apply_events` SQLite table** — one row per successful COMMENT write
+  carrying `run_id`, `result_id`, asset path, asset kind, `old_comment`
+  (verbatim prior text), `new_comment`, `profile_name`, `applied_by`,
+  `hostname`. New `SQLiteHistoryStore.record_apply_event(...)` /
+  `list_apply_events(...)` helpers. Indexed by `applied_at DESC`,
+  `run_id`, and the asset triple. ([#198])
+- **`apply_review_results_to_db(audit_log=…)`** — opt-in audit hook on the
+  apply API. When passed, every successful write fans into one
+  `apply_events` row with the prior text captured by a per-table
+  `_OldCommentReader` (one `get_column_comments` round-trip per table for
+  the whole apply). Default `None` is a zero-overhead no-op for legacy
+  callers. ([#201], [#209])
+- **CSP + sibling response headers** — `SecurityHeadersMiddleware` adds
+  `Content-Security-Policy`, `Referrer-Policy: no-referrer`,
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` to every
+  Studio response (SPA shell, `/api/*` JSON, SSE streams, 401/4xx error
+  pages). Defence-in-depth on top of the existing token + 127.0.0.1
+  binding. ([#193])
+- **Frontend ErrorBoundary** — uncaught render throws now land on a
+  fallback card with **Reload page** + **Copy details to clipboard**
+  buttons instead of unmounting the SPA. ([#195])
+- **SSE exponential reconnect** — transient transport errors retry with
+  1 / 2 / 4 / 8 / 16 / 30 s backoff (5 attempts). A successful frame
+  resets the budget. Cap reached → user-visible "please reload" message.
+  ([#195])
+- **Studio `/api/history/apply-events` endpoint** with `run_id` /
+  `profile_name` filters and bounded `limit` (1..500). ([#205])
+- **Studio `/pending` Preview SQL button** — opens a modal listing the
+  rendered SQL templates for every pending row before write. ([#206])
+- **`DatabaseConnector.preview_comment_sql(...)`** — returns the SQL
+  template `apply_comment` would execute (with `:cmt` placeholder) for
+  dry-run callers without touching the database. ([#197])
+- **`BaseAdapter.batch_get_table_comments(engine, pairs)`** — opt-in
+  adapter hook that resolves all `(schema, table)` → comment pairs in
+  one round-trip. PostgreSQL implements it via a `pg_description`
+  CTE; `Connector.get_related_table_comments` consults it before the
+  per-table fallback. 50+ round-trips collapse to one for FK-heavy
+  schemas. ([#194])
+- **Studio route code-splitting** — every route under `/runs`, `/ask`,
+  `/audit`, `/pending`, `/settings`, `/system` is now lazy-loaded
+  (`React.lazy` + `Suspense`). Initial-paint payload drops from
+  ~600 KB raw / 172 KB gzip to ~280 KB raw / ~88 KB gzip
+  (-54% raw, -49% gzip). ([#196])
+- **Rotating log file** — `~/.amx/logs/amx.log` now caps at 10 MB
+  (`AMX_LOG_MAX_BYTES`) with 5 archives (`AMX_LOG_BACKUP_COUNT`),
+  bounded ~60 MB total disk by default. ([#188])
+- **Structured `log_event(event_type, **fields)` helper** — emits one
+  `INFO` record on the `amx.events` logger with a JSON-encoded
+  `{event, ...fields}` payload so log shippers can pivot without
+  re-parsing free-form text. ([#188])
+- **`tests/perf/` opt-in benchmark harness** — `pytest tests/perf -m perf`
+  with deterministic synthetic DuckDB / MockLLM / seeded doc-set
+  fixtures. New `[perf]` extra (`pytest-benchmark`, `psutil`,
+  `duckdb`) and Makefile targets (`perf-baseline`, `perf-compare`,
+  `perf-clean`). Default `pytest` invocation skips the tree. ([#186])
+
+### Changed
+
+- **`Orchestrator._run_enabled_agents`** returns
+  `(suggestions, statuses)` instead of a flat suggestion list. The
+  status dict maps each enabled sub-agent label to one of `ok` /
+  `failed` / `cancelled` / `skipped` so callers can distinguish
+  partial success from silent degradation. The `ThreadPoolExecutor`
+  also runs inside an explicit `try/finally` with
+  `cancel_futures=True`. ([#192])
+- **`Orchestrator.process_table` / `process_tables_batch_mode` /
+  `TableProcessor.__init__`** accept a `cancel_token: threading.Event`
+  keyword argument. CLI / programmatic callers default to `None`
+  (no-op); Studio passes the live `Job.cancel` event so the cancel
+  button is observed at every phase boundary. ([#189])
+- **`ResultRowItem` (Studio run-detail page)** is now `React.memo` so
+  unrelated parent state changes no longer cascade re-renders across
+  every row on a 200+ row run. ([#202])
+- **Doc scanner** respects `.gitignore` (when `pathspec` is installed)
+  and skips files containing a `NUL` byte in the first 4 KB even if
+  the suffix passes the extension whitelist — closes the gap where
+  pointing AMX at a working repo accidentally fed `node_modules` or
+  binary `.txt` files into the embedding store. ([#207])
+- **`amx/search/agent_tools.py` helpers extracted** — `_ToolError`,
+  `_name_overlap_score`, `_dtype_compat_score`,
+  `_description_proximity`, `_safe_json` now live in
+  `amx/search/_agent_tools_helpers.py`. Re-exported from the original
+  module so historical imports keep working. First slice of the
+  ToolBox split. ([#208])
+
+### CI / build
+
+- **Dependency audit job** (`pip-audit`) runs on every PR in advisory
+  mode (`continue-on-error: true`). Surfaces any flagged CVE without
+  blocking the merge. ([#187])
+- **Dependabot** opens weekly grouped PRs for `pip`, `npm`, and
+  `github-actions`. **Major bumps are filtered out** so a future
+  React 19 / Vite 8 grouped bump can't land un-reviewed; majors are
+  planned manual migrations. ([#187], [#199])
+
+[#186]: https://github.com/omeryasirkucuk/amx/pull/186
+[#187]: https://github.com/omeryasirkucuk/amx/pull/187
+[#188]: https://github.com/omeryasirkucuk/amx/pull/188
+[#189]: https://github.com/omeryasirkucuk/amx/pull/189
+[#192]: https://github.com/omeryasirkucuk/amx/pull/192
+[#193]: https://github.com/omeryasirkucuk/amx/pull/193
+[#194]: https://github.com/omeryasirkucuk/amx/pull/194
+[#195]: https://github.com/omeryasirkucuk/amx/pull/195
+[#196]: https://github.com/omeryasirkucuk/amx/pull/196
+[#197]: https://github.com/omeryasirkucuk/amx/pull/197
+[#198]: https://github.com/omeryasirkucuk/amx/pull/198
+[#199]: https://github.com/omeryasirkucuk/amx/pull/199
+[#200]: https://github.com/omeryasirkucuk/amx/pull/200
+[#201]: https://github.com/omeryasirkucuk/amx/pull/201
+[#202]: https://github.com/omeryasirkucuk/amx/pull/202
+[#205]: https://github.com/omeryasirkucuk/amx/pull/205
+[#206]: https://github.com/omeryasirkucuk/amx/pull/206
+[#207]: https://github.com/omeryasirkucuk/amx/pull/207
+[#208]: https://github.com/omeryasirkucuk/amx/pull/208
+[#209]: https://github.com/omeryasirkucuk/amx/pull/209
+[#210]: https://github.com/omeryasirkucuk/amx/pull/210
+
 ## [0.12.9] - 2026-05-07
 
 The multi-profile + library-API-cleanup release. AMX is now multi-profile
