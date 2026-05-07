@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Database,
   PanelLeft,
+  ScrollText,
   Sparkles,
   History as HistoryIcon,
   Settings as SettingsIcon,
@@ -20,6 +21,7 @@ const navItems = [
   { to: "/", label: "Browse", icon: Database, end: true, match: ["/"] },
   { to: "/runs", label: "Runs", icon: HistoryIcon, match: ["/runs"] },
   { to: "/ask", label: "Ask", icon: Sparkles, match: ["/ask"] },
+  { to: "/audit", label: "Audit", icon: ScrollText, match: ["/audit"] },
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
   { to: "/system", label: "System", icon: Activity, match: ["/system"] },
 ];
