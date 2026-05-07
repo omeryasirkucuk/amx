@@ -13,6 +13,7 @@ from amx.agents.base import (
     apply_logprob_confidence,
 )
 from amx.config import PromptDetail
+from amx.llm.prompts import length_rule, per_col_token_budget
 from amx.llm.provider import FatalLLMError, LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, get_logger
@@ -71,51 +72,6 @@ REASONING: The column participates in key relationships, has identifier-like sam
 """
 
 
-_DESCRIPTION_LENGTH_RULES: dict[str, str] = {
-    "brief": "A concise description (1-2 sentences).",
-    "detailed": (
-        "A DETAILED description (2-4 sentences). Cover the column's purpose, "
-        "the typical kind of values it stores, and any relationships to other "
-        "tables/keys/business processes that the evidence supports. Write "
-        "concrete, specific sentences — do not pad with filler. If evidence "
-        "for a 4-sentence answer is missing, write fewer sentences rather "
-        "than invent context."
-    ),
-    "comprehensive": (
-        "A COMPREHENSIVE description (1-2 short paragraphs, roughly 5-8 "
-        "sentences). Cover the column's purpose, typical values and ranges, "
-        "relationships to other tables/keys/business processes, common usage "
-        "patterns in analytical queries, and any caveats or edge cases that "
-        "the evidence reveals (NULL handling, distinct cardinality, dominant "
-        "values). Stay specific and grounded in the evidence — never invent "
-        "context. If evidence is thin, shorten the answer rather than pad."
-    ),
-    "exhaustive": (
-        "An EXHAUSTIVE reference-style description (multiple short "
-        "paragraphs). Document, in order: (1) semantic meaning and business "
-        "purpose; (2) typical values, ranges, and data-type considerations; "
-        "(3) relationships to other tables, foreign keys, and upstream/"
-        "downstream business processes; (4) common analytical and reporting "
-        "patterns this column participates in; (5) edge cases, NULL "
-        "semantics, and any data-quality observations visible in the "
-        "evidence. Use multiple short paragraphs for readability. Cite only "
-        "what the evidence supports — omit sections you cannot ground."
-    ),
-}
-
-
-# Per-column output budget used to size ``max_tokens`` for a batch. Scaled by
-# ``description_verbosity`` so a 100-column batch in `comprehensive`/`exhaustive`
-# mode doesn't truncate halfway through — truncation is the dominant cause of
-# empty/missing per-column outputs in long batches.
-_VERBOSITY_PER_COL_TOKEN_BUDGET: dict[str, int] = {
-    "brief": 150,
-    "detailed": 350,
-    "comprehensive": 800,
-    "exhaustive": 1600,
-}
-
-
 def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
@@ -142,10 +98,7 @@ def _build_system_prompt(
         table_desc_lines = "\n".join(
             f"TABLE_DESCRIPTION_{i}: <alternative table description>" for i in range(2, n + 1)
         )
-    level = (description_verbosity or "brief").lower()
-    description_length_rule = _DESCRIPTION_LENGTH_RULES.get(
-        level, _DESCRIPTION_LENGTH_RULES["brief"]
-    )
+    description_length_rule = length_rule(description_verbosity)
     return (
         _BASE_SYSTEM_PROMPT.format(
             description_length_rule=description_length_rule,
@@ -183,8 +136,7 @@ class ProfileAgent(BaseAgent):
         return max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
 
     def _per_col_token_budget(self) -> int:
-        level = (getattr(self.llm.cfg, "description_verbosity", "brief") or "brief").lower()
-        return _VERBOSITY_PER_COL_TOKEN_BUDGET.get(level, 150)
+        return per_col_token_budget(getattr(self.llm.cfg, "description_verbosity", "brief"))
 
     @property
     def _prompt_detail(self) -> PromptDetail:
