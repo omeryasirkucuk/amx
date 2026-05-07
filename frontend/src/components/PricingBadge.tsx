@@ -81,18 +81,20 @@ export default function PricingBadge() {
   });
 
   const data = cacheInfo.data;
-  // While the cache is fresh and the user is not actively refreshing,
-  // hide the badge entirely so the TopBar does not gain extra chrome
-  // for the default state. Render only when stale / never-fetched /
-  // refreshing — i.e. when the user might want to act on it.
+  // The badge is always visible (when ``cacheInfo`` has resolved) so
+  // users always know where prices come from + when they were last
+  // pulled. An earlier iteration hid the badge while the cache was
+  // fresh; in practice users discovered the refresh path by accident
+  // when the badge eventually went stale, which made "I need to
+  // refresh" feel surprise-driven instead of routine. Stale shows in
+  // a warning tone; fresh stays in the neutral chrome row so it does
+  // not pull focus.
   if (!data) return null;
-  const showBadge = data.is_stale || refresh.isPending;
-  if (!showBadge) return null;
-
   const tone = data.is_stale ? "warning" : "info";
-  const label = data.fetched_at == null
-    ? "Prices: never fetched"
-    : `Prices: ${formatAge(data.age_seconds)}`;
+  const label =
+    data.fetched_at == null
+      ? "Prices: never fetched"
+      : `Prices: ${formatAge(data.age_seconds)}`;
 
   return (
     <span
