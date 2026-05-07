@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from typing import Any
 
 from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
 from amx.agents.code_agent import CodeAgent
@@ -266,6 +267,42 @@ def is_placeholder_description(text: str | None) -> bool:
     return any(marker in sample for marker in _PLACEHOLDER_MARKERS)
 
 
+def _record_audit(
+    audit_log: Any,
+    r: ReviewResult,
+    *,
+    audit_profile: str,
+    audit_user: str,
+    audit_host: str,
+    audit_run_id: int | None,
+) -> None:
+    """Write one ``apply_events`` row for a successful COMMENT.
+
+    No-op when ``audit_log`` is ``None`` so the legacy code path stays
+    untouched. Failures are swallowed at debug level — the audit log
+    is best-effort and must never abort an otherwise-successful apply.
+    """
+    if audit_log is None:
+        return
+    try:
+        audit_log.record_apply_event(
+            run_id=audit_run_id,
+            result_id=getattr(r, "result_id", None),
+            profile_name=audit_profile,
+            schema_name=r.schema,
+            table_name=r.table or "",
+            column_name=r.column,
+            asset_kind=r.asset_kind or "table",
+            old_comment=None,
+            new_comment=r.final_description or "",
+            applied_by=audit_user,
+            hostname=audit_host,
+            sql_template="",
+        )
+    except Exception as exc:
+        log.debug("audit_log.record_apply_event failed for %s.%s: %s", r.schema, r.table, exc)
+
+
 def apply_review_results_to_db(
     db: DatabaseConnector,
     results: list[ReviewResult],
@@ -275,6 +312,11 @@ def apply_review_results_to_db(
     on_progress: Callable[[ReviewResult, str, int, int, str], None] | None = None,
     cancel_token: threading.Event | None = None,
     dry_run: bool = False,
+    audit_log: Any = None,
+    audit_profile: str = "",
+    audit_user: str = "",
+    audit_host: str = "",
+    audit_run_id: int | None = None,
 ) -> int:
     """Write approved descriptions as COMMENT ON TABLE/VIEW/COLUMN to the database.
 
@@ -402,6 +444,14 @@ def apply_review_results_to_db(
                                     )
                                 if on_applied is not None:
                                     on_applied(item)
+                                _record_audit(
+                                    audit_log,
+                                    item,
+                                    audit_profile=audit_profile,
+                                    audit_user=audit_user,
+                                    audit_host=audit_host,
+                                    audit_run_id=audit_run_id,
+                                )
                             index = next_index
                             continue
                     except Exception as batch_exc:
@@ -427,6 +477,14 @@ def apply_review_results_to_db(
                     on_progress(r, "applied", index + 1, total, "")
                 if on_applied is not None:
                     on_applied(r)
+                _record_audit(
+                    audit_log,
+                    r,
+                    audit_profile=audit_profile,
+                    audit_user=audit_user,
+                    audit_host=audit_host,
+                    audit_run_id=audit_run_id,
+                )
             except Exception as exc:
                 if on_progress is not None:
                     on_progress(r, "failed", index + 1, total, str(exc))

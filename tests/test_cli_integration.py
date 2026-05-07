@@ -67,13 +67,16 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             def add_detail(self, idx: int, detail: str) -> None:
                 return None
 
-        def fake_apply_review_results_to_db(db, rows, on_applied, on_failed=None, on_progress=None):
+        def fake_apply_review_results_to_db(db, rows, **kwargs):
+            on_applied = kwargs.get("on_applied")
+            on_progress = kwargs.get("on_progress")
             for row in rows:
                 if on_progress is not None:
                     on_progress(row, "started", 1, len(rows), "")
                 if on_progress is not None:
                     on_progress(row, "applied", 1, len(rows), "")
-                on_applied(row)
+                if on_applied is not None:
+                    on_applied(row)
             return len(rows)
 
         with (
