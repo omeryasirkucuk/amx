@@ -1118,7 +1118,15 @@ class DatabaseConnector:
         outgoing_fks: list[dict[str, Any]],
         incoming_fks: list[dict[str, Any]],
     ) -> list[dict[str, str]]:
-        """Fetch comments for tables connected through FK relationships."""
+        """Fetch comments for tables connected through FK relationships.
+
+        Uses :meth:`amx.db.adapters.base.BaseAdapter.batch_get_table_comments`
+        when the active adapter implements the hook (PostgreSQL today)
+        so a tabel with N foreign-key neighbours costs one round-trip
+        instead of N. Adapters that have not overridden the hook fall
+        back to the per-table ``get_table_comment`` path; behaviour is
+        unchanged for them.
+        """
         related: set[tuple[str, str]] = set()
         for fk in outgoing_fks:
             rs = str(fk.get("referred_schema") or "")
@@ -1131,9 +1139,34 @@ class DatabaseConnector:
             if rs and rt:
                 related.add((rs, rt))
 
+        if not related:
+            return []
+
+        ordered_pairs = sorted(related)
+
+        # Try the batch path first. ``batch_get_table_comments`` returns
+        # ``None`` on adapters that have not opted in; a dict (possibly
+        # empty) means the adapter handled the request and we should
+        # not fall back per-table.
+        comments_by_pair: dict[tuple[str, str], str | None] | None = None
+        try:
+            comments_by_pair = self._adapter.batch_get_table_comments(self.engine, ordered_pairs)
+        except Exception as exc:
+            # A misbehaving batch implementation must not break callers
+            # — log and fall back to the historical per-table path.
+            log.warning(
+                "Adapter %s batch_get_table_comments failed (%s); falling back to per-table fetch.",
+                type(self._adapter).__name__,
+                exc,
+            )
+            comments_by_pair = None
+
         out: list[dict[str, str]] = []
-        for rs, rt in sorted(related):
-            cmt = self.get_table_comment(rs, rt) or ""
+        for rs, rt in ordered_pairs:
+            if comments_by_pair is not None:
+                cmt = comments_by_pair.get((rs, rt)) or ""
+            else:
+                cmt = self.get_table_comment(rs, rt) or ""
             out.append({"schema": rs, "table": rt, "comment": cmt})
         return out
 
