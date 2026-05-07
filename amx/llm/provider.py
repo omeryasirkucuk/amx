@@ -970,6 +970,31 @@ class LLMProvider:
 
     def __init__(self, cfg: LLMConfig):
         self.cfg = cfg
+        # When the keyring backend is unreachable (Keychain ACL miss
+        # after a binary path change on macOS, gnome-keyring /
+        # KWallet not running on Linux, Credential Manager access
+        # denied on Windows, …), the YAML's
+        # ``keyring:llm_profiles/<name>/api_key`` reference falls
+        # through to ``cfg.api_key`` unresolved. Compute an effective
+        # key for outgoing auth without mutating the dataclass —
+        # mutating would propagate through ``cfg.save()`` and erase
+        # the YAML reference for future runs that have a healthy
+        # backend.
+        from amx.storage.secrets import is_secret_reference
+
+        if is_secret_reference(cfg.api_key):
+            env_fallback = os.getenv("AMX_LLM_API_KEY", "")
+            log.warning(
+                "%s api_key is an unresolved keyring reference (backend unavailable?). %s",
+                cfg.provider or "(provider)",
+                "Using AMX_LLM_API_KEY env fallback."
+                if env_fallback
+                else "No AMX_LLM_API_KEY env fallback set; calls will fail until "
+                "the keyring backend recovers or you run /llm to re-enter the key.",
+            )
+            self._effective_api_key = env_fallback
+        else:
+            self._effective_api_key = cfg.api_key or ""
         normalized_model = normalize_llm_model(cfg.provider, cfg.model)
         if normalized_model and normalized_model != cfg.model:
             log.info(
@@ -1004,9 +1029,14 @@ class LLMProvider:
         return get_batch_provider(self.cfg) is not None
 
     def _configure_env(self) -> None:
+        # ``_effective_api_key`` is the resolved key we should auth with —
+        # ``cfg.api_key`` may still be a ``keyring:`` reference when the
+        # backend was offline at config-load time, and we don't want to
+        # leak the reference into upstream Authorization headers.
+        api_key = self._effective_api_key
         env_key = PROVIDER_ENV_KEY.get(self.cfg.provider)
-        if env_key and self.cfg.api_key:
-            os.environ[env_key] = self.cfg.api_key
+        if env_key and api_key:
+            os.environ[env_key] = api_key
 
         normalized_base = _normalized_api_base(self.cfg.provider, self.cfg.api_base)
         if normalized_base != self.cfg.api_base:
@@ -1024,21 +1054,21 @@ class LLMProvider:
             # Databricks Serving rejects an empty bearer; fall back to a
             # placeholder so LiteLLM doesn't strip the Authorization header,
             # but the real PAT (when supplied) wins.
-            os.environ.setdefault("OPENAI_API_KEY", self.cfg.api_key or "local")
+            os.environ.setdefault("OPENAI_API_KEY", api_key or "local")
         elif self.cfg.provider == "openrouter":
             if self.cfg.api_base:
                 os.environ["OPENAI_API_BASE"] = self.cfg.api_base
             # LiteLLM OpenRouter path expects OpenAI-style key wiring.
-            if self.cfg.api_key:
-                os.environ["OPENROUTER_API_KEY"] = self.cfg.api_key
-                os.environ["OPENAI_API_KEY"] = self.cfg.api_key
+            if api_key:
+                os.environ["OPENROUTER_API_KEY"] = api_key
+                os.environ["OPENAI_API_KEY"] = api_key
             else:
                 os.environ.setdefault("OPENROUTER_API_KEY", "")
         elif self.cfg.provider == "ollama":
             if self.cfg.api_base:
                 os.environ["OLLAMA_API_BASE"] = self.cfg.api_base
             # Some LiteLLM versions still check for a key even if unused
-            os.environ.setdefault("OLLAMA_API_KEY", self.cfg.api_key or "ollama")
+            os.environ.setdefault("OLLAMA_API_KEY", api_key or "ollama")
 
         lm = _litellm()
         lm.drop_params = True
@@ -1224,7 +1254,9 @@ class LLMProvider:
             extra["timeout"] = _llm_timeout_sec()
 
         def _do_completion(api_base_override: str | None) -> Any:
-            explicit_api_key = self.cfg.api_key if self.cfg.provider == "openrouter" else None
+            explicit_api_key = (
+                self._effective_api_key if self.cfg.provider == "openrouter" else None
+            )
             kwargs_for_call = dict(extra)
             if use_streaming:
                 kwargs_for_call["stream"] = True

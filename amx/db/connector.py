@@ -198,7 +198,35 @@ class DatabaseConnector:
     """Unified database connector that delegates backend-specific work to adapters."""
 
     def __init__(self, cfg: DBConfig):
-        self.cfg = cfg
+        # Sanitize unresolved keyring references on a COPY so the
+        # adapter never tries to use ``keyring:db_profiles/<x>/password``
+        # as a real secret (which would produce a confusing
+        # backend-specific auth error). Mutating the caller's cfg
+        # would propagate through ``AMXConfig.save()`` and erase the
+        # YAML reference — keep the original intact so the next
+        # process with a healthy keyring backend (any platform:
+        # macOS Keychain, Linux Secret Service, Windows Credential
+        # Manager) can resolve it.
+        from dataclasses import replace as _replace
+
+        from amx.storage.secrets import is_secret_reference
+
+        sanitized: dict[str, str] = {}
+        for fld in ("password", "access_token"):
+            current = getattr(cfg, fld, "") or ""
+            if is_secret_reference(current):
+                sanitized[fld] = ""
+                log.warning(
+                    "DB profile %s field is an unresolved keyring "
+                    "reference — backend keyring may be unavailable. "
+                    "Connection attempts will fail until the backend "
+                    "recovers or the credential is re-entered via /db.",
+                    fld,
+                )
+        if sanitized:
+            self.cfg = _replace(cfg, **sanitized)
+        else:
+            self.cfg = cfg
         self._engine: Engine | None = None
 
         # Auto-install the backend's driver(s) before constructing the
@@ -213,7 +241,7 @@ class DatabaseConnector:
 
         from amx.db.adapters import get_adapter
 
-        self._adapter = get_adapter(cfg)
+        self._adapter = get_adapter(self.cfg)
 
     @property
     def engine(self) -> Engine:
