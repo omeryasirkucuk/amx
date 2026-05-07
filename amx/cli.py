@@ -30,6 +30,7 @@ from amx.cli_support.commands.profiles import (
 from amx.cli_support.commands.profiles import (
     warn_no_doc_paths_for_scan_or_ingest as _warn_no_doc_paths_for_scan_or_ingest,
 )
+from amx.cli_support.commands.rerun import register_rerun_command
 from amx.cli_support.commands.run import (
     _finalize_scope,
     _resolve_codebase_for_run,
@@ -340,6 +341,7 @@ register_analyze_run_command(
     resolve_codebase_for_run=_resolve_codebase_for_run,
     log_event=_log_app_event,
 )
+register_rerun_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_docs_commands(
     main,
     finalize_scope=_finalize_scope,

@@ -31,6 +31,7 @@ from amx.web.routers import (
     live_db,
     pending,
     profiles,
+    rerun,
     runs,
     system,
     system_ops,
@@ -108,6 +109,22 @@ def create_app(
     app.include_router(system_ops.router)
     app.include_router(code_ops.router)
     app.include_router(generate.router)
+    app.include_router(rerun.router)
+
+    # Re-Run snapshots are short-lived (worker deletes them in finally).
+    # On startup, sweep anything older than 1h that a previous crashed
+    # worker may have left behind so the snapshot table never grows
+    # beyond a live re-run window.
+    try:
+        from amx.storage.sqlite_store import history_store as _hs
+
+        _store = _hs()
+        if _store is not None:
+            _store.gc_orphan_rerun_snapshots()
+    except Exception:
+        # Startup must never crash on a GC hiccup; the executor's own
+        # cleanup keeps the table tidy regardless.
+        pass
 
     root = static_root if static_root is not None else _static_root()
     app.state.static_root = root
