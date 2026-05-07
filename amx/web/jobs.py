@@ -53,6 +53,11 @@ class Job:
     error: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
     queue: Queue = field(default_factory=Queue)
+    # Set by the run worker once the orchestrator persists the run row,
+    # so a Studio user navigating to ``/runs/{numeric_run_id}`` while
+    # the worker is still running can find the live job and subscribe
+    # to its SSE stream. ``None`` for non-run kinds (apply / ask).
+    run_id: int | None = None
 
     def to_public_dict(self) -> dict[str, Any]:
         """Serializable shape for the ``GET /api/runs/{id}`` endpoint."""
@@ -65,6 +70,7 @@ class Job:
             "elapsed_sec": (self.ended_at or time.time()) - self.started_at,
             "summary": dict(self.summary),
             "error": self.error,
+            "run_id": self.run_id,
         }
 
 

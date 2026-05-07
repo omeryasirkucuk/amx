@@ -38,6 +38,10 @@ interface RunDetailPayload {
   settings?: Record<string, unknown>;
   llm_model?: string | null;
   duration_sec?: number | null;
+  /** Set by the backend when a worker thread is still alive for this
+      run id. SPA subscribes to /api/runs/{job}/events while it's
+      present so a numeric-id detail page shows live progress. */
+  live_job_id?: string | null;
 }
 
 interface ResultRow {
@@ -424,6 +428,120 @@ function normalizeAlternatives(raw: unknown): string[] {
   return out;
 }
 
+function PersistedRunActivityCard({ jobId }: { jobId: string }) {
+  // Compact live-progress panel rendered inside PersistedRunView when
+  // the run still has a worker thread. Subscribes to the same SSE
+  // stream LiveRunStream uses; reusing that whole component would
+  // also pull in the page header rewrite + cancel dialog which a
+  // user landing on a numeric run id doesn't need.
+  const [activities, setActivities] = useState<ActivityRow[]>([]);
+  const { events, closed, error } = useEventSource({
+    path: `/api/runs/${jobId}/events`,
+    enabled: true,
+  });
+
+  useEffect(() => {
+    for (const event of events) {
+      const t = String(event.type || "");
+      if (t === "activity.added") {
+        setActivities((curr) => {
+          const idx = Number(event.idx ?? curr.length);
+          if (curr.some((a) => a.idx === idx)) return curr;
+          return [
+            ...curr,
+            {
+              idx,
+              label: String(event.label ?? "—"),
+              status: "running",
+            },
+          ];
+        });
+      } else if (t === "activity.complete") {
+        const rawResults = Array.isArray(event.results) ? event.results : [];
+        const results = rawResults as ColumnDetail[];
+        setActivities((curr) =>
+          curr.map((a) =>
+            a.idx === Number(event.idx)
+              ? {
+                  ...a,
+                  status: "done",
+                  detail: String(event.detail ?? ""),
+                  results,
+                }
+              : a,
+          ),
+        );
+      } else if (t === "activity.fail") {
+        setActivities((curr) =>
+          curr.map((a) =>
+            a.idx === Number(event.idx)
+              ? { ...a, status: "failed", detail: String(event.detail ?? "") }
+              : a,
+          ),
+        );
+      }
+    }
+  }, [events]);
+
+  const completed = activities.filter((a) => a.status !== "running").length;
+  const total = activities.length;
+  const current = activities.find((a) => a.status === "running");
+
+  return (
+    <Card className="mb-4 border-accent/40">
+      <CardHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Loader2 size={14} className="animate-spin text-accent" />
+            Live progress
+            {total > 0 && (
+              <span className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+                {completed}/{total}
+              </span>
+            )}
+          </span>
+        }
+        description={
+          closed
+            ? "Worker exited. The status badge above will refresh automatically."
+            : current
+              ? `Now: ${current.label}`
+              : "Waiting for the worker to begin…"
+        }
+      />
+      <CardBody className="p-0">
+        {activities.length === 0 ? (
+          <div className="px-5 py-4 text-sm text-ink-dim">
+            <Loader2 size={14} className="mr-2 inline animate-spin" />
+            Waiting for the worker to begin…
+          </div>
+        ) : (
+          <ul className="divide-y divide-surface-border">
+            {activities.map((a) => (
+              <li key={a.idx} className="px-5 py-2 text-sm">
+                <div className="flex items-center gap-3">
+                  <ActivityDot status={a.status} />
+                  <span className="font-mono">{a.label}</span>
+                  {a.detail && (
+                    <span className="ml-auto text-xs text-ink-muted">
+                      {a.detail}
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && (
+          <div className="border-t border-surface-border px-5 py-2 text-xs text-critical">
+            {error}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 function ActivityDot({ status }: { status: "running" | "done" | "failed" }) {
   const cls =
     status === "done"
@@ -436,15 +554,37 @@ function ActivityDot({ status }: { status: "running" | "done" | "failed" }) {
 
 function PersistedRunView({ runId }: { runId: number }) {
   const [tab, setTab] = useState<Tab>("results");
+  const queryClient = useQueryClient();
   const run = useQuery({
     queryKey: ["run", runId],
     queryFn: () => apiFetch<RunDetailPayload>(`/api/history/runs/${runId}`),
+    // Poll the run row while there's an active worker so the moment
+    // it finishes (live_job_id flips to null) the page updates the
+    // status badge without needing a manual refresh. Off when there's
+    // no live job to keep the SPA quiet for completed runs.
+    refetchInterval: (query) => {
+      const data = query.state.data as RunDetailPayload | undefined;
+      return data?.live_job_id ? 3000 : false;
+    },
   });
+  const liveJobId = run.data?.live_job_id ?? null;
   const results = useQuery({
     queryKey: ["run-results", runId],
     queryFn: () => apiFetch<ResultsResponse>(`/api/history/runs/${runId}/results`),
     enabled: tab === "results",
+    // Tail the results table while live so partial output streams in
+    // alongside the activity panel.
+    refetchInterval: liveJobId ? 4000 : false,
   });
+  // When the live job ends, refresh the queries one more time so the
+  // detail page transitions cleanly from the live activity panel into
+  // the persisted results view.
+  useEffect(() => {
+    if (!liveJobId) {
+      queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
+    }
+  }, [liveJobId, runId, queryClient]);
 
   return (
     <>
@@ -488,6 +628,7 @@ function PersistedRunView({ runId }: { runId: number }) {
           </Link>
         }
       />
+      {liveJobId && <PersistedRunActivityCard jobId={liveJobId} />}
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <TabsList>
           {(["summary", "results", "scope", "settings"] as Tab[]).map((t) => (
