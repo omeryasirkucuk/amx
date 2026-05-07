@@ -1,4 +1,4 @@
-"""Rich-uyumlu CLI renk sabitleri. Studio SPA paleti ile aynı."""
+"""CLI color constants compatible with Rich. Mirrors the Studio SPA palette."""
 
 ACCENT = "#fb923c"
 ACCENT_INK = "#fed7aa"

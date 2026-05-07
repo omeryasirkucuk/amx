@@ -138,21 +138,13 @@ def _question_language_hint(text: str) -> str:
     """Light-weight language detector for short user questions.
 
     Returns one of ``arabic`` / ``japanese`` / ``korean`` / ``russian``
-    / ``turkish`` / ``english`` based on Unicode block presence + a
-    couple of Turkish-specific characters. Used by the deterministic
-    answer composers when the plan didn't pin an ``answer_language``.
-
-    AMX itself targets English in PR #61 and forward — every prompt,
-    every CLI surface, every docstring — but this detector stays
-    because deterministic short-circuit paths still echo the user's
-    own input when they ask in another language. The user-FACING UX
-    is English; the agent just doesn't sledgehammer non-English
-    questions when it can render them faithfully.
+    / ``english`` based on Unicode block presence. AMX answers in
+    English regardless; the detector exists only so the planner can
+    note the input language for telemetry / heuristics.
     """
     sample = (text or "").strip()
     if not sample:
         return "english"
-    lower = sample.lower()
     if re.search(r"[؀-ۿ]", sample):
         return "arabic"
     if re.search(r"[぀-ヿ一-鿿]", sample):
@@ -161,8 +153,6 @@ def _question_language_hint(text: str) -> str:
         return "korean"
     if re.search(r"[Ѐ-ӿ]", sample):
         return "russian"
-    if any(ch in lower for ch in "çğıöşü"):
-        return "turkish"
     return "english"
 
 

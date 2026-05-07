@@ -170,7 +170,7 @@ export default function RerunDialog({
           </label>
           <Textarea
             id="rerun-instructions"
-            placeholder='e.g. "Bu kolonun soft-delete satırlarını da içerdiğini de göz önünde bulundur."'
+            placeholder='e.g. "Note that this column also includes soft-deleted rows."'
             value={instructions}
             onChange={(e) => setInstructions(e.target.value)}
             rows={4}

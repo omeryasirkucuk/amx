@@ -309,7 +309,7 @@ class ToolBox:
                     "description": (
                         "Return the list of schema names (namespaces) visible in the active "
                         "database. Use this when the user asks 'which schemas do we have?', "
-                        "'what schemas exist?', 'sap_test ne tür bir şema?', or as a discovery "
+                        "'what schemas exist?', 'what kind of schema is sap_test?', or as a discovery "
                         "step before drilling into one specific schema.\n"
                         "Pass ``catalog`` to scope the listing to a Unity-Catalog catalog or "
                         "BigQuery project the active profile has not pinned. When the active "
@@ -401,7 +401,7 @@ class ToolBox:
                         "the user — never say 'no table found'. Order them by match_kind "
                         "(prefix > suffix > contains > fuzzy) and let the user pick. "
                         "Examples: 'where is adrc?', 'I think it was called trog…', "
-                        "'tablo adı vbap mı vbpa mı?'."
+                        "'is the table called vbap or vbpa?'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -496,7 +496,7 @@ class ToolBox:
                         "comments relate to a business concept (pricing, customer, address, "
                         "billing, ...). Returns a CANDIDATE SET — read each row's description "
                         "and filter false positives before composing your answer. Use for "
-                        "'tables about pricing', 'müşteri ile ilgili tablolar', 'find tables "
+                        "'tables about pricing', 'tables related to customers', 'find tables"
                         "that store invoices'."
                     ),
                     "parameters": {
@@ -555,7 +555,7 @@ class ToolBox:
                     "description": (
                         "Return likely join columns between two tables (verified foreign keys "
                         "first, semantic-similarity candidates after). Use this for "
-                        "'how do X and Y join?', 'X ile Y nasıl birleşir?'."
+                        "'how do X and Y join?', 'what columns connect X and Y?'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -582,8 +582,8 @@ class ToolBox:
                         "across the configured DB profiles. Fans out per profile in "
                         "parallel and returns ``profiles: {name: {databases|catalogs, "
                         "pinned_database, pinned_catalog, supports_catalogs}}``. Use "
-                        "this when the user asks 'which databases do I have?', 'hangi "
-                        "veritabanları var?', 'show me all databases', 'what's in each "
+                        "this when the user asks 'which databases do I have?', 'what "
+                        "databases exist?', 'show me all databases', 'what's in each "
                         "profile?'. The result enumerates the full reach of every "
                         "connection — NOT just the database currently pinned in each "
                         "profile's config. When composing the answer, list ALL entries "
@@ -751,7 +751,7 @@ class ToolBox:
                         "Return tables and/or columns that have NO comment in the live "
                         "database (queries the DB directly, NOT the catalog). Use this for "
                         "'are there any tables without a description?', 'which tables are "
-                        "missing comments?', 'açıklaması olmayan tablolar', 'eksik comment'. "
+                        "missing comments?', 'tables without descriptions', 'undocumented assets'. "
                         "Catalog data may be stale right after a /run-apply, so always use "
                         "this live-DB check for coverage questions instead of the concept "
                         "search tools. By default, system / extension assets (e.g. "
@@ -855,8 +855,8 @@ class ToolBox:
                         "dimensions (snowflake) or only the fact (star). Use "
                         "this for 'what's the main/fact table here?', "
                         "'which tables look like dimensions?', 'is this a "
-                        "star schema?', 'this schema'ın ana tablosu nedir?', "
-                        "'fact ve dimension tabloları?'."
+                        "star schema?', 'what is the main table of this schema?', "
+                        "'which are the fact and dimension tables?'."
                     ),
                     "parameters": {
                         "type": "object",
@@ -902,8 +902,8 @@ class ToolBox:
                         "1.0 means current-only (Type 1); >1 average means "
                         "history rows are kept (Type 2).\n"
                         "Use this for 'how does X hold history?', 'is this "
-                        "SCD2 mi?', 'eski değerler nasıl tutuluyor?', "
-                        "'değişiklik aynı satırda mı yeni satır mı?'. "
+                        "SCD2?', 'how are old values stored?', "
+                        "'are changes kept in the same row or in new rows?'. "
                         "ALWAYS surface the evidence list to the user — the "
                         "hypothesis alone (without evidence) is misleading."
                     ),
@@ -938,8 +938,8 @@ class ToolBox:
                         "no catalog round-trip) and ground-truth (live DB). "
                         "Use this for 'give me a sample / example value', 'what "
                         "does column X look like', 'show me a value from aedat', "
-                        "'date format YYYYMMDD mı, bir örnek görelim', 'kolon "
-                        "değerleri nasıl'. ALWAYS resolve the table via "
+                        "'is the date format YYYYMMDD, show me a sample', 'what "
+                        "do column values look like'. ALWAYS resolve the table via "
                         "find_table_by_name first if the user didn't qualify the "
                         "schema — running this tool with the wrong schema will "
                         "fail with a misleading 'table not found' error. The "
@@ -978,9 +978,9 @@ class ToolBox:
                         "``detected_format`` — recognises common patterns "
                         "(YYYYMMDD / YYYY-MM-DD / DD/MM/YYYY / DD-MM-YYYY / "
                         "DDMMYYYY / ISO 8601). Use this for 'how many nulls "
-                        "in email column?', 'date format ddmmyyyy mı?', 'is "
+                        "in email column?', 'is the date format ddmmyyyy?', 'is "
                         "the data continuous since when?' (read min_value of "
-                        "the date column), 'çoklama oranı', 'are there gaps "
+                        "the date column), 'duplication ratio', 'are there gaps "
                         "in created_at?'. ``columns`` defaults to all columns "
                         "of the table; pass a subset to limit the scan on "
                         "very wide tables."
@@ -1016,7 +1016,7 @@ class ToolBox:
                         "you compose the final answer, ALWAYS state the inference tier "
                         "explicitly so the user knows whether the join is FK-verified or "
                         "name-inferred. Use for 'which tables can I join with vbrk?', "
-                        "'X ile birleşebilecek tablolar', 'find tables related to vbrk'. "
+                        "'tables that can join with X', 'find tables related to vbrk'. "
                         "Different from get_join_candidates which needs both sides upfront. "
                         "WITHIN-PROFILE only: for cross-profile JOIN candidates ('what can I "
                         "join this with from another DB'), call find_joinable_across_profiles."

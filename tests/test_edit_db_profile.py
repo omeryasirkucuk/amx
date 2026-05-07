@@ -130,9 +130,9 @@ def test_edit_profile_does_not_change_active_when_editing_inactive_profile() -> 
 def test_schema_and_table_slash_commands_are_gone() -> None:
     """They used to live under the /db namespace and silently wrote
     cfg.current_schema / cfg.current_table without any validation.
-    They were the reason "olmayan bir şeye bağlanmak" was even
-    possible. Make sure the heads stay gone — re-introducing them
-    should be a deliberate, reviewed decision."""
+    They were the reason "connecting to something that doesn't exist"
+    was even possible. Make sure the heads stay gone — re-introducing
+    them should be a deliberate, reviewed decision."""
     db_heads = cmd_heads_for_namespace("db")
     assert "schema" not in db_heads
     assert "table" not in db_heads

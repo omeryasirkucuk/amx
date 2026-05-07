@@ -112,7 +112,7 @@ class ResolutionMixin:
         strong_tokens.extend(
             item
             for item in re.findall(
-                r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tablo|tablolar|tablosu|tablosunda|tablosuna|tablosundan|tabloları|tablosunu)\b",
+                r"\b([A-Za-z_][A-Za-z0-9_]{1,127})\s+(?:table|tables)\b",
                 question or "",
                 flags=re.IGNORECASE,
             )
@@ -120,7 +120,7 @@ class ResolutionMixin:
         strong_tokens.extend(
             item
             for item in re.findall(
-                r"\b(?:table|tables|tablo|tablolar|tablosu)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
+                r"\b(?:table|tables)\s+([A-Za-z_][A-Za-z0-9_]{1,127})\b",
                 question or "",
                 flags=re.IGNORECASE,
             )
@@ -131,38 +131,32 @@ class ResolutionMixin:
         # before overriding the LLM's chosen mode.
         weak_tokens: list[str] = []
         subject_patterns = (
-            # English: what's/what is/describe/explain/tell me about/show me X
+            # what's / what is / describe / explain / tell me about / show me X
             r"\b(?:what'?s|what is|what are|whats|describe|explain|define|tell\s+me\s+about|"
             r"show\s+me|info\s+(?:on|about)|details?\s+(?:on|about)|definition\s+of|"
             r"meaning\s+of|purpose\s+of)\s+(?:the\s+|a\s+|an\s+)?"
             r"`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
-            # English: what does X do/store/contain/mean
+            # what does X do/store/contain/mean
             r"\b(?:what\s+does|what\s+do)\s+`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\s+"
             r"(?:do|mean|store|contain|hold|represent)\b",
-            # Turkish: <X> nedir / hakkında / hakkinda / ne işe yarar / ne demek
-            r"\b`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\s+(?:nedir|ne\s+demek|"
-            r"hakk[ıi]nda|ne\s+i[şs]e\s+yarar|ne\s+i[şs]\s+yapar)\b",
-            # Turkish: bana <X> hakkında bilgi ver / <X>'i anlat / <X>'i açıkla
-            r"\b(?:bana\s+)?(?:bahset|anlat|a[çc][ıi]kla|tan[ıi]t)\s+"
-            r"(?:bana\s+)?`?([A-Za-z_][A-Za-z0-9_]{1,127})`?\b",
         )
         for pattern in subject_patterns:
             weak_tokens.extend(
                 item for item in re.findall(pattern, question or "", flags=re.IGNORECASE)
             )
         table_token_stopwords = {
-            "nedir",
-            "ne",
             "what",
             "is",
             "are",
-            "hangi",
-            "hangileri",
-            "var",
-            "mi",
-            "mı",
-            "mu",
-            "mü",
+            "be",
+            "been",
+            "have",
+            "had",
+            "do",
+            "does",
+            "did",
+            "commented",
+            "documented",
             # Question/quantifier words that precede "table" without naming one.
             # Without these, a question like "which table has the most rows"
             # is misread as a request for a literal table named "which".
@@ -195,8 +189,6 @@ class ResolutionMixin:
             # English verbs/prepositions that commonly follow "table" without
             # being a table name (e.g., "the table has the most rows" -> "has").
             "has",
-            "have",
-            "had",
             "with",
             "in",
             "on",
@@ -220,43 +212,18 @@ class ResolutionMixin:
             # so e.g. "describe table" does not extract "table" as a name.
             "table",
             "tables",
-            "tablo",
-            "tablolar",
-            # All inflected Turkish forms of "tablo" we already accept in the
-            # other regex branch — they must also drop out of subject capture.
-            "tablosu",
-            "tablosunda",
-            "tablosuna",
-            "tablosundan",
-            "tablosunu",
-            "tabloları",
-            "tablolarını",
-            "tablolardan",
             "column",
             "columns",
-            "kolon",
-            "kolonlar",
             "field",
             "fields",
-            "alan",
-            "alanlar",
             "data",
             "info",
             "information",
             "metadata",
-            "veri",
-            "bilgi",
             "schema",
             "schemas",
-            "sema",
-            "şema",
-            "şemalar",
-            "semalar",
             "database",
             "databases",
-            "veritaban",
-            "veritabani",
-            "veritabanı",
             # Generic adjectives that might land after "what's the".
             "most",
             "least",
@@ -621,29 +588,15 @@ class ResolutionMixin:
 
     def _column_name_lookup_terms(self, question: str, plan: SearchPlan) -> list[str]:
         stopwords = {
-            "ile",
-            "alakali",
-            "alakalı",
-            "ilgili",
-            "tüm",
-            "tum",
-            "kolon",
-            "kolonlar",
-            "kolonu",
             "column",
             "columns",
             "field",
             "fields",
-            "isim",
-            "isimleri",
             "name",
             "names",
-            "getir",
-            "listele",
             "list",
             "all",
             "which",
-            "hangi",
             "related",
             "with",
         }

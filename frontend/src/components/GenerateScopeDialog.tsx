@@ -17,9 +17,9 @@ interface Props {
   onClose: () => void;
   title: ReactNode;
   description?: ReactNode;
-  /** "Sadece bu asset" — fast, single LLM call. Rendered as the secondary button. */
+  /** "Just this asset" — fast, single LLM call. Rendered as the secondary button. */
   singleOption: ScopeOption;
-  /** "Bütün asset" — bulk run, spawns analyze worker. Rendered as the primary button. */
+  /** "All children" — bulk run, spawns analyze worker. Rendered as the primary button. */
   bulkOption: ScopeOption;
   cancelLabel?: string;
 }
