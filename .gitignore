@@ -63,3 +63,6 @@ frontend/.cache/
 
 # Local build artefacts under the SPA workspace
 *.tsbuildinfo
+
+# Perf benchmark baselines — captured locally, shared via PR or dashboard
+tests/perf/baselines/*.json
