@@ -50,6 +50,13 @@ def _make_db_mock() -> MagicMock:
 
 def test_audit_log_receives_one_event_per_successful_apply() -> None:
     db = _make_db_mock()
+    # Pre-write reader (added in PR-12b2) consults ``get_column_comments``
+    # before each overwrite so audit rows can carry the prior text.
+    # Stub returns the originals AMX is about to replace.
+    db.get_column_comments.return_value = {
+        "id": "Order id (DBA-written).",
+        "amount": "Total amount in cents.",
+    }
     audit = MagicMock()
 
     rows = [
@@ -80,10 +87,16 @@ def test_audit_log_receives_one_event_per_successful_apply() -> None:
     assert first_kwargs["run_id"] == 42
     assert first_kwargs["result_id"] == 10
     assert first_kwargs["asset_kind"] == "table"
-    # Old-comment lookup deferred to PR-12b2 — the helper passes None
-    # for now so rollback knows "we never read it" rather than
-    # "it was empty".
-    assert first_kwargs["old_comment"] is None
+    # PR-12b2: ``old_comment`` carries the pre-write value the reader
+    # captured. ``/history rollback`` uses this to restore the
+    # originals — DBA-written or otherwise — byte-for-byte.
+    assert first_kwargs["old_comment"] == "Order id (DBA-written)."
+
+    second_kwargs = audit.record_apply_event.call_args_list[1].kwargs
+    assert second_kwargs["old_comment"] == "Total amount in cents."
+
+    # Reader caches per-table; both rows share one round-trip.
+    db.get_column_comments.assert_called_once_with("public", "orders")
 
 
 def test_audit_log_omitted_means_no_record_calls() -> None:

@@ -275,12 +275,19 @@ def _record_audit(
     audit_user: str,
     audit_host: str,
     audit_run_id: int | None,
+    old_comment: str | None = None,
 ) -> None:
     """Write one ``apply_events`` row for a successful COMMENT.
 
     No-op when ``audit_log`` is ``None`` so the legacy code path stays
     untouched. Failures are swallowed at debug level — the audit log
     is best-effort and must never abort an otherwise-successful apply.
+
+    ``old_comment`` is the verbatim comment text that was on the
+    asset *before* this apply overwrote it. ``None`` means we
+    couldn't read it (adapter doesn't expose a read API, or the
+    pre-write read raised); ``/history rollback`` treats ``None``
+    as "original state unknown — skip this row".
     """
     if audit_log is None:
         return
@@ -293,7 +300,7 @@ def _record_audit(
             table_name=r.table or "",
             column_name=r.column,
             asset_kind=r.asset_kind or "table",
-            old_comment=None,
+            old_comment=old_comment,
             new_comment=r.final_description or "",
             applied_by=audit_user,
             hostname=audit_host,
@@ -301,6 +308,57 @@ def _record_audit(
         )
     except Exception as exc:
         log.debug("audit_log.record_apply_event failed for %s.%s: %s", r.schema, r.table, exc)
+
+
+class _OldCommentReader:
+    """Read prior COMMENT values from the live DB before they are
+    overwritten, with a per-(schema, table) column-comment cache so
+    a 200-row apply against one table costs one
+    ``get_column_comments`` call rather than 200.
+
+    Misses (adapter without a read API, query failure, asset kind
+    AMX cannot read) return ``None`` — the audit row records that
+    as "original unknown" and ``/history rollback`` skips that
+    row instead of synthesising garbage.
+    """
+
+    def __init__(self, db: DatabaseConnector) -> None:
+        self.db = db
+        self._column_cache: dict[tuple[str, str], dict[str, str | None]] = {}
+
+    def read(self, r: ReviewResult, kind: AssetKind) -> str | None:
+        try:
+            if kind == AssetKind.SCHEMA:
+                return self.db.get_schema_comment(r.schema)
+            if kind == AssetKind.DATABASE:
+                return self.db.get_database_comment()
+            if r.column is None:
+                return self.db.get_table_comment(r.schema, r.table)
+            key = (r.schema, r.table)
+            cached = self._column_cache.get(key)
+            if cached is None:
+                try:
+                    cached = self.db.get_column_comments(r.schema, r.table) or {}
+                except Exception as exc:
+                    log.debug(
+                        "get_column_comments failed for %s.%s (%s); "
+                        "audit will record old_comment=None",
+                        r.schema,
+                        r.table,
+                        exc,
+                    )
+                    cached = {}
+                self._column_cache[key] = cached
+            return cached.get(r.column)
+        except Exception as exc:
+            log.debug(
+                "old-comment read failed for %s.%s.%s (%s); audit will record old_comment=None",
+                r.schema,
+                r.table,
+                r.column or "",
+                exc,
+            )
+            return None
 
 
 def apply_review_results_to_db(
@@ -383,6 +441,13 @@ def apply_review_results_to_db(
         # callback to count "would-apply" rows when needed.
         return 0
 
+    # Build the old-comment reader once per apply call. Cache scope is
+    # the call so concurrent apply runs (multi-user shared store) get
+    # independent caches; nothing escapes this function. The reader is
+    # only consulted when ``audit_log`` is set — saves a round-trip on
+    # every legacy caller that doesn't audit.
+    old_reader = _OldCommentReader(db) if audit_log is not None else None
+
     with db.engine.begin() as conn:
         total = len(pending)
         index = 0
@@ -424,6 +489,15 @@ def apply_review_results_to_db(
                     batched_comments = [
                         (item.column or "", item.final_description) for item in group
                     ]
+                    # Pre-fetch the prior comment for every item in the
+                    # group BEFORE the batch overwrite — once committed,
+                    # the original text is gone and rollback can't
+                    # recover it. The reader caches at (schema, table)
+                    # level, so this is one ``get_column_comments``
+                    # call per table regardless of group size.
+                    pre_old: list[str | None] = []
+                    if old_reader is not None:
+                        pre_old = [old_reader.read(item, kind) for item in group]
                     try:
                         if on_progress is not None:
                             on_progress(
@@ -451,6 +525,7 @@ def apply_review_results_to_db(
                                     audit_user=audit_user,
                                     audit_host=audit_host,
                                     audit_run_id=audit_run_id,
+                                    old_comment=(pre_old[offset - 1] if pre_old else None),
                                 )
                             index = next_index
                             continue
@@ -461,6 +536,12 @@ def apply_review_results_to_db(
                             r.table,
                             batch_exc,
                         )
+            # Pre-fetch the prior comment for this row before the
+            # overwrite. ``read`` swallows its own errors and returns
+            # None on failure, so a misbehaving adapter doesn't break
+            # the apply itself — the audit row just lands with
+            # old_comment=None and rollback skips it.
+            pre_old_value = old_reader.read(r, kind) if old_reader is not None else None
             try:
                 if on_progress is not None:
                     on_progress(r, "started", index + 1, total, "")
@@ -484,6 +565,7 @@ def apply_review_results_to_db(
                     audit_user=audit_user,
                     audit_host=audit_host,
                     audit_run_id=audit_run_id,
+                    old_comment=pre_old_value,
                 )
             except Exception as exc:
                 if on_progress is not None:
