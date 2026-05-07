@@ -2,18 +2,38 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
   Activity,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Database,
+  DollarSign,
   Sparkles,
   PlayCircle,
   TrendingUp,
 } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import { Button, InfoHint, Skeleton } from "../components/ui";
+
+// Shape of the ``GET /api/usage?window=all`` payload — only the
+// fields the Overview cards consume. Kept inline (rather than
+// promoted to ``lib/api``) so a backend addition does not force a
+// type churn in two places at once; the shared definition can land
+// when a third surface starts consuming usage stats.
+interface UsageTotals {
+  runs: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+}
+interface UsageResponse {
+  window: string;
+  totals: UsageTotals;
+}
 import {
   humanizeCommand,
   relativeTime,
@@ -35,6 +55,16 @@ export default function Home() {
   const runs = useQuery({
     queryKey: ["recent-runs"],
     queryFn: () => api.recentRuns(8),
+    retry: false,
+  });
+  // Lifetime token + cost totals for the overview cards. Reads the
+  // same ``/api/usage`` endpoint the System page uses, with
+  // ``window=all`` so the cards reflect every recorded run instead
+  // of only the last 7 days. Failures fall through to ``—`` cards
+  // (the catch is in ``StatCard``'s ``value`` resolution).
+  const usage = useQuery({
+    queryKey: ["usage", "all"],
+    queryFn: () => apiFetch<UsageResponse>("/api/usage?window=all"),
     retry: false,
   });
 
@@ -83,6 +113,33 @@ export default function Home() {
           tone="positive"
           to="/runs"
           hint="Percentage of runs whose worker exited cleanly. Cancelled and failed runs both count against the total."
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        <StatCard
+          icon={ArrowUpFromLine}
+          label="Input tokens"
+          value={formatTokens(usage.data?.totals.input_tokens)}
+          tone="neutral"
+          to="/system"
+          hint="All-time prompt tokens billed at the input rate, summed across every recorded run. Click to drill into the System page's per-(provider, model) breakdown."
+        />
+        <StatCard
+          icon={ArrowDownToLine}
+          label="Output tokens"
+          value={formatTokens(usage.data?.totals.output_tokens)}
+          tone="neutral"
+          to="/system"
+          hint="All-time completion tokens billed at the output rate. Output is usually the dominant cost contributor on modern models."
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Total cost (USD)"
+          value={formatCost(usage.data?.totals.cost_usd)}
+          tone="accent"
+          to="/system"
+          hint="All-time USD cost frozen at run time. Older runs without a recorded price contribute zero — refresh prices via the TopBar ↻ button or run /usage --live for a recompute against current rates."
         />
       </div>
 
@@ -286,6 +343,37 @@ function successRate(stats: unknown): string {
     return `${Math.round((success / total) * 100)}%`;
   }
   return "—";
+}
+
+/**
+ * Format an aggregated token count for the Overview StatCard.
+ *
+ * Long numbers are compacted to ``12.4M`` / ``823.5K`` so the card
+ * does not need to grow horizontally on a fresh install with no
+ * runs. Anything under 10k stays as the raw integer with a
+ * locale-aware thousands separator. Missing / non-numeric input
+ * resolves to ``—`` so the card matches the rest of the dashboard's
+ * empty-state convention.
+ */
+function formatTokens(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}K`;
+  return value.toLocaleString();
+}
+
+/**
+ * Format an aggregated USD cost for the Overview StatCard.
+ *
+ * ``$0.0000`` is misleading on a model with no recorded price —
+ * rendered as ``—`` instead. Sub-cent totals fall to ``<$0.01`` so
+ * the user is not lulled by a literal zero on a small workload.
+ */
+function formatCost(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
+  if (value < 0.01) return "<$0.01";
+  if (value < 1) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
 }
 
 function totalRuns(stats: unknown): string {
