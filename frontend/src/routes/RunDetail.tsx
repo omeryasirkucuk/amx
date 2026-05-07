@@ -1078,10 +1078,10 @@ function ResultsTab({
         <Card>
           <CardBody className="space-y-2 px-4 py-3 text-xs">
             <p className="text-ink-muted">
-              This run didn't capture the target database (older run, or
-              applied before PR #224). Pick the database the schemas live
-              in so apply targets it directly — otherwise the COMMENTs
-              would land in the active profile's default and produce
+              This run didn't capture the target database. Pick the
+              database the schemas live in so apply targets it directly —
+              otherwise the COMMENTs would land in the active profile's
+              default and produce
               <span className="font-mono"> schema "…" does not exist</span>{" "}
               errors.
             </p>
