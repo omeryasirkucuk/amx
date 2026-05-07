@@ -449,6 +449,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                             table,
                             interactive_review=False,
                             auto_apply=False,
+                            cancel_token=job.cancel,
                         )
                     except RunCancelled:
                         raise
@@ -641,7 +642,10 @@ def _process_scope_batch(
                 for t in tables
             }
             schema_results = orchestrator.process_tables_batch_mode(
-                schema, list(tables), asset_kinds=asset_kinds
+                schema,
+                list(tables),
+                asset_kinds=asset_kinds,
+                cancel_token=job.cancel,
             )
         except RunCancelled:
             raise

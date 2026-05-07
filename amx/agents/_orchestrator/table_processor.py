@@ -18,6 +18,7 @@ and persistence helpers. Public surface is just
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -71,6 +72,7 @@ class TableProcessor:
         asset_kind: AssetKind | None = None,
         auto_apply: bool = False,
         interactive_review: bool = True,
+        cancel_token: threading.Event | None = None,
     ) -> None:
         self.orch = orch
         self.schema = schema
@@ -78,6 +80,25 @@ class TableProcessor:
         self.asset_kind = asset_kind
         self.auto_apply = auto_apply
         self.interactive_review = interactive_review
+        self.cancel_token = cancel_token
+
+    # ── Cancellation ───────────────────────────────────────────────────
+
+    def _check_cancel(self, *, phase: str) -> None:
+        """Raise :class:`RunCancelled` if the cancel token has been set.
+
+        Called at phase boundaries (profile fetch, filter chain, agent
+        run, apply / review dispatch). When ``self.cancel_token`` is
+        ``None`` (CLI invocation, programmatic call without a Studio
+        job) this is a no-op, so existing call sites are unaffected.
+
+        ``phase`` is included in the exception message so the SSE
+        consumer / log can show which boundary observed the cancel.
+        """
+        if self.cancel_token is not None and self.cancel_token.is_set():
+            from amx.agents.orchestrator import RunCancelled
+
+            raise RunCancelled(f"Cancelled before {phase} on {self.schema}.{self.table}")
 
     # ── Public entry point ─────────────────────────────────────────────
 
@@ -90,14 +111,19 @@ class TableProcessor:
         )
         heading(f"Analyzing {self.schema}.{self.table}{kind_label}")
 
+        self._check_cancel(phase="profile_fetch")
         profile = self._fetch_profile()
+
+        self._check_cancel(phase="filters")
         if not self._apply_filters(profile):
             return []
 
+        self._check_cancel(phase="agents")
         merged, result_id_map = self._run_agents_and_persist(profile)
         if merged is None:
             return []
 
+        self._check_cancel(phase="apply_or_review")
         return self._dispatch_apply_or_review(profile, merged, result_id_map)
 
     # ── Phase 1: profile fetch ─────────────────────────────────────────
