@@ -278,6 +278,31 @@ class DatabaseAdapter(ABC):
     def get_database_comment(self, engine: Engine) -> str | None:
         return None
 
+    def batch_get_table_comments(
+        self,
+        engine: Engine,
+        pairs: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], str | None] | None:
+        """Fetch table comments for many ``(schema, table)`` pairs at once.
+
+        Default implementation returns ``None`` so callers fall back to
+        per-table ``get_table_comment`` queries — preserves current
+        behaviour for every adapter that has not overridden this hook.
+
+        Adapters that can answer all pairs in a single round-trip
+        (PostgreSQL, MySQL, etc.) should override and return a dict
+        mapping each requested pair to its comment text (or ``None``
+        when the table has no comment). Pairs not present in the dict
+        are treated as "no comment".
+
+        Implementation note: 200 outgoing/incoming FKs commonly hit
+        50+ unique target tables. The default code path issues 50+
+        round-trips through SQLAlchemy's inspector cache; the batch
+        override compresses that to one query against the catalog
+        view (e.g. ``pg_description`` on Postgres).
+        """
+        return None
+
     def column_comments_probe_query(self, schema: str, table: str) -> str:
         """Return the query or metadata operation used to inspect column comments."""
         return f"SQLAlchemy inspector get_columns(table={table!r}, schema={schema!r})"
