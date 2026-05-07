@@ -1,0 +1,61 @@
+"""ToolBox.search_docs / search_code: schema registration + empty-scope path."""
+
+from __future__ import annotations
+
+import json
+
+from amx.config import AMXConfig, DBConfig
+from amx.search.agent_tools import ToolBox
+from amx.search.catalog import SearchCatalog
+
+
+def _make_toolbox(tmp_path) -> ToolBox:
+    cfg = AMXConfig.load(str(tmp_path / "config.yml"))
+    cfg.db_profiles["prod_pg"] = DBConfig(backend="postgresql", host="x")
+    cfg.active_db_profile = "prod_pg"
+    cfg.active_db_profiles = ["prod_pg"]
+    catalog = SearchCatalog(db_path=tmp_path / "search.db")
+    # We don't need a real connector; the doc/code tools never touch it.
+    return ToolBox(cfg, catalog, db_profiles=["prod_pg"])
+
+
+def test_schemas_register_search_docs_and_code() -> None:
+    names = {s["function"]["name"] for s in ToolBox.schemas()}
+    assert "search_docs" in names
+    assert "search_code" in names
+
+
+def test_search_docs_no_doc_profile_short_circuits(tmp_path) -> None:
+    """No doc profiles → tool reports no_docs_for_scope, never opens Chroma."""
+    box = _make_toolbox(tmp_path)
+    payload = box._tool_search_docs(query="what is churn?")
+    assert payload["count"] == 0
+    assert payload["reason"] == "no_docs_for_scope"
+    box.close()
+
+
+def test_search_code_no_code_profile_short_circuits(tmp_path) -> None:
+    box = _make_toolbox(tmp_path)
+    payload = box._tool_search_code(query="where is customers written?")
+    assert payload["count"] == 0
+    assert payload["reason"] == "no_code_for_scope"
+    box.close()
+
+
+def test_search_docs_invoke_through_dispatcher(tmp_path) -> None:
+    """invoke() must route ``search_docs`` to ``_tool_search_docs``."""
+    box = _make_toolbox(tmp_path)
+    raw = box.invoke("search_docs", json.dumps({"query": "abc"}))
+    payload = json.loads(raw)
+    # Either no_docs_for_scope (no profile) or a real result — not the
+    # "Unknown tool" error path. Asserting on the success-shape keys.
+    assert "count" in payload
+    box.close()
+
+
+def test_search_docs_empty_query_returns_marker(tmp_path) -> None:
+    box = _make_toolbox(tmp_path)
+    payload = box._tool_search_docs(query="   ")
+    assert payload["count"] == 0
+    assert payload["reason"] == "empty_query"
+    box.close()

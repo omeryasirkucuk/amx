@@ -46,12 +46,14 @@ interface DocProfile {
   name: string;
   paths: string[];
   is_active: boolean;
+  linked_db_profiles?: string[];
 }
 
 interface CodeProfile {
   name: string;
   path: string;
   is_active: boolean;
+  linked_db_profiles?: string[];
 }
 
 interface DbBackend {
@@ -1063,6 +1065,19 @@ function DocProfilesSection() {
                       ))}
                     </ul>
                   )}
+                  {(p.linked_db_profiles?.length ?? 0) > 0 && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-3 text-[10px] text-ink-dim">
+                      <span>Links:</span>
+                      {p.linked_db_profiles!.map((db) => (
+                        <span
+                          key={db}
+                          className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-accent-ink"
+                        >
+                          {db}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
@@ -1084,6 +1099,12 @@ function DocProfilesSection() {
               ? profiles.data?.profiles?.find((p) => p.name === editing.name)?.paths ?? []
               : []
           }
+          existingLinkedDbs={
+            editing.name
+              ? profiles.data?.profiles?.find((p) => p.name === editing.name)
+                  ?.linked_db_profiles ?? []
+              : []
+          }
           onClose={() => setEditing(null)}
         />
       )}
@@ -1096,16 +1117,19 @@ function DocProfileWizard({
   onClose,
   editingName,
   existingPaths,
+  existingLinkedDbs,
 }: {
   open: boolean;
   onClose: () => void;
   editingName: string | null;
   existingPaths: string[];
+  existingLinkedDbs: string[];
 }) {
   const qc = useQueryClient();
   const isEdit = editingName != null;
   const [name, setName] = useState(editingName ?? "");
   const [text, setText] = useState(existingPaths.join("\n"));
+  const [linkedDbs, setLinkedDbs] = useState<string[]>(existingLinkedDbs);
 
   const save = useMutation({
     mutationFn: () =>
@@ -1116,6 +1140,7 @@ function DocProfileWizard({
             .split("\n")
             .map((s) => s.trim())
             .filter(Boolean),
+          linked_db_profiles: linkedDbs,
         }),
       }),
     onSuccess: () => {
@@ -1170,6 +1195,7 @@ function DocProfileWizard({
             className="w-full rounded-md border border-surface-border bg-surface px-3 py-2 font-mono text-xs"
           />
         </Field>
+        <LinkedDbsField selected={linkedDbs} onChange={setLinkedDbs} kind="doc" />
         {save.isError && (
           <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
             {save.error instanceof Error ? save.error.message : "Save failed."}
@@ -1177,6 +1203,72 @@ function DocProfileWizard({
         )}
       </div>
     </Modal>
+  );
+}
+
+function LinkedDbsField({
+  selected,
+  onChange,
+  kind,
+}: {
+  selected: string[];
+  onChange: (next: string[]) => void;
+  kind: "doc" | "code";
+}) {
+  // Multi-select chips driven by the canonical DB profile list. An
+  // empty selection means "global" — the doc/code profile shows up in
+  // every /ask scope. Linking it to one or more DB profiles narrows
+  // /ask retrieval to questions running against those DBs.
+  const dbs = useQuery({
+    queryKey: ["profiles", "db", "names-only"],
+    queryFn: () =>
+      apiFetch<{ profiles: DbProfileSummary[] }>("/api/profiles/db"),
+    retry: false,
+  });
+  const profiles = dbs.data?.profiles ?? [];
+  const toggle = (name: string) => {
+    if (selected.includes(name)) {
+      onChange(selected.filter((n) => n !== name));
+    } else {
+      onChange([...selected, name]);
+    }
+  };
+  return (
+    <Field label="Linked DB profiles (optional)">
+      <p className="mb-2 text-[11px] text-ink-dim">
+        Pick which DB profiles this {kind} documents. Empty = global (in
+        scope for every /ask). When set, /ask only pulls from this {kind}{" "}
+        profile when at least one of the selected DBs is in the question's
+        scope.
+      </p>
+      {profiles.length === 0 ? (
+        <p className="text-xs text-ink-dim">
+          No DB profiles configured yet — leave empty to keep this {kind}{" "}
+          profile global.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {profiles.map((db) => {
+            const active = selected.includes(db.name);
+            return (
+              <button
+                key={db.name}
+                type="button"
+                onClick={() => toggle(db.name)}
+                className={
+                  "rounded-md border px-2 py-1 text-xs font-mono transition " +
+                  (active
+                    ? "border-accent bg-accent-soft text-accent-ink"
+                    : "border-surface-border bg-surface text-ink-muted hover:border-accent/40")
+                }
+              >
+                {db.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </Field>
   );
 }
 
@@ -1354,6 +1446,19 @@ function CodeProfilesSection() {
                   <div className="min-w-0">
                     <div className="font-medium">{p.name}</div>
                     <div className="truncate font-mono text-xs text-ink-dim">{p.path}</div>
+                    {(p.linked_db_profiles?.length ?? 0) > 0 && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-ink-dim">
+                        <span>Links:</span>
+                        {p.linked_db_profiles!.map((db) => (
+                          <span
+                            key={db}
+                            className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-accent-ink"
+                          >
+                            {db}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     {p.is_active ? (
@@ -1425,6 +1530,12 @@ function CodeProfilesSection() {
               ? profiles.data?.profiles?.find((p) => p.name === editing.name)?.path ?? ""
               : ""
           }
+          existingLinkedDbs={
+            editing.name
+              ? profiles.data?.profiles?.find((p) => p.name === editing.name)
+                  ?.linked_db_profiles ?? []
+              : []
+          }
           onClose={() => setEditing(null)}
         />
       )}
@@ -1437,22 +1548,25 @@ function CodeProfileWizard({
   onClose,
   editingName,
   existingPath,
+  existingLinkedDbs,
 }: {
   open: boolean;
   onClose: () => void;
   editingName: string | null;
   existingPath: string;
+  existingLinkedDbs: string[];
 }) {
   const qc = useQueryClient();
   const isEdit = editingName != null;
   const [name, setName] = useState(editingName ?? "");
   const [path, setPath] = useState(existingPath);
+  const [linkedDbs, setLinkedDbs] = useState<string[]>(existingLinkedDbs);
 
   const save = useMutation({
     mutationFn: () =>
       apiFetch(`/api/profiles/code/${encodeURIComponent(name)}`, {
         method: "PUT",
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path, linked_db_profiles: linkedDbs }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["profiles", "code"] });
@@ -1506,6 +1620,7 @@ function CodeProfileWizard({
             className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
           />
         </Field>
+        <LinkedDbsField selected={linkedDbs} onChange={setLinkedDbs} kind="code" />
         {save.isError && (
           <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
             {save.error instanceof Error ? save.error.message : "Save failed."}
