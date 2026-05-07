@@ -24,6 +24,7 @@ from amx.utils.console import (
     error,
     heading,
     info,
+    info_styled,
     render_table,
     success,
     warn,
@@ -1306,7 +1307,7 @@ def cmd_inspect(cfg: AMXConfig, rest: list[str]) -> None:
 
     profile = cfg.db_profiles[profile_name]
     heading(f"DB profile: {profile_name}")
-    info(f"  Backend:    [#22d3ee]{profile.backend}[/#22d3ee]")
+    info_styled("  Backend", profile.backend, value_style="#22d3ee")
     info(f"  Connection: {profile.display_summary}")
 
     # Print non-secret connection fields per backend so users can sanity-
