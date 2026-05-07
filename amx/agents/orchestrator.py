@@ -1187,7 +1187,7 @@ class Orchestrator:
         est = estimate_tokens(messages)
         with step_spinner(f"Merging suggestions: {len(needs_merge)} columns", token_estimate=est):
             result = self.llm.chat(messages)
-        tracker.record("merge", est, result.usage)
+        tracker.record_for("merge", est, self.llm, result.usage)
 
         parsed = self._parse_merge_response(result.content)
 
@@ -1772,7 +1772,7 @@ class Orchestrator:
                         for c in cols_slice
                     ]
                     batch_ctx = self.profile_agent._ctx_with_columns(ctx, col_dicts)
-                    tracker.record("profile_agent(batch)", 0, chat_result.usage)
+                    tracker.record_for("profile_agent(batch)", 0, self.llm, chat_result.usage)
                     parsed = self.profile_agent.parse_batch_result(chat_result.content, batch_ctx)
                     all_suggestions.extend(
                         apply_logprob_confidence(
@@ -1788,7 +1788,7 @@ class Orchestrator:
                 cid = f"rag:{schema}:{table}"
                 chat_result = batch_results.get(cid)
                 if chat_result and chat_result.content:
-                    tracker.record("rag_agent(batch)", 0, chat_result.usage)
+                    tracker.record_for("rag_agent(batch)", 0, self.llm, chat_result.usage)
                     parsed = self.rag_agent.parse_batch_result(chat_result.content, ctx)
                     all_suggestions.extend(
                         apply_logprob_confidence(
@@ -1804,7 +1804,7 @@ class Orchestrator:
                 cid = f"code:{schema}:{table}"
                 chat_result = batch_results.get(cid)
                 if chat_result and chat_result.content:
-                    tracker.record("code_agent(batch)", 0, chat_result.usage)
+                    tracker.record_for("code_agent(batch)", 0, self.llm, chat_result.usage)
                     parsed = self.code_agent.parse_batch_result(chat_result.content, ctx)
                     all_suggestions.extend(
                         apply_logprob_confidence(

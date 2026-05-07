@@ -508,7 +508,15 @@ def advance_file_progress(progress: Progress, filename: str = "") -> None:
 
 
 def render_token_summary(tracker: object) -> None:
-    """Render a Rich table summarising per-step token usage."""
+    """Render a Rich table summarising per-step token usage and cost.
+
+    The cost column is populated from the per-record USD figures the
+    :class:`TokenTracker` accumulated during the run (frozen at the
+    moment of the call). Steps whose price source was ``"unknown"``
+    contribute zero to the grand total — the user sees ``$0.0000`` and
+    knows to set a custom override via ``/cost`` or refresh the price
+    cache via ``/refresh-prices``.
+    """
     from amx.utils.token_tracker import TokenTracker
 
     if not isinstance(tracker, TokenTracker) or not tracker.has_records:
@@ -519,17 +527,29 @@ def render_token_summary(tracker: object) -> None:
     table.add_column("Input", justify="right")
     table.add_column("Output", justify="right")
     table.add_column("Total", justify="right", style="bold")
+    table.add_column("Cost (USD)", justify="right")
     tot_in = tot_out = tot_all = 0
-    for step, inp, out, total in rows:
-        table.add_row(step, f"{inp:,}", f"{out:,}", f"{total:,}")
+    tot_cost = 0.0
+    for row in rows:
+        step, inp, out, total, *cost_parts = row
+        cost = float(cost_parts[0]) if cost_parts else 0.0
+        table.add_row(
+            step,
+            f"{inp:,}",
+            f"{out:,}",
+            f"{total:,}",
+            f"${cost:,.4f}" if cost > 0 else "—",
+        )
         tot_in += inp
         tot_out += out
         tot_all += total
+        tot_cost += cost
     table.add_section()
     table.add_row(
         "[bold]TOTAL[/bold]",
         f"[bold]{tot_in:,}[/bold]",
         f"[bold]{tot_out:,}[/bold]",
         f"[bold]{tot_all:,}[/bold]",
+        (f"[bold]${tot_cost:,.4f}[/bold]" if tot_cost > 0 else "—"),
     )
     console.print(table)

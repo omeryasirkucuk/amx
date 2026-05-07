@@ -178,7 +178,7 @@ class RAGAgent(BaseAgent):
         est = estimate_tokens(messages)
         with step_spinner(f"RAG Agent: {len(columns)} columns", token_estimate=est):
             result = self.llm.chat(messages)
-        tracker.record("rag_agent", est, result.usage)
+        tracker.record_for("rag_agent", est, self.llm, result.usage)
 
         suggestions = self._parse_response(result.content, ctx)
         return apply_logprob_confidence(
