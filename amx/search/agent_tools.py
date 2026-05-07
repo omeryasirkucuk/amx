@@ -26,127 +26,31 @@ from typing import Any
 
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector, ProfilingError
+from amx.search._agent_tools_helpers import (
+    _description_proximity,
+    _dtype_compat_score,
+    _name_overlap_score,
+    _safe_json,
+    _ToolError,
+)
 from amx.search.catalog import SearchCatalog
 
-
-class _ToolError(RuntimeError):
-    """Raised by a tool when it can't fulfil the request — surfaced verbatim
-    to the LLM so it can adjust and try a different tool."""
-
-
-def _name_overlap_score(left: str, right: str) -> float:
-    """Score column-name similarity in [0, 1].
-
-    Combines token-level Jaccard overlap with character-level
-    SequenceMatcher ratio so ``customer_id`` and ``cust_id`` score high
-    (token "id" matches), while ``customer_id`` and ``payment_status``
-    score 0. Used by the cross-profile JOIN finder.
-    """
-    a = (left or "").strip().lower()
-    b = (right or "").strip().lower()
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-    # Token Jaccard (split on _ + camelCase boundaries).
-    import re as _re
-
-    def _tok(s: str) -> set[str]:
-        parts = _re.split(r"[_\W]+|(?=[A-Z])", s)
-        return {p.lower() for p in parts if p and len(p) >= 2}
-
-    tokens_a = _tok(a)
-    tokens_b = _tok(b)
-    jaccard = 0.0
-    if tokens_a and tokens_b:
-        intersect = tokens_a & tokens_b
-        union = tokens_a | tokens_b
-        jaccard = len(intersect) / max(1, len(union))
-    # Character similarity for short names where token matching misses.
-    char = SequenceMatcher(None, a, b).ratio()
-    # Take the max so either signal can carry a strong match.
-    return max(jaccard, char if char >= 0.7 else 0.0)
-
-
-def _dtype_compat_score(left: str, right: str) -> float:
-    """Score dtype compatibility for join purposes.
-
-    Returns 1.0 for same-family (INT↔BIGINT, VARCHAR↔TEXT), 0.5 for
-    weakly compatible (INT↔NUMERIC), 0.0 for incompatible
-    (VARCHAR↔INT). Coarse buckets are sufficient — joins on
-    incompatible dtypes won't actually work in SQL anyway.
-    """
-    families = {
-        "int": ("int", "bigint", "smallint", "tinyint", "int2", "int4", "int8"),
-        "float": (
-            "float",
-            "double",
-            "real",
-            "numeric",
-            "decimal",
-            "float8",
-            "float4",
-        ),
-        "string": ("char", "varchar", "text", "string", "nvarchar", "nchar"),
-        "bool": ("bool", "boolean", "bit"),
-        "date": ("date",),
-        "timestamp": ("timestamp", "datetime", "timestamptz"),
-        "uuid": ("uuid",),
-        "binary": ("bytea", "blob", "binary", "varbinary"),
-    }
-    canon = lambda s: (s or "").strip().lower().split("(", 1)[0]  # noqa: E731
-    a = canon(left)
-    b = canon(right)
-    if not a or not b:
-        return 0.0
-    if a == b:
-        return 1.0
-
-    def _family(name: str) -> str | None:
-        for fam, members in families.items():
-            if name in members:
-                return fam
-            for member in members:
-                if name.startswith(member):
-                    return fam
-        return None
-
-    fa = _family(a)
-    fb = _family(b)
-    if fa and fa == fb:
-        return 1.0
-    # int↔float weak compatibility (e.g. id columns stored as numeric)
-    if {fa, fb} == {"int", "float"}:
-        return 0.5
-    return 0.0
-
-
-def _description_proximity(left: str, right: str) -> float:
-    """Cheap text-similarity proxy for the vector signal in the
-    cross-profile JOIN finder. PR-D swaps this for a real
-    SearchIndex query — for now a SequenceMatcher ratio over the
-    cleaned description text gives recall comparable to a small
-    embedding model on short identifiers/descriptions.
-
-    Returns 0.0 when either side has no description (we don't want to
-    silently inflate the score on undocumented columns).
-    """
-    a = (left or "").strip().lower()
-    b = (right or "").strip().lower()
-    if not a or not b:
-        return 0.0
-    return SequenceMatcher(None, a, b).ratio()
-
-
-def _safe_json(value: Any, *, max_len: int = 6000) -> str:
-    """Serialize a tool result; truncate so the prompt stays manageable."""
-    try:
-        text = json.dumps(value, ensure_ascii=False, default=str)
-    except Exception:  # pragma: no cover - JSON of catalog rows always works
-        text = str(value)
-    if len(text) > max_len:
-        text = text[: max_len - 18] + "...<truncated>"
-    return text
+# ``json`` and ``SequenceMatcher`` stay imported above because the
+# ``ToolBox`` methods below still reach for them directly. The pure
+# helpers (``_name_overlap_score``, ``_dtype_compat_score``,
+# ``_description_proximity``, ``_safe_json``, and the ``_ToolError``
+# sentinel) live in ``_agent_tools_helpers`` and are re-exported here
+# so historical imports — ``from amx.search.agent_tools import
+# _name_overlap_score`` — keep working without forcing every caller
+# to chase the internal split.
+__all__ = (
+    "_ToolError",
+    "_description_proximity",
+    "_dtype_compat_score",
+    "_name_overlap_score",
+    "_safe_json",
+    "ToolBox",
+)
 
 
 class ToolBox:
