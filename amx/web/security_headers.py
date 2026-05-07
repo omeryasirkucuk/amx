@@ -79,9 +79,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     violation report covers them all.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         # We never overwrite a header a route has already set — if a
         # specific endpoint needs a relaxed CSP (rare), it can set the

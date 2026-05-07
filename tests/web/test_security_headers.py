@@ -71,6 +71,4 @@ def test_route_set_header_is_not_overwritten(client, auth_headers) -> None:
     # the header (i.e. middleware did not corrupt headers across calls).
     r1 = client.get("/api/system", headers=auth_headers)
     r2 = client.get("/api/system", headers=auth_headers)
-    assert r1.headers.get("Content-Security-Policy") == r2.headers.get(
-        "Content-Security-Policy"
-    )
+    assert r1.headers.get("Content-Security-Policy") == r2.headers.get("Content-Security-Policy")
