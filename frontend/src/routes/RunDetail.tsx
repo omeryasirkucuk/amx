@@ -816,6 +816,7 @@ function SummaryTab({ run }: { run: RunDetailPayload | undefined }) {
       <Card>
         <CardHeader title="Metrics" />
         <CardBody className="space-y-2 text-sm">
+          <TokensRow run={run} />
           <CostRow run={run} />
           {Object.entries(m).length === 0 ? (
             <div className="text-ink-dim">No metrics recorded.</div>
@@ -831,6 +832,83 @@ function SummaryTab({ run }: { run: RunDetailPayload | undefined }) {
         </CardBody>
       </Card>
     </div>
+  );
+}
+
+/** Aggregate token counts (input / output / total) inside the Metrics card.
+ *
+ * The figures come from ``tokens_json``: ``records[]`` when the run was
+ * created by post-2026-05 worker code that persists per-call data;
+ * ``summary`` (the legacy 4- or 5-tuple per-step list) otherwise. Old
+ * runs that only have a top-level ``total_tokens`` still surface a
+ * total row so the user knows the run did some work.
+ */
+function TokensRow({ run }: { run: RunDetailPayload }) {
+  const tokens = (run.tokens_json ?? {}) as Record<string, unknown>;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const records = (tokens.records ?? []) as Array<{
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  }>;
+  if (records.length > 0) {
+    for (const r of records) {
+      inputTokens += Number(r.prompt_tokens ?? 0);
+      outputTokens += Number(r.completion_tokens ?? 0);
+    }
+  } else if (Array.isArray(tokens.summary)) {
+    for (const row of tokens.summary as unknown[]) {
+      if (Array.isArray(row) && row.length >= 4) {
+        inputTokens += Number(row[1] ?? 0);
+        outputTokens += Number(row[2] ?? 0);
+      }
+    }
+  }
+  const totalFromBreakdown = inputTokens + outputTokens;
+  const totalTokens =
+    totalFromBreakdown > 0
+      ? totalFromBreakdown
+      : typeof tokens.total_tokens === "number"
+        ? Number(tokens.total_tokens)
+        : 0;
+
+  if (totalTokens === 0) {
+    // No token data at all — keep the card uncluttered. The Cost row
+    // below renders the dash itself; no need for a duplicate empty row.
+    return null;
+  }
+
+  // When we only have a top-level ``total_tokens`` (no per-call /
+  // per-step breakdown), show a single Total row instead of three
+  // dash-laden rows. Better signal-to-noise on legacy runs.
+  if (totalFromBreakdown === 0) {
+    return (
+      <Row label="Tokens">
+        <span className="font-mono tabular-nums text-xs">
+          {totalTokens.toLocaleString()} total
+          <span className="ml-2 text-[10px] uppercase tracking-wider text-ink-dim">
+            (legacy run · no input/output split)
+          </span>
+        </span>
+      </Row>
+    );
+  }
+
+  return (
+    <Row label="Tokens">
+      <span className="inline-flex items-center gap-2 font-mono tabular-nums text-xs">
+        <span title="Input (prompt) tokens billed at the input rate.">
+          ↑ {inputTokens.toLocaleString()}
+        </span>
+        <span title="Output (completion) tokens billed at the output rate — usually the dominant cost contributor.">
+          ↓ {outputTokens.toLocaleString()}
+        </span>
+        <span className="text-ink-dim">·</span>
+        <span title="Sum of input + output.">
+          {totalTokens.toLocaleString()} total
+        </span>
+      </span>
+    </Row>
   );
 }
 
