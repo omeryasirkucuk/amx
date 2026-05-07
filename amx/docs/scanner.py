@@ -50,14 +50,73 @@ class DocInfo:
     cleanup_root: str = ""  # temporary source directory to remove after callers finish reading
 
 
+def _looks_binary(path: Path, *, sniff_bytes: int = 4096) -> bool:
+    """Best-effort binary file detector for the local-doc scanner.
+
+    The extension whitelist already excludes images / archives / etc.,
+    but extensionless files and ``.txt`` files that happen to hold
+    raw bytes still slip through. Read the first ``sniff_bytes``; if
+    a NUL byte is present we treat the file as binary and skip it
+    rather than feed garbage into the embedding model.
+
+    Read errors are swallowed and treated as "binary" so a transient
+    permission failure doesn't crash the whole scan.
+    """
+    try:
+        with path.open("rb") as fh:
+            chunk = fh.read(sniff_bytes)
+    except Exception:
+        return True
+    return b"\x00" in chunk
+
+
+def _load_gitignore_matcher(root: Path):
+    """Return a ``pathspec.PathSpec`` built from ``<root>/.gitignore``,
+    or ``None`` when the file is missing or pathspec is unavailable.
+
+    ``pathspec`` is an optional dep — we degrade gracefully to "no
+    filter" rather than fail the scan when it isn't installed.
+    """
+    candidate = root / ".gitignore"
+    if not candidate.is_file():
+        return None
+    try:
+        import pathspec  # type: ignore[import-untyped]
+    except Exception:
+        return None
+    try:
+        with candidate.open("r", encoding="utf-8", errors="ignore") as fh:
+            return pathspec.PathSpec.from_lines("gitwildmatch", fh)
+    except Exception:
+        return None
+
+
 def _resolve_local(path: str) -> Iterator[DocInfo]:
     p = Path(path).expanduser().resolve()
-    if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
-        yield DocInfo(str(p), p.stat().st_size, p.suffix.lower(), "local")
-    elif p.is_dir():
-        for f in sorted(p.rglob("*")):
-            if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS:
-                yield DocInfo(str(f), f.stat().st_size, f.suffix.lower(), "local")
+    if p.is_file():
+        if p.suffix.lower() in SUPPORTED_EXTENSIONS and not _looks_binary(p):
+            yield DocInfo(str(p), p.stat().st_size, p.suffix.lower(), "local")
+        return
+    if not p.is_dir():
+        return
+
+    matcher = _load_gitignore_matcher(p)
+    for f in sorted(p.rglob("*")):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        # ``.gitignore`` matchers want repo-relative posix paths.
+        if matcher is not None:
+            try:
+                rel = f.relative_to(p).as_posix()
+            except ValueError:
+                rel = ""
+            if rel and matcher.match_file(rel):
+                continue
+        if _looks_binary(f):
+            continue
+        yield DocInfo(str(f), f.stat().st_size, f.suffix.lower(), "local")
 
 
 def normalize_github_url(url: str) -> str:
