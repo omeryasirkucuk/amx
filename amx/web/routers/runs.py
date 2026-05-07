@@ -392,6 +392,13 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     "applied_flag": bool(body.apply),
                     "trigger": "studio",
                     "batch_mode": use_batch,
+                    # Persist the exact database/catalog the run was
+                    # rooted at — without this the apply path falls
+                    # back to the active profile's pinned default and
+                    # produces ``schema "X" does not exist`` errors
+                    # when the user scoped to a non-default database.
+                    "database": (body.database or "").strip() or None,
+                    "catalog": (body.catalog or "").strip() or None,
                 },
             )
             # Bind the persistent run id to the live Job so the run
