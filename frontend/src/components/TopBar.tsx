@@ -15,7 +15,6 @@ import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
 import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
-import StudioMark from "./brand/StudioMark";
 import PricingBadge from "./PricingBadge";
 
 const navItems = [
@@ -58,10 +57,10 @@ export default function TopBar() {
         <Link
           to="/"
           aria-label="AMX Studio home"
-          className="group flex items-end gap-1.5 rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
+          className="group flex items-baseline gap-1.5 rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
         >
           <Logo size={16} />
-          <StudioMark size={10} />
+          <span className="text-sm font-medium text-ink">Studio</span>
         </Link>
         {crumbs.length > 0 && (
           <nav aria-label="Breadcrumb" className="hidden md:flex">
