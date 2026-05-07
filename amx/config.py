@@ -174,6 +174,17 @@ def _externalise_secrets_in_data(
 
 
 def _resolve_secret_field(mapping: dict[str, Any], field_name: str, store: SecretStore) -> None:
+    """Replace one ``keyring:...`` reference with its plaintext value.
+
+    When the keyring backend is unavailable (eg. macOS denied access
+    after a Python reinstall) or the entry no longer exists, the
+    reference STAYS in the mapping unchanged. The previous behaviour
+    overwrote the field with ``""`` which then became permanent on the
+    next ``cfg.save()`` — externalise skips empty values, so the YAML
+    lost the keyring pointer and the user had to re-enter the secret
+    even after fixing the backend. Leaving the reference in place lets
+    a subsequent process resolve it once the backend recovers.
+    """
     value = mapping.get(field_name, "")
     if not is_secret_reference(value):
         return
@@ -182,14 +193,20 @@ def _resolve_secret_field(mapping: dict[str, Any], field_name: str, store: Secre
         resolved = store.get(keyring_key)
     except Exception:
         resolved = None
-    mapping[field_name] = resolved or ""
+    if resolved:
+        mapping[field_name] = resolved
+    # else: keep the reference intact so cfg.save() can still
+    # round-trip it to YAML when the backend is healthy again.
 
 
 def _resolve_secrets_in_data(data: dict[str, Any], store: SecretStore) -> dict[str, Any]:
     """Replace ``keyring:...`` references in ``data`` with plaintext values from the store.
 
-    Mutates ``data`` in place. References that cannot be resolved (keyring
-    unavailable, or key removed) are replaced with empty strings.
+    Mutates ``data`` in place. References that cannot be resolved
+    (keyring unavailable, or key removed) are LEFT AS REFERENCES so a
+    subsequent run can recover once the backend is healthy — overwriting
+    them with ``""`` would silently destroy the YAML pointer on the
+    next save.
     """
     db_profiles = data.get("db_profiles") or {}
     if isinstance(db_profiles, dict):

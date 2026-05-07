@@ -2138,10 +2138,14 @@ class SecretKeychainTests(unittest.TestCase):
             yaml_text = cfg_path.read_text()
             self.assertNotIn("legacy-plain", yaml_text)
 
-    def test_missing_keyring_entry_resolves_to_empty_string(self) -> None:
-        """A reference whose key has been deleted from the keyring should not
-        crash the loader; the field becomes empty so the user can be prompted
-        to re-enter the secret."""
+    def test_missing_keyring_entry_preserves_reference_string(self) -> None:
+        """A reference whose backend lookup fails (key deleted, keyring
+        unavailable, ACL denied) MUST stay a reference in the in-memory
+        dataclass — the previous "fall back to empty" behaviour caused
+        the YAML pointer to be wiped on the next ``cfg.save()``,
+        permanently losing the credential after a transient backend
+        outage. ``DatabaseConnector`` strips it before any adapter sees
+        it; the YAML round-trip is what we pin here."""
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.yml"
             cfg_path.write_text(
@@ -2156,7 +2160,9 @@ class SecretKeychainTests(unittest.TestCase):
                 "    password: keyring:db_profiles/ghost/password\n"
             )
             cfg = AMXConfig.load(str(cfg_path))
-            self.assertEqual(cfg.db_profiles["ghost"].password, "")
+            self.assertTrue(
+                cfg.db_profiles["ghost"].password.startswith("keyring:")
+            )
 
     def test_llm_api_key_externalised_separately_from_db(self) -> None:
         with tempfile.TemporaryDirectory() as td:
