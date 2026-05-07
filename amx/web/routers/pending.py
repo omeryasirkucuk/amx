@@ -247,18 +247,58 @@ def restore(body: RestoreRequest) -> dict[str, Any]:
     return {"ok": True, "idx": len(rows) - 1, "count": len(rows), "already_present": False}
 
 
+class PendingApplyBody(BaseModel):
+    """Optional scope override for ``POST /api/pending/apply``.
+
+    The pending queue itself doesn't carry a per-row scope, so when
+    the user is reviewing a run rooted in a non-active DB profile or
+    on a non-default database/catalog, the apply path needs an
+    explicit hint to route the COMMENT statements at the right
+    target. Without it, the worker fell back to ``cfg.active_db_profile``
+    + the profile's pinned database, which produced
+    ``schema "X" does not exist`` errors when the active profile
+    pointed at a different database than the run was scoped to.
+
+    All fields are optional — omit to keep the legacy active-profile
+    fallback (CLI-driven sessions and single-profile setups).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    db_profile: str | None = None
+    database: str | None = None
+    catalog: str | None = None
+
+
 @router.post("/apply")
 def apply_pending(
+    body: PendingApplyBody | None = None,
     cfg: AMXConfig = Depends(get_cfg),
     jobs: JobRegistry = Depends(get_jobs),
 ) -> dict[str, Any]:
     """Spawn an apply job that writes every entry in the pending
     queue. Re-uses :func:`amx.web.routers.runs._apply_worker` so the
-    SSE event stream is bit-identical to ``POST /api/apply``."""
+    SSE event stream is bit-identical to ``POST /api/apply``.
+
+    Pass ``db_profile`` / ``database`` / ``catalog`` in the body to
+    pin the apply to the same scope the run was rooted in — Studio's
+    run-detail page sends these from ``run.data`` so the COMMENTs land
+    in the database the user actually scoped, not the active profile's
+    default."""
+    body = body or PendingApplyBody()
     job = jobs.new_job("apply")
     thread = threading.Thread(
         target=_apply_worker,
-        args=(cfg, job, ApplyRequest(results=None)),
+        args=(
+            cfg,
+            job,
+            ApplyRequest(
+                results=None,
+                db_profile=body.db_profile,
+                database=body.database,
+                catalog=body.catalog,
+            ),
+        ),
         name=f"amx-studio-pending-apply-{job.id}",
         daemon=True,
     )
