@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 
 import AppShell from "./components/AppShell";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/ui";
 import Home from "./routes/Home";
 import Database from "./routes/Database";
@@ -25,32 +26,39 @@ import System from "./routes/System";
 //   /db/:profile/:database/...   (2-level: Postgres, MySQL, ...)
 //   /cat/:profile/:catalog/...   (3-level: Databricks, BigQuery)
 export default function App() {
+  // ErrorBoundary sits above ToastProvider + Routes so an uncaught
+  // throw from any route lands on the fallback UI instead of leaving
+  // the user staring at a blank page. Provider/provider context state
+  // is rebuilt on reload — that's intentional, the boundary's reload
+  // affordance is what users will reach for.
   return (
-    <ToastProvider>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<Home />} />
-          <Route path="db" element={<Navigate to="/" replace />} />
-          <Route path="db/:profile" element={<Navigate to="/" replace />} />
-          <Route path="db/:profile/:database" element={<Database />} />
-          <Route path="db/:profile/:database/:schema" element={<Schema />} />
-          <Route path="db/:profile/:database/:schema/:table" element={<Table />} />
-          <Route path="cat" element={<Navigate to="/" replace />} />
-          <Route path="cat/:profile" element={<Navigate to="/" replace />} />
-          <Route path="cat/:profile/:catalog" element={<Database />} />
-          <Route path="cat/:profile/:catalog/:schema" element={<Schema />} />
-          <Route path="cat/:profile/:catalog/:schema/:table" element={<Table />} />
-          <Route path="runs" element={<RunsList />} />
-          <Route path="runs/new" element={<RunNew />} />
-          <Route path="runs/compare" element={<RunsCompare />} />
-          <Route path="runs/:runId" element={<RunDetail />} />
-          <Route path="ask" element={<Ask />} />
-          <Route path="pending" element={<Pending />} />
-          <Route path="settings" element={<Settings />} />
-          <Route path="system" element={<System />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route index element={<Home />} />
+            <Route path="db" element={<Navigate to="/" replace />} />
+            <Route path="db/:profile" element={<Navigate to="/" replace />} />
+            <Route path="db/:profile/:database" element={<Database />} />
+            <Route path="db/:profile/:database/:schema" element={<Schema />} />
+            <Route path="db/:profile/:database/:schema/:table" element={<Table />} />
+            <Route path="cat" element={<Navigate to="/" replace />} />
+            <Route path="cat/:profile" element={<Navigate to="/" replace />} />
+            <Route path="cat/:profile/:catalog" element={<Database />} />
+            <Route path="cat/:profile/:catalog/:schema" element={<Schema />} />
+            <Route path="cat/:profile/:catalog/:schema/:table" element={<Table />} />
+            <Route path="runs" element={<RunsList />} />
+            <Route path="runs/new" element={<RunNew />} />
+            <Route path="runs/compare" element={<RunsCompare />} />
+            <Route path="runs/:runId" element={<RunDetail />} />
+            <Route path="ask" element={<Ask />} />
+            <Route path="pending" element={<Pending />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="system" element={<System />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
