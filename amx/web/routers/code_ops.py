@@ -169,6 +169,195 @@ def search_code(
     return {"hits": out, "count": len(out)}
 
 
+class _CodeAnalyzeRequest(BaseModel):
+    """Body for ``POST /api/code/analyze``.
+
+    Tables are listed explicitly (no schema-only mode) so the Studio
+    user has to commit to a scope before paying the per-table LLM cost.
+    ``code_profile`` and ``db_profile`` are optional — fall back to the
+    active profiles when omitted, mirroring the CLI's ``/code-analyze``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_: str = Field(alias="schema")
+    tables: list[str] = Field(..., min_length=1, max_length=20)
+    code_profile: str | None = None
+    db_profile: str | None = None
+
+
+@router.post("/analyze")
+def submit_analyze(
+    body: _CodeAnalyzeRequest,
+    cfg: AMXConfig = Depends(get_cfg),
+    jobs: JobRegistry = Depends(get_jobs),
+) -> dict[str, Any]:
+    """Spawn a Code Agent worker and return the job id.
+
+    Studio's Code → Analyze page subscribes to the SSE stream so the
+    user sees per-table progress. The worker uses
+    :func:`amx.codebase.agent_service.run_code_analysis` — the same
+    loop the CLI's ``/code-analyze`` runs. Result is the union of every
+    table's suggestions, persisted under ``~/.amx/code_agent_results.json``
+    just like the CLI does.
+    """
+    if not cfg.llm.provider or not cfg.llm.model:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "message": (
+                    "No active LLM profile. Open Settings → LLM and pick "
+                    "a provider before running Code Analyze."
+                ),
+                "hint": "configure-llm",
+            },
+        )
+    code_profile = (body.code_profile or "").strip() or (cfg.active_code_profile or "").strip()
+    if not code_profile or code_profile not in cfg.code_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No code profile selected. Pick one under Settings → Code, "
+                "or pass `code_profile` in the request body."
+            ),
+        )
+    job = jobs.new_job("code_analyze")
+    thread = threading.Thread(
+        target=_analyze_worker,
+        args=(
+            cfg,
+            job,
+            body.schema_,
+            list(body.tables),
+            code_profile,
+            body.db_profile,
+        ),
+        name=f"amx-code-analyze-{job.id}",
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "schema": body.schema_,
+        "tables": list(body.tables),
+        "code_profile": code_profile,
+    }
+
+
+def _analyze_worker(
+    cfg: AMXConfig,
+    job: Job,
+    schema: str,
+    tables: list[str],
+    code_profile: str,
+    db_profile: str | None,
+) -> None:
+    """Run the analyze loop in a background thread, streaming progress."""
+    job.status = "running"
+    try:
+        from amx.codebase.agent_service import (
+            CodeAnalyzeRequest,
+            run_code_analysis,
+            serialize_suggestions,
+        )
+        from amx.codebase.cache import load_latest_cached_report
+        from amx.db.connector import DatabaseConnector
+        from amx.llm.provider import LLMProvider
+
+        code_path = cfg.code_profiles.get(code_profile, "") or ""
+        if not code_path:
+            raise RuntimeError(f"Code profile {code_profile!r} has no path configured.")
+
+        _, report = load_latest_cached_report(code_profile, code_path)
+        if report is None:
+            raise RuntimeError(f"No cached code-scan for {code_profile!r}. Run /code-scan first.")
+
+        # Allow a body override for the DB the analyze runs against —
+        # otherwise the active profile is used. The Studio request shape
+        # mirrors the multi-profile pattern other endpoints adopted.
+        if db_profile and db_profile in cfg.db_profiles:
+            from amx.web.routers.live_db import _connector_for_scope
+
+            db = _connector_for_scope(cfg, db_profile)
+        else:
+            db = DatabaseConnector(cfg.db)
+        llm = LLMProvider(cfg.llm)
+
+        for idx, table in enumerate(tables):
+            emit(
+                job.queue,
+                "activity.added",
+                {"idx": idx, "label": f"Analyzing {schema}.{table}"},
+            )
+
+        def _on_start(table_name: str, n_columns: int) -> None:
+            emit(
+                job.queue,
+                "activity.begin",
+                {
+                    "idx": tables.index(table_name),
+                    "detail": f"{n_columns} columns",
+                },
+            )
+
+        def _on_done(table_name: str, n_suggestions: int) -> None:
+            emit(
+                job.queue,
+                "activity.complete",
+                {
+                    "idx": tables.index(table_name),
+                    "detail": f"{n_suggestions} suggestions",
+                },
+            )
+
+        result = run_code_analysis(
+            cfg,
+            db,
+            llm,
+            CodeAnalyzeRequest(
+                schema=schema,
+                tables=tables,
+                code_profile=code_profile,
+                code_report=report,
+            ),
+            on_table_start=_on_start,
+            on_table_done=_on_done,
+        )
+
+        # Persist to the same on-disk cache the CLI writes so /run picks
+        # up the suggestions from either surface.
+        import json as _json
+        from pathlib import Path
+
+        payload = serialize_suggestions(result.suggestions)
+        cache_path = Path.home() / ".amx" / "code_agent_results.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+
+        summary = {
+            "schema": schema,
+            "code_profile": code_profile,
+            "by_table": result.by_table,
+            "suggestions_total": len(payload),
+            "suggestions": payload[:200],  # bound the SSE payload
+        }
+        job.status = "done"
+        job.summary = summary
+        job.ended_at = time.time()
+        emit_terminal(job.queue, "job.done", {"summary": summary})
+        try:
+            db.close()
+        except Exception:
+            pass
+    except Exception as exc:
+        log.exception("code analyze worker crashed")
+        job.status = "failed"
+        job.error = f"{exc.__class__.__name__}: {exc}"
+        job.ended_at = time.time()
+        emit_terminal(job.queue, "job.failed", {"error": job.error})
+
+
 @router.get("/results/{job_id}")
 def get_results(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> dict[str, Any]:
     """Read the persisted scan result for a finished job. The SPA

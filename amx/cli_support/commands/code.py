@@ -570,8 +570,12 @@ def register_code_commands(
 
         Results are saved to ~/.amx/code_agent_results.json and reused by the next /run.
         """
-        from amx.agents.base import AgentContext
-        from amx.agents.code_agent import CodeAgent
+        from amx.cli_support.hints import studio_hint
+        from amx.codebase.agent_service import (
+            CodeAnalyzeRequest,
+            run_code_analysis,
+            serialize_suggestions,
+        )
         from amx.codebase.cache import load_latest_cached_report
         from amx.db.connector import DatabaseConnector
         from amx.llm.provider import LLMProvider
@@ -623,24 +627,28 @@ def register_code_commands(
             schema_name = next(iter(scope))
             tables = scope[schema_name]
 
-            agent = CodeAgent(llm, code_report)
-            all_suggestions = []
-            for table_name in tables:
-                with step_spinner(f"Reading columns for {schema_name}.{table_name}"):
-                    columns = db.list_column_profiles(schema_name, table_name)
-                ctx = AgentContext(
+            # Shared loop with the Studio /api/code/analyze worker so the
+            # CLI and the SPA stay byte-identical on suggestions.
+            def _on_start(table_name: str, n_columns: int) -> None:
+                info(f"Code Agent: {schema_name}.{table_name} ({n_columns} columns)")
+
+            def _on_done(table_name: str, n_suggestions: int) -> None:
+                info(f"  -> {n_suggestions} suggestions")
+
+            result = run_code_analysis(
+                cfg,
+                db,
+                llm,
+                CodeAnalyzeRequest(
                     schema=schema_name,
-                    table=table_name,
-                    db_profile={
-                        "row_count": 0,
-                        "columns": [{"name": c.name, "dtype": c.dtype} for c in columns],
-                    },
-                    existing_metadata={},
-                )
-                info(f"Code Agent: {schema_name}.{table_name} ({len(columns)} columns)")
-                suggestions = agent.run(ctx)
-                all_suggestions.extend(suggestions)
-                info(f"  -> {len(suggestions)} suggestions")
+                    tables=list(tables),
+                    code_profile=profile_nm,
+                    code_report=code_report,
+                ),
+                on_table_start=_on_start,
+                on_table_done=_on_done,
+            )
+            all_suggestions = result.suggestions
 
         if not all_suggestions:
             warn("Code Agent produced no suggestions.")
@@ -659,19 +667,9 @@ def register_code_commands(
 
         cache_path = Path.home() / ".amx" / "code_agent_results.json"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [
-            {
-                "schema": s.schema,
-                "table": s.table,
-                "column": s.column,
-                "suggestions": s.suggestions,
-                "confidence": s.confidence.value,
-                "reasoning": s.reasoning,
-                "source": s.source,
-            }
-            for s in all_suggestions
-        ]
+        payload = serialize_suggestions(all_suggestions)
         cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         success(f"Saved {len(all_suggestions)} Code Agent suggestions to {cache_path}")
         info("These will be available as pre-computed input for the next `/run`.")
         render_token_summary(token_tracker)
+        studio_hint("code-analyze")
