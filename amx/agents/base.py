@@ -97,6 +97,30 @@ class AgentContext:
     rag_context: list[str] = field(default_factory=list)
     code_context: list[str] = field(default_factory=list)
     existing_metadata: dict[str, Any] = field(default_factory=dict)
+    # Optional free-text addendum from the user, populated by the
+    # Re-Run flow. Empty string on normal runs. Each agent's
+    # ``_build_prompt`` appends it as a final "Additional instructions
+    # from user (re-run):" block so the original DB/docs/code context
+    # is preserved and only this guidance is layered on top.
+    user_instructions: str = ""
+
+
+def _user_instructions_block(ctx: AgentContext) -> str:
+    """Render the optional re-run instructions suffix.
+
+    Empty string when ``ctx.user_instructions`` is unset / blank, so
+    on normal runs the prompt is byte-identical to pre-Re-Run output
+    (regression-safe).
+    """
+    text = (ctx.user_instructions or "").strip()
+    if not text:
+        return ""
+    return (
+        "\n\nAdditional instructions from user (re-run):\n"
+        f"{text}\n"
+        "Treat these as guidance to bias the description toward, not as a replacement "
+        "for the database/docs/code evidence above."
+    )
 
 
 class BaseAgent(ABC):

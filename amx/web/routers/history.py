@@ -102,12 +102,39 @@ def get_run(
 def get_run_results(
     run_id: int,
     unevaluated_only: bool = Query(default=False),
+    include_history: bool = Query(
+        default=False,
+        description=(
+            "When true, attach the full re-run chain (original + every "
+            "child re-run row) to each result under ``history``. Used by "
+            "the Studio history drawer to render v1/v2/v3 side-by-side."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Per-column LLM suggestions saved during this run. Used by the
     run-detail page's results table + the column drill page's
     "alternatives" carousel."""
-    rows = _store().get_run_results(run_id, unevaluated_only=unevaluated_only)
+    store = _store()
+    rows = store.get_run_results(run_id, unevaluated_only=unevaluated_only)
+    if include_history:
+        for row in rows:
+            try:
+                row["history"] = store.get_result_chain(int(row["id"]))
+            except Exception:
+                row["history"] = []
     return {"run_id": run_id, "results": rows, "count": len(rows)}
+
+
+@router.get("/results/{result_id}/history")
+def get_result_history(result_id: int) -> dict[str, Any]:
+    """Return the full re-run chain (original + every child re-run row).
+
+    Used by the Studio history drawer when the user clicks a "v2"
+    badge on a specific row — cheaper than fetching every result for
+    the whole run.
+    """
+    chain = _store().get_result_chain(int(result_id))
+    return {"result_id": result_id, "chain": chain, "count": len(chain)}
 
 
 @router.get("/runs/{run_id}/results-with-counts")

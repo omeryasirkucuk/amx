@@ -144,12 +144,14 @@ class CodeAgent(BaseAgent):
         if not all_code_blocks:
             return None
 
+        from amx.agents.base import _user_instructions_block
+
         col_lines = "\n".join(f"  - {c['name']} (type={c['dtype']})" for c in columns)
         user_msg = (
             f"Schema: {ctx.schema}\n"
             f"Table: {ctx.table}\n\n"
             f"Columns:\n{col_lines}\n\n"
-            f"Code references:\n\n" + "\n\n".join(all_code_blocks)
+            f"Code references:\n\n" + "\n\n".join(all_code_blocks) + _user_instructions_block(ctx)
         )
         system = _build_system_prompt(self._n_alternatives)
         return [
