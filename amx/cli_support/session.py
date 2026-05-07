@@ -1027,6 +1027,7 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "scan": ["docs", "scan"],
         "ingest": ["docs", "ingest"],
         "search-docs": ["docs", "search-docs"],
+        "doc-add": ["docs", "add"],
         "doc-analyze": ["docs", "analyze"],
         "export-doc-report": ["docs", "export-report"],
         "inspect": ["metadata", "inspect"],

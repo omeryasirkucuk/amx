@@ -907,6 +907,111 @@ function LlmProfileWizard({
 
 // ── Doc + Code profiles ───────────────────────────────────────────────
 
+function DocUploadDropZone({
+  profile,
+  onJobStarted,
+}: {
+  profile: string;
+  onJobStarted: (jobId: string, label: string) => void;
+}) {
+  const qc = useQueryClient();
+  const [dragOver, setDragOver] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const upload = async (files: FileList) => {
+    setError(null);
+    if (!profile) {
+      setError("Pick a doc profile first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("profile", profile);
+      fd.append("ingest", "true");
+      for (let i = 0; i < files.length; i += 1) {
+        fd.append("files", files[i]);
+      }
+      const resp = await fetch("/api/docs/upload", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `Upload failed: HTTP ${resp.status}`);
+      }
+      const body = (await resp.json()) as {
+        saved: Array<{ name: string; duplicate: boolean }>;
+        job_id?: string;
+      };
+      qc.invalidateQueries({ queryKey: ["profiles", "docs"] });
+      if (body.job_id) {
+        const fresh = body.saved.filter((s) => !s.duplicate).length;
+        onJobStarted(
+          body.job_id,
+          `Ingesting ${fresh} new file${fresh === 1 ? "" : "s"} in ${profile}`,
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="px-5 pb-3">
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (e.dataTransfer.files?.length) {
+            upload(e.dataTransfer.files);
+          }
+        }}
+        className={
+          "rounded-md border border-dashed px-3 py-2 text-xs transition " +
+          (dragOver
+            ? "border-accent bg-accent-soft text-accent-ink"
+            : "border-surface-border text-ink-dim hover:border-accent/40")
+        }
+      >
+        <label className="flex cursor-pointer items-center justify-between gap-2">
+          <span>
+            {busy
+              ? "Uploading…"
+              : `Drag-drop files here to add to ${profile || "(pick a profile)"} — or click to browse.`}
+          </span>
+          <input
+            type="file"
+            multiple
+            disabled={busy || !profile}
+            onChange={(e) => {
+              if (e.target.files?.length) upload(e.target.files);
+              e.target.value = "";
+            }}
+            className="hidden"
+            accept=".md,.markdown,.txt,.pdf,.docx,.doc,.csv,.tsv,.html,.htm,.rst,.rtf,.json,.yaml,.yml"
+          />
+          <span className="rounded bg-surface-subtle px-2 py-0.5 text-[10px]">
+            Browse
+          </span>
+        </label>
+      </div>
+      {error && (
+        <div className="mt-1 text-[11px] text-critical">{error}</div>
+      )}
+    </div>
+  );
+}
+
 function DocProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
@@ -1078,6 +1183,14 @@ function DocProfilesSection() {
                       ))}
                     </div>
                   )}
+                  <div className="mt-2">
+                    <DocUploadDropZone
+                      profile={p.name}
+                      onJobStarted={(jobId, label) =>
+                        setActiveOp({ jobId, label })
+                      }
+                    />
+                  </div>
                 </li>
               ))}
             </ul>
