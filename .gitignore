@@ -43,8 +43,6 @@ CHANGELOG.local.md
 
 # Internal AI-agent rules (not for the public repo)
 .agents/
-
-# Claude Code workspace (per-developer permissions; not for the public repo)
 .claude/
 
 # Local tool caches
