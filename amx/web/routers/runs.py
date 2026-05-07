@@ -748,11 +748,21 @@ def _emit_tokens_snapshot(queue: Any) -> None:
     module-level :class:`TokenTracker` singleton — every agent's
     ``record_for`` call has already accumulated the latest USD cost
     via :func:`amx.llm.pricing.compute_cost`.
+
+    The ``input_tokens`` / ``output_tokens`` split is summed from the
+    per-call records so the LiveRunStream can render an Input / Output
+    / Total breakdown even before ``finish_run`` writes the persisted
+    Metrics card.
     """
+    records = token_tracker.records()
+    input_total = sum(int(r.get("prompt_tokens") or 0) for r in records)
+    output_total = sum(int(r.get("completion_tokens") or 0) for r in records)
     emit(
         queue,
         "tokens.snapshot",
         {
+            "input_tokens": input_total,
+            "output_tokens": output_total,
             "total_tokens": int(token_tracker.total_tokens or 0),
             "total_cost_usd": round(float(token_tracker.total_cost_usd or 0.0), 6),
             "model_processing_sec": round(
