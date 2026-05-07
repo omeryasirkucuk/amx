@@ -449,6 +449,51 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_runs_shared_uuid "
                 "ON analysis_runs(shared_uuid)"
             )
+        # ── apply_events: audit trail of every COMMENT actually written ──
+        #
+        # ``run_results.applied_at`` already says "this row was applied"
+        # but cannot answer "what was the comment before we overwrote
+        # it" or "who applied it on which host". The apply_events table
+        # records one row per successful COMMENT write so /history
+        # rollback (PR-12b) and Studio's Recent Applies panel (PR-12c)
+        # have a stable replay log. Old comments are stored verbatim so
+        # rollback can restore them character-for-character.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS apply_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                applied_at REAL NOT NULL,
+                run_id INTEGER,
+                result_id INTEGER,
+                profile_name TEXT NOT NULL DEFAULT '',
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL DEFAULT '',
+                column_name TEXT,
+                asset_kind TEXT NOT NULL DEFAULT 'table',
+                old_comment TEXT,
+                new_comment TEXT NOT NULL,
+                applied_by TEXT NOT NULL DEFAULT '',
+                hostname TEXT NOT NULL DEFAULT '',
+                sql_template TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (run_id) REFERENCES analysis_runs(id),
+                FOREIGN KEY (result_id) REFERENCES run_results(id)
+            )
+            """
+        )
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_apply_events_applied_at "
+                "ON apply_events(applied_at DESC)"
+            )
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_apply_events_run_id ON apply_events(run_id)"
+            )
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_apply_events_asset "
+                "ON apply_events(profile_name, schema_name, table_name, column_name)"
+            )
 
     def create_run(
         self,
@@ -728,6 +773,113 @@ class SQLiteHistoryStore:
                 """,
                 (error_text, error_text, result_id),
             )
+
+    def record_apply_event(
+        self,
+        *,
+        schema_name: str,
+        new_comment: str,
+        run_id: int | None = None,
+        result_id: int | None = None,
+        profile_name: str = "",
+        table_name: str = "",
+        column_name: str | None = None,
+        asset_kind: str = "table",
+        old_comment: str | None = None,
+        applied_by: str = "",
+        hostname: str = "",
+        sql_template: str = "",
+    ) -> int:
+        """Append one ``apply_events`` row for a successful COMMENT write.
+
+        ``new_comment`` is the comment text actually written to the
+        database. ``old_comment`` (when supplied) lets a future
+        rollback step restore the prior state byte-for-byte. Every
+        other field is optional so callers that don't yet propagate
+        full attribution can still record a basic audit trail.
+
+        Returns the inserted row id so callers (e.g. Studio SSE) can
+        link a UI event back to the audit row.
+        """
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO apply_events (
+                    applied_at, run_id, result_id, profile_name,
+                    schema_name, table_name, column_name, asset_kind,
+                    old_comment, new_comment, applied_by, hostname,
+                    sql_template
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now,
+                    run_id,
+                    result_id,
+                    profile_name,
+                    schema_name,
+                    table_name,
+                    column_name,
+                    asset_kind,
+                    old_comment,
+                    new_comment,
+                    applied_by,
+                    hostname,
+                    sql_template,
+                ),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_apply_events(
+        self,
+        *,
+        run_id: int | None = None,
+        profile_name: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return apply events newest-first, optionally filtered by run / profile.
+
+        Used by ``/history rollback`` (PR-12b) to find the events to
+        replay in reverse, and by Studio's Recent Applies panel
+        (PR-12c) to render the timeline.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id is not None:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if profile_name is not None:
+            clauses.append("profile_name = ?")
+            params.append(profile_name)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT id, applied_at, run_id, result_id, profile_name, "
+            "schema_name, table_name, column_name, asset_kind, "
+            "old_comment, new_comment, applied_by, hostname, sql_template "
+            "FROM apply_events" + where + " ORDER BY applied_at DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [
+            {
+                "id": int(r[0]),
+                "applied_at": float(r[1]),
+                "run_id": r[2],
+                "result_id": r[3],
+                "profile_name": str(r[4]),
+                "schema_name": str(r[5]),
+                "table_name": str(r[6]),
+                "column_name": r[7],
+                "asset_kind": str(r[8]),
+                "old_comment": r[9],
+                "new_comment": str(r[10]),
+                "applied_by": str(r[11]),
+                "hostname": str(r[12]),
+                "sql_template": str(r[13]),
+            }
+            for r in rows
+        ]
 
     def update_run_status(self, run_id: int, status: str, error_text: str = "") -> None:
         """Update run status without overwriting metrics/tokens/results payloads."""
