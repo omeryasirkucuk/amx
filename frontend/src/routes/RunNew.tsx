@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { PlayCircle, Settings as SettingsIcon } from "lucide-react";
 
-import { api } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
@@ -123,17 +123,7 @@ export default function RunNew() {
       />
 
       {scopeUnavailable ? (
-        <Card>
-          <CardBody className="px-6 py-8 text-sm">
-            <p className="font-medium text-warning">No scope selected.</p>
-            <p className="mt-2 text-ink-muted">
-              Open a database or catalog from the sidebar, then start the run from
-              its &quot;Generate description&quot; button — the scope (profile +
-              database/catalog) is encoded in the URL so this page knows which
-              schemas to enumerate.
-            </p>
-          </CardBody>
-        </Card>
+        <ScopePicker />
       ) : !ctx.isLoading && !llmReady ? (
         <Card>
           <CardBody className="px-6 py-8">
@@ -407,5 +397,159 @@ function SchemaTablePicker({
         })}
       </div>
     </div>
+  );
+}
+
+interface DbProfileSummary {
+  name: string;
+  backend: string;
+  database: string;
+  catalog: string;
+}
+
+function ScopePicker() {
+  // Inline picker shown when the user lands on /runs/new without a
+  // scope query string (e.g. via the "+ New run" button on the Runs
+  // list, or by typing the URL). Without this, the page used to dump
+  // a "scope is encoded in the URL" message that didn't help anyone
+  // who didn't know which sidebar link to follow.
+  const navigate = useNavigate();
+  const [profile, setProfile] = useState<string>("");
+
+  const profiles = useQuery({
+    queryKey: ["profiles", "db"],
+    queryFn: () =>
+      apiFetch<{ profiles: DbProfileSummary[]; active: string | null }>(
+        "/api/profiles/db",
+      ),
+    retry: false,
+  });
+
+  const selected = useMemo(
+    () => profiles.data?.profiles?.find((p) => p.name === profile) ?? null,
+    [profiles.data, profile],
+  );
+  // Catalog backends (Databricks, BigQuery) live under /api/live/catalogs;
+  // every other backend uses /api/live/databases. Switching on backend
+  // up front avoids a wasted round trip.
+  const isCatalogBackend =
+    selected != null &&
+    ["databricks", "bigquery"].includes(selected.backend);
+
+  const catalogs = useQuery({
+    queryKey: ["live", "catalogs", profile],
+    queryFn: () =>
+      apiFetch<{ catalogs: string[]; active_catalog: string | null }>(
+        `/api/live/catalogs?profile=${encodeURIComponent(profile)}`,
+      ),
+    enabled: !!profile && isCatalogBackend,
+    retry: false,
+  });
+  const databases = useQuery({
+    queryKey: ["live", "databases", profile],
+    queryFn: () =>
+      apiFetch<{ databases: string[]; active_database: string | null }>(
+        `/api/live/databases?profile=${encodeURIComponent(profile)}`,
+      ),
+    enabled: !!profile && !isCatalogBackend,
+    retry: false,
+  });
+
+  const goto = (target: string) => {
+    const param = isCatalogBackend ? "catalog" : "database";
+    navigate(
+      `/runs/new?profile=${encodeURIComponent(profile)}&${param}=${encodeURIComponent(target)}`,
+    );
+  };
+
+  const profileList = profiles.data?.profiles ?? [];
+  const items = isCatalogBackend
+    ? catalogs.data?.catalogs ?? []
+    : databases.data?.databases ?? [];
+  const itemsLoading = isCatalogBackend
+    ? catalogs.isLoading
+    : databases.isLoading;
+  const itemsError = isCatalogBackend ? catalogs.error : databases.error;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Pick a scope to start a run"
+        description="A run analyses one database or catalog at a time. Pick a DB profile, then the database / catalog under it — schemas to enumerate appear next."
+      />
+      <CardBody className="space-y-4">
+        <div>
+          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-ink-dim">
+            DB profile
+          </label>
+          {profiles.isLoading ? (
+            <Skeleton className="h-9 w-full" />
+          ) : profileList.length === 0 ? (
+            <p className="text-sm text-ink-muted">
+              No DB profiles configured.{" "}
+              <Link to="/settings?tab=db" className="text-accent underline">
+                Add one in Settings →
+              </Link>
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {profileList.map((p) => (
+                <button
+                  key={p.name}
+                  type="button"
+                  onClick={() => setProfile(p.name)}
+                  className={
+                    "rounded-md border px-2.5 py-1 text-xs font-mono transition " +
+                    (p.name === profile
+                      ? "border-accent bg-accent-soft text-accent-ink"
+                      : "border-surface-border bg-surface text-ink-muted hover:border-accent/40")
+                  }
+                  title={`${p.backend} · ${p.database || p.catalog || "no default db"}`}
+                >
+                  {p.name}
+                  <span className="ml-1.5 text-[10px] text-ink-dim">
+                    {p.backend}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {profile && (
+          <div>
+            <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-ink-dim">
+              {isCatalogBackend ? "Catalog" : "Database"}
+            </label>
+            {itemsLoading ? (
+              <Skeleton className="h-9 w-full" />
+            ) : itemsError ? (
+              <p className="text-sm text-critical">
+                {(itemsError as Error).message}
+              </p>
+            ) : items.length === 0 ? (
+              <p className="text-sm text-ink-muted">
+                No {isCatalogBackend ? "catalogs" : "databases"} reachable on{" "}
+                <span className="font-mono">{profile}</span>. Check the
+                connection in Settings →&nbsp;DB.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {items.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => goto(item)}
+                    className="rounded-md border border-surface-border bg-surface px-2.5 py-1 text-xs font-mono text-ink-muted transition hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </CardBody>
+    </Card>
   );
 }
