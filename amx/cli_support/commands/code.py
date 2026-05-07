@@ -306,6 +306,7 @@ def register_code_commands(
         💡 Studio'da Settings → Code altında ``Search`` kutusu aynı
         sonuçları interaktif kart olarak gösterir.
         """
+        from amx.cli_support.hints import studio_hint
         from amx.codebase.code_rag import code_collection_count, query_code_snippets
 
         prof = (code_profile or "").strip()
@@ -339,6 +340,7 @@ def register_code_commands(
             console.print(f"  Source: {source}{' · ' + symbol if symbol else ''}")
             text = str(hit.get("text") or "")
             console.print(f"  {text[:400]}{'…' if len(text) > 400 else ''}")
+        studio_hint("code-search")
 
     @code.command("refresh")
     @click.option(

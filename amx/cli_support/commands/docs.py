@@ -56,6 +56,97 @@ def register_docs_commands(
     def docs() -> None:
         """Document scanning and RAG commands."""
 
+    @docs.command("add")
+    @click.argument("profile")
+    @click.argument("paths", nargs=-1, required=True)
+    @click.option(
+        "--no-ingest",
+        is_flag=True,
+        default=False,
+        help="Save files only; skip the immediate ingest. Run /ingest later.",
+    )
+    @click.pass_obj
+    def docs_add_cmd(
+        cfg: AMXConfig,
+        profile: str,
+        paths: tuple[str, ...],
+        no_ingest: bool,
+    ) -> None:
+        """`/doc-add <profile> <file>...` — drag-drop equivalent for the CLI.
+
+        Copies the listed local files into ``~/.amx/uploads/<profile>/``
+        (content-hashed so duplicates are detected), wires the upload
+        directory into the doc profile, and unless ``--no-ingest`` is
+        set, immediately runs the same ingest pipeline ``/ingest`` uses.
+
+        💡 Tip: Studio'da Settings → Docs altında dosyaları **sürükle-
+        bırak** ile de ekleyebilirsiniz.
+        """
+        from amx.cli_support.hints import studio_hint
+        from amx.docs.rag import RAGStore
+        from amx.docs.scanner import (
+            cleanup_scan_artifacts,
+            scan_all_sources,
+            total_size_mb,
+        )
+        from amx.docs.uploads import UploadError, save_uploaded_file
+
+        prof = (profile or "").strip()
+        if not prof:
+            error("profile name is required")
+            return
+
+        results = []
+        try:
+            for raw in paths:
+                p = Path(raw).expanduser()
+                if not p.exists():
+                    error(f"Not found: {p}")
+                    continue
+                if p.is_dir():
+                    error(
+                        f"{p} is a directory — point at individual files, "
+                        "or use /add-doc-profile <name> with the directory path."
+                    )
+                    continue
+                try:
+                    payload = p.read_bytes()
+                    res = save_uploaded_file(cfg, prof, p.name, payload)
+                except UploadError as exc:
+                    error(f"{p}: {exc}")
+                    continue
+                tag = " (duplicate, skipped write)" if res.duplicate else ""
+                success(f"Saved {p.name} → {res.saved_path}{tag}")
+                results.append(res)
+        finally:
+            studio_hint("doc-add")
+
+        if not results:
+            return
+
+        if no_ingest:
+            info("Skipping immediate ingest — run `/ingest` to index later.")
+            return
+
+        upload_root = str(Path(results[0].saved_path).parent)
+        documents = []
+        try:
+            with command_display(
+                mode="docs-upload-ingest",
+                provider=cfg.llm.provider,
+                model=cfg.llm.model,
+            ):
+                with step_spinner(f"Scanning {upload_root}"):
+                    documents = scan_all_sources([upload_root])
+                size = total_size_mb(documents)
+                info(f"Found {len(documents)} document(s) ({size:.1f} MB)")
+                store = RAGStore()
+                with step_spinner("Ingesting into RAG store"):
+                    chunks = store.ingest(documents, refresh=False)
+                success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
+        finally:
+            cleanup_scan_artifacts(documents)
+
     @docs.command("scan")
     @click.argument("paths", nargs=-1)
     @click.option(

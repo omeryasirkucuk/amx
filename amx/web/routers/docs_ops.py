@@ -14,10 +14,15 @@ import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from amx.config import AMXConfig
+from amx.docs.uploads import (
+    MAX_BATCH_BYTES,
+    UploadError,
+    save_uploaded_batch,
+)
 from amx.utils.console import quiet_console
 from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg, get_jobs
@@ -102,6 +107,90 @@ def submit_ingest(
     )
     thread.start()
     return {"job_id": job.id, "status": job.status, "paths": paths, "refresh": bool(body.refresh)}
+
+
+@router.post("/upload")
+async def upload_docs(
+    profile: str = Form(...),
+    files: list[UploadFile] = File(...),
+    ingest: bool = Form(default=True),
+    cfg: AMXConfig = Depends(get_cfg),
+    jobs: JobRegistry = Depends(get_jobs),
+) -> dict[str, Any]:
+    """Multipart drag-drop upload from Studio.
+
+    Saves every file under ``~/.amx/uploads/<profile>/`` (content-
+    addressed) and registers that directory on the doc profile so a
+    follow-up scan/ingest picks it up. When ``ingest=true`` (the SPA's
+    default) an ingest job is spawned right after the save and its
+    ``job_id`` is returned so the SPA can subscribe to progress.
+
+    Validation lives in :mod:`amx.docs.uploads` so the CLI's
+    ``/doc-add`` shares the exact same accept-list and size caps.
+    """
+    profile_clean = (profile or "").strip()
+    if not profile_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="profile is required.",
+        )
+    # Auto-create the doc profile if the user uploads to a new name —
+    # otherwise the wizard would force a separate "Add doc profile"
+    # round-trip first, which defeats the point of drag-drop.
+    if profile_clean not in cfg.doc_profiles:
+        cfg.doc_profiles[profile_clean] = []
+
+    payloads: list[tuple[str, bytes]] = []
+    total = 0
+    for upload in files:
+        data = await upload.read()
+        total += len(data)
+        if total > MAX_BATCH_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(f"Upload batch is over {MAX_BATCH_BYTES} bytes."),
+            )
+        payloads.append((upload.filename or "unnamed", data))
+
+    try:
+        results = save_uploaded_batch(cfg, profile_clean, payloads)
+    except UploadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    response: dict[str, Any] = {
+        "profile": profile_clean,
+        "saved": [
+            {
+                "name": r.original_name,
+                "path": r.saved_path,
+                "bytes": r.bytes_written,
+                "duplicate": r.duplicate,
+            }
+            for r in results
+        ],
+        "count": len(results),
+    }
+    if ingest and results:
+        # Re-use the existing ingest worker against the upload root
+        # (which save_uploaded_batch already added to the profile's
+        # paths). Passing the directory once is enough — scanner walks
+        # children and picks up every dropped file.
+        from pathlib import Path
+
+        upload_root = str(Path(results[0].saved_path).parent)
+        job = jobs.new_job("docs_ingest")
+        thread = threading.Thread(
+            target=_ingest_worker,
+            args=(job, [upload_root], False),
+            name=f"amx-docs-upload-ingest-{job.id}",
+            daemon=True,
+        )
+        thread.start()
+        response["job_id"] = job.id
+    return response
 
 
 @router.get("/search")

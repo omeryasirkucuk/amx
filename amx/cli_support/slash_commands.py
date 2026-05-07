@@ -186,6 +186,11 @@ _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
         "docs",
         "Link doc profile → DB profile(s) (/doc-link <doc-profile> [--db NAME …] [--clear])",
     ),
+    SlashCommand(
+        "/doc-add",
+        "docs",
+        "Drag-drop equivalent: /doc-add <profile> <file>... [--no-ingest]",
+    ),
     SlashCommand("/scan", "docs", "Scan documents (/scan [--doc-profile NAME] [paths...])"),
     SlashCommand("/ingest", "docs", "Ingest (/ingest [--doc-profile NAME] [--refresh] [paths...])"),
     SlashCommand("/search-docs", "docs", "Similarity search (/search-docs <text>, no LLM)"),
