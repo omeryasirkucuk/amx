@@ -323,17 +323,35 @@ export const api = {
       method: "POST",
     }),
   generateDatabaseDescription: (scope: Scope) =>
-    apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
+    apiFetch<{
+      description: string;
+      run_id: number | null;
+      result_id: number | null;
+      alternatives_count: number;
+      verbosity: string;
+    }>(
       withScope("/api/generate/database", scope),
       { method: "POST" },
     ),
   generateSchemaDescription: (scope: Scope, schema: string) =>
-    apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
+    apiFetch<{
+      description: string;
+      run_id: number | null;
+      result_id: number | null;
+      alternatives_count: number;
+      verbosity: string;
+    }>(
       withScope(`/api/generate/schema/${encodeURIComponent(schema)}`, scope),
       { method: "POST" },
     ),
   generateTableDescription: (scope: Scope, schema: string, table: string) =>
-    apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
+    apiFetch<{
+      description: string;
+      run_id: number | null;
+      result_id: number | null;
+      alternatives_count: number;
+      verbosity: string;
+    }>(
       withScope(
         `/api/generate/table/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`,
         scope,
@@ -346,7 +364,13 @@ export const api = {
     table: string,
     column: string,
   ) =>
-    apiFetch<{ description: string; run_id: number | null; result_id: number | null }>(
+    apiFetch<{
+      description: string;
+      run_id: number | null;
+      result_id: number | null;
+      alternatives_count: number;
+      verbosity: string;
+    }>(
       withScope(
         `/api/generate/column/${encodeURIComponent(schema)}/${encodeURIComponent(table)}/${encodeURIComponent(column)}`,
         scope,

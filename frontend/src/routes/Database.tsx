@@ -64,11 +64,15 @@ export default function Database() {
     mutationFn: () => api.generateDatabaseDescription(scope!),
     onSuccess: (result) => {
       setDraftDescription(result.description);
+      const altCount = result.alternatives_count ?? 1;
       toast.push({
         title: result.run_id
           ? `Queued for review (Run #${result.run_id})`
           : "Description queued for review",
-        description: "Approve from the Pending page to write it to the live database.",
+        description:
+          altCount > 1
+            ? `${altCount} alternatives generated (${result.verbosity}). Pick one and approve from the Pending page.`
+            : "Approve from the Pending page to write it to the live database.",
         tone: "success",
         duration: 3200,
       });
@@ -86,11 +90,15 @@ export default function Database() {
       api.generateSchemaDescription(scope!, schemaName),
     onSuccess: (result, schemaName) => {
       qc.invalidateQueries({ queryKey: ["live-schemas"] });
+      const altCount = result.alternatives_count ?? 1;
       toast.push({
         title: result.run_id
           ? `Schema queued for review (Run #${result.run_id})`
           : "Schema description queued for review",
-        description: `${schemaName} — approve from /pending.`,
+        description:
+          altCount > 1
+            ? `${schemaName} — ${altCount} alternatives (${result.verbosity}); pick one in /pending.`
+            : `${schemaName} — approve from /pending.`,
         tone: "success",
         duration: 3000,
       });
