@@ -342,12 +342,14 @@ def activate_llm(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]
 def list_docs(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     """Doc profiles are simple ``dict[name -> list[path]]`` — surface
     the path list so the SPA can render each profile as a card with
-    its source paths inline."""
+    its source paths inline. ``linked_db_profiles`` (empty = global)
+    drives doc retrieval scope for /ask."""
     items = [
         {
             "name": name,
             "paths": list(paths or []),
             "is_active": name == (getattr(cfg, "active_doc_profile", "") or ""),
+            "linked_db_profiles": list(cfg.doc_profile_linked_dbs.get(name, []) or []),
         }
         for name, paths in sorted(cfg.doc_profiles.items())
     ]
@@ -362,10 +364,42 @@ def list_code(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             "name": name,
             "path": str(value or ""),
             "is_active": name == (getattr(cfg, "active_code_profile", "") or ""),
+            "linked_db_profiles": list(cfg.code_profile_linked_dbs.get(name, []) or []),
         }
         for name, value in sorted(cfg.code_profiles.items())
     ]
     return {"profiles": items, "active": getattr(cfg, "active_code_profile", "") or None}
+
+
+def _validate_linked_dbs(cfg: AMXConfig, raw: Any, *, kind: str) -> list[str] | None:
+    """Common validation for the optional ``linked_db_profiles`` field.
+
+    Returns ``None`` when the body did not include the key at all (caller
+    leaves links untouched). Returns a sanitised list otherwise. Raises
+    HTTPException 400 when the value is malformed or names a missing DB.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="'linked_db_profiles' must be an array of DB profile names.",
+        )
+    cleaned: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        db = entry.strip()
+        if not db:
+            continue
+        if db not in cfg.db_profiles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown DB profile {db!r} on {kind} link.",
+            )
+        if db not in cleaned:
+            cleaned.append(db)
+    return cleaned
 
 
 @router.put("/docs/{name}")
@@ -376,9 +410,10 @@ def upsert_docs(
 ) -> dict[str, Any]:
     """Create / update a doc profile.
 
-    Body shape: ``{"paths": ["/abs/dir1", "https://…", "s3://bucket/key", …]}``.
-    Each path is normalised to a string; empty entries are dropped so
-    accidental blank rows don't survive a save.
+    Body shape: ``{"paths": [...], "linked_db_profiles": [...]?}``.
+    ``linked_db_profiles`` is optional — when absent the existing links
+    are preserved, when present (even as ``[]``) the new value replaces
+    them. ``[]`` flips the profile back to global scope.
     """
     raw_paths = body.get("paths") if isinstance(body, dict) else None
     if not isinstance(raw_paths, list):
@@ -387,12 +422,20 @@ def upsert_docs(
             detail="Body must include a 'paths' array of strings.",
         )
     cleaned = [str(p).strip() for p in raw_paths if str(p).strip()]
+    raw_links = body.get("linked_db_profiles") if isinstance(body, dict) else None
+    links = _validate_linked_dbs(cfg, raw_links, kind="doc")
     cfg.doc_profiles[name] = cleaned
+    if links is not None:
+        if links:
+            cfg.doc_profile_linked_dbs[name] = links
+        else:
+            cfg.doc_profile_linked_dbs.pop(name, None)
     cfg.save()
     return {
         "name": name,
         "paths": cleaned,
         "is_active": name == (getattr(cfg, "active_doc_profile", "") or ""),
+        "linked_db_profiles": list(cfg.doc_profile_linked_dbs.get(name, []) or []),
     }
 
 
@@ -403,10 +446,11 @@ def delete_docs(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No doc profile named {name!r}.",
         )
-    if name == (getattr(cfg, "active_doc_profile", "") or ""):
-        cfg.active_doc_profile = ""
-    del cfg.doc_profiles[name]
-    cfg.save()
+    # Goes through cfg.remove_doc_profile so the linked-DB map is also
+    # cleaned (otherwise a stale ``contracts -> [prod_pg]`` entry would
+    # hang around with the doc profile gone, only pruned the next time
+    # config is reloaded).
+    cfg.remove_doc_profile(name)
     return {"ok": True, "remaining": len(cfg.doc_profiles)}
 
 
@@ -430,7 +474,7 @@ def upsert_code(
 ) -> dict[str, Any]:
     """Create / update a code profile.
 
-    Body shape: ``{"path": "/abs/dir or https://github.com/org/repo"}``.
+    Body shape: ``{"path": "...", "linked_db_profiles": [...]?}``.
     """
     raw_path = body.get("path") if isinstance(body, dict) else None
     if not isinstance(raw_path, str) or not raw_path.strip():
@@ -438,12 +482,20 @@ def upsert_code(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Body must include a non-empty 'path' string.",
         )
+    raw_links = body.get("linked_db_profiles") if isinstance(body, dict) else None
+    links = _validate_linked_dbs(cfg, raw_links, kind="code")
     cfg.code_profiles[name] = raw_path.strip()
+    if links is not None:
+        if links:
+            cfg.code_profile_linked_dbs[name] = links
+        else:
+            cfg.code_profile_linked_dbs.pop(name, None)
     cfg.save()
     return {
         "name": name,
         "path": cfg.code_profiles[name],
         "is_active": name == (getattr(cfg, "active_code_profile", "") or ""),
+        "linked_db_profiles": list(cfg.code_profile_linked_dbs.get(name, []) or []),
     }
 
 
@@ -454,10 +506,7 @@ def delete_code(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No code profile named {name!r}.",
         )
-    if name == (getattr(cfg, "active_code_profile", "") or ""):
-        cfg.active_code_profile = ""
-    del cfg.code_profiles[name]
-    cfg.save()
+    cfg.remove_code_profile(name)
     return {"ok": True, "remaining": len(cfg.code_profiles)}
 
 

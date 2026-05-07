@@ -1180,6 +1180,12 @@ class AMXConfig:
     active_doc_profile: str = ""
     code_profiles: dict[str, str] = field(default_factory=dict)
     active_code_profile: str = ""
+    # Map a doc/code profile to the DB profiles it documents. Empty list
+    # (or absent key) = global, matches every DB scope. When `/ask` runs
+    # against scope_profiles=[X], only doc/code profiles whose linked
+    # list is empty OR contains X are pulled into the LLM tool window.
+    doc_profile_linked_dbs: dict[str, list[str]] = field(default_factory=dict)
+    code_profile_linked_dbs: dict[str, list[str]] = field(default_factory=dict)
     write_through_config: bool = True
 
     # ── Shared history store (v0.12.0) ───────────────────────────────────
@@ -1232,6 +1238,8 @@ class AMXConfig:
             "active_doc_profile",
             "code_profiles",
             "active_code_profile",
+            "doc_profile_linked_dbs",
+            "code_profile_linked_dbs",
             "write_through_config",
             "history_store_enabled",
             "history_store_profile",
@@ -1347,6 +1355,22 @@ class AMXConfig:
                         cfg.code_profiles[str(name)] = path
 
             cfg.active_code_profile = str(data.get("active_code_profile") or "")
+
+            doc_link_raw = data.get("doc_profile_linked_dbs") or {}
+            if isinstance(doc_link_raw, dict):
+                for name, dbs in doc_link_raw.items():
+                    if isinstance(dbs, list):
+                        cfg.doc_profile_linked_dbs[str(name)] = [
+                            str(x) for x in dbs if isinstance(x, str) and x
+                        ]
+            code_link_raw = data.get("code_profile_linked_dbs") or {}
+            if isinstance(code_link_raw, dict):
+                for name, dbs in code_link_raw.items():
+                    if isinstance(dbs, list):
+                        cfg.code_profile_linked_dbs[str(name)] = [
+                            str(x) for x in dbs if isinstance(x, str) and x
+                        ]
+
             cfg.write_through_config = bool(data.get("write_through_config", True))
 
             # 0.12.0 — shared run-history store. Defaults preserve
@@ -1416,6 +1440,23 @@ class AMXConfig:
                     if "default" in cfg.code_profiles
                     else next(iter(cfg.code_profiles.keys()))
                 )
+
+        # Prune ghost references in linked-DB maps:
+        #   - keys pointing at doc/code profiles that no longer exist
+        #   - DB profile names inside the lists that were deleted
+        # Without this, an outdated YAML carrying ``doc_profile_linked_dbs:
+        # {contracts: [removed_pg]}`` would still scope ``/ask`` against a
+        # deleted DB and silently shrink retrieval results.
+        cfg.doc_profile_linked_dbs = {
+            name: [db for db in dbs if db in cfg.db_profiles]
+            for name, dbs in cfg.doc_profile_linked_dbs.items()
+            if name in cfg.doc_profiles
+        }
+        cfg.code_profile_linked_dbs = {
+            name: [db for db in dbs if db in cfg.db_profiles]
+            for name, dbs in cfg.code_profile_linked_dbs.items()
+            if name in cfg.code_profiles
+        }
 
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
@@ -1491,6 +1532,12 @@ class AMXConfig:
             data["code_paths"] = code_paths_yaml
             data["code_profiles"] = dict(self.code_profiles)
             data["active_code_profile"] = self.active_code_profile
+            data["doc_profile_linked_dbs"] = {
+                k: list(v) for k, v in self.doc_profile_linked_dbs.items() if v
+            }
+            data["code_profile_linked_dbs"] = {
+                k: list(v) for k, v in self.code_profile_linked_dbs.items() if v
+            }
             data["selected_schemas"] = self.selected_schemas
             data["selected_tables"] = self.selected_tables
             data["write_through_config"] = self.write_through_config
@@ -1692,6 +1739,12 @@ class AMXConfig:
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")
         del self.db_profiles[name]
+        # Drop the deleted DB from every doc/code link list so /ask scope
+        # resolution doesn't reference a phantom profile.
+        for prof, dbs in list(self.doc_profile_linked_dbs.items()):
+            self.doc_profile_linked_dbs[prof] = [d for d in dbs if d != name]
+        for prof, dbs in list(self.code_profile_linked_dbs.items()):
+            self.code_profile_linked_dbs[prof] = [d for d in dbs if d != name]
         # 0.11.0: also evict from the multi-pick scope to prevent ghost
         # selections after a profile is removed.
         if name in self.active_db_profiles:
@@ -1795,8 +1848,33 @@ class AMXConfig:
         if name not in self.doc_profiles:
             raise KeyError(f"Unknown document profile: {name}")
         del self.doc_profiles[name]
+        self.doc_profile_linked_dbs.pop(name, None)
         if self.active_doc_profile == name:
             self.active_doc_profile = next(iter(self.doc_profiles.keys()), "")
+        self._autosave()
+
+    def set_doc_profile_linked_dbs(self, name: str, db_profiles: list[str]) -> None:
+        """Associate a doc profile with one or more DB profiles. Empty
+        list = global (the doc profile is in scope for every /ask). Caller
+        gets a clean error if either side doesn't exist — UI and CLI both
+        rely on the exception to surface the typo instead of silently
+        writing a ghost link that the load-time pruner would just drop.
+        """
+        if name not in self.doc_profiles:
+            raise KeyError(f"Unknown document profile: {name}")
+        cleaned: list[str] = []
+        for raw in db_profiles or []:
+            db = (raw or "").strip()
+            if not db:
+                continue
+            if db not in self.db_profiles:
+                raise KeyError(f"Unknown DB profile: {db}")
+            if db not in cleaned:
+                cleaned.append(db)
+        if cleaned:
+            self.doc_profile_linked_dbs[name] = cleaned
+        else:
+            self.doc_profile_linked_dbs.pop(name, None)
         self._autosave()
 
     def upsert_code_profile(self, name: str, path: str) -> None:
@@ -1807,8 +1885,28 @@ class AMXConfig:
         if name not in self.code_profiles:
             raise KeyError(f"Unknown codebase profile: {name}")
         del self.code_profiles[name]
+        self.code_profile_linked_dbs.pop(name, None)
         if self.active_code_profile == name:
             self.active_code_profile = next(iter(self.code_profiles.keys()), "")
+        self._autosave()
+
+    def set_code_profile_linked_dbs(self, name: str, db_profiles: list[str]) -> None:
+        """Symmetric with :meth:`set_doc_profile_linked_dbs`."""
+        if name not in self.code_profiles:
+            raise KeyError(f"Unknown codebase profile: {name}")
+        cleaned: list[str] = []
+        for raw in db_profiles or []:
+            db = (raw or "").strip()
+            if not db:
+                continue
+            if db not in self.db_profiles:
+                raise KeyError(f"Unknown DB profile: {db}")
+            if db not in cleaned:
+                cleaned.append(db)
+        if cleaned:
+            self.code_profile_linked_dbs[name] = cleaned
+        else:
+            self.code_profile_linked_dbs.pop(name, None)
         self._autosave()
 
     def _autosave(self) -> None:

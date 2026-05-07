@@ -836,3 +836,211 @@ def cmd_remove_code_profile(cfg: AMXConfig, rest: list[str]) -> None:
         success(f"Removed codebase profile: {rest[0]}")
     except Exception as exc:
         error(str(exc))
+
+
+def _parse_link_args(rest: list[str]) -> tuple[str, list[str], bool]:
+    """Parse ``<profile> [--db NAME]... [--clear]`` for /doc-link and /code-link.
+
+    Returns ``(profile_name, db_profile_names, clear_flag)``. ``--clear``
+    drops every linked DB so the profile becomes global again. Without
+    ``--db`` and without ``--clear`` the caller treats it as a read-only
+    listing.
+    """
+    if not rest:
+        return ("", [], False)
+    profile = rest[0]
+    dbs: list[str] = []
+    clear = False
+    i = 1
+    while i < len(rest):
+        token = rest[i]
+        if token == "--db" and i + 1 < len(rest):
+            dbs.append(rest[i + 1])
+            i += 2
+            continue
+        if token.startswith("--db="):
+            dbs.append(token.split("=", 1)[1])
+            i += 1
+            continue
+        if token in {"--clear", "--unlink"}:
+            clear = True
+            i += 1
+            continue
+        # Bare positional after the profile is treated as a DB name —
+        # the user mostly types `/doc-link contracts prod_pg analytics_bq`
+        # and that should "just work" without forcing --db before each.
+        dbs.append(token)
+        i += 1
+    return (profile, dbs, clear)
+
+
+def cmd_doc_link(cfg: AMXConfig, rest: list[str]) -> None:
+    """`/doc-link <doc-profile> [--db NAME]...` — link doc profile to DB(s).
+
+    No args after the profile name = print current links. ``--clear`` drops
+    every link (the profile becomes global again — matches every DB scope).
+    """
+    profile, dbs, clear = _parse_link_args(rest)
+    if not profile:
+        # List mode
+        if not cfg.doc_profile_linked_dbs:
+            info(
+                "No doc → DB links yet. Try `/doc-link <doc-profile> --db <db-profile>`. "
+                "An unlinked doc profile is treated as global (in scope for every /ask)."
+            )
+            return
+        rows = [
+            [name, ", ".join(linked) if linked else "(global)"]
+            for name, linked in sorted(cfg.doc_profile_linked_dbs.items())
+        ]
+        render_table("Doc profile → DB profile links", ["Doc profile", "Linked DBs"], rows)
+        return
+    if profile not in cfg.doc_profiles:
+        error(f"Unknown document profile: {profile}")
+        return
+    if clear:
+        try:
+            cfg.set_doc_profile_linked_dbs(profile, [])
+        except Exception as exc:
+            error(str(exc))
+            return
+        success(f"Cleared all DB links for doc profile {profile!r} (now global).")
+        return
+    if not dbs:
+        linked = cfg.doc_profile_linked_dbs.get(profile, [])
+        if linked:
+            info(f"{profile!r} is linked to: {', '.join(linked)}")
+        else:
+            info(
+                f"{profile!r} has no DB links — it is global (in scope for every /ask). "
+                f"Pass `--db NAME` (repeatable) to link, or `--clear` to keep global explicitly."
+            )
+        return
+    try:
+        cfg.set_doc_profile_linked_dbs(profile, dbs)
+    except KeyError as exc:
+        error(str(exc))
+        return
+    final = cfg.doc_profile_linked_dbs.get(profile, [])
+    success(f"Linked doc profile {profile!r} to: {', '.join(final)}")
+
+
+def cmd_code_link(cfg: AMXConfig, rest: list[str]) -> None:
+    """`/code-link <code-profile> [--db NAME]...` — link code profile to DB(s)."""
+    profile, dbs, clear = _parse_link_args(rest)
+    if not profile:
+        if not cfg.code_profile_linked_dbs:
+            info(
+                "No code → DB links yet. Try `/code-link <code-profile> --db <db-profile>`. "
+                "An unlinked code profile is treated as global."
+            )
+            return
+        rows = [
+            [name, ", ".join(linked) if linked else "(global)"]
+            for name, linked in sorted(cfg.code_profile_linked_dbs.items())
+        ]
+        render_table("Code profile → DB profile links", ["Code profile", "Linked DBs"], rows)
+        return
+    if profile not in cfg.code_profiles:
+        error(f"Unknown codebase profile: {profile}")
+        return
+    if clear:
+        try:
+            cfg.set_code_profile_linked_dbs(profile, [])
+        except Exception as exc:
+            error(str(exc))
+            return
+        success(f"Cleared all DB links for code profile {profile!r} (now global).")
+        return
+    if not dbs:
+        linked = cfg.code_profile_linked_dbs.get(profile, [])
+        if linked:
+            info(f"{profile!r} is linked to: {', '.join(linked)}")
+        else:
+            info(
+                f"{profile!r} has no DB links — it is global. Pass `--db NAME` to link, "
+                f"or `--clear` to keep global explicitly."
+            )
+        return
+    try:
+        cfg.set_code_profile_linked_dbs(profile, dbs)
+    except KeyError as exc:
+        error(str(exc))
+        return
+    final = cfg.code_profile_linked_dbs.get(profile, [])
+    success(f"Linked code profile {profile!r} to: {', '.join(final)}")
+
+
+def cmd_ask_context(cfg: AMXConfig) -> None:
+    """`/ask-context` — show what doc/code profiles `/ask` would pull in.
+
+    Mirrors the Studio "in scope" badge so a CLI user can sanity-check
+    their RAG scope before asking questions. Resolution rules match
+    :func:`amx.search._agent.scope.resolve_doc_profiles_for_scope`.
+    """
+    from amx.codebase.code_rag import code_collection_count
+    from amx.search._agent.scope import (
+        resolve_code_profiles_for_scope,
+        resolve_doc_profiles_for_scope,
+    )
+
+    scope_dbs = list(cfg.active_db_profiles or [])
+    if not scope_dbs and cfg.active_db_profile:
+        scope_dbs = [cfg.active_db_profile]
+
+    if scope_dbs:
+        info(f"DB scope: {', '.join(scope_dbs)}")
+    else:
+        info("DB scope: (none — configure a DB profile to see linked docs/code in /ask)")
+
+    doc_profiles = resolve_doc_profiles_for_scope(cfg, scope_dbs)
+    code_profiles = resolve_code_profiles_for_scope(cfg, scope_dbs)
+
+    # Doc breakdown
+    if doc_profiles:
+        from amx.docs.rag import RAGStore
+
+        rows: list[list[str]] = []
+        for name in doc_profiles:
+            paths = cfg.doc_profiles.get(name, []) or []
+            try:
+                store = RAGStore(source_filters=paths)
+                count = store.filtered_doc_count()
+            except Exception:
+                count = 0
+            linked = cfg.doc_profile_linked_dbs.get(name) or []
+            link_label = ", ".join(linked) if linked else "(global)"
+            rows.append([name, link_label, str(count), "; ".join(paths[:2])])
+        render_table(
+            "Docs in /ask scope",
+            ["Doc profile", "Linked DBs", "Indexed chunks", "Sources"],
+            rows,
+        )
+    else:
+        info(
+            "No doc profiles in /ask scope. /ask will answer from DB metadata only "
+            "for documentation questions."
+        )
+
+    # Code breakdown
+    if code_profiles:
+        rows = []
+        for name in code_profiles:
+            path = cfg.code_profiles.get(name, "") or ""
+            try:
+                count = code_collection_count(source_filters=[path] if path else None)
+            except Exception:
+                count = 0
+            linked = cfg.code_profile_linked_dbs.get(name) or []
+            link_label = ", ".join(linked) if linked else "(global)"
+            rows.append([name, link_label, str(count), path])
+        render_table(
+            "Code in /ask scope",
+            ["Code profile", "Linked DBs", "Indexed snippets", "Source"],
+            rows,
+        )
+    else:
+        info(
+            "No code profiles in /ask scope. /ask cannot answer 'where is X used in code' "
+            "questions — run /code-scan and (optionally) /code-link to attach a profile."
+        )
