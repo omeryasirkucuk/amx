@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { PlayCircle } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { PlayCircle, Settings as SettingsIcon } from "lucide-react";
 
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
@@ -40,6 +40,14 @@ export default function RunNew() {
   const ctx = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
   const supportsBatch = !!ctx.data?.llm_supports_batch;
   const llmProvider = ctx.data?.llm_provider ?? null;
+  // Pre-flight gate: the worker fails fast in _run_worker_body when
+  // cfg.llm.provider/model are missing, but the SPA shouldn't even
+  // accept the click — the user only sees the error after the job
+  // status flips to failed in the run detail. Surfacing the gap on
+  // RunNew keeps the bad path out of history altogether.
+  const llmReady = !!(
+    ctx.data?.llm_provider && ctx.data?.llm_model && ctx.data?.active_llm_profile
+  );
 
   const schemas = useQuery({
     queryKey: [
@@ -124,6 +132,35 @@ export default function RunNew() {
               database/catalog) is encoded in the URL so this page knows which
               schemas to enumerate.
             </p>
+          </CardBody>
+        </Card>
+      ) : !ctx.isLoading && !llmReady ? (
+        <Card>
+          <CardBody className="px-6 py-8">
+            <div className="flex items-start gap-3">
+              <SettingsIcon
+                size={18}
+                className="mt-0.5 flex-none text-warning"
+                aria-hidden="true"
+              />
+              <div className="min-w-0 flex-1 space-y-2">
+                <p className="text-sm font-semibold text-ink">
+                  Configure an LLM before running.
+                </p>
+                <p className="text-sm text-ink-muted">
+                  {ctx.data?.llm_provider
+                    ? "The active LLM profile has no model selected — Studio needs both a provider and a model to generate metadata."
+                    : "No LLM profile is active yet. Add one in Settings → LLM and Studio will route generation through it."}
+                </p>
+                <Link
+                  to="/settings?tab=llm"
+                  className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-xs font-medium text-accent-soft transition hover:opacity-90"
+                >
+                  <SettingsIcon size={12} />
+                  Open LLM settings
+                </Link>
+              </div>
+            </div>
           </CardBody>
         </Card>
       ) : (

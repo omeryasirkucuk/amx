@@ -145,6 +145,11 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         cfg = AMXConfig()
         cfg.llm.provider = "local"
         cfg.llm.model = "llama3"
+        # The pre-flight guard now distinguishes "no profiles at all"
+        # from "active profile incomplete" — to reach the
+        # connection-test path the registry must be non-empty.
+        cfg.llm_profiles = {"default": cfg.llm}
+        cfg.active_llm_profile = "default"
 
         class FakeDatabaseConnector:
             def __init__(self, cfg):
@@ -204,8 +209,11 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("No active LLM profile is configured.", result.output)
-        self.assertIn("/llm", result.output)
+        # The "no profiles at all" guard fires first now and points
+        # the user at the wizard. /llm is for switching among
+        # existing profiles, so it deliberately doesn't appear in
+        # this branch — this assertion was tightened to match.
+        self.assertIn("No LLM profile is configured.", result.output)
         self.assertIn("/add-llm-profile", result.output)
         self.assertIn("/setup", result.output)
 
@@ -706,7 +714,13 @@ class SearchIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("requires an active LLM profile", result.output)
+        # The /search ask command now catches the missing-LLM case
+        # upfront with the same wording as /run, instead of letting
+        # the agent's discussion-mode fallback ("requires an active
+        # LLM profile…") fire deep inside the planner. This keeps
+        # the user out of a planner loop they can't complete.
+        self.assertIn("No LLM profile is configured.", result.output)
+        self.assertIn("/add-llm-profile", result.output)
 
     @pytest.mark.integration
     def test_search_ask_actions_prompt_requires_human_approval(self) -> None:
