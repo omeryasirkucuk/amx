@@ -38,6 +38,13 @@ interface RunDetailPayload {
   settings?: Record<string, unknown>;
   llm_model?: string | null;
   duration_sec?: number | null;
+  /** DB scope the run was rooted at — the apply path needs these
+      to land COMMENT statements on the same database the user
+      actually scoped (Postgres throws schema-not-found errors when
+      the active profile points elsewhere). */
+  db_profile?: string | null;
+  database?: string | null;
+  catalog?: string | null;
   /** Set by the backend when a worker thread is still alive for this
       run id. SPA subscribes to /api/runs/{job}/events while it's
       present so a numeric-id detail page shows live progress. */
@@ -669,6 +676,11 @@ function PersistedRunView({ runId }: { runId: number }) {
             loading={results.isLoading}
             rows={results.data?.results ?? []}
             error={results.error as Error | undefined}
+            scope={{
+              db_profile: run.data?.db_profile ?? null,
+              database: run.data?.database ?? null,
+              catalog: run.data?.catalog ?? null,
+            }}
           />
         </TabPanel>
         <TabPanel value="scope">
@@ -786,11 +798,17 @@ function ResultsTab({
   loading,
   rows,
   error,
+  scope,
 }: {
   runId: number;
   loading: boolean;
   rows: ResultRow[];
   error?: Error;
+  scope: {
+    db_profile: string | null;
+    database: string | null;
+    catalog: string | null;
+  };
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -816,7 +834,16 @@ function ResultsTab({
     mutationFn: () =>
       apiFetch<{ job_id: string; status: string }>("/api/pending/apply", {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          // Pin the apply to the run's own scope. Without this the
+          // worker falls back to cfg.active_db_profile + its pinned
+          // database, which produces ``schema "X" does not exist``
+          // errors when the active profile points elsewhere than
+          // the database the run was rooted in.
+          db_profile: scope.db_profile ?? undefined,
+          database: scope.database ?? undefined,
+          catalog: scope.catalog ?? undefined,
+        }),
       }),
     onSuccess: (result) => {
       setActiveApplyJob(result.job_id);

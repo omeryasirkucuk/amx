@@ -85,6 +85,16 @@ def get_run(
             break
     row = dict(row)
     row["live_job_id"] = live_job_id
+    # Surface the run's effective database / catalog at the top level so
+    # the SPA can pin /api/pending/apply to the same scope without
+    # parsing settings_json on the client. Falls back to the legacy
+    # nested location for older runs that didn't capture it yet.
+    settings = row.get("settings_json")
+    if isinstance(settings, dict):
+        if row.get("database") in (None, ""):
+            row["database"] = settings.get("database") or None
+        if row.get("catalog") in (None, ""):
+            row["catalog"] = settings.get("catalog") or None
     return row
 
 
