@@ -574,7 +574,9 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                 },
                 tokens={
                     "total_tokens": token_tracker.total_tokens,
+                    "total_cost_usd": round(token_tracker.total_cost_usd, 8),
                     "summary": token_tracker.summary(),
+                    "records": token_tracker.records(),
                 },
                 results={"pending_count": pending_count},
                 error_text=final_error_text,

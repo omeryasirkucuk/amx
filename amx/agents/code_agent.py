@@ -190,7 +190,7 @@ class CodeAgent(BaseAgent):
         est = estimate_tokens(messages)
         with step_spinner(f"Code Agent: {len(columns)} columns", token_estimate=est):
             result = self.llm.chat(messages)
-        tracker.record("code_agent", est, result.usage)
+        tracker.record_for("code_agent", est, self.llm, result.usage)
 
         suggestions = self._parse_response(result.content, ctx)
         return apply_logprob_confidence(

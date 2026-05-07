@@ -390,7 +390,7 @@ class ProfileAgent(BaseAgent):
             log.error("LLM call failed in profile agent: %s", exc)
             return []
 
-        tracker.record("profile_agent", est, result.usage)
+        tracker.record_for("profile_agent", est, self.llm, result.usage)
         response = result.content
         _logprobs = result.logprobs
 

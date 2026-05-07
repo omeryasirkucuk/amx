@@ -638,6 +638,13 @@ function LlmProfileWizard({
   const [apiBase, setApiBase] = useState("");
   const [temperature, setTemperature] = useState(0.2);
   const [maxTokens, setMaxTokens] = useState(16_384);
+  // Custom cost overrides (USD per 1M tokens). Stored as strings so
+  // the user can clear them by deleting the input — an empty string
+  // round-trips to ``null`` on the backend, which the resolution path
+  // treats as "no override". Half-overrides (one set, one blank) are
+  // also rejected by the backend, matching the CLI ``/cost`` command.
+  const [customInputCost, setCustomInputCost] = useState("");
+  const [customOutputCost, setCustomOutputCost] = useState("");
   const [nAlternatives, setNAlternatives] = useState(3);
   const [columnBatchSize, setColumnBatchSize] = useState(10);
   const [promptDetail, setPromptDetail] = useState("standard");
@@ -658,6 +665,16 @@ function LlmProfileWizard({
     setApiBase(String(d.api_base ?? "") || "");
     setTemperature(Number(d.temperature ?? 0.2));
     setMaxTokens(Number(d.max_tokens ?? 16384));
+    setCustomInputCost(
+      d.custom_input_cost_per_mtok != null
+        ? String(d.custom_input_cost_per_mtok)
+        : "",
+    );
+    setCustomOutputCost(
+      d.custom_output_cost_per_mtok != null
+        ? String(d.custom_output_cost_per_mtok)
+        : "",
+    );
     setNAlternatives(Number(d.n_alternatives ?? 3));
     setColumnBatchSize(Number(d.column_batch_size ?? 10));
     setPromptDetail(String(d.prompt_detail || "standard"));
@@ -678,6 +695,14 @@ function LlmProfileWizard({
         model,
         temperature,
         max_tokens: maxTokens,
+        // Empty string = "clear the override". Backend treats null /
+        // negative / non-numeric as "no override". The conversion is
+        // explicit here so a future schema change does not silently
+        // start sending ``"" -> 0`` (which would bill input at zero).
+        custom_input_cost_per_mtok:
+          customInputCost.trim() === "" ? null : Number(customInputCost),
+        custom_output_cost_per_mtok:
+          customOutputCost.trim() === "" ? null : Number(customOutputCost),
         n_alternatives: nAlternatives,
         column_batch_size: columnBatchSize,
         prompt_detail: promptDetail,
@@ -814,6 +839,34 @@ function LlmProfileWizard({
               step={1024}
               value={maxTokens}
               onChange={(e) => setMaxTokens(Math.max(256, Number(e.target.value) || 0))}
+              className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+            />
+          </Field>
+          <Field
+            label="Custom input cost (USD / 1M tokens)"
+            hint="Override the auto-detected price. Leave blank to use LiteLLM / OpenRouter / bundled prices. Both rates must be set together — a half-override is treated as no override."
+          >
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={customInputCost}
+              placeholder="auto"
+              onChange={(e) => setCustomInputCost(e.target.value)}
+              className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+            />
+          </Field>
+          <Field
+            label="Custom output cost (USD / 1M tokens)"
+            hint="Same rules as the input rate — both must be set or both blank."
+          >
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={customOutputCost}
+              placeholder="auto"
+              onChange={(e) => setCustomOutputCost(e.target.value)}
               className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
             />
           </Field>

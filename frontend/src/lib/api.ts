@@ -471,7 +471,51 @@ export const api = {
     apiFetch<{ result_id: number; chain: ResultRow[]; count: number }>(
       `/api/history/results/${resultId}/history`,
     ),
+  /** Resolve the live price for a (provider, model) pair.
+   *
+   * Mirrors the resolution order used by the rest of AMX:
+   * ``user_override`` (when ``profile_name`` carries a custom rate),
+   * then ``litellm`` / ``openrouter`` / ``fallback`` / ``unknown``.
+   * The Settings cost editor calls this as the user types so the
+   * effective rate updates inline next to the input fields.
+   */
+  lookupPrice: (provider: string, model: string, profileName?: string) => {
+    const params = new URLSearchParams({ provider, model });
+    if (profileName) params.set("profile_name", profileName);
+    return apiFetch<ModelPrice>(`/api/pricing/model?${params.toString()}`);
+  },
+  /** Force-fetch fresh prices from LiteLLM + OpenRouter. */
+  refreshPrices: () =>
+    apiFetch<{
+      litellm: number;
+      openrouter: number;
+      errors: string[];
+      skipped: boolean;
+    }>("/api/pricing/refresh", { method: "POST" }),
+  /** Inspect the local price cache (age, source counts, freshness). */
+  pricingCacheInfo: () =>
+    apiFetch<{
+      fetched_at: number | null;
+      age_seconds: number | null;
+      ttl_seconds: number;
+      is_stale: boolean;
+      litellm_count: number;
+      openrouter_count: number;
+      fallback_count: number;
+    }>("/api/pricing/cache-info"),
 };
+
+/** Shape returned by ``lookupPrice`` — mirrors the backend
+ *  :class:`ModelPrice` dataclass. ``source`` is one of
+ *  ``user_override`` / ``litellm`` / ``openrouter`` / ``fallback`` /
+ *  ``unknown``.
+ */
+export interface ModelPrice {
+  input_per_mtok: number;
+  output_per_mtok: number;
+  source: string;
+  fetched_at: number | null;
+}
 
 /** Shape of one row in the re-run chain returned by ``resultHistory``.
  *

@@ -246,6 +246,125 @@ def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
 # heads-up before silently committing it to config.yml.
 _MAX_TOKENS_SOFT_CAP = 262_144
 
+_RESET_TOKENS = {"reset", "clear", "default", "auto", "none", "-"}
+
+
+def cmd_cost(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set per-1M-token cost overrides for the active LLM profile.
+
+    Usage::
+
+        /cost                           # show effective price + source
+        /cost <input> <output>          # set custom override (USD / Mtok)
+        /cost reset                     # remove the override
+
+    Resolution order is documented in ``amx/llm/pricing.py:lookup_price``;
+    a custom override always wins over LiteLLM / OpenRouter / fallback.
+    Both rates are required when setting — a half-override is treated
+    as no override to avoid the "set output, forgot input" footgun.
+    """
+    from amx.llm.pricing import cache_age_seconds, lookup_price
+
+    profile = cfg.active_llm_profile or ""
+    if not profile or profile not in cfg.llm_profiles:
+        warn("No active LLM profile. Run /add-llm-profile or /use-llm first.")
+        return
+
+    if not rest:
+        price = lookup_price(
+            cfg, provider=cfg.llm.provider, model=cfg.llm.model, profile_name=profile
+        )
+        info_styled(
+            f"Cost for '{profile}' [input  $/Mtok]",
+            f"{price.input_per_mtok:.4f}",
+            value_style="bold",
+        )
+        info_styled(
+            f"Cost for '{profile}' [output $/Mtok]",
+            f"{price.output_per_mtok:.4f}",
+            value_style="bold",
+        )
+        info_styled("Source", price.source)
+        if price.source != "user_override":
+            age = cache_age_seconds()
+            if age is None:
+                age_label = "never (run /refresh-prices)"
+            elif age < 60:
+                age_label = f"{int(age)}s ago"
+            elif age < 3600:
+                age_label = f"{int(age / 60)}m ago"
+            else:
+                age_label = f"{age / 3600.0:.1f}h ago"
+            info(f"Last fetched: {age_label}.")
+        info(
+            "Run /cost <input> <output> to override (e.g. /cost 0.50 2.50). "
+            "/cost reset removes the override."
+        )
+        return
+
+    head = (rest[0] or "").lower()
+    if head in _RESET_TOKENS:
+        cfg.llm.custom_input_cost_per_mtok = None
+        cfg.llm.custom_output_cost_per_mtok = None
+        cfg.llm_profiles[profile].custom_input_cost_per_mtok = None
+        cfg.llm_profiles[profile].custom_output_cost_per_mtok = None
+        cfg.save()
+        success(f"Cost override cleared for '{profile}'. Reverting to fetched prices.")
+        return
+
+    if len(rest) < 2:
+        error(
+            "Usage: /cost <input_per_mtok> <output_per_mtok>  (or /cost reset). "
+            "Both rates are required — a half-override is rejected to keep "
+            "the audit trail honest."
+        )
+        return
+    try:
+        in_rate = float(rest[0])
+        out_rate = float(rest[1])
+    except ValueError:
+        error(f"Expected two numeric rates (USD / 1M tokens), got: {rest[0]} {rest[1]}")
+        return
+    if in_rate < 0 or out_rate < 0:
+        error("Rates must be non-negative.")
+        return
+    cfg.llm.custom_input_cost_per_mtok = in_rate
+    cfg.llm.custom_output_cost_per_mtok = out_rate
+    cfg.llm_profiles[profile].custom_input_cost_per_mtok = in_rate
+    cfg.llm_profiles[profile].custom_output_cost_per_mtok = out_rate
+    cfg.save()
+    success(
+        f"Cost override saved for '{profile}': input ${in_rate:.4f}/Mtok, "
+        f"output ${out_rate:.4f}/Mtok."
+    )
+
+
+def cmd_refresh_prices(cfg: AMXConfig, rest: list[str]) -> None:
+    """Force-fetch fresh LLM prices from LiteLLM + OpenRouter.
+
+    Persists to ``~/.amx/pricing-cache.json`` (24h TTL). Subsequent
+    ``/usage`` and any LLM call that resolves a price will see the new
+    rates immediately. Errors per source are reported but never raise —
+    a stale cache is always preferable to a crashed shell.
+    """
+    from amx.llm.pricing import refresh_prices
+
+    info("Fetching latest prices from LiteLLM and OpenRouter…")
+    result = refresh_prices(force=True)
+    if result.get("errors"):
+        for err in result["errors"]:
+            warn(f"  {err}")
+    if result.get("skipped"):
+        info(
+            f"Cache still fresh — {result['litellm']} LiteLLM + "
+            f"{result['openrouter']} OpenRouter models loaded."
+        )
+    else:
+        success(
+            f"Updated {result['litellm']} LiteLLM + {result['openrouter']} "
+            "OpenRouter models. Cache valid for 24h."
+        )
+
 
 def cmd_max_tokens(cfg: AMXConfig, rest: list[str]) -> None:
     """Show or set the LLM output-token budget for the active profile.

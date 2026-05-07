@@ -1,16 +1,20 @@
-"""``/usage`` slash command — show token usage and approximate cost.
+"""``/usage`` slash command — show token usage and live USD cost.
 
 Reads from the SQLite ``analysis_runs`` table (already populated by every
-``/analyze run``) and aggregates by (provider, model) over a time window.
-Apply approximate USD pricing per million tokens so users have an
-order-of-magnitude sense of LLM spend without needing to log into the
-provider dashboard.
+``/analyze run``) and aggregates by (provider, model) over a time
+window. Cost can be rendered two ways:
 
-The pricing table is intentionally minimal and approximate — exact
-amounts depend on tier and discount, so we render a "(approximate)"
-disclaimer. Models we do not have pricing for show ``—`` for cost.
+* **Frozen** (default) — uses the per-record USD figures the
+  :class:`TokenTracker` saved at run time. This is the audit trail:
+  what a run actually cost given the prices on the day it ran.
+* **Live** (``/usage --live``) — re-runs :func:`amx.llm.pricing.compute_cost`
+  against today's prices on the same recorded token totals so users
+  can answer "what would this same workload cost today?".
 
-This command is local-only: nothing is sent to a network endpoint.
+Source attribution: the table includes a ``Source`` column showing
+where the price came from (litellm / openrouter / user_override /
+fallback / unknown) so the user can tell when a custom override was
+in effect or when AMX had to fall back to the bundled snapshot.
 """
 
 from __future__ import annotations
@@ -20,41 +24,14 @@ import time
 from typing import Any
 
 from amx.config import AMXConfig
+from amx.llm.pricing import (
+    ModelPrice,
+    cache_age_seconds,
+    compute_cost,
+    lookup_price,
+)
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import error, heading, info, render_table, warn
-
-# USD per 1M tokens (input, output). Embedding models track only input.
-# Source: provider public price pages, approximated for end-user
-# orientation only. Update when a model is renamed or repriced.
-_PRICING_PER_MTOK: dict[str, tuple[float, float]] = {
-    # OpenAI chat
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4-turbo": (10.00, 30.00),
-    "gpt-4": (30.00, 60.00),
-    "o1": (15.00, 60.00),
-    "o1-mini": (3.00, 12.00),
-    "o3-mini": (1.10, 4.40),
-    # OpenAI embeddings (output cost ignored by the model API)
-    "text-embedding-3-small": (0.02, 0.0),
-    "text-embedding-3-large": (0.13, 0.0),
-    "text-embedding-ada-002": (0.10, 0.0),
-    # Anthropic
-    "claude-opus-4": (15.00, 75.00),
-    "claude-sonnet-4": (3.00, 15.00),
-    "claude-haiku-4": (0.80, 4.00),
-    "claude-3-5-sonnet": (3.00, 15.00),
-    "claude-3-5-haiku": (0.80, 4.00),
-    "claude-3-opus": (15.00, 75.00),
-    # Gemini
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.0-pro": (1.25, 5.00),
-    "gemini-1.5-pro": (1.25, 5.00),
-    "gemini-1.5-flash": (0.075, 0.30),
-    # DeepSeek
-    "deepseek-chat": (0.27, 1.10),
-    "deepseek-reasoner": (0.55, 2.19),
-}
 
 _WINDOWS: dict[str, float | None] = {
     "today": 24 * 3600.0,
@@ -65,6 +42,7 @@ _WINDOWS: dict[str, float | None] = {
     "all": None,
 }
 _DEFAULT_WINDOW = "7d"
+_LIVE_FLAGS = {"--live", "-l", "live"}
 
 
 def _normalize_window(arg: str) -> tuple[str, float | None]:
@@ -74,39 +52,18 @@ def _normalize_window(arg: str) -> tuple[str, float | None]:
     return _DEFAULT_WINDOW, _WINDOWS[_DEFAULT_WINDOW]
 
 
-def _lookup_pricing(model: str) -> tuple[float, float] | None:
-    """Match model id against the pricing table; tolerates provider-prefixed
-    forms like ``openai/gpt-4o`` or ``anthropic/claude-sonnet-4-20250514`` by
-    stripping the namespace and trimming trailing dated suffixes."""
-    if not model:
-        return None
-    name = model.lower().strip()
-    if name in _PRICING_PER_MTOK:
-        return _PRICING_PER_MTOK[name]
-    # Strip a provider prefix (openai/, anthropic/, openrouter/openai/, …).
-    while "/" in name:
-        name = name.split("/", 1)[1]
-        if name in _PRICING_PER_MTOK:
-            return _PRICING_PER_MTOK[name]
-    # Strip dated/version suffixes (e.g. -20250514, -v2, -latest, -beta).
-    for sep in ("-2024", "-2025", "-2026", "-v", "-latest", "-beta", "-preview"):
-        if sep in name:
-            head = name.split(sep, 1)[0]
-            if head in _PRICING_PER_MTOK:
-                return _PRICING_PER_MTOK[head]
-    return None
-
-
 def _aggregate_runs(
     runs: list[dict[str, Any]],
-) -> tuple[dict[tuple[str, str], dict[str, int]], int]:
-    """Group runs by (provider, model) and sum token totals.
+) -> tuple[dict[tuple[str, str], dict[str, Any]], int]:
+    """Group runs by (provider, model) and accumulate token + frozen-cost totals.
 
-    Returns ``(per_model_aggregate, total_runs_with_tokens)``. Runs whose
-    ``tokens_json`` cannot be parsed contribute zero — we never raise from
-    a read-only display command.
+    The frozen-cost path reads each run's ``tokens_json.records[*].input_cost_usd``
+    + ``output_cost_usd`` (set by :class:`TokenTracker` on newer runs).
+    Older runs without the cost fields contribute zero to the frozen
+    total — those runs render with ``$ — (frozen)`` until the user re-
+    aggregates with ``--live``.
     """
-    per: dict[tuple[str, str], dict[str, int]] = {}
+    per: dict[tuple[str, str], dict[str, Any]] = {}
     counted = 0
     for run in runs:
         provider = str(run.get("llm_provider") or "(unknown)")
@@ -123,51 +80,126 @@ def _aggregate_runs(
             continue
         prompt_total = 0
         completion_total = 0
+        frozen_cost_total = 0.0
+        seen_cost_field = False
+        sources_seen: set[str] = set()
         for record in records:
             if not isinstance(record, dict):
                 continue
             prompt_total += int(record.get("prompt_tokens") or 0)
             completion_total += int(record.get("completion_tokens") or 0)
+            if "input_cost_usd" in record or "output_cost_usd" in record:
+                seen_cost_field = True
+                frozen_cost_total += float(record.get("input_cost_usd") or 0.0)
+                frozen_cost_total += float(record.get("output_cost_usd") or 0.0)
+            src = record.get("price_source")
+            if src:
+                sources_seen.add(str(src))
         if prompt_total == 0 and completion_total == 0:
             continue
         bucket = per.setdefault(
             (provider, model),
-            {"runs": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            {
+                "runs": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "frozen_cost_usd": 0.0,
+                "frozen_cost_known": False,
+                "sources": set(),
+            },
         )
         bucket["runs"] += 1
         bucket["input_tokens"] += prompt_total
         bucket["output_tokens"] += completion_total
         bucket["total_tokens"] += prompt_total + completion_total
+        if seen_cost_field:
+            bucket["frozen_cost_known"] = True
+            bucket["frozen_cost_usd"] += frozen_cost_total
+        bucket["sources"] |= sources_seen
         counted += 1
     return per, counted
 
 
-def _format_cost(model: str, input_tokens: int, output_tokens: int) -> str:
-    pricing = _lookup_pricing(model)
-    if pricing is None:
+def _format_cost(cost: float, *, known: bool) -> str:
+    if not known:
         return "—"
-    input_usd = input_tokens * pricing[0] / 1_000_000.0
-    output_usd = output_tokens * pricing[1] / 1_000_000.0
-    total = input_usd + output_usd
-    if total < 0.01:
-        return "<$0.01"
-    return f"${total:,.2f}"
+    if cost <= 0.0:
+        return "$0.00"
+    if cost < 0.0001:
+        return "<$0.0001"
+    return f"${cost:,.4f}"
+
+
+def _format_sources(sources: set[str]) -> str:
+    """Render the price-source set as a compact, sorted label.
+
+    Multiple sources only happen when an aggregated bucket was filled
+    by runs that used different price tables (e.g. the user toggled
+    a custom override mid-week). Showing them comma-separated keeps
+    the audit trail honest without bloating the column.
+    """
+    if not sources:
+        return "—"
+    cleaned = sorted(s for s in sources if s)
+    return ", ".join(cleaned) if cleaned else "—"
+
+
+def _live_recompute(cfg: AMXConfig, bucket: dict[str, Any], model: str) -> tuple[float, str]:
+    """Recompute USD cost for one bucket using today's prices.
+
+    Resolution falls back to ``ModelPrice(0, 0, "unknown")`` when the
+    price is not known — the same contract :func:`lookup_price` always
+    returns. Caller renders the bucket as "$0.0000 (unknown)" so the
+    user sees the gap rather than a misleading zero.
+    """
+    price: ModelPrice = lookup_price(cfg, provider="", model=model)
+    _in, _out, total = compute_cost(
+        prompt_tokens=int(bucket["input_tokens"]),
+        completion_tokens=int(bucket["output_tokens"]),
+        price=price,
+    )
+    return total, price.source
+
+
+def _format_cache_age(seconds: float | None) -> str:
+    if seconds is None:
+        return "never (run /refresh-prices)"
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds / 60)}m ago"
+    if seconds < 86_400:
+        return f"{seconds / 3600.0:.1f}h ago"
+    return f"{seconds / 86_400.0:.1f}d ago"
 
 
 def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
-    """Show LLM token usage and approximate cost.
+    """Show LLM token usage and USD cost.
 
     Usage::
 
-        /usage              # last 7 days (default)
+        /usage              # last 7 days, frozen costs (default)
         /usage 24h          # last 24 hours
-        /usage 7d           # last 7 days
         /usage 30d          # last 30 days
         /usage all          # since the SQLite history was created
+        /usage --live       # recompute with today's prices
+        /usage 30d --live   # combined
 
-    Reads ~/.amx/history.db. Local-only; no network calls.
+    Reads ~/.amx/history.db. Frozen costs come from the per-record USD
+    figures saved at run time; ``--live`` recomputes using current
+    prices fetched from LiteLLM / OpenRouter (cached locally — see
+    /refresh-prices).
     """
-    label, window_sec = _normalize_window(rest[0] if rest else "")
+    args = list(rest or [])
+    live = False
+    cleaned: list[str] = []
+    for arg in args:
+        if (arg or "").lower() in _LIVE_FLAGS:
+            live = True
+        else:
+            cleaned.append(arg)
+    label, window_sec = _normalize_window(cleaned[0] if cleaned else "")
     hs = history_store()
     if hs is None:
         warn(
@@ -208,7 +240,8 @@ def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
 
     per_model, runs_with_tokens = _aggregate_runs(runs)
 
-    heading(f"LLM usage — last {label}")
+    mode_label = "live" if live else "frozen"
+    heading(f"LLM usage — last {label} ({mode_label})")
     info(
         f"  {len(runs)} runs scanned, {runs_with_tokens} with token data. "
         f"Source: ~/.amx/history.db (local only)."
@@ -218,7 +251,6 @@ def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
         warn("None of the scanned runs recorded token usage.")
         return
 
-    # Sort heaviest-first so the user sees the dominant cost line at top.
     sorted_keys = sorted(
         per_model.keys(),
         key=lambda key: per_model[key]["total_tokens"],
@@ -226,20 +258,24 @@ def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
     )
     table_rows: list[list[object]] = []
     grand_in = grand_out = grand_total = 0
-    grand_cost_known = 0.0
-    grand_cost_seen = False
+    grand_cost = 0.0
+    grand_cost_known = False
     for provider, model in sorted_keys:
         bucket = per_model[(provider, model)]
         in_tokens = bucket["input_tokens"]
         out_tokens = bucket["output_tokens"]
         total = bucket["total_tokens"]
-        cost = _format_cost(model, in_tokens, out_tokens)
-        if cost not in {"—"}:
-            grand_cost_seen = True
-            pricing = _lookup_pricing(model)
-            if pricing:
-                grand_cost_known += in_tokens * pricing[0] / 1_000_000.0
-                grand_cost_known += out_tokens * pricing[1] / 1_000_000.0
+        if live:
+            cost_value, live_source = _live_recompute(cfg, bucket, model)
+            cost_known = live_source != "unknown"
+            sources_label = live_source
+        else:
+            cost_value = float(bucket["frozen_cost_usd"])
+            cost_known = bool(bucket["frozen_cost_known"])
+            sources_label = _format_sources(bucket["sources"])
+        if cost_known:
+            grand_cost_known = True
+            grand_cost += cost_value
         table_rows.append(
             [
                 provider,
@@ -248,7 +284,8 @@ def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
                 f"{in_tokens:,}",
                 f"{out_tokens:,}",
                 f"{total:,}",
-                cost,
+                _format_cost(cost_value, known=cost_known),
+                sources_label,
             ]
         )
         grand_in += in_tokens
@@ -263,15 +300,23 @@ def cmd_usage(cfg: AMXConfig, rest: list[str]) -> None:
             f"[bold]{grand_in:,}[/bold]",
             f"[bold]{grand_out:,}[/bold]",
             f"[bold]{grand_total:,}[/bold]",
-            (f"[bold]≈ ${grand_cost_known:,.2f}[/bold]" if grand_cost_seen else "—"),
+            (
+                f"[bold]{_format_cost(grand_cost, known=grand_cost_known)}[/bold]"
+                if grand_cost_known
+                else "—"
+            ),
+            "",
         ]
     )
     render_table(
-        f"Usage ({label})",
-        ["Provider", "Model", "Runs", "Input", "Output", "Total", "Cost (approx)"],
+        f"Usage ({label}, {mode_label})",
+        ["Provider", "Model", "Runs", "Input", "Output", "Total", "Cost (USD)", "Source"],
         table_rows,
     )
-    info(
-        "Cost is approximate — based on a built-in price table and the actual "
-        "token counts you used. For exact spend, check your provider dashboard."
-    )
+    age = _format_cache_age(cache_age_seconds())
+    if live:
+        info(f"Live recompute against current prices. Cache last refreshed: {age}.")
+        info("Run /refresh-prices to pull the latest LiteLLM + OpenRouter price tables.")
+    else:
+        info(f"Frozen costs as recorded at run time. Price cache last refreshed: {age}.")
+        info("Pass --live to recompute against today's prices.")

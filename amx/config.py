@@ -1026,6 +1026,14 @@ class LLMConfig(_ObservableConfig):
     # thinking). Only consumed when the model supports reasoning AND a caller
     # passes ``on_thinking`` to ``LLMProvider.chat``; otherwise ignored.
     thinking_budget: int = 1024
+    # User-defined cost override in USD per 1M tokens. When BOTH are set,
+    # they win over fetched LiteLLM / OpenRouter prices (resolution order
+    # in ``amx/llm/pricing.py:lookup_price``). A half-override — only
+    # input or only output — is treated as no override to avoid the
+    # "set output, forgot input" footgun where AMX would silently bill
+    # the user at "free input + market output" or vice versa.
+    custom_input_cost_per_mtok: float | None = None
+    custom_output_cost_per_mtok: float | None = None
 
     @property
     def prompt_detail_cfg(self) -> PromptDetail:
@@ -1063,7 +1071,29 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         logprob_medium=float(m.get("logprob_medium", 0.50)),
         force_logprobs=bool(m.get("force_logprobs", True)),
         thinking_budget=int(m.get("thinking_budget", 1024)),
+        custom_input_cost_per_mtok=_optional_nonneg_float(m.get("custom_input_cost_per_mtok")),
+        custom_output_cost_per_mtok=_optional_nonneg_float(m.get("custom_output_cost_per_mtok")),
     )
+
+
+def _optional_nonneg_float(value: Any) -> float | None:
+    """Coerce a YAML scalar to ``float | None`` for cost overrides.
+
+    Empty string -> None (Studio sends ``""`` when the user clears the
+    field). Negative -> None (a negative rate would silently subtract
+    from the aggregate cost — almost certainly a typo).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f < 0:
+        return None
+    return f
 
 
 def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
@@ -1087,6 +1117,8 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "logprob_medium": llm.logprob_medium,
         "force_logprobs": llm.force_logprobs,
         "thinking_budget": llm.thinking_budget,
+        "custom_input_cost_per_mtok": llm.custom_input_cost_per_mtok,
+        "custom_output_cost_per_mtok": llm.custom_output_cost_per_mtok,
     }
 
 

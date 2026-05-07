@@ -436,6 +436,7 @@ def _finalize_history_run(
             },
             tokens={
                 "total_tokens": token_tracker.total_tokens,
+                "total_cost_usd": round(token_tracker.total_cost_usd, 8),
                 "summary": token_tracker.summary(),
                 "records": token_tracker.records(),
             },
