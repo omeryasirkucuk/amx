@@ -24,6 +24,13 @@ updates:
     labels:
       - "dependencies"
       - "python"
+    # Major bumps need a planned migration (e.g. SQLAlchemy 2 → 3,
+    # Click 8 → 9). Auto-grouping them with minor/patch bumps in a
+    # single PR makes the PR un-reviewable and impossible to revert
+    # surgically. Security advisories still surface independently.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       python-deps:
         patterns: ["*"]
@@ -43,6 +50,13 @@ updates:
     labels:
       - "dependencies"
       - "javascript"
+    # Same major-bump cap as the pip ecosystem. PR #191 was a 14-pkg
+    # major-grouped bundle (React 18→19, Router 6→7, Vite 5→8, …)
+    # that broke ``npm run build`` against the current SPA. Future
+    # major migrations land as one-off manual PRs.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-deps:
         patterns: ["*"]
