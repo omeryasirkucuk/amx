@@ -232,6 +232,11 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "llm",
         "Show/set LLM sampling temperature (/temperature [0.0-2.0])",
     ),
+    SlashCommand(
+        "/max-tokens",
+        "llm",
+        "Show/set LLM output token budget (/max-tokens [N]) — reasoning models keep their floor",
+    ),
     # Batching (throughput)
     SlashCommand(
         "/llm-batch-size", "llm", "Show/set number of columns per LLM call (/llm-batch-size [N])"

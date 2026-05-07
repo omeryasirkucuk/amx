@@ -28,11 +28,11 @@ from amx.utils.console import (
 
 def default_model(provider: str) -> str:
     return {
-        "openai": "gpt-4o",
-        "openrouter": "openai/gpt-4o-mini",
-        "anthropic": "claude-sonnet-4-20250514",
-        "gemini": "gemini-2.0-flash",
-        "deepseek": "deepseek-chat",
+        "openai": "gpt-5.4-mini",
+        "openrouter": "anthropic/claude-haiku-4.5",
+        "anthropic": "claude-haiku-4.5",
+        "gemini": "gemini-2.5-flash",
+        "deepseek": "deepseek-chat-v4",
         "local": "llama3",
         "kimi": "kimi",
         "ollama": "llama3",
@@ -88,10 +88,12 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     )
     if provider == "openrouter":
         info(
-            "OpenRouter model examples: openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, qwen/qwen3.6-plus"
+            "OpenRouter model examples: anthropic/claude-haiku-4.5, "
+            "google/gemini-2.5-flash, openai/gpt-5.4-mini, "
+            "deepseek/deepseek-chat-v4, moonshotai/kimi-k2.6 (reasoning — auto-tuned)"
         )
     elif provider == "openai":
-        info("OpenAI model example: gpt-4o")
+        info("OpenAI model example: gpt-5.4-mini (or gpt-5.5 / gpt-5 reasoning)")
     elif provider == "anthropic":
         info("Anthropic model example: claude-sonnet-4-20250514")
     elif provider == "gemini":
@@ -182,10 +184,8 @@ def cmd_logprob_thresholds(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         high = getattr(cfg.llm, "logprob_high", 0.85)
         med = getattr(cfg.llm, "logprob_medium", 0.50)
-        info(
-            f"Current logprob thresholds: [bold]HIGH[/] >= {high:.2f} | [bold]MEDIUM[/] >= {med:.2f}"
-        )
-        info("Run [#22d3ee]/logprob-thresholds <high> <med>[/#22d3ee] to change (e.g. 0.9 0.6).")
+        info(f"Current logprob thresholds: HIGH >= {high:.2f} | MEDIUM >= {med:.2f}")
+        info("Run /logprob-thresholds <high> <med> to change (e.g. 0.9 0.6).")
         return
 
     try:
@@ -238,6 +238,60 @@ def cmd_temperature(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].temperature = clamped
     cfg.save()
     success(f"Temperature saved for LLM profile '{cfg.active_llm_profile}': {clamped:.2f}")
+
+
+# Soft cap for ``/max-tokens`` user input. Higher values are accepted with
+# a warning rather than rejected — AMX's philosophy is that the user owns
+# their cost decisions, but a typo'd "1000000" should at least surface a
+# heads-up before silently committing it to config.yml.
+_MAX_TOKENS_SOFT_CAP = 262_144
+
+
+def cmd_max_tokens(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the LLM output-token budget for the active profile.
+
+    Without arguments: print the active value. With a numeric argument:
+    clamp to ``[1, _MAX_TOKENS_SOFT_CAP]``, persist to ``config.yml``, and
+    update the active LLMConfig in place so the next agent call uses the
+    new budget without reloading. Reasoning models still see their floor
+    (``_DEFAULT_REASONING_FLOOR`` in ``amx/llm/provider.py``) applied on
+    top — the user's value is treated as the *minimum* output budget,
+    never silently lowered for a reasoning route.
+    """
+    if not rest:
+        current = int(getattr(cfg.llm, "max_tokens", 16_384) or 16_384)
+        info_styled("Current LLM max_tokens", str(current), value_style="bold")
+        info(
+            "Run /max-tokens <value> to change (e.g. 32000). "
+            "Reasoning models (Kimi K2.x, Claude extended-thinking, "
+            "GPT-5/o-series, deepseek-reasoner …) get a 32k floor applied "
+            "automatically; this setting is the floor for non-reasoning models."
+        )
+        return
+
+    raw = rest[0]
+    try:
+        value = int(raw)
+    except ValueError:
+        error(f"Expected an integer, got: {raw}")
+        return
+
+    if value < 1:
+        error("max_tokens must be ≥ 1.")
+        return
+    if value > _MAX_TOKENS_SOFT_CAP:
+        warn(
+            f"max_tokens {value} is above the soft cap "
+            f"{_MAX_TOKENS_SOFT_CAP}. Capping at the soft limit; raise the "
+            "cap in profiles.py if you really need this much budget."
+        )
+        value = _MAX_TOKENS_SOFT_CAP
+
+    cfg.llm.max_tokens = value
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].max_tokens = value
+    cfg.save()
+    success(f"max_tokens saved for LLM profile '{cfg.active_llm_profile}': {value}")
 
 
 def cmd_llm_profiles(cfg: AMXConfig) -> None:

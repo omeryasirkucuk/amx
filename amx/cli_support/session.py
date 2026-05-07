@@ -80,6 +80,9 @@ from amx.cli_support.commands.profiles import (
     cmd_logprob_thresholds as _cmd_logprob_thresholds,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_max_tokens as _cmd_max_tokens,
+)
+from amx.cli_support.commands.profiles import (
     cmd_n_alternatives as _cmd_n_alternatives,
 )
 from amx.cli_support.commands.profiles import (
@@ -855,6 +858,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "temperature"):
             return True
         _cmd_temperature(cfg, parts[1:])
+        return True
+    if head in ("max-tokens", "max_tokens"):
+        if not _require_namespace(head, namespace, "llm", "max-tokens"):
+            return True
+        _cmd_max_tokens(cfg, parts[1:])
         return True
     if head == "doc-profiles":
         if not _require_namespace(head, namespace, "docs", "doc-profiles"):
