@@ -6,7 +6,140 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-07
+
 ### Added
+
+- **Doc & code RAG wired into `/ask`** — two LLM-callable tools
+  (`search_docs`, `search_code`) let the agent ground answers in the
+  user's ingested documentation and the `amx_code` Chroma index.
+  Tools short-circuit (`reason: no_docs_for_scope` /
+  `no_code_for_scope`) when nothing is in scope so the LLM never
+  fabricates definitions or callsites. Lazy-init keeps the no-context
+  path zero-cost. ([#212])
+- **Doc/code profile ↔ DB profile linking.** Each doc or code profile
+  can now be linked to one or more DB profiles. `/ask` running against
+  scope `{X}` only pulls from doc/code profiles whose link list
+  contains `X` (or is empty = global). New CLI commands `/doc-link`,
+  `/code-link`, `/ask-context` plus a multi-select chip control on
+  the Studio Settings → Docs/Code wizards. ([#212])
+- **Studio scope rozeti on AskChat** — read-only `📄 N docs · 💻 M code`
+  banner above the scope dropdown showing what `/ask` will pull in
+  for the active scope. Backed by `GET /api/ask/context`. ([#213])
+- **Studio Code Search box** (`Settings → Code`) and the matching
+  `GET /api/code/search` endpoint — embedding-only similarity over
+  the `amx_code` index, no LLM call. CLI counterpart:
+  `/code-search <text> [--code-profile NAME]`. ([#213])
+- **Drag-drop document upload in Studio.** `Settings → Docs` profile
+  cards have a per-profile drop zone, and the Add/Edit doc profile
+  wizard can stage files in memory and upload them on save.
+  Content-addressed under `~/.amx/uploads/<profile>/<sha256>.<ext>`,
+  per-file 25 MB and per-batch 100 MB caps, idempotent profile path
+  registration. CLI counterpart: `/doc-add <profile> <file>...`. New
+  shared module `amx/docs/uploads.py`. ([#214], [#217])
+- **Studio inline scope picker on `/runs/new`** — clicking **+ New
+  run** without a scope query string now shows a chip-based DB
+  profile + database/catalog picker instead of a "no scope selected"
+  warning, so the user can start a run without first navigating
+  through the sidebar. ([#218])
+- **Studio Code Analyze** — every code profile row in `Settings →
+  Code` now has an **Analyze** button that opens a modal (schema +
+  tables) and runs the Code Agent against the cached `/code-scan`,
+  with per-table SSE progress and the same on-disk JSON cache shape
+  the CLI's `/code-analyze` writes. New shared module
+  `amx/codebase/agent_service.py`; CLI command refactored to call
+  into it so both surfaces stay byte-identical. ([#215])
+- **Live progress on numeric run-detail pages.** A run still being
+  processed by a worker thread now exposes `live_job_id` on
+  `GET /api/history/runs/{id}`; the Studio run-detail page subscribes
+  to the SSE stream and renders a compact activity card above the
+  tabs while the worker is alive. The page polls the run row until
+  the worker exits, then transitions cleanly into the persisted
+  results view. The live `/runs/new-{jobId}` view also now redirects
+  to the persisted detail page as soon as `run.created` fires, so
+  users gain access to the full edit / pick / apply controls
+  immediately. ([#219], [#221])
+- **Studio drag-drop `Docs` empty-state hint** and a
+  `cli_support/hints.py` helper that prints "Studio'da Settings →
+  Docs altında dosyaları sürükle-bırak ile de ekleyebilirsiniz." at
+  the end of `/doc-add` so terminal users discover the visual
+  surface. Same helper powers the `/code-search` and `/code-analyze`
+  studio hints. ([#214])
+- **Cold-path bench guard.** `tests/perf/bench_ask_no_context.py`
+  pins the four no-context guarantees the doc/code RAG plumbing
+  introduced (search_docs / search_code short-circuit, scope
+  resolver micro-cost, ToolBox.schemas() constant time). New
+  advisory CI job runs the file with `pytest -m perf` on every PR.
+  ([#216])
+- **`Job.run_id`** — the run worker now binds the persistent run id
+  to the live job the moment `run.created` is emitted, so a
+  numeric-id detail page can find a still-running worker through
+  `/api/history/runs/{id}`'s `live_job_id` field. ([#219])
+- **Inline database picker on the run-detail Apply button** for
+  legacy runs whose row predates per-run scope tracking — the user
+  names the target database (datalist suggestions populated from
+  `GET /api/live/databases?profile=X`) and the override is forwarded
+  into `/api/pending/apply`. ([#225])
+
+### Changed
+
+- **Per-row SAVEPOINT in `apply_review_results_to_db`.** PostgreSQL
+  aborts the entire transaction on the first failed statement, so
+  one bad asset (eg. wrong schema name) used to cascade-fail every
+  subsequent COMMENT in the same apply with a misleading
+  `InFailedSqlTransaction` error. Each row (and each batch) now runs
+  inside `conn.begin_nested()` so a row-level error rolls back only
+  its own savepoint and the rest of the batch still applies. Falls
+  back to a passthrough on connections without `begin_nested` so
+  legacy adapters and test fakes keep working. ([#222])
+- **`POST /api/pending/apply` accepts `{db_profile, database, catalog}`**
+  in the body so the apply lands on the same database the run was
+  rooted at. The Studio run worker now persists `database` /
+  `catalog` into `settings_json`, the history endpoint flattens
+  them onto the run row, and the SPA forwards them with every
+  apply. Old runs without the persisted scope fall back to the
+  inline database picker (see Added). ([#224], [#225])
+- **`POST /api/pending/restore`** sets `applied=True` on the
+  reconstructed `ReviewResult`. Without this, `save_pending` (which
+  drops `applied=False` rows by design) silently lost the restored
+  row — the SPA's "Apply pending queue" stayed at zero even after a
+  successful 200 OK response. ([#223])
+- **Studio Apply pending queue refresh.** Three rounds of
+  `invalidateQueries` (immediate / 1.2 s / 3 s) plus extra
+  `["run", id]` and `["apply-events"]` keys so badges, metrics card,
+  and audit strip all flush after a job.done event — even on slower
+  disks where the SQLite write lags the SSE terminal event. ([#221])
+- **`_apply_worker` (Studio)** wires `on_applied` /
+  `on_failed` hooks plus `clear_pending()` after a clean run, mirroring
+  the CLI's `/analyze apply` path. Without these, the live DB write
+  succeeded but `run_results.applied_at` never got recorded and the
+  pending file never cleared, so badges stayed `queued` forever.
+  ([#219])
+
+### Fixed
+
+- **Keyring reference survives reinstalls and transient backend
+  outages on every OS** (macOS Keychain ACL miss after a binary
+  rebuild, gnome-keyring / KWallet not running on Linux, Credential
+  Manager access denied on Windows). The previous behaviour
+  overwrote the in-memory value with `""` whenever the lookup
+  failed; the next `cfg.save()` then wrote that empty string to
+  disk, deleting the YAML's `keyring:` pointer for good — one
+  transient outage permanently lost the secret. The resolver now
+  leaves the reference intact when the backend can't help, and the
+  LLM provider / DB connector both substitute clean fallbacks
+  (env-var / blank on a `replace()` copy) so adapters never see the
+  reference and the dataclass + YAML keep their pointer. ([#227])
+
+### Documentation
+
+- **`/ask` system prompt** routes business-meaning questions to
+  `search_docs`, `where-is-X-used` questions to `search_code`, and
+  recommends `/code-analyze --tables <X>` (CLI) / Code Analyze
+  (Studio) for deep table-level reviews instead of synthesising
+  them inline. ([#212])
+
+### Also in this release (Conventional-Commits ledger from prior PRs)
 
 - **Python 3.13 and 3.14 support.** CI now exercises the full
   3.10–3.14 matrix on every PR, and PyPI classifiers advertise the
@@ -146,6 +279,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 [#208]: https://github.com/omeryasirkucuk/amx/pull/208
 [#209]: https://github.com/omeryasirkucuk/amx/pull/209
 [#210]: https://github.com/omeryasirkucuk/amx/pull/210
+[#212]: https://github.com/omeryasirkucuk/amx/pull/212
+[#213]: https://github.com/omeryasirkucuk/amx/pull/213
+[#214]: https://github.com/omeryasirkucuk/amx/pull/214
+[#215]: https://github.com/omeryasirkucuk/amx/pull/215
+[#216]: https://github.com/omeryasirkucuk/amx/pull/216
+[#217]: https://github.com/omeryasirkucuk/amx/pull/217
+[#218]: https://github.com/omeryasirkucuk/amx/pull/218
+[#219]: https://github.com/omeryasirkucuk/amx/pull/219
+[#221]: https://github.com/omeryasirkucuk/amx/pull/221
+[#222]: https://github.com/omeryasirkucuk/amx/pull/222
+[#223]: https://github.com/omeryasirkucuk/amx/pull/223
+[#224]: https://github.com/omeryasirkucuk/amx/pull/224
+[#225]: https://github.com/omeryasirkucuk/amx/pull/225
+[#227]: https://github.com/omeryasirkucuk/amx/pull/227
 
 ## [0.12.9] - 2026-05-07
 
