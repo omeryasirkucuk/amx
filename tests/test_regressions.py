@@ -2163,9 +2163,7 @@ class SecretKeychainTests(unittest.TestCase):
                 "    password: keyring:db_profiles/ghost/password\n"
             )
             cfg = AMXConfig.load(str(cfg_path))
-            self.assertTrue(
-                cfg.db_profiles["ghost"].password.startswith("keyring:")
-            )
+            self.assertTrue(cfg.db_profiles["ghost"].password.startswith("keyring:"))
 
     def test_llm_api_key_externalised_separately_from_db(self) -> None:
         with tempfile.TemporaryDirectory() as td:
