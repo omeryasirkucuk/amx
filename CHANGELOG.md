@@ -8,6 +8,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Python 3.13 and 3.14 support.** CI now exercises the full
+  3.10–3.14 matrix on every PR, and PyPI classifiers advertise the
+  expanded support surface. `requires-python` stays at `>=3.10`.
 - **`amx /history rollback <run_id>`** — undo a past `/apply` by restoring the
   COMMENTs each affected asset had immediately before the run. Backed by the
   new `apply_events` audit table; replays in reverse time order inside a
