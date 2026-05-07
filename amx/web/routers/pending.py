@@ -258,3 +258,64 @@ def apply_pending(
     )
     thread.start()
     return {"job_id": job.id, "status": job.status}
+
+
+@router.post("/preview")
+def preview_pending(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Dry-run preview of the pending queue.
+
+    Loads the same pending entries ``POST /api/pending/apply`` would
+    write, asks the active connector for the SQL template each
+    asset would execute, and returns the list synchronously. No
+    database connection is opened mutably and the pending file is
+    untouched, so the caller (Studio's Pending page) can render a
+    "Show SQL preview" modal without committing anything.
+
+    Each item carries either ``sql_template`` (the rendered template
+    with the ``:cmt`` placeholder) or ``skipped_reason`` when the
+    backend cannot accept a comment for the asset kind. Errors from
+    a misbehaving adapter are surfaced as ``error`` strings on the
+    individual item — partial preview is still useful.
+    """
+    from amx.agents.orchestrator import apply_review_results_to_db
+    from amx.db.connector import DatabaseConnector
+
+    rows = load_pending()
+    if not rows:
+        return {"events": [], "count": 0}
+
+    db = DatabaseConnector(cfg.db)
+
+    events: list[dict[str, Any]] = []
+
+    def _on_progress(
+        result: ReviewResult,
+        status_label: str,
+        idx: int,
+        total: int,
+        detail: str,
+    ) -> None:
+        item: dict[str, Any] = {
+            "idx": idx,
+            "schema": result.schema,
+            "table": result.table or "",
+            "column": result.column,
+            "asset_kind": result.asset_kind or "table",
+            "new_comment": result.final_description or "",
+        }
+        if status_label == "preview":
+            if "unsupported" in detail.lower():
+                item["skipped_reason"] = detail
+            else:
+                item["sql_template"] = detail
+        elif status_label == "preview_failed":
+            item["error"] = detail
+        events.append(item)
+
+    apply_review_results_to_db(
+        db,
+        rows,
+        on_progress=_on_progress,
+        dry_run=True,
+    )
+    return {"events": events, "count": len(events)}

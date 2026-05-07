@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Inbox, Play, Search, Trash2, X } from "lucide-react";
+import { Check, Eye, Inbox, Play, Search, Trash2, X } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
@@ -38,12 +38,31 @@ interface PendingResponse {
   count: number;
 }
 
+interface PreviewEvent {
+  idx: number;
+  schema: string;
+  table: string;
+  column: string | null;
+  asset_kind: string;
+  new_comment: string;
+  sql_template?: string;
+  skipped_reason?: string;
+  error?: string;
+}
+
+interface PreviewResponse {
+  events: PreviewEvent[];
+  count: number;
+}
+
 export default function Pending() {
   const qc = useQueryClient();
   const toast = useToast();
   const [activeJob, setActiveJob] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [query, setQuery] = useState("");
+  const [previewEvents, setPreviewEvents] = useState<PreviewEvent[] | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   const pending = useQuery({
     queryKey: ["pending"],
@@ -111,6 +130,25 @@ export default function Pending() {
     }
   }
 
+  async function handlePreview() {
+    setPreviewing(true);
+    try {
+      const res = await apiFetch<PreviewResponse>("/api/pending/preview", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setPreviewEvents(res.events);
+    } catch (err) {
+      toast.push({
+        title: "Preview failed",
+        description: err instanceof Error ? err.message : "Preview failed.",
+        tone: "error",
+      });
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
   const filtered = useMemo(() => {
     const list = pending.data?.pending ?? [];
     const q = query.trim().toLowerCase();
@@ -150,6 +188,15 @@ export default function Pending() {
               Clear all
             </Button>
             <Button
+              variant="subtle"
+              size="md"
+              leadingIcon={<Eye size={14} />}
+              disabled={!total || previewing}
+              onClick={handlePreview}
+            >
+              {previewing ? "Previewing…" : "Preview SQL"}
+            </Button>
+            <Button
               variant="primary"
               size="md"
               leadingIcon={<Play size={14} />}
@@ -161,6 +208,13 @@ export default function Pending() {
           </div>
         }
       />
+
+      {previewEvents !== null && (
+        <PreviewModal
+          events={previewEvents}
+          onClose={() => setPreviewEvents(null)}
+        />
+      )}
 
       {activeJob && (
         <div className="mb-6">
@@ -377,6 +431,79 @@ function PendingItem({
         </Tooltip>
       </div>
     </li>
+  );
+}
+
+function PreviewModal({
+  events,
+  onClose,
+}: {
+  events: PreviewEvent[];
+  onClose: () => void;
+}) {
+  const writeable = events.filter((e) => e.sql_template);
+  const skipped = events.filter((e) => e.skipped_reason || e.error);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-12"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="preview-modal-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="max-h-[80vh] w-full max-w-3xl overflow-hidden rounded-lg border border-border bg-surface-raised shadow-xl">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div>
+            <h2 id="preview-modal-title" className="text-lg font-semibold">
+              Apply preview (dry-run)
+            </h2>
+            <p className="text-xs text-text-soft">
+              {writeable.length} statement{writeable.length === 1 ? "" : "s"} would
+              run; {skipped.length} skipped. Nothing has been written to the
+              database.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close preview"
+            className="rounded p-1 hover:bg-surface"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto px-4 py-2">
+          {events.length === 0 ? (
+            <p className="py-8 text-center text-sm text-text-soft">
+              No pending rows to preview.
+            </p>
+          ) : (
+            <ul className="divide-y divide-border text-sm">
+              {events.map((event) => (
+                <li key={event.idx} className="py-3">
+                  <div className="font-mono text-xs text-text-soft">
+                    {[event.schema, event.table, event.column]
+                      .filter(Boolean)
+                      .join(".")}
+                  </div>
+                  {event.sql_template ? (
+                    <pre className="mt-1 overflow-x-auto rounded bg-surface p-2 font-mono text-xs">
+                      {event.sql_template}
+                    </pre>
+                  ) : (
+                    <p className="mt-1 text-xs italic text-text-soft">
+                      {event.skipped_reason ?? event.error ?? "(no preview)"}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
