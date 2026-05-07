@@ -3,6 +3,7 @@ import { Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useQuery } from "@tanstack/react-query";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
 import { apiFetch, ApiError } from "../lib/api";
@@ -11,6 +12,22 @@ import { Card } from "./Card";
 import { cn } from "../lib/cn";
 import { InfoHint } from "./ui";
 import AskScopeDropdown from "./AskScopeDropdown";
+
+interface AskContextResponse {
+  scope_db_profiles: string[];
+  doc_profiles: Array<{
+    name: string;
+    linked_db_profiles: string[];
+    paths: string[];
+    indexed_chunks: number;
+  }>;
+  code_profiles: Array<{
+    name: string;
+    linked_db_profiles: string[];
+    path: string;
+    indexed_snippets: number;
+  }>;
+}
 
 export interface SubmittedTurn {
   role: "user" | "assistant";
@@ -415,7 +432,8 @@ export default function AskChat({
       </div>
 
       <Card className="p-3">
-        <div className="mb-2 flex items-center justify-end">
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <AskScopeBadge scope={scopeForSession} />
           <AskScopeDropdown
             scope={scopeForSession}
             onChange={handleScopeChange}
@@ -775,5 +793,80 @@ function AnswerMeta({
     <div className="mt-2 text-[10.5px] italic text-ink-dim">
       {parts.join(" · ")}
     </div>
+  );
+}
+
+function AskScopeBadge({ scope }: { scope: string[] | null }) {
+  // The badge gives the user a quick read on what doc/code RAG /ask
+  // will actually pull in for the active scope. Hidden when nothing's
+  // configured to keep the chat header clean for fresh installs.
+  const queryKey = ["ask", "context", scope ?? "_session_default_"];
+  const ctx = useQuery({
+    queryKey,
+    queryFn: () => {
+      const qs =
+        scope && scope.length > 0
+          ? `?scope_profiles=${scope.map(encodeURIComponent).join(",")}`
+          : "";
+      return apiFetch<AskContextResponse>(`/api/ask/context${qs}`);
+    },
+    retry: false,
+    staleTime: 10_000,
+  });
+  if (!ctx.data) return <div />;
+  const docs = ctx.data.doc_profiles ?? [];
+  const code = ctx.data.code_profiles ?? [];
+  const docCount = docs.reduce((acc, p) => acc + (p.indexed_chunks || 0), 0);
+  const codeCount = code.reduce((acc, p) => acc + (p.indexed_snippets || 0), 0);
+  if (docs.length === 0 && code.length === 0) {
+    return (
+      <Link
+        to="/settings?tab=docs"
+        className="text-[10.5px] text-ink-dim hover:text-ink-muted"
+        title="No doc/code profiles in scope. /ask will only use DB metadata."
+      >
+        No doc/code RAG in scope · configure in Settings →
+      </Link>
+    );
+  }
+  const tooltipDocs = docs
+    .map(
+      (p) =>
+        `${p.name} (${p.indexed_chunks} chunks${
+          p.linked_db_profiles.length
+            ? ", linked: " + p.linked_db_profiles.join(", ")
+            : ", global"
+        })`,
+    )
+    .join("\n");
+  const tooltipCode = code
+    .map(
+      (p) =>
+        `${p.name} (${p.indexed_snippets} snippets${
+          p.linked_db_profiles.length
+            ? ", linked: " + p.linked_db_profiles.join(", ")
+            : ", global"
+        })`,
+    )
+    .join("\n");
+  return (
+    <Link
+      to="/settings?tab=docs"
+      className="inline-flex items-center gap-3 rounded-md bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-muted hover:bg-surface-border"
+      title={[tooltipDocs, tooltipCode].filter(Boolean).join("\n\n")}
+    >
+      {docs.length > 0 && (
+        <span>
+          📄 {docs.length} doc{docs.length === 1 ? "" : "s"}{" "}
+          <span className="text-ink-dim">({docCount})</span>
+        </span>
+      )}
+      {code.length > 0 && (
+        <span>
+          💻 {code.length} code{" "}
+          <span className="text-ink-dim">({codeCount})</span>
+        </span>
+      )}
+    </Link>
   );
 }

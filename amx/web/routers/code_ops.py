@@ -97,6 +97,78 @@ def submit_scan(
     return {"job_id": job.id, "status": job.status, "path": path}
 
 
+@router.get("/search")
+def search_code(
+    q: str,
+    n: int = 5,
+    profile: str | None = None,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Synchronous embedding-only search over the ``amx_code`` Chroma
+    index — the Studio counterpart to ``GET /api/docs/search``. No LLM
+    call; the SPA renders results directly.
+
+    Pass ``profile`` to scope the hit list to one code profile's source
+    paths (the same gate the /ask ``search_code`` tool applies). Omit
+    to search across every indexed snippet.
+    """
+    query = (q or "").strip()
+    if not query:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query string is required.",
+        )
+    try:
+        from amx.codebase.code_rag import code_collection_count, query_code_snippets
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Code RAG dependencies not installed: {exc}",
+        ) from exc
+
+    profile_name = (profile or "").strip()
+    source_filters: list[str] = []
+    if profile_name:
+        if profile_name not in cfg.code_profiles:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Unknown code profile {profile_name!r}.",
+            )
+        path = (cfg.code_profiles.get(profile_name) or "").strip()
+        if path:
+            source_filters = [path]
+
+    if code_collection_count(source_filters=source_filters or None) == 0:
+        return {
+            "hits": [],
+            "count": 0,
+            "message": (
+                f"No indexed code for profile {profile_name!r} — run /code-scan first."
+                if profile_name
+                else "amx_code index is empty — run /code-scan first."
+            ),
+        }
+
+    hits = query_code_snippets(
+        query,
+        n_results=max(1, min(int(n), 25)),
+        source_filters=source_filters or None,
+    )
+    out: list[dict[str, Any]] = []
+    for hit in hits:
+        meta = hit.get("metadata") or {}
+        out.append(
+            {
+                "source": str(meta.get("source") or meta.get("rel_path") or "unknown"),
+                "rel_path": str(meta.get("rel_path") or ""),
+                "symbol": str(meta.get("symbol") or meta.get("kind") or ""),
+                "distance": float(hit.get("distance") or 0.0),
+                "preview": str(hit.get("text") or "")[:400],
+            }
+        )
+    return {"hits": out, "count": len(out)}
+
+
 @router.get("/results/{job_id}")
 def get_results(job_id: str, jobs: JobRegistry = Depends(get_jobs)) -> dict[str, Any]:
     """Read the persisted scan result for a finished job. The SPA

@@ -283,6 +283,63 @@ def register_code_commands(
         _render_code_report_summary(report)
         info("Results saved. Next `/run` will use them from cache (use `/code-refresh` to clear).")
 
+    @code.command("search")
+    @click.argument("question")
+    @click.option("-n", "--results", default=5, help="Number of results.")
+    @click.option(
+        "--code-profile",
+        default=None,
+        help="Scope hits to this code profile's path (default: every indexed snippet).",
+    )
+    @click.pass_obj
+    def code_search_cmd(
+        cfg: AMXConfig, question: str, results: int, code_profile: str | None
+    ) -> None:
+        """Embedding-only similarity search over the ``amx_code`` index.
+
+        Mirrors the Studio Code → Search box. No LLM call; cheap. Pass
+        ``--code-profile`` to gate to one profile's source paths so a
+        repo without ETL code doesn't surface in a "where is X written?"
+        question. The output prints file:line + snippet so the user can
+        jump directly into their editor.
+
+        💡 Studio'da Settings → Code altında ``Search`` kutusu aynı
+        sonuçları interaktif kart olarak gösterir.
+        """
+        from amx.codebase.code_rag import code_collection_count, query_code_snippets
+
+        prof = (code_profile or "").strip()
+        source_filters: list[str] | None = None
+        if prof:
+            if prof not in cfg.code_profiles:
+                error(f"Unknown code profile: {prof}")
+                sys.exit(1)
+            path = (cfg.code_profiles.get(prof) or "").strip()
+            source_filters = [path] if path else None
+
+        if code_collection_count(source_filters=source_filters) == 0:
+            error(
+                f"No indexed code{' for profile ' + prof if prof else ''}. Run `/code-scan` first."
+            )
+            return
+
+        n = max(1, min(int(results), 25))
+        hits = query_code_snippets(question, n_results=n, source_filters=source_filters)
+        if not hits:
+            info("No matches.")
+            return
+        for i, hit in enumerate(hits, 1):
+            meta = hit.get("metadata") or {}
+            source = meta.get("source") or meta.get("rel_path") or "unknown"
+            symbol = meta.get("symbol") or meta.get("kind") or ""
+            console.print(
+                f"\n[heading]Match {i}[/heading] (distance: "
+                f"{float(hit.get('distance') or 0.0):.3f})"
+            )
+            console.print(f"  Source: {source}{' · ' + symbol if symbol else ''}")
+            text = str(hit.get("text") or "")
+            console.print(f"  {text[:400]}{'…' if len(text) > 400 else ''}")
+
     @code.command("refresh")
     @click.option(
         "--code-profile",
