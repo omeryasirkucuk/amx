@@ -133,11 +133,13 @@ class RAGAgent(BaseAgent):
         col_lines = "\n".join(
             f"  - {c['name']} (type={c['dtype']}, samples={c.get('samples', [])})" for c in columns
         )
+        from amx.agents.base import _user_instructions_block
+
         user_msg = (
             f"Schema: {ctx.schema}\n"
             f"Table: {ctx.table}\n\n"
             f"Columns:\n{col_lines}\n\n"
-            f"Relevant documentation:\n{doc_text}"
+            f"Relevant documentation:\n{doc_text}" + _user_instructions_block(ctx)
         )
         system = _build_system_prompt(self._n_alternatives)
         return [

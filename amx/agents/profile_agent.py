@@ -723,7 +723,9 @@ class ProfileAgent(BaseAgent):
                 ]
             )
 
-        return "\n".join(lines)
+        from amx.agents.base import _user_instructions_block
+
+        return "\n".join(lines) + _user_instructions_block(ctx)
 
     def _parse_response(self, text: str, ctx: AgentContext) -> list[MetadataSuggestion]:
         text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", (text or "").strip())

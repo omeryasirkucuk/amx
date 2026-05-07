@@ -1,0 +1,320 @@
+"""Re-Run snapshot builder.
+
+When the user clicks "Re-Run this item" (CLI or Studio), the worker
+freezes the original run's inputs into a short-lived row in
+``rerun_context_snapshots`` so every parallel agent sees identical
+context. The snapshot is deleted in the worker's ``finally`` block —
+storage cost is zero outside the live re-run window.
+
+Snapshot payload (one per target item):
+
+* ``schema`` / ``table`` / ``column`` / ``asset_kind`` — the addressable
+  coordinates of the item being re-run.
+* ``db_profile`` — the live ``AgentContext.db_profile`` dict produced by
+  :meth:`amx.agents.orchestrator.Orchestrator._build_context`. For
+  *column* re-runs ``columns`` is filtered down to just the target so
+  the agents don't waste tokens on siblings.
+* ``rag_context`` / ``code_context`` — placeholders today (Profile-only
+  re-run). Populated when the doc/code agent wiring is ported into the
+  re-run path in a follow-up.
+* ``existing_metadata`` — passed through verbatim from the orchestrator.
+* ``user_instructions`` — the optional free-text addendum from the
+  re-run modal. Empty string means "no additional guidance".
+* ``original`` — book-keeping for the executor: the parent ``run_id`` /
+  ``result_id``, the original asset coordinates, the active LLM/DB/Doc/
+  Code profile names from the source run.
+
+The functions in this module never write to ``run_results`` themselves
+— that's the executor's job (:mod:`amx.agents._orchestrator.rerun`).
+This module only owns context assembly + snapshot read/write/delete.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import asdict
+from typing import Any
+
+from amx.agents.base import AgentContext
+from amx.config import AMXConfig
+from amx.db.connector import AssetKind, DatabaseConnector
+from amx.storage.sqlite_store import history_store
+from amx.utils.logging import get_logger
+
+log = get_logger("agents.rerun_context")
+
+
+class RerunContextError(RuntimeError):
+    """Snapshot build failed (missing target row, no DB profile, etc.).
+
+    The web router translates this to a 4xx HTTPException so the SPA
+    surfaces the underlying message instead of "Internal Server Error".
+    """
+
+
+def _connector_for_db_profile(cfg: AMXConfig, profile_name: str) -> DatabaseConnector:
+    """Open a fresh ``DatabaseConnector`` against a named DB profile.
+
+    Mirrors the resolution logic the run worker uses: look up the
+    profile in ``cfg.db_profiles`` and instantiate a connector. The
+    connector's ``cfg`` attribute carries the connection details so
+    ``profile_table`` can introspect.
+    """
+    base = cfg.db_profiles.get((profile_name or "").strip())
+    if base is None:
+        raise RerunContextError(
+            f"DB profile '{profile_name}' is not defined in this AMXConfig — "
+            "the original run referenced a profile that no longer exists."
+        )
+    return DatabaseConnector(base)
+
+
+def _build_db_profile_dict(
+    db: DatabaseConnector,
+    schema: str,
+    table: str,
+    *,
+    asset_kind: AssetKind | None = None,
+    only_column: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Assemble the ``db_profile`` slice the agents read from.
+
+    Returns ``(db_profile_dict, existing_metadata_dict)`` matching the
+    shape :meth:`Orchestrator._build_context` produces, so the agent
+    prompt builders work without any branching for the re-run path.
+    When ``only_column`` is provided, ``db_profile['columns']`` is
+    narrowed to that single column — sibling columns are kept as
+    ``context_column_names`` so the LLM still sees the table shape.
+    """
+    profile = db.profile_table(schema, table, asset_kind=asset_kind)
+    db_name = db.cfg.database or db.cfg.project or db.cfg.catalog or "N/A"
+
+    all_cols = [
+        {
+            "name": c.name,
+            "dtype": c.dtype,
+            "nullable": c.nullable,
+            "row_count": c.row_count,
+            "null_count": c.null_count,
+            "distinct_count": c.distinct_count,
+            "cardinality_ratio": c.cardinality_ratio,
+            "min_val": c.min_val,
+            "max_val": c.max_val,
+            "samples": c.samples,
+            "existing_comment": c.existing_comment,
+        }
+        for c in profile.columns
+    ]
+
+    if only_column:
+        target_cols = [c for c in all_cols if c["name"] == only_column]
+        sibling_names = [c["name"] for c in all_cols if c["name"] != only_column]
+    else:
+        target_cols = all_cols
+        sibling_names = []
+
+    db_profile: dict[str, Any] = {
+        "row_count": profile.row_count,
+        "existing_comment": profile.existing_comment,
+        "primary_key": profile.primary_key,
+        "foreign_keys": profile.foreign_keys,
+        "referenced_by": profile.referenced_by,
+        "unique_constraints": profile.unique_constraints,
+        "check_constraints": profile.check_constraints,
+        "stats_seq_scan": profile.stats_seq_scan,
+        "stats_idx_scan": profile.stats_idx_scan,
+        "stats_n_live_tup": profile.stats_n_live_tup,
+        "stats_source": db.stats_label,
+        "schema_comment": profile.schema_comment,
+        "database_comment": profile.database_comment,
+        "related_comments": profile.related_comments,
+        "query_usage": {},
+        "columns": target_cols,
+    }
+    if sibling_names:
+        db_profile["context_column_names"] = sibling_names
+
+    existing_metadata = {
+        "database": db_name,
+        "backend": db.backend,
+        "table_comment": profile.existing_comment,
+        "schema_comment": profile.schema_comment,
+        "database_comment": profile.database_comment,
+    }
+    return db_profile, existing_metadata
+
+
+def _resolve_asset_kind(raw: str | None) -> AssetKind | None:
+    """Best-effort coercion of stored ``asset_kind`` strings to the enum."""
+    if not raw:
+        return None
+    try:
+        return AssetKind(raw)
+    except ValueError:
+        return None
+
+
+def build_context_snapshot(
+    cfg: AMXConfig,
+    *,
+    target_result_id: int,
+    job_id: str,
+    user_instructions: str | None = None,
+) -> str:
+    """Build + persist a frozen ``AgentContext`` for one target item.
+
+    Returns the generated ``snapshot_id`` (uuid hex). The caller (the
+    re-run worker) reads it back via
+    :func:`amx.storage.sqlite_store.SQLiteHistoryStore.read_rerun_snapshot`
+    and feeds it into the agent fan-out.
+
+    Re-uses live indexes for everything except DB schema (which is
+    profiled fresh — the snapshot freezes that fresh read so parallel
+    agents agree). RAG/code context populating is intentionally a
+    follow-up: the user's free-text addendum is the v1 lever for
+    biasing the second pass.
+    """
+    hs = history_store()
+    if hs is None:
+        raise RerunContextError(
+            "History store is not initialised — cannot resolve original run "
+            "metadata. Open Settings → History to enable it."
+        )
+
+    target = hs.get_run_result(int(target_result_id))
+    if target is None:
+        raise RerunContextError(
+            f"Target run_result {target_result_id} not found. Was the row deleted?"
+        )
+
+    parent_run = hs.get_run(int(target.get("run_id") or 0))
+    if parent_run is None:
+        raise RerunContextError(
+            f"Original run {target.get('run_id')} not found for result {target_result_id}."
+        )
+
+    schema = str(target.get("schema_name") or "")
+    table = str(target.get("table_name") or "")
+    column = target.get("column_name")
+    asset_kind_raw = str(target.get("asset_kind") or "table")
+    asset_kind = _resolve_asset_kind(asset_kind_raw)
+
+    # Prefer the profile that was active during the original run.
+    # Fall back to the currently active profile so a re-run still
+    # works after the user rotated profiles between sessions.
+    db_profile_name = str(parent_run.get("db_profile") or "") or (cfg.active_db_profile or "")
+
+    payload: dict[str, Any] = {
+        "schema": schema,
+        "table": table,
+        "column": column,
+        "asset_kind": asset_kind_raw,
+        "db_profile": {},
+        "rag_context": [],
+        "code_context": [],
+        "existing_metadata": {},
+        "user_instructions": (user_instructions or "").strip(),
+        "original": {
+            "run_id": int(target.get("run_id") or 0),
+            "result_id": int(target_result_id),
+            "rerun_seq": int(target.get("rerun_seq") or 0),
+            "parent_result_id": target.get("parent_result_id"),
+            "db_profile": db_profile_name or None,
+            "llm_profile": parent_run.get("llm_profile"),
+            "doc_profile": parent_run.get("doc_profile"),
+            "code_profile": parent_run.get("code_profile"),
+            "llm_provider": parent_run.get("llm_provider"),
+            "llm_model": parent_run.get("llm_model"),
+            "db_backend": parent_run.get("db_backend"),
+            "alternatives": list(target.get("alternatives_json") or []),
+            "chosen_description": target.get("chosen_description") or "",
+        },
+    }
+
+    # Schema/database-level re-runs aggregate from the run's already-
+    # produced table descriptions; no live profiling needed. The
+    # executor reads ``original.run_id`` to fetch peer rows when it
+    # builds the meta prompt.
+    if asset_kind in (AssetKind.SCHEMA, AssetKind.DATABASE):
+        payload["existing_metadata"] = {
+            "database": "",
+            "backend": parent_run.get("db_backend"),
+        }
+        snapshot_id = uuid.uuid4().hex
+        hs.save_rerun_snapshot(
+            snapshot_id=snapshot_id,
+            job_id=job_id,
+            target_result_id=int(target_result_id),
+            payload=payload,
+        )
+        return snapshot_id
+
+    # Table / column re-run: live-profile the table fresh.
+    if not db_profile_name:
+        raise RerunContextError(
+            "Original run has no db_profile recorded and no active profile is set — "
+            "cannot rebuild the database context for this re-run."
+        )
+
+    db = _connector_for_db_profile(cfg, db_profile_name)
+    try:
+        db_profile, existing_metadata = _build_db_profile_dict(
+            db,
+            schema,
+            table,
+            asset_kind=asset_kind,
+            only_column=column if column else None,
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    payload["db_profile"] = db_profile
+    payload["existing_metadata"] = existing_metadata
+
+    snapshot_id = uuid.uuid4().hex
+    hs.save_rerun_snapshot(
+        snapshot_id=snapshot_id,
+        job_id=job_id,
+        target_result_id=int(target_result_id),
+        payload=payload,
+    )
+    return snapshot_id
+
+
+def hydrate_context(payload: dict[str, Any]) -> AgentContext:
+    """Re-inflate an ``AgentContext`` from a snapshot payload dict.
+
+    Keeps ``user_instructions`` populated so the agent prompt suffixes
+    fire automatically without any re-run-specific code in the agents.
+    """
+    return AgentContext(
+        schema=str(payload.get("schema") or ""),
+        table=str(payload.get("table") or ""),
+        column=payload.get("column"),
+        asset_kind=str(payload.get("asset_kind") or "table"),
+        db_profile=dict(payload.get("db_profile") or {}),
+        rag_context=list(payload.get("rag_context") or []),
+        code_context=list(payload.get("code_context") or []),
+        existing_metadata=dict(payload.get("existing_metadata") or {}),
+        user_instructions=str(payload.get("user_instructions") or ""),
+    )
+
+
+def serialize_context(ctx: AgentContext) -> dict[str, Any]:
+    """JSON-serializable dict for storing an ``AgentContext`` in a snapshot.
+
+    Used by tests and any path that wants to round-trip a context the
+    same way the live snapshot writer does.
+    """
+    return asdict(ctx)
+
+
+__all__ = [
+    "RerunContextError",
+    "build_context_snapshot",
+    "hydrate_context",
+    "serialize_context",
+]

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from queue import Queue
 from typing import Any, Literal
 
-JobKind = Literal["run", "apply", "ask"]
+JobKind = Literal["run", "apply", "ask", "rerun"]
 JobStatus = Literal["queued", "running", "cancelled", "done", "failed"]
 
 
