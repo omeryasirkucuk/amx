@@ -492,6 +492,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                             or [_review_result_to_event(r) for r in table_results],
                         },
                     )
+                    _emit_tokens_snapshot(job.queue)
     except RunCancelled:
         job.status = "cancelled"
         final_status = "cancelled"
@@ -698,6 +699,7 @@ def _process_scope_batch(
                     "results": column_details or [_review_result_to_event(r) for r in table_rows],
                 },
             )
+        _emit_tokens_snapshot(job.queue)
 
 
 def _column_details_for_table(
@@ -735,6 +737,29 @@ def _column_details_for_table(
             }
         )
     return out
+
+
+def _emit_tokens_snapshot(queue: Any) -> None:
+    """Push a running tokens + USD cost total onto the SSE bus.
+
+    Emitted after each per-table ``activity.complete`` so the SPA's
+    LiveRunStream can render the same "tokens + cost" header that the
+    CLI ``LiveDisplay`` shows mid-run. Reads directly from the
+    module-level :class:`TokenTracker` singleton — every agent's
+    ``record_for`` call has already accumulated the latest USD cost
+    via :func:`amx.llm.pricing.compute_cost`.
+    """
+    emit(
+        queue,
+        "tokens.snapshot",
+        {
+            "total_tokens": int(token_tracker.total_tokens or 0),
+            "total_cost_usd": round(float(token_tracker.total_cost_usd or 0.0), 6),
+            "model_processing_sec": round(
+                float(token_tracker.total_model_processing_sec or 0.0), 3
+            ),
+        },
+    )
 
 
 def _review_result_to_event(r: ReviewResult) -> dict[str, Any]:

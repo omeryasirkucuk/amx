@@ -140,6 +140,13 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   const [activities, setActivities] = useState<ActivityRow[]>([]);
   const [resolvedRunId, setResolvedRunId] = useState<number | null>(null);
   const [scope, setScope] = useState<Record<string, string[]>>({});
+  // Latest tokens.snapshot — the run worker emits one after every
+  // per-table activity.complete so the live banner can show the
+  // running USD figure (parity with the CLI's LiveDisplay header).
+  const [tokensSnapshot, setTokensSnapshot] = useState<{
+    total_tokens: number;
+    total_cost_usd: number;
+  } | null>(null);
   const [startTime] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
 
@@ -208,6 +215,11 @@ function LiveRunStream({ jobId }: { jobId: string }) {
               : a,
           ),
         );
+      } else if (t === "tokens.snapshot") {
+        setTokensSnapshot({
+          total_tokens: Number(event.total_tokens ?? 0),
+          total_cost_usd: Number(event.total_cost_usd ?? 0),
+        });
       }
     }
   }, [events]);
@@ -299,6 +311,24 @@ function LiveRunStream({ jobId }: { jobId: string }) {
               {currentActivity ? currentActivity.label : "Waiting for the worker…"}
             </span>
           </span>
+          {tokensSnapshot && tokensSnapshot.total_tokens > 0 && (
+            <span
+              className="inline-flex items-center gap-1.5 font-mono tabular-nums text-ink"
+              title={
+                tokensSnapshot.total_cost_usd > 0
+                  ? `Running USD cost based on the prices recorded with each LLM call. Refresh prices via /refresh-prices.`
+                  : `No price recorded for this model — run /refresh-prices or set a custom override via /cost.`
+              }
+            >
+              <span className="text-ink-muted">↓</span>
+              {tokensSnapshot.total_tokens.toLocaleString()} tok
+              {tokensSnapshot.total_cost_usd > 0 && (
+                <span className="text-positive">
+                  · ${tokensSnapshot.total_cost_usd.toFixed(4)}
+                </span>
+              )}
+            </span>
+          )}
           <span className="ml-auto text-xs text-ink-dim">
             {completedCount}/{activities.length || "—"} processed
           </span>
@@ -470,6 +500,10 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   // also pull in the page header rewrite + cancel dialog which a
   // user landing on a numeric run id doesn't need.
   const [activities, setActivities] = useState<ActivityRow[]>([]);
+  const [tokensSnapshot, setTokensSnapshot] = useState<{
+    total_tokens: number;
+    total_cost_usd: number;
+  } | null>(null);
   const { events, closed, error } = useEventSource({
     path: `/api/runs/${jobId}/events`,
     enabled: true,
@@ -514,6 +548,11 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
               : a,
           ),
         );
+      } else if (t === "tokens.snapshot") {
+        setTokensSnapshot({
+          total_tokens: Number(event.total_tokens ?? 0),
+          total_cost_usd: Number(event.total_cost_usd ?? 0),
+        });
       }
     }
   }, [events]);
@@ -545,6 +584,19 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
         }
       />
       <CardBody className="p-0">
+        {tokensSnapshot && tokensSnapshot.total_tokens > 0 && (
+          <div className="border-b border-surface-border px-5 py-2 text-xs">
+            <span className="font-mono tabular-nums text-ink">
+              <span className="text-ink-muted">Running totals: </span>↓{" "}
+              {tokensSnapshot.total_tokens.toLocaleString()} tokens
+              {tokensSnapshot.total_cost_usd > 0 && (
+                <span className="ml-2 text-positive">
+                  ${tokensSnapshot.total_cost_usd.toFixed(4)}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
         {activities.length === 0 ? (
           <div className="px-5 py-4 text-sm text-ink-dim">
             <Loader2 size={14} className="mr-2 inline animate-spin" />
