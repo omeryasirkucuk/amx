@@ -450,13 +450,24 @@ class Orchestrator:
         asset_kind: AssetKind | None = None,
         interactive_review: bool = True,
         auto_apply: bool = False,
+        *,
+        cancel_token: threading.Event | None = None,
     ) -> list[ReviewResult]:
         """Run the per-table flow.
 
         This is now a thin delegator — every phase (filter chain, agent
         loop, apply / review dispatch) lives on
         :class:`TableProcessor` so each step is independently
-        testable. Public signature is unchanged.
+        testable.
+
+        ``cancel_token`` is the same :class:`threading.Event` AMX Studio
+        already plumbs through ``apply_review_results_to_db`` and the
+        per-asset loops in ``runs.py``. Today the token is forwarded to
+        :class:`TableProcessor` and checked at phase boundaries so a
+        cancel button click is observed within one phase's latency
+        rather than waiting for the whole table to finish.
+        Cooperative cancellation inside the LLM call lands in a
+        follow-up PR.
         """
         from amx.agents._orchestrator import TableProcessor
 
@@ -467,6 +478,7 @@ class Orchestrator:
             asset_kind=asset_kind,
             auto_apply=auto_apply,
             interactive_review=interactive_review,
+            cancel_token=cancel_token,
         ).run()
 
     def process_schema_meta(
@@ -1316,10 +1328,16 @@ class Orchestrator:
         schema: str,
         tables: list[str],
         asset_kinds: dict[str, AssetKind] | None = None,
+        *,
+        cancel_token: threading.Event | None = None,
     ) -> list[ReviewResult]:
         """Run the full pipeline for *tables* via the provider's Batch API.
 
-        Falls back to Chat Completions if the provider has no batch support.
+        Falls back to Chat Completions if the provider has no batch
+        support, in which case ``cancel_token`` is forwarded to the
+        per-table fallback loop. Inside the genuine batch path the
+        token is observed between batch phases so a Studio cancel
+        click stops further work even mid-batch.
         """
         from amx.llm.batch import BatchRequest, run_batch, supported_providers
 
@@ -1333,8 +1351,15 @@ class Orchestrator:
             )
             all_results: list[ReviewResult] = []
             for table in tables:
+                if cancel_token is not None and cancel_token.is_set():
+                    raise RunCancelled(f"Cancelled before {schema}.{table}")
                 all_results.extend(
-                    self.process_table(schema, table, asset_kind=asset_kinds.get(table))
+                    self.process_table(
+                        schema,
+                        table,
+                        asset_kind=asset_kinds.get(table),
+                        cancel_token=cancel_token,
+                    )
                 )
             return all_results
 
