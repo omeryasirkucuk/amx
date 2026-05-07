@@ -637,6 +637,7 @@ function LlmProfileWizard({
   const [apiKey, setApiKey] = useState("");
   const [apiBase, setApiBase] = useState("");
   const [temperature, setTemperature] = useState(0.2);
+  const [maxTokens, setMaxTokens] = useState(16_384);
   const [nAlternatives, setNAlternatives] = useState(3);
   const [columnBatchSize, setColumnBatchSize] = useState(10);
   const [promptDetail, setPromptDetail] = useState("standard");
@@ -656,6 +657,7 @@ function LlmProfileWizard({
     setApiKey(String(d.api_key || ""));
     setApiBase(String(d.api_base ?? "") || "");
     setTemperature(Number(d.temperature ?? 0.2));
+    setMaxTokens(Number(d.max_tokens ?? 16384));
     setNAlternatives(Number(d.n_alternatives ?? 3));
     setColumnBatchSize(Number(d.column_batch_size ?? 10));
     setPromptDetail(String(d.prompt_detail || "standard"));
@@ -675,6 +677,7 @@ function LlmProfileWizard({
         provider,
         model,
         temperature,
+        max_tokens: maxTokens,
         n_alternatives: nAlternatives,
         column_batch_size: columnBatchSize,
         prompt_detail: promptDetail,
@@ -798,6 +801,20 @@ function LlmProfileWizard({
               value={temperature}
               onChange={(e) => setTemperature(Number(e.target.value))}
               className="w-full"
+            />
+          </Field>
+          <Field
+            label={`Max output tokens (${maxTokens.toLocaleString()})`}
+            hint="Output budget per LLM call. Reasoning models (Kimi K2.x, Claude extended-thinking, GPT-5/o-series, deepseek-reasoner) automatically get a 32k floor on top — this value is the floor for non-reasoning models. Higher = bigger answers + higher cost."
+          >
+            <input
+              type="number"
+              min={256}
+              max={262_144}
+              step={1024}
+              value={maxTokens}
+              onChange={(e) => setMaxTokens(Math.max(256, Number(e.target.value) || 0))}
+              className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
             />
           </Field>
           <Field

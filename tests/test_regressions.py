@@ -1538,7 +1538,10 @@ class HistoryFormattingTests(unittest.TestCase):
 
 class ProfileHelperTests(unittest.TestCase):
     def test_default_model_includes_openrouter(self) -> None:
-        self.assertEqual(default_model("openrouter"), "openai/gpt-4o-mini")
+        # Default updated 2026-05 from gpt-4o-mini to claude-haiku-4.5
+        # — see ``default_model`` in profiles.py for the rationale (cheap,
+        # fast, non-reasoning, top of the budget tier).
+        self.assertEqual(default_model("openrouter"), "anthropic/claude-haiku-4.5")
 
     def test_openrouter_model_normalization_strips_duplicate_provider_prefix(self) -> None:
         self.assertEqual(
@@ -2160,9 +2163,7 @@ class SecretKeychainTests(unittest.TestCase):
                 "    password: keyring:db_profiles/ghost/password\n"
             )
             cfg = AMXConfig.load(str(cfg_path))
-            self.assertTrue(
-                cfg.db_profiles["ghost"].password.startswith("keyring:")
-            )
+            self.assertTrue(cfg.db_profiles["ghost"].password.startswith("keyring:"))
 
     def test_llm_api_key_externalised_separately_from_db(self) -> None:
         with tempfile.TemporaryDirectory() as td:
