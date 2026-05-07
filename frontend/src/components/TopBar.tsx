@@ -16,6 +16,7 @@ import { cn } from "../lib/cn";
 import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
 import StudioMark from "./brand/StudioMark";
+import PricingBadge from "./PricingBadge";
 
 const navItems = [
   { to: "/", label: "Browse", icon: Database, end: true, match: ["/"] },
@@ -94,7 +95,9 @@ export default function TopBar() {
           </nav>
         )}
 
-        <nav className="ml-auto flex items-center gap-0.5">
+        <div className="ml-auto flex items-center gap-2">
+          <PricingBadge />
+          <nav className="flex items-center gap-0.5">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -113,7 +116,8 @@ export default function TopBar() {
               {item.label}
             </NavLink>
           ))}
-        </nav>
+          </nav>
+        </div>
       </div>
     </header>
   );
