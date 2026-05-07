@@ -189,6 +189,15 @@ dev = [
     "build>=1.2",
     "twine>=5.0",
 ]
+# Optional benchmark harness. Lives under tests/perf/ and is opt-in:
+#   pip install -e ".[perf]"
+#   pytest tests/perf -m perf --benchmark-only
+# Never auto-installed; never imported by the runtime amx package.
+perf = [
+    "pytest-benchmark>=4.0",
+    "psutil>=5.9",
+    "duckdb>=1.0",
+]
 
 [project.scripts]
 amx = "amx.cli:run_cli"
@@ -259,11 +268,12 @@ testpaths = ["tests"]
 # runner can't satisfy. Run them locally with:
 #   pytest -m "integration or live"   (run only the marked ones)
 #   pytest -m ""                      (run everything, ignore the filter)
-addopts = "-ra --strict-markers -m 'not integration and not live'"
+addopts = "-ra --strict-markers -m 'not integration and not live and not perf'"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests that require external services or coordinated mock setup",
     "live: marks tests that hit real LLM or DB endpoints",
+    "perf: marks performance benchmarks (opt-in via 'pytest tests/perf -m perf')",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:litellm.*",
