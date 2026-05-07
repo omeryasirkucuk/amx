@@ -148,8 +148,19 @@ def register_analyze_commands(
         """Run metadata inference agents."""
 
     @analyze.command("apply")
+    @click.option(
+        "--dry-run",
+        is_flag=True,
+        default=False,
+        help=(
+            "Print the COMMENT statements that would run, without "
+            "touching the database. The pending file is left "
+            "unchanged so you can re-run /apply for real after "
+            "reviewing the preview."
+        ),
+    )
     @pass_config
-    def analyze_apply(cfg: AMXConfig) -> None:
+    def analyze_apply(cfg: AMXConfig, dry_run: bool) -> None:
         """Write pending approved descriptions to the database (COMMENT ON TABLE/COLUMN)."""
         from amx.agents.orchestrator import (
             apply_review_results_to_db,
@@ -172,7 +183,11 @@ def register_analyze_commands(
             )
             return
 
-        heading("Apply pending metadata to the database")
+        heading(
+            "Preview pending metadata writes (dry-run)"
+            if dry_run
+            else "Apply pending metadata to the database"
+        )
         render_table(
             "Pending comments",
             ["Asset", "Description"],
@@ -184,6 +199,65 @@ def register_analyze_commands(
                 for row in pending
             ],
         )
+        if dry_run:
+            # Dry-run path: short-circuit straight to the preview loop.
+            # No confirmation prompt — nothing will be written so there
+            # is nothing for the user to gate. Pending file is left
+            # untouched so the user can re-run /apply for real.
+            info(
+                f"Dry-run: showing the SQL templates for {len(pending)} pending comment(s). "
+                "No changes will be written."
+            )
+            db = DatabaseConnector(cfg.db)
+            if not db.test_connection():
+                log_event(
+                    event_type="analyze_apply",
+                    status="failed",
+                    command="analyze.apply",
+                    details={"reason": "db_connect_failed", "dry_run": True},
+                )
+                error("Cannot connect to database.")
+                sys.exit(1)
+
+            preview_count = 0
+            skipped_count = 0
+
+            def _on_preview(_r: Any, status: str, idx: int, total: int, detail: str) -> None:
+                nonlocal preview_count, skipped_count
+                if status == "preview":
+                    preview_count += 1
+                    if "unsupported" in detail.lower():
+                        skipped_count += 1
+                        info(f"  [{idx}/{total}] (skipped — backend cannot accept this asset kind)")
+                    else:
+                        info(f"  [{idx}/{total}] {detail}")
+                elif status == "preview_failed":
+                    skipped_count += 1
+                    error(f"  [{idx}/{total}] preview error: {detail}")
+
+            apply_review_results_to_db(
+                db,
+                pending,
+                on_progress=_on_preview,
+                dry_run=True,
+            )
+            success(
+                f"Dry-run complete: {preview_count} comment(s) previewed"
+                + (f", {skipped_count} unsupported/skipped." if skipped_count else ".")
+                + " Pending file unchanged. Re-run `/analyze apply` (without --dry-run) to write."
+            )
+            log_event(
+                event_type="analyze_apply",
+                status="preview",
+                command="analyze.apply",
+                details={
+                    "preview_count": preview_count,
+                    "skipped_count": skipped_count,
+                    "dry_run": True,
+                },
+            )
+            return
+
         if not confirm(f"Write {len(pending)} comment(s) to the database?", default=True):
             log_event(
                 event_type="analyze_apply",
