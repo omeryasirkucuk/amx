@@ -167,9 +167,49 @@ class SQLiteHistoryStore:
                 "ALTER TABLE run_results ADD COLUMN created_by TEXT",
                 "ALTER TABLE run_results ADD COLUMN hostname TEXT",
                 "ALTER TABLE run_results ADD COLUMN shared_uuid TEXT",
+                # Re-Run versioning (v0.13). ``parent_result_id`` links a
+                # re-run row back to the original run_results row it was
+                # spawned from; ``rerun_seq`` is 0 for originals, 1+ for
+                # successive re-runs in the chain. ``user_instructions``
+                # records the optional free-text addendum the user typed
+                # in the re-run modal so the audit trail / history drawer
+                # can show it next to the alternatives.
+                "ALTER TABLE run_results ADD COLUMN parent_result_id INTEGER",
+                "ALTER TABLE run_results ADD COLUMN rerun_seq INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE run_results ADD COLUMN user_instructions TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_run_results_parent "
+                    "ON run_results(parent_result_id)"
+                )
+            # ── rerun_context_snapshots: short-lived, GC'd when the worker
+            # finishes (job.done / failed / cancelled). One row per target
+            # item per re-run job; payload_json is the AgentContext frozen
+            # at job start so all parallel agents see identical inputs.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rerun_context_snapshots (
+                    snapshot_id      TEXT PRIMARY KEY,
+                    job_id           TEXT NOT NULL,
+                    target_result_id INTEGER NOT NULL,
+                    payload_json     TEXT NOT NULL,
+                    created_at       REAL NOT NULL
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_rerun_snap_job "
+                    "ON rerun_context_snapshots(job_id)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_rerun_snap_created "
+                    "ON rerun_context_snapshots(created_at)"
+                )
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_run_results_shared_uuid "
@@ -660,6 +700,13 @@ class SQLiteHistoryStore:
           schema, table, column (or None), asset_kind, source, confidence,
           reasoning, alternatives (list[str])
 
+        Optional re-run fields:
+          parent_result_id (int | None) — original run_results.id this row
+            re-runs; ``rerun_seq`` (int, default 0) — versioned position in
+            the chain (0 = original, 1+ = ordered re-runs);
+          ``user_instructions`` (str | None) — free-text addendum the user
+            typed in the re-run modal.
+
         Returns the inserted row IDs.
         """
         now = time.time()
@@ -671,8 +718,9 @@ class SQLiteHistoryStore:
                     INSERT INTO run_results (
                         run_id, saved_at, schema_name, table_name, column_name,
                         asset_kind, source, confidence, logprob_score, raw_logprob,
-                        token_count, model_version, reasoning, alternatives_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        token_count, model_version, reasoning, alternatives_json,
+                        parent_result_id, rerun_seq, user_instructions
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -689,6 +737,9 @@ class SQLiteHistoryStore:
                         s.get("model_version", ""),
                         s.get("reasoning", ""),
                         json.dumps(s.get("alternatives", []), ensure_ascii=True),
+                        s.get("parent_result_id"),
+                        int(s.get("rerun_seq", 0) or 0),
+                        s.get("user_instructions"),
                     ),
                 )
                 ids.append(int(cur.lastrowid))
@@ -920,6 +971,197 @@ class SQLiteHistoryStore:
                     d["alternatives_json"] = json.loads(raw)
             out.append(d)
         return out
+
+    # ── Re-Run helpers ─────────────────────────────────────────────────────
+
+    def get_run_result(self, result_id: int) -> dict[str, Any] | None:
+        """Return one ``run_results`` row by id, alternatives parsed."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM run_results WHERE id = ?",
+                (int(result_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        raw = d.get("alternatives_json")
+        if isinstance(raw, str) and raw:
+            with contextlib.suppress(Exception):
+                d["alternatives_json"] = json.loads(raw)
+        return d
+
+    def get_result_chain(self, result_id: int) -> list[dict[str, Any]]:
+        """Return the full version chain (original + all re-runs) for an item.
+
+        Walks ``parent_result_id`` upward to find the chain root, then
+        fetches every row whose ``parent_result_id`` matches that root
+        (plus the root itself), ordered by ``rerun_seq`` ASC. Used by
+        the Studio history drawer + ``GET /api/history/runs/...?include_history=true``.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, parent_result_id FROM run_results WHERE id = ?",
+                (int(result_id),),
+            ).fetchone()
+            if row is None:
+                return []
+            root = int(row["id"])
+            seen: set[int] = set()
+            while True:
+                if root in seen:
+                    break
+                seen.add(root)
+                parent_row = conn.execute(
+                    "SELECT parent_result_id FROM run_results WHERE id = ?",
+                    (root,),
+                ).fetchone()
+                parent = (
+                    int(parent_row["parent_result_id"])
+                    if parent_row and parent_row["parent_result_id"] is not None
+                    else None
+                )
+                if parent is None or parent == root:
+                    break
+                root = parent
+            chain_rows = conn.execute(
+                """
+                SELECT * FROM run_results
+                WHERE id = ? OR parent_result_id = ?
+                ORDER BY rerun_seq ASC, id ASC
+                """,
+                (root, root),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in chain_rows:
+            d = dict(r)
+            raw = d.get("alternatives_json")
+            if isinstance(raw, str) and raw:
+                with contextlib.suppress(Exception):
+                    d["alternatives_json"] = json.loads(raw)
+            out.append(d)
+        return out
+
+    def next_rerun_seq(self, parent_result_id: int) -> int:
+        """Return the next ``rerun_seq`` to use for a re-run targeting this item.
+
+        Looks at the chain root (parent_result_id, which already points at
+        the original) and returns ``max(rerun_seq) + 1`` so concurrent
+        re-runs receive monotonically increasing sequence numbers.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(MAX(rerun_seq), 0) AS mx
+                FROM run_results
+                WHERE id = ? OR parent_result_id = ?
+                """,
+                (int(parent_result_id), int(parent_result_id)),
+            ).fetchone()
+        return int((row["mx"] if row else 0) or 0) + 1
+
+    def save_rerun_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        job_id: str,
+        target_result_id: int,
+        payload: dict[str, Any],
+    ) -> None:
+        """Persist a frozen ``AgentContext`` for the re-run worker to read.
+
+        Snapshots are short-lived: the worker deletes them in its
+        ``finally`` block once the job terminates (done / failed /
+        cancelled), and ``gc_orphan_rerun_snapshots`` sweeps anything
+        left over from a crash on next process startup.
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO rerun_context_snapshots
+                    (snapshot_id, job_id, target_result_id, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    str(snapshot_id),
+                    str(job_id),
+                    int(target_result_id),
+                    json.dumps(payload, ensure_ascii=True),
+                    time.time(),
+                ),
+            )
+
+    def read_rerun_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        """Return the deserialized snapshot payload, or ``None`` when missing."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json, target_result_id, job_id "
+                "FROM rerun_context_snapshots WHERE snapshot_id = ?",
+                (str(snapshot_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row["payload_json"])
+        except Exception:
+            return None
+        return {
+            "snapshot_id": str(snapshot_id),
+            "job_id": str(row["job_id"]),
+            "target_result_id": int(row["target_result_id"]),
+            "payload": payload,
+        }
+
+    def list_rerun_snapshots_for_job(self, job_id: str) -> list[dict[str, Any]]:
+        """Return all snapshot rows for one job (ordered by created_at)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT snapshot_id, target_result_id, payload_json, created_at
+                FROM rerun_context_snapshots
+                WHERE job_id = ?
+                ORDER BY created_at ASC
+                """,
+                (str(job_id),),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload_json"])
+            except Exception:
+                continue
+            out.append(
+                {
+                    "snapshot_id": str(r["snapshot_id"]),
+                    "target_result_id": int(r["target_result_id"]),
+                    "payload": payload,
+                    "created_at": float(r["created_at"]),
+                }
+            )
+        return out
+
+    def delete_rerun_snapshots_for_job(self, job_id: str) -> int:
+        """Drop every snapshot row owned by a finished job. Returns count."""
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM rerun_context_snapshots WHERE job_id = ?",
+                (str(job_id),),
+            )
+            return int(cur.rowcount or 0)
+
+    def gc_orphan_rerun_snapshots(self, *, max_age_seconds: float = 3600.0) -> int:
+        """Sweep snapshots older than ``max_age_seconds`` (default 1h).
+
+        Called once at AMX Studio startup (and at CLI bootstrap) so
+        any rows left behind by a crashed worker don't accumulate.
+        Returns the number of rows deleted.
+        """
+        cutoff = time.time() - float(max_age_seconds)
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM rerun_context_snapshots WHERE created_at < ?",
+                (cutoff,),
+            )
+            return int(cur.rowcount or 0)
 
     def list_runs_with_result_counts(self, limit: int = 20) -> list[dict[str, Any]]:
         """List recent runs augmented with pending evaluation count."""
