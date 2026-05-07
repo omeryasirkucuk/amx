@@ -35,6 +35,7 @@ from amx.web.routers import (
     system,
     system_ops,
 )
+from amx.web.security_headers import SecurityHeadersMiddleware
 
 
 def _static_root() -> Path:
@@ -87,6 +88,12 @@ def create_app(
     # Auth middleware runs before any router so unauthenticated /api/*
     # requests short-circuit with 401 — never reach the route handler.
     app.add_middleware(TokenAuthMiddleware)
+    # SecurityHeadersMiddleware sits in front of auth so the
+    # Content-Security-Policy + sibling headers ride along on the 401
+    # response too. Starlette runs middleware in the *reverse* of
+    # ``add_middleware`` order, so adding it after auth means it wraps
+    # the auth middleware — every response goes through it.
+    app.add_middleware(SecurityHeadersMiddleware)
 
     app.include_router(system.router)
     app.include_router(live_db.router)
