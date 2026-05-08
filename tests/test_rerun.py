@@ -1013,3 +1013,174 @@ def test_rerun_items_cleans_up_snapshots_on_failure(
     with s._connect() as conn:
         count = conn.execute("SELECT COUNT(*) FROM rerun_context_snapshots").fetchone()[0]
     assert count == 0
+
+
+# ── run_context_cache (P4: skip live profile_table on re-run) ──
+
+
+def test_save_and_lookup_run_context_cache_round_trips(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Round-trip the cache key + payload."""
+    payload = {
+        "db_profile": {
+            "row_count": 42,
+            "columns": [{"name": "id"}, {"name": "status"}],
+        },
+        "existing_metadata": {"database": "shop"},
+    }
+    store.save_run_context_cache(
+        db_profile="prod_pg",
+        database="shop",
+        schema="public",
+        table="orders",
+        payload=payload,
+        source_run_id=7,
+    )
+    hit = store.lookup_run_context_cache(
+        db_profile="prod_pg",
+        database="shop",
+        schema="public",
+        table="orders",
+    )
+    assert hit is not None
+    assert hit["payload"] == payload
+    assert hit["source_run_id"] == 7
+
+
+def test_lookup_run_context_cache_misses_on_different_table(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Wrong (schema, table) coordinates return ``None`` not the wrong row."""
+    store.save_run_context_cache(
+        db_profile="prod_pg",
+        database="shop",
+        schema="public",
+        table="orders",
+        payload={"db_profile": {}, "existing_metadata": {}},
+    )
+    miss = store.lookup_run_context_cache(
+        db_profile="prod_pg",
+        database="shop",
+        schema="public",
+        table="customers",
+    )
+    assert miss is None
+
+
+def test_lookup_run_context_cache_treats_expired_as_missing(
+    store: SQLiteHistoryStore,
+) -> None:
+    """A row past ``expires_at`` reads back as ``None`` so callers rebuild."""
+    store.save_run_context_cache(
+        db_profile="prod_pg",
+        database="",
+        schema="public",
+        table="orders",
+        payload={"db_profile": {}, "existing_metadata": {}},
+        ttl_seconds=0.001,
+    )
+    import time as _time
+
+    _time.sleep(0.01)
+    miss = store.lookup_run_context_cache(
+        db_profile="prod_pg",
+        database="",
+        schema="public",
+        table="orders",
+    )
+    assert miss is None
+
+
+def test_delete_run_context_cache_drops_row(
+    store: SQLiteHistoryStore,
+) -> None:
+    """The apply path calls this once a COMMENT writes successfully."""
+    store.save_run_context_cache(
+        db_profile="prod_pg",
+        database="shop",
+        schema="public",
+        table="orders",
+        payload={"db_profile": {}, "existing_metadata": {}},
+    )
+    deleted = store.delete_run_context_cache(
+        db_profile="prod_pg",
+        database="shop",
+        schema="public",
+        table="orders",
+    )
+    assert deleted == 1
+    assert (
+        store.lookup_run_context_cache(
+            db_profile="prod_pg",
+            database="shop",
+            schema="public",
+            table="orders",
+        )
+        is None
+    )
+
+
+def test_save_run_context_cache_replaces_on_conflict(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Re-analyzing the same table refreshes -- does not duplicate -- the row."""
+    first_payload = {"db_profile": {"row_count": 1}, "existing_metadata": {}}
+    second_payload = {"db_profile": {"row_count": 999}, "existing_metadata": {}}
+    for payload in (first_payload, second_payload):
+        store.save_run_context_cache(
+            db_profile="prod_pg",
+            database="",
+            schema="public",
+            table="orders",
+            payload=payload,
+        )
+    hit = store.lookup_run_context_cache(
+        db_profile="prod_pg",
+        database="",
+        schema="public",
+        table="orders",
+    )
+    assert hit is not None
+    assert hit["payload"] == second_payload
+    with store._connect() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM run_context_cache "
+            "WHERE db_profile=? AND schema_name=? AND table_name=?",
+            ("prod_pg", "public", "orders"),
+        ).fetchone()
+    assert rows[0] == 1
+
+
+def test_gc_run_context_cache_reaps_only_expired_rows(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Long-TTL rows survive GC; expired rows are dropped."""
+    store.save_run_context_cache(
+        db_profile="prod_pg",
+        database="",
+        schema="public",
+        table="orders",
+        payload={"db_profile": {}, "existing_metadata": {}},
+        ttl_seconds=0.001,
+    )
+    store.save_run_context_cache(
+        db_profile="prod_pg",
+        database="",
+        schema="public",
+        table="customers",
+        payload={"db_profile": {}, "existing_metadata": {}},
+        ttl_seconds=86400,
+    )
+    import time as _time
+
+    _time.sleep(0.01)
+    deleted = store.gc_run_context_cache()
+    assert deleted == 1
+    survivors = store.lookup_run_context_cache(
+        db_profile="prod_pg",
+        database="",
+        schema="public",
+        table="customers",
+    )
+    assert survivors is not None
