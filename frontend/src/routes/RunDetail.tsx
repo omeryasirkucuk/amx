@@ -588,6 +588,131 @@ function normalizeAlternatives(raw: unknown): string[] {
   return out;
 }
 
+/** Compact token + cost chip rendered next to the status badge in the
+ *  page header. Surfaces the figures users were complaining were
+ *  buried inside the Summary tab — once a run finishes you can tell
+ *  at a glance how many tokens it burned and what it cost without
+ *  switching tabs. Falls back to nothing for runs that never
+ *  recorded tokens (legacy runs, runs that crashed before any LLM
+ *  call). */
+function RunHeaderTokenCost({ run }: { run: RunDetailPayload }) {
+  const tokens = (run.tokens_json ?? {}) as Record<string, unknown>;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const records = (tokens.records ?? []) as Array<{
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  }>;
+  if (records.length > 0) {
+    for (const r of records) {
+      inputTokens += Number(r.prompt_tokens ?? 0);
+      outputTokens += Number(r.completion_tokens ?? 0);
+    }
+  } else if (Array.isArray(tokens.summary)) {
+    for (const row of tokens.summary as unknown[]) {
+      if (Array.isArray(row) && row.length >= 4) {
+        inputTokens += Number(row[1] ?? 0);
+        outputTokens += Number(row[2] ?? 0);
+      }
+    }
+  }
+  const totalFromBreakdown = inputTokens + outputTokens;
+  const totalTokens =
+    totalFromBreakdown > 0
+      ? totalFromBreakdown
+      : typeof tokens.total_tokens === "number"
+        ? Number(tokens.total_tokens)
+        : 0;
+  const cost = typeof tokens.total_cost_usd === "number" ? tokens.total_cost_usd : null;
+  if (totalTokens === 0 && cost == null) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface-subtle/60 px-2 py-0.5 font-mono tabular-nums text-[11px] text-ink"
+      title="Tokens consumed by this run (input ↑ + output ↓) and the USD cost frozen at run time. Open the Summary tab for the per-step breakdown."
+    >
+      {totalFromBreakdown > 0 && (
+        <>
+          <span className="text-ink-dim">↑</span>
+          {compactTokenCount(inputTokens)}
+          <span className="text-ink-dim">↓</span>
+          {compactTokenCount(outputTokens)}
+        </>
+      )}
+      {totalFromBreakdown === 0 && totalTokens > 0 && (
+        <>
+          <span className="text-ink-dim">tokens</span>
+          {compactTokenCount(totalTokens)}
+        </>
+      )}
+      {cost != null && cost > 0 && (
+        <>
+          <span className="text-ink-dim">·</span>
+          <span className="text-positive">${cost.toFixed(4)}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
+/** Show the run's effective scope (DB profile + database/catalog +
+ *  picked schemas/tables) right next to the status badge so the
+ *  header answers "what did this run touch" before the user scrolls.
+ *  Empty scope renders nothing — the user already knows it was an
+ *  all-schemas run from the lack of a chip. */
+function RunHeaderScope({ run }: { run: RunDetailPayload }) {
+  const scope = (run.scope_json ?? run.scope ?? {}) as Record<string, unknown>;
+  const target =
+    (run.database && run.database.trim()) ||
+    (run.catalog && run.catalog.trim()) ||
+    "";
+  const entries = Object.entries(scope).filter(([k]) => k && k !== "db_profile");
+  if (entries.length === 0 && !target && !run.db_profile) return null;
+  const tableLabel = (() => {
+    if (entries.length === 0) return "All schemas";
+    let totalTables = 0;
+    let allEmpty = true;
+    for (const [, v] of entries) {
+      if (Array.isArray(v) && v.length > 0) {
+        totalTables += v.length;
+        allEmpty = false;
+      }
+    }
+    if (entries.length === 1) {
+      const [s, v] = entries[0];
+      if (Array.isArray(v) && v.length > 0) {
+        return `${s} · ${v.length} ${v.length === 1 ? "table" : "tables"}`;
+      }
+      return `${s} (all tables)`;
+    }
+    if (allEmpty) return `${entries.length} schemas`;
+    return `${entries.length} schemas · ${totalTables} ${totalTables === 1 ? "table" : "tables"}`;
+  })();
+  const targetLabel = target ? ` @ ${target}` : "";
+  const profileLabel = run.db_profile ? `${run.db_profile}` : "";
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface-subtle/60 px-2 py-0.5 font-mono text-[11px] text-ink-muted"
+      title="Scope this run targeted. Open the Scope tab for the raw JSON."
+    >
+      <span className="text-ink-dim">scope</span>
+      <span className="text-ink">
+        {profileLabel ? `${profileLabel}${targetLabel} · ` : ""}
+        {tableLabel}
+      </span>
+    </span>
+  );
+}
+
+/** Render token counts with K/M compaction so the header chip stays
+ *  one line on narrow viewports. Mirrors the Home overview cards'
+ *  formatter so the two surfaces feel consistent. */
+function compactTokenCount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
 function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   // Compact live-progress panel rendered inside PersistedRunView when
   // the run still has a worker thread. Subscribes to the same SSE
@@ -778,7 +903,7 @@ function PersistedRunView({ runId }: { runId: number }) {
         ]}
         description={
           run.data ? (
-            <span className="inline-flex items-center gap-2 text-xs">
+            <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
               <Badge
                 tone={
                   run.data.status === "success"
@@ -801,6 +926,8 @@ function PersistedRunView({ runId }: { runId: number }) {
               <span className="font-mono text-ink-muted">
                 {run.data.llm_model ?? "—"}
               </span>
+              <RunHeaderTokenCost run={run.data} />
+              <RunHeaderScope run={run.data} />
             </span>
           ) : undefined
         }
@@ -1533,7 +1660,14 @@ function ResultsTab({
         onBulkDone={() => {
           setSelectedIds(new Set());
           setMultiSelectMode(false);
-          queryClient.invalidateQueries({ queryKey: ["history", "run-results"] });
+          // Bulk re-run produces a new analysis_runs row; the user is
+          // typically still looking at the parent run when the worker
+          // wraps. Invalidate by prefix so whichever runs are open
+          // pull fresh data, plus ``pending`` so the queue size
+          // reflects the new rows.
+          queryClient.invalidateQueries({ queryKey: ["run-results"] });
+          queryClient.invalidateQueries({ queryKey: ["pending"] });
+          queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
         }}
       />
       {grouped.map(({ key, rows: tableRows }) => (
@@ -1779,8 +1913,15 @@ function ResultRowItemImpl({
     } else {
       pushToast({ tone: "warning", title: "Re-run cancelled" });
     }
-    queryClient.invalidateQueries({ queryKey: ["history", "run-results"] });
-    queryClient.invalidateQueries({ queryKey: ["history", "result-chain", row.id] });
+    // The actual cache keys are ["run-results", runId] for the
+    // results table and ["pending"] for the pending-queue bookkeeping
+    // — invalidating ["history", ...] was a no-op so the row never
+    // refreshed in place. Use prefix-only keys so all open runs get
+    // refetched (the user may be on a different run id than the one
+    // that spawned the re-run).
+    queryClient.invalidateQueries({ queryKey: ["run-results"] });
+    queryClient.invalidateQueries({ queryKey: ["pending"] });
+    queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
     setRerunJobId(null);
     // ``rerunSse.events`` is the only changing dependency we care
     // about — adding the others would re-fire the toast on every
