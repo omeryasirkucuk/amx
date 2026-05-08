@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
@@ -809,10 +809,28 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   // for the entire 5–30 minute window the agents took to drive a
   // single table through profile + RAG + LLM batch.
   const [lastStep, setLastStep] = useState<string | null>(null);
+  // Recently-completed sub-steps (last 5) so the user can see a
+  // rolling "what just happened" trail instead of just the current
+  // step. Each entry carries elapsed-from-start so the history reads
+  // like a timeline. Capped to 5 to keep the card height bounded.
+  const [recentSteps, setRecentSteps] = useState<
+    Array<{ id: number; label: string; offsetSec: number }>
+  >([]);
+  const recentIdRef = useRef(0);
+  // Wall-clock for the elapsed-time chip. Mirrors LiveRunStream so
+  // the user can see the run has been going for "1m 47s" without
+  // having to wait for the next SSE event to arrive.
+  const [startTime] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const { events, closed, error } = useEventSource({
     path: `/api/runs/${jobId}/events`,
     enabled: true,
   });
+  useEffect(() => {
+    if (closed) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [closed]);
 
   useEffect(() => {
     for (const event of events) {
@@ -866,6 +884,19 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
         const label = String(event.label ?? "Thinking").trim();
         setLastStep(label ? `${label}…` : "Thinking…");
       } else if (t === "step.complete" || t === "step.fail") {
+        const label = String(event.label ?? "").trim();
+        if (label) {
+          const offsetSec = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+          recentIdRef.current += 1;
+          const entryId = recentIdRef.current;
+          setRecentSteps((curr) => {
+            const next = [
+              ...curr,
+              { id: entryId, label: `${t === "step.fail" ? "✗ " : "✓ "}${label}`, offsetSec },
+            ];
+            return next.length > 5 ? next.slice(next.length - 5) : next;
+          });
+        }
         setLastStep(null);
       } else if (t === "tokens.snapshot") {
         setTokensSnapshot({
@@ -893,17 +924,33 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   const completed = activities.filter((a) => a.status !== "running").length;
   const total = activities.length;
   const current = activities.find((a) => a.status === "running");
+  const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
 
   return (
     <Card className="mb-4 border-accent/40">
       <CardHeader
         title={
           <span className="inline-flex items-center gap-2">
-            <Loader2 size={14} className="animate-spin text-accent" />
+            <Loader2
+              size={14}
+              className={cn(
+                "text-accent",
+                !closed && "animate-spin",
+              )}
+            />
             Live progress
             {total > 0 && (
               <span className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
                 {completed}/{total}
+              </span>
+            )}
+            {!closed && (
+              <span
+                className="inline-flex items-center gap-1 rounded bg-surface-subtle px-1.5 py-0.5 font-mono tabular-nums text-[10px] text-ink-muted"
+                title="Time elapsed since the run page loaded"
+              >
+                <Timer size={10} />
+                {formatElapsed(elapsedSec)}
               </span>
             )}
           </span>
@@ -916,7 +963,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
                 ? `Now: ${current.label} — ${lastStep}`
                 : `Now: ${current.label}`
               : lastStep
-                ? lastStep
+                ? `Now: ${lastStep}`
                 : "Waiting for the worker to begin…"
         }
       />
@@ -934,10 +981,32 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
             </span>
           </div>
         )}
+        {recentSteps.length > 0 && (
+          <div className="border-b border-surface-border px-5 py-2">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+              Recent steps
+            </p>
+            <ul className="space-y-0.5 text-xs">
+              {recentSteps.map((s) => (
+                <li
+                  key={s.id}
+                  className="flex items-center gap-2 font-mono tabular-nums text-ink-muted"
+                >
+                  <span className="text-[10px] text-ink-dim">
+                    +{formatElapsed(s.offsetSec)}
+                  </span>
+                  <span className="truncate text-ink">{s.label}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {activities.length === 0 ? (
           <div className="px-5 py-4 text-sm text-ink-dim">
             <Loader2 size={14} className="mr-2 inline animate-spin" />
-            {lastStep || "Waiting for the worker to begin…"}
+            {lastStep
+              ? `Now: ${lastStep}`
+              : "Waiting for the worker to begin…"}
           </div>
         ) : (
           <ul className="divide-y divide-surface-border">
