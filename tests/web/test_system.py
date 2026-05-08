@@ -27,8 +27,14 @@ def test_version_reports_components(client, auth_headers) -> None:
 def test_context_reads_active_profile_state(client, auth_headers, cfg) -> None:
     """The /api/context handler must read straight from cfg —
     mutating cfg in-place after building the app should reflect on
-    the next request."""
-    cfg.active_db_profile = "prod"
+    the next request.
+
+    DB activation was retired in 0.13 (see ContextResponse), so the
+    handler no longer surfaces ``active_db_profile`` /
+    ``active_db_profiles``; LLM + doc + code activation continue to
+    flow through unchanged.
+    """
+    cfg.active_db_profile = "prod"  # internal default-fallback pointer
     cfg.active_llm_profile = "claude"
     cfg.current_schema = "sales"
     cfg.current_table = "orders"
@@ -36,7 +42,8 @@ def test_context_reads_active_profile_state(client, auth_headers, cfg) -> None:
     response = client.get("/api/context", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
-    assert payload["active_db_profile"] == "prod"
+    assert "active_db_profile" not in payload
+    assert "active_db_profiles" not in payload
     assert payload["active_llm_profile"] == "claude"
     assert payload["current_schema"] == "sales"
     assert payload["current_table"] == "orders"
@@ -54,7 +61,9 @@ def test_context_handles_blank_profile_state(client, auth_headers, cfg) -> None:
     response = client.get("/api/context", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
-    assert payload["active_db_profile"] is None
+    # DB activation is no longer surfaced; the LLM / schema / table
+    # fields still coerce blank strings to JSON null.
+    assert "active_db_profile" not in payload
     assert payload["active_llm_profile"] is None
     assert payload["current_schema"] is None
     assert payload["current_table"] is None

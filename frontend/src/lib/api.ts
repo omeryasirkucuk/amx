@@ -91,8 +91,11 @@ export interface HealthResponse {
   version: string;
 }
 export interface ContextResponse {
-  active_db_profile: string | null;
-  active_db_profiles: string[];
+  // ``active_db_profile`` / ``active_db_profiles`` were dropped in
+  // 0.13: every defined DB profile is selectable from Run / Ask /
+  // Browse directly; nothing is "active" globally. The CLI keeps a
+  // default-fallback pointer internally (set via ``/use-db <name>``)
+  // but the SPA must never read or render it.
   active_llm_profile: string | null;
   active_doc_profile: string | null;
   active_code_profile: string | null;
