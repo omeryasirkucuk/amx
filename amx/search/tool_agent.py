@@ -28,6 +28,8 @@ from amx.config import AMXConfig
 from amx.llm.provider import LLMProvider
 from amx.search.agent_tools import ToolBox
 from amx.search.catalog import SearchCatalog
+from amx.utils.token_tracker import estimate_tokens
+from amx.utils.token_tracker import tracker as token_tracker
 
 if TYPE_CHECKING:
     from amx.utils.live_display import LiveDisplay
@@ -805,14 +807,29 @@ def _run_tool_loop(
             from amx.agents.orchestrator import RunCancelled
 
             raise RunCancelled(f"Cancelled before iteration {iteration}")
+        chat_messages = [_convert_message_for_litellm(m) for m in messages]
+        # Pre-call token estimate so the tracker can label this step's
+        # input cost. Falls back to 0 silently when tiktoken can't
+        # tokenise the message shape (some structured tool messages).
+        est = estimate_tokens(chat_messages)
         result = llm.chat(
-            [_convert_message_for_litellm(m) for m in messages],
+            chat_messages,
             temperature=0.0,
             max_tokens=_AGENT_MAX_TOKENS,
             use_logprobs=False,
             tools=tools_schema,
             tool_choice="auto",
             on_thinking=on_thinking,
+        )
+        # Per-step record so the Run detail Metrics card can render
+        # an honest tool_agent.iter row -- the previous wiring summed
+        # ``aggregated_usage`` for the SSE answer.final event but never
+        # wrote into ``analysis_runs.tokens_json``.
+        token_tracker.record_for(
+            f"tool_agent.iter{iterations}",
+            est,
+            llm,
+            getattr(result, "usage", None),
         )
         # Aggregate usage across iterations.
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -862,21 +879,28 @@ def _run_tool_loop(
         # Hit the iteration cap without a final answer — force a closing call
         # without ``tools`` so the LLM returns plain text from whatever it
         # gathered.
+        closing_messages = [_convert_message_for_litellm(m) for m in messages] + [
+            {
+                "role": "user",
+                "content": (
+                    "You've reached the tool-call budget. Compose your final answer now, in "
+                    f"{answer_language or 'english'}, based on the tool results above."
+                ),
+            }
+        ]
+        est = estimate_tokens(closing_messages)
         result = llm.chat(
-            [_convert_message_for_litellm(m) for m in messages]
-            + [
-                {
-                    "role": "user",
-                    "content": (
-                        "You've reached the tool-call budget. Compose your final answer now, in "
-                        f"{answer_language or 'english'}, based on the tool results above."
-                    ),
-                }
-            ],
+            closing_messages,
             temperature=0.0,
             max_tokens=_AGENT_MAX_TOKENS,
             use_logprobs=False,
             on_thinking=on_thinking,
+        )
+        token_tracker.record_for(
+            "tool_agent.final",
+            est,
+            llm,
+            getattr(result, "usage", None),
         )
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             aggregated_usage[key] += int((result.usage or {}).get(key, 0) or 0)

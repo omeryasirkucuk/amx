@@ -37,13 +37,38 @@ def _get_encoding() -> tiktoken.Encoding:
     return tiktoken.get_encoding("cl100k_base")
 
 
-def estimate_tokens(messages: list[dict[str, str]]) -> int:
+def estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate prompt tokens for a list of OpenAI-style chat messages.
+
+    Each value is encoded with tiktoken's ``cl100k_base`` BPE. Tool-
+    calling shapes pass ``tool_calls``: list[dict] / ``content``: list
+    instead of plain strings, so we coerce non-string values to JSON
+    text before encoding -- the previous implementation crashed with
+    ``TypeError: 'list' object cannot be converted to 'PyString'`` when
+    the search tool agent fed it a chat with ``role=assistant`` plus
+    ``tool_calls=[...]``. Falling back to ``json.dumps`` is honest
+    enough for an estimate (it overcounts a bit on punctuation, which
+    is the safe direction).
+    """
     enc = _get_encoding()
     total = 0
     for msg in messages:
         total += 4  # role/name/separator framing
         for value in msg.values():
-            total += len(enc.encode(value, disallowed_special=()))
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                # Tool-calling messages can carry list[dict] / dict here;
+                # serialise so tiktoken always sees a string.
+                try:
+                    import json as _json
+
+                    text = _json.dumps(value, ensure_ascii=True)
+                except Exception:
+                    text = str(value)
+            else:
+                text = value
+            total += len(enc.encode(text, disallowed_special=()))
     total += 2  # reply priming
     return max(1, total)
 

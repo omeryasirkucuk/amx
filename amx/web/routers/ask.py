@@ -34,6 +34,7 @@ from amx.search.session_store import ChatSessionStore
 from amx.search.tool_agent import run_tool_agent
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import tracker as token_tracker
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
 from amx.web.progress_bus import emit, emit_terminal
@@ -563,12 +564,80 @@ def _ask_worker(
     emit(job.queue, "activity.added", {"idx": 0, "label": "Thinking"})
     emit(job.queue, "activity.begin", {"idx": 0})
 
+    # Open a ``search.ask`` analysis_runs row so the Studio
+    # /ask query lands in the same RunsList / Run detail / /usage
+    # surfaces analyze.run + rerun already use. Mirrors the CLI
+    # path (amx/cli_support/commands/search.py around the /ask
+    # entry point) so the two surfaces produce equivalent history
+    # rows. Best-effort: a missing history store can't block the
+    # tool-agent loop -- the answer still streams either way.
+    token_tracker.reset()
+    hs = history_store()
+    run_id: int | None = None
+    if hs is not None:
+        try:
+            run_id = int(
+                hs.create_run(
+                    command="search.ask",
+                    mode="chat",
+                    db_backend=getattr(cfg.db, "backend", "") or "",
+                    db_profile=db_profile,
+                    llm_provider=cfg.llm.provider,
+                    llm_model=cfg.llm.model,
+                    scope={p: [] for p in (scope_profiles or [])},
+                    selected_count=0,
+                    planned_count=0,
+                    review_strategy=None,
+                    llm_profile=cfg.active_llm_profile or None,
+                    doc_profile=getattr(cfg, "active_doc_profile", None) or None,
+                    code_profile=getattr(cfg, "active_code_profile", None) or None,
+                    settings={
+                        "trigger": "studio.ask",
+                        "session_id": session_id,
+                        "scope_profiles": list(scope_profiles or []),
+                    },
+                )
+            )
+        except Exception as exc:  # pragma: no cover - best-effort
+            log.warning("Could not open search.ask run row: %s", exc)
+            run_id = None
+
+    def _finish(
+        *,
+        status_value: str,
+        metrics: dict[str, Any] | None = None,
+        error_text: str = "",
+    ) -> None:
+        """Tail-call helper: persist tokens_json on every terminal
+        path -- success, failure, cancel. Without this, the Run
+        detail Metrics card stays empty for ask queries that
+        crashed mid-flight."""
+        if hs is None or run_id is None:
+            return
+        try:
+            hs.finish_run(
+                run_id,
+                status=status_value,
+                metrics=metrics or {},
+                tokens={
+                    "total_tokens": token_tracker.total_tokens,
+                    "total_cost_usd": round(token_tracker.total_cost_usd, 8),
+                    "summary": token_tracker.summary(),
+                    "records": token_tracker.records(),
+                },
+                results={"session_id": session_id},
+                error_text=error_text,
+            )
+        except Exception as exc:  # pragma: no cover - best-effort
+            log.warning("Could not finalise tokens_json for ask run %s: %s", run_id, exc)
+
     catalog = _load_catalog()
     if catalog is None:
         job.status = "failed"
         job.error = "Search catalog isn't initialised yet — run /search sync first."
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        _finish(status_value="failed", error_text=job.error)
         emit_terminal(
             job.queue,
             "job.failed",
@@ -593,6 +662,7 @@ def _ask_worker(
         )
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        _finish(status_value="failed", error_text=job.error)
         emit_terminal(
             job.queue,
             "job.failed",
@@ -651,6 +721,7 @@ def _ask_worker(
         job.status = "cancelled"
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": "Cancelled."})
+        _finish(status_value="cancelled")
         emit_terminal(job.queue, "job.cancelled", {})
         return
     except Exception as exc:
@@ -691,6 +762,7 @@ def _ask_worker(
         job.error = message
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
+        _finish(status_value="failed", error_text=job.error)
         payload: dict[str, Any] = {"error": job.error}
         if hint:
             payload["hint"] = hint
@@ -708,7 +780,7 @@ def _ask_worker(
             try:
                 store.append_assistant_turn(
                     int(session_id),
-                    run_id=None,
+                    run_id=run_id,
                     answer_summary=result.answer or "",
                 )
             except Exception as exc:
@@ -752,6 +824,16 @@ def _ask_worker(
         "usage": dict(result.usage),
     }
     job.ended_at = time.time()
+    _finish(
+        status_value="success",
+        metrics={
+            "iterations": int(result.iterations or 0),
+            "tool_call_count": len(result.tool_calls or []),
+            "total_latency_ms": int(result.total_latency_ms or 0),
+            "scope_profiles": list(result.scope_profiles or []),
+            "focus_profile": result.focus_profile,
+        },
+    )
     emit_terminal(job.queue, "job.done", {"summary": job.summary})
 
 
