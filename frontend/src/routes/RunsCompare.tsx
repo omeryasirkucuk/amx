@@ -15,6 +15,7 @@ import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
 import Dialog from "../components/ui/Dialog";
+import { useToast } from "../components/ui";
 import {
   ConfidencePill,
   LogprobBadge,
@@ -29,6 +30,8 @@ import {
 } from "../lib/api";
 import { cn } from "../lib/cn";
 import {
+  commandKind,
+  type CommandKindFilter,
   humanizeCommand,
   relativeTime,
   shortModel,
@@ -42,22 +45,6 @@ import {
 // re-imported aliases above.
 
 // ── Picker filtering primitives ────────────────────────────────────────
-
-type CommandKindFilter = "all" | "analyze" | "rerun" | "generate" | "ask";
-
-/** Bucket an ``analysis_runs.command`` string into the picker filter
- *  buckets. Anything that isn't analyze / rerun / generate / ask
- *  falls into "other" and survives only when the filter is "all". */
-function commandKind(
-  command: string | null | undefined,
-): "analyze" | "rerun" | "generate" | "ask" | "other" {
-  const cmd = (command ?? "").toLowerCase();
-  if (cmd === "analyze.run" || cmd === "analyze.apply") return "analyze";
-  if (cmd === "rerun") return "rerun";
-  if (cmd.startsWith("generate.")) return "generate";
-  if (cmd === "search.ask" || cmd === "ask.run") return "ask";
-  return "other";
-}
 
 /** Tailwind background class for the run-row command chip. Coloured
  *  so the user can scan a long picker and tell at a glance which
@@ -177,6 +164,7 @@ function buildCompareSeedPrompt(data: CompareResponse): string {
 
 export default function RunsCompare() {
   const navigate = useNavigate();
+  const toast = useToast();
   const [selected, setSelected] = useState<number[]>([]);
   const [search, setSearch] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<CommandKindFilter>("all");
@@ -201,16 +189,64 @@ export default function RunsCompare() {
     retry: false,
   });
 
+  // ``compareableIds(): {ids, droppedAsks}`` filters Ask sessions out
+  // of the user's selection before any /compare call. Ask runs are
+  // free-text Q&A turns — they don't produce per-asset descriptions
+  // the way analyze / generate / rerun runs do, so a side-by-side
+  // pivot of them is meaningless. The picker still LISTS them under
+  // the "ask" kind chip so the user can preview them, but the
+  // submit-time filter quietly drops them and surfaces a toast so
+  // the exclusion is visible.
+  function compareableSelection(): {
+    ids: number[];
+    droppedAsks: number[];
+  } {
+    const allRows = (recent.data?.runs as RunRow[] | undefined) ?? [];
+    const askIds = new Set(
+      allRows
+        .filter((r) => commandKind(r.command) === "ask")
+        .map((r) => r.id),
+    );
+    const ids = selected.filter((id) => !askIds.has(id));
+    const droppedAsks = selected.filter((id) => askIds.has(id));
+    return { ids, droppedAsks };
+  }
+
+  function notifyDroppedAsks(droppedAsks: number[]) {
+    if (droppedAsks.length === 0) return;
+    const idsLabel = droppedAsks.map((id) => `#${id}`).join(", ");
+    toast.push({
+      title: `Excluded ${droppedAsks.length} Ask session${droppedAsks.length === 1 ? "" : "s"} from the comparison`,
+      description: (
+        `Ask runs (${idsLabel}) are conversational Q&A turns and don't ` +
+        "produce per-asset descriptions; comparing them isn't meaningful. " +
+        "The remaining analyze / generate / rerun selections were compared."
+      ),
+      tone: "warning",
+      duration: 5000,
+    });
+  }
+
   const compare = useMutation({
-    mutationFn: () =>
-      apiFetch<CompareResponse>("/api/history/compare", {
+    mutationFn: () => {
+      const { ids, droppedAsks } = compareableSelection();
+      if (ids.length < 2) {
+        throw new Error(
+          droppedAsks.length > 0
+            ? "Comparison needs at least 2 non-Ask runs. Pick more analyze / generate / rerun runs."
+            : "Pick at least 2 runs to compare.",
+        );
+      }
+      notifyDroppedAsks(droppedAsks);
+      return apiFetch<CompareResponse>("/api/history/compare", {
         method: "POST",
         body: JSON.stringify({
-          run_ids: selected,
+          run_ids: ids,
           quality_tier: 1, // Tier 0 metrics auto-shown in the modal
           ground_truth_run_id: groundTruthRunId,
         }),
-      }),
+      });
+    },
     onSuccess: () => setViewerOpen(true),
   });
 
@@ -218,8 +254,16 @@ export default function RunsCompare() {
   // preview dialog confirms; replaces ``compareData`` so the modal
   // re-renders with the enriched quality_metrics.
   const deepAnalysis = useMutation({
-    mutationFn: () =>
-      api.runDeepAnalysis(selected, { groundTruthRunId }),
+    mutationFn: () => {
+      const { ids, droppedAsks } = compareableSelection();
+      if (ids.length < 2) {
+        throw new Error(
+          "Deep analysis needs at least 2 non-Ask runs.",
+        );
+      }
+      notifyDroppedAsks(droppedAsks);
+      return api.runDeepAnalysis(ids, { groundTruthRunId });
+    },
     onSuccess: (next) => {
       compare.reset();
       // ``compare`` exposes its own ``data`` via mutation state;
