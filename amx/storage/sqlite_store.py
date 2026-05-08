@@ -1442,13 +1442,23 @@ class SQLiteHistoryStore:
             params.append(str(command_filter))
         where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(max(1, int(limit)))
+        # ``tokens_json`` joins the SELECT so /api/usage's aggregator
+        # (and any future caller that reasons about per-run cost) can
+        # read the per-call records without a second round-trip. The
+        # column is small (~400-500B per run) and the SPA's runs list
+        # already pulls it via /api/history/runs/{id}, so the marginal
+        # bandwidth cost on a 50-row list query is in the same ballpark.
+        # Without this column on the SELECT, _aggregate_runs found
+        # ``run.get("tokens_json")`` to be ``None`` on every row and
+        # silently skipped them all -- the Overview cards rendered
+        # "--" even with months of usage in the history database.
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT id, started_at, ended_at, duration_sec, status, command, mode,
                        db_backend, db_profile, llm_provider, llm_model,
                        llm_profile, doc_profile, code_profile,
-                       scope_json, metrics_json,
+                       scope_json, metrics_json, tokens_json,
                        created_by, hostname, client_version, shared_uuid
                 FROM analysis_runs
                 {where_sql}
@@ -1460,6 +1470,12 @@ class SQLiteHistoryStore:
         out: list[dict[str, Any]] = []
         for r in rows:
             d = dict(r)
+            # ``scope_json`` + ``metrics_json`` are eagerly JSON-decoded
+            # so the SPA's run list can render scope / metrics chips
+            # without re-parsing. ``tokens_json`` deliberately stays a
+            # raw string -- the aggregator handles either shape, and
+            # most readers (recent-runs feed, runs list table) only
+            # care that the field is non-empty, never its contents.
             for key in ("scope_json", "metrics_json"):
                 raw = d.get(key)
                 if isinstance(raw, str) and raw:
