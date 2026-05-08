@@ -101,8 +101,10 @@ export default function Landing() {
       {/* Hero -- brand mark + one-line tagline. The wordmark uses
           the same pixel-art glyph the docs site / topbar share, so
           the Studio feels like a continuation of the marketing
-          surface without copying its copy. */}
-      <header className="space-y-3">
+          surface without copying its copy. Centered horizontally so
+          the entry surface reads as a deliberate "you've arrived"
+          moment rather than a left-pinned form header. */}
+      <header className="flex flex-col items-center space-y-3 text-center">
         <div className="flex items-baseline gap-2">
           <Logo size={28} />
           <span className="text-2xl font-semibold tracking-tight text-ink">
@@ -116,8 +118,10 @@ export default function Landing() {
 
       {/* Status line -- concrete grounding. "Connected to X, with Y
           DB profiles" answers "is anything ready" without dumping a
-          stat dashboard. */}
-      <section className="flex flex-wrap items-center gap-2 text-sm">
+          stat dashboard. Centered so it reads as a single "what's
+          ready" line under the hero, rather than a left-pinned
+          status bar. */}
+      <section className="flex flex-wrap items-center justify-center gap-2 text-sm">
         {hasLlm ? (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-surface-border bg-surface-subtle/40 px-3 py-1 font-mono text-xs text-ink-muted">
             <span className="h-1.5 w-1.5 rounded-full bg-positive" />
