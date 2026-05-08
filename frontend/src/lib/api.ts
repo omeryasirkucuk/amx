@@ -102,6 +102,12 @@ export interface ContextResponse {
   llm_provider: string | null;
   llm_model: string | null;
   llm_supports_batch: boolean;
+  /** Local OS user + hostname surfaced so the SPA can colour code
+   *  apply events as "you" vs "{teammate}" without re-deriving the
+   *  identity on every render. Both are nullable when the OS query
+   *  failed (very rare). */
+  current_user: string | null;
+  current_hostname: string | null;
 }
 
 export interface CatalogsResponse {
