@@ -170,19 +170,15 @@ def get_logger(name: str) -> logging.Logger:
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
         logger.addFilter(_RequestIdFilter())
-        # Don't propagate to the root logger. Several third-party
-        # imports (``transformers``, ``litellm``, ``bert_score``,
-        # ``uvicorn[standard]``) call ``logging.basicConfig`` at
-        # import time, which attaches a default stream handler to
-        # root at ``INFO`` (sometimes ``DEBUG``). Without
-        # ``propagate=False`` every amx.* INFO / DEBUG record fans
-        # out to that root handler too — the user's REPL terminal
-        # gets flooded with ``INFO:amx.db.connector:Connected via
-        # postgresql ...`` and ``DEBUG:amx.llm.provider:LLM call
-        # ...`` lines while AMX Studio is up. Those records still
-        # land on disk via the file handler below; the on-screen
-        # leak is what we're closing here.
-        logger.propagate = False
+        # ``propagate`` stays True so pytest's caplog can pick up
+        # amx.* records via the root logger (every test that asserts
+        # a log line goes through ``caplog.at_level(level,
+        # logger="amx.X")`` which relies on propagation). The
+        # corresponding Studio-terminal flood — INFO / DEBUG records
+        # from amx.db.connector / amx.llm.provider leaking out via a
+        # third-party basicConfig handler on root — is silenced
+        # process-wide by ``mute_root_logger_for_studio`` below,
+        # called from ``amx/web/launcher.py`` before uvicorn boots.
         # Pin the on-disk log to UTF-8 explicitly. Without this, Python
         # on Windows opens the file with the platform default codec
         # (cp1252), and any log message containing →, —, … — including
@@ -211,6 +207,31 @@ def get_logger(name: str) -> logging.Logger:
 
 
 # ── Structured events ────────────────────────────────────────────────
+
+
+def mute_root_logger_for_studio() -> None:
+    """Force the root logger to WARNING for the AMX Studio process.
+
+    Several third-party imports (``transformers``, ``litellm``,
+    ``bert_score``, ``uvicorn[standard]``) call ``logging.basicConfig``
+    at import time, which attaches a default stream handler to root at
+    INFO or DEBUG. Without this guard, every amx.* INFO / DEBUG record
+    that propagates to root produces a line on the user's REPL
+    terminal — ``INFO:amx.db.connector:Connected via postgresql ...``,
+    ``DEBUG:amx.llm.provider:LLM call ...``, plus the bert-score
+    ``Some weights of RobertaModel were not initialized`` flood —
+    drowning the prompt while AMX Studio is up.
+
+    Setting root to WARNING leaves amx.*'s own file handler (DEBUG)
+    and stderr handler (WARNING) intact: the disk log under
+    ``~/.amx/logs/amx.log`` still carries the full DEBUG trace, the
+    user still sees real WARNING / ERROR lines on screen, and pytest
+    test isolation is unaffected because this helper is only called
+    from the Studio launcher path.
+    """
+    root = logging.getLogger()
+    if root.level == logging.NOTSET or root.level < logging.WARNING:
+        root.setLevel(logging.WARNING)
 
 
 def log_event(event_type: str, /, **fields: Any) -> None:

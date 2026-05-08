@@ -64,6 +64,20 @@ const NAMED_EVENTS = [
   "answer.final",
   "tokens",
   "tokens.snapshot",
+  // Fine-grained sub-step events bridged from the CLI's LiveDisplay
+  // into the web SSE stream (see amx/utils/live_display.py +
+  // amx/web/routers/runs.py). These are what makes the run-detail
+  // page show "Profiling address.state…" / "Calling LLM (batch 1/3)"
+  // instead of just "Waiting for the worker to begin…".
+  "step.added",
+  "step.begin",
+  "step.update",
+  "step.complete",
+  "step.fail",
+  "step.detail",
+  "step.thinking",
+  "step.thinking_done",
+  "tokens.delta",
 ] as const;
 
 export function useEventSource({
