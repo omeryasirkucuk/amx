@@ -48,6 +48,14 @@ class ContextResponse(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_supports_batch: bool = False
+    # Identity of the local AMX user — read once at request time from
+    # the OS (``getpass.getuser`` + ``socket.gethostname``). The SPA
+    # uses these to tell *its* writes apart from those a teammate
+    # made via a shared history store: "you applied this" vs "alice
+    # applied this" on the Audit timeline + the pre-run conflict
+    # banner.
+    current_user: str | None = None
+    current_hostname: str | None = None
 
 
 class ErrorResponse(BaseModel):
