@@ -19,7 +19,14 @@ import {
   ConfidencePill,
   LogprobBadge,
 } from "../components/ui/InsightBadges";
-import { apiFetch, api, type RunRow } from "../lib/api";
+import {
+  apiFetch,
+  api,
+  type CompareAggregateRow as AggregateRow,
+  type CompareResponse,
+  type ComparePerColumnRow as PerColumnRow,
+  type RunRow,
+} from "../lib/api";
 import { cn } from "../lib/cn";
 import {
   humanizeCommand,
@@ -29,46 +36,10 @@ import {
   summarizeScope,
 } from "../lib/runDisplay";
 
-interface SummaryRow {
-  run_id: number;
-  command?: string;
-  llm_profile?: string;
-  llm_model?: string;
-  doc_profile?: string;
-  code_profile?: string;
-  duration_sec?: number;
-  status?: string;
-  [key: string]: unknown;
-}
-
-/** Backend ``compare_runs`` returns ``per_column`` in long format:
- *  one entry per (asset, run) combo with a ``run_id`` field. The
- *  pivot from "long rows" -> "one row per asset, one column per run"
- *  happens client-side in ``PerColumnPivot``. */
-interface PerColumnRow {
-  schema?: string;
-  table?: string;
-  column?: string;
-  run_id?: number;
-  description?: string;
-  confidence?: string;
-  logprob_score?: number | null;
-  token_count?: number | null;
-}
-
-interface AggregateRow {
-  metric: string;
-  run_id: number;
-  value: number | null;
-}
-
-interface CompareResponse {
-  runs: Array<{ id: number; command?: string; status?: string }>;
-  summary_rows: SummaryRow[];
-  per_column: PerColumnRow[];
-  aggregates: AggregateRow[];
-  missing: number[];
-}
+// SummaryRow / PerColumnRow / AggregateRow / CompareResponse types
+// live in ../lib/api so they can be reused by the runDeepAnalysis
+// helper. The local pivot logic below still consumes them via the
+// re-imported aliases above.
 
 // ── Picker filtering primitives ────────────────────────────────────────
 
@@ -212,6 +183,14 @@ export default function RunsCompare() {
   const [pageSize, setPageSize] = useState<PageSize>(readStoredPageSize);
   const [page, setPage] = useState<number>(0);
   const [viewerOpen, setViewerOpen] = useState<boolean>(false);
+  // ``groundTruthRunId`` lets the user pin one of the picked runs as
+  // the academic ground-truth baseline for reference-based metrics
+  // (chrF, ROUGE-L). Falls through to the live DB COMMENT waterfall
+  // in the backend when null.
+  const [groundTruthRunId, setGroundTruthRunId] = useState<number | null>(null);
+  // Cost-preview dialog for the Tier 2 LLM-as-judge run.
+  const [deepAnalysisConfirmOpen, setDeepAnalysisConfirmOpen] =
+    useState<boolean>(false);
   const recent = useQuery({
     queryKey: ["recent-runs", "compare"],
     // 200 is the server-side max. Paging is now client-side: with
@@ -226,10 +205,41 @@ export default function RunsCompare() {
     mutationFn: () =>
       apiFetch<CompareResponse>("/api/history/compare", {
         method: "POST",
-        body: JSON.stringify({ run_ids: selected }),
+        body: JSON.stringify({
+          run_ids: selected,
+          quality_tier: 1, // Tier 0 metrics auto-shown in the modal
+          ground_truth_run_id: groundTruthRunId,
+        }),
       }),
     onSuccess: () => setViewerOpen(true),
   });
+
+  // Tier 2 — LLM-as-judge tournament. Only fires after the cost-
+  // preview dialog confirms; replaces ``compareData`` so the modal
+  // re-renders with the enriched quality_metrics.
+  const deepAnalysis = useMutation({
+    mutationFn: () =>
+      api.runDeepAnalysis(selected, { groundTruthRunId }),
+    onSuccess: (next) => {
+      compare.reset();
+      // ``compare`` exposes its own ``data`` via mutation state;
+      // updating cache via setQueryData isn't applicable since it's
+      // a mutation. Easiest pattern: re-trigger ``compare.mutate``
+      // with the freshly-loaded payload — but that wastes an API
+      // call. Instead, mutate the underlying cache by re-invoking
+      // mutateAsync would loop. Pragmatic: stash the payload in a
+      // local override that CompareResults reads.
+      setDeepAnalysisOverride(next);
+      setDeepAnalysisConfirmOpen(false);
+    },
+  });
+
+  // Once Tier 2 runs, override the displayed payload without losing
+  // the cheap Tier 0 result we already had.
+  const [deepAnalysisOverride, setDeepAnalysisOverride] =
+    useState<CompareResponse | null>(null);
+  const compareData: CompareResponse | null =
+    deepAnalysisOverride ?? compare.data ?? null;
 
   const pdf = useMutation({
     mutationFn: () => api.compareAsPdf(selected),
@@ -335,7 +345,7 @@ export default function RunsCompare() {
                     Clear selection
                   </button>
                 )}
-                {compare.data && !viewerOpen && (
+                {compareData && !viewerOpen && (
                   <button
                     type="button"
                     onClick={() => setViewerOpen(true)}
@@ -468,6 +478,30 @@ export default function RunsCompare() {
                       readOnly
                       className="h-3.5 w-3.5 cursor-pointer accent-current"
                     />
+                    {isPicked && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setGroundTruthRunId((curr) =>
+                            curr === row.id ? null : row.id,
+                          );
+                        }}
+                        title={
+                          groundTruthRunId === row.id
+                            ? "This run is the ground truth baseline. Click to unpin."
+                            : "Set this run as the ground-truth baseline for reference-based quality metrics."
+                        }
+                        className={cn(
+                          "rounded-md border px-1.5 py-0.5 text-[10px] uppercase tracking-wider transition",
+                          groundTruthRunId === row.id
+                            ? "border-accent bg-accent-soft/40 text-accent-ink"
+                            : "border-surface-border text-ink-dim hover:border-accent/40 hover:text-ink",
+                        )}
+                      >
+                        {groundTruthRunId === row.id ? "Ground truth" : "Set baseline"}
+                      </button>
+                    )}
                     <span className="font-mono text-xs text-ink-dim">
                       #{row.id}
                     </span>
@@ -543,13 +577,13 @@ export default function RunsCompare() {
         </div>
       )}
 
-      {compare.data && (
+      {compareData && (
         <Dialog
           open={viewerOpen}
           onClose={() => setViewerOpen(false)}
           size="xl"
-          title={`Comparison · ${compare.data.runs.length} run${compare.data.runs.length === 1 ? "" : "s"}`}
-          description={`Run ids: ${compare.data.runs.map((r) => `#${r.id}`).join(", ")}`}
+          title={`Comparison · ${compareData.runs.length} run${compareData.runs.length === 1 ? "" : "s"}`}
+          description={`Run ids: ${compareData.runs.map((r) => `#${r.id}`).join(", ")}`}
           footer={
             <>
               {pdf.isError && (
@@ -566,10 +600,22 @@ export default function RunsCompare() {
               >
                 Close
               </button>
+              {!compareData?.quality_metrics?.judge_outcomes?.length && (
+                <button
+                  type="button"
+                  onClick={() => setDeepAnalysisConfirmOpen(true)}
+                  disabled={deepAnalysis.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink disabled:opacity-40"
+                  title="Run Tier 1 embeddings + Tier 2 LLM-as-judge tournament for academic quality scores."
+                >
+                  <Sparkles size={14} />
+                  {deepAnalysis.isPending ? "Analysing…" : "Run deeper analysis"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
-                  const seedPrompt = buildCompareSeedPrompt(compare.data!);
+                  const seedPrompt = buildCompareSeedPrompt(compareData!);
                   setViewerOpen(false);
                   navigate("/ask", { state: { seedPrompt } });
                 }}
@@ -590,9 +636,65 @@ export default function RunsCompare() {
             </>
           }
         >
-          <CompareResults data={compare.data} />
+          <CompareResults data={compareData} />
         </Dialog>
       )}
+
+      {/* Cost preview for the LLM-as-judge tournament. We only roughly
+          estimate cost here — actual usage is captured in tokens_json
+          server-side and surfaced once the tournament finishes. */}
+      <Dialog
+        open={deepAnalysisConfirmOpen}
+        onClose={() => setDeepAnalysisConfirmOpen(false)}
+        size="md"
+        title="Run deeper quality analysis?"
+        description={
+          "Tier 1 (sentence-transformer embeddings) + Tier 2 (G-Eval " +
+          "LLM-as-judge tournament). The judge runs C(N,2) calls per " +
+          "asset using the active LLM profile — token cost rolls into " +
+          "the active run's tokens_json."
+        }
+        footer={
+          <>
+            {deepAnalysis.isError && (
+              <span className="mr-auto text-xs text-critical">
+                {deepAnalysis.error instanceof Error
+                  ? deepAnalysis.error.message
+                  : "Deep analysis failed."}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setDeepAnalysisConfirmOpen(false)}
+              className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => deepAnalysis.mutate()}
+              disabled={deepAnalysis.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+            >
+              {deepAnalysis.isPending ? "Running…" : "Run analysis"}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-ink-muted">
+          Estimated cost depends on the number of assets × number of run
+          pairs and your active LLM's per-token rate. A typical 50-column
+          × 3-run comparison runs ~150 judge calls; on{" "}
+          <span className="font-mono">gpt-4o-mini</span> that's roughly{" "}
+          <span className="font-semibold">$0.01–$0.02</span>. The result
+          replaces the current Tier 0 view in this modal.
+        </p>
+        <p className="mt-3 text-xs text-ink-dim">
+          Methods cited in the resulting Quality card: chrF (Popović 2015),
+          ROUGE-L (Lin 2004), G-Eval (Liu et al. 2023), Prometheus 2 (Kim
+          et al. 2024).
+        </p>
+      </Dialog>
     </>
   );
 }
@@ -634,6 +736,151 @@ function renderTokensCostBadge(row: RunRow) {
     >
       {pieces.join(" · ")}
     </span>
+  );
+}
+
+function QualityCard({ data }: { data: CompareResponse }) {
+  const quality = data.quality_metrics;
+  if (!quality || !quality.per_run.length) return null;
+
+  // Reference resolution summary across assets — tells the reader
+  // whether reference-based metrics had real ground truth.
+  const refSummary = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const r of quality.references) {
+      counts[r.source] = (counts[r.source] ?? 0) + 1;
+    }
+    const labels: Record<string, string> = {
+      user_pinned: "user-pinned",
+      db_comment: "live DB COMMENT",
+      catalog_applied: "catalog applied",
+      none: "no reference",
+    };
+    const parts: string[] = [];
+    for (const src of [
+      "user_pinned",
+      "db_comment",
+      "catalog_applied",
+      "none",
+    ] as const) {
+      if (counts[src]) parts.push(`${counts[src]} ${labels[src]}`);
+    }
+    return parts.join(" · ");
+  }, [quality.references]);
+
+  const fmt = (v: number | null | undefined): string =>
+    v == null ? "—" : `${(v * 100).toFixed(0)}%`;
+
+  const hasChrf = quality.per_run.some((r) => r.chrf != null);
+  const hasRouge = quality.per_run.some((r) => r.rouge_l != null);
+  const hasEmbed = quality.per_run.some((r) => r.embedding_agreement != null);
+  const hasJudge = quality.per_run.some((r) => r.judge_win_rate != null);
+
+  return (
+    <Card>
+      <CardHeader
+        title={`Quality metrics · Tier ${quality.tier}`}
+        description={
+          refSummary
+            ? `References: ${refSummary}.`
+            : "No reference resolved — reference-based metrics skipped."
+        }
+      />
+      <CardBody className="p-0 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
+            <tr>
+              <th className="px-5 py-2 text-left font-semibold">Run</th>
+              <th className="px-5 py-2 text-right font-semibold">Length</th>
+              <th className="px-5 py-2 text-right font-semibold">Diversity</th>
+              <th className="px-5 py-2 text-right font-semibold">Schema grounding</th>
+              {hasChrf && (
+                <th className="px-5 py-2 text-right font-semibold">chrF</th>
+              )}
+              {hasRouge && (
+                <th className="px-5 py-2 text-right font-semibold">ROUGE-L</th>
+              )}
+              {hasEmbed && (
+                <th className="px-5 py-2 text-right font-semibold">
+                  Embed. agree.
+                </th>
+              )}
+              {hasJudge && (
+                <th className="px-5 py-2 text-right font-semibold">
+                  Judge win-rate
+                </th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {quality.per_run.map((row) => (
+              <tr key={row.run_id} className="border-t border-surface-border">
+                <td className="px-5 py-2 font-mono text-xs">#{row.run_id}</td>
+                <td className="px-5 py-2 text-right font-mono text-xs">
+                  {fmt(row.length_appropriateness)}
+                </td>
+                <td className="px-5 py-2 text-right font-mono text-xs">
+                  {fmt(row.type_token_ratio)}
+                </td>
+                <td className="px-5 py-2 text-right font-mono text-xs">
+                  {fmt(row.schema_grounding)}
+                </td>
+                {hasChrf && (
+                  <td className="px-5 py-2 text-right font-mono text-xs">
+                    {fmt(row.chrf)}
+                  </td>
+                )}
+                {hasRouge && (
+                  <td className="px-5 py-2 text-right font-mono text-xs">
+                    {fmt(row.rouge_l)}
+                  </td>
+                )}
+                {hasEmbed && (
+                  <td className="px-5 py-2 text-right font-mono text-xs">
+                    {fmt(row.embedding_agreement)}
+                  </td>
+                )}
+                {hasJudge && (
+                  <td className="px-5 py-2 text-right font-mono text-xs">
+                    {row.judge_win_rate != null
+                      ? `${(row.judge_win_rate * 100).toFixed(0)}% (${row.judge_wins}/${row.judge_pairings})`
+                      : "—"}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </CardBody>
+      {quality.citations.length > 0 && (
+        <div className="border-t border-surface-border bg-surface-subtle/30 px-5 py-3 text-[11px] text-ink-dim">
+          <div className="mb-1 font-semibold uppercase tracking-wider">
+            Methods
+          </div>
+          <ul className="space-y-1">
+            {quality.citations.map((c) => (
+              <li key={c.key}>
+                <span className="font-semibold text-ink-muted">{c.label}.</span>{" "}
+                {c.citation}
+                {c.url && (
+                  <>
+                    {" "}
+                    <a
+                      href={c.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-accent hover:underline"
+                    >
+                      {c.url}
+                    </a>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -718,6 +965,9 @@ function CompareResults({ data }: { data: CompareResponse }) {
           </CardBody>
         </Card>
       )}
+
+      {/* Quality metric framework — Tier 0/1/2 academic metrics. */}
+      <QualityCard data={data} />
     </div>
   );
 }

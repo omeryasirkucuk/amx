@@ -1221,6 +1221,37 @@ class ToolBox:
                                     "specific field."
                                 ),
                             },
+                            "quality_tier": {
+                                "type": "integer",
+                                "description": (
+                                    "Academic text-quality metric tier. "
+                                    "0 (default): no quality analysis — "
+                                    "just the standard summary / aggregate "
+                                    "pivot. 1: + Tier 0 offline metrics "
+                                    "(chrF, ROUGE-L, schema grounding, "
+                                    "length, type-token ratio) — free, "
+                                    "fast. 2: + Tier 1 local sentence "
+                                    "embeddings + Tier 2 LLM-as-judge "
+                                    "pairwise tournament (G-Eval, Liu et "
+                                    "al. 2023). Tier 2 runs C(N,2) judge "
+                                    "calls per asset and writes their "
+                                    "tokens into the run's tokens_json. "
+                                    "Use 1 when the user asks 'compare "
+                                    "quality' / 'which is more accurate'; "
+                                    "use 2 when they explicitly request a "
+                                    "rigorous / academic comparison."
+                                ),
+                            },
+                            "ground_truth_run_id": {
+                                "type": "integer",
+                                "description": (
+                                    "Optional: pin one of the runs as the "
+                                    "ground-truth baseline for reference-"
+                                    "based metrics (chrF / ROUGE-L). "
+                                    "Overrides the live DB COMMENT → "
+                                    "catalog-applied → none waterfall."
+                                ),
+                            },
                         },
                         "required": ["run_ids"],
                     },
@@ -5057,6 +5088,8 @@ class ToolBox:
         run_ids: list[int] | None = None,
         include_per_column: bool = False,
         column_filter: str = "",
+        quality_tier: int = 0,
+        ground_truth_run_id: int | None = None,
     ) -> dict[str, Any]:
         """Side-by-side comparison of two or more past runs.
 
@@ -5092,8 +5125,45 @@ class ToolBox:
                 )
             }
 
+        # Clamp tier so a malformed LLM call (tier=99) doesn't pull
+        # the LLM judge unexpectedly. Tier 2 needs an active
+        # LLMProvider — build one lazily so every Tier 0/1 call stays
+        # cheap.
         try:
-            payload = compare_runs(normalized_ids)
+            tier = int(quality_tier)
+        except (TypeError, ValueError):
+            tier = 0
+        tier = max(0, min(2, tier))
+        llm_provider = None
+        db_connector = None
+        if tier >= 2:
+            try:
+                from amx.llm.provider import LLMProvider
+
+                if self.cfg.llm.provider and self.cfg.llm.model:
+                    llm_provider = LLMProvider(self.cfg.llm)
+                else:
+                    # No active LLM → silently demote to Tier 1 so the
+                    # caller still gets useful metrics.
+                    tier = 1
+            except Exception:
+                tier = 1
+        if tier > 0:
+            try:
+                from amx.db.connector import DatabaseConnector
+
+                db_connector = DatabaseConnector(self.cfg.db)
+            except Exception:
+                db_connector = None
+
+        try:
+            payload = compare_runs(
+                normalized_ids,
+                quality_tier=tier,
+                ground_truth_run_id=ground_truth_run_id,
+                db_connector=db_connector,
+                llm_provider=llm_provider,
+            )
         except RuntimeError as exc:
             # ``compare_runs`` raises RuntimeError when the history store
             # isn't initialised — surface it verbatim so the LLM can
@@ -5126,6 +5196,13 @@ class ToolBox:
             result["per_column_sample"] = filtered[:3]
         if column_filter:
             result["column_filter"] = column_filter
+        # Surface quality_metrics back to the LLM when the caller
+        # opted into Tier ≥ 1. The metrics dict is already shaped for
+        # rendering (per_run rollups + per_asset cells + citations);
+        # the LLM is expected to read per_run + citations and explain
+        # WHY each winner wins (system-prompt routing rule).
+        if "quality_metrics" in payload:
+            result["quality_metrics"] = payload["quality_metrics"]
         return result
 
     def _tool_list_chat_sessions(

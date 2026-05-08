@@ -250,6 +250,101 @@ export interface StatsResponse {
   [key: string]: unknown;
 }
 
+// ── Compare payload (used by /history compare modal + deep analysis) ──
+//
+// CompareResponse mirrors the dict the backend's ``compare_runs`` helper
+// builds (see ``amx/cli_support/commands/compare.py``). Quality_metrics is
+// optional — only populated when ``quality_tier > 0`` was passed (Tier 0
+// metrics, Tier 1 embeddings, Tier 2 LLM-as-judge), and the deep-analysis
+// endpoint always returns it filled. Lives in api.ts so the runDeepAnalysis
+// helper can declare its return type without RunsCompare.tsx having to
+// re-export anything.
+
+export interface CompareSummaryRow {
+  run_id: number;
+  command?: string;
+  llm_profile?: string;
+  llm_model?: string;
+  doc_profile?: string;
+  code_profile?: string;
+  duration_sec?: number;
+  status?: string;
+  [key: string]: unknown;
+}
+
+export interface ComparePerColumnRow {
+  schema?: string;
+  table?: string;
+  column?: string;
+  run_id?: number;
+  description?: string;
+  confidence?: string;
+  logprob_score?: number | null;
+  token_count?: number | null;
+}
+
+export interface CompareAggregateRow {
+  metric: string;
+  run_id: number;
+  value: number | null;
+}
+
+export interface QualityPerRun {
+  run_id: number;
+  length_appropriateness: number | null;
+  type_token_ratio: number | null;
+  schema_grounding: number | null;
+  chrf: number | null;
+  rouge_l: number | null;
+  levenshtein: number | null;
+  embedding_agreement: number | null;
+  semantic_grounding: number | null;
+  judge_win_rate: number | null;
+  judge_pairings: number;
+  judge_wins: number;
+}
+
+export interface QualityReference {
+  schema: string;
+  table: string;
+  column: string;
+  source: "user_pinned" | "db_comment" | "catalog_applied" | "none";
+  text: string;
+  run_id: number | null;
+}
+
+export interface QualityCitation {
+  key: string;
+  label: string;
+  citation: string;
+  url: string;
+}
+
+export interface QualityMetrics {
+  per_asset: Array<Record<string, unknown>>;
+  per_run: QualityPerRun[];
+  references: QualityReference[];
+  judge_outcomes: Array<{
+    run_a: number;
+    run_b: number;
+    winner: "A" | "B" | "tie";
+    reasoning: string;
+    confidence: number;
+  }>;
+  citations: QualityCitation[];
+  cost: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  tier: number;
+}
+
+export interface CompareResponse {
+  runs: Array<{ id: number; command?: string; status?: string }>;
+  summary_rows: CompareSummaryRow[];
+  per_column: ComparePerColumnRow[];
+  aggregates: CompareAggregateRow[];
+  missing: number[];
+  quality_metrics?: QualityMetrics;
+}
+
 /** Helper: append `?profile=…&database=…` to a path. */
 function withScope(path: string, scope: Scope, extra?: string): string {
   const qs = scopeQuery(scope) + (extra ? `&${extra}` : "");
@@ -298,6 +393,29 @@ export const api = {
     if (command) params.set("command", command);
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
   },
+  /** Trigger Tier 1+2 quality analysis on an existing comparison.
+   *
+   * The default ``/api/history/compare`` endpoint runs Tier 0 only
+   * (offline metrics) so the modal opens cheap and fast. The
+   * Studio "Run deeper analysis" button posts here when the user
+   * accepts the cost preview — this re-runs ``compare_runs`` with
+   * tier=2, which adds local sentence-transformer embedding
+   * agreement (Tier 1) and the LLM-as-judge tournament (Tier 2,
+   * G-Eval style — Liu et al. 2023). The response shape is
+   * identical to /compare; only ``quality_metrics`` is enriched.
+   */
+  runDeepAnalysis: (
+    runIds: number[],
+    options?: { groundTruthRunId?: number | null },
+  ) =>
+    apiFetch<CompareResponse>("/api/history/compare/deep-analysis", {
+      method: "POST",
+      body: JSON.stringify({
+        run_ids: runIds,
+        quality_tier: 2,
+        ground_truth_run_id: options?.groundTruthRunId ?? null,
+      }),
+    }),
   /** Download the PDF rendering of a Compare result.
    *
    * Posts ``run_ids`` to ``/api/history/compare/pdf``; the server

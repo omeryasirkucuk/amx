@@ -851,22 +851,33 @@ def _collect_per_column_long(
     return rows
 
 
-def compare_runs(run_ids: list[int]) -> dict[str, Any]:
+def compare_runs(
+    run_ids: list[int],
+    *,
+    quality_tier: int = 0,
+    ground_truth_run_id: int | None = None,
+    db_connector: Any = None,
+    llm_provider: Any = None,
+) -> dict[str, Any]:
     """Pure helper: assemble a JSON-serializable comparison payload
-    for a list of run ids. Used by both the CLI ``/history compare``
-    command (rendering wrapper) and the ``/api/history/compare``
-    endpoint (web UI).
+    for a list of run ids. Used by the CLI ``/history compare``
+    command, the ``/api/history/compare`` endpoint, and the
+    ``compare_runs`` LLM tool.
 
     Returns ``{"runs": [...], "summary_rows": [...], "per_column": [...],
-    "aggregates": [...], "missing": [...] }`` where:
+    "aggregates": [...], "missing": [...], "quality_metrics": {...}? }``.
 
-    * ``runs`` — full run rows for the ones we found.
-    * ``summary_rows`` — per-run roll-up suitable for table rendering.
-    * ``per_column`` — long-form rows suitable for pivoting in the
-      browser.
-    * ``aggregates`` — per-run aggregate metrics.
-    * ``missing`` — run ids the caller asked for but the store didn't
-      have (so the SPA can show a "run #42 was deleted" toast).
+    ``quality_tier``:
+      * ``0`` — Tier 0 only (offline, deterministic, free).
+      * ``1`` — Tier 0 + Tier 1 (local sentence embeddings).
+      * ``2`` — Tier 0 + Tier 1 + Tier 2 (LLM judge — paid; needs
+        ``llm_provider``).
+
+    ``ground_truth_run_id`` lets the user pin a specific run as the
+    reference baseline (CLI ``--ground-truth-run``, Studio "Set as
+    ground truth" radio); the reference waterfall in ``quality.py``
+    falls back to live DB COMMENT and then to most-recently-applied
+    catalog comments before declaring "no reference".
     """
     hs = history_store()
     if hs is None:
@@ -893,13 +904,30 @@ def compare_runs(run_ids: list[int]) -> dict[str, Any]:
         except Exception:
             results_by_run[int(row["id"])] = []
 
-    return {
+    payload: dict[str, Any] = {
         "runs": found,
         "summary_rows": _collect_run_summary_rows(found),
         "per_column": _collect_per_column_long(found, results_by_run),
         "aggregates": _collect_aggregate_long(found, results_by_run),
         "missing": missing,
     }
+
+    if quality_tier > 0 or ground_truth_run_id is not None:
+        # Lazy import — only callers that opt in pay the import cost,
+        # and unit tests that don't exercise quality skip the chain
+        # entirely.
+        from amx.cli_support.quality import compute_quality_metrics
+
+        payload["quality_metrics"] = compute_quality_metrics(
+            payload,
+            tier=quality_tier,
+            db_connector=db_connector,
+            history_store=hs,
+            ground_truth_run_id=ground_truth_run_id,
+            llm_provider=llm_provider,
+        )
+
+    return payload
 
 
 def _collect_aggregate_long(
@@ -1397,6 +1425,14 @@ def _build_pdf_context(payload: dict[str, Any]) -> dict[str, Any]:
     from amx import __version__ as amx_version
 
     run_ids_label = ", ".join(f"#{rid}" for rid in run_ids) if run_ids else "(no runs)"
+
+    # Quality metrics — optional, present only when the caller passed
+    # quality_tier > 0 to compare_runs.
+    quality = payload.get("quality_metrics") or {}
+    quality_per_run = list(quality.get("per_run") or [])
+    citations = list(quality.get("citations") or [])
+    references_summary = _quality_reference_summary(quality.get("references") or [])
+
     return {
         "runs": runs,
         "run_ids": run_ids,
@@ -1413,7 +1449,36 @@ def _build_pdf_context(payload: dict[str, Any]) -> dict[str, Any]:
         "run_col_pct": f"{run_col_pct:.2f}",
         "aggregate_run_col_pct": f"{aggregate_run_col_pct:.2f}",
         "logo_data_url": _amx_logo_data_url(),
+        "quality_per_run": quality_per_run,
+        "quality_citations": citations,
+        "quality_references_summary": references_summary,
+        "quality_tier": int(quality.get("tier") or 0),
     }
+
+
+def _quality_reference_summary(refs: list[dict[str, Any]]) -> str:
+    """One-line summary of how reference resolution went across assets.
+
+    Used by the PDF Quality section header so the reader knows
+    whether the chrF / ROUGE-L numbers had a real ground truth or
+    fell back to a baseline run.
+    """
+    if not refs:
+        return ""
+    by_source: dict[str, int] = {}
+    for r in refs:
+        by_source[r.get("source", "none")] = by_source.get(r.get("source", "none"), 0) + 1
+    pretty = {
+        "user_pinned": "user-pinned baseline",
+        "db_comment": "live DB COMMENT",
+        "catalog_applied": "catalog applied",
+        "none": "no reference",
+    }
+    parts = []
+    for src in ("user_pinned", "db_comment", "catalog_applied", "none"):
+        if by_source.get(src):
+            parts.append(f"{by_source[src]} {pretty[src]}")
+    return " · ".join(parts)
 
 
 def _amx_logo_data_url() -> str:
@@ -1579,6 +1644,114 @@ def render_compare_pdf(payload: dict[str, Any]) -> bytes:
     return pdf_bytes
 
 
+# ── Quality panel renderer ──────────────────────────────────────────────────
+
+
+def _fmt_quality_cell(value: float | None, kind: str = "score") -> str:
+    """Pretty-print one Quality panel cell.
+
+    ``score`` formats 0–1 floats as percentages; ``count`` formats ints;
+    ``levenshtein`` formats raw edit distance integers.
+    """
+    if value is None:
+        return "—"
+    if kind == "score":
+        return f"{float(value) * 100:.0f}%"
+    if kind == "count":
+        return f"{int(value):,}"
+    if kind == "levenshtein":
+        return f"{int(value)} edits"
+    return str(value)
+
+
+def _render_quality_panel(quality: dict[str, Any]) -> None:
+    """Rich table rendering of the Tier 0/1/2 quality metrics.
+
+    Shows reference-resolution summary at the top, per-run aggregate
+    rollups in the middle, a citation footer at the bottom. Mirrors
+    the layout the Studio Compare modal will get in its Quality card.
+    """
+    per_run = list(quality.get("per_run") or [])
+    references = list(quality.get("references") or [])
+    citations = list(quality.get("citations") or [])
+    if not per_run:
+        return
+
+    console.print()
+    console.print("[bold]Quality metrics[/bold]")
+
+    # Reference resolution summary line.
+    by_source: dict[str, int] = {}
+    for r in references:
+        by_source[r["source"]] = by_source.get(r["source"], 0) + 1
+    summary_parts = []
+    for source in ("user_pinned", "db_comment", "catalog_applied", "none"):
+        count = by_source.get(source, 0)
+        if count > 0:
+            label = {
+                "user_pinned": "user-pinned",
+                "db_comment": "live DB COMMENT",
+                "catalog_applied": "catalog applied",
+                "none": "no reference",
+            }[source]
+            summary_parts.append(f"{count} {label}")
+    if summary_parts:
+        console.print(f"[dim]References: {', '.join(summary_parts)}[/dim]")
+
+    # Per-run aggregate table.
+    table = Table(box=box.SIMPLE_HEAVY, show_lines=False, expand=False)
+    table.add_column("Run", style="bold")
+    table.add_column("Length", justify="right")
+    table.add_column("Diversity", justify="right")
+    table.add_column("Schema grounding", justify="right")
+    has_chrf = any(r.get("chrf") is not None for r in per_run)
+    has_rouge = any(r.get("rouge_l") is not None for r in per_run)
+    has_lev = any(r.get("levenshtein") is not None for r in per_run)
+    has_emb = any(r.get("embedding_agreement") is not None for r in per_run)
+    has_judge = any(r.get("judge_win_rate") is not None for r in per_run)
+    if has_chrf:
+        table.add_column("chrF", justify="right")
+    if has_rouge:
+        table.add_column("ROUGE-L", justify="right")
+    if has_lev:
+        table.add_column("Edit dist.", justify="right")
+    if has_emb:
+        table.add_column("Embed. agree.", justify="right")
+    if has_judge:
+        table.add_column("Judge win-rate", justify="right")
+
+    for row in per_run:
+        cells = [
+            f"#{row['run_id']}",
+            _fmt_quality_cell(row.get("length_appropriateness")),
+            _fmt_quality_cell(row.get("type_token_ratio")),
+            _fmt_quality_cell(row.get("schema_grounding")),
+        ]
+        if has_chrf:
+            cells.append(_fmt_quality_cell(row.get("chrf")))
+        if has_rouge:
+            cells.append(_fmt_quality_cell(row.get("rouge_l")))
+        if has_lev:
+            cells.append(_fmt_quality_cell(row.get("levenshtein"), kind="levenshtein"))
+        if has_emb:
+            cells.append(_fmt_quality_cell(row.get("embedding_agreement")))
+        if has_judge:
+            wr = row.get("judge_win_rate")
+            pairings = row.get("judge_pairings") or 0
+            wins = row.get("judge_wins") or 0
+            cells.append(
+                f"{wr * 100:.0f}% ({wins}/{pairings})" if wr is not None else "—"
+            )
+        table.add_row(*cells)
+    console.print(table)
+
+    if citations:
+        labels = " · ".join(f"{c['label']}" for c in citations)
+        console.print(f"[dim]Methods: {labels}[/dim]")
+        for cite in citations:
+            console.print(f"  [dim]· {cite['citation']}[/dim]")
+
+
 # ── Ask AMX hand-off ────────────────────────────────────────────────────────
 
 
@@ -1696,6 +1869,31 @@ def register_compare_command(
             "charts (long-format per_column + aggregate_metrics arrays)."
         ),
     )
+    @click.option(
+        "--quality",
+        "quality_mode",
+        type=click.Choice(["none", "basic", "full"]),
+        default="basic",
+        help=(
+            "Quality metric tier. ``none`` skips the academic quality "
+            "panel; ``basic`` (default) computes Tier 0 offline metrics "
+            "(chrF, ROUGE-L, schema grounding); ``full`` adds Tier 1 "
+            "embeddings + Tier 2 LLM-as-judge (cost — uses the active "
+            "LLM, see CHANGELOG citations for chrF/ROUGE/G-Eval/etc.)."
+        ),
+    )
+    @click.option(
+        "--ground-truth-run",
+        "ground_truth_run_id",
+        type=int,
+        default=None,
+        help=(
+            "Pin one of the resolved runs as the ground-truth baseline "
+            "for reference-based metrics. When omitted the waterfall "
+            "tries: live DB COMMENT → catalog-applied → none "
+            "(reference-based metrics skip)."
+        ),
+    )
     @pass_config
     def search_compare(
         cfg: AMXConfig,
@@ -1710,6 +1908,8 @@ def register_compare_command(
         csv_path: str | None,
         md_path: str | None,
         json_path: str | None,
+        quality_mode: str,
+        ground_truth_run_id: int | None,
     ) -> None:
         """Compare runs side-by-side: descriptions, logprobs, timing, tokens."""
         runs = _resolve_runs(
@@ -1792,6 +1992,61 @@ def register_compare_command(
                 success(f"Wrote JSON → {json_path}")
             except OSError as exc:
                 error(f"JSON export failed: {exc}")
+
+        # Quality panel (Tier 0 by default). Computes academic
+        # text-quality metrics on the same payload compare_runs would
+        # have built — chrF (Popović 2015), ROUGE-L (Lin 2004), schema
+        # grounding (Jaccard 1912), length appropriateness, type-token
+        # ratio (Templin 1957). ``--quality full`` adds Tier 1 local
+        # embeddings + Tier 2 LLM-as-judge (G-Eval, Liu et al. 2023).
+        quality_metrics: dict[str, Any] | None = None
+        tier = {"none": 0, "basic": 0, "full": 2}.get(quality_mode, 0)
+        if quality_mode != "none":
+            try:
+                from amx.cli_support.quality import compute_quality_metrics
+
+                # ``--quality basic`` runs Tier 0 only (no LLM cost,
+                # no embedding download). ``full`` runs everything.
+                payload_for_quality = {
+                    "runs": runs,
+                    "summary_rows": _collect_run_summary_rows(runs),
+                    "per_column": _collect_per_column_long(
+                        runs, results_by_run, column_filter=column_opt
+                    ),
+                    "aggregates": _collect_aggregate_long(runs, results_by_run),
+                    "missing": [],
+                }
+                llm_provider = None
+                db_connector = None
+                if tier >= 2:
+                    try:
+                        from amx.llm.provider import LLMProvider
+
+                        llm_provider = LLMProvider(cfg.llm)
+                    except Exception as exc:
+                        warn(f"Quality judge skipped (LLM unavailable): {exc}")
+                        tier = 1
+                # DB connector is opportunistic — used by the reference
+                # waterfall to pull live ``COMMENT ON COLUMN`` values.
+                # Falls through silently when the active scope has no
+                # reachable DB profile (CI, fresh install, etc.).
+                try:
+                    from amx.db.connector import DatabaseConnector
+
+                    db_connector = DatabaseConnector(cfg.db)
+                except Exception:
+                    db_connector = None
+                quality_metrics = compute_quality_metrics(
+                    payload_for_quality,
+                    tier=tier,
+                    db_connector=db_connector,
+                    history_store=hs,
+                    ground_truth_run_id=ground_truth_run_id,
+                    llm_provider=llm_provider,
+                )
+                _render_quality_panel(quality_metrics)
+            except Exception as exc:
+                warn(f"Quality analysis failed: {exc}")
 
         # Numbered prompt for the natural follow-up: "discuss this with
         # the LLM". Default to Done so a user who just wanted the
