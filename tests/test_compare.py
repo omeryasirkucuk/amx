@@ -907,6 +907,37 @@ class ComparePdfRenderingTests(unittest.TestCase):
                     os.environ.pop("DYLD_FALLBACK_LIBRARY_PATH", None)
         self.assertIn("/opt/homebrew/lib", got)
 
+    def test_amx_logo_embeds_as_data_url(self) -> None:
+        """The PDF running header pulls the AMX favicon from
+        ``amx/web/static/favicon.png`` and inlines it as a base64
+        data URL. The static dir is shipped inside the wheel
+        (``[tool.setuptools.package-data]``), so the lookup must
+        succeed both for an editable install and for a built wheel.
+        """
+        from amx.cli_support.commands.compare import _amx_logo_data_url
+
+        data_url = _amx_logo_data_url()
+        self.assertTrue(
+            data_url.startswith("data:image/png;base64,"),
+            "Favicon must encode as a PNG data URL; got "
+            + (data_url[:40] if data_url else "(empty)"),
+        )
+        # Sanity: real favicon is ~13 KB; the encoded payload ought
+        # to be at least an order of magnitude larger than the
+        # ``data:image/png;base64,`` prefix.
+        self.assertGreater(len(data_url), 1000)
+
+    def test_logo_url_threaded_into_template_context(self) -> None:
+        from amx.cli_support.commands.compare import _build_pdf_context
+
+        ctx = _build_pdf_context(self._payload([1, 2]))
+        self.assertIn("logo_data_url", ctx)
+        self.assertTrue(
+            ctx["logo_data_url"].startswith("data:image/png;base64,"),
+            "Context must carry the logo as a data URL so the @page "
+            "@top-right rule can render it on every page.",
+        )
+
     def test_render_compare_pdf_returns_pdf_bytes(self) -> None:
         """Smoke test: WeasyPrint produces a valid PDF blob for an
         8-run payload (the dense layout case the user explicitly

@@ -9,6 +9,7 @@ where users naturally end up after running questions.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import csv
 import difflib
@@ -1404,7 +1405,33 @@ def _build_pdf_context(payload: dict[str, Any]) -> dict[str, Any]:
         "asset_col_pct": f"{asset_col_pct:.1f}",
         "run_col_pct": f"{run_col_pct:.2f}",
         "aggregate_run_col_pct": f"{aggregate_run_col_pct:.2f}",
+        "logo_data_url": _amx_logo_data_url(),
     }
+
+
+def _amx_logo_data_url() -> str:
+    """Encode the AMX favicon as a base64 ``data:`` URL so the PDF
+    template can drop it into a CSS ``content: url(...)`` running
+    header without WeasyPrint having to resolve a filesystem path
+    at render time.
+
+    Reads ``amx/web/static/favicon.png`` (the same mark the SPA
+    serves at ``/favicon.png`` and the browser tab uses) so the
+    PDF brand exactly matches the Studio tab. Returns an empty
+    string if the file isn't shipped — running header degrades
+    gracefully to no logo instead of breaking the render.
+    """
+    # Walk up from amx/cli_support/commands/compare.py to the
+    # ``amx/`` package root, then hop into ``web/static/``.
+    pkg_root = Path(__file__).resolve().parent.parent.parent
+    logo_path = pkg_root / "web" / "static" / "favicon.png"
+    if not logo_path.is_file():
+        return ""
+    try:
+        encoded = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return f"data:image/png;base64,{encoded}"
 
 
 def _bootstrap_weasyprint_native_libs() -> None:
