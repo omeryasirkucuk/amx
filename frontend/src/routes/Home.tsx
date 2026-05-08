@@ -190,7 +190,7 @@ export default function Home() {
                               {humanizeCommand(row.command)}
                             </span>
                             <span className="truncate text-ink-muted text-xs">
-                              · {describeScope(row.scope, row.db_profile)}
+                              · {describeScope(row.scope_json ?? row.scope, row.db_profile)}
                               {processed != null && (
                                 <span className="ml-2 text-ink-dim">
                                   {processed}

@@ -170,6 +170,11 @@ export interface RunRow {
   status: string;
   started_at: number | string;
   duration_sec: number | null;
+  /** ``list_recent_runs`` returns the parsed scope under
+   *  ``scope_json``. The plain ``scope`` alias is kept for the run-
+   *  detail endpoint and for any older payloads still cached client-
+   *  side. Always read ``scope_json ?? scope``. */
+  scope_json?: Record<string, string[]> | null;
   scope?: Record<string, string[]> | null;
   /** Parsed metrics_json — shape varies by command. */
   metrics?: Record<string, unknown> | null;
