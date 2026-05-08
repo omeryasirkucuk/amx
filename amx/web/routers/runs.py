@@ -734,6 +734,11 @@ def _column_details_for_table(
                 "alternatives": alternatives,
                 "chosen_description": row.get("chosen_description") or "",
                 "source": row.get("source") or "",
+                # Reasoning is the LLM's one-sentence justification --
+                # the CLI shows it inline at review time. Without
+                # forwarding it here, the SPA's live-progress card
+                # could never display it for in-flight runs.
+                "reasoning": row.get("reasoning") or "",
             }
         )
     return out
@@ -788,6 +793,15 @@ def _review_result_to_event(r: ReviewResult) -> dict[str, Any]:
         "confidence": r.confidence.value if r.confidence else "medium",
         "preview": (r.final_description or "")[:160],
         "result_id": r.result_id,
+        # Reasoning -- the LLM's one-sentence justification. The
+        # ReviewResult dataclass does not currently carry it (the
+        # value lives on the upstream MetadataSuggestion); this
+        # fallback keeps the SSE shape forward-compatible if the
+        # dataclass grows the field later. Today the primary
+        # ``_column_details_for_table`` path reads reasoning straight
+        # from SQLite via ``run_results.reasoning``, so the live
+        # card already gets it for analyze runs that hit history.
+        "reasoning": getattr(r, "reasoning", "") or "",
     }
 
 
