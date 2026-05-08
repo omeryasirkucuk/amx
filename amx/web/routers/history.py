@@ -49,12 +49,37 @@ def _store() -> Any:
 def list_recent_runs(
     limit: int = Query(default=20, ge=1, le=200),
     command: str | None = Query(default="analyze.run"),
+    jobs: JobRegistry = Depends(get_jobs),
 ) -> dict[str, Any]:
     """Most-recent runs filtered by command. ``command=all`` includes
     every kind (analyze.run + search.ask + …) so the SPA's "All
-    activity" view can render them together."""
+    activity" view can render them together.
+
+    Each row carries a ``live_job_id`` when its worker thread is still
+    alive in the registry. The Studio uses that id to render an inline
+    Cancel control on the running rows — without it, the only way to
+    stop a stuck worker was to know the SSE job id off-hand and POST
+    ``/api/runs/{job}/cancel`` by hand.
+    """
     cmd_filter = None if (command or "").strip().lower() in {"", "all"} else command
     rows = _store().list_recent_runs(limit=limit, command_filter=cmd_filter)
+    # Build a {run_id: job_id} index in O(active jobs) so the per-row
+    # lookup below is O(1). Apply / rerun jobs are skipped — only the
+    # primary "run" worker maps to an analyze.run / rerun row id.
+    live_by_run_id: dict[int, str] = {}
+    for job in jobs.list():
+        if job.kind != "run":
+            continue
+        if job.status not in ("queued", "running"):
+            continue
+        if job.run_id is None:
+            continue
+        live_by_run_id[int(job.run_id)] = job.id
+    if live_by_run_id:
+        for row in rows:
+            rid = row.get("id") if isinstance(row, dict) else None
+            if rid is not None and int(rid) in live_by_run_id:
+                row["live_job_id"] = live_by_run_id[int(rid)]
     return {"command_filter": cmd_filter, "runs": rows, "count": len(rows)}
 
 
