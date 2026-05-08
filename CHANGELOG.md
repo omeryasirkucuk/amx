@@ -8,6 +8,28 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Compare ↔ Ask AMX integration.** `/ask` now exposes a
+  `compare_runs` LLM tool, so natural-language requests like
+  "compare runs 58, 59, 60" or "I ran analyze on the address table
+  last week — please compare those runs" land cleanly in chat. The
+  tool defaults to a SUMMARY payload (runs + summary_rows + aggregates
+  + a 3-row per-column sample) so an 8-run × 200-column comparison
+  doesn't blow the LLM's context window; the model drills in via
+  `include_per_column=true` or `column_filter='<col>'` only when the
+  user actually asks about specific descriptions. The system prompt
+  routes scope hints through `list_past_runs` first to resolve
+  candidate run IDs before calling `compare_runs`. The Studio Compare
+  modal grew an **Ask AMX** button next to Download PDF — clicking
+  closes the modal and opens `/ask` with a seeded user turn the user
+  can edit before submitting (no auto-submit, no context lost). The
+  CLI mirror: `amx history compare` now ends with a numbered
+  `1) Ask AMX about this comparison · 2) Done` prompt that defaults
+  to Done, so scripted invocations and users who just want the
+  tables can still hit Enter and exit. Picking 1 routes through a
+  new `launch_ask_session` helper that does the same LLM pre-flight
+  and SearchService construction the typed `/search ask` command
+  uses, so the seeded chat behaves identically to user-driven entry.
+
 - **Studio Compare modal + paged picker + PDF export.** The Compare
   picker now pages with a sticky-header page-size selector
   (10 / 20 / 50 / 100, persisted in `localStorage`), Prev / Next

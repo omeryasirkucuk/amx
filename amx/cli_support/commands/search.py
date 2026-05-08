@@ -485,6 +485,45 @@ def _run_approved_search_actions(
     return records
 
 
+def launch_ask_session(
+    cfg: AMXConfig,
+    question_text: str,
+    *,
+    log_event: LogEvent,
+) -> None:
+    """Launch a one-shot ``/ask`` session for a pre-formed question.
+
+    Used by sibling commands (``/history compare``) when the user
+    accepts a "next: Ask AMX about this" prompt. Performs the same
+    LLM-config pre-flight as the normal ``/search ask`` Click command,
+    builds a service for the persisted DB scope, and routes through
+    ``_run_search_ask`` so the seeded chat behaves identically to the
+    user-typed path. No-ops with a clean error message when the LLM
+    isn't configured (so callers don't have to repeat the guard).
+    """
+    if not cfg.llm_profiles:
+        error(
+            "No LLM profile is configured. Run `/add-llm-profile` (or "
+            "`/setup`) before launching Ask AMX."
+        )
+        return
+    if not cfg.llm.provider or not cfg.llm.model:
+        active = cfg.active_llm_profile or "(none)"
+        error(
+            f"Active LLM profile '{active}' is incomplete (provider/model "
+            "unset). Run `/llm` to pick one of the configured profiles."
+        )
+        return
+    text = (question_text or "").strip()
+    if not text:
+        return
+    svc = _service(cfg)
+    if svc is None:
+        return
+    with svc:
+        _run_search_ask(cfg, svc, text, log_event=log_event)
+
+
 def _run_search_ask(
     cfg: AMXConfig,
     svc: SearchService,

@@ -28,7 +28,14 @@ from rich.text import Text
 
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
-from amx.utils.console import console, error, info, success, warn
+from amx.utils.console import (
+    ask_choice,
+    console,
+    error,
+    info,
+    success,
+    warn,
+)
 
 LogEvent = Callable[..., None]
 
@@ -1572,6 +1579,26 @@ def render_compare_pdf(payload: dict[str, Any]) -> bytes:
     return pdf_bytes
 
 
+# ── Ask AMX hand-off ────────────────────────────────────────────────────────
+
+
+def _build_compare_ask_seed(runs: list[dict[str, Any]]) -> str:
+    """Compose the seed prompt fed into ``/ask`` when the user picks
+    "Ask AMX about this comparison" at the end of a CLI compare. The
+    LLM's first turn already knows the run IDs in question — it can
+    call ``compare_runs`` itself to fetch the payload — so the seed
+    stays compact instead of dumping the whole pivot into context.
+    """
+    ids = [int(r.get("id") or 0) for r in runs if r.get("id") is not None]
+    id_label = ", ".join(f"#{rid}" for rid in ids) if ids else "(no runs)"
+    return (
+        f"I just compared runs {id_label}. Walk me through the key "
+        "differences (model time, tokens, cost, confidence band split, "
+        "avg logprob) and tell me which run produced the most reliable "
+        "descriptions. Use the compare_runs tool to fetch the payload."
+    )
+
+
 # ── Public registration ─────────────────────────────────────────────────────
 
 
@@ -1766,6 +1793,31 @@ def register_compare_command(
             except OSError as exc:
                 error(f"JSON export failed: {exc}")
 
+        # Numbered prompt for the natural follow-up: "discuss this with
+        # the LLM". Default to Done so a user who just wanted the
+        # comparison can press Enter and exit without friction. Picking
+        # 1 routes through ``launch_ask_session`` — same LLM pre-flight
+        # and SearchService construction the typed ``/ask`` command
+        # uses, so the chat behaves identically to user-driven entry.
+        next_action = "done"
+        try:
+            choice = ask_choice(
+                "What's next?",
+                ["Ask AMX about this comparison", "Done"],
+                default="Done",
+            )
+        except Exception:
+            # Non-interactive environments (CI, piped stdin) can't
+            # prompt — silently skip the follow-up so scripted /history
+            # compare invocations stay non-blocking.
+            choice = ""
+        if choice == "Ask AMX about this comparison":
+            from amx.cli_support.commands.search import launch_ask_session
+
+            seed = _build_compare_ask_seed(runs)
+            next_action = "ask_amx"
+            launch_ask_session(cfg, seed, log_event=log_event)
+
         log_event(
             event_type="search_compare",
             status="success",
@@ -1781,6 +1833,7 @@ def register_compare_command(
                 "exported_csv": bool(csv_path),
                 "exported_md": bool(md_path),
                 "exported_json": bool(json_path),
+                "next_action": next_action,
             },
         )
 
