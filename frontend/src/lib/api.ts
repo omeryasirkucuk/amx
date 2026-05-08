@@ -298,6 +298,40 @@ export const api = {
     if (command) params.set("command", command);
     return apiFetch<RecentRunsResponse>(`/api/history/runs?${params.toString()}`);
   },
+  /** Download the PDF rendering of a Compare result.
+   *
+   * Posts ``run_ids`` to ``/api/history/compare/pdf``; the server
+   * re-runs the comparison and pipes WeasyPrint's bytes back as a
+   * single ``application/pdf`` blob. Bypasses ``apiFetch`` because
+   * that helper expects JSON responses — here we want the raw blob
+   * so the UI can build an ``<a download>`` and let the browser
+   * save the file with the suggested name.
+   */
+  compareAsPdf: async (runIds: number[]): Promise<Blob> => {
+    const token = getStoredToken();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/pdf",
+    };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch("/api/history/compare/pdf", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ run_ids: runIds }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let detail = text;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.detail) detail = String(parsed.detail);
+      } catch {
+        /* not JSON, keep raw */
+      }
+      throw new ApiError(res.status, detail || res.statusText);
+    }
+    return res.blob();
+  },
   applyEvents: (params: { runId?: number | null; profileName?: string | null; limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.runId != null) qs.set("run_id", String(params.runId));
