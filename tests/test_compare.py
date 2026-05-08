@@ -620,12 +620,13 @@ class ExportJSONTests(unittest.TestCase):
             import json as _json
 
             payload = _json.loads(out_path.read_text())
-            # 11 metric rows × 2 runs = 22 entries.
-            self.assertEqual(len(payload["aggregate_metrics"]), 11 * 2)
+            # 12 metric rows (cost_usd added in 0.13) x 2 runs = 24 entries.
+            self.assertEqual(len(payload["aggregate_metrics"]), 12 * 2)
             metrics_seen = {r["metric"] for r in payload["aggregate_metrics"]}
             self.assertIn("avg_logprob_score", metrics_seen)
             self.assertIn("approval_rate", metrics_seen)
             self.assertIn("total_tokens", metrics_seen)
+            self.assertIn("cost_usd", metrics_seen)
 
 
 class CompareDispatchUnderHistoryNamespaceTests(unittest.TestCase):
