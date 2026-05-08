@@ -1332,6 +1332,73 @@ class CompareQualityTests(unittest.TestCase):
             self.assertTrue(ACADEMIC_REFERENCES[key]["citation"])
             self.assertTrue(ACADEMIC_REFERENCES[key]["label"])
 
+    def test_bert_score_returns_none_without_reference(self) -> None:
+        from amx.cli_support.quality import bert_score_for_pair
+
+        # BERTScore is reference-based — empty reference must short-
+        # circuit cleanly so callers can fall through gracefully on
+        # assets that have no resolved ground truth.
+        self.assertIsNone(bert_score_for_pair("anything", ""))
+        self.assertIsNone(bert_score_for_pair("", "reference"))
+
+    def test_judge_cost_logged_as_app_event(self) -> None:
+        """When Tier 2 judge calls actually fire, the aggregate cost
+        rolls into the ``app_events`` audit trail so it shows up in
+        /usage / Studio Audit alongside other compare events. We do
+        NOT mutate the compared runs' ``tokens_json`` — those rows
+        are closed historical records of the analyze runs.
+        """
+        from unittest.mock import MagicMock
+
+        from amx.cli_support.quality import compute_quality_metrics
+
+        store = MagicMock()
+        # Fake out enough surface that compute_quality_metrics can
+        # find the per-asset rows. The judge tournament needs the
+        # llm_provider to be present and tier=2 to fire.
+        llm = MagicMock()
+        llm.chat.return_value = MagicMock(
+            content='{"winner": "A", "reasoning": "fake", "confidence": 0.9}',
+            usage={"prompt_tokens": 50, "completion_tokens": 10},
+        )
+        payload = {
+            "runs": [{"id": 1}, {"id": 2}],
+            "summary_rows": [{"run_id": 1}, {"run_id": 2}],
+            "aggregates": [],
+            "per_column": [
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": "id",
+                    "run_id": 1,
+                    "description": "Primary key.",
+                },
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": "id",
+                    "run_id": 2,
+                    "description": "Order id.",
+                },
+            ],
+            "missing": [],
+        }
+        out = compute_quality_metrics(
+            payload,
+            tier=2,
+            history_store=store,
+            llm_provider=llm,
+        )
+        # Cost is captured in the response.
+        self.assertEqual(out["cost"]["prompt_tokens"], 50)
+        self.assertEqual(out["cost"]["completion_tokens"], 10)
+        # AND audited via log_event on the app_events trail.
+        store.log_event.assert_called_once()
+        kwargs = store.log_event.call_args.kwargs
+        self.assertEqual(kwargs.get("event_type"), "quality_judge")
+        self.assertEqual(kwargs.get("command"), "search.compare")
+        self.assertIn("prompt_tokens", kwargs.get("details") or {})
+
     def test_compare_runs_payload_omits_quality_when_tier_zero_and_no_pin(
         self,
     ) -> None:

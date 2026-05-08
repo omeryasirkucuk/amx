@@ -296,6 +296,7 @@ export interface QualityPerRun {
   schema_grounding: number | null;
   chrf: number | null;
   rouge_l: number | null;
+  bertscore: number | null;
   levenshtein: number | null;
   embedding_agreement: number | null;
   semantic_grounding: number | null;
@@ -425,17 +426,31 @@ export const api = {
    * so the UI can build an ``<a download>`` and let the browser
    * save the file with the suggested name.
    */
-  compareAsPdf: async (runIds: number[]): Promise<Blob> => {
+  compareAsPdf: async (
+    runIds: number[],
+    options?: {
+      qualityTier?: number;
+      groundTruthRunId?: number | null;
+    },
+  ): Promise<Blob> => {
     const token = getStoredToken();
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/pdf",
     };
     if (token) headers.Authorization = `Bearer ${token}`;
+    // Forward the user's current quality state so a "Run deeper
+    // analysis" → "Download PDF" sequence carries Tier 1+2 metrics
+    // (judge win-rate, embedding agreement) into the printed
+    // report; without this the PDF endpoint defaults to Tier 0.
     const res = await fetch("/api/history/compare/pdf", {
       method: "POST",
       headers,
-      body: JSON.stringify({ run_ids: runIds }),
+      body: JSON.stringify({
+        run_ids: runIds,
+        quality_tier: options?.qualityTier ?? 1,
+        ground_truth_run_id: options?.groundTruthRunId ?? null,
+      }),
     });
     if (!res.ok) {
       const text = await res.text();

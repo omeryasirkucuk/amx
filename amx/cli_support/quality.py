@@ -295,6 +295,54 @@ def rouge_l_score(prediction: str, reference: str) -> float | None:
     return float(scores["rougeL"].fmeasure)
 
 
+def bert_score_for_pair(prediction: str, reference: str) -> float | None:
+    """BERTScore F1 (Zhang et al. 2020) in [0, 1].
+
+    Tier 1.5: heavier than chrF / ROUGE-L because it loads a
+    pretrained BERT model (~400MB on first call) and runs it on every
+    description-reference pair, but it captures *semantic* similarity
+    (paraphrases, synonym substitutions) where the n-gram metrics
+    only see lexical overlap. Lazy-loaded via optional_deps.ensure
+    so callers that don't opt into the ``bertscore`` extra don't pay
+    the dependency at import time.
+
+    Returns ``None`` when the package isn't installed (caller falls
+    through gracefully) or when either input is empty.
+    """
+    if not prediction or not reference:
+        return None
+    try:
+        from amx.utils.optional_deps import ensure
+
+        ensure(
+            [("bert_score", "bert-score")],
+            feature="Compare BERTScore (Tier 1.5)",
+        )
+    except RuntimeError:
+        return None
+    try:
+        from bert_score import score as _bert_score
+    except ImportError:
+        return None
+    # ``score`` returns (P, R, F1) tensors. Single-pair scoring is
+    # rare in the official API but supported — we just request a
+    # batch of size 1 and pull F1[0] as a Python float.
+    try:
+        _, _, f1 = _bert_score(
+            [prediction],
+            [reference],
+            lang="en",
+            verbose=False,
+            rescale_with_baseline=False,
+        )
+    except Exception:
+        # First call downloads the model; in air-gapped / read-only
+        # environments that download fails. Silently skip BERTScore
+        # rather than poisoning the whole quality response.
+        return None
+    return float(f1[0].item())
+
+
 def levenshtein_distance(prediction: str, reference: str) -> int | None:
     """Edit distance (Levenshtein 1966). 0 = identical, larger = farther.
 
@@ -853,6 +901,14 @@ def compute_quality_metrics(
                 cell["rouge_l"] = rouge_l_score(desc, ref.text)
                 cell["levenshtein"] = levenshtein_distance(desc, ref.text)
                 cell["reference_source"] = ref.source
+                # Tier 1.5: BERTScore is only worth the BERT inference
+                # when there's a real reference to compare against,
+                # AND the user opted into Tier 1+ (paying for embedding
+                # work). The helper short-circuits to ``None`` on
+                # missing packages / first-run download failures so a
+                # missing reference cell falls back cleanly.
+                if tier >= 1:
+                    cell["bertscore"] = bert_score_for_pair(desc, ref.text)
             else:
                 cell["reference_source"] = "none"
             if embedder is not None:
@@ -898,6 +954,7 @@ def compute_quality_metrics(
             "schema_grounding": [],
             "chrf": [],
             "rouge_l": [],
+            "bertscore": [],
             "levenshtein": [],
             "embedding_agreement": [],
             "semantic_grounding": [],
@@ -917,6 +974,7 @@ def compute_quality_metrics(
             "schema_grounding",
             "chrf",
             "rouge_l",
+            "bertscore",
             "embedding_agreement",
             "semantic_grounding",
         ):
@@ -952,6 +1010,7 @@ def compute_quality_metrics(
             "schema_grounding": _mean(agg["schema_grounding"]),
             "chrf": _mean(agg["chrf"]),
             "rouge_l": _mean(agg["rouge_l"]),
+            "bertscore": _mean(agg["bertscore"]),
             "levenshtein": _mean(agg["levenshtein"]),
             "embedding_agreement": _mean(agg["embedding_agreement"]),
             "semantic_grounding": _mean(agg["semantic_grounding"]),
@@ -974,8 +1033,51 @@ def compute_quality_metrics(
         "total_tokens": cost_p + cost_c,
     }
 
+    # Audit the judge cost into ``app_events`` so it shows up in
+    # ``/usage`` aggregates, the Studio Audit page, and the AMX
+    # ``app_events`` SQLite trail. We deliberately do NOT mutate the
+    # compared runs' own ``tokens_json`` — those rows are closed
+    # historical records of the analyze runs that produced the
+    # descriptions; tampering would falsify the original cost
+    # snapshot. The judge cost is conceptually a /history compare
+    # cost, not a per-run cost, and belongs alongside the existing
+    # ``search_compare`` audit event.
+    if (
+        judge_outcomes
+        and history_store is not None
+        and hasattr(history_store, "log_event")
+    ):
+        try:
+            history_store.log_event(
+                event_type="quality_judge",
+                status="success",
+                command="search.compare",
+                details={
+                    "run_ids": run_ids,
+                    "asset_count": len(by_asset),
+                    "pairings": len(judge_outcomes),
+                    "prompt_tokens": cost_p,
+                    "completion_tokens": cost_c,
+                    "total_tokens": cost_p + cost_c,
+                },
+            )
+        except Exception:
+            # Audit-log failure should never break the user-visible
+            # quality response; just swallow and continue.
+            pass
+
     has_any_reference = any(r["source"] != "none" for r in references)
-    citations = _build_citations(_used_metric_keys(tier, has_any_reference))
+    has_bertscore = any(
+        r.get("bertscore") is not None for r in per_run_rows
+    )
+    metric_keys = _used_metric_keys(tier, has_any_reference)
+    if has_bertscore and "bertscore" not in metric_keys:
+        # BERTScore (Tier 1.5) only contributes a citation when the
+        # ``bert-score`` extra is installed AND a reference was
+        # resolved — otherwise the helper returned None and the
+        # citation would mislead.
+        metric_keys.append("bertscore")
+    citations = _build_citations(metric_keys)
 
     return {
         "per_asset": per_asset_rows,
@@ -1001,6 +1103,7 @@ __all__ = [
     "ACADEMIC_REFERENCES",
     "AssetReference",
     "JudgeOutcome",
+    "bert_score_for_pair",
     "chrf_score",
     "compute_quality_metrics",
     "embedding_agreement_for_asset",

@@ -367,16 +367,46 @@ def compare_pdf(body: CompareRequest) -> StreamingResponse:
     """Render the comparison payload as a landscape A4 PDF report.
 
     The Studio "Download PDF" button on the Compare modal posts here
-    with the same ``run_ids`` it just used for ``/compare``. We re-run
-    ``compare_runs`` so the PDF reflects the latest stored values
-    (cheap — same lookups the modal already triggered) and stream
-    WeasyPrint's bytes back as a single ``application/pdf`` blob.
+    with the same ``run_ids`` (and ``quality_tier`` / ``ground_truth_run_id``)
+    it used for ``/compare``. We re-run ``compare_runs`` so the PDF
+    reflects the latest stored values, opt into Tier 1+2 quality
+    metrics when the user has already requested deep analysis, and
+    stream WeasyPrint's bytes back as a single ``application/pdf`` blob.
     """
     _store()
     from amx.cli_support.commands.compare import compare_runs, render_compare_pdf
 
+    # Tier 2 needs a working LLMProvider for the judge tournament; if
+    # the request asks for Tier 2 PDF rendering and the box has no LLM
+    # configured, gracefully demote to Tier 1 so the PDF still ships.
+    llm_provider = None
+    db_connector = None
+    if body.quality_tier > 0:
+        try:
+            from amx.config import AMXConfig
+            from amx.db.connector import DatabaseConnector
+
+            cfg = AMXConfig.load()
+            try:
+                db_connector = DatabaseConnector(cfg.db)
+            except Exception:
+                db_connector = None
+            if body.quality_tier >= 2 and cfg.llm.provider and cfg.llm.model:
+                from amx.llm.provider import LLMProvider
+
+                llm_provider = LLMProvider(cfg.llm)
+        except Exception:
+            db_connector = None
+            llm_provider = None
+
     try:
-        payload = compare_runs(list(body.run_ids))
+        payload = compare_runs(
+            list(body.run_ids),
+            quality_tier=body.quality_tier,
+            ground_truth_run_id=body.ground_truth_run_id,
+            db_connector=db_connector,
+            llm_provider=llm_provider,
+        )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
