@@ -291,7 +291,6 @@ export interface CompareAggregateRow {
 
 export interface QualityPerRun {
   run_id: number;
-  length_appropriateness: number | null;
   type_token_ratio: number | null;
   schema_grounding: number | null;
   chrf: number | null;
