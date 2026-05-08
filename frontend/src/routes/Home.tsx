@@ -81,15 +81,13 @@ export default function Home() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          icon={Database}
-          label="Active backend"
-          value={ctx?.db_backend ?? "—"}
-          tone="neutral"
-          to="/settings"
-          hint="The database engine AMX is currently connected to. Switch via Settings → Database."
-        />
+      {/* Top row dropped the "Active backend" card in 0.13: DB profile
+          activation was retired (the user picks a profile per-action
+          on Run / Ask / Browse), so a single "active backend" string
+          no longer described anything. The remaining three -- LLM
+          model, total runs, success rate -- are the at-a-glance
+          numbers the Overview was actually used for. */}
+      <div className="grid gap-4 md:grid-cols-3">
         <StatCard
           icon={Sparkles}
           label="LLM model"
