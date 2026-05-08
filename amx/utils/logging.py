@@ -170,6 +170,19 @@ def get_logger(name: str) -> logging.Logger:
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
         logger.addFilter(_RequestIdFilter())
+        # Don't propagate to the root logger. Several third-party
+        # imports (``transformers``, ``litellm``, ``bert_score``,
+        # ``uvicorn[standard]``) call ``logging.basicConfig`` at
+        # import time, which attaches a default stream handler to
+        # root at ``INFO`` (sometimes ``DEBUG``). Without
+        # ``propagate=False`` every amx.* INFO / DEBUG record fans
+        # out to that root handler too — the user's REPL terminal
+        # gets flooded with ``INFO:amx.db.connector:Connected via
+        # postgresql ...`` and ``DEBUG:amx.llm.provider:LLM call
+        # ...`` lines while AMX Studio is up. Those records still
+        # land on disk via the file handler below; the on-screen
+        # leak is what we're closing here.
+        logger.propagate = False
         # Pin the on-disk log to UTF-8 explicitly. Without this, Python
         # on Windows opens the file with the platform default codec
         # (cp1252), and any log message containing →, —, … — including
