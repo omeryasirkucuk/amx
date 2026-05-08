@@ -14,6 +14,7 @@ import { ToastProvider } from "./components/ui";
 // AppShell + ToastProvider + ErrorBoundary stay eager because they
 // are visible before the route renders and unmounting them on every
 // navigation would kill the toast queue and reset the error boundary.
+const Landing = lazy(() => import("./routes/Landing"));
 const Home = lazy(() => import("./routes/Home"));
 const Database = lazy(() => import("./routes/Database"));
 const Schema = lazy(() => import("./routes/Schema"));
@@ -54,7 +55,8 @@ export default function App() {
         <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route element={<AppShell />}>
-              <Route index element={<Home />} />
+              <Route index element={<Landing />} />
+              <Route path="overview" element={<Home />} />
               <Route path="db" element={<Navigate to="/" replace />} />
               <Route path="db/:profile" element={<Navigate to="/" replace />} />
               <Route path="db/:profile/:database" element={<Database />} />

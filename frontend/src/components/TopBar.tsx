@@ -2,8 +2,8 @@ import { Link, NavLink, useLocation, useParams } from "react-router-dom";
 import { useMemo } from "react";
 import {
   Activity,
+  BarChart3,
   ChevronRight,
-  Database,
   PanelLeft,
   ScrollText,
   Sparkles,
@@ -17,8 +17,13 @@ import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
 import PricingBadge from "./PricingBadge";
 
+// 0.13: ``/`` is the calm Landing page (entry surface). The
+// dashboard view that used to live there moved to ``/overview``;
+// the nav link below points users at it for the token / cost
+// breakdown. Browse no longer needs its own top-bar link because
+// the sidebar tree is the browse surface and it's always visible.
 const navItems = [
-  { to: "/", label: "Browse", icon: Database, end: true, match: ["/"] },
+  { to: "/overview", label: "Overview", icon: BarChart3, match: ["/overview"] },
   { to: "/runs", label: "Runs", icon: HistoryIcon, match: ["/runs"] },
   { to: "/ask", label: "Ask", icon: Sparkles, match: ["/ask"] },
   { to: "/audit", label: "Audit", icon: ScrollText, match: ["/audit"] },
@@ -101,7 +106,6 @@ export default function TopBar() {
             <NavLink
               key={item.to}
               to={item.to}
-              end={item.end}
               className={({ isActive }) =>
                 cn(
                   "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors duration-fast",
