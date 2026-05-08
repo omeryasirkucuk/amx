@@ -31,7 +31,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   and appends them to `DYLD_FALLBACK_LIBRARY_PATH` /
   `LD_LIBRARY_PATH` before WeasyPrint imports, so a plain
   `brew install pango cairo` "just works" without the user having
-  to set any env var.
+  to set any env var. The PDF report now renders in the same warm-
+  stone + amber dark palette as the Studio modal — section cards,
+  uppercase column headers, status pills (`success` / `ready` /
+  `failed` / `cancelled`), `provider/model` LLM labels, and an
+  amber-rim winner highlight on best-per-row aggregate cells — so
+  what the user signs off on the screen is what lands in the saved
+  PDF. Render-time GLib chatter from libpango (the
+  `g_datalist_id_set_data_full: assertion 'key_id > 0'` line) used
+  to spam the Studio terminal because it's emitted directly to fd 2
+  below Python's `sys.stderr`; AMX now redirects fd 2 to /dev/null
+  for the duration of the WeasyPrint call (and forces GC inside the
+  redirect so deferred destructors stay quiet too).
 
 ## [0.14.0] - 2026-05-08
 
