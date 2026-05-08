@@ -13,17 +13,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   panel covering every knob the active LLM profile defines —
   temperature, max output tokens, alternatives, column batch size,
   prompt detail, description verbosity, thinking budget, logprob
-  thresholds, and (reporting-only) custom cost overrides. The active
-  profile's current values pre-fill via `/api/context`'s new
-  `llm_profile_defaults` block; only fields the user actually
-  changes are forwarded as `llm_overrides` on `POST /api/runs`. The
-  CLI gains a parallel interactive gate: before each `amx analyze
-  run` AMX asks "Override LLM settings for this run? [y/N]" and, on
-  yes, walks every field with the saved profile values as defaults.
-  Both surfaces derive a one-shot AMXConfig via
-  `dataclasses.replace` so the saved profile on disk is **never
-  mutated** — the override applies for that run only and the next
-  invocation goes back to the profile's stored values.
+  thresholds, and (reporting-only) custom cost overrides. Inputs
+  pre-fill with the active profile's current values (read from
+  `/api/context`'s new `llm_profile_defaults` block) so the user
+  always has a real starting point; each row shows a small "default
+  X" chip that flips to "override" the moment the value diverges,
+  and only fields that actually differ are forwarded as
+  `llm_overrides` on `POST /api/runs`. The CLI gains a parallel
+  interactive gate: before each `amx analyze run` AMX asks
+  "Override LLM settings for this run? [y/N]" and, on yes, walks
+  every field with the saved profile values as defaults. Both
+  surfaces derive a one-shot AMXConfig via `dataclasses.replace` so
+  the saved profile on disk is **never mutated** — the override
+  applies for that run only and the next invocation goes back to
+  the profile's stored values.
 - **Academic text-quality metrics for `/history compare`.** Replaces
   the "winner = highest logprob" heuristic with a multi-tier
   framework that surfaces actual correctness/quality of LLM-
