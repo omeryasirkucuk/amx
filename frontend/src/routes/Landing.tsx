@@ -347,7 +347,7 @@ function RecentRow({ row }: { row: RunRow }) {
         <HistoryIcon size={13} className="shrink-0 text-ink-dim" />
         <span className="font-mono text-xs text-ink-dim">#{row.id}</span>
         <span className="font-medium text-ink truncate" title={row.command}>
-          {humanizeCommand(row.command)}
+          {humanizeCommand(row.command, row.scope_json ?? row.scope)}
         </span>
         <span className="truncate text-ink-muted text-xs">
           · {summarizeScope(row.scope_json ?? row.scope)}

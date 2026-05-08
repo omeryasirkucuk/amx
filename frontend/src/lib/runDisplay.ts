@@ -5,7 +5,11 @@
 // reader. These helpers turn them into compact, human labels.
 
 const COMMAND_LABELS: Record<string, string> = {
-  "analyze.run": "Schema description",
+  // ``analyze.run`` is intentionally absent — it spans
+  // database / schema / table / column granularity, and the right
+  // label depends on the run's scope, not the command id. Callers
+  // pass the scope into ``humanizeCommand`` so we can pick the
+  // accurate label.
   "analyze.apply": "Apply changes",
   "apply.run": "Apply changes",
   "search.ask": "Ask query",
@@ -17,11 +21,59 @@ const COMMAND_LABELS: Record<string, string> = {
   "docs.scan": "Doc scan",
   "doc.ingest": "Doc ingest",
   "docs.ingest": "Doc ingest",
+  "generate.database": "Database description",
+  "generate.schema": "Schema description",
+  "generate.table": "Table description",
+  "generate.column": "Column description",
 };
 
-/** Map a raw command identifier to a label suited for end-user lists. */
-export function humanizeCommand(command: string | null | undefined): string {
+/** Pick the right ``analyze.run`` label from the scope shape.
+ *
+ *   - empty / null scope             → "Database description"
+ *   - one or many schemas, no tables → "Schema description"
+ *   - one schema with one table      → "Table description"
+ *   - many tables (any schema mix)   → "Tables description"
+ *
+ * Accepts ``unknown`` because the API row type widens scope to
+ * ``Record<string, unknown>`` to keep room for legacy payloads;
+ * we narrow defensively here.
+ */
+function analyzeRunLabel(scope: unknown): string {
+  if (!scope || typeof scope !== "object") return "Database description";
+  const entries = Object.entries(scope as Record<string, unknown>);
+  if (entries.length === 0) return "Database description";
+  let totalTables = 0;
+  let allEmpty = true;
+  for (const [, tables] of entries) {
+    if (Array.isArray(tables) && tables.length > 0) {
+      totalTables += tables.length;
+      allEmpty = false;
+    }
+  }
+  if (allEmpty) return "Schema description";
+  if (totalTables === 1) return "Table description";
+  return "Tables description";
+}
+
+/** Map a raw command identifier to a label suited for end-user lists.
+ *
+ * ``analyze.run`` is scope-dependent: a run pinned to one table
+ * produces a "Table description", a run on a whole schema produces
+ * a "Schema description", and a run with no scope at all is a
+ * "Database description". Callers that have the scope in hand
+ * (RunsList, RunsCompare, the picker) should pass it through.
+ * Callers that don't (legacy contexts) get a generic "Analyze run"
+ * fallback instead of the historically incorrect blanket
+ * "Schema description" label.
+ */
+export function humanizeCommand(
+  command: string | null | undefined,
+  scope?: unknown,
+): string {
   if (!command) return "Run";
+  if (command === "analyze.run") {
+    return scope === undefined ? "Analyze run" : analyzeRunLabel(scope);
+  }
   if (COMMAND_LABELS[command]) return COMMAND_LABELS[command];
   // Fallback: strip the trailing `.<verb>` and Title-case the head.
   const head = command.split(".")[0] ?? command;
