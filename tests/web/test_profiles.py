@@ -15,7 +15,12 @@ def _set_llm_profile(cfg, name: str, **fields) -> None:
     cfg.llm_profiles[name] = LLMConfig(**fields)
 
 
-def test_list_db_profiles_marks_active(client, auth_headers, cfg) -> None:
+def test_list_db_profiles_returns_all_with_is_active_true(client, auth_headers, cfg) -> None:
+    """0.13: DB profile activation is gone. Every defined profile is
+    selectable from every Studio surface, so ``is_active`` reads as
+    ``True`` for every row and the legacy top-level ``active`` key is
+    no longer in the response.
+    """
     _set_db_profile(cfg, "prod", backend="postgresql", host="db.example.com", database="app")
     _set_db_profile(cfg, "stage", backend="postgresql", host="stage.example.com")
     cfg.active_db_profile = "prod"
@@ -23,10 +28,10 @@ def test_list_db_profiles_marks_active(client, auth_headers, cfg) -> None:
     response = client.get("/api/profiles/db", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
-    assert payload["active"] == "prod"
+    assert "active" not in payload
     by_name = {row["name"]: row for row in payload["profiles"]}
     assert by_name["prod"]["is_active"] is True
-    assert by_name["stage"]["is_active"] is False
+    assert by_name["stage"]["is_active"] is True
 
 
 def test_get_db_profile_masks_secrets(client, auth_headers, cfg) -> None:
@@ -98,24 +103,26 @@ def test_put_db_profile_drops_unknown_fields(client, auth_headers) -> None:
     assert response.status_code == 200
 
 
-def test_delete_db_profile_active_promotes_next(client, auth_headers, cfg) -> None:
-    """Deleting the active profile when others exist promotes the
-    next remaining one. The user no longer has to manually activate
-    a different profile before they can clean up."""
+def test_delete_db_profile_with_others_remaining(client, auth_headers, cfg) -> None:
+    """Deleting the default-fallback profile when others exist still
+    leaves the config consistent. The CLI's reconcile path will pick
+    the next first profile on next load (or now); the response no
+    longer carries an ``active`` key because there's no Studio-level
+    notion of an active profile post-0.13."""
     _set_db_profile(cfg, "prod", backend="postgresql", host="x")
     _set_db_profile(cfg, "stage", backend="postgresql", host="y")
     cfg.active_db_profile = "prod"
     response = client.delete("/api/profiles/db/prod", headers=auth_headers)
     assert response.status_code == 200
     assert "prod" not in cfg.db_profiles
-    # Active pointer migrated to the remaining profile.
+    # Reconcile promotes the next remaining profile to default-fallback.
     assert cfg.active_db_profile == "stage"
     body = response.json()
-    assert body["active"] == "stage"
+    assert "active" not in body
     assert body["remaining"] == 1
 
 
-def test_delete_db_profile_last_one_clears_active(client, auth_headers, cfg) -> None:
+def test_delete_db_profile_last_one_clears_internal_pointer(client, auth_headers, cfg) -> None:
     """User can wipe the only profile they have. The downstream
     surfaces (browse sidebar, /ask configure-llm flow, etc.) handle
     the empty-config state with friendly prompts."""
@@ -126,7 +133,7 @@ def test_delete_db_profile_last_one_clears_active(client, auth_headers, cfg) -> 
     assert cfg.db_profiles == {}
     assert cfg.active_db_profile == ""
     body = response.json()
-    assert body["active"] is None
+    assert "active" not in body
     assert body["remaining"] == 0
 
 
@@ -140,19 +147,22 @@ def test_delete_db_profile_removes_inactive(client, auth_headers, cfg) -> None:
     assert cfg.active_db_profile == "prod"
 
 
-def test_activate_db_profile_404_for_unknown(client, auth_headers) -> None:
-    response = client.post("/api/profiles/db/missing/activate", headers=auth_headers)
-    assert response.status_code == 404
-
-
-def test_activate_db_profile_flips_state(client, auth_headers, cfg) -> None:
+def test_activate_db_profile_returns_410_gone(client, auth_headers, cfg) -> None:
+    """0.13: activation has been retired. The endpoint stays in the URL
+    space so older Studio bundles still cached in a browser tab get a
+    crisp 410 with an explanatory hint instead of a confusing 404 on a
+    route the new server no longer registers.
+    """
     _set_db_profile(cfg, "prod", backend="postgresql", host="x")
     _set_db_profile(cfg, "stage", backend="postgresql", host="y")
     cfg.active_db_profile = "prod"
 
     response = client.post("/api/profiles/db/stage/activate", headers=auth_headers)
-    assert response.status_code == 200
-    assert cfg.active_db_profile == "stage"
+    assert response.status_code == 410
+    assert "removed" in response.json()["detail"].lower()
+    # Internal pointer untouched by a 410 -- the failed call must not
+    # mutate the cfg state.
+    assert cfg.active_db_profile == "prod"
 
 
 def test_test_db_profile_invokes_connector(client, auth_headers, cfg, monkeypatch) -> None:

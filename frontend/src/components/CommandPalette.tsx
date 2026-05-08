@@ -137,16 +137,12 @@ export default function CommandPalette() {
         run: () => navigate("/"),
       });
     }
-    if (ctx.data?.active_db_profile) {
-      base.push({
-        id: "show-active-db",
-        label: `Active DB profile (CLI): ${ctx.data.active_db_profile}`,
-        hint: "Studio is multi-profile; this only matters for the CLI",
-        group: "Context",
-        icon: Database,
-        run: () => navigate("/settings"),
-      });
-    }
+    // The "Active DB profile (CLI): {name}" line was retired in 0.13:
+    // /api/context no longer surfaces ``active_db_profile`` and Studio
+    // picks per-action everywhere. The CLI's default-fallback pointer
+    // is set via ``/use-db <name>`` and is intentionally not shown
+    // here so users don't grow a dependency on a command-palette
+    // affordance that would re-introduce the very concept we removed.
     return base;
   }, [ctx.data, lastScope, lastSchema, lastTable, navigate]);
 

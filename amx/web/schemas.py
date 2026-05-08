@@ -34,11 +34,17 @@ class VersionResponse(BaseModel):
 
 
 class ContextResponse(BaseModel):
-    """Active config snapshot the SPA shows in the top bar (active DB +
-    LLM pills, current schema/table breadcrumbs)."""
+    """Active config snapshot the SPA shows in the top bar (active LLM
+    pill, current schema/table breadcrumbs).
 
-    active_db_profile: str | None = None
-    active_db_profiles: list[str] = Field(default_factory=list)
+    DB activation was retired in 0.13: every defined DB profile is
+    selectable from Run / Ask / Browse directly, so there is no
+    "active DB" pill to render. The CLI keeps a default-fallback
+    pointer internally (``cfg.active_db_profile``) for ``amx run``
+    without ``--profile``; that's deliberately not surfaced here so
+    SPA consumers can't grow a dependency on it again.
+    """
+
     active_llm_profile: str | None = None
     active_doc_profile: str | None = None
     active_code_profile: str | None = None

@@ -143,17 +143,18 @@ function DbProfilesSection() {
   const profiles = useQuery({
     queryKey: ["profiles", "db"],
     queryFn: () =>
-      apiFetch<{ profiles: DbProfileSummary[]; active: string | null; count: number }>(
+      apiFetch<{ profiles: DbProfileSummary[]; count: number }>(
         "/api/profiles/db",
       ),
     retry: false,
   });
 
-  const activate = useMutation({
-    mutationFn: (name: string) =>
-      apiFetch(`/api/profiles/db/${encodeURIComponent(name)}/activate`, { method: "POST" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["profiles", "db"] }),
-  });
+  // DB profile activation was retired in 0.13: every defined profile
+  // is selectable from Run / Ask / Browse directly, so the list page
+  // no longer renders an Active badge or an Activate button. The
+  // mutation hook + ``is_active`` typings stay deleted here -- the
+  // server still answers the legacy ``/activate`` route with 410 Gone
+  // for any older bundle that races a refresh.
 
   const remove = useMutation({
     mutationFn: (name: string) =>
@@ -178,7 +179,7 @@ function DbProfilesSection() {
       <Card>
         <CardHeader
           title={`${profiles.data?.count ?? 0} DB profile${profiles.data?.count === 1 ? "" : "s"}`}
-          description={`Active: ${profiles.data?.active ?? "—"}`}
+          description="Every defined profile is selectable from Run, Ask, and Browse. There's no separate Activate step."
           actions={
             <button
               type="button"
@@ -230,17 +231,6 @@ function DbProfilesSection() {
                             </span>
                           </div>
                         )}
-                        {p.is_active ? (
-                          <StatusPill tone="positive">Active</StatusPill>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => activate.mutate(p.name)}
-                            className="rounded-md bg-surface-subtle px-2 py-1 text-xs text-ink-muted hover:bg-accent-soft hover:text-accent-ink"
-                          >
-                            Activate
-                          </button>
-                        )}
                         <button
                           type="button"
                           onClick={() => test.mutate(p.name)}
@@ -264,7 +254,12 @@ function DbProfilesSection() {
                         >
                           <Pencil size={14} />
                         </button>
-                        {!p.is_active && (
+                        {/* Delete is unconditional now: there's no Active
+                            profile to protect, and the API already
+                            handles "last profile" + "first profile"
+                            cases gracefully (the next defined profile
+                            becomes the new CLI default-fallback). */}
+                        {true && (
                           <button
                             type="button"
                             onClick={() => {

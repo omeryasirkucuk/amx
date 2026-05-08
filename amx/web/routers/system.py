@@ -89,9 +89,13 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
     except Exception:
         current_hostname = ""
 
+    # ``active_db_profile`` and ``active_db_profiles`` are intentionally
+    # omitted: the SPA picks a DB profile per-action (RunNew, Ask,
+    # Browse) and there is no longer an "active" badge anywhere in the
+    # UI. The fields stay alive on ``cfg`` as the CLI's default-fallback
+    # pointer (used by ``amx run`` without ``--profile``); they are no
+    # longer part of the Studio API surface.
     return ContextResponse(
-        active_db_profile=cfg.active_db_profile or None,
-        active_db_profiles=list(getattr(cfg, "active_db_profiles", []) or []),
         active_llm_profile=cfg.active_llm_profile or None,
         active_doc_profile=getattr(cfg, "active_doc_profile", None) or None,
         active_code_profile=getattr(cfg, "active_code_profile", None) or None,

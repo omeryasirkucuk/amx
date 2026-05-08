@@ -16,6 +16,10 @@ interface Props {
 
 interface DbProfileSummary {
   name: string;
+  /** Always ``true`` since 0.13: DB profile activation was retired and
+   *  every defined profile is selectable from every Studio surface.
+   *  The field is retained for back-compat with older bundles that
+   *  still cached this shape; new code should ignore it. */
   is_active: boolean;
   backend?: string;
   host?: string;
