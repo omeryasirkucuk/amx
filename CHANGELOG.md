@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- **Studio Compare modal + paged picker + PDF export.** The Compare
+  picker now pages with a sticky-header page-size selector
+  (10 / 20 / 50 / 100, persisted in `localStorage`), Prev / Next
+  controls, and a "Clear selection" link. Hitting Compare no longer
+  drops the result at the bottom of the page — it opens a full-width
+  Dialog over the picker, so the picker stays visible underneath
+  for further iteration. The Dialog header carries a **Download
+  PDF** button that hits a new `POST /api/history/compare/pdf`
+  endpoint; the server re-runs the comparison and pipes WeasyPrint's
+  bytes back as a single landscape A4 PDF (cell font scales with run
+  count down to a 7pt floor so 8-run comparisons still print
+  readably). The optional `pdf` extra (`pip install amx-cli[pdf]`)
+  pulls `weasyprint` + `jinja2`; on first click `optional_deps.ensure`
+  installs them transparently if they're missing. WeasyPrint needs
+  Pango / Cairo system libraries — `brew install pango cairo
+  gdk-pixbuf libffi` on macOS, or
+  `apt-get install libpango-1.0-0 libpangoft2-1.0-0` on Debian /
+  Ubuntu Docker images.
+
 ## [0.14.0] - 2026-05-08
 
 The "watch the meter and re-run anything" release. Every LLM call now

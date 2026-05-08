@@ -101,6 +101,15 @@ studio = [
     # endpoint accepts multipart bodies.
     "python-multipart>=0.0.7",
 ]
+# PDF report rendering for the Compare modal (auto-installed on
+# demand via amx.utils.optional_deps when the user clicks
+# "Download PDF" in Studio or runs /search compare --pdf). Kept as
+# its own extra because WeasyPrint pulls Pango/Cairo bindings that
+# are heavier than the rest of `studio`.
+pdf = [
+    "weasyprint>=60",
+    "jinja2>=3.1",
+]
 cloud-sources = [
     "boto3>=1.34",
     "google-api-python-client>=2.0",
@@ -185,6 +194,8 @@ all = [
     "uvicorn[standard]>=0.27",
     "sse-starlette>=2.0",
     "python-multipart>=0.0.7",
+    "weasyprint>=60",
+    "jinja2>=3.1",
     "boto3>=1.34",
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
@@ -225,6 +236,10 @@ include = ["amx*"]
 # (vendored dist) so a developer cloning the repo + running
 # ``pip install -e .`` gets a working AMX Studio without Node.
 "amx.web" = ["static/**/*", "static/index.html"]
+# Jinja templates used by /search compare --pdf and the Studio
+# "Download PDF" button. WeasyPrint reads them at render time, so
+# they have to ship inside the wheel alongside the Python code.
+"amx.cli_support" = ["templates/*.html"]
 
 [tool.ruff]
 line-length = 100

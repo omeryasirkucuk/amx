@@ -1,12 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { GitCompare, Search } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  GitCompare,
+  Search,
+} from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import EmptyState from "../components/EmptyState";
 import StatusPill from "../components/StatusPill";
+import Dialog from "../components/ui/Dialog";
 import {
   ConfidencePill,
   LogprobBadge,
@@ -169,17 +176,32 @@ function pickWinnerRunId(
   return bestId;
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const;
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
+const PAGE_SIZE_STORAGE_KEY = "amx.compare.pickerPageSize";
+
+function readStoredPageSize(): PageSize {
+  if (typeof window === "undefined") return 20;
+  const raw = Number(window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY));
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(raw)
+    ? (raw as PageSize)
+    : 20;
+}
+
 export default function RunsCompare() {
   const [selected, setSelected] = useState<number[]>([]);
   const [search, setSearch] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<CommandKindFilter>("all");
+  const [pageSize, setPageSize] = useState<PageSize>(readStoredPageSize);
+  const [page, setPage] = useState<number>(0);
+  const [viewerOpen, setViewerOpen] = useState<boolean>(false);
   const recent = useQuery({
     queryKey: ["recent-runs", "compare"],
-    // 50 keeps the picker useful after a week of analyze + rerun
-    // activity (PR #248 made re-runs near-free and they dominate
-    // the recent list); the previous cap of 20 fell off the end of
-    // the user's history within a single afternoon.
-    queryFn: () => api.recentRuns(50, "all"),
+    // 200 is the server-side max. Paging is now client-side: with
+    // 100/page the user can scroll their full recent history without
+    // a second round trip. If the wall ever creeps past 200, switch
+    // /api/history/runs to offset/limit and page server-side.
+    queryFn: () => api.recentRuns(200, "all"),
     retry: false,
   });
 
@@ -189,12 +211,40 @@ export default function RunsCompare() {
         method: "POST",
         body: JSON.stringify({ run_ids: selected }),
       }),
+    onSuccess: () => setViewerOpen(true),
+  });
+
+  const pdf = useMutation({
+    mutationFn: () => api.compareAsPdf(selected),
+    onSuccess: (blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const date = new Date().toISOString().slice(0, 10);
+      const ids = selected.join("-");
+      a.href = url;
+      a.download = `compare-${ids}-${date}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    },
   });
 
   function toggle(id: number) {
     setSelected((curr) =>
       curr.includes(id) ? curr.filter((x) => x !== id) : [...curr, id],
     );
+  }
+
+  function clearSelection() {
+    setSelected([]);
+  }
+
+  function changePageSize(next: PageSize) {
+    setPageSize(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next));
+    }
   }
 
   // Apply text + kind filters to the run picker. The text filter
@@ -224,12 +274,27 @@ export default function RunsCompare() {
     });
   }, [recent.data, search, kindFilter]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const pagedRows = useMemo(
+    () => filteredRows.slice(safePage * pageSize, safePage * pageSize + pageSize),
+    [filteredRows, safePage, pageSize],
+  );
+
+  // Snap back to page 0 whenever the active dataset shrinks under
+  // the cursor — search tightens, kind filter narrows, page size
+  // grows, or the underlying fetch returns fewer rows. Without this
+  // the user lands on an empty page after every filter tweak.
+  useEffect(() => {
+    setPage(0);
+  }, [search, kindFilter, pageSize, recent.data]);
+
   return (
     <>
       <PageHeader
         eyebrow="History"
         title="Compare runs"
-        description="Pick 2–4 runs from the list below; the compare endpoint mirrors the CLI's /history compare output (same numbers, same per-column pivot)."
+        description="Pick at least 2 runs from the list below; the compare endpoint mirrors the CLI's /history compare output (same numbers, same per-column pivot)."
         actions={
           <Link to="/runs" className="text-xs text-ink-dim hover:text-ink">
             ← All runs
@@ -243,15 +308,35 @@ export default function RunsCompare() {
             title={`${selected.length} run${selected.length === 1 ? "" : "s"} selected`}
             description="Click a row to toggle. The compare button is enabled once you've picked at least two."
             actions={
-              <button
-                type="button"
-                onClick={() => compare.mutate()}
-                disabled={selected.length < 2 || compare.isPending}
-                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
-              >
-                <GitCompare size={14} />
-                {compare.isPending ? "Comparing…" : "Compare"}
-              </button>
+              <div className="flex items-center gap-2">
+                {selected.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearSelection}
+                    className="text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
+                  >
+                    Clear selection
+                  </button>
+                )}
+                {compare.data && !viewerOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setViewerOpen(true)}
+                    className="text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
+                  >
+                    Re-open last comparison
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => compare.mutate()}
+                  disabled={selected.length < 2 || compare.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+                >
+                  <GitCompare size={14} />
+                  {compare.isPending ? "Comparing…" : "Compare"}
+                </button>
+              </div>
             }
           />
           <div className="flex flex-wrap items-center gap-3 border-t border-surface-border bg-surface-subtle/30 px-5 py-2">
@@ -287,9 +372,57 @@ export default function RunsCompare() {
                 },
               )}
             </div>
-            <span className="ml-auto text-[11px] text-ink-dim tabular-nums">
-              {filteredRows.length} of {recent.data?.runs?.length ?? 0}
-            </span>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="text-[11px] text-ink-dim tabular-nums">
+                {filteredRows.length === 0
+                  ? "0 of 0"
+                  : `${safePage * pageSize + 1}–${Math.min(
+                      (safePage + 1) * pageSize,
+                      filteredRows.length,
+                    )} of ${filteredRows.length}`}
+              </span>
+              <label className="inline-flex items-center gap-1 text-[11px] text-ink-dim">
+                Page size
+                <select
+                  value={pageSize}
+                  onChange={(e) =>
+                    changePageSize(Number(e.target.value) as PageSize)
+                  }
+                  className="rounded-md border border-surface-border bg-surface px-1.5 py-0.5 text-[11px] text-ink outline-none"
+                >
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={safePage === 0}
+                  className="rounded-md border border-surface-border bg-surface p-1 text-ink-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft size={12} />
+                </button>
+                <span className="min-w-[3.5rem] text-center text-[11px] text-ink-dim tabular-nums">
+                  {safePage + 1} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPage((p) => Math.min(totalPages - 1, p + 1))
+                  }
+                  disabled={safePage >= totalPages - 1}
+                  className="rounded-md border border-surface-border bg-surface p-1 text-ink-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="Next page"
+                >
+                  <ChevronRight size={12} />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
         <CardBody className="p-0">
@@ -297,7 +430,7 @@ export default function RunsCompare() {
             <div className="px-5 py-6 text-sm text-ink-dim">Loading runs…</div>
           ) : filteredRows.length ? (
             <ul className="divide-y divide-surface-border">
-              {filteredRows.map((row) => {
+              {pagedRows.map((row) => {
                 const isPicked = selected.includes(row.id);
                 const kind = commandKind(row.command);
                 const scope = row.scope_json ?? row.scope;
@@ -393,7 +526,44 @@ export default function RunsCompare() {
         </div>
       )}
 
-      {compare.data && <CompareResults data={compare.data} />}
+      {compare.data && (
+        <Dialog
+          open={viewerOpen}
+          onClose={() => setViewerOpen(false)}
+          size="xl"
+          title={`Comparison · ${compare.data.runs.length} run${compare.data.runs.length === 1 ? "" : "s"}`}
+          description={`Run ids: ${compare.data.runs.map((r) => `#${r.id}`).join(", ")}`}
+          footer={
+            <>
+              {pdf.isError && (
+                <span className="mr-auto text-xs text-critical">
+                  {pdf.error instanceof Error
+                    ? pdf.error.message
+                    : "PDF export failed."}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setViewerOpen(false)}
+                className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => pdf.mutate()}
+                disabled={pdf.isPending}
+                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-40"
+              >
+                <Download size={14} />
+                {pdf.isPending ? "Generating PDF…" : "Download PDF"}
+              </button>
+            </>
+          }
+        >
+          <CompareResults data={compare.data} />
+        </Dialog>
+      )}
     </>
   );
 }

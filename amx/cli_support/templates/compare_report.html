@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AMX Run Comparison · {{ run_ids_label }}</title>
+<style>
+  @page {
+    size: A4 landscape;
+    margin: 12mm 10mm 14mm 10mm;
+    @bottom-right {
+      content: counter(page) " / " counter(pages);
+      font-family: "Helvetica", "Arial", sans-serif;
+      font-size: 8pt;
+      color: #6b6b6b;
+    }
+    @bottom-left {
+      content: "AMX run comparison · generated {{ generated_at }}";
+      font-family: "Helvetica", "Arial", sans-serif;
+      font-size: 8pt;
+      color: #6b6b6b;
+    }
+  }
+
+  /* Density scales with run count: N runs in [2..8] picks a font
+     between 10pt (2 runs) and 7pt (8 runs). Above 8 we floor at 7pt
+     and let WeasyPrint break the rightmost columns to a fresh page
+     run-of-runs (rare but possible if the user really pushes it). */
+  :root {
+    --base-fs: {{ base_font_pt }}pt;
+    --cell-fs: {{ cell_font_pt }}pt;
+    --winner-bg: #fff7d6;
+    --winner-border: #d99a00;
+    --row-alt-bg: #f7f5ef;
+    --header-bg: #2b2620;
+    --header-fg: #f7eed8;
+    --subtle-fg: #6b6b6b;
+    --rule: #d4cdb8;
+    --confidence-high: #1f8a4a;
+    --confidence-med: #b07d00;
+    --confidence-low: #a13b2c;
+  }
+
+  html, body {
+    font-family: "Helvetica", "Arial", sans-serif;
+    color: #1f1a14;
+    font-size: var(--base-fs);
+    line-height: 1.35;
+    margin: 0;
+    padding: 0;
+  }
+
+  h1 { font-size: 16pt; margin: 0 0 4pt 0; letter-spacing: -0.2pt; }
+  h2 {
+    font-size: 11pt;
+    margin: 14pt 0 4pt 0;
+    text-transform: uppercase;
+    letter-spacing: 0.6pt;
+    color: var(--subtle-fg);
+    border-bottom: 0.5pt solid var(--rule);
+    padding-bottom: 2pt;
+  }
+  p.lede { color: var(--subtle-fg); font-size: 9pt; margin: 0 0 8pt 0; }
+
+  table.report {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: var(--cell-fs);
+  }
+  table.report th, table.report td {
+    border: 0.4pt solid var(--rule);
+    padding: 4pt 5pt;
+    vertical-align: top;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  table.report thead th {
+    background: var(--header-bg);
+    color: var(--header-fg);
+    text-align: left;
+    font-weight: 600;
+    letter-spacing: 0.3pt;
+  }
+  table.report tbody tr:nth-child(2n) td { background: var(--row-alt-bg); }
+  table.report td.metric { font-weight: 600; white-space: nowrap; }
+  table.report td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.report td.asset { font-family: "Menlo", "Courier New", monospace; word-break: break-all; }
+  table.report td.winner {
+    background: var(--winner-bg) !important;
+    box-shadow: inset 0 0 0 1pt var(--winner-border);
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 1pt 4pt;
+    border-radius: 2pt;
+    font-size: calc(var(--cell-fs) - 1pt);
+    font-weight: 600;
+    margin-right: 3pt;
+  }
+  .badge.high { background: #e6f5ec; color: var(--confidence-high); }
+  .badge.medium, .badge.med { background: #fdf3d8; color: var(--confidence-med); }
+  .badge.low { background: #fbe7e2; color: var(--confidence-low); }
+  .meta { color: var(--subtle-fg); font-size: calc(var(--cell-fs) - 1pt); }
+  .mono { font-family: "Menlo", "Courier New", monospace; }
+  .desc { white-space: pre-wrap; }
+  .empty { color: var(--subtle-fg); }
+
+  .missing-banner {
+    background: #fbe7e2;
+    border: 0.5pt solid #a13b2c;
+    color: #6b1f17;
+    padding: 4pt 6pt;
+    font-size: 9pt;
+    margin: 6pt 0 8pt 0;
+    border-radius: 2pt;
+  }
+
+  /* Page break before each big section once content is dense; small
+     comparisons stay on one page. WeasyPrint respects break-before
+     when the previous section has overflowed. */
+  section.page-block { break-inside: avoid-page; }
+  section.aggregates, section.percol { margin-top: 10pt; }
+
+  /* Asset column gets a fixed slim width; remaining width spreads
+     evenly across the run columns. With table-layout:fixed this
+     keeps the per-column pivot aligned across many runs. */
+  table.percol col.asset-col { width: {{ asset_col_pct }}%; }
+  table.percol col.run-col   { width: {{ run_col_pct }}%; }
+  table.aggregates col.metric-col { width: 22%; }
+  table.aggregates col.run-col    { width: {{ aggregate_run_col_pct }}%; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AMX run comparison · {{ run_ids_label }}</h1>
+  <p class="lede">
+    {{ runs|length }} run{% if runs|length != 1 %}s{% endif %} ·
+    generated {{ generated_at }} · AMX {{ amx_version }}
+  </p>
+</header>
+
+{% if missing %}
+<div class="missing-banner">
+  {{ missing|length }} run id{{ "s" if missing|length != 1 else "" }} not found in history:
+  {% for m in missing %}#{{ m }}{% if not loop.last %}, {% endif %}{% endfor %}
+</div>
+{% endif %}
+
+<section class="page-block summary">
+  <h2>Run summary</h2>
+  <table class="report">
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th>Started</th>
+        <th>Status</th>
+        <th>Command</th>
+        <th>DB profile</th>
+        <th>LLM model</th>
+        <th>Doc / Code</th>
+        <th class="num">Duration</th>
+        <th class="num">Processed</th>
+        <th class="num">Applied</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in summary_rows %}
+      <tr>
+        <td class="mono">#{{ r.run_id }}</td>
+        <td>{{ r.started_at or "—" }}</td>
+        <td>{{ r.status or "—" }}</td>
+        <td class="mono">{{ r.command or "—" }}</td>
+        <td>{{ r.db_profile or "—" }}</td>
+        <td class="mono">{{ r.llm_model or "—" }}</td>
+        <td>{{ (r.doc_profile or "") }}{% if r.doc_profile and r.code_profile %} / {% endif %}{{ r.code_profile or "" }}{% if not r.doc_profile and not r.code_profile %}—{% endif %}</td>
+        <td class="num">{{ "%.2f"|format(r.duration_sec or 0) }}s</td>
+        <td class="num">{{ r.processed_count or 0 }}</td>
+        <td class="num">{{ r.applied_count or 0 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% if aggregate_rows %}
+<section class="page-block aggregates">
+  <h2>Aggregate metrics</h2>
+  <p class="lede">Highlighted cell = best value per row (lower for tokens / cost / duration; higher for confidence / logprob / approval).</p>
+  <table class="report aggregates">
+    <colgroup>
+      <col class="metric-col">
+      {% for rid in run_ids %}<col class="run-col">{% endfor %}
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Metric</th>
+        {% for rid in run_ids %}<th class="num">#{{ rid }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for arow in aggregate_rows %}
+      <tr>
+        <td class="metric">{{ arow.label }}</td>
+        {% for rid in run_ids %}
+        {% set cell = arow.cells[rid] %}
+        <td class="num{% if cell.is_winner %} winner{% endif %}">
+          {{ cell.display }}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if percol_rows %}
+<section class="page-block percol">
+  <h2>Per-column descriptions</h2>
+  <p class="lede">Each cell shows the chosen description for that run. The cell with the highest logprob across the row gets the winner highlight.</p>
+  <table class="report percol">
+    <colgroup>
+      <col class="asset-col">
+      {% for rid in run_ids %}<col class="run-col">{% endfor %}
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Asset</th>
+        {% for rid in run_ids %}<th>#{{ rid }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for prow in percol_rows %}
+      <tr>
+        <td class="asset">{{ prow.label }}</td>
+        {% for rid in run_ids %}
+        {% set cell = prow.cells[rid] %}
+        {% if cell %}
+        <td class="{% if cell.is_winner %}winner{% endif %}">
+          <div class="desc">{{ cell.description }}</div>
+          <div class="meta">
+            {% if cell.confidence %}<span class="badge {{ cell.confidence_class }}">{{ cell.confidence }}</span>{% endif %}
+            {% if cell.logprob_display %}<span class="mono">logprob {{ cell.logprob_display }}</span>{% endif %}
+            {% if cell.token_count %}<span class="mono"> · {{ cell.token_count }} tok</span>{% endif %}
+          </div>
+        </td>
+        {% else %}
+        <td class="empty">—</td>
+        {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if not aggregate_rows and not percol_rows %}
+<p class="empty">No aggregate metrics or per-column overlap to display for the selected runs.</p>
+{% endif %}
+
+</body>
+</html>
