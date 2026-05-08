@@ -579,6 +579,20 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             log.warning("Auto-apply after run failed: %s", exc)
             final_error_text = f"Auto-apply failed: {exc}"
 
+    # Demote successful runs to ``ready_for_review`` when nothing was
+    # actually written to the catalog. The worker finished cleanly but
+    # 119/119 suggestions still sitting in the pending queue is not a
+    # "success" — it's a queue waiting on the human review step. CLI's
+    # ``analyze.run`` interrupt path uses the same rule (see
+    # ``amx/cli_support/commands/_analyze/interrupt.py:65``); web
+    # parity here keeps both surfaces telling the user the same story.
+    if (
+        final_status == "success"
+        and pending_count > 0
+        and int(applied) == 0
+    ):
+        final_status = "ready_for_review"
+
     if hs is not None and run_id is not None:
         try:
             hs.finish_run(
@@ -608,7 +622,11 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         except Exception as exc:
             log.warning("finish_run failed: %s", exc)
 
-    if final_status == "success":
+    if final_status in ("success", "ready_for_review"):
+        # Both terminal states close the job from the worker side; the
+        # SSE consumer treats ``job.done`` as "worker exited" and reads
+        # the persisted run status to decide whether the run actually
+        # succeeded or merely landed suggestions in the pending queue.
         job.status = "done"
         job.summary = {
             "run_id": run_id,
@@ -616,6 +634,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             "failed": len(failed_assets),
             "pending": pending_count,
             "applied": int(applied),
+            "run_status": final_status,
         }
         job.ended_at = time.time()
         emit_terminal(job.queue, "job.done", {"summary": job.summary})
