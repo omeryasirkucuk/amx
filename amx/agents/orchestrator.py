@@ -18,6 +18,7 @@ from amx.agents.rag_agent import RAGAgent
 from amx.codebase.analyzer import CodebaseReport
 from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
+from amx.llm.prompts import length_rule
 from amx.llm.provider import LLMProvider
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
@@ -41,10 +42,12 @@ MERGE_PROMPT = """\
 You are merging metadata suggestions from multiple sources for database columns.
 Produce one best description per column using evidence discipline, not averaging.
 
+Length rule (CRITICAL — honour the user's verbosity preset):
+{description_length_rule}
+
 Output rules:
 - Write every description and reasoning string in **clear, business-friendly American English**.
 - Use complete sentences. End every description with a period.
-- Aim for one tight sentence (≤ 25 words) unless the user's verbosity preset asks for more.
 - No hedging language ("might", "possibly", "could be") unless the evidence really is ambiguous —
   in which case lower CONFIDENCE rather than soften the description.
 - Never start a description with the column name or "This column" — describe the *meaning*, not the row.
@@ -114,7 +117,9 @@ REASONING: <why>
 MERGE_SYSTEM_PROMPT = """\
 You merge metadata suggestions conservatively.
 Do not invent meaning not present in the source proposals or their reasoning.
-Prefer directly supported and reusable catalog language over verbose prose.
+Honour the user-supplied verbosity preset in the user message — do not
+silently shorten an "exhaustive" or "comprehensive" answer to a single
+sentence.
 """
 
 META_SYSTEM_PROMPT = """\
@@ -1219,16 +1224,36 @@ class Orchestrator:
             columns_blocks.append(f"### {label}\n{source_text}")
 
         columns_text = "\n\n".join(columns_blocks)
+        # Inject the active LLM profile's verbosity directive so the
+        # merge step preserves an "exhaustive" / "comprehensive"
+        # answer instead of collapsing every column to one tight
+        # sentence. Without this the per-agent agents already write
+        # the long form, but this LLM call summarises it back down.
+        verbosity = getattr(self.llm.cfg, "description_verbosity", "brief")
         messages = [
             {"role": "system", "content": MERGE_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": MERGE_PROMPT.format(columns_text=columns_text),
+                "content": MERGE_PROMPT.format(
+                    columns_text=columns_text,
+                    description_length_rule=length_rule(verbosity),
+                ),
             },
         ]
         est = estimate_tokens(messages)
+        # Scale the merge call's output budget the same way ProfileAgent
+        # does: ~1600 tokens per column at the exhaustive preset, less
+        # for shorter presets. Without this the merge call inherits
+        # cfg.max_tokens (16k by default) and truncates mid-column on a
+        # multi-column comprehensive/exhaustive batch.
+        from amx.llm.prompts import per_col_token_budget
+
+        merge_max_tokens = max(
+            self.llm.cfg.max_tokens,
+            len(needs_merge) * per_col_token_budget(verbosity),
+        )
         with step_spinner(f"Merging suggestions: {len(needs_merge)} columns", token_estimate=est):
-            result = self.llm.chat(messages)
+            result = self.llm.chat(messages, max_tokens=merge_max_tokens)
         tracker.record_for("merge", est, self.llm, result.usage)
 
         parsed = self._parse_merge_response(result.content)
@@ -1376,34 +1401,62 @@ class Orchestrator:
     def _parse_merge_response(
         text: str,
     ) -> dict[str, tuple[str, Confidence, str]]:
-        """Parse batched merge response into {column: (description, confidence, reasoning)}."""
+        """Parse batched merge response into {column: (description, confidence, reasoning)}.
+
+        ``BEST_DESCRIPTION`` and ``REASONING`` may span multiple lines
+        when the user picks a verbose preset (``comprehensive`` /
+        ``exhaustive``) so we accumulate continuation lines into the
+        most recent multi-line field until another known label
+        appears. The pre-2026-05 single-line parser silently truncated
+        multi-paragraph answers to the first sentence.
+        """
         text = _strip_code_fences(text)
         results: dict[str, tuple[str, Confidence, str]] = {}
         current_col = ""
-        best = ""
+        best_lines: list[str] = []
+        reasoning_lines: list[str] = []
         conf = Confidence.MEDIUM
-        reasoning = ""
+        active: str | None = None  # "best" | "reasoning" | None
 
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("COLUMN:"):
-                if current_col and best:
-                    results[current_col] = (best, conf, reasoning)
-                current_col = line.split(":", 1)[1].strip()
-                best = ""
+        def _flush() -> None:
+            if current_col and best_lines:
+                description = "\n".join(line.rstrip() for line in best_lines).strip()
+                reasoning_text = "\n".join(
+                    line.rstrip() for line in reasoning_lines
+                ).strip()
+                results[current_col] = (description, conf, reasoning_text)
+
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if stripped.startswith("COLUMN:"):
+                _flush()
+                current_col = stripped.split(":", 1)[1].strip()
+                best_lines = []
+                reasoning_lines = []
                 conf = Confidence.MEDIUM
-                reasoning = ""
-            elif line.startswith("BEST_DESCRIPTION:"):
-                best = line.split(":", 1)[1].strip()
-            elif line.startswith("CONFIDENCE:"):
-                raw = line.split(":", 1)[1].strip().upper()
+                active = None
+            elif stripped.startswith("BEST_DESCRIPTION:"):
+                first = stripped.split(":", 1)[1].strip()
+                best_lines = [first] if first else []
+                active = "best"
+            elif stripped.startswith("CONFIDENCE:"):
+                raw = stripped.split(":", 1)[1].strip().upper()
                 conf = Confidence[raw] if raw in Confidence.__members__ else Confidence.MEDIUM
-            elif line.startswith("REASONING:"):
-                reasoning = line.split(":", 1)[1].strip()
+                active = None
+            elif stripped.startswith("REASONING:"):
+                first = stripped.split(":", 1)[1].strip()
+                reasoning_lines = [first] if first else []
+                active = "reasoning"
+            else:
+                # Continuation line for the most recently opened
+                # multi-line field. Preserves blank lines so multi-
+                # paragraph answers keep their paragraph breaks.
+                if active == "best":
+                    best_lines.append(raw_line)
+                elif active == "reasoning":
+                    reasoning_lines.append(raw_line)
 
-        if current_col and best:
-            results[current_col] = (best, conf, reasoning)
-
+        _flush()
         return results
 
     def _human_review(
