@@ -1703,6 +1703,19 @@ class AMXConfig:
         return self._config_path or str(Path(self.CONFIG_DIR) / "config.yml")
 
     def apply_active_db_profile(self) -> None:
+        """Reconcile the persisted DB pointer at config-load time.
+
+        ``active_db_profile`` is now an *internal* default-fallback
+        pointer -- the Studio UI no longer exposes activation, and the
+        SPA picks a profile per-action (Run, Ask, Browse). The pointer
+        only matters for CLI commands invoked without ``--profile``
+        (the legacy ``amx run`` flow), where some deterministic
+        default has to win. We keep accepting an explicit value
+        because the CLI's ``/use-db`` still sets it and existing
+        configs round-trip; invalid / missing values snap back to the
+        first defined profile so a stale name in YAML can't crash the
+        bootstrap.
+        """
         name = self.active_db_profile or "default"
         if name not in self.db_profiles and self.db_profiles:
             name = next(iter(self.db_profiles.keys()))
@@ -1711,12 +1724,16 @@ class AMXConfig:
             self.db = self.db_profiles[name]
 
     def set_active_db_profile(self, name: str) -> None:
-        """Set a single active DB profile (collapses the multi-pick scope).
+        """Set the internal default-fallback DB profile pointer.
 
-        Equivalent to ``set_active_db_profiles([name])`` — kept as a
-        thin shim because every existing call site (``cmd_use``,
-        ``_maybe_modify_profiles_before_run``, etc.) speaks the
-        single-name idiom and would be churn-y to migrate.
+        Studio no longer exposes "Activate" anywhere; the only public
+        caller for this method is the CLI's ``/use-db <name>`` (which
+        documents itself as "set the default fallback profile") and
+        the add/remove reconcile path in this module. Equivalent to
+        ``set_active_db_profiles([name])`` -- kept as a thin shim so
+        every existing call site (``cmd_use``,
+        ``_maybe_modify_profiles_before_run``, etc.) keeps speaking
+        the single-name idiom.
         """
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")

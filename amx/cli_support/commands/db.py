@@ -233,7 +233,9 @@ def print_db_namespace_hint() -> None:
     info(
         f"Database engines: {backends}. "
         "Use /db-profiles to list saved profiles (each row shows its backend). "
-        "/use-db switches the active profile - you will see backend + connection summary. "
+        "/use-db sets the default-fallback profile -- the one CLI commands "
+        "use when no --profile is passed. AMX Studio picks per-action; the "
+        "default only matters for the CLI. "
         "/add-db-profile first asks which engine (PostgreSQL, Snowflake, Databricks, BigQuery), then connection details."
     )
 
@@ -243,6 +245,10 @@ def cmd_profiles(cfg: AMXConfig) -> None:
 
     rows = []
     legacy_profiles: list[str] = []
+    # The asterisk now flags the *default-fallback* profile -- the one
+    # CLI commands use when ``--profile`` is omitted. Studio no longer
+    # has an "active" notion (every defined profile is selectable
+    # per-action), so the marker only matters here in the CLI listing.
     for name, db in sorted(cfg.db_profiles.items(), key=lambda x: x[0]):
         mark = "*" if name == cfg.active_db_profile else " "
         # 0.11.0: surface unpinned-database state (database is now optional).
@@ -254,7 +260,7 @@ def cmd_profiles(cfg: AMXConfig) -> None:
         if has_legacy_database_default(db):
             legacy_profiles.append(name)
     render_table(
-        "DB profiles (* = active, ? = no DB pinned)",
+        "DB profiles (* = CLI default-fallback, ? = no DB pinned)",
         ["Profile", "Backend", "Connection"],
         rows,
     )
@@ -276,12 +282,21 @@ def cmd_use(
     *,
     log_event: LogEvent | None = None,
 ) -> None:
-    """Switch the active DB scope.
+    """Set the CLI's default-fallback DB scope.
 
-    0.11.0 multi-pick:
-        /use-db prod_pg                 → single-profile (legacy behaviour)
-        /use-db prod_pg analytics_bq    → persisted multi-profile scope used
-                                          by /ask, /run, /sync.
+    AMX Studio (0.13+) picks a DB profile per-action -- the user names
+    the target on Run, Ask, and Browse, so there is no Studio-level
+    "active" pill. ``/use-db`` survives because the CLI still needs a
+    default for ``amx run`` / ``/sync`` etc. invoked without
+    ``--profile``: pick the profile (or profiles) that the next
+    such call should fall back to.
+
+    Single-arg form pins one profile as the default-fallback;
+    multi-arg form pins a multi-profile scope (used by /ask, /run,
+    /sync to fan out automatically).
+
+        /use-db prod_pg                 -> single profile
+        /use-db prod_pg analytics_bq    -> multi-profile scope
 
     Interactive form (no args): prompts whether the user wants single
     or multi-pick, then runs the appropriate selector.
@@ -352,14 +367,17 @@ def cmd_use(
         p = cfg.db
         if len(chosen) == 1:
             success(
-                f"Switched active DB profile to: {chosen[0]} [{p.backend}] - {p.display_summary}"
+                f"Default-fallback DB profile set to: {chosen[0]} [{p.backend}] - {p.display_summary}"
             )
         else:
-            success(f"Active DB scope: {', '.join(chosen)} (default = {chosen[0]} [{p.backend}])")
-        # Reassure the user that switching the *active* scope does not
-        # detach the shared run-history store: that one stays pinned to
-        # whichever profile was passed to `/history-store enable` until
-        # the user explicitly disables it or removes the host profile.
+            success(
+                f"Default-fallback DB scope: {', '.join(chosen)} (primary = {chosen[0]} [{p.backend}])"
+            )
+        # Reassure the user that switching the default-fallback scope
+        # does not detach the shared run-history store: that one stays
+        # pinned to whichever profile was passed to
+        # `/history-store enable` until the user explicitly disables
+        # it or removes the host profile.
         host = (getattr(cfg, "history_store_profile", "") or "").strip()
         if getattr(cfg, "history_store_enabled", False) and host and host != chosen[0]:
             info(

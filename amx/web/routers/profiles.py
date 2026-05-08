@@ -158,6 +158,11 @@ def list_db(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     target). Full secrets are NEVER included in the list response;
     callers must hit ``GET /api/profiles/db/{name}`` for the masked
     detail."""
+    # ``is_active`` reads as ``True`` for every defined DB profile now
+    # that Studio no longer has an Activate UI. Every Studio surface
+    # (Run, Ask, Browse) picks a profile per-action; the legacy field
+    # is kept on the row so older bundles cached in the user's browser
+    # don't crash when they read it.
     items: list[dict[str, Any]] = []
     for name, profile in sorted(cfg.db_profiles.items()):
         items.append(
@@ -168,10 +173,10 @@ def list_db(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
                 "database": profile.database or "",
                 "catalog": profile.catalog or "",
                 "project": profile.project or "",
-                "is_active": name == (cfg.active_db_profile or ""),
+                "is_active": True,
             }
         )
-    return {"profiles": items, "active": cfg.active_db_profile or None, "count": len(items)}
+    return {"profiles": items, "count": len(items)}
 
 
 @router.get("/db/{name}")
@@ -182,7 +187,7 @@ def get_db(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No DB profile named {name!r}.",
         )
-    return _mask_db(profile, name, is_active=name == (cfg.active_db_profile or ""))
+    return _mask_db(profile, name, is_active=True)
 
 
 @router.put("/db/{name}")
@@ -197,18 +202,17 @@ def upsert_db(
     merged = _merge_db_patch(existing, body)
     cfg.upsert_db_profile(name, merged)
     cfg.save()
-    return _mask_db(merged, name, is_active=name == (cfg.active_db_profile or ""))
+    return _mask_db(merged, name, is_active=True)
 
 
 @router.delete("/db/{name}")
 def delete_db(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
-    """Delete a DB profile. The active profile and the last remaining
-    profile can both be deleted — Studio surfaces the empty-config
-    state via the browse sidebar's "no profiles yet" empty state and
-    the /ask 412 ``configure-llm`` flow. Refusing the deletion forced
-    a roundabout reset; matching the CLI's ``/remove-db-profile``
-    behaviour means the SPA stops requiring users to first add a
-    decoy profile + activate it before they can clean up."""
+    """Delete a DB profile. The last remaining profile can be deleted —
+    Studio surfaces the empty-config state via the browse sidebar's
+    "no profiles yet" empty state and the /ask 412 ``configure-llm``
+    flow. Refusing the deletion forced a roundabout reset; matching
+    the CLI's ``/remove-db-profile`` behaviour means the SPA stops
+    requiring users to add a decoy profile before they can clean up."""
     if name not in cfg.db_profiles:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -220,20 +224,27 @@ def delete_db(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
         "ok": True,
         "name": name,
         "remaining": len(cfg.db_profiles),
-        "active": cfg.active_db_profile or None,
     }
 
 
 @router.post("/db/{name}/activate")
-def activate_db(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
-    if name not in cfg.db_profiles:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No DB profile named {name!r}.",
-        )
-    cfg.set_active_db_profile(name)
-    cfg.save()
-    return {"active": name}
+def activate_db(name: str) -> dict[str, Any]:
+    """Activation is no longer a user-facing concept for DB profiles.
+    Every defined profile is selectable from every Studio surface
+    (Run, Ask, Browse) per-action; nothing is "active" globally.
+    The endpoint stays in the URL space so older Studio bundles get
+    a clear 410 with a hint instead of silently 404-ing on a route
+    the new server no longer registers."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "DB profile activation removed in 0.13: every defined profile "
+            "is selectable from Run, Ask, and Browse directly. The CLI "
+            "fallback ('amx run' without --profile) uses the first defined "
+            "profile; change the order in ~/.amx/config.yml or run "
+            "/use-db <name> to override."
+        ),
+    )
 
 
 @router.post("/db/{name}/test")
