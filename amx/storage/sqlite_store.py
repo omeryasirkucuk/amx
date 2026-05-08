@@ -215,6 +215,41 @@ class SQLiteHistoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_run_results_shared_uuid "
                     "ON run_results(shared_uuid)"
                 )
+            # ── run_context_cache: persistent table-level context produced
+            # at first run, reused on subsequent re-runs to skip live
+            # ``profile_table`` introspection. Keyed on
+            # (db_profile, database, schema, table) so a re-run of any
+            # column on the same table can hit the same row. The cache
+            # is dropped from ``_record_audit`` after the row's COMMENT
+            # lands on the live database (i.e. we trust the table the
+            # user just touched is no longer a re-run target). A 24h
+            # TTL guards against silently serving stale schema after
+            # the user altered the table out-of-band.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS run_context_cache (
+                    cache_key       TEXT PRIMARY KEY,
+                    db_profile      TEXT NOT NULL,
+                    database_name   TEXT NOT NULL DEFAULT '',
+                    schema_name     TEXT NOT NULL,
+                    table_name      TEXT NOT NULL,
+                    payload_json    TEXT NOT NULL,
+                    source_run_id   INTEGER,
+                    created_at      REAL NOT NULL,
+                    expires_at      REAL
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_run_context_cache_table "
+                    "ON run_context_cache(db_profile, database_name, schema_name, table_name)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_run_context_cache_expires "
+                    "ON run_context_cache(expires_at)"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
@@ -1160,6 +1195,156 @@ class SQLiteHistoryStore:
             cur = conn.execute(
                 "DELETE FROM rerun_context_snapshots WHERE created_at < ?",
                 (cutoff,),
+            )
+            return int(cur.rowcount or 0)
+
+    # ── run_context_cache: first-run table profiles reused on rerun ──
+
+    @staticmethod
+    def _context_cache_key(
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+    ) -> str:
+        return f"{db_profile}|{database or ''}|{schema}|{table}"
+
+    def save_run_context_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+        payload: dict[str, Any],
+        source_run_id: int | None = None,
+        ttl_seconds: float = 86400.0,
+    ) -> None:
+        """Persist a table-level context snapshot for re-use on re-run.
+
+        ``payload`` is the JSON-serialisable dict the rerun executor
+        normally rebuilds via ``_build_db_profile_dict`` — keys at
+        minimum: ``db_profile`` (the column-aware profile dict) and
+        ``existing_metadata``.  ``ttl_seconds`` defaults to 24 hours so
+        a stale schema can't silently produce wrong descriptions when
+        the user re-runs a week later.
+
+        Uses ``INSERT OR REPLACE`` keyed on
+        (db_profile, database, schema, table) so a re-analyze of the
+        same table refreshes the cache rather than appending duplicates.
+        """
+        cache_key = self._context_cache_key(
+            db_profile=str(db_profile or ""),
+            database=str(database or ""),
+            schema=str(schema or ""),
+            table=str(table or ""),
+        )
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO run_context_cache
+                    (cache_key, db_profile, database_name, schema_name, table_name,
+                     payload_json, source_run_id, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    source_run_id = excluded.source_run_id,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                """,
+                (
+                    cache_key,
+                    str(db_profile or ""),
+                    str(database or ""),
+                    str(schema or ""),
+                    str(table or ""),
+                    json.dumps(payload, ensure_ascii=True),
+                    int(source_run_id) if source_run_id is not None else None,
+                    now,
+                    (now + float(ttl_seconds)) if ttl_seconds > 0 else None,
+                ),
+            )
+
+    def lookup_run_context_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+    ) -> dict[str, Any] | None:
+        """Return the cached payload for a table, or ``None`` if missing/expired.
+
+        Expired rows are kept on disk (cheaper than rewriting) but the
+        lookup pretends they're absent so callers always rebuild from
+        the live database. ``gc_run_context_cache`` reaps them.
+        """
+        cache_key = self._context_cache_key(
+            db_profile=str(db_profile or ""),
+            database=str(database or ""),
+            schema=str(schema or ""),
+            table=str(table or ""),
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json, expires_at, source_run_id, created_at
+                FROM run_context_cache
+                WHERE cache_key = ?
+                """,
+                (cache_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        expires_at = row["expires_at"]
+        if expires_at is not None and float(expires_at) < time.time():
+            return None
+        try:
+            payload = json.loads(row["payload_json"])
+        except Exception:
+            return None
+        return {
+            "payload": payload,
+            "source_run_id": row["source_run_id"],
+            "created_at": float(row["created_at"]),
+        }
+
+    def delete_run_context_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+    ) -> int:
+        """Drop the cache row for a single table; returns rowcount.
+
+        Called from the apply path after a successful COMMENT write so
+        we don't keep stale-but-valid context around for a row the
+        user has already accepted.
+        """
+        cache_key = self._context_cache_key(
+            db_profile=str(db_profile or ""),
+            database=str(database or ""),
+            schema=str(schema or ""),
+            table=str(table or ""),
+        )
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM run_context_cache WHERE cache_key = ?",
+                (cache_key,),
+            )
+            return int(cur.rowcount or 0)
+
+    def gc_run_context_cache(self) -> int:
+        """Sweep cache rows past their TTL; called at process startup."""
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM run_context_cache WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now,),
             )
             return int(cur.rowcount or 0)
 

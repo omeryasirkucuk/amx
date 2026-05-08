@@ -69,26 +69,20 @@ def _connector_for_db_profile(cfg: AMXConfig, profile_name: str) -> DatabaseConn
     return DatabaseConnector(base)
 
 
-def _build_db_profile_dict(
+def _table_profile_to_dicts(
+    profile: Any,
     db: DatabaseConnector,
-    schema: str,
-    table: str,
     *,
-    asset_kind: AssetKind | None = None,
     only_column: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Assemble the ``db_profile`` slice the agents read from.
+    """Convert a freshly-built ``TableProfile`` to the snapshot dict shape.
 
-    Returns ``(db_profile_dict, existing_metadata_dict)`` matching the
-    shape :meth:`Orchestrator._build_context` produces, so the agent
-    prompt builders work without any branching for the re-run path.
-    When ``only_column`` is provided, ``db_profile['columns']`` is
-    narrowed to that single column — sibling columns are kept as
-    ``context_column_names`` so the LLM still sees the table shape.
+    Factored out of :func:`_build_db_profile_dict` so callers that
+    already have a ``TableProfile`` in memory (e.g. the first-run
+    orchestrator) can re-use the conversion without re-introspecting
+    the live database.
     """
-    profile = db.profile_table(schema, table, asset_kind=asset_kind)
     db_name = db.cfg.database or db.cfg.project or db.cfg.catalog or "N/A"
-
     all_cols = [
         {
             "name": c.name,
@@ -105,7 +99,6 @@ def _build_db_profile_dict(
         }
         for c in profile.columns
     ]
-
     if only_column:
         target_cols = [c for c in all_cols if c["name"] == only_column]
         sibling_names = [c["name"] for c in all_cols if c["name"] != only_column]
@@ -133,7 +126,6 @@ def _build_db_profile_dict(
     }
     if sibling_names:
         db_profile["context_column_names"] = sibling_names
-
     existing_metadata = {
         "database": db_name,
         "backend": db.backend,
@@ -142,6 +134,51 @@ def _build_db_profile_dict(
         "database_comment": profile.database_comment,
     }
     return db_profile, existing_metadata
+
+
+def _slice_cached_profile(
+    db_profile: dict[str, Any],
+    *,
+    only_column: str | None,
+) -> dict[str, Any]:
+    """Return a copy of a cached ``db_profile`` narrowed to one column.
+
+    The cache stores the full table profile (every column) so a
+    subsequent re-run targeting a *different* column can still use the
+    same row. This helper rebuilds the column-specific slice the
+    agents expect at call time.
+    """
+    if not only_column:
+        return dict(db_profile)
+    cols = list(db_profile.get("columns") or [])
+    target_cols = [c for c in cols if c.get("name") == only_column]
+    sibling_names = [c.get("name") for c in cols if c.get("name") != only_column]
+    out = dict(db_profile)
+    out["columns"] = target_cols
+    if sibling_names:
+        out["context_column_names"] = sibling_names
+    return out
+
+
+def _build_db_profile_dict(
+    db: DatabaseConnector,
+    schema: str,
+    table: str,
+    *,
+    asset_kind: AssetKind | None = None,
+    only_column: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Assemble the ``db_profile`` slice the agents read from.
+
+    Returns ``(db_profile_dict, existing_metadata_dict)`` matching the
+    shape :meth:`Orchestrator._build_context` produces, so the agent
+    prompt builders work without any branching for the re-run path.
+    When ``only_column`` is provided, ``db_profile['columns']`` is
+    narrowed to that single column — sibling columns are kept as
+    ``context_column_names`` so the LLM still sees the table shape.
+    """
+    profile = db.profile_table(schema, table, asset_kind=asset_kind)
+    return _table_profile_to_dicts(profile, db, only_column=only_column)
 
 
 def _resolve_asset_kind(raw: str | None) -> AssetKind | None:
@@ -249,29 +286,58 @@ def build_context_snapshot(
         )
         return snapshot_id
 
-    # Table / column re-run: live-profile the table fresh.
+    # Table / column re-run: prefer the cached first-run profile when
+    # the user hasn't touched the table out-of-band. Saves a 5-30s
+    # ``profile_table`` round-trip per re-run target. Cache miss /
+    # expiry / cross-database edge case all fall through to the live
+    # profile rebuild below.
     if not db_profile_name:
         raise RerunContextError(
             "Original run has no db_profile recorded and no active profile is set — "
             "cannot rebuild the database context for this re-run."
         )
 
-    db = _connector_for_db_profile(cfg, db_profile_name)
-    try:
-        db_profile, existing_metadata = _build_db_profile_dict(
-            db,
-            schema,
-            table,
-            asset_kind=asset_kind,
-            only_column=column if column else None,
-        )
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
+    parent_database = (parent_run.get("database") or "") if parent_run else ""
+    cached = hs.lookup_run_context_cache(
+        db_profile=db_profile_name,
+        database=parent_database,
+        schema=schema,
+        table=table,
+    )
+    db_profile_dict: dict[str, Any] | None = None
+    existing_metadata: dict[str, Any] | None = None
+    if cached and isinstance(cached.get("payload"), dict):
+        cached_payload = cached["payload"]
+        cached_db_profile = cached_payload.get("db_profile")
+        cached_existing = cached_payload.get("existing_metadata")
+        if isinstance(cached_db_profile, dict) and isinstance(cached_existing, dict):
+            db_profile_dict = _slice_cached_profile(
+                cached_db_profile, only_column=column if column else None
+            )
+            existing_metadata = dict(cached_existing)
+            log.info(
+                "rerun: cache hit for %s.%s -- skipping live profile_table",
+                schema,
+                table,
+            )
 
-    payload["db_profile"] = db_profile
+    if db_profile_dict is None or existing_metadata is None:
+        db = _connector_for_db_profile(cfg, db_profile_name)
+        try:
+            db_profile_dict, existing_metadata = _build_db_profile_dict(
+                db,
+                schema,
+                table,
+                asset_kind=asset_kind,
+                only_column=column if column else None,
+            )
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    payload["db_profile"] = db_profile_dict
     payload["existing_metadata"] = existing_metadata
 
     snapshot_id = uuid.uuid4().hex
@@ -312,9 +378,56 @@ def serialize_context(ctx: AgentContext) -> dict[str, Any]:
     return asdict(ctx)
 
 
+def cache_table_profile(
+    *,
+    profile: Any,
+    db: DatabaseConnector,
+    db_profile_name: str,
+    database: str,
+    run_id: int | None = None,
+) -> bool:
+    """Persist the freshly-built table profile for re-use on re-run.
+
+    Called from the analyze path right after ``db.profile_table``
+    succeeds. Cache hits in :func:`build_context_snapshot` skip the
+    live profile rebuild — saving 5-30s per re-run target.
+
+    Returns ``True`` when the row was written, ``False`` on any
+    exception (best-effort: a failed cache write must never break the
+    analyze loop).
+    """
+    hs = history_store()
+    if hs is None:
+        return False
+    try:
+        db_profile_dict, existing_metadata = _table_profile_to_dicts(profile, db)
+        payload = {
+            "db_profile": db_profile_dict,
+            "existing_metadata": existing_metadata,
+        }
+        hs.save_run_context_cache(
+            db_profile=str(db_profile_name or ""),
+            database=str(database or ""),
+            schema=str(profile.schema or ""),
+            table=str(profile.name or ""),
+            payload=payload,
+            source_run_id=run_id,
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - best-effort
+        log.debug(
+            "cache_table_profile failed for %s.%s: %s",
+            getattr(profile, "schema", "?"),
+            getattr(profile, "name", "?"),
+            exc,
+        )
+        return False
+
+
 __all__ = [
     "RerunContextError",
     "build_context_snapshot",
+    "cache_table_profile",
     "hydrate_context",
     "serialize_context",
 ]

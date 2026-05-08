@@ -123,6 +123,10 @@ def create_app(
         _store = _hs()
         if _store is not None:
             _store.gc_orphan_rerun_snapshots()
+            # Also reap context-cache rows past their TTL so a stale
+            # schema doesn't quietly bias re-run prompts after the
+            # user altered the table out-of-band.
+            _store.gc_run_context_cache()
     except Exception:
         # Startup must never crash on a GC hiccup; the executor's own
         # cleanup keeps the table tidy regardless.

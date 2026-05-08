@@ -577,6 +577,28 @@ def apply_review_results_to_db(
                                     audit_run_id=audit_run_id,
                                     old_comment=(pre_old[offset - 1] if pre_old else None),
                                 )
+                                # Mirror the per-row branch's cache GC
+                                # so a successful batch apply also drops
+                                # the cached first-run profile for the
+                                # touched table. Best-effort.
+                                if audit_log is not None:
+                                    try:
+                                        audit_log.delete_run_context_cache(
+                                            db_profile=audit_profile or "",
+                                            database=db.cfg.database
+                                            or db.cfg.project
+                                            or db.cfg.catalog
+                                            or "",
+                                            schema=item.schema,
+                                            table=item.table or "",
+                                        )
+                                    except Exception as cache_exc:
+                                        log.debug(
+                                            "delete_run_context_cache (batch) failed for %s.%s: %s",
+                                            item.schema,
+                                            item.table,
+                                            cache_exc,
+                                        )
                             index = next_index
                             continue
                     except Exception as batch_exc:
@@ -624,6 +646,26 @@ def apply_review_results_to_db(
                     audit_run_id=audit_run_id,
                     old_comment=pre_old_value,
                 )
+                # Drop the cached first-run profile for this table so
+                # we don't keep stale-but-valid context around for a
+                # row the user has already accepted. The cache write
+                # path is best-effort, so the GC must be too — a
+                # failed delete must never break the apply loop.
+                if audit_log is not None:
+                    try:
+                        audit_log.delete_run_context_cache(
+                            db_profile=audit_profile or "",
+                            database=db.cfg.database or db.cfg.project or db.cfg.catalog or "",
+                            schema=r.schema,
+                            table=r.table or "",
+                        )
+                    except Exception as cache_exc:
+                        log.debug(
+                            "delete_run_context_cache failed for %s.%s: %s",
+                            r.schema,
+                            r.table,
+                            cache_exc,
+                        )
             except Exception as exc:
                 if on_progress is not None:
                     on_progress(r, "failed", index + 1, total, str(exc))

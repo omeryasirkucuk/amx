@@ -118,6 +118,14 @@ class TableProcessor:
         self._check_cancel(phase="profile_fetch")
         profile = self._fetch_profile()
 
+        # Cache the freshly-profiled table so a re-run on any of its
+        # columns skips the 5-30s ``profile_table`` round-trip. Cached
+        # rows live until the apply path drops them (or the 24h TTL
+        # expires, defending against out-of-band schema changes the
+        # cache can't see). Best-effort — a cache write never breaks
+        # the analyze loop.
+        self._cache_profile_for_rerun(profile)
+
         self._check_cancel(phase="filters")
         if not self._apply_filters(profile):
             return []
@@ -139,6 +147,53 @@ class TableProcessor:
                 self.table,
                 asset_kind=self.asset_kind,
             )
+
+    def _cache_profile_for_rerun(self, profile: TableProfile) -> None:
+        """Persist the table profile for re-use on subsequent re-runs.
+
+        Reads ``db_profile`` (the named profile, not the connector's
+        config dataclass) off the history row when ``self.orch.run_id``
+        is set; otherwise no-ops because the cache key needs the name
+        to disambiguate two profiles pointing at databases with the
+        same string. ``database`` falls back to ``self.orch.db.cfg``
+        for analytics backends that pin it on the connector.
+        """
+        from amx.agents.rerun_context import cache_table_profile
+        from amx.storage.sqlite_store import history_store
+
+        try:
+            hs = history_store()
+            db_profile_name = ""
+            database = ""
+            if hs is not None and self.orch.run_id is not None:
+                run = hs.get_run(int(self.orch.run_id))
+                if isinstance(run, dict):
+                    db_profile_name = str(run.get("db_profile") or "")
+                    database = str(run.get("database") or "")
+            if not database:
+                database = (
+                    getattr(self.orch.db.cfg, "database", "")
+                    or getattr(self.orch.db.cfg, "project", "")
+                    or getattr(self.orch.db.cfg, "catalog", "")
+                    or ""
+                )
+            if not db_profile_name:
+                # Without a profile name we'd write a cache row keyed
+                # only on (database, schema, table) — fine for users
+                # with a single profile but ambiguous in multi-profile
+                # setups. Skip rather than risk a wrong-profile hit.
+                return
+            cache_table_profile(
+                profile=profile,
+                db=self.orch.db,
+                db_profile_name=db_profile_name,
+                database=database,
+                run_id=self.orch.run_id,
+            )
+        except Exception:
+            # Best-effort caching — analyze must continue even if the
+            # cache layer is misconfigured (e.g. SQLite locked).
+            pass
 
     # ── Phase 2: filter chain ──────────────────────────────────────────
 
