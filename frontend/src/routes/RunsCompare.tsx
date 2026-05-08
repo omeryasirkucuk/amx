@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ChevronLeft,
   ChevronRight,
   Download,
   GitCompare,
   Search,
+  Sparkles,
 } from "lucide-react";
 
 import PageHeader from "../components/PageHeader";
@@ -188,7 +189,23 @@ function readStoredPageSize(): PageSize {
     : 20;
 }
 
+/** Compose the seed prompt the Ask AMX modal hand-off pushes into the
+ *  /ask page. Stays short on purpose — the LLM can call the
+ *  compare_runs tool with the run ids to fetch the payload itself, no
+ *  need to dump the whole pivot into the first user turn. */
+function buildCompareSeedPrompt(data: CompareResponse): string {
+  const ids = data.runs.map((r) => `#${r.id}`).join(", ");
+  return (
+    `I just compared ${data.runs.length} runs (${ids}). ` +
+    "Walk me through the key differences (model time, tokens, cost, " +
+    "confidence band split, avg logprob) and tell me which run produced " +
+    "the most reliable descriptions. Use the compare_runs tool to fetch " +
+    "the payload."
+  );
+}
+
 export default function RunsCompare() {
+  const navigate = useNavigate();
   const [selected, setSelected] = useState<number[]>([]);
   const [search, setSearch] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<CommandKindFilter>("all");
@@ -548,6 +565,18 @@ export default function RunsCompare() {
                 className="rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
               >
                 Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const seedPrompt = buildCompareSeedPrompt(compare.data!);
+                  setViewerOpen(false);
+                  navigate("/ask", { state: { seedPrompt } });
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm text-ink-muted transition hover:text-ink"
+              >
+                <Sparkles size={14} />
+                Ask AMX
               </button>
               <button
                 type="button"

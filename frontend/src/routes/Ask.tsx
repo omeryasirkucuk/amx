@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleStop, Plus, Settings as SettingsIcon, Sparkles } from "lucide-react";
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import PageHeader from "../components/PageHeader";
 import AskChat, { type SubmittedTurn } from "../components/AskChat";
@@ -53,6 +53,7 @@ function turnsToBubbles(turns: SessionTurn[]): SubmittedTurn[] {
 
 export default function Ask() {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [seedTurns, setSeedTurns] = useState<SubmittedTurn[] | null>(null);
   // Monotonic counter so AskChat reseeds even when the user clicks the
@@ -60,6 +61,27 @@ export default function Ask() {
   const [seedToken, setSeedToken] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<number | null>(null);
+
+  // Cross-page hand-off: when /runs/compare's "Ask AMX" button (or any
+  // other deep link) navigates to /ask with state.seedPrompt, drop it
+  // into AskChat as a single user turn so the chat opens with the
+  // question pre-filled. We do NOT auto-submit — the user can edit it
+  // first or hit cancel without losing context. After consuming we
+  // strip the state via history.replaceState so a back/forward bounce
+  // doesn't re-seed the same prompt twice.
+  useEffect(() => {
+    const seed = (location.state as { seedPrompt?: string } | null)?.seedPrompt;
+    if (!seed) return;
+    setSelectedSessionId(null);
+    setSeedTurns([{ role: "user", content: seed }]);
+    setSeedToken((n) => n + 1);
+    setLoadError(null);
+    window.history.replaceState({}, "");
+    // location.state is the only signal we need; selectedSessionId etc.
+    // are set inside the effect and re-running on their changes would
+    // create a feedback loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   // Pre-flight: gate the chat surface on a configured LLM. Without
   // this the user can type a question, click submit, and only then
