@@ -73,6 +73,14 @@ interface ResultRow {
   chosen_description: string | null;
   evaluation: string | null;
   applied_at: number | null;
+  /** One-sentence justification the LLM emitted alongside the
+   *  description ("REASONING:" line in the prompt). Persisted in
+   *  ``run_results.reasoning`` and surfaced to the CLI's interactive
+   *  review prompt; rendered on the Studio Run detail page so the
+   *  reviewer can see WHY the model picked the chosen wording
+   *  without having to fall back to the CLI. Empty / null on legacy
+   *  rows that predate the prompt change demanding the line. */
+  reasoning?: string | null;
   /** Re-Run versioning fields. ``rerun_seq`` is 0 for originals,
    *  1+ for successive re-runs. ``parent_result_id`` chains a re-run
    *  back to the original (NULL on originals). ``user_instructions``
@@ -129,6 +137,11 @@ interface ColumnDetail {
   alternatives: unknown;
   chosen_description: string;
   source?: string;
+  /** LLM's justification for the chosen wording. Forwarded by
+   *  ``_column_details_for_table`` (web/routers/runs.py) so the live
+   *  per-column card surfaces it in the same place the persisted
+   *  Run detail page does. Empty string when missing. */
+  reasoning?: string;
 }
 
 interface ActivityRow {
@@ -538,6 +551,7 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
           </span>
         )}
       </div>
+      <ReasoningDisclosure reasoning={detail.reasoning ?? ""} />
       <div className="mt-2 space-y-1">
         {alts.length === 0 ? (
           <div className="text-xs text-ink-dim">{detail.chosen_description || "—"}</div>
@@ -565,6 +579,33 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
         )}
       </div>
     </div>
+  );
+}
+
+/** One-sentence justification the LLM emitted alongside the
+ *  description. The CLI prints this inline at review time
+ *  (``Reasoning: …``); Studio renders it as a small italic muted
+ *  disclosure under the chosen description. Long reasoning clamps
+ *  to two lines by default, click to expand the full text inline.
+ *  Hidden entirely when the value is empty / missing so legacy
+ *  rows that predate the prompt change don't render an empty stub.
+ */
+function ReasoningDisclosure({ reasoning }: { reasoning: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const trimmed = (reasoning || "").trim();
+  if (!trimmed) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      className="mt-2 block w-full rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-left text-xs italic text-ink-muted transition hover:border-accent/30 hover:text-ink"
+      title={expanded ? "Click to collapse" : trimmed}
+    >
+      <span className="not-italic mr-2 text-[10px] uppercase tracking-wider text-ink-dim">
+        Why
+      </span>
+      <span className={cn(expanded ? "" : "line-clamp-2")}>{trimmed}</span>
+    </button>
   );
 }
 
@@ -2175,6 +2216,7 @@ function ResultRowItemImpl({
           />
         </div>
       )}
+      <ReasoningDisclosure reasoning={displayRow.reasoning ?? ""} />
       <div className="mt-2 space-y-1">
         {visible.length === 0 ? (
           <p className="text-xs text-ink-dim">{chosen || "—"}</p>
