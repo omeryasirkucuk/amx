@@ -347,6 +347,33 @@ def bert_score_for_pair(prediction: str, reference: str) -> float | None:
     except ImportError:
         return None
 
+    # Defensive transformers version check. bert-score pulls tokenizers
+    # 0.22+ on a fresh install, but if the user already has an older
+    # transformers (4.51.x and below pin tokenizers<0.22) sitting in
+    # the environment, the BERTScorer constructor either crashes with
+    # a cryptic ``ImportError`` or silently scores with an incompatible
+    # tokenizer. Surface a clean upgrade hint and skip cleanly so the
+    # rest of the quality response still ships.
+    try:
+        import transformers as _transformers
+
+        _ver = tuple(int(p) for p in _transformers.__version__.split(".")[:2])
+        if _ver < (4, 56):
+            from amx.utils.console import warn as _warn
+
+            _warn(
+                f"BERTScore (Tier 1.5) skipped — transformers "
+                f"{_transformers.__version__} pre-dates the tokenizers "
+                f"0.22 cutover. Run: pip install --upgrade "
+                f"\"transformers>=4.56\""
+            )
+            return None
+    except (ImportError, ValueError, AttributeError):
+        # Couldn't parse the version string — let the BERTScorer
+        # constructor decide. Real errors fall into the broader
+        # ``except Exception`` below.
+        pass
+
     # Silence transformers' "Some weights of RobertaModel were not
     # initialized..." warning AND any direct stderr writes the
     # tokenizer / accelerate libraries make during the first model
