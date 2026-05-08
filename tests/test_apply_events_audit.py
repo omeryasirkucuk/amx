@@ -163,3 +163,54 @@ def test_list_apply_events_respects_limit(store: SQLiteHistoryStore) -> None:
         store.record_apply_event(schema_name="s", new_comment=f"c-{i}")
     assert len(store.list_apply_events(limit=3)) == 3
     assert len(store.list_apply_events(limit=100)) == 10
+
+
+def test_list_recent_runs_returns_tokens_json_for_aggregation(
+    store: SQLiteHistoryStore,
+) -> None:
+    """``/api/usage`` aggregates per-run tokens by reading
+    ``tokens_json`` off each row. The previous SELECT skipped that
+    column so the aggregator silently received None and produced an
+    empty Overview. Pin the SELECT so this regression can't slip back.
+    """
+    run_id = store.create_run(
+        command="analyze.run",
+        mode="chat",
+        db_backend="postgresql",
+        db_profile="local",
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        scope={},
+    )
+    store.finish_run(
+        run_id,
+        status="success",
+        metrics={"duration_sec": 1.0},
+        tokens={
+            "total_tokens": 300,
+            "total_cost_usd": 0.0042,
+            "records": [
+                {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 200,
+                    "input_cost_usd": 0.001,
+                    "output_cost_usd": 0.0032,
+                }
+            ],
+        },
+        results={},
+    )
+
+    runs = store.list_recent_runs(limit=10, command_filter=None)
+    assert len(runs) == 1
+    raw = runs[0].get("tokens_json")
+    assert raw, "tokens_json must be present on the returned dict"
+    # Either a JSON string the aggregator parses or a pre-parsed dict.
+    if isinstance(raw, str):
+        import json as _json
+
+        payload = _json.loads(raw)
+    else:
+        payload = raw
+    assert payload.get("total_tokens") == 300
+    assert payload.get("records")
