@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronDown, PlayCircle, Settings as SettingsIcon } from "lucide-react";
@@ -9,7 +9,7 @@ import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
-import { Button, Field, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
+import { Button, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
 
 interface SchemaPickState {
   schema: string;
@@ -48,6 +48,32 @@ const EMPTY_OVERRIDES: OverrideFormState = {
   customInputCost: "",
   customOutputCost: "",
 };
+
+/** Build an OverrideFormState seeded with the active profile's
+ *  current values so every input shows a real number ("0.20",
+ *  "16384") instead of an empty box. Numeric ``null`` values
+ *  collapse to ``""`` because cost overrides are nullable on the
+ *  backend and the user clears them by emptying the field. Used
+ *  both for initial seeding via useEffect and for the "Reset to
+ *  profile defaults" button. */
+function seedFromDefaults(defaults: LLMProfileDefaults | null): OverrideFormState {
+  const num = (value: number | null | undefined): string =>
+    value === null || value === undefined ? "" : String(value);
+  if (!defaults) return EMPTY_OVERRIDES;
+  return {
+    temperature: num(defaults.temperature),
+    maxTokens: num(defaults.max_tokens),
+    nAlternatives: num(defaults.n_alternatives),
+    columnBatchSize: num(defaults.column_batch_size),
+    promptDetail: defaults.prompt_detail ?? "",
+    descriptionVerbosity: defaults.description_verbosity ?? "",
+    thinkingBudget: num(defaults.thinking_budget),
+    logprobHigh: num(defaults.logprob_high),
+    logprobMedium: num(defaults.logprob_medium),
+    customInputCost: num(defaults.custom_input_cost_per_mtok),
+    customOutputCost: num(defaults.custom_output_cost_per_mtok),
+  };
+}
 
 /** Coerce a stringy form value into a numeric override only when the
  *  user actually typed something new. Returns ``undefined`` to mean
@@ -132,6 +158,19 @@ export default function RunNew() {
   const supportsBatch = !!ctx.data?.llm_supports_batch;
   const llmProvider = ctx.data?.llm_provider ?? null;
   const profileDefaults = ctx.data?.llm_profile_defaults ?? null;
+
+  // Seed the override form with the active profile's values the
+  // first time they arrive so every input shows a real starting
+  // point ("0.20", "16384", "standard") instead of a row of empty
+  // boxes. Subsequent profile-defaults reads are ignored —
+  // a React Query refetch must not stomp the user's already-typed
+  // overrides mid-session.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !profileDefaults) return;
+    seededRef.current = true;
+    setOverrides(seedFromDefaults(profileDefaults));
+  }, [profileDefaults]);
   // Pre-flight gate: the worker fails fast in _run_worker_body when
   // cfg.llm.provider/model are missing, but the SPA shouldn't even
   // accept the click — the user only sees the error after the job
@@ -664,11 +703,49 @@ interface AdvancedLLMOverridesProps {
   profileName: string | null;
 }
 
+/** One row in the disclosure: label + hint icon, default chip on
+ *  the right, input on the next line. Single column to fit the
+ *  narrow side card without wrapping the labels. */
+function OverrideRow({
+  label,
+  hint,
+  defaultValue,
+  changed,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  defaultValue: string;
+  changed: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-muted">
+          {label}
+          {hint && <InfoHint text={hint} />}
+        </span>
+        <span
+          className={cn(
+            "font-mono text-[10px] tabular-nums",
+            changed ? "text-accent" : "text-ink-dim",
+          )}
+          title={`Profile default: ${defaultValue}`}
+        >
+          {changed ? "override" : `default ${defaultValue}`}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /** Disclosure block on /runs/new exposing every LLM-profile tuning
- *  knob as a per-run override. Profile defaults pre-fill via the
- *  `Profile: …` hint next to each input. Empty input = use profile
- *  default; the parent only forwards changed values to the backend.
- *  The saved profile is never mutated. */
+ *  knob as a per-run override. Inputs pre-fill from the active
+ *  profile's defaults so the user has a real starting point. The
+ *  parent only forwards values that differ from the profile default
+ *  to the backend; the saved profile is never mutated. */
 function AdvancedLLMOverrides({
   open,
   onToggle,
@@ -679,23 +756,46 @@ function AdvancedLLMOverrides({
 }: AdvancedLLMOverridesProps) {
   const update = (patch: Partial<OverrideFormState>) =>
     onChange({ ...form, ...patch });
-  const overrideCount = useMemo(() => {
-    let n = 0;
-    if (pickNumber(form.temperature, defaults?.temperature) !== undefined) n++;
-    if (pickNumber(form.maxTokens, defaults?.max_tokens) !== undefined) n++;
-    if (pickNumber(form.nAlternatives, defaults?.n_alternatives) !== undefined) n++;
-    if (pickNumber(form.columnBatchSize, defaults?.column_batch_size) !== undefined) n++;
-    if (pickString(form.promptDetail, defaults?.prompt_detail) !== undefined) n++;
-    if (pickString(form.descriptionVerbosity, defaults?.description_verbosity) !== undefined) n++;
-    if (pickNumber(form.thinkingBudget, defaults?.thinking_budget) !== undefined) n++;
-    if (pickNumber(form.logprobHigh, defaults?.logprob_high) !== undefined) n++;
-    if (pickNumber(form.logprobMedium, defaults?.logprob_medium) !== undefined) n++;
-    if (pickNumber(form.customInputCost, defaults?.custom_input_cost_per_mtok) !== undefined) n++;
-    if (pickNumber(form.customOutputCost, defaults?.custom_output_cost_per_mtok) !== undefined) n++;
-    return n;
-  }, [form, defaults]);
-  const profileBadge = (value: number | string | null | undefined): string =>
+  const diffMap = useMemo(
+    () => ({
+      temperature: pickNumber(form.temperature, defaults?.temperature) !== undefined,
+      maxTokens: pickNumber(form.maxTokens, defaults?.max_tokens) !== undefined,
+      nAlternatives:
+        pickNumber(form.nAlternatives, defaults?.n_alternatives) !== undefined,
+      columnBatchSize:
+        pickNumber(form.columnBatchSize, defaults?.column_batch_size) !== undefined,
+      promptDetail:
+        pickString(form.promptDetail, defaults?.prompt_detail) !== undefined,
+      descriptionVerbosity:
+        pickString(form.descriptionVerbosity, defaults?.description_verbosity) !==
+        undefined,
+      thinkingBudget:
+        pickNumber(form.thinkingBudget, defaults?.thinking_budget) !== undefined,
+      logprobHigh:
+        pickNumber(form.logprobHigh, defaults?.logprob_high) !== undefined,
+      logprobMedium:
+        pickNumber(form.logprobMedium, defaults?.logprob_medium) !== undefined,
+      customInputCost:
+        pickNumber(form.customInputCost, defaults?.custom_input_cost_per_mtok) !==
+        undefined,
+      customOutputCost:
+        pickNumber(form.customOutputCost, defaults?.custom_output_cost_per_mtok) !==
+        undefined,
+    }),
+    [form, defaults],
+  );
+  const overrideCount = useMemo(
+    () => Object.values(diffMap).filter(Boolean).length,
+    [diffMap],
+  );
+  const fmt = (value: number | string | null | undefined): string =>
     value === null || value === undefined || value === "" ? "—" : String(value);
+  const inputCls =
+    "w-full rounded-md border border-surface-border bg-surface px-2 py-1 font-mono text-xs tabular-nums";
+  const selectCls =
+    "w-full rounded-md border border-surface-border bg-surface px-2 py-1 text-xs";
+  const sectionCls =
+    "rounded-md border border-border/60 bg-surface-subtle/40 px-3 py-2.5 space-y-2.5";
 
   return (
     <div className="rounded-md border border-border bg-surface-subtle/30">
@@ -717,232 +817,238 @@ function AdvancedLLMOverrides({
           Advanced LLM settings
           <InfoHint text="Override the active LLM profile's tuning knobs for this run only. The saved profile is not mutated." />
         </span>
-        <span className="text-[10.5px] uppercase tracking-wider text-ink-dim">
+        <span
+          className={cn(
+            "text-[10px] uppercase tracking-wider",
+            overrideCount > 0 ? "text-accent" : "text-ink-dim",
+          )}
+        >
           {overrideCount > 0
             ? `${overrideCount} override${overrideCount > 1 ? "s" : ""}`
-            : "profile defaults"}
+            : "match profile"}
         </span>
       </button>
       {open && (
-        <div className="space-y-4 border-t border-border px-3 py-3">
+        <div className="space-y-3 border-t border-border px-3 py-3 text-xs">
           <p className="text-[11px] text-ink-dim">
-            Profile{" "}
+            Source profile{" "}
             <span className="font-mono text-ink-muted">
               {profileName ?? "—"}
-            </span>{" "}
-            is the source of truth — empty fields fall back to its
-            current values. Type a new value to override for this run
-            only.
+            </span>
+            . Edit a field to override for this run only.
           </p>
 
-          <h4 className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-dim">
-            Generation
-          </h4>
-          <div className="grid grid-cols-2 gap-3">
-            <Field
-              label="Temperature (0.0–2.0)"
-              hint={`Profile: ${profileBadge(defaults?.temperature)}`}
-              description="Creativity: low = consistent, high = varied (0.1–0.3 recommended)."
+          <div className={sectionCls}>
+            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+              Generation
+            </h4>
+
+            <OverrideRow
+              label="Temperature"
+              hint="Creativity: low = consistent, high = varied (0.1–0.3 recommended)."
+              defaultValue={fmt(defaults?.temperature)}
+              changed={diffMap.temperature}
             >
               <input
                 type="number"
                 min={0}
                 max={2}
                 step={0.05}
-                placeholder={profileBadge(defaults?.temperature)}
                 value={form.temperature}
                 onChange={(e) => update({ temperature: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
-            <Field
+            </OverrideRow>
+
+            <OverrideRow
               label="Max output tokens"
-              hint={`Profile: ${profileBadge(defaults?.max_tokens)}`}
-              description="Output budget per LLM call. Reasoning models auto-tune a 32k floor on top. Higher = bigger answers + higher cost."
+              hint="Output budget per LLM call. Reasoning models auto-tune a 32k floor on top. Higher = bigger answers + higher cost."
+              defaultValue={fmt(defaults?.max_tokens)}
+              changed={diffMap.maxTokens}
             >
               <input
                 type="number"
                 min={256}
                 max={262_144}
                 step={1024}
-                placeholder={profileBadge(defaults?.max_tokens)}
                 value={form.maxTokens}
                 onChange={(e) => update({ maxTokens: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
-            <Field
-              label="Alternatives per column (1–5)"
-              hint={`Profile: ${profileBadge(defaults?.n_alternatives)}`}
-              description="How many alternative description proposals to generate per column."
+            </OverrideRow>
+
+            <OverrideRow
+              label="Alternatives per column"
+              hint="How many alternative description proposals to generate per column (1–5)."
+              defaultValue={fmt(defaults?.n_alternatives)}
+              changed={diffMap.nAlternatives}
             >
               <input
                 type="number"
                 min={1}
                 max={5}
                 step={1}
-                placeholder={profileBadge(defaults?.n_alternatives)}
                 value={form.nAlternatives}
                 onChange={(e) => update({ nAlternatives: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
-            <Field
+            </OverrideRow>
+
+            <OverrideRow
               label="Column batch size"
-              hint={`Profile: ${profileBadge(defaults?.column_batch_size)}`}
-              description="Columns processed per LLM call. Higher = cheaper; lower = more stable."
+              hint="Columns processed per LLM call. Higher = cheaper; lower = more stable."
+              defaultValue={fmt(defaults?.column_batch_size)}
+              changed={diffMap.columnBatchSize}
             >
               <input
                 type="number"
                 min={1}
                 max={200}
                 step={1}
-                placeholder={profileBadge(defaults?.column_batch_size)}
                 value={form.columnBatchSize}
                 onChange={(e) => update({ columnBatchSize: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
-            <Field
+            </OverrideRow>
+
+            <OverrideRow
               label="Prompt detail"
-              hint={`Profile: ${profileBadge(defaults?.prompt_detail)}`}
-              description="How much context the model receives. More = accurate; less = fast/cheap."
+              hint="How much context the model receives. More = accurate; less = fast/cheap."
+              defaultValue={fmt(defaults?.prompt_detail)}
+              changed={diffMap.promptDetail}
             >
               <select
-                value={form.promptDetail || (defaults?.prompt_detail ?? "")}
+                value={form.promptDetail}
                 onChange={(e) => update({ promptDetail: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
+                className={selectCls}
               >
+                {!form.promptDetail && <option value="">—</option>}
                 {["minimal", "standard", "detailed", "full"].map((v) => (
                   <option key={v} value={v}>
                     {v}
                   </option>
                 ))}
               </select>
-            </Field>
-            <Field
+            </OverrideRow>
+
+            <OverrideRow
               label="Description verbosity"
-              hint={`Profile: ${profileBadge(defaults?.description_verbosity)}`}
-              description="Output length: brief = one sentence, exhaustive = detailed."
+              hint="Output length: brief = one sentence, exhaustive = detailed."
+              defaultValue={fmt(defaults?.description_verbosity)}
+              changed={diffMap.descriptionVerbosity}
             >
               <select
-                value={
-                  form.descriptionVerbosity ||
-                  (defaults?.description_verbosity ?? "")
-                }
-                onChange={(e) =>
-                  update({ descriptionVerbosity: e.target.value })
-                }
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
+                value={form.descriptionVerbosity}
+                onChange={(e) => update({ descriptionVerbosity: e.target.value })}
+                className={selectCls}
               >
+                {!form.descriptionVerbosity && <option value="">—</option>}
                 {["brief", "detailed", "comprehensive", "exhaustive"].map((v) => (
                   <option key={v} value={v}>
                     {v}
                   </option>
                 ))}
               </select>
-            </Field>
-            <Field
+            </OverrideRow>
+
+            <OverrideRow
               label="Thinking budget"
-              hint={`Profile: ${profileBadge(defaults?.thinking_budget)}`}
-              description="Token budget for the model's internal reasoning (Anthropic extended thinking + similar). 0 = off."
+              hint="Token budget for the model's internal reasoning (Anthropic extended thinking + similar). 0 = off."
+              defaultValue={fmt(defaults?.thinking_budget)}
+              changed={diffMap.thinkingBudget}
             >
               <input
                 type="number"
                 min={0}
                 max={64_000}
                 step={256}
-                placeholder={profileBadge(defaults?.thinking_budget)}
                 value={form.thinkingBudget}
                 onChange={(e) => update({ thinkingBudget: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
+            </OverrideRow>
           </div>
 
-          <h4 className="border-t border-border pt-3 text-[10.5px] font-semibold uppercase tracking-wider text-ink-dim">
-            Confidence thresholds
-          </h4>
-          <div className="grid grid-cols-2 gap-3">
-            <Field
-              label="High (≥)"
-              hint={`Profile: ${profileBadge(defaults?.logprob_high)}`}
-              description="Predictions above this score are flagged 'high confidence'."
+          <div className={sectionCls}>
+            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+              Confidence thresholds
+            </h4>
+            <OverrideRow
+              label="High threshold (≥)"
+              hint="Predictions above this token-probability score are flagged 'high confidence'."
+              defaultValue={fmt(defaults?.logprob_high)}
+              changed={diffMap.logprobHigh}
             >
               <input
                 type="number"
                 min={0}
                 max={1}
                 step={0.05}
-                placeholder={profileBadge(defaults?.logprob_high)}
                 value={form.logprobHigh}
                 onChange={(e) => update({ logprobHigh: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
-            <Field
-              label="Medium (≥)"
-              hint={`Profile: ${profileBadge(defaults?.logprob_medium)}`}
-              description="Above this is 'medium confidence'; below counts as 'low'."
+            </OverrideRow>
+            <OverrideRow
+              label="Medium threshold (≥)"
+              hint="Above this is 'medium confidence'; below counts as 'low'."
+              defaultValue={fmt(defaults?.logprob_medium)}
+              changed={diffMap.logprobMedium}
             >
               <input
                 type="number"
                 min={0}
                 max={1}
                 step={0.05}
-                placeholder={profileBadge(defaults?.logprob_medium)}
                 value={form.logprobMedium}
                 onChange={(e) => update({ logprobMedium: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
+            </OverrideRow>
           </div>
 
-          <h4 className="border-t border-border pt-3 text-[10.5px] font-semibold uppercase tracking-wider text-ink-dim">
-            Cost overrides
-          </h4>
-          <p className="text-[11px] text-ink-dim">
-            Reporting only — does not affect the LLM call. Both rates
-            must be set together, or both blank.
-          </p>
-          <div className="grid grid-cols-2 gap-3">
-            <Field
-              label="Custom input cost (USD / 1M tokens)"
-              hint={`Profile: ${profileBadge(defaults?.custom_input_cost_per_mtok)}`}
+          <div className={sectionCls}>
+            <h4 className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
+              Cost overrides
+              <InfoHint text="Reporting only — does not change the LLM call. Both rates must be set together, or both blank." />
+            </h4>
+            <OverrideRow
+              label="Input USD / 1M"
+              defaultValue={fmt(defaults?.custom_input_cost_per_mtok)}
+              changed={diffMap.customInputCost}
             >
               <input
                 type="number"
                 min={0}
                 step={0.01}
-                placeholder={profileBadge(defaults?.custom_input_cost_per_mtok)}
                 value={form.customInputCost}
                 onChange={(e) => update({ customInputCost: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
-            <Field
-              label="Custom output cost (USD / 1M tokens)"
-              hint={`Profile: ${profileBadge(defaults?.custom_output_cost_per_mtok)}`}
+            </OverrideRow>
+            <OverrideRow
+              label="Output USD / 1M"
+              defaultValue={fmt(defaults?.custom_output_cost_per_mtok)}
+              changed={diffMap.customOutputCost}
             >
               <input
                 type="number"
                 min={0}
                 step={0.01}
-                placeholder={profileBadge(defaults?.custom_output_cost_per_mtok)}
                 value={form.customOutputCost}
                 onChange={(e) => update({ customOutputCost: e.target.value })}
-                className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
+                className={inputCls}
               />
-            </Field>
+            </OverrideRow>
           </div>
 
           {overrideCount > 0 && (
             <button
               type="button"
-              onClick={() => onChange(EMPTY_OVERRIDES)}
+              onClick={() => onChange(seedFromDefaults(defaults))}
               className="text-[11px] text-accent underline-offset-2 hover:underline"
             >
-              Reset all overrides
+              Reset to profile defaults
             </button>
           )}
         </div>
