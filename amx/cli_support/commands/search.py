@@ -490,16 +490,26 @@ def launch_ask_session(
     question_text: str,
     *,
     log_event: LogEvent,
+    follow_up: bool = True,
 ) -> None:
-    """Launch a one-shot ``/ask`` session for a pre-formed question.
+    """Launch a seeded ``/ask`` session for a pre-formed question and
+    leave the user in the sticky ``ask>`` REPL so they can act on
+    whatever follow-up the LLM offered.
 
     Used by sibling commands (``/history compare``) when the user
     accepts a "next: Ask AMX about this" prompt. Performs the same
     LLM-config pre-flight as the normal ``/search ask`` Click command,
-    builds a service for the persisted DB scope, and routes through
-    ``_run_search_ask`` so the seeded chat behaves identically to the
-    user-typed path. No-ops with a clean error message when the LLM
-    isn't configured (so callers don't have to repeat the guard).
+    builds a service for the persisted DB scope, routes the seed
+    question through ``_run_search_ask`` so the answer renders
+    identically to the user-typed path, and then drops into the
+    sticky ``ask>`` REPL — without that drop the LLM's
+    "If you want, I can next drill into the per-column comparison"
+    nudge was unactionable: control returned to the parent slash
+    prompt and the user couldn't reply without losing the chat
+    session's context.
+
+    ``follow_up=False`` skips the REPL drop (used by callers / tests
+    that want strict one-shot semantics).
     """
     if not cfg.llm_profiles:
         error(
@@ -522,6 +532,35 @@ def launch_ask_session(
         return
     with svc:
         _run_search_ask(cfg, svc, text, log_event=log_event)
+
+    if not follow_up:
+        return
+    # Drop into the sticky ``ask>`` REPL. ``_run_search_ask`` updates
+    # ``cfg.active_chat_session_id`` as a side effect of the agent
+    # call, so the REPL resumes the same chat thread instead of
+    # opening a fresh one — follow-up turns inherit the seed prompt
+    # as context. We pull ``main_command`` from the active Click
+    # context (compare runs inside the REPL's ``main_command.main()``
+    # dispatch, so the root group is always reachable). Outside any
+    # Click context (unit tests, scripted invocations) we silently
+    # skip the REPL — the seed answer already rendered.
+    try:
+        from click import get_current_context
+
+        from amx.cli_support.session import _run_ask_repl
+
+        ctx = get_current_context(silent=True)
+    except Exception:
+        return
+    if ctx is None:
+        return
+    main_command = ctx.find_root().command
+    try:
+        _run_ask_repl(cfg, main_command=main_command, log_event=log_event)
+    except (EOFError, KeyboardInterrupt):
+        # Non-TTY stdin (CI, piped invocation) — the seed answer
+        # already printed; just return cleanly.
+        pass
 
 
 def _run_search_ask(
