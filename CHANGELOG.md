@@ -25,7 +25,13 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   Pango / Cairo system libraries — `brew install pango cairo
   gdk-pixbuf libffi` on macOS, or
   `apt-get install libpango-1.0-0 libpangoft2-1.0-0` on Debian /
-  Ubuntu Docker images.
+  Ubuntu Docker images. AMX auto-detects the Homebrew prefix
+  (`/opt/homebrew/lib` on Apple Silicon, `/usr/local/lib` on Intel)
+  and the standard Linux distro library directories at render time
+  and appends them to `DYLD_FALLBACK_LIBRARY_PATH` /
+  `LD_LIBRARY_PATH` before WeasyPrint imports, so a plain
+  `brew install pango cairo` "just works" without the user having
+  to set any env var.
 
 ## [0.14.0] - 2026-05-08
 

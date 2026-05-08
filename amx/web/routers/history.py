@@ -300,6 +300,22 @@ def compare_pdf(body: CompareRequest) -> StreamingResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    except OSError as exc:
+        # cffi raises OSError when WeasyPrint imports cleanly but
+        # ctypes can't dlopen the native Pango / Cairo libs — happens
+        # on a vanilla macOS box without ``brew install pango cairo``
+        # or a slim Linux container without ``libpango-1.0-0``. Map to
+        # a 503 with a one-line install hint so the SPA can render an
+        # actionable error instead of an opaque ASGI 500.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "PDF export needs the Pango / Cairo system libraries. "
+                "Install them with `brew install pango cairo` (macOS) or "
+                "`apt install libpango-1.0-0 libpangoft2-1.0-0` (Debian / "
+                f"Ubuntu) and reload Studio. Original error: {exc}"
+            ),
+        ) from exc
     run_ids_label = "-".join(str(r["id"]) for r in payload["runs"])
     filename = f"compare-{run_ids_label}.pdf"
     return StreamingResponse(
