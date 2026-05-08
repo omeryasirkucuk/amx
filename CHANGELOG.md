@@ -8,6 +8,42 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Academic text-quality metrics for `/history compare`.** Replaces
+  the "winner = highest logprob" heuristic with a multi-tier
+  framework that surfaces actual correctness/quality of LLM-
+  generated descriptions. **Tier 0** (default, offline, free):
+  length appropriateness, type-token ratio (Templin 1957), schema
+  grounding (Jaccard 1912 token containment), chrF (Popović 2015 —
+  https://aclanthology.org/W15-3049/), ROUGE-L (Lin 2004 —
+  https://aclanthology.org/W04-1013/), Levenshtein edit distance
+  (Levenshtein 1966). **Tier 1** (opt-in, free, local): pairwise
+  cosine agreement matrix and semantic schema grounding via
+  `sentence-transformers` (default `all-MiniLM-L6-v2`). **Tier 2**
+  (opt-in, paid): G-Eval pairwise tournament (Liu et al. 2023,
+  https://arxiv.org/abs/2303.16634) calling the active LLM for each
+  asset's `C(N,2)` pairs; the same evaluator family used by
+  Prometheus 2 (Kim et al. 2024, https://arxiv.org/abs/2405.01535).
+  Reference resolution waterfall: explicit `--ground-truth-run` /
+  Studio "Set baseline" radio → live DB `COMMENT ON COLUMN`/`TABLE`
+  → most-recent applied catalog comment → none. Reference-based
+  metrics short-circuit cleanly when no ground truth resolves so
+  the panel still shows reference-free metrics. Ships as new
+  optional extras: `pip install amx-cli[quality]` (Tier 0,
+  `sacrebleu`+`rouge-score`), `amx-cli[quality,local-embeddings]`
+  (Tier 1), `amx-cli[quality,bertscore]` (BERTScore opt-in,
+  Zhang et al. 2020, https://arxiv.org/abs/1904.09675). The CLI
+  Quality panel renders right above the "what's next" prompt with
+  inline methods footer; the Studio modal grew a Quality card with
+  a "Run deeper analysis" button + cost-preview dialog; the PDF
+  report adds a Quality section with full bibliographic Methods
+  block. Ask AMX wires through the same `compare_runs` LLM tool —
+  `quality_tier=1` for free metrics, `quality_tier=2` for the
+  judge tournament — and the system prompt now instructs the LLM
+  to cite the underlying signal in one short sentence per metric
+  ("#58 wins on schema grounding 0.84 vs 0.52 because its
+  descriptions reference the column name and dtype") instead of
+  dumping numbers.
+
 - **Compare ↔ Ask AMX integration.** `/ask` now exposes a
   `compare_runs` LLM tool, so natural-language requests like
   "compare runs 58, 59, 60" or "I ran analyze on the address table
