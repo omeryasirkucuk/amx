@@ -8,6 +8,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Studio "Cost overrides" rows on /runs/new always showed
+  `default —`.** The Advanced LLM settings disclosure read its
+  default badge from the saved profile's
+  `custom_input_cost_per_mtok` / `custom_output_cost_per_mtok`
+  fields, which are nullable and almost always unset (most users
+  let LiteLLM / OpenRouter resolve the price). The cost rows now
+  back-fill the default chip with the live `/api/pricing/model`
+  rate, labelled with its source (e.g. `live $0.30 · litellm`), so
+  the user sees the actual price the run will be billed at. The
+  input fields stay empty so unchanged values aren't mis-reported
+  as overrides; typing a number in either field still ships through
+  as a per-run override exactly as before.
+
 - **Studio run-detail page stalled on "Waiting for the worker to
   begin…" for the entire run.** ``step_spinner`` (the wrapper every
   agent uses to surface "Profile Agent batch 2/3", "Calling LLM",
