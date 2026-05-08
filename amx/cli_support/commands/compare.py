@@ -9,12 +9,13 @@ where users naturally end up after running questions.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import difflib
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1203,6 +1204,33 @@ def _pick_aggregate_winner(metric: str, vals: dict[int, Any]) -> int | None:
     return best_id
 
 
+def _pdf_status_class(status: str | None) -> str:
+    """Map a run row's ``status`` to a PDF pill colour class. Mirrors
+    ``frontend/src/lib/runDisplay.ts:statusTone`` so the modal and the
+    exported PDF use the same green / amber / red / muted palette
+    for the same input."""
+    s = (status or "").strip().lower()
+    if s == "success":
+        return "positive"
+    if s == "failed":
+        return "critical"
+    if s == "cancelled":
+        return "warning"
+    if s in {"running", "queued"}:
+        return "accent"
+    return "neutral"
+
+
+def _pdf_status_label(status: str | None) -> str:
+    """Match the SPA's ``statusLabel`` shortener — ``ready_for_review``
+    is just "ready" in the modal, so the PDF mirrors that."""
+    if not status:
+        return "—"
+    if status == "ready_for_review":
+        return "ready"
+    return status
+
+
 def _confidence_class(band: str) -> str:
     b = (band or "").strip().lower()
     if b == "high":
@@ -1225,6 +1253,31 @@ def _build_pdf_context(payload: dict[str, Any]) -> dict[str, Any]:
     aggregates = list(payload.get("aggregates") or [])
     per_column = list(payload.get("per_column") or [])
     missing = list(payload.get("missing") or [])
+
+    # Decorate the summary rows with what the template actually
+    # displays — provider/model label, pill class, pill text — so
+    # the Jinja stays free of branching logic. ``llm_provider`` lives
+    # on the raw run row but ``_collect_run_summary_rows`` does not
+    # promote it (CSV / JSON exports never needed it). For the PDF we
+    # join it in here to mirror the modal's ``openai/gpt-5.4`` look.
+    runs_by_id = {int(r.get("id") or 0): r for r in runs}
+    enriched_summary: list[dict[str, Any]] = []
+    for sr in summary_rows:
+        rid = int(sr.get("run_id") or 0)
+        raw = runs_by_id.get(rid, {})
+        provider = str(raw.get("llm_provider") or "").strip().lower()
+        model = str(sr.get("llm_model") or "").strip()
+        if provider and model and "/" not in model:
+            llm_label = f"{provider}/{model}"
+        else:
+            llm_label = model or "—"
+        status = sr.get("status")
+        out = dict(sr)
+        out["llm_provider_model"] = llm_label
+        out["status_class"] = _pdf_status_class(status)
+        out["status_label"] = _pdf_status_label(status)
+        enriched_summary.append(out)
+    summary_rows = enriched_summary
 
     # Aggregate pivot: preserve insertion order from the canonical
     # _AGGREGATE_METRICS tuple so the PDF rows match the Studio table.
@@ -1402,6 +1455,44 @@ def _bootstrap_weasyprint_native_libs() -> None:
     os.environ[env_var] = os.pathsep.join([*existing_parts, *additions])
 
 
+@contextlib.contextmanager
+def _silence_native_stderr() -> Iterator[None]:
+    """Redirect the *file-descriptor-level* stderr to /dev/null for the
+    duration of the block, then restore it.
+
+    Pango / GLib chatter ("g_datalist_id_set_data_full: assertion
+    'key_id > 0' failed", "cannot unreference class of invalid
+    (unclassed) type '(null)'") originates inside libpango — it
+    bypasses ``sys.stderr`` and writes directly to fd 2. Python-level
+    redirects (``contextlib.redirect_stderr``) are no-ops against
+    that. The dup2 dance below is what actually quiets the noise so
+    the Studio terminal stays readable while a PDF is being rendered.
+
+    Real Python exceptions raised inside the block still propagate —
+    we restore the original fd in ``finally`` so any later traceback
+    Python prints lands on the user's screen, not in /dev/null.
+    """
+    try:
+        stderr_fd = sys.stderr.fileno()
+    except (AttributeError, ValueError, OSError):
+        # ``pytest -s`` and some embedded environments replace sys.stderr
+        # with an object that has no real fd. The native libs still
+        # write to the OS-level fd 2, but if we can't capture the
+        # Python-level fd here, just no-op — the user is in a debug
+        # context where surfacing every warning is fine.
+        yield
+        return
+    saved_fd = os.dup(stderr_fd)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, stderr_fd)
+        yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(devnull_fd)
+        os.close(saved_fd)
+
+
 def render_compare_pdf(payload: dict[str, Any]) -> bytes:
     """Render a ``compare_runs`` payload as a landscape A4 PDF report.
 
@@ -1438,7 +1529,20 @@ def render_compare_pdf(payload: dict[str, Any]) -> bytes:
     template = env.get_template("compare_report.html")
     context = _build_pdf_context(payload)
     html_str = template.render(**context)
-    return HTML(string=html_str).write_pdf()
+
+    # Render *and* tear down the WeasyPrint object inside the silenced
+    # block. Pango / GLib emit a tail of "g_datalist_id_set_data_full:
+    # assertion 'key_id > 0' failed" warnings at object-destroy time
+    # (deferred Python __del__), so the noise leaks past write_pdf()
+    # unless we force GC inside the redirect.
+    import gc
+
+    with _silence_native_stderr():
+        html = HTML(string=html_str)
+        pdf_bytes = html.write_pdf()
+        del html
+        gc.collect()
+    return pdf_bytes
 
 
 # ── Public registration ─────────────────────────────────────────────────────
