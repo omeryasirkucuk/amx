@@ -239,6 +239,32 @@ def list_apply_events(
     return {"events": rows, "count": len(rows)}
 
 
+@router.get("/apply-attribution")
+def apply_attribution(
+    profile: str = Query(..., description="DB profile name to scope the lookup."),
+    schemas: str | None = Query(
+        default=None,
+        description="Optional comma-separated schema list. Empty => every schema.",
+    ),
+) -> dict[str, Any]:
+    """Latest apply event per (schema, table, column) for a profile.
+
+    Drives the RunNew pre-flight banner -- "this asset was last
+    applied by {applied_by} on {applied_at}, sure you want to
+    overwrite?". One row per asset (newest), keyed under
+    ``schema.table`` (or ``schema.table.column`` for column-level
+    rows). The frontend cross-references with /api/context's
+    current_user to colour-code the conflict warning.
+    """
+    schema_list: list[str] | None = None
+    if schemas is not None:
+        schema_list = [s.strip() for s in schemas.split(",") if s.strip()]
+        if not schema_list:
+            schema_list = None
+    rows = _store().latest_apply_per_asset(profile_name=profile, schemas=schema_list)
+    return {"profile": profile, "schemas": schema_list, "events": rows, "count": len(rows)}
+
+
 class CompareRequest(BaseModel):
     run_ids: list[int] = Field(..., min_length=1, description="Runs to compare side-by-side.")
 

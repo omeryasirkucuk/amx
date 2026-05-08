@@ -163,3 +163,111 @@ def test_list_apply_events_respects_limit(store: SQLiteHistoryStore) -> None:
         store.record_apply_event(schema_name="s", new_comment=f"c-{i}")
     assert len(store.list_apply_events(limit=3)) == 3
     assert len(store.list_apply_events(limit=100)) == 10
+
+
+# ── latest_apply_per_asset (PR-attribution: pre-run conflict warning) ──
+
+
+def test_latest_apply_per_asset_returns_newest_per_asset(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Two writes to the same asset; only the most recent is returned."""
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="public",
+        table_name="orders",
+        new_comment="v1",
+        applied_by="alice",
+    )
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="public",
+        table_name="orders",
+        new_comment="v2",
+        applied_by="bob",
+    )
+    rows = store.latest_apply_per_asset(profile_name="prod")
+    assert len(rows) == 1
+    assert rows[0]["new_comment"] == "v2"
+    assert rows[0]["applied_by"] == "bob"
+
+
+def test_latest_apply_per_asset_separates_columns_from_table(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Column-level rows live in their own bucket from the parent table."""
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="public",
+        table_name="orders",
+        new_comment="table-doc",
+        applied_by="alice",
+    )
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="public",
+        table_name="orders",
+        column_name="status",
+        new_comment="column-doc",
+        applied_by="alice",
+    )
+    rows = store.latest_apply_per_asset(profile_name="prod")
+    keys = {(r["schema_name"], r["table_name"], r["column_name"]) for r in rows}
+    assert keys == {
+        ("public", "orders", None),
+        ("public", "orders", "status"),
+    }
+
+
+def test_latest_apply_per_asset_filters_by_profile(
+    store: SQLiteHistoryStore,
+) -> None:
+    """A different profile's events do not leak into the lookup."""
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="public",
+        table_name="orders",
+        new_comment="prod",
+        applied_by="alice",
+    )
+    store.record_apply_event(
+        profile_name="dev",
+        schema_name="public",
+        table_name="orders",
+        new_comment="dev",
+        applied_by="alice",
+    )
+    rows = store.latest_apply_per_asset(profile_name="prod")
+    assert len(rows) == 1
+    assert rows[0]["new_comment"] == "prod"
+
+
+def test_latest_apply_per_asset_filters_by_schemas_subset(
+    store: SQLiteHistoryStore,
+) -> None:
+    """``schemas=["a"]`` returns only rows whose schema is in the list."""
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="a",
+        table_name="t",
+        new_comment="a",
+        applied_by="alice",
+    )
+    store.record_apply_event(
+        profile_name="prod",
+        schema_name="b",
+        table_name="t",
+        new_comment="b",
+        applied_by="alice",
+    )
+    rows = store.latest_apply_per_asset(profile_name="prod", schemas=["a"])
+    assert len(rows) == 1
+    assert rows[0]["schema_name"] == "a"
+
+
+def test_latest_apply_per_asset_empty_when_no_events(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Fresh history store -> empty list (no warning fires on RunNew)."""
+    rows = store.latest_apply_per_asset(profile_name="prod")
+    assert rows == []

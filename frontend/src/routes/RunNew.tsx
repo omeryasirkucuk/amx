@@ -1,14 +1,22 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { PlayCircle, Settings as SettingsIcon } from "lucide-react";
+import { AlertTriangle, PlayCircle, Settings as SettingsIcon } from "lucide-react";
 
-import { api, apiFetch } from "../lib/api";
+import { api, apiFetch, type ApplyAttribution } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
-import { Button, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
+import {
+  AlertDialog,
+  Badge,
+  Button,
+  InfoHint,
+  Skeleton,
+  Switch,
+  useToast,
+} from "../components/ui";
 
 interface SchemaPickState {
   schema: string;
@@ -40,6 +48,69 @@ export default function RunNew() {
   const ctx = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
   const supportsBatch = !!ctx.data?.llm_supports_batch;
   const llmProvider = ctx.data?.llm_provider ?? null;
+  const me = ctx.data?.current_user ?? null;
+  const myHost = ctx.data?.current_hostname ?? null;
+  // Pre-flight conflict warning. We pull every asset on the active
+  // profile that has been applied at least once, then cross-reference
+  // with the schemas/tables the user is about to run. Empty payload
+  // when the history store has no events yet (fresh install) — the
+  // warning never fires, the run starts immediately.
+  const attribution = useQuery({
+    queryKey: [
+      "apply-attribution",
+      scope?.profile ?? "",
+      // Re-fetch when picked schemas change so we narrow the response.
+      // Only the schemas the user picked are useful; pulling every
+      // schema's history would be wasteful on a busy team profile.
+      picked.map((p) => p.schema).sort().join(","),
+    ],
+    queryFn: () =>
+      api.applyAttribution(
+        scope?.profile ?? "",
+        picked.map((p) => p.schema),
+      ),
+    enabled: !!scope?.profile && picked.length > 0,
+    retry: false,
+  });
+  const [confirmOverwriteOpen, setConfirmOverwriteOpen] = useState(false);
+
+  // Map (schema.table.column?) -> latest apply event so the table
+  // picker can show a per-asset badge. Column-level events fall
+  // back to their parent table when the run targets the table.
+  const attributionByAsset = useMemo(() => {
+    const m = new Map<string, ApplyAttribution>();
+    for (const ev of attribution.data?.events ?? []) {
+      const key = ev.column_name
+        ? `${ev.schema_name}.${ev.table_name}.${ev.column_name}`
+        : `${ev.schema_name}.${ev.table_name}`;
+      m.set(key, ev);
+    }
+    return m;
+  }, [attribution.data]);
+
+  // Conflicts = picked assets that someone *else* applied. A picked
+  // schema with empty tables (= all reachable) is conservative here:
+  // we list every applied asset under that schema as a potential
+  // overwrite. The user resolves the warning by picking specific
+  // tables (which narrows the conflict list) or by acknowledging.
+  const conflicts = useMemo<ApplyAttribution[]>(() => {
+    if (!me || !attribution.data?.events) return [];
+    const out: ApplyAttribution[] = [];
+    for (const ev of attribution.data.events) {
+      // Same OS user + same host means this row is "yours"; anyone
+      // else's row counts as a foreign change worth surfacing.
+      if (ev.applied_by === me && (myHost ? ev.hostname === myHost : true)) continue;
+      // Find the picked schema entry; skip if user didn't pick this schema.
+      const pick = picked.find((p) => p.schema === ev.schema_name);
+      if (!pick) continue;
+      // Empty tables = "all tables in this schema" — every applied
+      // row under it is in scope. Otherwise, only conflicts on the
+      // tables the user specifically picked.
+      if (pick.tables.length > 0 && !pick.tables.includes(ev.table_name)) continue;
+      out.push(ev);
+    }
+    return out;
+  }, [attribution.data, me, myHost, picked]);
   // Pre-flight gate: the worker fails fast in _run_worker_body when
   // cfg.llm.provider/model are missing, but the SPA shouldn't even
   // accept the click — the user only sees the error after the job
@@ -209,6 +280,9 @@ export default function RunNew() {
                               ),
                             )
                           }
+                          attribution={attributionByAsset}
+                          currentUser={me}
+                          currentHost={myHost}
                         />
                       )}
                     </li>
@@ -280,9 +354,56 @@ export default function RunNew() {
                   {batchMode && supportsBatch ? "batch" : "chat"}
                 </dd>
               </dl>
+              {conflicts.length > 0 && (
+                <div
+                  className="flex gap-2 rounded-md border border-warning/40 bg-warning-soft/20 px-3 py-2 text-xs"
+                  role="alert"
+                >
+                  <AlertTriangle
+                    size={14}
+                    className="mt-0.5 flex-none text-warning"
+                    aria-hidden="true"
+                  />
+                  <div className="space-y-1">
+                    <p className="font-medium text-ink">
+                      {conflicts.length} of the picked assets were last
+                      applied by someone else.
+                    </p>
+                    <ul className="space-y-0.5 text-ink-muted">
+                      {conflicts.slice(0, 5).map((c) => {
+                        const asset = c.column_name
+                          ? `${c.schema_name}.${c.table_name}.${c.column_name}`
+                          : `${c.schema_name}.${c.table_name}`;
+                        return (
+                          <li key={c.applied_at + asset} className="font-mono">
+                            <span className="text-ink">{asset}</span>{" "}
+                            <span className="text-ink-dim">·</span>{" "}
+                            <span>{c.applied_by || "unknown"}</span>
+                          </li>
+                        );
+                      })}
+                      {conflicts.length > 5 && (
+                        <li className="text-ink-dim">
+                          + {conflicts.length - 5} more
+                        </li>
+                      )}
+                    </ul>
+                    <p className="text-ink-dim">
+                      Apply will overwrite their comments. Confirm before
+                      submitting if you intend to.
+                    </p>
+                  </div>
+                </div>
+              )}
               <Button
                 type="button"
-                onClick={() => submit.mutate()}
+                onClick={() => {
+                  if (conflicts.length > 0) {
+                    setConfirmOverwriteOpen(true);
+                  } else {
+                    submit.mutate();
+                  }
+                }}
                 disabled={picked.length === 0}
                 loading={submit.isPending}
                 variant="primary"
@@ -297,6 +418,22 @@ export default function RunNew() {
                   Pick at least one schema to enable the start button.
                 </p>
               )}
+              <AlertDialog
+                open={confirmOverwriteOpen}
+                onClose={() => setConfirmOverwriteOpen(false)}
+                onConfirm={() => {
+                  setConfirmOverwriteOpen(false);
+                  submit.mutate();
+                }}
+                loading={submit.isPending}
+                title={`Run on ${conflicts.length} asset${conflicts.length === 1 ? "" : "s"} someone else applied?`}
+                description={
+                  conflicts.length === 1
+                    ? `${conflicts[0].applied_by || "another user"} last applied ${conflicts[0].schema_name}.${conflicts[0].table_name}${conflicts[0].column_name ? "." + conflicts[0].column_name : ""}. The run regenerates suggestions; the live comment only changes when you Apply afterwards.`
+                    : `Multiple teammates' work is in scope. The run regenerates suggestions; the live comments only change when you Apply afterwards. Cancel here to narrow the picked tables first.`
+                }
+                confirmLabel="Run anyway"
+              />
             </CardBody>
           </Card>
         </div>
@@ -309,10 +446,18 @@ function SchemaTablePicker({
   schema,
   selected,
   onChange,
+  attribution,
+  currentUser,
+  currentHost,
 }: {
   schema: string;
   selected: string[];
   onChange: (tables: string[]) => void;
+  /** ``schema.table`` -> latest apply event lookup. Empty when the
+   *  history store has no events for the active profile. */
+  attribution?: Map<string, ApplyAttribution>;
+  currentUser?: string | null;
+  currentHost?: string | null;
 }) {
   const scope = useRunScope();
   const assets = useQuery({
@@ -379,19 +524,50 @@ function SchemaTablePicker({
       <div className="flex flex-wrap gap-1.5">
         {assets.data.assets.map((asset) => {
           const on = selected.length === 0 || selected.includes(asset.name);
+          const attr = attribution?.get(`${schema}.${asset.name}`);
+          const hasComment = !!asset.comment?.trim();
+          // Conflict iff a foreign user last applied this asset.
+          // Same user + same host (when known) reads as "yours" so
+          // re-running your own previous output doesn't fire the
+          // warning chip.
+          const isMine =
+            !!attr &&
+            !!currentUser &&
+            attr.applied_by === currentUser &&
+            (!currentHost || !attr.hostname || attr.hostname === currentHost);
+          const isConflict = !!attr && !isMine;
           return (
             <button
               key={`${schema}.${asset.name}`}
               type="button"
               onClick={() => toggle(asset.name)}
+              title={
+                attr
+                  ? isMine
+                    ? `You applied this on ${new Date(attr.applied_at * 1000).toLocaleDateString()}.`
+                    : `${attr.applied_by || "another user"} last applied this on ${new Date(attr.applied_at * 1000).toLocaleDateString()} -- run will offer to overwrite.`
+                  : hasComment
+                    ? "Already has a live-DB comment from outside AMX."
+                    : "No comment yet on this asset."
+              }
               className={cn(
-                "rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors duration-fast",
+                "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px] transition-colors duration-fast",
                 on
                   ? "border-accent/40 bg-accent-soft/40 text-ink"
                   : "border-border text-ink-dim hover:border-accent/40 hover:text-ink",
+                isConflict && on && "border-warning/60 bg-warning-soft/30",
               )}
             >
-              {asset.name}
+              <span>{asset.name}</span>
+              {isConflict && (
+                <Badge tone="warning">{attr?.applied_by || "other"}</Badge>
+              )}
+              {!isConflict && isMine && (
+                <Badge tone="info">you</Badge>
+              )}
+              {!attr && hasComment && (
+                <Badge tone="neutral">commented</Badge>
+              )}
             </button>
           );
         })}

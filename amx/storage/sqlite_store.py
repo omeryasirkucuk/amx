@@ -967,6 +967,68 @@ class SQLiteHistoryStore:
             for r in rows
         ]
 
+    def latest_apply_per_asset(
+        self,
+        *,
+        profile_name: str,
+        schemas: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the most-recent apply_event row per (schema, table, column).
+
+        Used by the RunNew pre-flight banner: ``"this asset was last
+        applied by {applied_by} on {applied_at} -- you sure?"``.
+
+        Filters to a single ``profile_name`` because the question
+        "who else touched THIS asset" is profile-scoped (the same
+        ``schema.table`` string can address two completely different
+        physical tables across two profiles).
+
+        SQLite 3.25+ ``ROW_NUMBER`` window function ranks events per
+        asset and keeps the newest row only. Empty list when the
+        history store has no events for the profile yet.
+        """
+        clauses = ["profile_name = ?"]
+        params: list[Any] = [str(profile_name or "")]
+        if schemas:
+            placeholders = ",".join("?" * len(schemas))
+            clauses.append(f"schema_name IN ({placeholders})")
+            params.extend(str(s) for s in schemas)
+        where = " WHERE " + " AND ".join(clauses)
+        sql = (
+            "WITH ranked AS ("
+            "  SELECT id, applied_at, run_id, result_id, profile_name, "
+            "         schema_name, table_name, column_name, asset_kind, "
+            "         old_comment, new_comment, applied_by, hostname, "
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY profile_name, schema_name, table_name, "
+            "                        COALESCE(column_name, '') "
+            "           ORDER BY applied_at DESC, id DESC"
+            "         ) AS rn "
+            f"  FROM apply_events{where}"
+            ") "
+            "SELECT * FROM ranked WHERE rn = 1 ORDER BY applied_at DESC"
+        )
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [
+            {
+                "id": int(r[0]),
+                "applied_at": float(r[1]),
+                "run_id": r[2],
+                "result_id": r[3],
+                "profile_name": str(r[4]),
+                "schema_name": str(r[5]),
+                "table_name": str(r[6]),
+                "column_name": r[7],
+                "asset_kind": str(r[8]),
+                "old_comment": r[9],
+                "new_comment": str(r[10]),
+                "applied_by": str(r[11]),
+                "hostname": str(r[12]),
+            }
+            for r in rows
+        ]
+
     def update_run_status(self, run_id: int, status: str, error_text: str = "") -> None:
         """Update run status without overwriting metrics/tokens/results payloads."""
         with self._lock, self._connect() as conn:

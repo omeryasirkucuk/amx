@@ -224,6 +224,26 @@ export interface ApplyEventsResponse {
   count: number;
 }
 
+/** Per-asset latest apply event. ``new_comment`` lets the SPA show
+ *  the *current* live-DB state without a second introspection
+ *  round-trip when the user is about to overwrite it. */
+export interface ApplyAttribution {
+  schema_name: string;
+  table_name: string;
+  column_name: string | null;
+  applied_at: number;
+  applied_by: string;
+  hostname: string;
+  run_id: number | null;
+  new_comment: string;
+}
+export interface ApplyAttributionResponse {
+  profile: string;
+  schemas: string[] | null;
+  events: ApplyAttribution[];
+  count: number;
+}
+
 /**
  * Backend returns total_runs / success_runs / failed_runs /
  * ready_for_review_runs. Older callers in this file used the shorter
@@ -301,6 +321,19 @@ export const api = {
     if (params.profileName) qs.set("profile_name", params.profileName);
     qs.set("limit", String(params.limit ?? 100));
     return apiFetch<ApplyEventsResponse>(`/api/history/apply-events?${qs.toString()}`);
+  },
+  /** Latest apply event per asset for one profile. Drives the
+   *  RunNew pre-flight banner that warns when a teammate already
+   *  touched a picked asset. Returns an empty events list when the
+   *  history store has no rows for the profile yet. */
+  applyAttribution: (profile: string, schemas?: string[]) => {
+    const qs = new URLSearchParams({ profile });
+    if (schemas && schemas.length > 0) {
+      qs.set("schemas", schemas.join(","));
+    }
+    return apiFetch<ApplyAttributionResponse>(
+      `/api/history/apply-attribution?${qs.toString()}`,
+    );
   },
   setDatabaseComment: (scope: Scope, comment: string) =>
     apiFetch<{ comment: string }>(withScope("/api/comments/database", scope), {
