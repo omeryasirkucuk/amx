@@ -15,12 +15,15 @@ generated descriptions. Three tiers, opt-in by cost:
   BERTScore (Zhang et al. 2020) is a separate Tier 1.5 toggle that
   loads the heavier ``bert-score`` package.
 
-* **Tier 2** — LLM-as-judge, paid, opt-in.
+* **Tier 2** — LLM-as-judge, opt-in (consumes tokens on the
+  active LLM provider).
   G-Eval style pairwise tournament (Liu et al. 2023, Kim et al.
   2024 Prometheus 2). Each asset gets ``C(N, 2)`` judge calls,
   output is structured JSON ``{winner, reasoning, confidence}``,
-  per-run win-rate is the headline aggregate. Cost rolls into the
-  same ``tokens_json["summary"]`` array the analyze worker uses.
+  per-run win-rate is the headline aggregate. Token usage is
+  audited on the ``app_events`` trail so /usage aggregates can
+  surface it; the analyze runs' own ``tokens_json`` snapshots
+  stay untouched.
 
 Reference selection follows a waterfall:
 

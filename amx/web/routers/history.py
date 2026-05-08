@@ -275,7 +275,7 @@ def compare(body: CompareRequest) -> dict[str, Any]:
     ``quality_tier`` defaults to 0 (offline metrics only) so the modal
     auto-load stays cheap. Studio's "Run deeper analysis" button posts
     to ``/compare/deep-analysis`` with tier=2 to opt into the LLM
-    judge (paid, slower).
+    judge (consumes tokens on the active LLM, slower).
     """
     # Force the store to be live before the helper queries it.
     _store()
@@ -303,7 +303,10 @@ def compare_deep_analysis(body: CompareRequest) -> dict[str, Any]:
     so a deep-analysis hit always runs the full G-Eval pairwise
     pipeline (Liu et al. 2023). Otherwise identical to the standard
     /compare endpoint — same payload shape, just enriched with the
-    judge outcomes and embedding agreement.
+    judge outcomes and embedding agreement. Tier 2 consumes tokens
+    on the active LLM provider; the call is opt-in (Studio's "Run
+    deeper analysis" button shows a confirmation dialog first) and
+    the token usage is audited via the ``app_events`` trail.
     """
     _store()
     from amx.cli_support.commands.compare import compare_runs
