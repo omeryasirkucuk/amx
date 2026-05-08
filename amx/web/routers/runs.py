@@ -538,16 +538,35 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     # "Waiting for the worker to begin…" for the entire profile +
     # RAG + LLM batch window — sometimes 5–30 minutes — because the
     # web worker only emitted per-table activity events.
+    #
+    # Two halves of the bridge are required:
+    # 1) ``push_subscriber`` registers a thread-local listener that
+    #    forwards every ``step.*`` / ``tokens.delta`` event onto the
+    #    job's SSE queue.
+    # 2) ``start_headless`` flips ``LiveDisplay.is_active`` to True
+    #    *without* painting a Rich ``Live`` panel on the parent CLI
+    #    terminal. The agents' ``step_spinner`` blocks check
+    #    ``is_active`` and only emit subscriber events when it's
+    #    True; without headless mode the spinner falls through to
+    #    its silent CLI-fallback path and the SSE queue never sees
+    #    a single per-batch / per-agent label.
     from amx.utils.live_display import (
+        get_display as _get_display,
         pop_subscriber as _pop_display_subscriber,
-    )
-    from amx.utils.live_display import (
         push_subscriber as _push_display_subscriber,
     )
 
     def _display_to_sse(event_type: str, payload: dict[str, Any]) -> None:
         emit(job.queue, event_type, payload)
 
+    _display = _get_display()
+    _display.start_headless(
+        schema=", ".join(scope.keys()) if len(scope) <= 3 else f"{len(scope)} schemas",
+        table=f"{total_assets} assets",
+        mode="analyze.run",
+        provider=cfg.llm.provider,
+        model=cfg.llm.model,
+    )
     _push_display_subscriber(_display_to_sse)
 
     try:
@@ -635,8 +654,13 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     finally:
         # Always remove the bridge so a future job in this same worker
         # thread doesn't accidentally inherit the previous job's
-        # subscribers.
+        # subscribers, and tear down headless mode so the global
+        # LiveDisplay singleton goes back to inactive.
         _pop_display_subscriber(_display_to_sse)
+        try:
+            _display.stop_headless()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     # Persist deferred review results into the pending queue regardless
     # of cancellation — the user may want to review what *did* finish.
