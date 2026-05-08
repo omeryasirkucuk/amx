@@ -176,3 +176,24 @@ export function shortModel(model: string | null | undefined): string {
   const slash = model.lastIndexOf("/");
   return slash >= 0 ? model.slice(slash + 1) : model;
 }
+
+/** Bucket an ``analysis_runs.command`` string into one of the
+ *  user-visible kind filters. Anything that isn't analyze / rerun /
+ *  generate / ask lands in "other" so the "All" filter still picks
+ *  up tools we add later (sync, scan, ingest, …) without forcing a
+ *  schema migration on every pre-existing chip group. Shared by the
+ *  Runs list filter chips and the Compare picker chip group. */
+export function commandKind(
+  command: string | null | undefined,
+): "analyze" | "rerun" | "generate" | "ask" | "other" {
+  const cmd = (command ?? "").toLowerCase();
+  if (cmd === "analyze.run" || cmd === "analyze.apply") return "analyze";
+  if (cmd === "rerun") return "rerun";
+  if (cmd.startsWith("generate.")) return "generate";
+  if (cmd === "search.ask" || cmd === "ask.run") return "ask";
+  return "other";
+}
+
+/** Filter values surfaced as chips in both the Runs list and the
+ *  Compare picker. ``all`` returns every row regardless of kind. */
+export type CommandKindFilter = "all" | "analyze" | "rerun" | "generate" | "ask";

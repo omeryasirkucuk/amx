@@ -17,6 +17,8 @@ import {
   useToast,
 } from "../components/ui";
 import {
+  commandKind,
+  type CommandKindFilter,
   humanizeCommand,
   relativeTime,
   shortModel,
@@ -24,6 +26,7 @@ import {
   statusTone,
   summarizeScope,
 } from "../lib/runDisplay";
+import { cn } from "../lib/cn";
 
 interface Row {
   id: number;
@@ -46,11 +49,46 @@ interface Row {
   live_job_id?: string | null;
 }
 
+// Persisted kind-filter so the user's pick (Analyze / Ask / Generate /
+// Rerun / All) survives page refreshes. Default ``analyze`` mirrors
+// the historical behaviour: /runs is the "what AMX did to the
+// database" log; Ask sessions live behind /ask. Picking another kind
+// from the chip group widens the view.
+const KIND_FILTER_STORAGE_KEY = "amx.runs.kindFilter";
+
+function readStoredKindFilter(): CommandKindFilter {
+  if (typeof window === "undefined") return "analyze";
+  const raw = window.localStorage.getItem(KIND_FILTER_STORAGE_KEY);
+  if (raw === "all" || raw === "analyze" || raw === "rerun" || raw === "generate" || raw === "ask") {
+    return raw;
+  }
+  return "analyze";
+}
+
+const KIND_FILTER_OPTIONS: ReadonlyArray<{
+  value: CommandKindFilter;
+  label: string;
+}> = [
+  { value: "analyze", label: "Analyze" },
+  { value: "rerun", label: "Re-run" },
+  { value: "generate", label: "Generate" },
+  { value: "ask", label: "Ask" },
+  { value: "all", label: "All activity" },
+];
+
 export default function RunsList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
   const [confirmCancelRow, setConfirmCancelRow] = useState<Row | null>(null);
+  const [kindFilter, setKindFilter] = useState<CommandKindFilter>(readStoredKindFilter);
+
+  function changeKindFilter(next: CommandKindFilter) {
+    setKindFilter(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(KIND_FILTER_STORAGE_KEY, next);
+    }
+  }
   const runs = useQuery({
     queryKey: ["recent-runs", "all"],
     queryFn: () => api.recentRuns(50, "all"),
@@ -69,13 +107,16 @@ export default function RunsList() {
     },
   });
 
-  // /runs is the "what AMX did to the database" log — Ask sessions
-  // are conversational queries that don't touch the warehouse, so
-  // they live behind /ask only and are filtered out here.
-  const ASK_COMMANDS = new Set(["ask.run", "search.ask"]);
-  const rows: Row[] = ((runs.data?.runs as Row[] | undefined) ?? []).filter(
-    (r) => !ASK_COMMANDS.has(r.command),
-  );
+  // /runs defaults to "Analyze" so the page reads as the "what AMX
+  // did to the database" log. The kind chip group above the table
+  // lets the user widen to All activity, narrow to Ask sessions /
+  // Generate / Rerun. ``commandKind`` buckets each row's raw
+  // ``command`` field; "other" survives only under "all".
+  const allRows: Row[] = (runs.data?.runs as Row[] | undefined) ?? [];
+  const rows: Row[] = useMemo(() => {
+    if (kindFilter === "all") return allRows;
+    return allRows.filter((r) => commandKind(r.command) === kindFilter);
+  }, [allRows, kindFilter]);
 
   const cancelRun = useMutation({
     mutationFn: (jobId: string) => api.cancelRun(jobId),
@@ -278,6 +319,39 @@ export default function RunsList() {
           </div>
         }
       />
+      {/* Kind filter chip group. Lets the user toggle between Analyze
+          (default — the historical behaviour), Ask sessions, Generate
+          runs, Re-runs, and the union "All activity". The pick is
+          persisted in localStorage so a refresh doesn't reset the view. */}
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] uppercase tracking-wider text-ink-dim">
+          Kind
+        </span>
+        {KIND_FILTER_OPTIONS.map(({ value, label }) => {
+          const active = kindFilter === value;
+          const count = value === "all"
+            ? allRows.length
+            : allRows.filter((r) => commandKind(r.command) === value).length;
+          return (
+            <button
+              key={value}
+              type="button"
+              onClick={() => changeKindFilter(value)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] transition",
+                active
+                  ? "bg-accent-soft/60 text-accent-ink"
+                  : "bg-surface text-ink-muted hover:bg-surface-subtle",
+              )}
+            >
+              {label}
+              <span className="font-mono text-[10px] text-ink-dim tabular-nums">
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
       <DataTable<Row>
         columns={columns}
         rows={rows}
