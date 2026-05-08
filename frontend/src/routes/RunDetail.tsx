@@ -861,6 +861,8 @@ function ActivityDot({ status }: { status: "running" | "done" | "failed" }) {
 
 function PersistedRunView({ runId }: { runId: number }) {
   const [tab, setTab] = useState<Tab>("results");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const toast = useToast();
   const queryClient = useQueryClient();
   const run = useQuery({
     queryKey: ["run", runId],
@@ -892,6 +894,34 @@ function PersistedRunView({ runId }: { runId: number }) {
       queryClient.invalidateQueries({ queryKey: ["run-results", runId] });
     }
   }, [liveJobId, runId, queryClient]);
+
+  // Cancel a still-running run from the persisted view. The job
+  // registry uses the SSE job id (``live_job_id``), not the numeric
+  // analysis_runs id; the backend short-circuits when the worker has
+  // already exited so the user racing the poll never gets a 500.
+  const cancel = useMutation({
+    mutationFn: () => {
+      if (!liveJobId) throw new Error("This run already finished.");
+      return api.cancelRun(liveJobId);
+    },
+    onSuccess: () => {
+      setConfirmCancel(false);
+      toast.push({
+        title: "Cancellation requested",
+        description: "The worker bails between rows; already-written changes stay.",
+        tone: "warning",
+      });
+      queryClient.invalidateQueries({ queryKey: ["run", runId] });
+    },
+    onError: (e: Error) => {
+      setConfirmCancel(false);
+      toast.push({
+        title: "Cancel failed",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
 
   return (
     <>
@@ -932,10 +962,32 @@ function PersistedRunView({ runId }: { runId: number }) {
           ) : undefined
         }
         actions={
-          <Link to="/runs" className="text-xs text-ink-dim hover:text-ink">
-            ← All runs
-          </Link>
+          <div className="flex items-center gap-3">
+            {liveJobId && (
+              <Button
+                variant="danger"
+                size="md"
+                leadingIcon={<PauseCircle size={14} />}
+                onClick={() => setConfirmCancel(true)}
+                disabled={cancel.isPending}
+              >
+                Cancel
+              </Button>
+            )}
+            <Link to="/runs" className="text-xs text-ink-dim hover:text-ink">
+              ← All runs
+            </Link>
+          </div>
         }
+      />
+      <AlertDialog
+        open={confirmCancel}
+        onClose={() => setConfirmCancel(false)}
+        onConfirm={() => cancel.mutate()}
+        loading={cancel.isPending}
+        title="Cancel this run?"
+        description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
+        confirmLabel="Cancel run"
       />
       {liveJobId && <PersistedRunActivityCard jobId={liveJobId} />}
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
