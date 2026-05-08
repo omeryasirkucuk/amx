@@ -80,6 +80,10 @@ interface ResultRow {
   parent_result_id?: number | null;
   rerun_seq?: number;
   user_instructions?: string | null;
+  /** Full version chain when the row was fetched with
+   *  ``?include_history=true``. Ordered by ``rerun_seq`` ASC, so
+   *  ``history[history.length - 1]`` is always the latest version. */
+  history?: ResultRow[];
 }
 
 interface ResultsResponse {
@@ -879,7 +883,15 @@ function PersistedRunView({ runId }: { runId: number }) {
   const liveJobId = run.data?.live_job_id ?? null;
   const results = useQuery({
     queryKey: ["run-results", runId],
-    queryFn: () => apiFetch<ResultsResponse>(`/api/history/runs/${runId}/results`),
+    // ``include_history=true`` attaches the full re-run chain to each
+    // row so the UI can render the latest version's alternatives in
+    // place. Without it, a row that has been re-run on a parent run
+    // page kept showing the original alternatives — the user had to
+    // navigate to the new run id to see the regenerated suggestions.
+    queryFn: () =>
+      apiFetch<ResultsResponse>(
+        `/api/history/runs/${runId}/results?include_history=true`,
+      ),
     enabled: tab === "results",
     // Tail the results table while live so partial output streams in
     // alongside the activity panel.
@@ -1902,10 +1914,27 @@ function ResultRowItemImpl({
   /** Toggle this row's membership in the parent's selectedIds Set. */
   onToggleSelected?: (id: number) => void;
 }) {
+  // When the row was fetched with ``include_history=true`` and a
+  // re-run produced a v2/v3+ version, surface the latest entry's
+  // suggestions in place. Without this swap, the user had to
+  // navigate to the new run's detail page to see the regenerated
+  // alternatives — defeating the point of an inline Re-Run icon.
+  // ``displayRow`` keeps the original ``id`` (+ pending bookkeeping)
+  // but prefers the latest chain entry's content fields.
+  const latestChainEntry = (() => {
+    const chain = row.history;
+    if (!Array.isArray(chain) || chain.length === 0) return null;
+    // chain is ordered by rerun_seq ASC; last entry is newest.
+    const candidate = chain[chain.length - 1];
+    if (!candidate || candidate.id === row.id) return null;
+    return candidate;
+  })();
+  const displayRow = latestChainEntry ?? row;
   const sourceAlts = pendingEntry
     ? normalizeAlternativeStrings(pendingEntry.alternatives)
-    : normalizeAlternatives(row.alternatives_json);
-  const chosen = pendingEntry?.final_description ?? row.chosen_description ?? "";
+    : normalizeAlternatives(displayRow.alternatives_json);
+  const chosen =
+    pendingEntry?.final_description ?? displayRow.chosen_description ?? "";
   const visible = chosen && !sourceAlts.includes(chosen)
     ? [chosen, ...sourceAlts]
     : sourceAlts;
@@ -1913,7 +1942,10 @@ function ResultRowItemImpl({
   const queued = !applied && !!pendingEntry;
   const skipped = !applied && !pendingEntry;
   const editable = queued;
-  const rerunSeq = row.rerun_seq ?? 0;
+  // Show the latest chain entry's seq when present so the v-badge
+  // tracks the freshly-rendered alternatives, not the original
+  // row's stale "v1" stamp.
+  const rerunSeq = (latestChainEntry?.rerun_seq ?? row.rerun_seq) ?? 0;
   const statusTone: "positive" | "neutral" | "warning" = applied
     ? "positive"
     : queued
@@ -1990,8 +2022,22 @@ function ResultRowItemImpl({
     return parts.join(".") || "(unnamed)";
   })();
 
+  // Table-level rows (column_name === null) are visually
+  // distinguished from columns: a thicker accent strip on the left
+  // and a "TABLE" eyebrow next to the asset name. Without this, the
+  // table summary blended into the column list and the user had to
+  // hunt for the *what is this table about* line — which the agent
+  // generates explicitly and is usually the most useful single
+  // sentence in the group.
+  const isTableLevel = row.column_name == null;
   return (
-    <li className="px-5 py-3">
+    <li
+      className={cn(
+        "px-5 py-3",
+        isTableLevel &&
+          "border-l-2 border-l-accent/70 bg-accent-soft/10",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {multiSelectMode && (
           <Checkbox
@@ -2001,8 +2047,18 @@ function ResultRowItemImpl({
             className="mr-1"
           />
         )}
-        <span className="font-mono text-ink">
-          {row.column_name ?? <em className="text-ink-dim">(table)</em>}
+        {isTableLevel && (
+          <span className="rounded-sm bg-accent-soft/60 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent-ink">
+            Table
+          </span>
+        )}
+        <span
+          className={cn(
+            "font-mono",
+            isTableLevel ? "text-sm font-semibold text-ink" : "text-ink",
+          )}
+        >
+          {row.column_name ?? row.table_name}
         </span>
         <ConfidencePill value={row.confidence} score={row.logprob_score} />
         <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
@@ -2010,8 +2066,8 @@ function ResultRowItemImpl({
         {rerunSeq > 0 && (
           <span
             title={
-              row.user_instructions
-                ? `Re-run version ${rerunSeq}. User added: "${row.user_instructions}"`
+              displayRow.user_instructions
+                ? `Re-run version ${rerunSeq}. User added: "${displayRow.user_instructions}"`
                 : `Re-run version ${rerunSeq}.`
             }
           >
@@ -2202,6 +2258,19 @@ function groupByTable(rows: ResultRow[]) {
     const list = map.get(key) ?? [];
     list.push(r);
     map.set(key, list);
+  }
+  // Within each table, surface the table-level description (the row
+  // whose column_name is null) before its columns. Without this the
+  // table summary buried itself under N column rows — readers scanned
+  // the columns first and the *what does this table represent* line
+  // appeared as an afterthought at the bottom of the group.
+  for (const list of map.values()) {
+    list.sort((a, b) => {
+      const ax = a.column_name == null ? 0 : 1;
+      const bx = b.column_name == null ? 0 : 1;
+      if (ax !== bx) return ax - bx;
+      return (a.column_name ?? "").localeCompare(b.column_name ?? "");
+    });
   }
   return Array.from(map.entries()).map(([key, rows]) => ({ key, rows }));
 }
