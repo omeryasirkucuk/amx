@@ -1544,14 +1544,22 @@ function ResultsTab({
     );
   }
 
-  // Count rows still waiting in the pending queue — not in the
-  // queue and not already applied = the user skipped them earlier.
+  // Count rows still waiting in the pending queue. Includes
+  // revisions queued on top of an already-applied row -- the next
+  // Apply will overwrite the live comment for those, so they must
+  // contribute to the CTA's count or the button stays disabled
+  // ("Queue empty -- all applied") even though work is queued.
   const queuedCount = rows.reduce(
-    (n, r) =>
-      n + (r.id != null && pendingByResultId.has(r.id) && !r.applied_at ? 1 : 0),
+    (n, r) => n + (r.id != null && pendingByResultId.has(r.id) ? 1 : 0),
     0,
   );
-  const appliedCount = rows.filter((r) => !!r.applied_at).length;
+  // Applied & untouched: the row has a live-DB comment AND no
+  // pending revision queued. Used for the "X applied" tally next to
+  // the Apply CTA so it reflects committed work, not work currently
+  // being revised.
+  const appliedCount = rows.filter(
+    (r) => !!r.applied_at && !(r.id != null && pendingByResultId.has(r.id)),
+  ).length;
   const nothingToApply = queuedCount === 0 && !activeApplyJob;
   const applyLabel = activeApplyJob
     ? "Apply running…"
@@ -1964,23 +1972,37 @@ function ResultRowItemImpl({
   const visible = chosen && !sourceAlts.includes(chosen)
     ? [chosen, ...sourceAlts]
     : sourceAlts;
+  // ``applied`` is the live-DB state: this row's COMMENT was written
+  // at some point. ``hasPendingRevision`` is the pending-file state:
+  // a (possibly different) description is queued for a future write.
+  // The two states co-exist when the user revises an already-applied
+  // row -- the next Apply overwrites the live comment with the new
+  // pick. ``isAppliedClean`` separates "applied and untouched" from
+  // "applied but a revision is queued" so the badge text and the
+  // alternative-button affordance can react to each.
   const applied = !!row.applied_at;
-  const queued = !applied && !!pendingEntry;
-  const skipped = !applied && !pendingEntry;
+  const hasPendingRevision = !!pendingEntry;
+  const isAppliedClean = applied && !hasPendingRevision;
+  const queued = hasPendingRevision;
+  const skipped = !applied && !hasPendingRevision;
   const editable = queued;
   // Show the latest chain entry's seq when present so the v-badge
   // tracks the freshly-rendered alternatives, not the original
   // row's stale "v1" stamp.
   const rerunSeq = (latestChainEntry?.rerun_seq ?? row.rerun_seq) ?? 0;
-  const statusTone: "positive" | "neutral" | "warning" = applied
+  const statusTone: "positive" | "neutral" | "warning" = isAppliedClean
     ? "positive"
     : queued
-      ? "neutral"
+      ? applied
+        ? "warning"
+        : "neutral"
       : "warning";
-  const statusLabel = applied
+  const statusLabel = isAppliedClean
     ? "applied"
     : queued
-      ? "queued"
+      ? applied
+        ? "applied · revising"
+        : "queued"
       : skipped
         ? "skipped"
         : (row.evaluation || "pending");
@@ -2159,10 +2181,12 @@ function ResultRowItemImpl({
           visible.map((alt, idx) => {
             const isChosen = alt === chosen;
             // Editable rows pick a new chosen alternative; skipped
-            // rows clicking an alternative restore them to pending
-            // with that alternative as the chosen description.
+            // rows + already-applied rows clicking an alternative
+            // restore them to pending with that alternative as the
+            // chosen description. Applied + revising rows just need
+            // pickAlternative -- pendingEntry is already there.
             const canPick = editable && !isChosen;
-            const canRestore = skipped;
+            const canRestore = (skipped || isAppliedClean) && !isChosen;
             const clickable = canPick || canRestore;
             return (
               <button
@@ -2174,13 +2198,19 @@ function ResultRowItemImpl({
                 }}
                 disabled={!clickable || isMutating}
                 title={
-                  applied
-                    ? "Already applied — re-run to change."
-                    : skipped
-                      ? "Click to restore this row to the pending queue with this alternative chosen."
-                      : isChosen
-                        ? "Currently chosen alternative"
-                        : "Make this the chosen alternative"
+                  isAppliedClean
+                    ? isChosen
+                      ? "Currently applied to the live database."
+                      : "Click to queue this alternative as a revision -- the next Apply overwrites the live comment."
+                    : applied
+                      ? isChosen
+                        ? "Pending revision uses this alternative -- Apply to overwrite the live comment."
+                        : "Make this the queued revision (does not write to the database until Apply)."
+                      : skipped
+                        ? "Click to restore this row to the pending queue with this alternative chosen."
+                        : isChosen
+                          ? "Currently chosen alternative"
+                          : "Make this the chosen alternative"
                 }
                 className={cn(
                   "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-fast",
@@ -2210,6 +2240,12 @@ function ResultRowItemImpl({
         {skipped && visible.length > 0 && (
           <p className="px-1 text-[10.5px] text-ink-dim">
             Skipped — click any alternative above to restore this row.
+          </p>
+        )}
+        {isAppliedClean && visible.length > 0 && (
+          <p className="px-1 text-[10.5px] text-ink-dim">
+            Applied — pick a different alternative above to queue a revision,
+            then Apply to overwrite the live comment.
           </p>
         )}
       </div>
