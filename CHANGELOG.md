@@ -19,7 +19,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   (Levenshtein 1966). **Tier 1** (opt-in, free, local): pairwise
   cosine agreement matrix and semantic schema grounding via
   `sentence-transformers` (default `all-MiniLM-L6-v2`). **Tier 2**
-  (opt-in, paid): G-Eval pairwise tournament (Liu et al. 2023,
+  (opt-in, consumes tokens on the active LLM): G-Eval pairwise tournament (Liu et al. 2023,
   https://arxiv.org/abs/2303.16634) calling the active LLM for each
   asset's `C(N,2)` pairs; the same evaluator family used by
   Prometheus 2 (Kim et al. 2024, https://arxiv.org/abs/2405.01535).
@@ -194,7 +194,7 @@ The other shipped axes:
   table profile cache are reused, so a re-run is comparable to its
   source run rather than a fresh shot. ([#229])
 - **Cache first-run table profile, reuse on re-run.** The introspection
-  cost paid on the first run is amortized over every subsequent
+  cost absorbed on the first run is amortized over every subsequent
   re-run of the same row. ([#248])
 - **Readable Audit timeline** — day groups, inline before/after diffs,
   and author chips on `/audit`. Filters by run id and DB profile
@@ -4444,7 +4444,7 @@ Open-source users who don't know a command exists won't ever run it. Slash-comma
 
 ## [0.5.9] - 2026-04-30
 ### Fixed
-- **Reasoning-style models that return empty content now abort the run with one clear message** (`amx/llm/provider.py`): user reported `openrouter/tencent/hy3-preview:free` exhausting all output tokens on internal "thinking" and returning `content=""` with `finish_reason=length` on every batch. Previous behavior raised the soft `LLMTruncationError` per batch, which the agents caught and recorded as a diagnostic, churning through the table list while the same failure repeated. Now: when `finish_reason=length` AND `content == ""`, we raise `FatalLLMError` instead — the run aborts after the first attempt with a friendly message naming non-reasoning paid alternatives (`openrouter/openai/gpt-4o-mini`, `openrouter/anthropic/claude-3-5-haiku`, `openrouter/google/gemini-1.5-flash`) and pointing at `AMX_LLM_MIN_MAX_TOKENS` / `AMX_REASONING_EFFORT=minimal` for users who insist on a reasoning model.
+- **Reasoning-style models that return empty content now abort the run with one clear message** (`amx/llm/provider.py`): user reported `openrouter/tencent/hy3-preview:free` exhausting all output tokens on internal "thinking" and returning `content=""` with `finish_reason=length` on every batch. Previous behavior raised the soft `LLMTruncationError` per batch, which the agents caught and recorded as a diagnostic, churning through the table list while the same failure repeated. Now: when `finish_reason=length` AND `content == ""`, we raise `FatalLLMError` instead — the run aborts after the first attempt with a friendly message naming non-reasoning model alternatives (`openrouter/openai/gpt-4o-mini`, `openrouter/anthropic/claude-3-5-haiku`, `openrouter/google/gemini-1.5-flash`) and pointing at `AMX_LLM_MIN_MAX_TOKENS` / `AMX_REASONING_EFFORT=minimal` for users who insist on a reasoning model.
 
 ### Why this matters for open source
 Free / preview tiers on OpenRouter often expose reasoning-style models (Tencent Hunyuan 3, DeepSeek-R1, QwQ, etc.) where every output token goes to internal chain-of-thought. AMX's structured-JSON prompts can't produce useful work in that mode regardless of how many times we retry. Aborting early with a model-recommendation message saves users hours of confused retries and burned API quota.
