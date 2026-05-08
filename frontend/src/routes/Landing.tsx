@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -22,6 +22,7 @@ import {
   statusTone,
   summarizeScope,
 } from "../lib/runDisplay";
+import { useUi } from "../lib/store";
 
 // AMX Studio's calm operations entry. Lives at the bare ``/`` route
 // (the historical Overview dashboard moved to ``/overview``). The
@@ -56,6 +57,16 @@ interface DbProfilesResponse {
 }
 
 export default function Landing() {
+  // The Landing is a calm entry surface; the sidebar tree is the
+  // browse affordance for everything else but on this page it
+  // mostly just visually crowds the hero band. Tuck it away by
+  // default; the topbar Toggle Sidebar control still exposes the
+  // tree for users who want to jump straight into a profile.
+  const setSidebarCollapsed = useUi((s) => s.setSidebarCollapsed);
+  useEffect(() => {
+    setSidebarCollapsed(true);
+  }, [setSidebarCollapsed]);
+
   const ctx = useQuery({
     queryKey: ["context"],
     queryFn: () => api.context(),
