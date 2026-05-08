@@ -57,6 +57,19 @@ class FakeHistoryStore:
                 r["status"] = status
                 return
 
+    def finish_run(self, run_id: int, **kwargs: Any) -> None:
+        """Capture the tokens / metrics / status payload the
+        generate.* endpoints now write so tests can assert that
+        ``tokens_json`` carries USD cost + per-step records."""
+        for r in self.runs:
+            if r["id"] == run_id:
+                r["status"] = kwargs.get("status", r.get("status"))
+                r["finish_metrics"] = kwargs.get("metrics") or {}
+                r["finish_tokens"] = kwargs.get("tokens") or {}
+                r["finish_results"] = kwargs.get("results") or {}
+                r["finish_error_text"] = kwargs.get("error_text", "")
+                return
+
     def fetch_run_result(self, result_id: int) -> dict[str, Any] | None:
         return self.run_results.get(result_id)
 
@@ -479,3 +492,106 @@ def test_n3_persists_all_alternatives_in_run_results(
         "Second framing.",
         "Third alternative.",
     ]
+
+
+# ── tokens_json + USD cost recording (PR-token-cost-tracking) ──
+
+
+def test_generate_database_records_tokens_in_finish_run(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    chat_spy: MagicMock,
+    fake_history: FakeHistoryStore,
+) -> None:
+    """The Studio Run detail Metrics card was rendering "No metrics
+    recorded" for ``generate.*`` runs because ``finish_run`` was never
+    called. Pin the contract: every successful generate triggers
+    ``finish_run(tokens={...})`` with a non-zero total_tokens summary,
+    so the SPA can show input/output + USD cost just like analyze.run.
+    """
+    cfg.llm.n_alternatives = 1
+    chat_spy.return_value = ChatResult(
+        content="A single description sentence.",
+        usage={"prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130},
+    )
+
+    resp = _post(client, "/api/generate/database", auth_headers)
+    assert resp.status_code == 200
+
+    assert len(fake_history.runs) == 1
+    run = fake_history.runs[0]
+    tokens = run.get("finish_tokens") or {}
+    assert tokens.get("total_tokens", 0) > 0, (
+        "generate.database must populate tokens_json.total_tokens "
+        "(Run detail Metrics card depends on it)"
+    )
+    summary = tokens.get("summary") or []
+    assert summary and summary[0][0].startswith("generate."), (
+        "summary[0][0] should be the per-step label so the Run detail page can render the breakdown"
+    )
+    assert "records" in tokens
+    assert run.get("status") == "ready_for_review"
+
+
+def test_generate_column_records_per_step_label(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    chat_spy: MagicMock,
+    fake_history: FakeHistoryStore,
+) -> None:
+    """Each generate.* endpoint passes its asset_kind into the
+    tracker step label so the breakdown reads ``generate.column``,
+    not a generic ``llm.chat`` -- the Run detail page surfaces the
+    label as the row name in the Metrics card."""
+    cfg.llm.n_alternatives = 1
+    chat_spy.return_value = ChatResult(
+        content="A column-focused sentence.",
+        usage={"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
+    )
+
+    resp = client.post(
+        "/api/generate/column/sales/orders/customer_id?profile=demo",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    run = fake_history.runs[0]
+    summary = run["finish_tokens"]["summary"]
+    assert summary[0][0] == "generate.column"
+
+
+def test_generate_endpoint_resets_tracker_between_calls(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    chat_spy: MagicMock,
+    fake_history: FakeHistoryStore,
+) -> None:
+    """Two back-to-back generate calls must not bleed token totals
+    into each other. The shared ``TokenTracker`` singleton is reset
+    at endpoint top -- without that guard the second run's
+    ``tokens_json.total_tokens`` would equal the SUM of both LLM
+    calls instead of just its own."""
+    cfg.llm.n_alternatives = 1
+
+    chat_spy.return_value = ChatResult(
+        content="First.",
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )
+    _post(client, "/api/generate/database", auth_headers)
+
+    chat_spy.return_value = ChatResult(
+        content="Second.",
+        usage={"prompt_tokens": 200, "completion_tokens": 50, "total_tokens": 250},
+    )
+    _post(client, "/api/generate/database", auth_headers)
+
+    first = fake_history.runs[0]["finish_tokens"]
+    second = fake_history.runs[1]["finish_tokens"]
+    # The second run must reflect ONLY its own LLM round-trip.
+    assert second["total_tokens"] < first["total_tokens"] + second["total_tokens"]
+    # Stricter: tracker reset means the two records lists are
+    # length-1 each (one llm.chat per generate).
+    assert len(first["records"]) == 1
+    assert len(second["records"]) == 1

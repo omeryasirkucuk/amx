@@ -225,7 +225,13 @@ def test_ask_worker_persists_assistant_turn_with_correct_kwargs(
     """The worker used to call ``append_assistant_turn(answer=…)`` —
     but the store signature is ``append_assistant_turn(*, run_id,
     answer_summary)``. The TypeError was swallowed by a bare except
-    and assistant turns silently disappeared. Pin the kwargs."""
+    and assistant turns silently disappeared. Pin the kwargs.
+
+    0.13: ``run_id`` now carries the just-opened ``search.ask``
+    analysis_runs row id (was always ``None`` previously) so the
+    Audit / RunsList / chat_turns join paths line up. Assertion
+    accepts either ``None`` (history store unavailable) or an int.
+    """
     from amx.search.tool_agent import ToolAgentResult
 
     stub_session_store.start_session.return_value = 99
@@ -257,7 +263,10 @@ def test_ask_worker_persists_assistant_turn_with_correct_kwargs(
     args, kwargs = stub_session_store.append_assistant_turn.call_args
     assert args == (99,)
     assert kwargs["answer_summary"] == "hello there"
-    assert kwargs["run_id"] is None
+    # Either None (no history store available in test) or a real int
+    # (history store is initialised; the search.ask row got created).
+    run_id = kwargs["run_id"]
+    assert run_id is None or isinstance(run_id, int)
 
 
 def test_ask_worker_failed_when_catalog_missing(
@@ -292,3 +301,98 @@ def _drain_sse(client, path: str, auth_headers, timeout: float = 3.0) -> list[di
             if str(event.get("type", "")).startswith("job."):
                 break
     return events
+
+
+def test_ask_worker_opens_search_ask_run_with_tokens(
+    client, auth_headers, monkeypatch, stub_session_store
+) -> None:
+    """0.13: every Studio /ask query opens an ``analysis_runs`` row
+    with ``command="search.ask"`` so the Run detail Metrics card,
+    /usage aggregator, and /compare all see the LLM cost. Pin the
+    contract: create_run + finish_run(tokens={...}) fire on the
+    happy path. Without these, the user's complaint -- "ask runda
+    cost gözükmüyor" -- regresses silently.
+    """
+    from amx.search.tool_agent import ToolAgentResult
+
+    stub_session_store.start_session.return_value = 1
+    stub_session_store.append_user_turn.return_value = None
+    stub_session_store.append_assistant_turn.return_value = None
+
+    fake_hs = MagicMock()
+    fake_hs.create_run.return_value = 7
+    fake_hs.finish_run.return_value = None
+    monkeypatch.setattr(ask_router, "history_store", lambda: fake_hs)
+
+    def fake_run_tool_agent(**kwargs):
+        return ToolAgentResult(
+            answer="hello",
+            tool_calls=[],
+            iterations=2,
+            usage={"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14},
+            finish_reason="stop",
+            total_latency_ms=42,
+        )
+
+    monkeypatch.setattr(ask_router, "run_tool_agent", fake_run_tool_agent)
+    monkeypatch.setattr(ask_router, "_load_catalog", lambda: MagicMock())
+    monkeypatch.setattr(ask_router, "LLMProvider", lambda cfg: MagicMock())
+
+    submit = client.post(
+        "/api/ask",
+        headers=auth_headers,
+        json={"question": "hi"},
+    )
+    job_id = submit.json()["job_id"]
+    _wait_for_status(client, job_id, "done")
+
+    fake_hs.create_run.assert_called_once()
+    create_kwargs = fake_hs.create_run.call_args.kwargs
+    assert create_kwargs["command"] == "search.ask"
+
+    fake_hs.finish_run.assert_called_once()
+    finish_args = fake_hs.finish_run.call_args
+    assert finish_args.args == (7,)
+    finish_kwargs = finish_args.kwargs
+    assert finish_kwargs["status"] == "success"
+    tokens = finish_kwargs["tokens"] or {}
+    # tracker.records() may be empty when run_tool_agent itself is
+    # stubbed (no real llm.chat happens) -- but the tokens dict
+    # must be present with the canonical keys so the Run detail
+    # Metrics card has something to render in production.
+    for key in ("total_tokens", "total_cost_usd", "summary", "records"):
+        assert key in tokens
+
+    # The chat turn must carry the run_id we just created so /history
+    # can join chat_turns with analysis_runs.
+    stub_session_store.append_assistant_turn.assert_called_once()
+    assert stub_session_store.append_assistant_turn.call_args.kwargs["run_id"] == 7
+
+
+def test_ask_worker_finishes_run_on_failure(
+    client, auth_headers, monkeypatch, stub_session_store
+) -> None:
+    """A failed ask must still call ``finish_run`` so the Audit /
+    /usage / Compare surfaces show cost for partial work, with
+    status=failed + error_text. Without this the run row stays in
+    ``running`` forever and the Metrics card never renders."""
+    fake_hs = MagicMock()
+    fake_hs.create_run.return_value = 9
+    fake_hs.finish_run.return_value = None
+    monkeypatch.setattr(ask_router, "history_store", lambda: fake_hs)
+
+    def boom(**kwargs):
+        raise RuntimeError("LLM exploded")
+
+    monkeypatch.setattr(ask_router, "run_tool_agent", boom)
+    monkeypatch.setattr(ask_router, "_load_catalog", lambda: MagicMock())
+    monkeypatch.setattr(ask_router, "LLMProvider", lambda cfg: MagicMock())
+
+    submit = client.post("/api/ask", headers=auth_headers, json={"question": "hi"})
+    job_id = submit.json()["job_id"]
+    _wait_for_status(client, job_id, "failed")
+
+    fake_hs.finish_run.assert_called_once()
+    kwargs = fake_hs.finish_run.call_args.kwargs
+    assert kwargs["status"] == "failed"
+    assert "exploded" in (kwargs["error_text"] or "").lower()
