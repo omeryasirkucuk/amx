@@ -595,3 +595,35 @@ def test_generate_endpoint_resets_tracker_between_calls(
     # length-1 each (one llm.chat per generate).
     assert len(first["records"]) == 1
     assert len(second["records"]) == 1
+
+
+def test_generate_schema_captures_target_database_in_settings(
+    cfg: AMXConfig,
+    client,
+    auth_headers,
+    chat_spy: MagicMock,
+    fake_history: FakeHistoryStore,
+) -> None:
+    """User report: opening Run detail for a generate.schema run
+    showed "this run didn't capture the target database" even
+    though the request URL clearly carried ``?database=bird_train``.
+    Pin the contract: the URL's ``database`` and ``catalog`` query
+    args must round-trip into ``settings_json`` so
+    ``GET /api/history/runs/{id}`` (history.py:92-97) can flatten
+    them onto the run row and the Apply CTA stays unblocked.
+    """
+    cfg.llm.n_alternatives = 1
+    chat_spy.return_value = ChatResult(
+        content="schema-level description",
+        usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+    )
+
+    resp = client.post(
+        "/api/generate/schema/sales?profile=demo&database=bird_train",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    run = fake_history.runs[0]
+    settings = run["settings"]
+    assert settings["database"] == "bird_train"
+    assert settings["catalog"] is None
