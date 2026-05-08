@@ -174,6 +174,10 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     input: number;
     output: number;
   }>({ input: 0, output: 0 });
+  // Latest LiveDisplay step bridged from the worker (Profiling X /
+  // Calling LLM batch Y/Z / etc.). Empty string when nothing is in
+  // flight (between activities).
+  const [lastStep, setLastStep] = useState<string | null>(null);
   const [startTime] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
 
@@ -279,6 +283,28 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           input: Number(event.input_tokens ?? 0),
           output: Number(event.output_tokens ?? 0),
         });
+      } else if (
+        t === "step.added" ||
+        t === "step.begin" ||
+        t === "step.update"
+      ) {
+        const label = String(event.label ?? "").trim();
+        if (label) setLastStep(label);
+      } else if (t === "step.thinking") {
+        const label = String(event.label ?? "Thinking").trim();
+        setLastStep(label ? `${label}…` : "Thinking…");
+      } else if (t === "step.complete" || t === "step.fail") {
+        setLastStep(null);
+      } else if (t === "tokens.delta") {
+        const totalIn = Number(event.total_in ?? 0);
+        const totalOut = Number(event.total_out ?? 0);
+        const cost = Number(event.total_cost_usd ?? 0);
+        if (totalIn || totalOut) {
+          setTokensSnapshot({
+            total_tokens: totalIn + totalOut,
+            total_cost_usd: cost,
+          });
+        }
       }
     }
   }, [events]);
@@ -381,7 +407,13 @@ function LiveRunStream({ jobId }: { jobId: string }) {
             <ActivityIcon size={13} className="text-ink-muted" />
             <span className="text-ink-muted">Now:</span>
             <span className="font-mono">
-              {currentActivity ? currentActivity.label : "Waiting for the worker…"}
+              {currentActivity
+                ? lastStep
+                  ? `${currentActivity.label} — ${lastStep}`
+                  : currentActivity.label
+                : lastStep
+                  ? lastStep
+                  : "Waiting for the worker…"}
             </span>
           </span>
           {tokensSnapshot && tokensSnapshot.total_tokens > 0 && (
@@ -485,7 +517,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           {activities.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-dim">
               <Loader2 size={14} className="mr-2 inline animate-spin" />
-              Waiting for the worker to begin…
+              {lastStep || "Waiting for the worker to begin…"}
             </div>
           ) : (
             <ul className="divide-y divide-surface-border">
@@ -770,6 +802,13 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
     total_tokens: number;
     total_cost_usd: number;
   } | null>(null);
+  // Latest LiveDisplay step bridged from the worker. Mirrors what
+  // the CLI shows in its Rich Live region — "Profiling address.state",
+  // "Calling LLM (batch 1/3)", "Saving 12 suggestions". Without this,
+  // the Live progress card stalled on the current per-table activity
+  // for the entire 5–30 minute window the agents took to drive a
+  // single table through profile + RAG + LLM batch.
+  const [lastStep, setLastStep] = useState<string | null>(null);
   const { events, closed, error } = useEventSource({
     path: `/api/runs/${jobId}/events`,
     enabled: true,
@@ -806,6 +845,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
               : a,
           ),
         );
+        setLastStep(null);
       } else if (t === "activity.fail") {
         setActivities((curr) =>
           curr.map((a) =>
@@ -814,11 +854,38 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
               : a,
           ),
         );
+        setLastStep(null);
+      } else if (
+        t === "step.added" ||
+        t === "step.begin" ||
+        t === "step.update"
+      ) {
+        const label = String(event.label ?? "").trim();
+        if (label) setLastStep(label);
+      } else if (t === "step.thinking") {
+        const label = String(event.label ?? "Thinking").trim();
+        setLastStep(label ? `${label}…` : "Thinking…");
+      } else if (t === "step.complete" || t === "step.fail") {
+        setLastStep(null);
       } else if (t === "tokens.snapshot") {
         setTokensSnapshot({
           total_tokens: Number(event.total_tokens ?? 0),
           total_cost_usd: Number(event.total_cost_usd ?? 0),
         });
+      } else if (t === "tokens.delta") {
+        // Running totals from the bridged LiveDisplay
+        // ``add_session_tokens`` call. Every LLM round-trip pushes
+        // this; we coalesce into the same banner the per-table
+        // tokens.snapshot drives.
+        const totalIn = Number(event.total_in ?? 0);
+        const totalOut = Number(event.total_out ?? 0);
+        const cost = Number(event.total_cost_usd ?? 0);
+        if (totalIn || totalOut) {
+          setTokensSnapshot({
+            total_tokens: totalIn + totalOut,
+            total_cost_usd: cost,
+          });
+        }
       }
     }
   }, [events]);
@@ -845,8 +912,12 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
           closed
             ? "Worker exited. The status badge above will refresh automatically."
             : current
-              ? `Now: ${current.label}`
-              : "Waiting for the worker to begin…"
+              ? lastStep
+                ? `Now: ${current.label} — ${lastStep}`
+                : `Now: ${current.label}`
+              : lastStep
+                ? lastStep
+                : "Waiting for the worker to begin…"
         }
       />
       <CardBody className="p-0">
@@ -866,7 +937,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
         {activities.length === 0 ? (
           <div className="px-5 py-4 text-sm text-ink-dim">
             <Loader2 size={14} className="mr-2 inline animate-spin" />
-            Waiting for the worker to begin…
+            {lastStep || "Waiting for the worker to begin…"}
           </div>
         ) : (
           <ul className="divide-y divide-surface-border">
