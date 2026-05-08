@@ -176,6 +176,10 @@ export interface RunRow {
    *  side. Always read ``scope_json ?? scope``. */
   scope_json?: Record<string, string[]> | null;
   scope?: Record<string, string[]> | null;
+  /** Set when a worker thread is still alive for this row in the
+   *  job registry. The Studio uses the id to render an inline Cancel
+   *  control on running rows; null/absent for finished rows. */
+  live_job_id?: string | null;
   /** Parsed metrics_json — shape varies by command. */
   metrics?: Record<string, unknown> | null;
   /** Active DB profile at the time of the run (e.g. "local-postgres"). */

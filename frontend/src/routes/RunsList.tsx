@@ -1,17 +1,20 @@
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { GitCompare, History, PlayCircle } from "lucide-react";
+import { GitCompare, History, PauseCircle, PlayCircle } from "lucide-react";
 
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
 import EmptyState from "../components/EmptyState";
 import {
+  AlertDialog,
   Badge,
   Button,
   DataTable,
   type DataTableColumn,
   type DataTableFilter,
+  IconButton,
+  useToast,
 } from "../components/ui";
 import {
   humanizeCommand,
@@ -37,14 +40,33 @@ interface Row {
   llm_model?: string | null;
   db_profile?: string | null;
   started_at?: number | string | null;
+  /** SSE job id when a worker is still alive for this row. Drives the
+   *  inline Cancel icon on running rows; null/absent for finished
+   *  rows. */
+  live_job_id?: string | null;
 }
 
 export default function RunsList() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [confirmCancelRow, setConfirmCancelRow] = useState<Row | null>(null);
   const runs = useQuery({
     queryKey: ["recent-runs", "all"],
     queryFn: () => api.recentRuns(50, "all"),
     retry: false,
+    // Poll while there's at least one running row so a freshly
+    // cancelled job's status flips on screen without the user
+    // refreshing the page. Backend's ``live_job_id`` is what drives
+    // the inline Cancel icon — when the worker exits, the next poll
+    // returns the row with ``live_job_id=null`` and the icon hides.
+    refetchInterval: (query) => {
+      const data = (query.state.data as { runs?: Row[] } | undefined)?.runs;
+      const stillRunning = (data ?? []).some(
+        (r) => r.status === "running" || r.status === "queued",
+      );
+      return stillRunning ? 4000 : false;
+    },
   });
 
   // /runs is the "what AMX did to the database" log — Ask sessions
@@ -54,6 +76,27 @@ export default function RunsList() {
   const rows: Row[] = ((runs.data?.runs as Row[] | undefined) ?? []).filter(
     (r) => !ASK_COMMANDS.has(r.command),
   );
+
+  const cancelRun = useMutation({
+    mutationFn: (jobId: string) => api.cancelRun(jobId),
+    onSuccess: () => {
+      setConfirmCancelRow(null);
+      toast.push({
+        title: "Cancellation requested",
+        description: "Worker bails between rows; already-written changes stay.",
+        tone: "warning",
+      });
+      queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+    },
+    onError: (e: Error) => {
+      setConfirmCancelRow(null);
+      toast.push({
+        title: "Cancel failed",
+        description: e.message,
+        tone: "error",
+      });
+    },
+  });
 
   const columns: DataTableColumn<Row>[] = useMemo(
     () => [
@@ -157,8 +200,32 @@ export default function RunsList() {
         ),
         hideOnMobile: true,
       },
+      {
+        // Inline Cancel for running rows. Renders blank for finished
+        // rows so the column doesn't draw a wide "—" gutter on every
+        // line — the icon is only useful for the 0–1 actively
+        // running row at any given time.
+        id: "actions",
+        header: "",
+        width: "w-10",
+        align: "right",
+        cell: (r) =>
+          r.live_job_id ? (
+            <IconButton
+              icon={<PauseCircle size={14} />}
+              label="Cancel this run"
+              size="sm"
+              variant="ghost"
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmCancelRow(r);
+              }}
+              disabled={cancelRun.isPending}
+            />
+          ) : null,
+      },
     ],
-    [],
+    [cancelRun.isPending],
   );
 
   const filters: DataTableFilter<Row>[] = useMemo(
@@ -238,6 +305,23 @@ export default function RunsList() {
             compact
           />
         }
+      />
+      <AlertDialog
+        open={!!confirmCancelRow}
+        onClose={() => setConfirmCancelRow(null)}
+        onConfirm={() => {
+          if (confirmCancelRow?.live_job_id) {
+            cancelRun.mutate(confirmCancelRow.live_job_id);
+          }
+        }}
+        loading={cancelRun.isPending}
+        title={
+          confirmCancelRow
+            ? `Cancel run #${confirmCancelRow.id}?`
+            : "Cancel this run?"
+        }
+        description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
+        confirmLabel="Cancel run"
       />
     </>
   );
