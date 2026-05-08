@@ -31,6 +31,8 @@ from amx.search._agent._types import (
     _trim_rows_to_token_budget,
 )
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import estimate_tokens
+from amx.utils.token_tracker import tracker as token_tracker
 
 log = get_logger("search.agent.answering")
 
@@ -111,14 +113,22 @@ class AnsweringMixin:
             dict(base_payload, rows=trimmed_rows, result_count=len(trimmed_rows)),
             ensure_ascii=True,
         )
+        synthesize_messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        est = estimate_tokens(synthesize_messages)
         result = llm.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            synthesize_messages,
             temperature=0.1,
             max_tokens=1600 if len(rows) > 12 else 1200,
             use_logprobs=False,
+        )
+        token_tracker.record_for(
+            "answer.synthesize",
+            est,
+            llm,
+            getattr(result, "usage", None),
         )
         return result.content.strip(), result.usage or {}
 

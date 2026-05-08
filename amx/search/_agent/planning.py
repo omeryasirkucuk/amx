@@ -37,6 +37,8 @@ from amx.search._agent._types import (
     _merge_usage,
 )
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import estimate_tokens
+from amx.utils.token_tracker import tracker as token_tracker
 
 log = get_logger("search.agent.planning")
 
@@ -214,14 +216,25 @@ class PlanningMixin:
             },
             ensure_ascii=True,
         )
+        plan_messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        est = estimate_tokens(plan_messages)
         result = llm.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            plan_messages,
             temperature=0.0,
             max_tokens=900,
             use_logprobs=False,
+        )
+        # Pin the planning pass into the global tracker so the Run
+        # detail page surfaces an honest "plan.pass1" row alongside
+        # tool_agent.iter and answer.synthesize.
+        token_tracker.record_for(
+            "plan.pass1",
+            est,
+            llm,
+            getattr(result, "usage", None),
         )
         payload = _json_block(result.content)
         return (self._plan_from_payload(payload, question), result.usage or {})
@@ -256,14 +269,22 @@ class PlanningMixin:
             },
             ensure_ascii=True,
         )
+        review_messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        est = estimate_tokens(review_messages)
         result = llm.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            review_messages,
             temperature=0.0,
             max_tokens=700,
             use_logprobs=False,
+        )
+        token_tracker.record_for(
+            "plan.pass2_review",
+            est,
+            llm,
+            getattr(result, "usage", None),
         )
         payload = _json_block(result.content)
         payload.setdefault("review_notes", "reviewed_by_pass2")

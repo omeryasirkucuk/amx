@@ -55,6 +55,8 @@ from amx.llm.provider import LLMProvider
 from amx.pending_review import load_pending, save_pending
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger
+from amx.utils.token_tracker import estimate_tokens
+from amx.utils.token_tracker import tracker as token_tracker
 from amx.web.deps import get_cfg
 from amx.web.routers.live_db import _connector_for_scope
 
@@ -179,15 +181,27 @@ def _generate(
     n: int = 1,
     verbosity: str = "brief",
     temperature: float = 0.2,
+    asset_kind: str = "generate",
 ) -> list[str]:
-    """Run the LLM and return up to N description alternatives."""
+    """Run the LLM and return up to N description alternatives.
+
+    Token + USD cost is recorded into the module-level ``TokenTracker``
+    singleton (``amx.utils.token_tracker``) so callers can persist the
+    summary into ``analysis_runs.tokens_json`` -- this keeps the Run
+    detail Metrics card honest for ``generate.*`` runs (it used to
+    read "No metrics recorded" because nothing wired the tracker).
+    Each endpoint resets the tracker at the top of the request to
+    avoid bleeding state across concurrent jobs.
+    """
     system_prompt = _build_system_prompt(n, verbosity)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    est = estimate_tokens(messages)
     try:
         result = llm.chat(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,
             temperature=temperature,
             use_logprobs=False,
         )
@@ -196,6 +210,17 @@ def _generate(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"LLM call failed: {exc.__class__.__name__}: {exc}",
         ) from exc
+    # Record per-call usage so ``_record_and_queue`` can pull it into
+    # ``tokens_json`` via ``finish_run``. ``record_for`` also computes
+    # USD cost from the active pricing table; failures inside it are
+    # swallowed (token_tracker.py:_record_for_safe) so a missing model
+    # price never breaks the response.
+    token_tracker.record_for(
+        f"generate.{asset_kind}",
+        est,
+        llm,
+        getattr(result, "usage", None),
+    )
     alternatives = _parse_alternatives(result.content or "", n)
     if not alternatives:
         raise HTTPException(
@@ -584,6 +609,37 @@ def _record_and_queue(
     except Exception as exc:  # pragma: no cover
         log.warning("Could not flip run %s to ready_for_review: %s", run_id, exc)
 
+    # Surface the LLM token + USD cost into ``analysis_runs.tokens_json``
+    # so the Studio Run detail Metrics card actually has something to
+    # render. Without this, Run #N detail page reads "No metrics
+    # recorded" even though we know exactly how many tokens the call
+    # burned. ``finish_run`` accepts the same shape ``analyze.run``
+    # writes (total_tokens / total_cost_usd / summary / records),
+    # which the SPA's TokensRow + CostRow already understand.
+    try:
+        hs.finish_run(
+            int(run_id),
+            status="ready_for_review",
+            metrics={
+                "asset_kind": asset_kind,
+                "alternatives_count": len(alternatives),
+                "trigger": "studio.generate.singleshot",
+            },
+            tokens={
+                "total_tokens": token_tracker.total_tokens,
+                "total_cost_usd": round(token_tracker.total_cost_usd, 8),
+                "summary": token_tracker.summary(),
+                "records": token_tracker.records(),
+            },
+            results={"result_id": response.get("result_id")},
+        )
+    except Exception as exc:  # pragma: no cover - best-effort
+        log.warning(
+            "Could not finalise tokens_json for generate run %s: %s",
+            run_id,
+            exc,
+        )
+
     rr = ReviewResult(
         schema=schema,
         table=table,
@@ -615,11 +671,22 @@ def generate_database(
     catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
+    # ``token_tracker.reset()`` clears any residual records from a
+    # previous request that shared this Python process so the
+    # finalised ``tokens_json`` only reflects this generation. The
+    # analyze.run worker uses the same singleton-with-reset pattern
+    # (amx/web/routers/runs.py:_run_worker_body).
+    token_tracker.reset()
     db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     n, verbosity, temperature, pd = _settings(cfg)
     user_prompt = _build_database_prompt(db, db_label, pd)
     alternatives = _generate(
-        _llm(cfg), user_prompt, n=n, verbosity=verbosity, temperature=temperature
+        _llm(cfg),
+        user_prompt,
+        n=n,
+        verbosity=verbosity,
+        temperature=temperature,
+        asset_kind="database",
     )
     return _record_and_queue(
         cfg,
@@ -643,11 +710,17 @@ def generate_schema(
     catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
+    token_tracker.reset()
     db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     n, verbosity, temperature, pd = _settings(cfg)
     user_prompt = _build_schema_prompt(db, schema, pd)
     alternatives = _generate(
-        _llm(cfg), user_prompt, n=n, verbosity=verbosity, temperature=temperature
+        _llm(cfg),
+        user_prompt,
+        n=n,
+        verbosity=verbosity,
+        temperature=temperature,
+        asset_kind="schema",
     )
     return _record_and_queue(
         cfg,
@@ -672,11 +745,17 @@ def generate_table(
     catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
+    token_tracker.reset()
     db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     n, verbosity, temperature, pd = _settings(cfg)
     user_prompt = _build_table_prompt(db, schema, table, pd)
     alternatives = _generate(
-        _llm(cfg), user_prompt, n=n, verbosity=verbosity, temperature=temperature
+        _llm(cfg),
+        user_prompt,
+        n=n,
+        verbosity=verbosity,
+        temperature=temperature,
+        asset_kind="table",
     )
     return _record_and_queue(
         cfg,
@@ -702,11 +781,17 @@ def generate_column(
     catalog: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
+    token_tracker.reset()
     db, db_label, backend = _resolve_generate_connector(cfg, profile, database, catalog)
     n, verbosity, temperature, pd = _settings(cfg)
     user_prompt = _build_column_prompt(db, schema, table, column, pd)
     alternatives = _generate(
-        _llm(cfg), user_prompt, n=n, verbosity=verbosity, temperature=temperature
+        _llm(cfg),
+        user_prompt,
+        n=n,
+        verbosity=verbosity,
+        temperature=temperature,
+        asset_kind="column",
     )
     return _record_and_queue(
         cfg,
