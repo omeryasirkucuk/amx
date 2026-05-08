@@ -802,7 +802,6 @@ function QualityCard({ data }: { data: CompareResponse }) {
           <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
             <tr>
               <th className="px-5 py-2 text-left font-semibold">Run</th>
-              <th className="px-5 py-2 text-right font-semibold">Length</th>
               <th className="px-5 py-2 text-right font-semibold">Diversity</th>
               <th className="px-5 py-2 text-right font-semibold">Schema grounding</th>
               {hasChrf && (
@@ -830,9 +829,6 @@ function QualityCard({ data }: { data: CompareResponse }) {
             {quality.per_run.map((row) => (
               <tr key={row.run_id} className="border-t border-surface-border">
                 <td className="px-5 py-2 font-mono text-xs">#{row.run_id}</td>
-                <td className="px-5 py-2 text-right font-mono text-xs">
-                  {fmt(row.length_appropriateness)}
-                </td>
                 <td className="px-5 py-2 text-right font-mono text-xs">
                   {fmt(row.type_token_ratio)}
                 </td>
