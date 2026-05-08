@@ -118,10 +118,10 @@ export default function RunsList() {
       {
         id: "command",
         header: "Type",
-        sortValue: (r) => humanizeCommand(r.command),
+        sortValue: (r) => humanizeCommand(r.command, r.scope_json ?? r.scope),
         cell: (r) => (
           <span className="text-sm font-medium text-ink" title={r.command}>
-            {humanizeCommand(r.command)}
+            {humanizeCommand(r.command, r.scope_json ?? r.scope)}
           </span>
         ),
       },

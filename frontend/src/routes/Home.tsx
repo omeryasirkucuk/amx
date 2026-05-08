@@ -185,7 +185,7 @@ export default function Home() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-baseline gap-2">
                             <span className="font-medium text-ink truncate" title={row.command}>
-                              {humanizeCommand(row.command)}
+                              {humanizeCommand(row.command, row.scope_json ?? row.scope)}
                             </span>
                             <span className="truncate text-ink-muted text-xs">
                               · {describeScope(row.scope_json ?? row.scope, row.db_profile)}
