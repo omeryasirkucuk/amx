@@ -41,10 +41,13 @@ Reference selection follows a waterfall:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import os
 import re
-from collections.abc import Iterable
+import sys
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
@@ -298,6 +301,15 @@ def rouge_l_score(prediction: str, reference: str) -> float | None:
     return float(scores["rougeL"].fmeasure)
 
 
+# Module-level BERTScorer cache. Building a fresh ``BERTScorer`` is
+# expensive (loads roberta-large, ~400 MB on first call) and prints
+# a "Some weights of RobertaModel were not initialized..." warning
+# on every load. Caching means we pay both costs ONCE per process —
+# the AMX Studio terminal stays clean even when a Tier 1.5 quality
+# pass scores 50 columns × 3 runs back-to-back.
+_BERT_SCORER: Any = None
+
+
 def bert_score_for_pair(prediction: str, reference: str) -> float | None:
     """BERTScore F1 (Zhang et al. 2020) in [0, 1].
 
@@ -309,9 +321,16 @@ def bert_score_for_pair(prediction: str, reference: str) -> float | None:
     so callers that don't opt into the ``bertscore`` extra don't pay
     the dependency at import time.
 
+    The ``BERTScorer`` instance is cached at module level so the
+    second-and-onward score calls in a tournament reuse the loaded
+    model. Without the cache every pair re-loaded roberta-large
+    and re-emitted the transformers' "Some weights..." warning,
+    drowning the Studio terminal.
+
     Returns ``None`` when the package isn't installed (caller falls
     through gracefully) or when either input is empty.
     """
+    global _BERT_SCORER
     if not prediction or not reference:
         return None
     try:
@@ -324,26 +343,73 @@ def bert_score_for_pair(prediction: str, reference: str) -> float | None:
     except RuntimeError:
         return None
     try:
-        from bert_score import score as _bert_score
+        from bert_score import BERTScorer
     except ImportError:
         return None
-    # ``score`` returns (P, R, F1) tensors. Single-pair scoring is
-    # rare in the official API but supported — we just request a
-    # batch of size 1 and pull F1[0] as a Python float.
+
+    # Silence transformers' "Some weights of RobertaModel were not
+    # initialized..." warning AND any direct stderr writes the
+    # tokenizer / accelerate libraries make during the first model
+    # load. We re-use the same fd-level redirect the WeasyPrint path
+    # uses (Pango stderr noise) so the Studio terminal stays quiet.
+    if _BERT_SCORER is None:
+        try:
+            from transformers.utils import logging as _hf_logging
+
+            _hf_logging.set_verbosity_error()
+        except ImportError:
+            pass
+        try:
+            with _silence_native_stderr():
+                _BERT_SCORER = BERTScorer(
+                    lang="en",
+                    rescale_with_baseline=False,
+                    nthreads=1,
+                )
+        except Exception:
+            # First call downloads the model; in air-gapped / read-
+            # only environments that download fails. Silently skip
+            # BERTScore rather than poisoning the whole quality
+            # response.
+            _BERT_SCORER = None
+            return None
+
+    if _BERT_SCORER is None:
+        return None
     try:
-        _, _, f1 = _bert_score(
-            [prediction],
-            [reference],
-            lang="en",
-            verbose=False,
-            rescale_with_baseline=False,
-        )
+        with _silence_native_stderr():
+            _, _, f1 = _BERT_SCORER.score([prediction], [reference])
     except Exception:
-        # First call downloads the model; in air-gapped / read-only
-        # environments that download fails. Silently skip BERTScore
-        # rather than poisoning the whole quality response.
         return None
     return float(f1[0].item())
+
+
+@contextlib.contextmanager
+def _silence_native_stderr() -> Iterator[None]:
+    """Redirect file-descriptor-level stderr to /dev/null for the
+    duration of the block.
+
+    BERTScore's first model load writes warnings via two channels:
+    the transformers Python logger (silenced via
+    ``hf_logging.set_verbosity_error``) AND raw stderr writes from
+    the underlying C++ tokenizer / accelerate libraries that bypass
+    Python logging entirely. Mirrors the WeasyPrint stderr-silencer
+    in ``amx/cli_support/commands/compare.py`` — same dup2 dance.
+    """
+    try:
+        stderr_fd = sys.stderr.fileno()
+    except (AttributeError, ValueError, OSError):
+        yield
+        return
+    saved_fd = os.dup(stderr_fd)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, stderr_fd)
+        yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(devnull_fd)
+        os.close(saved_fd)
 
 
 def levenshtein_distance(prediction: str, reference: str) -> int | None:
