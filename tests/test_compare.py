@@ -971,6 +971,170 @@ class ComparePdfRenderingTests(unittest.TestCase):
         self.assertGreater(len(pdf_bytes), 1000, "PDF should not be a stub")
 
 
+class CompareAskToolTests(unittest.TestCase):
+    """The Ask LLM tool registry now exposes ``compare_runs`` so
+    natural-language requests like "compare runs 58, 59" route through
+    the same pure helper the CLI ``/history compare`` and the Studio
+    Compare modal already use. These tests pin the dispatcher contract
+    — argument validation, summary-by-default payload shape, the
+    ``include_per_column`` and ``column_filter`` drill-down knobs — so
+    a refactor that breaks the LLM-facing surface trips a red test.
+    """
+
+    def _build_toolbox(self):
+        from unittest.mock import MagicMock
+
+        from amx.search.agent_tools import ToolBox
+
+        cfg = AMXConfig()
+        catalog = MagicMock()
+        return ToolBox(cfg, catalog, db_factory=lambda: MagicMock())
+
+    def _seed_two_overlapping_runs(self, store: SQLiteHistoryStore) -> tuple[int, int]:
+        suggestion = {
+            "schema": "sales",
+            "table": "orders",
+            "column": "id",
+            "asset_kind": "table",
+            "source": "code",
+            "confidence": "high",
+            "logprob_score": 0.91,
+            "raw_logprob": 0.91,
+            "token_count": 28,
+            "model_version": "gpt-4o",
+            "reasoning": "primary key",
+            "alternatives": ["Primary key for orders"],
+        }
+        rid_a = _seed_run(store, llm_profile="prof-a", suggestions=[suggestion])
+        rid_b = _seed_run(
+            store,
+            llm_profile="prof-b",
+            suggestions=[{**suggestion, "logprob_score": 0.78, "confidence": "medium"}],
+        )
+        return rid_a, rid_b
+
+    def test_rejects_fewer_than_two_run_ids(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            toolbox = self._build_toolbox()
+            with patch(
+                "amx.cli_support.commands.compare.history_store", return_value=store
+            ):
+                empty = toolbox._tool_compare_runs(run_ids=[])
+                single = toolbox._tool_compare_runs(run_ids=[42])
+        self.assertIn("error", empty)
+        self.assertIn("at least 2", empty["error"])
+        self.assertIn("error", single)
+        self.assertIn("at least 2", single["error"])
+
+    def test_default_returns_summary_with_sample_not_full_pivot(self) -> None:
+        """Default invocation must keep the per-column pivot OUT of the
+        payload — only a 3-row sample plus a total count — so the LLM
+        doesn't blow its context window on an 8-run × 200-column
+        comparison. Drill-down is the LLM's call via include_per_column.
+        """
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid_a, rid_b = self._seed_two_overlapping_runs(store)
+            toolbox = self._build_toolbox()
+            with patch(
+                "amx.cli_support.commands.compare.history_store", return_value=store
+            ):
+                payload = toolbox._tool_compare_runs(run_ids=[rid_a, rid_b])
+
+        self.assertNotIn("per_column", payload)
+        self.assertIn("per_column_sample", payload)
+        self.assertIn("per_column_count", payload)
+        self.assertLessEqual(len(payload["per_column_sample"]), 3)
+        # Summary shape — one row per run, both runs visible.
+        self.assertEqual(len(payload["summary_rows"]), 2)
+        self.assertEqual({r["run_id"] for r in payload["summary_rows"]}, {rid_a, rid_b})
+        self.assertGreater(len(payload["aggregates"]), 0)
+
+    def test_include_per_column_returns_full_pivot(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid_a, rid_b = self._seed_two_overlapping_runs(store)
+            toolbox = self._build_toolbox()
+            with patch(
+                "amx.cli_support.commands.compare.history_store", return_value=store
+            ):
+                payload = toolbox._tool_compare_runs(
+                    run_ids=[rid_a, rid_b],
+                    include_per_column=True,
+                )
+        self.assertIn("per_column", payload)
+        self.assertNotIn("per_column_sample", payload)
+        self.assertEqual(payload["per_column_count"], len(payload["per_column"]))
+
+    def test_column_filter_restricts_per_column_rows(self) -> None:
+        """When the user is asking about one specific column the LLM
+        should pass column_filter — much cheaper than the full pivot.
+        The response must include only that column's rows and surface
+        the filter back so the model can confirm what it received.
+        """
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid_a, rid_b = self._seed_two_overlapping_runs(store)
+            toolbox = self._build_toolbox()
+            with patch(
+                "amx.cli_support.commands.compare.history_store", return_value=store
+            ):
+                payload = toolbox._tool_compare_runs(
+                    run_ids=[rid_a, rid_b],
+                    column_filter="id",
+                )
+        self.assertEqual(payload.get("column_filter"), "id")
+        self.assertIn("per_column", payload)
+        for row in payload["per_column"]:
+            self.assertEqual(row.get("column"), "id")
+
+    def test_invalid_run_id_returns_clean_error(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            toolbox = self._build_toolbox()
+            with patch(
+                "amx.cli_support.commands.compare.history_store", return_value=store
+            ):
+                payload = toolbox._tool_compare_runs(
+                    run_ids=["not-a-number", "also-bad"],  # type: ignore[list-item]
+                )
+        self.assertIn("error", payload)
+        self.assertIn("Invalid", payload["error"])
+
+    def test_compare_runs_schema_required_run_ids(self) -> None:
+        from amx.search.agent_tools import ToolBox
+
+        entry = next(
+            (
+                s
+                for s in ToolBox.schemas()
+                if s.get("function", {}).get("name") == "compare_runs"
+            ),
+            None,
+        )
+        self.assertIsNotNone(entry, "compare_runs must appear in ToolBox.schemas()")
+        params = entry["function"]["parameters"]
+        self.assertIn("run_ids", params["required"])
+        self.assertIn("include_per_column", params["properties"])
+        self.assertIn("column_filter", params["properties"])
+
+
 class CompareDispatchUnderHistoryNamespaceTests(unittest.TestCase):
     """User feedback 2026-05-02: ``/compare`` belongs under ``/history``,
     not ``/search`` — comparing past runs is fundamentally an audit
@@ -1273,6 +1437,7 @@ class AskHistoryToolsTests(unittest.TestCase):
         self.assertIn("list_past_runs", names)
         self.assertIn("describe_run", names)
         self.assertIn("list_chat_sessions", names)
+        self.assertIn("compare_runs", names)
 
     def test_list_past_runs_default_filters_to_analyze_run(self) -> None:
         """User report 2026-05-02 (image 2): /ask sessions polluted the

@@ -1164,6 +1164,71 @@ class ToolBox:
             {
                 "type": "function",
                 "function": {
+                    "name": "compare_runs",
+                    "description": (
+                        "Side-by-side comparison of two or more past /run "
+                        "invocations. Wraps the same payload the CLI "
+                        "/history compare and the Studio Compare modal use — "
+                        "summary per run (model, profiles, duration, status), "
+                        "aggregate metrics (model time, tokens, cost, "
+                        "confidence band split, approval rate, avg logprob), "
+                        "and per-column LLM descriptions. Use this when the "
+                        "user asks 'compare runs 58, 59, 60', 'which run "
+                        "produced better descriptions for the address table', "
+                        "'compare my last 3 runs on sales.orders'. If the "
+                        "user gives a scope hint instead of run IDs ('I ran "
+                        "analyze on the address table last week — compare "
+                        "those runs'), call list_past_runs FIRST to resolve "
+                        "candidate run IDs, then call this tool with the "
+                        "matching ids. Returns a SUMMARY by default — runs, "
+                        "summary_rows, aggregates, and a 3-row "
+                        "per_column_sample plus per_column_count. Pass "
+                        "include_per_column=true to fetch every per-column "
+                        "row (large; only do this when the user asks for "
+                        "specific descriptions). Pass column_filter="
+                        "'<col_name>' to drill into one column across every "
+                        "run — much cheaper than the full pivot when the "
+                        "question is about a single field."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "run_ids": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": (
+                                    "Two or more run IDs to compare. The "
+                                    "list must have at least 2 entries."
+                                ),
+                            },
+                            "include_per_column": {
+                                "type": "boolean",
+                                "description": (
+                                    "When true, return every per-column row "
+                                    "(asset × run). Default false: returns "
+                                    "the first 3 rows as a sample plus the "
+                                    "total per_column_count so the LLM can "
+                                    "decide whether to drill in."
+                                ),
+                            },
+                            "column_filter": {
+                                "type": "string",
+                                "description": (
+                                    "Optional: restrict per-column rows to "
+                                    "one column name across every run. "
+                                    "Cheaper than include_per_column=true "
+                                    "when the user is asking about one "
+                                    "specific field."
+                                ),
+                            },
+                        },
+                        "required": ["run_ids"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "list_chat_sessions",
                     "description": (
                         "List the user's past ``/ask`` chat sessions (resumable conversation "
@@ -4986,6 +5051,82 @@ class ToolBox:
             ]
             out["results_count"] = len(out["results"])
         return out
+
+    def _tool_compare_runs(
+        self,
+        run_ids: list[int] | None = None,
+        include_per_column: bool = False,
+        column_filter: str = "",
+    ) -> dict[str, Any]:
+        """Side-by-side comparison of two or more past runs.
+
+        Wraps the pure ``compare_runs`` helper that already powers the
+        CLI ``/history compare`` and the Studio Compare modal. Defaults
+        to a SUMMARY payload (runs + summary_rows + aggregates + 3-row
+        sample) so the model doesn't blow its context window on an
+        8-run × 200-column pivot; the LLM can re-call with
+        ``include_per_column=true`` or ``column_filter="<col>"`` when
+        the user actually wants the per-column descriptions.
+        """
+        from amx.cli_support.commands.compare import compare_runs
+
+        # Validate the input set before delegating so the LLM gets a
+        # crisp error message instead of a deeper TypeError.
+        if not run_ids:
+            return {
+                "error": (
+                    "compare_runs needs at least 2 run IDs. Pass run_ids "
+                    "as an array of integers, or call list_past_runs "
+                    "first to resolve them from a scope hint."
+                )
+            }
+        try:
+            normalized_ids = [int(r) for r in run_ids]
+        except (TypeError, ValueError) as exc:
+            return {"error": f"Invalid run_ids: {exc}"}
+        if len(normalized_ids) < 2:
+            return {
+                "error": (
+                    "compare_runs needs at least 2 run IDs to make a "
+                    "comparison meaningful."
+                )
+            }
+
+        try:
+            payload = compare_runs(normalized_ids)
+        except RuntimeError as exc:
+            # ``compare_runs`` raises RuntimeError when the history store
+            # isn't initialised — surface it verbatim so the LLM can
+            # tell the user to activate a profile.
+            return {"error": str(exc)}
+
+        per_column = list(payload.get("per_column") or [])
+        if column_filter:
+            needle = column_filter.strip()
+            filtered = [
+                r for r in per_column if str(r.get("column") or "").strip() == needle
+            ]
+        else:
+            filtered = per_column
+
+        result: dict[str, Any] = {
+            "runs": payload.get("runs") or [],
+            "summary_rows": payload.get("summary_rows") or [],
+            "aggregates": payload.get("aggregates") or [],
+            "missing": payload.get("missing") or [],
+            "per_column_count": len(filtered),
+        }
+        if include_per_column or column_filter:
+            # Caller asked for the full pivot (or for a single-column
+            # slice, which is small by definition).
+            result["per_column"] = filtered
+        else:
+            # Cheap-context default: a 3-row sample so the model can
+            # eyeball the shape and decide whether to drill in.
+            result["per_column_sample"] = filtered[:3]
+        if column_filter:
+            result["column_filter"] = column_filter
+        return result
 
     def _tool_list_chat_sessions(
         self,
