@@ -629,6 +629,84 @@ class ExportJSONTests(unittest.TestCase):
             self.assertIn("cost_usd", metrics_seen)
 
 
+class ComparePerColumnContractTests(unittest.TestCase):
+    """Pin the long-format ``per_column`` shape the SPA's
+    ``RunsCompare.tsx`` (PerColumnPivot) depends on. The page
+    renders ``confidence`` + ``logprob_score`` + ``token_count`` per
+    cell on top of the description, plus the ``run_id`` is what
+    drives the per-asset winner-ring computation. Drift on any of
+    these four fields would silently break the Compare UX without
+    a visible runtime error -- the cells would just lose their
+    badges -- so pin the contract here.
+    """
+
+    def test_per_column_long_carries_confidence_logprob_tokens(self) -> None:
+        from amx.cli_support.commands.compare import _collect_per_column_long
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            rid1, rid2 = _seed_two_runs_for_export(store)
+            runs = [store.get_run(rid1), store.get_run(rid2)]
+            results_by_run = {
+                rid1: store.get_run_results(rid1),
+                rid2: store.get_run_results(rid2),
+            }
+            rows = _collect_per_column_long(runs, results_by_run)
+            self.assertGreater(len(rows), 0)
+            for row in rows:
+                # SPA reads exactly these keys -- removing any of
+                # them silently degrades the Compare cell footer.
+                for key in (
+                    "schema",
+                    "table",
+                    "column",
+                    "run_id",
+                    "description",
+                    "confidence",
+                    "logprob_score",
+                    "token_count",
+                ):
+                    self.assertIn(key, row)
+
+
+class CompareAggregateMetricSetTests(unittest.TestCase):
+    """Pin the per-metric ``_AGGREGATE_METRICS`` table the SPA's
+    AGGREGATE_DIRECTION map mirrors. A new metric added on the
+    backend without a matching frontend entry would render with a
+    raw key label and no winner highlight; pinning the set here
+    forces both sides to update together.
+    """
+
+    def test_aggregate_metric_names_match_spa_direction_map(self) -> None:
+        from amx.cli_support.commands.compare import _AGGREGATE_METRICS
+
+        # Mirror of frontend/src/routes/RunsCompare.tsx
+        # ``AGGREGATE_DIRECTION``. If you add a metric on either
+        # side, update this set + the SPA together.
+        spa_direction_map = {
+            "wall_duration_sec",
+            "model_processing_sec",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "cost_usd",
+            "avg_logprob_score",
+            "pct_high_confidence",
+            "pct_medium_confidence",
+            "pct_low_confidence",
+            "approval_rate",
+            "saved_results",
+        }
+        backend_names = {export_name for export_name, _agg_key in _AGGREGATE_METRICS}
+        self.assertEqual(
+            spa_direction_map,
+            backend_names,
+            "SPA's AGGREGATE_DIRECTION must list exactly the metrics "
+            "the backend's _AGGREGATE_METRICS emits.",
+        )
+
+
 class CompareDispatchUnderHistoryNamespaceTests(unittest.TestCase):
     """User feedback 2026-05-02: ``/compare`` belongs under ``/history``,
     not ``/search`` — comparing past runs is fundamentally an audit

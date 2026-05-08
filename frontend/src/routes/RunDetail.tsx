@@ -9,6 +9,7 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import JobProgress from "../components/JobProgress";
 import StatusPill from "../components/StatusPill";
+import { ConfidencePill, LogprobBadge } from "../components/ui/InsightBadges";
 import RerunDialog from "../components/RerunDialog";
 import { cn } from "../lib/cn";
 import {
@@ -2259,27 +2260,6 @@ function ResultRowItemImpl({
 // object reference + same callbacks → bail out of re-render.
 const ResultRowItem = memo(ResultRowItemImpl);
 
-function LogprobBadge({ score }: { score: number | null }) {
-  if (score == null) {
-    return (
-      <span
-        className="font-mono text-[10px] text-ink-dim"
-        title="No logprob recorded for this suggestion."
-      >
-        logprob —
-      </span>
-    );
-  }
-  return (
-    <span
-      className="font-mono text-[10px] text-ink-muted"
-      title="Average log-probability — closer to 0 = more confident; very negative = the model was guessing."
-    >
-      logprob {score.toFixed(3)}
-    </span>
-  );
-}
-
 function normalizeAlternativeStrings(raw: unknown[]): string[] {
   const out: string[] = [];
   for (const entry of raw ?? []) {
@@ -2295,22 +2275,6 @@ function normalizeAlternativeStrings(raw: unknown[]): string[] {
     seen.add(d);
     return true;
   });
-}
-
-function ConfidencePill({
-  value,
-  score,
-}: {
-  value: string;
-  score: number | null;
-}) {
-  const tone =
-    value === "high" ? "positive" : value === "low" ? "warning" : "neutral";
-  return (
-    <span title={score != null ? `logprob ${score.toFixed(3)}` : undefined}>
-      <StatusPill tone={tone}>{value}</StatusPill>
-    </span>
-  );
 }
 
 function groupByTable(rows: ResultRow[]) {
