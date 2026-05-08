@@ -873,30 +873,26 @@ function QualityCard({ data }: { data: CompareResponse }) {
       </CardBody>
       {quality.citations.length > 0 && (
         <div className="border-t border-surface-border bg-surface-subtle/30 px-5 py-3 text-[11px] text-ink-dim">
-          <div className="mb-1 font-semibold uppercase tracking-wider">
+          {/* Surface only the metric labels and a docs link — the
+              card was getting unreadable when seven full bibliographic
+              entries stacked under the table on every compare. The
+              full citations live at /cli/history/#academic-methods on
+              amxcli.com for anyone who wants them. */}
+          <span className="font-semibold uppercase tracking-wider">
             Methods
-          </div>
-          <ul className="space-y-1">
-            {quality.citations.map((c) => (
-              <li key={c.key}>
-                <span className="font-semibold text-ink-muted">{c.label}.</span>{" "}
-                {c.citation}
-                {c.url && (
-                  <>
-                    {" "}
-                    <a
-                      href={c.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono text-accent hover:underline"
-                    >
-                      {c.url}
-                    </a>
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+          </span>
+          <span>
+            {": "}
+            {quality.citations.map((c) => c.label).join(" · ")} ·{" "}
+            <a
+              href="https://amxcli.com/cli/history/#academic-methods"
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent hover:underline"
+            >
+              full citations
+            </a>
+          </span>
         </div>
       )}
     </Card>

@@ -1752,10 +1752,17 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
     console.print(table)
 
     if citations:
+        # Surface only the metric labels and a one-line pointer at the
+        # docs page that carries the full bibliographic entries — the
+        # CLI panel was getting unreadable when seven citations
+        # printed inline after every comparison. Anyone who wants the
+        # full Popović 2015 / Lin 2004 / etc. references can read
+        # https://amxcli.com/cli/history/#academic-methods.
         labels = " · ".join(f"{c['label']}" for c in citations)
         console.print(f"[dim]Methods: {labels}[/dim]")
-        for cite in citations:
-            console.print(f"  [dim]· {cite['citation']}[/dim]")
+        console.print(
+            "[dim]Full citations: https://amxcli.com/cli/history/#academic-methods[/dim]"
+        )
 
 
 # ── Ask AMX hand-off ────────────────────────────────────────────────────────
