@@ -164,6 +164,9 @@ interface CatalogsCache {
 interface DatabasesCache {
   databases: string[];
 }
+interface AssetsCache {
+  assets: { name: string; kind?: string }[];
+}
 
 /** Look up cached database/catalog children for a profile and
  *  return true if any of their names match the search query.
@@ -184,6 +187,27 @@ function profileHasMatchingChildInCache(
   const dbs = qc.getQueryData<DatabasesCache>(["live-databases", profileName]);
   if (dbs?.databases?.some((d) => matchesSearch(d, query))) return true;
   return false;
+}
+
+/** Return true when a schema's cached asset list (tables / views)
+ *  contains a name that matches the search query. Used to keep a
+ *  schema row visible when the user types a table name -- but only
+ *  if that asset list is already in the React Query cache. */
+function schemaHasMatchingAssetInCache(
+  qc: QueryClient,
+  scope: Scope,
+  schema: string,
+  query: string,
+): boolean {
+  if (!query) return false;
+  const cached = qc.getQueryData<AssetsCache>([
+    "live-assets",
+    scope.profile,
+    scope.database ?? "",
+    scope.catalog ?? "",
+    schema,
+  ]);
+  return !!cached?.assets?.some((a) => matchesSearch(a.name, query));
 }
 
 function SectionTitle({
@@ -410,6 +434,8 @@ function ProfileScopeChildren({
             key={name}
             scope={{ profile, catalog: name, kind: "catalog" }}
             label={name}
+            query={query}
+            parentMatched={parentMatched || matchesSearch(name, query)}
           />
         ))}
       </div>
@@ -446,19 +472,35 @@ function ProfileScopeChildren({
           key={name}
           scope={{ profile, database: name, kind: "database" }}
           label={name}
+          query={query}
+          parentMatched={parentMatched || matchesSearch(name, query)}
         />
       ))}
     </div>
   );
 }
 
-function ScopeNode({ scope, label }: { scope: Scope; label: string }) {
+function ScopeNode({
+  scope,
+  label,
+  query,
+  parentMatched,
+}: {
+  scope: Scope;
+  label: string;
+  query: string;
+  parentMatched: boolean;
+}) {
   const params = useParams();
   const navigate = useNavigate();
   const isOnThis =
     params.profile === scope.profile &&
     (scope.database ? params.database === scope.database : params.catalog === scope.catalog);
   const [open, setOpen] = useState<boolean>(isOnThis);
+  // While the user is typing, force every level open so the
+  // search query reaches schemas + tables. Without this the tree
+  // would only filter the rows the user has already drilled into.
+  const effectiveOpen = open || !!query;
 
   return (
     <div>
@@ -475,19 +517,32 @@ function ScopeNode({ scope, label }: { scope: Scope; label: string }) {
             : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
         )}
       >
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {effectiveOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="truncate">{label}</span>
       </button>
-      {open && (
+      {effectiveOpen && (
         <div className="ml-3 mt-0.5 border-l border-border pl-2">
-          <SchemasUnderScope scope={scope} />
+          <SchemasUnderScope
+            scope={scope}
+            query={query}
+            parentMatched={parentMatched}
+          />
         </div>
       )}
     </div>
   );
 }
 
-function SchemasUnderScope({ scope }: { scope: Scope }) {
+function SchemasUnderScope({
+  scope,
+  query,
+  parentMatched,
+}: {
+  scope: Scope;
+  query: string;
+  parentMatched: boolean;
+}) {
+  const qc = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: [
       "live-schemas",
@@ -516,16 +571,49 @@ function SchemasUnderScope({ scope }: { scope: Scope }) {
   if (!data || data.schemas.length === 0) {
     return <div className="px-2 py-1 text-[11px] text-ink-dim">(no schemas)</div>;
   }
+  // When parentMatched is true, the user already hit on something
+  // higher up the chain (a profile / db / catalog) -- show every
+  // schema unfiltered. Otherwise narrow to schemas whose name
+  // matches OR that have a cached asset list with a table name
+  // match (so a typed table name keeps its parent schema visible
+  // even before the user clicks into it).
+  const schemas = query
+    ? data.schemas.filter(
+        (s) =>
+          parentMatched ||
+          matchesSearch(s, query) ||
+          schemaHasMatchingAssetInCache(qc, scope, s, query),
+      )
+    : data.schemas;
+  if (schemas.length === 0) {
+    return <div className="px-2 py-1 text-[11px] text-ink-dim">No schemas match.</div>;
+  }
   return (
     <div className="space-y-0.5">
-      {data.schemas.map((schema) => (
-        <SchemaNode key={schema} scope={scope} schema={schema} />
+      {schemas.map((schema) => (
+        <SchemaNode
+          key={schema}
+          scope={scope}
+          schema={schema}
+          query={query}
+          parentMatched={parentMatched || matchesSearch(schema, query)}
+        />
       ))}
     </div>
   );
 }
 
-function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
+function SchemaNode({
+  scope,
+  schema,
+  query,
+  parentMatched,
+}: {
+  scope: Scope;
+  schema: string;
+  query: string;
+  parentMatched: boolean;
+}) {
   const params = useParams();
   const navigate = useNavigate();
   const isOnThis =
@@ -533,6 +621,10 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
     (scope.database ? params.database === scope.database : params.catalog === scope.catalog) &&
     params.schema === schema;
   const [open, setOpen] = useState<boolean>(isOnThis);
+  // Force the assets list open while the user has a search query
+  // active so a table-name match pulls its parent schema's assets
+  // into view without an extra click.
+  const effectiveOpen = open || !!query;
 
   const { data: assets } = useQuery({
     queryKey: [
@@ -543,8 +635,13 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
       schema,
     ],
     queryFn: () => api.liveAssets(scope, schema),
-    enabled: open,
+    enabled: effectiveOpen,
   });
+
+  const filteredAssets =
+    assets?.assets && query && !parentMatched
+      ? assets.assets.filter((a) => matchesSearch(a.name, query))
+      : assets?.assets;
 
   return (
     <div>
@@ -561,13 +658,13 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
             : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
         )}
       >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {effectiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         <span className="truncate">{schema}</span>
       </button>
-      {open && (
+      {effectiveOpen && (
         <div className="ml-3 border-l border-border pl-2">
-          {assets?.assets?.length ? (
-            assets.assets.map((asset) => (
+          {filteredAssets?.length ? (
+            filteredAssets.map((asset) => (
               <button
                 key={`${schema}.${asset.name}`}
                 type="button"
@@ -587,7 +684,11 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
             ))
           ) : (
             <div className="px-2 py-1 text-[11px] text-ink-dim">
-              {assets ? "(empty)" : "Loading…"}
+              {assets
+                ? query && !parentMatched
+                  ? "No tables match."
+                  : "(empty)"
+                : "Loading…"}
             </div>
           )}
         </div>
