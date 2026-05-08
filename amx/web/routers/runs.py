@@ -24,6 +24,7 @@ machinery.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 import time
@@ -32,7 +33,7 @@ from queue import Empty
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from amx.agents.orchestrator import (
@@ -41,13 +42,13 @@ from amx.agents.orchestrator import (
     RunCancelled,
     apply_review_results_to_db,
 )
-from amx.config import AMXConfig
+from amx.config import AMXConfig, LLMConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
 from amx.pending_review import clear_pending, load_pending, save_pending
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import quiet_console
-from amx.utils.logging import get_logger
+from amx.utils.logging import get_logger, log_event
 from amx.utils.token_tracker import tracker as token_tracker
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
@@ -56,6 +57,52 @@ from amx.web.routers.live_db import _connector_for_scope
 
 router = APIRouter(prefix="/api", tags=["runs"])
 log = get_logger("web.runs")
+
+
+class LLMOverrides(BaseModel):
+    """Per-run override of the active LLM profile's tuning knobs.
+
+    Every field is optional — omitted = use the saved profile's value.
+    Applied via :func:`_apply_llm_overrides` at the start of the run
+    worker, *without ever mutating the saved profile on disk*. The
+    derived :class:`AMXConfig` is scoped to the worker thread.
+    """
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=256, le=262_144)
+    n_alternatives: int | None = Field(default=None, ge=1, le=5)
+    column_batch_size: int | None = Field(default=None, ge=1, le=200)
+    prompt_detail: str | None = None
+    description_verbosity: str | None = None
+    thinking_budget: int | None = Field(default=None, ge=0, le=64_000)
+    logprob_high: float | None = Field(default=None, ge=0.0, le=1.0)
+    logprob_medium: float | None = Field(default=None, ge=0.0, le=1.0)
+    custom_input_cost_per_mtok: float | None = Field(default=None, ge=0.0)
+    custom_output_cost_per_mtok: float | None = Field(default=None, ge=0.0)
+
+    @field_validator("prompt_detail")
+    @classmethod
+    def _check_prompt_detail(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        allowed = {"minimal", "standard", "detailed", "full"}
+        if v not in allowed:
+            raise ValueError(f"prompt_detail must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("description_verbosity")
+    @classmethod
+    def _check_verbosity(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        allowed = {"brief", "detailed", "comprehensive", "exhaustive"}
+        if v not in allowed:
+            raise ValueError(f"description_verbosity must be one of {sorted(allowed)}")
+        return v
+
+    def non_null(self) -> dict[str, Any]:
+        """Return only the fields the caller actually set."""
+        return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
 class RunRequest(BaseModel):
@@ -72,6 +119,11 @@ class RunRequest(BaseModel):
     worker resolves the connector via :func:`_connector_for_scope` and
     records the run under that profile name. Omit them to keep the
     legacy single-active behaviour for the pre-multi-profile SPA.
+
+    ``llm_overrides`` lets the caller tune any LLM profile knob *for
+    this run only* — temperature, n_alternatives, prompt_detail, etc.
+    The saved profile on disk is never mutated; the worker derives a
+    one-shot :class:`AMXConfig` via :func:`_apply_llm_overrides`.
     """
 
     scope: dict[str, list[str]] = Field(
@@ -87,6 +139,42 @@ class RunRequest(BaseModel):
     )
     database: str | None = Field(default=None)
     catalog: str | None = Field(default=None)
+    llm_overrides: LLMOverrides | None = Field(
+        default=None,
+        description=(
+            "Optional per-run overrides for the active LLM profile's "
+            "tuning knobs (temperature, max_tokens, n_alternatives, "
+            "column_batch_size, prompt_detail, description_verbosity, "
+            "thinking_budget, logprob_high, logprob_medium, "
+            "custom_input_cost_per_mtok, custom_output_cost_per_mtok). "
+            "Saved profile is never mutated."
+        ),
+    )
+
+
+def _apply_llm_overrides(cfg: AMXConfig, overrides: LLMOverrides | None) -> tuple[AMXConfig, dict[str, Any]]:
+    """Return ``(derived_cfg, applied_dict)``.
+
+    When ``overrides`` is ``None`` or empty the input ``cfg`` is
+    returned unchanged. Otherwise we use :func:`dataclasses.replace`
+    to build a derived :class:`LLMConfig` carrying the new values and
+    a derived :class:`AMXConfig` that wraps it — the saved profile on
+    disk and the in-memory ``cfg`` shared with the rest of the process
+    are left alone, which is what makes this safe to call from a
+    request handler.
+
+    The second return value is the applied-fields dict (only keys the
+    caller actually overrode), suitable for emitting as a structured
+    audit event.
+    """
+    if overrides is None:
+        return cfg, {}
+    applied = overrides.non_null()
+    if not applied:
+        return cfg, {}
+    derived_llm = dataclasses.replace(cfg.llm, **applied)
+    derived_cfg = dataclasses.replace(cfg, llm=derived_llm)
+    return derived_cfg, applied
 
 
 class ApplyRequest(BaseModel):
@@ -305,6 +393,24 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         _fail_job(job, "No active LLM profile is configured. Use Settings to add one.")
         return
 
+    # Per-run overrides for the active LLM profile (Studio "Advanced
+    # LLM settings" disclosure on /runs/new). The derived ``cfg`` only
+    # exists for the lifetime of this worker thread — the saved profile
+    # on disk is never mutated. When the body omits ``llm_overrides``
+    # the helper returns the original ``cfg`` unchanged, so the common
+    # case stays a no-op.
+    cfg, applied_overrides = _apply_llm_overrides(cfg, body.llm_overrides)
+    if applied_overrides:
+        emit(job.queue, "run.llm_overrides", {"overrides": applied_overrides})
+        try:
+            log_event(
+                "run.llm_overrides",
+                trigger="studio",
+                overrides=applied_overrides,
+            )
+        except Exception:  # pragma: no cover - audit log is best effort
+            pass
+
     scope: dict[str, list[str]] = {
         str(s): [str(t) for t in (tables or [])] for s, tables in (body.scope or {}).items()
     }
@@ -399,6 +505,10 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     # when the user scoped to a non-default database.
                     "database": (body.database or "").strip() or None,
                     "catalog": (body.catalog or "").strip() or None,
+                    # Record exactly which LLM-profile knobs diverged
+                    # for this one run so /history can show the
+                    # delta-from-profile alongside the run's outcome.
+                    "llm_overrides": applied_overrides or None,
                 },
             )
             # Bind the persistent run id to the live Job so the run

@@ -85,3 +85,52 @@ def test_context_reports_no_batch_for_ollama(client, auth_headers, cfg) -> None:
     response = client.get("/api/context", headers=auth_headers)
     assert response.status_code == 200
     assert response.json()["llm_supports_batch"] is False
+
+
+def test_context_surfaces_llm_profile_defaults(client, auth_headers, cfg) -> None:
+    """RunNew's "Advanced LLM settings" disclosure pre-fills from
+    ``llm_profile_defaults`` on /api/context. The handler must mirror
+    every tuning knob from ``cfg.llm`` so the SPA never has to fetch
+    the profile twice."""
+    cfg.llm.provider = "openai"
+    cfg.llm.model = "gpt-4o"
+    cfg.llm.temperature = 0.42
+    cfg.llm.max_tokens = 8192
+    cfg.llm.n_alternatives = 4
+    cfg.llm.column_batch_size = 12
+    cfg.llm.prompt_detail = "detailed"
+    cfg.llm.description_verbosity = "comprehensive"
+    cfg.llm.thinking_budget = 2048
+    cfg.llm.logprob_high = 0.9
+    cfg.llm.logprob_medium = 0.55
+    cfg.llm.custom_input_cost_per_mtok = 1.25
+    cfg.llm.custom_output_cost_per_mtok = 2.5
+
+    response = client.get("/api/context", headers=auth_headers)
+    assert response.status_code == 200
+    defaults = response.json()["llm_profile_defaults"]
+    assert defaults is not None
+    assert defaults["temperature"] == 0.42
+    assert defaults["max_tokens"] == 8192
+    assert defaults["n_alternatives"] == 4
+    assert defaults["column_batch_size"] == 12
+    assert defaults["prompt_detail"] == "detailed"
+    assert defaults["description_verbosity"] == "comprehensive"
+    assert defaults["thinking_budget"] == 2048
+    assert defaults["logprob_high"] == 0.9
+    assert defaults["logprob_medium"] == 0.55
+    assert defaults["custom_input_cost_per_mtok"] == 1.25
+    assert defaults["custom_output_cost_per_mtok"] == 2.5
+
+
+def test_context_omits_llm_profile_defaults_without_provider(
+    client, auth_headers, cfg
+) -> None:
+    """Without a configured provider the handler returns ``null`` so
+    the SPA can render an "LLM not configured" empty state instead of
+    showing a row of fake defaults."""
+    cfg.llm.provider = ""
+    cfg.llm.model = ""
+    response = client.get("/api/context", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["llm_profile_defaults"] is None
