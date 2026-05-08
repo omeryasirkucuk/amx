@@ -59,21 +59,27 @@ export default function Ask() {
   // Monotonic counter so AskChat reseeds even when the user clicks the
   // currently-loaded session (e.g. to discard local in-progress edits).
   const [seedToken, setSeedToken] = useState(0);
+  // Cross-page hand-off auto-submit slot. When set, AskChat fires this
+  // prompt as a real /api/ask call on next mount/seedToken bump, then
+  // calls back so we clear it.
+  const [seedSubmit, setSeedSubmit] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<number | null>(null);
 
   // Cross-page hand-off: when /runs/compare's "Ask AMX" button (or any
-  // other deep link) navigates to /ask with state.seedPrompt, drop it
-  // into AskChat as a single user turn so the chat opens with the
-  // question pre-filled. We do NOT auto-submit — the user can edit it
-  // first or hit cancel without losing context. After consuming we
-  // strip the state via history.replaceState so a back/forward bounce
-  // doesn't re-seed the same prompt twice.
+  // other deep link) navigates to /ask with state.seedPrompt, fire the
+  // prompt automatically — the user already consented to send it by
+  // clicking the modal button, so leaving it as a stranded orange
+  // bubble (the previous behaviour) was confusing. seedTurns stays
+  // empty; AskChat's submitText will push the user turn itself.
+  // After consuming we strip the state via history.replaceState so a
+  // back/forward bounce doesn't re-seed the same prompt twice.
   useEffect(() => {
     const seed = (location.state as { seedPrompt?: string } | null)?.seedPrompt;
     if (!seed) return;
     setSelectedSessionId(null);
-    setSeedTurns([{ role: "user", content: seed }]);
+    setSeedTurns([]);
+    setSeedSubmit(seed);
     setSeedToken((n) => n + 1);
     setLoadError(null);
     window.history.replaceState({}, "");
@@ -283,6 +289,8 @@ export default function Ask() {
             selectedSessionId={selectedSessionId}
             seedTurns={seedTurns}
             seedToken={seedToken}
+            seedSubmit={seedSubmit}
+            onSeedSubmitConsumed={() => setSeedSubmit(null)}
             onSessionAssigned={handleSessionAssigned}
             onResumeStale={() => {
               // The AskChat detected a stored "in-flight" job that has

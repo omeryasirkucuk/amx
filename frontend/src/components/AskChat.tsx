@@ -59,6 +59,15 @@ interface AskChatProps {
   // Bumped each time the parent wants to reseed (so identical loads
   // still trigger the effect). Re-using a number works fine.
   seedToken: number;
+  // Optional: when set, AskChat fires this prompt as a fresh user
+  // turn the moment it mounts (or the moment seedToken bumps). Used
+  // by the Compare modal's "Ask AMX" hand-off — the user already
+  // consented to send by clicking the modal button, so leaving the
+  // seed visible as a stranded orange bubble was confusing.
+  // ``onSeedSubmitConsumed`` clears the parent's slot once the
+  // submit has fired so a re-render doesn't refire it.
+  seedSubmit?: string | null;
+  onSeedSubmitConsumed?: () => void;
   // Lets the chat panel notify parent when a brand-new session id is
   // assigned by the backend, so the sidebar can refresh / highlight.
   onSessionAssigned?: (sessionId: number | null) => void;
@@ -76,6 +85,8 @@ export default function AskChat({
   selectedSessionId,
   seedTurns,
   seedToken,
+  seedSubmit,
+  onSeedSubmitConsumed,
   onSessionAssigned,
   onResumeStale,
 }: AskChatProps) {
@@ -275,9 +286,8 @@ export default function AskChat({
     clearAskActiveJob(sessionKey);
   }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, sessionKey, clearAskActiveJob]);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const text = question.trim();
+  async function submitText(rawText: string) {
+    const text = (rawText || "").trim();
     if (!text || activeJob) return;
     setSubmitError(null);
     setSubmitErrorHint(null);
@@ -339,6 +349,33 @@ export default function AskChat({
       setSubmitErrorHint(hint);
     }
   }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await submitText(question);
+  }
+
+  // Cross-page hand-off auto-submit. The Compare modal's "Ask AMX"
+  // button drops a seed prompt onto the parent and bumps seedToken;
+  // we pick it up here once the chat is mounted and there's no
+  // in-flight job, fire it as a real /api/ask call (so the orange
+  // user bubble streams a real assistant reply instead of just
+  // sitting there as a stranded pre-loaded turn), and immediately
+  // tell the parent to clear its slot so a re-render doesn't refire
+  // the same prompt twice.
+  useEffect(() => {
+    if (!seedSubmit) return;
+    if (activeJob) return;
+    void submitText(seedSubmit);
+    onSeedSubmitConsumed?.();
+    // ``seedToken`` is part of the dep list because the parent
+    // bumps it on every fresh hand-off; without it, two consecutive
+    // hand-offs of the same text would fail the seedSubmit-changed
+    // gate. ``submitText`` is intentionally NOT in the deps —
+    // including it would refire on every render that tweaks
+    // session/scope state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedSubmit, seedToken]);
 
   function handleScopeChange(next: string[] | null) {
     setAskScope(sessionKey, next);
