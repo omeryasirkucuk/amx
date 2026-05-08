@@ -75,11 +75,19 @@ export default function CommandPalette() {
     const base: PaletteItem[] = [
       {
         id: "go-home",
-        label: "Go to dashboard",
+        label: "Go home",
         group: "Navigate",
         icon: Database,
         run: () => navigate("/"),
-        keywords: "home dashboard",
+        keywords: "home landing entry",
+      },
+      {
+        id: "go-overview",
+        label: "Open Overview dashboard",
+        group: "Navigate",
+        icon: Database,
+        run: () => navigate("/overview"),
+        keywords: "overview dashboard tokens cost stats",
       },
       {
         id: "go-runs",
