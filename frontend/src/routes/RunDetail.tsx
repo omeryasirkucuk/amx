@@ -1370,6 +1370,13 @@ function ResultsTab({
   const [overrideDatabase, setOverrideDatabase] = useState<string>(
     scope.database ?? "",
   );
+  // Confirm-before-apply state. The apply path is irreversible
+  // (writes COMMENT statements to the live DB), so we render a
+  // dialog with the row count + DB target rather than fire on a
+  // single click. Without this, a misclick on "Apply pending queue"
+  // silently mutated the database — and a user reported exactly
+  // this surprise after navigating away and back.
+  const [confirmApplyOpen, setConfirmApplyOpen] = useState(false);
   // Catalog override is reserved for Databricks/BigQuery profiles; the
   // run-detail picker focuses on database (Postgres-shape) for now,
   // since that's where the real-world breakage occurred. Catalog stays
@@ -1585,7 +1592,7 @@ function ResultsTab({
             queueApply.isPending ||
             !hasDatabaseScope
           }
-          onClick={() => queueApply.mutate()}
+          onClick={() => setConfirmApplyOpen(true)}
           title={
             !hasDatabaseScope
               ? "Pick a target database below — this run didn't capture one."
@@ -1595,6 +1602,25 @@ function ResultsTab({
           {applyLabel}
         </Button>
       </div>
+      <AlertDialog
+        open={confirmApplyOpen}
+        onClose={() => setConfirmApplyOpen(false)}
+        onConfirm={() => {
+          setConfirmApplyOpen(false);
+          queueApply.mutate();
+        }}
+        loading={queueApply.isPending}
+        title={`Apply ${queuedCount} pending ${queuedCount === 1 ? "row" : "rows"}?`}
+        description={(() => {
+          const target = (scope.database || overrideDatabase || scope.catalog || "").trim();
+          const profile = scope.db_profile || "";
+          const where = profile && target
+            ? `${profile} @ ${target}`
+            : profile || target || "the active database profile";
+          return `This writes COMMENT statements to ${where}. The change is permanent — restoring the previous comment requires another apply with the old text. Cancel here to keep reviewing the queue.`;
+        })()}
+        confirmLabel={`Apply ${queuedCount}`}
+      />
       {!scope.database && !scope.catalog && scope.db_profile && (
         <Card>
           <CardBody className="space-y-2 px-4 py-3 text-xs">
