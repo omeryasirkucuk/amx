@@ -72,6 +72,23 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
         except Exception:  # pragma: no cover - defensive
             supports_batch = False
 
+    # Surface the local OS user / hostname so the SPA can colour-code
+    # apply events as "you" vs "{teammate}" without re-deriving it on
+    # every Audit row. Failures are swallowed because the values are
+    # display-only — a missing one shouldn't 500 the whole context
+    # query that gates the top-bar pills.
+    import getpass
+    import socket
+
+    try:
+        current_user = getpass.getuser()
+    except Exception:
+        current_user = ""
+    try:
+        current_hostname = socket.gethostname()
+    except Exception:
+        current_hostname = ""
+
     return ContextResponse(
         active_db_profile=cfg.active_db_profile or None,
         active_db_profiles=list(getattr(cfg, "active_db_profiles", []) or []),
@@ -84,4 +101,6 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
         llm_provider=provider or None,
         llm_model=getattr(llm, "model", None) or None,
         llm_supports_batch=supports_batch,
+        current_user=current_user or None,
+        current_hostname=current_hostname or None,
     )
