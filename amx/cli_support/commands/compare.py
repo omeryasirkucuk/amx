@@ -1115,6 +1115,276 @@ def _export_markdown(
     path.write_text("".join(parts), encoding="utf-8")
 
 
+# ── PDF report rendering ────────────────────────────────────────────────────
+
+# Direction per aggregate metric, keyed by the export name produced by
+# ``_collect_aggregate_long``. Mirrors ``AGGREGATE_DIRECTION`` in
+# ``frontend/src/routes/RunsCompare.tsx`` so the SPA's winner ring and
+# the PDF's highlighted cell agree on which run "wins" each row.
+_PDF_AGGREGATE_DIRECTION: dict[str, str] = {
+    "wall_duration_sec": "min",
+    "model_processing_sec": "min",
+    "prompt_tokens": "min",
+    "completion_tokens": "min",
+    "total_tokens": "min",
+    "cost_usd": "min",
+    "avg_logprob_score": "max",
+    "pct_high_confidence": "max",
+    "pct_medium_confidence": "neutral",
+    "pct_low_confidence": "min",
+    "approval_rate": "max",
+    "saved_results": "neutral",
+}
+
+_PDF_AGGREGATE_LABEL: dict[str, str] = {
+    "wall_duration_sec": "Wall duration (s)",
+    "model_processing_sec": "Model processing (s)",
+    "prompt_tokens": "Prompt tokens",
+    "completion_tokens": "Completion tokens",
+    "total_tokens": "Total tokens",
+    "cost_usd": "Cost (USD)",
+    "avg_logprob_score": "Avg logprob",
+    "pct_high_confidence": "% high confidence",
+    "pct_medium_confidence": "% medium confidence",
+    "pct_low_confidence": "% low confidence",
+    "approval_rate": "Approval rate",
+    "saved_results": "Saved results",
+}
+
+
+def _format_aggregate_cell(metric: str, value: Any) -> str:
+    if value is None:
+        return "—"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if metric == "cost_usd":
+        if v <= 0:
+            return "$0.00"
+        return "<$0.01" if v < 0.01 else f"${v:.4f}"
+    if metric.startswith("pct_"):
+        return f"{v:.0f}%"
+    if metric == "approval_rate":
+        return f"{v * 100:.0f}%"
+    if metric.endswith("_sec"):
+        return f"{v:.2f}s"
+    if metric == "avg_logprob_score":
+        return f"{v:.3f}"
+    if v == int(v):
+        return f"{int(v):,}"
+    return f"{v:,.2f}"
+
+
+def _pick_aggregate_winner(metric: str, vals: dict[int, Any]) -> int | None:
+    direction = _PDF_AGGREGATE_DIRECTION.get(metric, "neutral")
+    if direction == "neutral":
+        return None
+    best_id: int | None = None
+    best_val: float | None = None
+    for rid, raw in vals.items():
+        if raw is None:
+            continue
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if not (v == v and v != float("inf") and v != float("-inf")):
+            continue
+        if best_val is None:
+            best_id, best_val = rid, v
+            continue
+        if direction == "min" and v < best_val:
+            best_id, best_val = rid, v
+        elif direction == "max" and v > best_val:
+            best_id, best_val = rid, v
+    return best_id
+
+
+def _confidence_class(band: str) -> str:
+    b = (band or "").strip().lower()
+    if b == "high":
+        return "high"
+    if b in {"medium", "med"}:
+        return "medium"
+    if b == "low":
+        return "low"
+    return ""
+
+
+def _build_pdf_context(payload: dict[str, Any]) -> dict[str, Any]:
+    """Shape the ``compare_runs`` payload into the dict the Jinja
+    template consumes — performs the long-to-wide pivots and the
+    winner highlight resolution in Python so the template stays
+    free of business logic."""
+    runs = list(payload.get("runs") or [])
+    run_ids: list[int] = [int(r["id"]) for r in runs]
+    summary_rows = list(payload.get("summary_rows") or [])
+    aggregates = list(payload.get("aggregates") or [])
+    per_column = list(payload.get("per_column") or [])
+    missing = list(payload.get("missing") or [])
+
+    # Aggregate pivot: preserve insertion order from the canonical
+    # _AGGREGATE_METRICS tuple so the PDF rows match the Studio table.
+    agg_by_metric: dict[str, dict[int, Any]] = {}
+    for arow in aggregates:
+        metric = arow.get("metric")
+        if not metric:
+            continue
+        rid = int(arow.get("run_id"))
+        agg_by_metric.setdefault(metric, {})[rid] = arow.get("value")
+
+    aggregate_rows: list[dict[str, Any]] = []
+    for export_name, _agg_key in _AGGREGATE_METRICS:
+        vals = agg_by_metric.get(export_name)
+        if not vals:
+            continue
+        winner = _pick_aggregate_winner(export_name, vals)
+        cells: dict[int, dict[str, Any]] = {}
+        for rid in run_ids:
+            v = vals.get(rid)
+            cells[rid] = {
+                "display": _format_aggregate_cell(export_name, v),
+                "is_winner": (winner is not None and rid == winner),
+            }
+        aggregate_rows.append(
+            {
+                "metric": export_name,
+                "label": _PDF_AGGREGATE_LABEL.get(export_name, export_name),
+                "cells": cells,
+            }
+        )
+
+    # Per-column pivot grouped by (schema, table, column). Sort rows
+    # so assets with overlap across more runs surface first — matches
+    # the SPA's PerColumnPivot ordering.
+    by_asset: dict[tuple[str, str, str], dict[int, dict[str, Any]]] = {}
+    label_by_asset: dict[tuple[str, str, str], str] = {}
+    for prow in per_column:
+        key = (
+            str(prow.get("schema") or ""),
+            str(prow.get("table") or ""),
+            str(prow.get("column") or ""),
+        )
+        rid_raw = prow.get("run_id")
+        if rid_raw is None:
+            continue
+        try:
+            rid = int(rid_raw)
+        except (TypeError, ValueError):
+            continue
+        by_asset.setdefault(key, {})[rid] = prow
+        if key not in label_by_asset:
+            label = ".".join(p for p in key if p) or "—"
+            label_by_asset[key] = label
+
+    ordered_keys = sorted(
+        by_asset.keys(),
+        key=lambda k: (-len(by_asset[k]), label_by_asset[k]),
+    )
+
+    percol_rows: list[dict[str, Any]] = []
+    for key in ordered_keys:
+        cells_map = by_asset[key]
+        # Winner per asset row: highest logprob (closest to 0).
+        best_rid: int | None = None
+        best_lp: float | None = None
+        for rid, cell in cells_map.items():
+            lp = cell.get("logprob_score")
+            if lp is None:
+                continue
+            try:
+                lpv = float(lp)
+            except (TypeError, ValueError):
+                continue
+            if best_lp is None or lpv > best_lp:
+                best_rid, best_lp = rid, lpv
+
+        rendered_cells: dict[int, dict[str, Any] | None] = {}
+        for rid in run_ids:
+            cell = cells_map.get(rid)
+            if not cell or not str(cell.get("description") or "").strip():
+                rendered_cells[rid] = None
+                continue
+            lp = cell.get("logprob_score")
+            try:
+                lp_display = f"{float(lp):.2f}" if lp is not None else ""
+            except (TypeError, ValueError):
+                lp_display = ""
+            rendered_cells[rid] = {
+                "description": str(cell.get("description") or "").strip(),
+                "confidence": str(cell.get("confidence") or "").strip(),
+                "confidence_class": _confidence_class(str(cell.get("confidence") or "")),
+                "logprob_display": lp_display,
+                "token_count": cell.get("token_count"),
+                "is_winner": (best_rid is not None and rid == best_rid),
+            }
+        percol_rows.append({"label": label_by_asset[key], "cells": rendered_cells})
+
+    # Density tuning: 2 runs → 10pt cells; each extra run drops ~0.5pt
+    # down to a 7pt floor. Asset column shrinks proportionally so run
+    # columns get the page real estate.
+    n_runs = max(1, len(run_ids))
+    cell_pt = max(7.0, 10.0 - 0.5 * (n_runs - 2))
+    base_pt = max(8.0, 10.5 - 0.3 * (n_runs - 2))
+    asset_col_pct = max(14, 26 - 1.4 * (n_runs - 2))
+    run_col_pct = (100 - asset_col_pct) / n_runs
+    aggregate_run_col_pct = (100 - 22) / n_runs
+
+    from amx import __version__ as amx_version
+
+    run_ids_label = ", ".join(f"#{rid}" for rid in run_ids) if run_ids else "(no runs)"
+    return {
+        "runs": runs,
+        "run_ids": run_ids,
+        "run_ids_label": run_ids_label,
+        "summary_rows": summary_rows,
+        "aggregate_rows": aggregate_rows,
+        "percol_rows": percol_rows,
+        "missing": missing,
+        "amx_version": amx_version,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "base_font_pt": f"{base_pt:.1f}",
+        "cell_font_pt": f"{cell_pt:.1f}",
+        "asset_col_pct": f"{asset_col_pct:.1f}",
+        "run_col_pct": f"{run_col_pct:.2f}",
+        "aggregate_run_col_pct": f"{aggregate_run_col_pct:.2f}",
+    }
+
+
+def render_compare_pdf(payload: dict[str, Any]) -> bytes:
+    """Render a ``compare_runs`` payload as a landscape A4 PDF report.
+
+    Lazy-imports Jinja2 + WeasyPrint via :mod:`amx.utils.optional_deps`
+    so the heavy Pango/Cairo bindings only land on disk the first time
+    the user actually clicks "Download PDF" in Studio (or runs the CLI
+    with ``--pdf``). Returns the encoded PDF bytes; the FastAPI route
+    streams them straight to the browser.
+    """
+    from amx.utils.optional_deps import ensure
+
+    ensure(
+        [
+            ("jinja2", "jinja2"),
+            ("weasyprint", "weasyprint"),
+        ],
+        feature="Compare PDF export",
+    )
+
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    from weasyprint import HTML
+
+    template_dir = Path(__file__).resolve().parent.parent / "templates"
+    env = Environment(
+        loader=FileSystemLoader(str(template_dir)),
+        autoescape=select_autoescape(["html"]),
+    )
+    template = env.get_template("compare_report.html")
+    context = _build_pdf_context(payload)
+    html_str = template.render(**context)
+    return HTML(string=html_str).write_pdf()
+
+
 # ── Public registration ─────────────────────────────────────────────────────
 
 
@@ -1328,4 +1598,4 @@ def register_compare_command(
         )
 
 
-__all__ = ["register_compare_command"]
+__all__ = ["compare_runs", "register_compare_command", "render_compare_pdf"]

@@ -16,8 +16,10 @@ interface DialogProps {
   preventBackdropClose?: boolean;
   /** Hide close icon button (header still renders title). */
   hideCloseButton?: boolean;
-  /** Width preset. */
-  size?: "sm" | "md" | "lg";
+  /** Width preset. ``xl`` opts the panel into a flex column whose
+   *  body scrolls — used by the Compare result modal where the inner
+   *  tables can be much taller than the viewport. */
+  size?: "sm" | "md" | "lg" | "xl";
   className?: string;
   children?: ReactNode;
 }
@@ -26,6 +28,7 @@ const sizeClasses: Record<NonNullable<DialogProps["size"]>, string> = {
   sm: "max-w-sm",
   md: "max-w-md",
   lg: "max-w-2xl",
+  xl: "max-w-[min(1200px,95vw)] max-h-[92vh] flex flex-col",
 };
 
 /**
@@ -120,7 +123,12 @@ export default function Dialog({
         )}
       >
         {(title || !hideCloseButton) && (
-          <header className="flex items-start justify-between gap-4 px-5 pt-5">
+          <header
+            className={cn(
+              "flex items-start justify-between gap-4 px-5 pt-5",
+              size === "xl" && "shrink-0",
+            )}
+          >
             <div className="min-w-0">
               {title && (
                 <h2
@@ -150,9 +158,23 @@ export default function Dialog({
             )}
           </header>
         )}
-        {children && <div className="px-5 py-4 text-sm text-ink">{children}</div>}
+        {children && (
+          <div
+            className={cn(
+              "px-5 py-4 text-sm text-ink",
+              size === "xl" && "min-h-0 flex-1 overflow-auto",
+            )}
+          >
+            {children}
+          </div>
+        )}
         {footer && (
-          <footer className="flex items-center justify-end gap-2 border-t border-border bg-surface-subtle/40 px-5 py-3">
+          <footer
+            className={cn(
+              "flex items-center justify-end gap-2 border-t border-border bg-surface-subtle/40 px-5 py-3",
+              size === "xl" && "shrink-0",
+            )}
+          >
             {footer}
           </footer>
         )}

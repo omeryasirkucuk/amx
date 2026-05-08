@@ -707,6 +707,203 @@ class CompareAggregateMetricSetTests(unittest.TestCase):
         )
 
 
+class ComparePdfRenderingTests(unittest.TestCase):
+    """PDF report rendering — pivots, winner highlights, density tuning,
+    and a smoke test that WeasyPrint actually emits a valid PDF blob
+    when the system has Pango/Cairo available.
+    """
+
+    def _payload(self, run_ids: list[int]) -> dict:
+        """Build a synthetic ``compare_runs`` payload covering all the
+        shapes the template depends on: summary rows, long-format
+        aggregates with min / max / neutral metrics, and per-column
+        rows with overlapping + non-overlapping assets across runs.
+        """
+        runs = [{"id": rid} for rid in run_ids]
+        summary_rows = [
+            {
+                "run_id": rid,
+                "started_at": "2026-05-08 10:00",
+                "status": "success",
+                "command": "analyze.run",
+                "db_profile": "pg",
+                "llm_profile": f"prof-{rid}",
+                "llm_model": "gpt-4o",
+                "doc_profile": "docs-prod",
+                "code_profile": "code-main",
+                "duration_sec": 10.0 + rid,
+                "processed_count": 5,
+                "applied_count": 4,
+                "settings": {},
+            }
+            for rid in run_ids
+        ]
+        # Aggregates: total_tokens (min), avg_logprob_score (max),
+        # pct_medium_confidence (neutral), saved_results (neutral).
+        aggregates: list[dict] = []
+        for i, rid in enumerate(run_ids):
+            aggregates.append({"metric": "total_tokens", "run_id": rid, "value": 1000 - i * 10})
+            aggregates.append(
+                {"metric": "avg_logprob_score", "run_id": rid, "value": -0.5 - i * 0.1}
+            )
+            aggregates.append(
+                {"metric": "pct_medium_confidence", "run_id": rid, "value": 33.3}
+            )
+            aggregates.append({"metric": "saved_results", "run_id": rid, "value": 7})
+        per_column: list[dict] = []
+        for i, rid in enumerate(run_ids):
+            per_column.append(
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": "id",
+                    "run_id": rid,
+                    "description": f"Primary key v{i}",
+                    "confidence": ["high", "medium", "low"][i % 3],
+                    "logprob_score": -0.2 - i * 0.05,
+                    "token_count": 28,
+                }
+            )
+        # Asset present only in the first run — exercises the
+        # "missing cell" path.
+        per_column.append(
+            {
+                "schema": "sales",
+                "table": "orders",
+                "column": "customer_id",
+                "run_id": run_ids[0],
+                "description": "FK to customers",
+                "confidence": "high",
+                "logprob_score": -0.1,
+                "token_count": 14,
+            }
+        )
+        return {
+            "runs": runs,
+            "summary_rows": summary_rows,
+            "per_column": per_column,
+            "aggregates": aggregates,
+            "missing": [],
+        }
+
+    def test_aggregate_pivot_picks_min_winner_for_total_tokens(self) -> None:
+        from amx.cli_support.commands.compare import _build_pdf_context
+
+        ctx = _build_pdf_context(self._payload([10, 20, 30]))
+        tokens_row = next(r for r in ctx["aggregate_rows"] if r["metric"] == "total_tokens")
+        winners = {rid for rid, cell in tokens_row["cells"].items() if cell["is_winner"]}
+        # Synthetic payload makes run 30 the lowest (1000 - 2*10 = 980).
+        self.assertEqual(winners, {30})
+
+    def test_aggregate_pivot_picks_max_winner_for_avg_logprob(self) -> None:
+        from amx.cli_support.commands.compare import _build_pdf_context
+
+        ctx = _build_pdf_context(self._payload([10, 20, 30]))
+        logprob_row = next(
+            r for r in ctx["aggregate_rows"] if r["metric"] == "avg_logprob_score"
+        )
+        winners = {rid for rid, cell in logprob_row["cells"].items() if cell["is_winner"]}
+        # Run 10's logprob is -0.5 (closest to 0 = best).
+        self.assertEqual(winners, {10})
+
+    def test_aggregate_pivot_marks_no_winner_for_neutral_metrics(self) -> None:
+        from amx.cli_support.commands.compare import _build_pdf_context
+
+        ctx = _build_pdf_context(self._payload([10, 20, 30]))
+        for metric in ("pct_medium_confidence", "saved_results"):
+            row = next(r for r in ctx["aggregate_rows"] if r["metric"] == metric)
+            winners = [rid for rid, cell in row["cells"].items() if cell["is_winner"]]
+            self.assertEqual(winners, [], f"{metric} must never highlight a winner")
+
+    def test_per_column_pivot_picks_highest_logprob_per_asset(self) -> None:
+        from amx.cli_support.commands.compare import _build_pdf_context
+
+        ctx = _build_pdf_context(self._payload([10, 20, 30]))
+        # Asset present in all 3 runs sorts first (overlap=3 > overlap=1).
+        first = ctx["percol_rows"][0]
+        self.assertEqual(first["label"], "sales.orders.id")
+        winners = {rid for rid, cell in first["cells"].items() if cell and cell["is_winner"]}
+        # Run 10 has the highest (least negative) logprob: -0.2.
+        self.assertEqual(winners, {10})
+        # Asset only in run 10 has its single cell as winner by default.
+        second = ctx["percol_rows"][1]
+        self.assertEqual(second["label"], "sales.orders.customer_id")
+        self.assertIsNotNone(second["cells"][10])
+        self.assertIsNone(second["cells"][20])
+        self.assertIsNone(second["cells"][30])
+
+    def test_density_scales_with_run_count(self) -> None:
+        from amx.cli_support.commands.compare import _build_pdf_context
+
+        small = _build_pdf_context(self._payload([1, 2]))
+        big = _build_pdf_context(self._payload(list(range(1, 9))))  # 8 runs
+        # More runs → smaller cell font (down to a 7pt floor).
+        self.assertGreater(float(small["cell_font_pt"]), float(big["cell_font_pt"]))
+        self.assertGreaterEqual(float(big["cell_font_pt"]), 7.0)
+
+    def test_aggregate_cell_formatting(self) -> None:
+        from amx.cli_support.commands.compare import _format_aggregate_cell
+
+        self.assertEqual(_format_aggregate_cell("cost_usd", 0), "$0.00")
+        self.assertEqual(_format_aggregate_cell("cost_usd", 0.005), "<$0.01")
+        self.assertEqual(_format_aggregate_cell("cost_usd", 1.2345), "$1.2345")
+        self.assertEqual(_format_aggregate_cell("pct_high_confidence", 67.4), "67%")
+        self.assertEqual(_format_aggregate_cell("approval_rate", 0.5), "50%")
+        self.assertEqual(_format_aggregate_cell("wall_duration_sec", 3.456), "3.46s")
+        self.assertEqual(_format_aggregate_cell("avg_logprob_score", -0.7321), "-0.732")
+        self.assertEqual(_format_aggregate_cell("total_tokens", None), "—")
+        self.assertEqual(_format_aggregate_cell("total_tokens", 12345), "12,345")
+
+    def test_pdf_direction_map_matches_aggregate_metric_set(self) -> None:
+        """Mirror-test for the PDF-side direction table. Adding a new
+        aggregate metric without a direction entry would silently land
+        in the PDF as a neutral row; pin both sides together.
+        """
+        from amx.cli_support.commands.compare import (
+            _AGGREGATE_METRICS,
+            _PDF_AGGREGATE_DIRECTION,
+        )
+
+        backend_names = {export_name for export_name, _agg_key in _AGGREGATE_METRICS}
+        self.assertEqual(
+            backend_names,
+            set(_PDF_AGGREGATE_DIRECTION.keys()),
+            "_PDF_AGGREGATE_DIRECTION must cover exactly the metrics "
+            "_AGGREGATE_METRICS emits — otherwise PDF rows render with "
+            "no winner highlight.",
+        )
+
+    def test_render_compare_pdf_returns_pdf_bytes(self) -> None:
+        """Smoke test: WeasyPrint produces a valid PDF blob for an
+        8-run payload (the dense layout case the user explicitly
+        called out). Skipped when Pango/Cairo aren't installed on
+        the test host — CI image installs them; local devs can
+        ``brew install pango cairo`` to opt in.
+        """
+        try:
+            import jinja2  # noqa: F401
+            import weasyprint  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"PDF deps not installed: {exc}")
+        except OSError as exc:
+            # ``import weasyprint`` itself triggers the native Pango /
+            # Cairo dlopen on first import. On a vanilla macOS box
+            # without ``brew install pango cairo`` (or a slim Linux
+            # image without ``libpango-1.0-0``) that fails before we
+            # even reach the render call.
+            self.skipTest(f"WeasyPrint native libs missing: {exc}")
+
+        from amx.cli_support.commands.compare import render_compare_pdf
+
+        payload = self._payload(list(range(1, 9)))  # 8 runs
+        try:
+            pdf_bytes = render_compare_pdf(payload)
+        except OSError as exc:
+            self.skipTest(f"WeasyPrint native libs missing: {exc}")
+        self.assertTrue(pdf_bytes.startswith(b"%PDF-"), "Output must be a PDF blob")
+        self.assertGreater(len(pdf_bytes), 1000, "PDF should not be a stub")
+
+
 class CompareDispatchUnderHistoryNamespaceTests(unittest.TestCase):
     """User feedback 2026-05-02: ``/compare`` belongs under ``/history``,
     not ``/search`` — comparing past runs is fundamentally an audit

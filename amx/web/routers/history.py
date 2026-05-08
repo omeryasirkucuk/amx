@@ -13,9 +13,11 @@ refactor lives in ``amx/cli_support/commands/compare.py``.
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from amx.storage.sqlite_store import history_store
@@ -260,3 +262,48 @@ def compare(body: CompareRequest) -> dict[str, Any]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+@router.post("/compare/pdf")
+def compare_pdf(body: CompareRequest) -> StreamingResponse:
+    """Render the comparison payload as a landscape A4 PDF report.
+
+    The Studio "Download PDF" button on the Compare modal posts here
+    with the same ``run_ids`` it just used for ``/compare``. We re-run
+    ``compare_runs`` so the PDF reflects the latest stored values
+    (cheap — same lookups the modal already triggered) and stream
+    WeasyPrint's bytes back as a single ``application/pdf`` blob.
+    """
+    _store()
+    from amx.cli_support.commands.compare import compare_runs, render_compare_pdf
+
+    try:
+        payload = compare_runs(list(body.run_ids))
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    if not payload.get("runs"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="None of the requested run ids were found in history.",
+        )
+    try:
+        pdf_bytes = render_compare_pdf(payload)
+    except RuntimeError as exc:
+        # ``optional_deps.ensure`` raises RuntimeError when pip install
+        # fails (offline / read-only env / locked corp box). Surface
+        # the hint verbatim so the UI can render the recommended
+        # ``pip install`` command instead of a 500.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    run_ids_label = "-".join(str(r["id"]) for r in payload["runs"])
+    filename = f"compare-{run_ids_label}.pdf"
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
