@@ -7,8 +7,24 @@
   /* ── Page geometry ─────────────────────────────────────────────── */
   @page {
     size: A4 landscape;
-    margin: 14mm 14mm 16mm 14mm;
+    /* Top margin holds the AMX logo running header. 18mm is enough
+       for the 12mm-tall mark plus 3mm breathing room above and
+       below — the page content starts cleanly below it so a table
+       never collides with the logo. */
+    margin: 18mm 14mm 16mm 14mm;
     background: rgb(15, 15, 14);
+    {% if logo_data_url %}
+    @top-right {
+      /* ``content: element()`` pulls the .running-logo block in
+         from the document body. Going through a running element
+         (instead of ``content: url()`` directly) lets us pin the
+         image to a real CSS box size — without it WeasyPrint
+         renders the favicon at its 256×256px native size and
+         clips the right edge against the page trim. */
+      content: element(amxlogo);
+      vertical-align: top;
+    }
+    {% endif %}
     @bottom-right {
       content: counter(page) " / " counter(pages);
       font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
@@ -21,6 +37,24 @@
       font-size: 8pt;
       color: rgb(120, 113, 108);
     }
+  }
+
+  /* Hidden source for the running-header logo. ``position: running()``
+     yanks this out of the normal flow on every page and parks it in
+     the @top-right margin box. The wrapping div fixes the box size
+     so the favicon scales cleanly instead of being drawn at 256px
+     native (which would clip past the page edge). */
+  .running-logo {
+    position: running(amxlogo);
+    width: 12mm;
+    height: 12mm;
+    line-height: 0;
+    margin-top: 3mm;
+  }
+  .running-logo img {
+    width: 12mm;
+    height: 12mm;
+    display: block;
   }
 
   /* ── Density (scales with run count) ───────────────────────────── */
@@ -240,6 +274,12 @@
 </style>
 </head>
 <body>
+
+{% if logo_data_url %}
+<div class="running-logo" aria-hidden="true">
+  <img src="{{ logo_data_url|safe }}" alt="">
+</div>
+{% endif %}
 
 <header class="report-header">
   <h1>Comparison · {{ runs|length }} run{% if runs|length != 1 %}s{% endif %}</h1>
