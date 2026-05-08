@@ -2,143 +2,249 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AMX Run Comparison · {{ run_ids_label }}</title>
+<title>Comparison · {{ run_ids_label }}</title>
 <style>
+  /* ── Page geometry ─────────────────────────────────────────────── */
   @page {
     size: A4 landscape;
-    margin: 12mm 10mm 14mm 10mm;
+    margin: 14mm 14mm 16mm 14mm;
+    background: rgb(15, 15, 14);
     @bottom-right {
       content: counter(page) " / " counter(pages);
-      font-family: "Helvetica", "Arial", sans-serif;
+      font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
       font-size: 8pt;
-      color: #6b6b6b;
+      color: rgb(120, 113, 108);
     }
     @bottom-left {
-      content: "AMX run comparison · generated {{ generated_at }}";
-      font-family: "Helvetica", "Arial", sans-serif;
+      content: "AMX run comparison · {{ generated_at }}";
+      font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
       font-size: 8pt;
-      color: #6b6b6b;
+      color: rgb(120, 113, 108);
     }
   }
 
-  /* Density scales with run count: N runs in [2..8] picks a font
-     between 10pt (2 runs) and 7pt (8 runs). Above 8 we floor at 7pt
-     and let WeasyPrint break the rightmost columns to a fresh page
-     run-of-runs (rare but possible if the user really pushes it). */
+  /* ── Density (scales with run count) ───────────────────────────── */
   :root {
     --base-fs: {{ base_font_pt }}pt;
     --cell-fs: {{ cell_font_pt }}pt;
-    --winner-bg: #fff7d6;
-    --winner-border: #d99a00;
-    --row-alt-bg: #f7f5ef;
-    --header-bg: #2b2620;
-    --header-fg: #f7eed8;
-    --subtle-fg: #6b6b6b;
-    --rule: #d4cdb8;
-    --confidence-high: #1f8a4a;
-    --confidence-med: #b07d00;
-    --confidence-low: #a13b2c;
+    --bg: rgb(15, 15, 14);
+    --surface: rgb(26, 25, 24);
+    --surface-subtle: rgb(19, 17, 15);
+    --surface-raised: rgb(31, 29, 27);
+    --border: rgb(42, 39, 35);
+    --border-strong: rgb(61, 57, 52);
+    --ink: rgb(245, 244, 242);
+    --ink-muted: rgb(168, 162, 158);
+    --ink-dim: rgb(120, 113, 108);
+    --accent: rgb(251, 146, 60);
+    --accent-soft: rgba(251, 146, 60, 0.18);
+    --accent-soft-2: rgba(251, 146, 60, 0.10);
+    --accent-ring: rgba(251, 146, 60, 0.55);
+    --positive: rgb(74, 222, 128);
+    --positive-soft: rgba(74, 222, 128, 0.16);
+    --warning: rgb(234, 179, 8);
+    --warning-soft: rgba(234, 179, 8, 0.16);
+    --critical: rgb(248, 113, 113);
+    --critical-soft: rgba(248, 113, 113, 0.16);
+    --info: rgb(34, 211, 238);
+    --info-soft: rgba(34, 211, 238, 0.16);
   }
 
   html, body {
-    font-family: "Helvetica", "Arial", sans-serif;
-    color: #1f1a14;
-    font-size: var(--base-fs);
-    line-height: 1.35;
     margin: 0;
     padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Helvetica Neue", "Helvetica", "Arial", sans-serif;
+    font-size: var(--base-fs);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
   }
 
-  h1 { font-size: 16pt; margin: 0 0 4pt 0; letter-spacing: -0.2pt; }
-  h2 {
-    font-size: 11pt;
-    margin: 14pt 0 4pt 0;
-    text-transform: uppercase;
-    letter-spacing: 0.6pt;
-    color: var(--subtle-fg);
-    border-bottom: 0.5pt solid var(--rule);
-    padding-bottom: 2pt;
+  .mono {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
   }
-  p.lede { color: var(--subtle-fg); font-size: 9pt; margin: 0 0 8pt 0; }
 
+  /* ── Header ────────────────────────────────────────────────────── */
+  header.report-header {
+    margin-bottom: 12pt;
+  }
+  header.report-header h1 {
+    margin: 0;
+    font-size: 18pt;
+    font-weight: 600;
+    letter-spacing: -0.3pt;
+    color: var(--ink);
+  }
+  header.report-header .runids {
+    margin-top: 4pt;
+    font-size: 10pt;
+    color: var(--ink-muted);
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+  }
+  header.report-header .meta {
+    margin-top: 2pt;
+    font-size: 8.5pt;
+    color: var(--ink-dim);
+  }
+
+  .missing-banner {
+    background: var(--critical-soft);
+    border: 0.6pt solid rgba(248, 113, 113, 0.4);
+    color: var(--critical);
+    border-radius: 6pt;
+    padding: 6pt 10pt;
+    font-size: 9pt;
+    margin: 6pt 0 10pt 0;
+  }
+
+  /* ── Card (one per section) ───────────────────────────────────── */
+  section.card {
+    background: var(--surface);
+    border: 0.6pt solid var(--border);
+    border-radius: 10pt;
+    margin-bottom: 12pt;
+    overflow: hidden;
+    break-inside: avoid-page;
+  }
+  .card-header {
+    padding: 12pt 16pt 10pt 16pt;
+    border-bottom: 0.6pt solid var(--border);
+  }
+  .card-title {
+    margin: 0;
+    font-size: 12pt;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.1pt;
+  }
+  .card-desc {
+    margin: 3pt 0 0 0;
+    font-size: 9pt;
+    color: var(--ink-muted);
+  }
+
+  /* ── Tables ───────────────────────────────────────────────────── */
   table.report {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
     font-size: var(--cell-fs);
   }
-  table.report th, table.report td {
-    border: 0.4pt solid var(--rule);
-    padding: 4pt 5pt;
+  table.report thead th {
+    background: var(--surface-subtle);
+    color: var(--ink-dim);
+    font-size: calc(var(--cell-fs) - 1.5pt);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6pt;
+    padding: 7pt 12pt;
+    text-align: left;
+    border-bottom: 0.6pt solid var(--border);
+  }
+  table.report tbody td {
+    padding: 8pt 12pt;
+    border-top: 0.4pt solid var(--border);
+    color: var(--ink);
     vertical-align: top;
     word-wrap: break-word;
     overflow-wrap: break-word;
   }
-  table.report thead th {
-    background: var(--header-bg);
-    color: var(--header-fg);
-    text-align: left;
-    font-weight: 600;
-    letter-spacing: 0.3pt;
+  table.report tbody tr:first-child td { border-top: none; }
+  table.report td.metric-name {
+    color: var(--ink);
+    font-weight: 500;
   }
-  table.report tbody tr:nth-child(2n) td { background: var(--row-alt-bg); }
-  table.report td.metric { font-weight: 600; white-space: nowrap; }
-  table.report td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  table.report td.asset { font-family: "Menlo", "Courier New", monospace; word-break: break-all; }
-  table.report td.winner {
-    background: var(--winner-bg) !important;
-    box-shadow: inset 0 0 0 1pt var(--winner-border);
+  table.report td.num,
+  table.report th.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+  }
+  table.report td.runid {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    color: var(--ink-muted);
   }
 
-  .badge {
+  /* Winner cell — amber rim + soft amber wash, mirroring the
+     ``ring-1 ring-inset ring-accent/50 bg-accent-soft/20`` look in
+     the Studio modal. ``inset`` shadow keeps cell padding intact. */
+  table.report td.winner {
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 0.8pt var(--accent-ring);
+    color: var(--ink);
+  }
+
+  /* ── Status pill ───────────────────────────────────────────────── */
+  .pill {
     display: inline-block;
-    padding: 1pt 4pt;
-    border-radius: 2pt;
+    padding: 1.5pt 8pt;
+    border-radius: 999pt;
     font-size: calc(var(--cell-fs) - 1pt);
     font-weight: 600;
-    margin-right: 3pt;
+    letter-spacing: 0.2pt;
+    line-height: 1.2;
   }
-  .badge.high { background: #e6f5ec; color: var(--confidence-high); }
-  .badge.medium, .badge.med { background: #fdf3d8; color: var(--confidence-med); }
-  .badge.low { background: #fbe7e2; color: var(--confidence-low); }
-  .meta { color: var(--subtle-fg); font-size: calc(var(--cell-fs) - 1pt); }
-  .mono { font-family: "Menlo", "Courier New", monospace; }
-  .desc { white-space: pre-wrap; }
-  .empty { color: var(--subtle-fg); }
+  .pill.positive { background: var(--positive-soft); color: var(--positive); }
+  .pill.warning  { background: var(--warning-soft);  color: var(--warning); }
+  .pill.critical { background: var(--critical-soft); color: var(--critical); }
+  .pill.accent   { background: var(--accent-soft);   color: var(--accent); }
+  .pill.neutral  { background: rgba(120, 113, 108, 0.20); color: var(--ink-muted); }
 
-  .missing-banner {
-    background: #fbe7e2;
-    border: 0.5pt solid #a13b2c;
-    color: #6b1f17;
-    padding: 4pt 6pt;
-    font-size: 9pt;
-    margin: 6pt 0 8pt 0;
-    border-radius: 2pt;
+  /* ── Confidence + logprob badges (per-column section) ─────────── */
+  .badge {
+    display: inline-block;
+    padding: 1pt 6pt;
+    border-radius: 4pt;
+    font-size: calc(var(--cell-fs) - 1.5pt);
+    font-weight: 600;
+    margin-right: 4pt;
+    letter-spacing: 0.1pt;
+  }
+  .badge.high { background: var(--positive-soft); color: var(--positive); }
+  .badge.medium, .badge.med { background: var(--warning-soft); color: var(--warning); }
+  .badge.low { background: var(--critical-soft); color: var(--critical); }
+
+  .meta-line {
+    margin-top: 4pt;
+    color: var(--ink-dim);
+    font-size: calc(var(--cell-fs) - 1.5pt);
+  }
+  .meta-line .mono { color: var(--ink-muted); }
+
+  .desc {
+    color: var(--ink);
+    font-size: var(--cell-fs);
+    line-height: 1.4;
+    word-break: break-word;
   }
 
-  /* Page break before each big section once content is dense; small
-     comparisons stay on one page. WeasyPrint respects break-before
-     when the previous section has overflowed. */
-  section.page-block { break-inside: avoid-page; }
-  section.aggregates, section.percol { margin-top: 10pt; }
+  .empty {
+    color: var(--ink-dim);
+    font-style: normal;
+  }
 
-  /* Asset column gets a fixed slim width; remaining width spreads
-     evenly across the run columns. With table-layout:fixed this
-     keeps the per-column pivot aligned across many runs. */
+  /* ── Column widths (driven by run count) ───────────────────────── */
   table.percol col.asset-col { width: {{ asset_col_pct }}%; }
   table.percol col.run-col   { width: {{ run_col_pct }}%; }
-  table.aggregates col.metric-col { width: 22%; }
+  table.aggregates col.metric-col { width: 26%; }
   table.aggregates col.run-col    { width: {{ aggregate_run_col_pct }}%; }
+
+  table.summary th, table.summary td { font-size: var(--cell-fs); }
+
+  hr.sep {
+    border: none;
+    border-top: 0.4pt solid var(--border);
+    margin: 0;
+  }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>AMX run comparison · {{ run_ids_label }}</h1>
-  <p class="lede">
-    {{ runs|length }} run{% if runs|length != 1 %}s{% endif %} ·
-    generated {{ generated_at }} · AMX {{ amx_version }}
-  </p>
+<header class="report-header">
+  <h1>Comparison · {{ runs|length }} run{% if runs|length != 1 %}s{% endif %}</h1>
+  <div class="runids">Run ids: {{ run_ids_label }}</div>
+  <div class="meta">Generated {{ generated_at }} · AMX {{ amx_version }}</div>
 </header>
 
 {% if missing %}
@@ -148,46 +254,49 @@
 </div>
 {% endif %}
 
-<section class="page-block summary">
-  <h2>Run summary</h2>
-  <table class="report">
+{# ── Summary card ──────────────────────────────────────────────── #}
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Summary</h2>
+    <p class="card-desc">One row per run.</p>
+  </div>
+  <table class="report summary">
     <thead>
       <tr>
         <th>Run</th>
-        <th>Started</th>
-        <th>Status</th>
         <th>Command</th>
-        <th>DB profile</th>
-        <th>LLM model</th>
+        <th>LLM</th>
         <th>Doc / Code</th>
         <th class="num">Duration</th>
-        <th class="num">Processed</th>
-        <th class="num">Applied</th>
+        <th>Status</th>
       </tr>
     </thead>
     <tbody>
       {% for r in summary_rows %}
       <tr>
-        <td class="mono">#{{ r.run_id }}</td>
-        <td>{{ r.started_at or "—" }}</td>
-        <td>{{ r.status or "—" }}</td>
+        <td class="runid">#{{ r.run_id }}</td>
         <td class="mono">{{ r.command or "—" }}</td>
-        <td>{{ r.db_profile or "—" }}</td>
-        <td class="mono">{{ r.llm_model or "—" }}</td>
-        <td>{{ (r.doc_profile or "") }}{% if r.doc_profile and r.code_profile %} / {% endif %}{{ r.code_profile or "" }}{% if not r.doc_profile and not r.code_profile %}—{% endif %}</td>
-        <td class="num">{{ "%.2f"|format(r.duration_sec or 0) }}s</td>
-        <td class="num">{{ r.processed_count or 0 }}</td>
-        <td class="num">{{ r.applied_count or 0 }}</td>
+        <td class="mono">{{ r.llm_provider_model or r.llm_model or "—" }}</td>
+        <td>
+          {% set doc = r.doc_profile or "" %}
+          {% set code = r.code_profile or "" %}
+          {% if doc and code %}{{ doc }} / {{ code }}{% elif doc or code %}{{ doc or code }}{% else %}—{% endif %}
+        </td>
+        <td class="num">{% if r.duration_sec %}{{ "%.2f"|format(r.duration_sec) }}s{% else %}—{% endif %}</td>
+        <td><span class="pill {{ r.status_class }}">{{ r.status_label }}</span></td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
 
+{# ── Aggregates card ──────────────────────────────────────────── #}
 {% if aggregate_rows %}
-<section class="page-block aggregates">
-  <h2>Aggregate metrics</h2>
-  <p class="lede">Highlighted cell = best value per row (lower for tokens / cost / duration; higher for confidence / logprob / approval).</p>
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Aggregates</h2>
+    <p class="card-desc">Per-run roll-ups (model time, tokens, cost, confidence band split, approval rate). Best value per row is highlighted.</p>
+  </div>
   <table class="report aggregates">
     <colgroup>
       <col class="metric-col">
@@ -202,12 +311,10 @@
     <tbody>
       {% for arow in aggregate_rows %}
       <tr>
-        <td class="metric">{{ arow.label }}</td>
+        <td class="metric-name">{{ arow.label }}</td>
         {% for rid in run_ids %}
         {% set cell = arow.cells[rid] %}
-        <td class="num{% if cell.is_winner %} winner{% endif %}">
-          {{ cell.display }}
-        </td>
+        <td class="num{% if cell.is_winner %} winner{% endif %}">{{ cell.display }}</td>
         {% endfor %}
       </tr>
       {% endfor %}
@@ -216,10 +323,13 @@
 </section>
 {% endif %}
 
+{# ── Per-column descriptions card ─────────────────────────────── #}
 {% if percol_rows %}
-<section class="page-block percol">
-  <h2>Per-column descriptions</h2>
-  <p class="lede">Each cell shows the chosen description for that run. The cell with the highest logprob across the row gets the winner highlight.</p>
+<section class="card">
+  <div class="card-header">
+    <h2 class="card-title">Per-column descriptions</h2>
+    <p class="card-desc">Each cell shows the chosen description for that run. The cell with the highest logprob across the row gets the winner highlight.</p>
+  </div>
   <table class="report percol">
     <colgroup>
       <col class="asset-col">
@@ -234,13 +344,13 @@
     <tbody>
       {% for prow in percol_rows %}
       <tr>
-        <td class="asset">{{ prow.label }}</td>
+        <td class="mono">{{ prow.label }}</td>
         {% for rid in run_ids %}
         {% set cell = prow.cells[rid] %}
         {% if cell %}
         <td class="{% if cell.is_winner %}winner{% endif %}">
           <div class="desc">{{ cell.description }}</div>
-          <div class="meta">
+          <div class="meta-line">
             {% if cell.confidence %}<span class="badge {{ cell.confidence_class }}">{{ cell.confidence }}</span>{% endif %}
             {% if cell.logprob_display %}<span class="mono">logprob {{ cell.logprob_display }}</span>{% endif %}
             {% if cell.token_count %}<span class="mono"> · {{ cell.token_count }} tok</span>{% endif %}
