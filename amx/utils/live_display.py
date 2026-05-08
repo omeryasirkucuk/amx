@@ -135,6 +135,16 @@ class LiveDisplay:
     def __init__(self, console: Console | None = None) -> None:
         self._console = console or Console()
         self._live: Live | None = None
+        # Headless activation flag: true while a non-CLI consumer
+        # (currently AMX Studio's run worker) wants the display's
+        # state machine + subscriber bus running, but does NOT want
+        # a Rich ``Live`` painted on the parent terminal. With this
+        # set, ``is_active`` returns True and ``step_spinner`` emits
+        # ``step.*`` events through ``_notify_subscribers``, which
+        # the SSE bridge in ``amx/web/routers/runs.py`` forwards to
+        # the browser — without doubling up on output in the CLI
+        # terminal where Studio was launched from.
+        self._headless: bool = False
         self._lock = threading.Lock()
 
         self._context_schema: str = ""
@@ -307,7 +317,51 @@ class LiveDisplay:
 
     @property
     def is_active(self) -> bool:
-        return self._live is not None
+        return self._live is not None or self._headless
+
+    # ── Headless lifecycle (Studio worker) ────────────────────────────────
+
+    def start_headless(
+        self,
+        schema: str = "",
+        table: str = "",
+        mode: str = "",
+        provider: str = "",
+        model: str = "",
+    ) -> None:
+        """Activate the display's state + subscriber bus WITHOUT painting.
+
+        Mirrors :meth:`start` for state initialisation but skips the
+        Rich ``Live`` widget — the parent CLI terminal stays clean
+        (the Studio launcher's ``quiet_console()`` is in effect, but
+        Rich's ``Live`` would still write).
+
+        ``step_spinner`` checks ``is_active`` to decide whether to
+        emit ``step.*`` events; with headless on, the SSE bridge in
+        :mod:`amx.web.routers.runs` sees the same per-batch / per-
+        agent narration the CLI's terminal Live would have shown.
+        """
+        # Reset the same fields ``start()`` resets so a worker is
+        # never poisoned by a previous run's leftover state.
+        self._context_schema = schema
+        self._context_table = table
+        self._context_mode = mode
+        self._context_provider = provider
+        self._context_model = model
+        self._activities.clear()
+        self._thinking = False
+        self._thinking_text = ""
+        self._collapsed = False
+        self._session_start = time.monotonic()
+        self._total_tokens_in = 0
+        self._total_tokens_out = 0
+        self._total_cost_usd = 0.0
+        self._pause_depth = 0
+        self._headless = True
+
+    def stop_headless(self) -> None:
+        """Deactivate the headless state. Idempotent."""
+        self._headless = False
 
     # ── Context ───────────────────────────────────────────────────────────
 

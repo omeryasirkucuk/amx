@@ -8,6 +8,23 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Studio run-detail page stalled on "Waiting for the worker to
+  begin…" for the entire run.** ``step_spinner`` (the wrapper every
+  agent uses to surface "Profile Agent batch 2/3", "Calling LLM",
+  "Profiling sales.orders", …) only emitted SSE-bridgeable events
+  when ``LiveDisplay.is_active`` was True, and Studio never started
+  the display because the parent CLI terminal couldn't host a Rich
+  ``Live`` widget. ``LiveDisplay`` now has a ``start_headless`` /
+  ``stop_headless`` mode that flips ``is_active`` and notifies
+  subscribers WITHOUT painting on the parent terminal; the run
+  worker activates it for the run's lifetime so every batch /
+  agent step flows over SSE. The run-detail card grew an elapsed
+  timer + a rolling 5-step "Recent steps" trail with timestamps so
+  the user sees both what the worker is doing and how long it has
+  been running.
+
+### Fixed
+
 - **`description_verbosity = exhaustive` (and `comprehensive` /
   `detailed`) silently collapsed to a single sentence on multi-agent
   runs.** When the orchestrator's `_merge_suggestions` step ran —
