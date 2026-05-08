@@ -245,6 +245,31 @@ def _aggregate_for_run(run: dict[str, Any], results: list[dict[str, Any]]) -> di
         except Exception:
             total_tokens = 0
 
+    # USD cost frozen at run time (PR #235). The Compare table is
+    # the natural place to read it: A vs B at the same model is
+    # almost always a "did the new prompt save tokens / dollars?"
+    # question. Falls back to per-record summing when only
+    # ``records[]`` is present (older runs); the top-level
+    # ``total_cost_usd`` covers most rows produced after PR #235.
+    cost_usd: float | None = None
+    raw_total = tokens.get("total_cost_usd") if isinstance(tokens, dict) else None
+    if isinstance(raw_total, (int, float)) and float(raw_total) >= 0:
+        cost_usd = float(raw_total)
+    if cost_usd is None or cost_usd == 0.0:
+        record_total = 0.0
+        seen_record_cost = False
+        records_list = tokens.get("records") if isinstance(tokens, dict) else None
+        if isinstance(records_list, list):
+            for record in records_list:
+                if not isinstance(record, dict):
+                    continue
+                if "input_cost_usd" in record or "output_cost_usd" in record:
+                    seen_record_cost = True
+                    record_total += float(record.get("input_cost_usd") or 0.0)
+                    record_total += float(record.get("output_cost_usd") or 0.0)
+        if seen_record_cost:
+            cost_usd = record_total
+
     logprob_scores = [
         float(r["logprob_score"]) for r in results if r.get("logprob_score") is not None
     ]
@@ -267,6 +292,7 @@ def _aggregate_for_run(run: dict[str, Any], results: list[dict[str, Any]]) -> di
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
+        "cost_usd": cost_usd,
         "avg_logprob": avg_logprob,
         "high_pct": bands["high"] / total_band * 100.0,
         "medium_pct": bands["medium"] / total_band * 100.0,
@@ -642,6 +668,18 @@ def _render_aggregate_metrics(
         [_fmt_int(a["total_tokens"]) for a in aggs],
         _highlight_best(total_vals, higher_is_better=False),
     )
+    # Cost USD (lower is better; ``None`` for runs that predate
+    # PR #235's frozen-cost capture, rendered as ``--`` so the
+    # user doesn't read $0.00 as "free").
+    cost_vals = [a["cost_usd"] for a in aggs]
+    _row(
+        "Cost (USD)",
+        [f"${a['cost_usd']:.4f}" if a["cost_usd"] is not None else "—" for a in aggs],
+        _highlight_best(
+            [v if v is not None and v > 0 else None for v in cost_vals],
+            higher_is_better=False,
+        ),
+    )
     # Avg logprob (higher is better)
     logprob_vals = [a["avg_logprob"] for a in aggs]
     _row(
@@ -727,6 +765,11 @@ _AGGREGATE_METRICS: tuple[tuple[str, str], ...] = (
     ("prompt_tokens", "prompt_tokens"),
     ("completion_tokens", "completion_tokens"),
     ("total_tokens", "total_tokens"),
+    # ``cost_usd`` is the frozen USD cost; ``None`` for runs that
+    # predate PR #235's per-record cost capture so the SPA can
+    # render "--" for those rows without misleading the user
+    # with a $0.00 that means "we just don't know".
+    ("cost_usd", "cost_usd"),
     ("avg_logprob_score", "avg_logprob"),
     ("pct_high_confidence", "high_pct"),
     ("pct_medium_confidence", "medium_pct"),
