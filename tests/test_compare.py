@@ -13,6 +13,7 @@ Covers three slices:
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -873,6 +874,39 @@ class ComparePdfRenderingTests(unittest.TestCase):
             "no winner highlight.",
         )
 
+    def test_bootstrap_appends_brew_prefix_on_macos(self) -> None:
+        """The dyld bootstrap is what made the first user-facing
+        report work — without it the ``brew install pango`` prefix
+        ``/opt/homebrew/lib`` never enters dyld's search path and
+        WeasyPrint's first dlopen fails with a 500 in production.
+        Pin the env-var augmentation so a future refactor can't
+        silently drop it.
+        """
+        import sys as _sys
+
+        if _sys.platform != "darwin":
+            self.skipTest("macOS-only behaviour")
+
+        from amx.cli_support.commands import compare as compare_mod
+
+        # Pretend the brew prefix exists even on hosts where it
+        # doesn't, so the test doesn't depend on whether the dev
+        # has actually run ``brew install pango``.
+        before = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+        os.environ.pop("DYLD_FALLBACK_LIBRARY_PATH", None)
+        with patch("amx.cli_support.commands.compare.Path") as MockPath:
+            instance = MockPath.return_value
+            instance.is_dir.return_value = True
+            try:
+                compare_mod._bootstrap_weasyprint_native_libs()
+                got = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+            finally:
+                if before:
+                    os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = before
+                else:
+                    os.environ.pop("DYLD_FALLBACK_LIBRARY_PATH", None)
+        self.assertIn("/opt/homebrew/lib", got)
+
     def test_render_compare_pdf_returns_pdf_bytes(self) -> None:
         """Smoke test: WeasyPrint produces a valid PDF blob for an
         8-run payload (the dense layout case the user explicitly
@@ -880,18 +914,15 @@ class ComparePdfRenderingTests(unittest.TestCase):
         the test host — CI image installs them; local devs can
         ``brew install pango cairo`` to opt in.
         """
-        try:
-            import jinja2  # noqa: F401
-            import weasyprint  # noqa: F401
-        except ImportError as exc:
-            self.skipTest(f"PDF deps not installed: {exc}")
-        except OSError as exc:
-            # ``import weasyprint`` itself triggers the native Pango /
-            # Cairo dlopen on first import. On a vanilla macOS box
-            # without ``brew install pango cairo`` (or a slim Linux
-            # image without ``libpango-1.0-0``) that fails before we
-            # even reach the render call.
-            self.skipTest(f"WeasyPrint native libs missing: {exc}")
+        # Check the pip packages are present *without* importing
+        # WeasyPrint — that would trigger the native dlopen too
+        # early, before render_compare_pdf's bootstrap helper has
+        # had a chance to point dyld at the brew prefix.
+        import importlib.util
+
+        for module_name in ("jinja2", "weasyprint"):
+            if importlib.util.find_spec(module_name) is None:
+                self.skipTest(f"PDF deps not installed: {module_name}")
 
         from amx.cli_support.commands.compare import render_compare_pdf
 
@@ -899,6 +930,11 @@ class ComparePdfRenderingTests(unittest.TestCase):
         try:
             pdf_bytes = render_compare_pdf(payload)
         except OSError as exc:
+            # render_compare_pdf augments DYLD_FALLBACK_LIBRARY_PATH /
+            # LD_LIBRARY_PATH with the standard brew / distro prefixes
+            # before importing WeasyPrint. If the dlopen still fails
+            # the host genuinely has no Pango installed — skip the
+            # smoke test instead of failing the suite.
             self.skipTest(f"WeasyPrint native libs missing: {exc}")
         self.assertTrue(pdf_bytes.startswith(b"%PDF-"), "Output must be a PDF blob")
         self.assertGreater(len(pdf_bytes), 1000, "PDF should not be a stub")

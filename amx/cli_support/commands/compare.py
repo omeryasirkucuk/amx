@@ -12,6 +12,8 @@ from __future__ import annotations
 import csv
 import difflib
 import json
+import os
+import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -1352,6 +1354,54 @@ def _build_pdf_context(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bootstrap_weasyprint_native_libs() -> None:
+    """Make sure WeasyPrint's cffi-driven dlopen of libpango / libcairo
+    can find Homebrew copies on macOS.
+
+    The ``pip install weasyprint`` wheel only carries the Python
+    bindings; the native Pango / Cairo / GObject / harfbuzz dylibs
+    have to come from the OS package manager (Homebrew on macOS,
+    apt on Debian / Ubuntu). On a default macOS install ``cffi``
+    calls ``ctypes.util.find_library('pango-1.0')`` which only
+    searches a handful of system paths — ``/opt/homebrew/lib``
+    (Apple Silicon brew prefix) and ``/usr/local/lib`` (Intel brew
+    prefix) are *not* on that list, so a user who ran
+    ``brew install pango cairo`` still gets a confusing
+    "cannot load library 'libpango-1.0-0'" 500.
+
+    We work around this by appending the brew library directory to
+    ``DYLD_FALLBACK_LIBRARY_PATH`` *before* the WeasyPrint import
+    runs. macOS ``dyld`` re-reads this variable on every dlopen
+    call (unlike ``DYLD_LIBRARY_PATH``, which is read once at
+    process start), so setting it from inside Python actually
+    takes effect on the very next ``ffi.dlopen`` WeasyPrint runs.
+    Linux gets the same treatment via ``LD_LIBRARY_PATH`` for
+    Nix / non-FHS layouts.
+
+    Idempotent — safe to call before every render.
+    """
+    if sys.platform == "darwin":
+        env_var = "DYLD_FALLBACK_LIBRARY_PATH"
+        candidates = ("/opt/homebrew/lib", "/usr/local/lib")
+    elif sys.platform.startswith("linux"):
+        env_var = "LD_LIBRARY_PATH"
+        candidates = (
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/aarch64-linux-gnu",
+            "/usr/lib64",
+            "/usr/lib",
+        )
+    else:
+        return
+
+    existing = os.environ.get(env_var, "")
+    existing_parts = [p for p in existing.split(os.pathsep) if p]
+    additions = [p for p in candidates if Path(p).is_dir() and p not in existing_parts]
+    if not additions:
+        return
+    os.environ[env_var] = os.pathsep.join([*existing_parts, *additions])
+
+
 def render_compare_pdf(payload: dict[str, Any]) -> bytes:
     """Render a ``compare_runs`` payload as a landscape A4 PDF report.
 
@@ -1370,6 +1420,12 @@ def render_compare_pdf(payload: dict[str, Any]) -> bytes:
         ],
         feature="Compare PDF export",
     )
+
+    # Augment dyld / ld search paths *before* the WeasyPrint import
+    # so the very first ffi.dlopen() in this process finds Homebrew
+    # / distro Pango. Cheap to call repeatedly (returns early when
+    # the env var already lists the directory).
+    _bootstrap_weasyprint_native_libs()
 
     from jinja2 import Environment, FileSystemLoader, select_autoescape
     from weasyprint import HTML
