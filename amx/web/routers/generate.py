@@ -504,6 +504,8 @@ def _record_and_queue(
     asset_kind: str,
     db_profile: str | None = None,
     db_backend: str | None = None,
+    database: str | None = None,
+    catalog: str | None = None,
 ) -> dict[str, Any]:
     """Persist generated alternatives through history + pending queue.
 
@@ -555,6 +557,16 @@ def _record_and_queue(
 
     effective_profile = (db_profile or cfg.active_db_profile) or None
     effective_backend = db_backend or (cfg.db.backend if cfg.db else None)
+    # The endpoint already knows which database / catalog the
+    # connector was opened against (URL query string), but the
+    # previous wiring dropped that on the floor: only ``db_profile``
+    # made it onto the run row. Apply later then warned "this run
+    # didn't capture the target database" and forced the user to
+    # type the name back in. Stash both into ``settings_json`` so
+    # ``GET /api/history/runs/{id}`` (history.py:92-97) can flatten
+    # them onto the run payload exactly like the rerun path does.
+    effective_database = (database or "").strip() or None
+    effective_catalog = (catalog or "").strip() or None
     try:
         run_id = hs.create_run(
             command=command,
@@ -570,7 +582,11 @@ def _record_and_queue(
             llm_profile=cfg.active_llm_profile,
             doc_profile=cfg.active_doc_profile or None,
             code_profile=cfg.active_code_profile or None,
-            settings={"trigger": "studio.generate.singleshot"},
+            settings={
+                "trigger": "studio.generate.singleshot",
+                "database": effective_database,
+                "catalog": effective_catalog,
+            },
         )
     except Exception as exc:  # pragma: no cover — DB-layer failure
         log.warning("Could not record generate run: %s", exc)
@@ -699,6 +715,8 @@ def generate_database(
         asset_kind="database",
         db_profile=db_label,
         db_backend=backend or None,
+        database=database,
+        catalog=catalog,
     )
 
 
@@ -733,6 +751,8 @@ def generate_schema(
         asset_kind="schema",
         db_profile=db_label,
         db_backend=backend or None,
+        database=database,
+        catalog=catalog,
     )
 
 
@@ -768,6 +788,8 @@ def generate_table(
         asset_kind="table",
         db_profile=db_label,
         db_backend=backend or None,
+        database=database,
+        catalog=catalog,
     )
 
 
@@ -804,6 +826,8 @@ def generate_column(
         asset_kind="column",
         db_profile=db_label,
         db_backend=backend or None,
+        database=database,
+        catalog=catalog,
     )
 
 
