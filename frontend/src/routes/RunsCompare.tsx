@@ -22,12 +22,19 @@ interface SummaryRow {
   [key: string]: unknown;
 }
 
+/** Backend ``compare_runs`` returns ``per_column`` in long format:
+ *  one entry per (asset, run) combo with a ``run_id`` field. The
+ *  pivot from "long rows" -> "one row per asset, one column per run"
+ *  happens client-side in ``PerColumnPivot``. */
 interface PerColumnRow {
   schema?: string;
   table?: string;
   column?: string;
-  // run_id keyed columns: each value is a string (description)
-  [key: string]: unknown;
+  run_id?: number;
+  description?: string;
+  confidence?: string;
+  logprob_score?: number | null;
+  token_count?: number | null;
 }
 
 interface AggregateRow {
@@ -283,7 +290,7 @@ function AggregatesPivot({
                   key={id}
                   className="px-5 py-2 text-right font-mono text-xs tabular-nums"
                 >
-                  {v == null ? "—" : typeof v === "number" ? v.toLocaleString() : String(v)}
+                  {formatAggregateCell(metric, v)}
                 </td>
               );
             })}
@@ -294,6 +301,36 @@ function AggregatesPivot({
   );
 }
 
+/** Pretty-print one Aggregates cell. ``cost_usd`` reads as
+ *  ``$0.0123``; the percentage metrics get a trailing ``%``;
+ *  durations land as seconds with one decimal. Everything else
+ *  falls through to a thousand-separated integer / locale string
+ *  so the numbers stay scannable across orders of magnitude. */
+function formatAggregateCell(metric: string, value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (metric === "cost_usd") {
+    if (value <= 0) return "$0.00";
+    return value < 0.01 ? `<$0.01` : `$${value.toFixed(4)}`;
+  }
+  if (metric.startsWith("pct_")) {
+    return `${(value as number).toFixed(0)}%`;
+  }
+  if (metric === "approval_rate") {
+    return `${((value as number) * 100).toFixed(0)}%`;
+  }
+  if (metric.endsWith("_sec")) {
+    return `${(value as number).toFixed(2)}s`;
+  }
+  return (value as number).toLocaleString();
+}
+
+/** Pivot the long-format ``per_column`` rows into a single row per
+ *  asset, with one cell per run. Two re-runs of the same column on
+ *  the same table now collapse onto one line so the user can read
+ *  the v1 vs v2 description side-by-side -- which is the only
+ *  "Compare" actually useful for. The previous render kept reading
+ *  ``r["run_<id>"]`` (a key the backend never produced) so every
+ *  cell was the empty-state dash. */
 function PerColumnPivot({
   rows,
   runIds,
@@ -301,6 +338,37 @@ function PerColumnPivot({
   rows: PerColumnRow[];
   runIds: number[];
 }) {
+  // Group by (schema, table, column).
+  const byAsset = new Map<string, Map<number, PerColumnRow>>();
+  const labelByAsset = new Map<string, string>();
+  for (const r of rows) {
+    const schema = r.schema ?? "";
+    const table = r.table ?? "";
+    const column = r.column ?? "";
+    const key = `${schema}|${table}|${column}`;
+    const inner = byAsset.get(key) ?? new Map<number, PerColumnRow>();
+    if (typeof r.run_id === "number") {
+      inner.set(r.run_id, r);
+    }
+    byAsset.set(key, inner);
+    if (!labelByAsset.has(key)) {
+      labelByAsset.set(
+        key,
+        [schema, table, column].filter(Boolean).join(".") || "—",
+      );
+    }
+  }
+
+  // Sort assets that overlap across the most runs first -- those are
+  // the most meaningful comparisons. Tie-break alphabetically so the
+  // ordering is stable across re-renders.
+  const orderedKeys = Array.from(byAsset.keys()).sort((a, b) => {
+    const aOverlap = byAsset.get(a)?.size ?? 0;
+    const bOverlap = byAsset.get(b)?.size ?? 0;
+    if (aOverlap !== bOverlap) return bOverlap - aOverlap;
+    return (labelByAsset.get(a) ?? "").localeCompare(labelByAsset.get(b) ?? "");
+  });
+
   return (
     <table className="w-full text-xs">
       <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
@@ -314,23 +382,42 @@ function PerColumnPivot({
         </tr>
       </thead>
       <tbody>
-        {rows.map((r, idx) => (
-          <tr key={idx} className="border-t border-surface-border">
-            <td className="px-5 py-2 align-top font-mono">
-              {[r.schema, r.table, r.column].filter(Boolean).join(".") || "—"}
-            </td>
-            {runIds.map((id) => {
-              const value = (r as Record<string, unknown>)[`run_${id}`] as
-                | string
-                | undefined;
-              return (
-                <td key={id} className="px-5 py-2 align-top text-ink-muted">
-                  {value || "—"}
-                </td>
-              );
-            })}
-          </tr>
-        ))}
+        {orderedKeys.map((key) => {
+          const cells = byAsset.get(key)!;
+          const overlapCount = cells.size;
+          const isOverlap = overlapCount >= 2;
+          return (
+            <tr
+              key={key}
+              className={
+                isOverlap
+                  ? "border-t border-accent/30 bg-accent-soft/10"
+                  : "border-t border-surface-border"
+              }
+            >
+              <td className="px-5 py-2 align-top font-mono">
+                <div>{labelByAsset.get(key)}</div>
+                {!isOverlap && (
+                  <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-dim">
+                    only in run #{Array.from(cells.keys())[0]}
+                  </div>
+                )}
+              </td>
+              {runIds.map((id) => {
+                const cell = cells.get(id);
+                return (
+                  <td key={id} className="px-5 py-2 align-top text-ink-muted">
+                    {cell?.description?.trim() ? (
+                      <span>{cell.description}</span>
+                    ) : (
+                      <span className="text-ink-dim">—</span>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
