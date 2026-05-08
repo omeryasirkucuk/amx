@@ -50,27 +50,37 @@ export default function Schema() {
     setDraftDescription("");
   }, [scope?.profile, scope?.database, scope?.catalog, schema]);
 
+  // Per-table "Gen" button. The previous wiring called the inline,
+  // synchronous ``/api/generate/table`` endpoint, which blocked for
+  // the whole LLM round-trip and produced no run row in the registry
+  // -- so a refresh mid-flight cancelled the request silently and
+  // /runs showed nothing. Submit a regular analyze run scoped to
+  // exactly one table instead: the worker spawns in the background,
+  // the user lands on the live-progress page (cancellable, visible
+  // in Runs), and the result is reviewable on the run detail page.
   const generateTableOne = useMutation({
     mutationFn: (table: string) =>
-      api.generateTableDescription(scope!, schema, table),
+      api.submitRun({
+        scope: { [schema]: [table] },
+        apply: false,
+        missing_only: false,
+        db_profile: scope?.profile,
+        database: scope?.database,
+        catalog: scope?.catalog,
+      }),
     onSuccess: (result, table) => {
-      qc.invalidateQueries({ queryKey: ["live-assets"] });
-      const altCount = result.alternatives_count ?? 1;
       toast.push({
-        title: result.run_id
-          ? `Table queued for review (Run #${result.run_id})`
-          : "Table description queued for review",
-        description:
-          altCount > 1
-            ? `${schema}.${table} — ${altCount} alternatives (${result.verbosity}); pick one in /pending.`
-            : `${schema}.${table} — approve from /pending.`,
+        title: `Run started for ${schema}.${table}`,
+        description: "Streaming activity on the run detail page; results land in the pending queue.",
         tone: "success",
-        duration: 3000,
+        duration: 2400,
       });
+      qc.invalidateQueries({ queryKey: ["recent-runs"] });
+      navigate(`/runs/new-${result.job_id}`);
     },
     onError: (e: Error) =>
       toast.push({
-        title: "Generation failed",
+        title: "Could not start run",
         description: e.message,
         tone: "error",
       }),
