@@ -253,7 +253,7 @@ def ask_context(
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """What doc/code profiles will ``/ask`` pull in for the given DB
-    scope? Drives the AskChat scope rozeti so the user sees what's
+    scope? Drives the AskChat scope badge so the user sees what's
     really in play before asking. Mirrors the CLI's ``/ask-context``.
 
     ``scope_profiles`` is a comma-separated DB profile list. Omit to
