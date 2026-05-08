@@ -4,7 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronDown, PlayCircle, Settings as SettingsIcon } from "lucide-react";
 
 import { api, apiFetch } from "../lib/api";
-import type { LLMOverrides, LLMProfileDefaults } from "../lib/api";
+import type { LLMOverrides, LLMProfileDefaults, ModelPrice } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
@@ -158,6 +158,24 @@ export default function RunNew() {
   const supportsBatch = !!ctx.data?.llm_supports_batch;
   const llmProvider = ctx.data?.llm_provider ?? null;
   const profileDefaults = ctx.data?.llm_profile_defaults ?? null;
+  const llmModel = ctx.data?.llm_model ?? null;
+  const activeLlmProfile = ctx.data?.active_llm_profile ?? null;
+  // Resolve the live (provider, model) price so the "Cost overrides"
+  // section can show the auto-detected LiteLLM/OpenRouter rate as the
+  // default badge instead of "—". The profile's stored
+  // ``custom_*_cost_per_mtok`` still wins when set; this is the
+  // fallback for the common "no override" case.
+  const livePrice = useQuery({
+    queryKey: ["pricing", "model", llmProvider, llmModel, activeLlmProfile],
+    queryFn: () =>
+      api.lookupPrice(
+        llmProvider!,
+        llmModel!,
+        activeLlmProfile ?? undefined,
+      ),
+    enabled: !!llmProvider && !!llmModel,
+    staleTime: 5 * 60_000, // 5 min — matches Settings.tsx behaviour
+  });
 
   // Seed the override form with the active profile's values the
   // first time they arrive so every input shows a real starting
@@ -404,6 +422,8 @@ export default function RunNew() {
                 onChange={setOverrides}
                 defaults={profileDefaults}
                 profileName={ctx.data?.active_llm_profile ?? null}
+                livePrice={livePrice.data ?? null}
+                livePriceLoading={livePrice.isFetching}
               />
               <hr className="border-border" />
               <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
@@ -701,6 +721,80 @@ interface AdvancedLLMOverridesProps {
   onChange: (next: OverrideFormState) => void;
   defaults: LLMProfileDefaults | null;
   profileName: string | null;
+  /** Auto-resolved (provider, model) price from
+   *  ``GET /api/pricing/model``. Used to back-fill the "default X"
+   *  chip on the Cost overrides rows when the active profile has no
+   *  custom rate set — so the user sees the actual rate AMX will
+   *  bill at instead of an unhelpful em-dash. */
+  livePrice: ModelPrice | null;
+  livePriceLoading: boolean;
+}
+
+/** Cost-override row variant. The default badge falls back to the
+ *  resolved LiveLLM/OpenRouter rate when the profile has no custom
+ *  override, so users see the actual price AMX will bill at instead
+ *  of "default —". Source is shown in parentheses ("litellm" /
+ *  "openrouter" / "fallback") so the user knows where the number
+ *  came from and whether it's worth overriding. */
+function CostOverrideRow({
+  label,
+  profileValue,
+  liveValue,
+  liveSource,
+  liveLoading,
+  changed,
+  children,
+}: {
+  label: string;
+  profileValue: number | null | undefined;
+  liveValue: number | null;
+  liveSource: string | null;
+  liveLoading: boolean;
+  changed: boolean;
+  children: ReactNode;
+}) {
+  const profileSet = profileValue !== null && profileValue !== undefined;
+  const usingLive = !profileSet && liveValue !== null;
+  const renderBadge = (): { text: string; tone: "default" | "muted" } => {
+    if (changed) return { text: "override", tone: "default" };
+    if (profileSet) return { text: `profile $${(profileValue as number).toFixed(2)}`, tone: "default" };
+    if (usingLive) {
+      const sourceLabel =
+        liveSource && liveSource !== "user_override" && liveSource !== "unknown"
+          ? ` · ${liveSource}`
+          : "";
+      return { text: `live $${(liveValue as number).toFixed(2)}${sourceLabel}`, tone: "default" };
+    }
+    if (liveLoading) return { text: "loading…", tone: "muted" };
+    return { text: "default —", tone: "muted" };
+  };
+  const badge = renderBadge();
+  const tooltip = profileSet
+    ? `Profile-defined custom rate: $${(profileValue as number).toFixed(4)} / 1M tokens.`
+    : usingLive
+      ? `Auto-resolved from ${liveSource ?? "pricing cache"}. Override here to bill this run at a different rate.`
+      : "No price resolved for this model. Set a custom rate or run /refresh-prices.";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-ink-muted">{label}</span>
+        <span
+          className={cn(
+            "font-mono text-[10px] tabular-nums",
+            changed
+              ? "text-accent"
+              : badge.tone === "muted"
+                ? "text-ink-dim"
+                : "text-ink-muted",
+          )}
+          title={tooltip}
+        >
+          {badge.text}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
 }
 
 /** One row in the disclosure: label + hint icon, default chip on
@@ -753,6 +847,8 @@ function AdvancedLLMOverrides({
   onChange,
   defaults,
   profileName,
+  livePrice,
+  livePriceLoading,
 }: AdvancedLLMOverridesProps) {
   const update = (patch: Partial<OverrideFormState>) =>
     onChange({ ...form, ...patch });
@@ -1010,11 +1106,14 @@ function AdvancedLLMOverrides({
           <div className={sectionCls}>
             <h4 className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
               Cost overrides
-              <InfoHint text="Reporting only — does not change the LLM call. Both rates must be set together, or both blank." />
+              <InfoHint text="Reporting only — does not change the LLM call. The default badge shows the rate AMX will bill at: profile override if set, otherwise the auto-detected LiteLLM / OpenRouter price for this model. Both rates must be set together, or both blank." />
             </h4>
-            <OverrideRow
+            <CostOverrideRow
               label="Input USD / 1M"
-              defaultValue={fmt(defaults?.custom_input_cost_per_mtok)}
+              profileValue={defaults?.custom_input_cost_per_mtok}
+              liveValue={livePrice?.input_per_mtok ?? null}
+              liveSource={livePrice?.source ?? null}
+              liveLoading={livePriceLoading}
               changed={diffMap.customInputCost}
             >
               <input
@@ -1025,10 +1124,13 @@ function AdvancedLLMOverrides({
                 onChange={(e) => update({ customInputCost: e.target.value })}
                 className={inputCls}
               />
-            </OverrideRow>
-            <OverrideRow
+            </CostOverrideRow>
+            <CostOverrideRow
               label="Output USD / 1M"
-              defaultValue={fmt(defaults?.custom_output_cost_per_mtok)}
+              profileValue={defaults?.custom_output_cost_per_mtok}
+              liveValue={livePrice?.output_per_mtok ?? null}
+              liveSource={livePrice?.source ?? null}
+              liveLoading={livePriceLoading}
               changed={diffMap.customOutputCost}
             >
               <input
@@ -1039,7 +1141,7 @@ function AdvancedLLMOverrides({
                 onChange={(e) => update({ customOutputCost: e.target.value })}
                 className={inputCls}
               />
-            </OverrideRow>
+            </CostOverrideRow>
           </div>
 
           {overrideCount > 0 && (
