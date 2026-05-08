@@ -430,6 +430,7 @@
         <th class="num">Schema grounding</th>
         <th class="num">chrF</th>
         <th class="num">ROUGE-L</th>
+        <th class="num">BERTScore</th>
         <th class="num">Embed. agree.</th>
         <th class="num">Judge win-rate</th>
       </tr>
@@ -443,6 +444,7 @@
         <td class="num">{% if row.schema_grounding is not none %}{{ "%.0f"|format(row.schema_grounding * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">{% if row.chrf is not none %}{{ "%.0f"|format(row.chrf * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">{% if row.rouge_l is not none %}{{ "%.0f"|format(row.rouge_l * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if row.bertscore is not none %}{{ "%.0f"|format(row.bertscore * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">{% if row.embedding_agreement is not none %}{{ "%.0f"|format(row.embedding_agreement * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">
           {% if row.judge_win_rate is not none %}

@@ -242,7 +242,17 @@ export default function RunsCompare() {
     deepAnalysisOverride ?? compare.data ?? null;
 
   const pdf = useMutation({
-    mutationFn: () => api.compareAsPdf(selected),
+    mutationFn: () => {
+      // Carry the active quality tier into the PDF render so a
+      // "Run deeper analysis" → "Download PDF" sequence produces a
+      // report with the Tier 1+2 metrics (judge win-rate, embedding
+      // agreement) instead of silently dropping back to Tier 0.
+      const tier = compareData?.quality_metrics?.tier ?? 1;
+      return api.compareAsPdf(selected, {
+        qualityTier: tier,
+        groundTruthRunId: groundTruthRunId,
+      });
+    },
     onSuccess: (blob) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -773,6 +783,7 @@ function QualityCard({ data }: { data: CompareResponse }) {
 
   const hasChrf = quality.per_run.some((r) => r.chrf != null);
   const hasRouge = quality.per_run.some((r) => r.rouge_l != null);
+  const hasBert = quality.per_run.some((r) => r.bertscore != null);
   const hasEmbed = quality.per_run.some((r) => r.embedding_agreement != null);
   const hasJudge = quality.per_run.some((r) => r.judge_win_rate != null);
 
@@ -799,6 +810,9 @@ function QualityCard({ data }: { data: CompareResponse }) {
               )}
               {hasRouge && (
                 <th className="px-5 py-2 text-right font-semibold">ROUGE-L</th>
+              )}
+              {hasBert && (
+                <th className="px-5 py-2 text-right font-semibold">BERTScore</th>
               )}
               {hasEmbed && (
                 <th className="px-5 py-2 text-right font-semibold">
@@ -833,6 +847,11 @@ function QualityCard({ data }: { data: CompareResponse }) {
                 {hasRouge && (
                   <td className="px-5 py-2 text-right font-mono text-xs">
                     {fmt(row.rouge_l)}
+                  </td>
+                )}
+                {hasBert && (
+                  <td className="px-5 py-2 text-right font-mono text-xs">
+                    {fmt(row.bertscore)}
                   </td>
                 )}
                 {hasEmbed && (

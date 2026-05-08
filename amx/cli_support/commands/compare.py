@@ -1706,6 +1706,7 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
     table.add_column("Schema grounding", justify="right")
     has_chrf = any(r.get("chrf") is not None for r in per_run)
     has_rouge = any(r.get("rouge_l") is not None for r in per_run)
+    has_bert = any(r.get("bertscore") is not None for r in per_run)
     has_lev = any(r.get("levenshtein") is not None for r in per_run)
     has_emb = any(r.get("embedding_agreement") is not None for r in per_run)
     has_judge = any(r.get("judge_win_rate") is not None for r in per_run)
@@ -1713,6 +1714,8 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
         table.add_column("chrF", justify="right")
     if has_rouge:
         table.add_column("ROUGE-L", justify="right")
+    if has_bert:
+        table.add_column("BERTScore", justify="right")
     if has_lev:
         table.add_column("Edit dist.", justify="right")
     if has_emb:
@@ -1731,6 +1734,8 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
             cells.append(_fmt_quality_cell(row.get("chrf")))
         if has_rouge:
             cells.append(_fmt_quality_cell(row.get("rouge_l")))
+        if has_bert:
+            cells.append(_fmt_quality_cell(row.get("bertscore")))
         if has_lev:
             cells.append(_fmt_quality_cell(row.get("levenshtein"), kind="levenshtein"))
         if has_emb:
