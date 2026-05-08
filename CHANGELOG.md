@@ -6,6 +6,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`description_verbosity = exhaustive` (and `comprehensive` /
+  `detailed`) silently collapsed to a single sentence on multi-agent
+  runs.** When the orchestrator's `_merge_suggestions` step ran —
+  which happens whenever ProfileAgent + RAG / Code agents propose
+  the same column — the merge LLM was told to "Aim for one tight
+  sentence (≤ 25 words) unless the user's verbosity preset asks for
+  more" but the prompt never actually disclosed which preset was
+  active. The merge step also parsed only the first line of
+  `BEST_DESCRIPTION`, so any multi-paragraph answer that did slip
+  through got truncated on the way back into the suggestion list.
+  Both layers fixed: the verbosity's length rule is now injected
+  into `MERGE_PROMPT` (same `length_rule()` ProfileAgent uses), the
+  hardcoded "≤ 25 words" line is gone, the merge call's max_tokens
+  scales with `per_col_token_budget(verbosity)` so dense exhaustive
+  batches don't truncate, and `_parse_merge_response` accumulates
+  continuation lines into `BEST_DESCRIPTION` and `REASONING` so
+  multi-paragraph answers round-trip cleanly. Single-line responses
+  (the brief-mode common case) keep parsing unchanged.
+
 ### Added
 
 - **Per-run LLM fine-tuning overrides.** Studio's `/runs/new` page
