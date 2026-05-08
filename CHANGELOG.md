@@ -6,6 +6,206 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-05-08
+
+The "watch the meter and re-run anything" release. Every LLM call now
+reports tokens **and USD cost** at every surface — `/ask`, `/generate`,
+the run progress header, the Tokens & cost card on the run detail page,
+the lifetime card on the Studio Overview, and a top-bar pricing-cache
+freshness badge with a one-click refresh button. Pricing is fetched
+live, user-overridable, and audited frozen+live so a re-priced run
+keeps both the cost it ran at and the cost it would cost today.
+
+The other shipped axes:
+
+- **Re-Run.** A run row, or a multi-row selection, can be re-executed
+  with the original context preserved (DB scope, table profile cache,
+  prompt detail, alternatives count). The first-run table profile is
+  cached and reused, so re-runs are cheaper and produce comparable
+  output.
+- **Studio Landing.** `/` is now a calm landing page; the dashboard
+  moved to `/overview`. The sidebar gets a DB profile search box and
+  per-profile collapse, so a workspace with many profiles stays
+  navigable. The brand renders as "AMX Studio" (pixel mark + text
+  wordmark); the browser tab title is consistent.
+- **Run lifecycle.** A running run can be cancelled from both the
+  Runs list and the Run detail page. Applying the pending queue
+  prompts for confirmation. An already-applied row can be revised
+  inline. The live `/runs/new-{jobId}` view redirects to the
+  persisted detail page as soon as `run.created` fires.
+- **Compare rebuild.** New picker, surfaces per-row confidence /
+  log-prob, marks winners, includes a cost row, and overlap is
+  computed against the actual same-asset set.
+- **Audit timeline.** `/audit` is reorganized into day groups with
+  inline diffs and author chips so a row's history is readable at a
+  glance.
+- **LLM reasoning trace** is exposed on the Run detail page when the
+  provider returns one.
+- **`/generate` parity.** Single-shot `/generate` now respects
+  `n_alternatives`, `verbosity`, `temperature`, and `prompt_detail`
+  the same way the full `/run` path does. The run row captures the
+  target database / catalog. Per-table **Gen** in Studio spawns a
+  background run rather than blocking the UI on an inline LLM call.
+- **`/max-tokens` REPL command** plus raised default `max_tokens`
+  ceilings and modernized reasoning-token handling so reasoning
+  models (Kimi K2.x, Claude extended-thinking, GPT-5 / o-series,
+  DeepSeek-reasoner) get a 32 k floor on top of the configured
+  output budget.
+- **Concept cleanup.** The "Active backend" Overview card and the
+  whole "Active DB profile" concept are gone. Every saved DB profile
+  is its own expandable row in the sidebar, two browser tabs on
+  different profiles never collide, and the apply path is pinned to
+  the run's own DB scope rather than whatever profile the user
+  happens to have selected.
+- **Hygiene.** Console no longer leaks Rich markup tags into terminal
+  output. `/usage` aggregates every run kind, not just `analyze.run`,
+  and `list_recent_runs` pulls `tokens_json` so the aggregation has
+  data to work with. Residual Turkish content has been purged from
+  CLI text, Studio surfaces, the agent path, and earlier CHANGELOG
+  entries.
+
+### Added
+
+- **Live LLM cost tracking with user override + frozen+live audit.**
+  `amx/llm/pricing.py` fetches current per-(provider, model) rates
+  from a versioned table, caches them on disk with a freshness
+  timestamp, and lets the user pin an override per model. Every run
+  records both the price it ran at (frozen) and the price it would
+  cost today (live), so a stale price never silently rewrites
+  history. ([#235])
+- **Live USD cost in run progress headers** — the SSE progress card
+  shows running input tokens, output tokens, and USD cost while the
+  worker is alive, updating per-batch. ([#236])
+- **TopBar pricing-cache freshness badge** with a one-click refresh
+  button. The badge turns warm-yellow when the cache is over 24 h
+  old; refreshing forces a re-fetch. ([#237])
+- **Always-visible pricing badge** plus a Settings → LLM
+  auto-detected price hint that pre-fills the override field with
+  the current public rate so an override is a deliberate
+  tweak, not a re-keying chore. ([#239])
+- **Lifetime input/output tokens + USD cost on Studio Overview.**
+  The dashboard card sums every run's token and USD cost across the
+  install, alongside the existing run-count and success-rate cards.
+  ([#243])
+- **Token + USD cost on every LLM-using feature.** `/ask` answers
+  carry a per-turn cost footer; `/generate` (single-shot and per-table)
+  reports tokens and cost the same way `/run` already did. ([#258])
+- **Cancel a running run** from the Runs list **Cancel** button and
+  the Run detail page; the worker tears down cleanly and the row
+  records `status=cancelled`. ([#245])
+- **Re-Run (context-preserving)** for one or many `run_results` rows.
+  The original DB scope, prompt detail, alternatives count, and
+  table profile cache are reused, so a re-run is comparable to its
+  source run rather than a fresh shot. ([#229])
+- **Cache first-run table profile, reuse on re-run.** The introspection
+  cost paid on the first run is amortized over every subsequent
+  re-run of the same row. ([#248])
+- **Readable Audit timeline** — day groups, inline before/after diffs,
+  and author chips on `/audit`. Filters by run id and DB profile
+  still apply on top. ([#250])
+- **Surface LLM reasoning on the Run detail page.** When the provider
+  returns a reasoning trace (Anthropic extended thinking, GPT-5
+  o-series, DeepSeek-reasoner, Kimi K2.x), it's rendered alongside
+  the answer rather than thrown away. ([#261])
+- **Compare picker rebuild** — new asset picker, per-row confidence
+  and log-prob, winner marks, plus cost and same-asset overlap rows.
+  ([#260])
+- **Calm Landing page at `/`**; the dashboard moves to `/overview`
+  with a redirect from the legacy URL. ([#262])
+- **Sidebar DB profile search + collapse** on Landing — a search box
+  filters profile rows live and each row remembers its
+  expanded/collapsed state per browser tab. ([#263])
+- **`/max-tokens` REPL command** to inspect or set the per-call
+  output budget without leaving the chat. ([#231])
+- **`/generate` respects `n_alternatives`, `verbosity`, `temperature`,
+  `prompt_detail`** in single-shot mode, matching `/run` semantics
+  exactly. ([#232])
+
+### Changed
+
+- **Brand renders as "AMX Studio"** — pixel mark + text wordmark in
+  the top bar and browser tab title. ([#240])
+- **Drop the "Active DB profile" concept.** Every saved DB profile is
+  its own expandable row in the Browse sidebar; the apply path is
+  pinned to the run's own scope, not a global setting. ([#254])
+- **Drop the "Active backend" Overview card.** It restated information
+  the sidebar already exposes. ([#255])
+- **Per-table "Gen" spawns a background run**, not an inline LLM call,
+  so the UI stays responsive while the worker runs. ([#257])
+- **Confirm before applying the pending queue** — Studio's Apply
+  pending queue button now opens a one-click confirmation modal
+  showing the row count and target database. ([#247])
+- **Allow revising an already-applied row inline.** The Run detail
+  table edits an applied row and writes a new audit entry rather than
+  refusing the edit. ([#249])
+- **Raise `max_tokens` defaults** and modernize reasoning-token
+  handling so reasoning models (Kimi K2.x, Claude extended-thinking,
+  GPT-5 / o-series, DeepSeek-reasoner) get a 32 k reasoning floor on
+  top of the configured output budget. ([#231])
+
+### Fixed
+
+- **Live run no longer stuck on "starting…"** — the SSE stream wires
+  through the first heartbeat and the Tokens & cost card renders as
+  soon as the first batch returns. ([#241])
+- **Re-run cost persistence** + Metrics tokens row + legacy `/usage`
+  rows now reflect the same cost the run header showed. ([#238])
+- **`/usage` aggregates every run kind**, not just `analyze.run`. ([#252])
+- **`list_recent_runs` pulls `tokens_json`** so usage aggregation has
+  data to sum. ([#253])
+- **Compare cost row + actual same-asset overlap.** Earlier builds
+  computed overlap against the union of asset sets, which over-stated
+  agreement on partial coverage. ([#256])
+- **`/generate` captures target database/catalog** into the run row,
+  so a re-run can reproduce the original scope. ([#259])
+- **Stale-bundle reload crash** + the `'AMX Studio'` browser tab title
+  fix. ([#242])
+- **Drop internal repo PR reference** from the run-detail banner so
+  public installs don't see a dead link. ([#233])
+- **Stop Rich markup tags leaking into terminal output** when a run
+  prints help text or progress lines. ([#230])
+- **Rerun alternatives + table description visibility** on the Run
+  detail page. ([#246])
+- **Scope/cost/audit/rerun gaps** on the runs surface — every run row
+  now has a consistent toolbar across list and detail. ([#244])
+- **Purge Turkish content from CLI, Studio, agent paths**, and recent
+  CHANGELOG entries. ([#234])
+
+[#229]: https://github.com/omeryasirkucuk/amx/pull/229
+[#230]: https://github.com/omeryasirkucuk/amx/pull/230
+[#231]: https://github.com/omeryasirkucuk/amx/pull/231
+[#232]: https://github.com/omeryasirkucuk/amx/pull/232
+[#233]: https://github.com/omeryasirkucuk/amx/pull/233
+[#234]: https://github.com/omeryasirkucuk/amx/pull/234
+[#235]: https://github.com/omeryasirkucuk/amx/pull/235
+[#236]: https://github.com/omeryasirkucuk/amx/pull/236
+[#237]: https://github.com/omeryasirkucuk/amx/pull/237
+[#238]: https://github.com/omeryasirkucuk/amx/pull/238
+[#239]: https://github.com/omeryasirkucuk/amx/pull/239
+[#240]: https://github.com/omeryasirkucuk/amx/pull/240
+[#241]: https://github.com/omeryasirkucuk/amx/pull/241
+[#242]: https://github.com/omeryasirkucuk/amx/pull/242
+[#243]: https://github.com/omeryasirkucuk/amx/pull/243
+[#244]: https://github.com/omeryasirkucuk/amx/pull/244
+[#245]: https://github.com/omeryasirkucuk/amx/pull/245
+[#246]: https://github.com/omeryasirkucuk/amx/pull/246
+[#247]: https://github.com/omeryasirkucuk/amx/pull/247
+[#248]: https://github.com/omeryasirkucuk/amx/pull/248
+[#249]: https://github.com/omeryasirkucuk/amx/pull/249
+[#250]: https://github.com/omeryasirkucuk/amx/pull/250
+[#252]: https://github.com/omeryasirkucuk/amx/pull/252
+[#253]: https://github.com/omeryasirkucuk/amx/pull/253
+[#254]: https://github.com/omeryasirkucuk/amx/pull/254
+[#255]: https://github.com/omeryasirkucuk/amx/pull/255
+[#256]: https://github.com/omeryasirkucuk/amx/pull/256
+[#257]: https://github.com/omeryasirkucuk/amx/pull/257
+[#258]: https://github.com/omeryasirkucuk/amx/pull/258
+[#259]: https://github.com/omeryasirkucuk/amx/pull/259
+[#260]: https://github.com/omeryasirkucuk/amx/pull/260
+[#261]: https://github.com/omeryasirkucuk/amx/pull/261
+[#262]: https://github.com/omeryasirkucuk/amx/pull/262
+[#263]: https://github.com/omeryasirkucuk/amx/pull/263
+
 ## [0.13.0] - 2026-05-07
 
 ### Added
@@ -23,7 +223,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   contains `X` (or is empty = global). New CLI commands `/doc-link`,
   `/code-link`, `/ask-context` plus a multi-select chip control on
   the Studio Settings → Docs/Code wizards. ([#212])
-- **Studio scope rozeti on AskChat** — read-only `📄 N docs · 💻 M code`
+- **Studio scope badge on AskChat** — read-only `📄 N docs · 💻 M code`
   banner above the scope dropdown showing what `/ask` will pull in
   for the active scope. Backed by `GET /api/ask/context`. ([#213])
 - **Studio Code Search box** (`Settings → Code`) and the matching
