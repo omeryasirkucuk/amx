@@ -20,6 +20,10 @@ interface LastOpened {
 interface UiSlice {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
+  /** Imperative setter so a route can force the collapsed state on
+   *  mount (e.g. the Landing page wants the sidebar tucked away by
+   *  default; the user can still re-open it from the topbar). */
+  setSidebarCollapsed: (next: boolean) => void;
   lastOpenedSchema: string | null;
   lastOpenedTable: string | null;
   /** Full scope of the most recently viewed table (null until the
@@ -51,6 +55,7 @@ export const useUi = create<UiSlice>()(
       sidebarCollapsed: false,
       toggleSidebar: () =>
         set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+      setSidebarCollapsed: (next: boolean) => set({ sidebarCollapsed: next }),
       lastOpenedSchema: null,
       lastOpenedTable: null,
       lastOpened: null,
