@@ -550,6 +550,42 @@ def rerun_items(
     # rows hang off a meaningful parent. Mode is "single" for a one-item
     # re-run, "batch" for multi-item.
     mode = "single" if len(target_result_ids) == 1 else "batch"
+    # Inherit scope + database / catalog from the parent so Apply
+    # downstream knows which database the COMMENTs target. Without this
+    # the rerun's analysis_runs row had ``scope_json="{}"`` and the SPA
+    # blocked the Apply pending queue button until the user manually
+    # typed the database name. The parent's ``scope_json`` survives
+    # ``list_recent_runs`` as a parsed dict; ``get_run`` may also leave
+    # it as a JSON string so coerce defensively.
+    parent_scope_raw = parent_run.get("scope_json") or parent_run.get("scope")
+    parent_scope: dict[str, list[str]] = {}
+    if isinstance(parent_scope_raw, dict):
+        parent_scope = {
+            str(k): list(v) if isinstance(v, list) else [] for k, v in parent_scope_raw.items()
+        }
+    elif isinstance(parent_scope_raw, str) and parent_scope_raw.strip():
+        try:
+            import json as _json
+
+            decoded = _json.loads(parent_scope_raw)
+            if isinstance(decoded, dict):
+                parent_scope = {
+                    str(k): list(v) if isinstance(v, list) else [] for k, v in decoded.items()
+                }
+        except Exception:
+            parent_scope = {}
+    parent_settings = parent_run.get("settings_json") or parent_run.get("settings") or {}
+    if isinstance(parent_settings, str):
+        try:
+            import json as _json
+
+            parent_settings = _json.loads(parent_settings) or {}
+        except Exception:
+            parent_settings = {}
+    if not isinstance(parent_settings, dict):
+        parent_settings = {}
+    inherited_database = parent_run.get("database") or parent_settings.get("database") or None
+    inherited_catalog = parent_run.get("catalog") or parent_settings.get("catalog") or None
     new_run_id = hs.create_run(
         command="rerun",
         mode=mode,
@@ -557,7 +593,7 @@ def rerun_items(
         db_profile=str(parent_run.get("db_profile") or ""),
         llm_provider=str(parent_run.get("llm_provider") or cfg.llm.provider or ""),
         llm_model=str(parent_run.get("llm_model") or cfg.llm.model or ""),
-        scope={},
+        scope=parent_scope,
         selected_count=len(target_result_ids),
         planned_count=len(target_result_ids),
         review_strategy="individual",
@@ -569,6 +605,12 @@ def rerun_items(
             "parent_run_id": parent_run_id,
             "user_instructions": (user_instructions or "").strip() or None,
             "temperature_override": temperature_override,
+            # Surface the database / catalog at the settings level so
+            # the SPA's history.get_run handler can flatten them onto
+            # the run row (see history.py:92) and the Apply pending
+            # queue button stays enabled for re-run output.
+            "database": inherited_database,
+            "catalog": inherited_catalog,
         },
     )
 

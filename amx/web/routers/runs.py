@@ -852,6 +852,24 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
             except Exception:
                 pass
 
+    # Build the audit context once so each successful COMMENT write
+    # lands in apply_events with the correct attribution. Mirrors the
+    # CLI path (amx/cli_support/commands/run.py): without these
+    # arguments the CLI's apply path logs to apply_events but the
+    # Studio path stayed silent — the Audit page rendered "0 events"
+    # even after a successful Apply pending queue.
+    import getpass
+    import socket
+
+    try:
+        applied_by = getpass.getuser()
+    except Exception:
+        applied_by = ""
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = ""
+
     try:
         applied = apply_review_results_to_db(
             db,
@@ -860,6 +878,10 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
             on_failed=_on_failed,
             on_progress=_build_progress_callback(job),
             cancel_token=job.cancel,
+            audit_log=hs,
+            audit_profile=str(body.db_profile or getattr(cfg.db, "name", "") or ""),
+            audit_user=applied_by,
+            audit_host=hostname,
         )
     except RunCancelled:
         # apply_review_results_to_db already commits-what-was-applied

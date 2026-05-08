@@ -25,7 +25,13 @@ import {
 interface Row {
   id: number;
   command: string;
-  scope: Record<string, unknown> | null;
+  // Backend serializes the parsed scope under ``scope_json`` (see
+  // ``list_recent_runs`` in sqlite_store). The legacy ``scope`` key is
+  // kept here only for resilience against older payloads — without
+  // ``scope_json`` every row in this list rendered "All schemas"
+  // regardless of what the user actually picked.
+  scope_json?: Record<string, unknown> | null;
+  scope?: Record<string, unknown> | null;
   status: string;
   duration_sec: number | null;
   llm_model?: string | null;
@@ -81,7 +87,7 @@ export default function RunsList() {
         header: "Scope",
         cell: (r) => (
           <span className="truncate text-sm text-ink-muted">
-            {summarizeScope(r.scope)}
+            {summarizeScope(r.scope_json ?? r.scope)}
           </span>
         ),
         hideOnMobile: true,
@@ -216,7 +222,7 @@ export default function RunsList() {
           [
             String(r.id),
             r.command,
-            Object.keys(r.scope || {}).join(" "),
+            Object.keys(r.scope_json || r.scope || {}).join(" "),
             r.status,
           ].join(" ")
         }
