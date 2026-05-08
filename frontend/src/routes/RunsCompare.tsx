@@ -298,7 +298,7 @@ export default function RunsCompare() {
       const hay = [
         String(row.id),
         row.command ?? "",
-        humanizeCommand(row.command),
+        humanizeCommand(row.command, row.scope_json ?? row.scope),
         summarizeScope(row.scope_json ?? row.scope),
         Object.keys(row.scope_json ?? row.scope ?? {}).join(" "),
         shortModel(row.llm_model),
@@ -522,7 +522,7 @@ export default function RunsCompare() {
                       )}
                       title={row.command ?? undefined}
                     >
-                      {humanizeCommand(row.command)}
+                      {humanizeCommand(row.command, row.scope_json ?? row.scope)}
                     </span>
                     <span
                       className="min-w-0 truncate text-ink-muted"
