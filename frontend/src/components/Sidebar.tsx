@@ -1,7 +1,16 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useSyncExternalStore } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { ChevronRight, ChevronDown, Database, FolderTree, Layers } from "lucide-react";
+import {
+  ChevronRight,
+  ChevronDown,
+  Database,
+  FolderTree,
+  Layers,
+  Search,
+  X,
+} from "lucide-react";
 
 import { ApiError, api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
@@ -67,12 +76,138 @@ export default function Sidebar({ collapsed }: Props) {
         >
           DB Profiles
         </SectionTitle>
+        <ProfileSearchInput />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <ProfilesTree />
       </div>
     </div>
   );
+}
+
+/** Sidebar search box for the DB Profiles section. Filters
+ *  profile names + their database / catalog children by simple
+ *  case-insensitive substring; no fuzzy matching, no regex --
+ *  just type the few letters you remember. The query is read by
+ *  ``ProfilesTree`` via the module-local ``useProfileSearch``
+ *  hook so the input lives next to the section title without
+ *  prop-drilling through the tree. */
+function ProfileSearchInput() {
+  const { query, setQuery } = useProfileSearch();
+  return (
+    <div className="mb-1.5 mt-1 flex items-center gap-1.5 rounded-md border border-surface-border bg-surface px-2 py-1 focus-within:border-accent/40">
+      <Search size={12} className="shrink-0 text-ink-dim" />
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search profiles, databases…"
+        aria-label="Search DB profiles"
+        className="w-full bg-transparent text-xs text-ink outline-none placeholder:text-ink-dim"
+      />
+      {query && (
+        <button
+          type="button"
+          onClick={() => setQuery("")}
+          aria-label="Clear search"
+          className="shrink-0 rounded p-0.5 text-ink-dim hover:bg-surface-subtle hover:text-ink"
+        >
+          <X size={11} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Module-local search-state singleton. Backs a useSyncExternalStore
+// hook so every sub-tree of the sidebar (the input + every profile
+// row + every database/catalog child) reacts to the same query
+// without prop-drilling. Reset to the empty string on every page
+// load -- search state is intentionally session-only because the
+// query is "what the user is hunting for right now", not a
+// long-lived preference.
+const _searchListeners = new Set<() => void>();
+let _searchValue = "";
+function _subscribeProfileSearch(listener: () => void): () => void {
+  _searchListeners.add(listener);
+  return () => _searchListeners.delete(listener);
+}
+function _getProfileSearch(): string {
+  return _searchValue;
+}
+function _setProfileSearch(next: string): void {
+  if (_searchValue === next) return;
+  _searchValue = next;
+  _searchListeners.forEach((fn) => fn());
+}
+
+function useProfileSearch(): { query: string; setQuery: (next: string) => void } {
+  const query = useSyncExternalStore(
+    _subscribeProfileSearch,
+    _getProfileSearch,
+    _getProfileSearch,
+  );
+  return { query, setQuery: _setProfileSearch };
+}
+
+/** Case-insensitive substring match. Empty needle matches
+ *  everything so the unfiltered tree renders normally. */
+function matchesSearch(haystack: string, needle: string): boolean {
+  if (!needle) return true;
+  return haystack.toLowerCase().includes(needle.toLowerCase());
+}
+
+interface CatalogsCache {
+  supports_catalogs: boolean;
+  catalogs: string[];
+}
+interface DatabasesCache {
+  databases: string[];
+}
+interface AssetsCache {
+  assets: { name: string; kind?: string }[];
+}
+
+/** Look up cached database/catalog children for a profile and
+ *  return true if any of their names match the search query.
+ *  Used so a profile row stays visible when the user types the
+ *  name of a database that lives below it -- but only when that
+ *  list is already in the query cache (we don't kick off N
+ *  fetches just for the search). */
+function profileHasMatchingChildInCache(
+  qc: QueryClient,
+  profileName: string,
+  query: string,
+): boolean {
+  if (!query) return false;
+  const cats = qc.getQueryData<CatalogsCache>(["live-catalogs", profileName]);
+  if (cats?.supports_catalogs) {
+    if (cats.catalogs.some((c) => matchesSearch(c, query))) return true;
+  }
+  const dbs = qc.getQueryData<DatabasesCache>(["live-databases", profileName]);
+  if (dbs?.databases?.some((d) => matchesSearch(d, query))) return true;
+  return false;
+}
+
+/** Return true when a schema's cached asset list (tables / views)
+ *  contains a name that matches the search query. Used to keep a
+ *  schema row visible when the user types a table name -- but only
+ *  if that asset list is already in the React Query cache. */
+function schemaHasMatchingAssetInCache(
+  qc: QueryClient,
+  scope: Scope,
+  schema: string,
+  query: string,
+): boolean {
+  if (!query) return false;
+  const cached = qc.getQueryData<AssetsCache>([
+    "live-assets",
+    scope.profile,
+    scope.database ?? "",
+    scope.catalog ?? "",
+    schema,
+  ]);
+  return !!cached?.assets?.some((a) => matchesSearch(a.name, query));
 }
 
 function SectionTitle({
@@ -113,6 +248,8 @@ function LlmSection() {
 }
 
 function ProfilesTree() {
+  const qc = useQueryClient();
+  const { query } = useProfileSearch();
   const profiles = useQuery({
     queryKey: ["db-profiles", "list"],
     queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
@@ -137,21 +274,66 @@ function ProfilesTree() {
       </div>
     );
   }
+  // When the search box is empty, render the whole tree. When
+  // it's set, decide row-by-row whether to show each profile.
+  // A profile passes the filter if its name or backend matches,
+  // or if a database/catalog already in the React Query cache
+  // for it matches -- the latter lets a hit on a child name keep
+  // the parent visible after the user has expanded that profile
+  // at least once. We don't fetch lazily-loaded children just to
+  // search; the user can expand profiles to broaden the surface.
+  const filtered = query
+    ? list.filter((p) => {
+        const nameMatch =
+          matchesSearch(p.name, query) || matchesSearch(p.backend ?? "", query);
+        if (nameMatch) return true;
+        return profileHasMatchingChildInCache(qc, p.name, query);
+      })
+    : list;
+  if (filtered.length === 0) {
+    return (
+      <div className="px-2 py-1 text-xs text-ink-dim">
+        No profiles match “{query}”.
+      </div>
+    );
+  }
   return (
     <div className="space-y-0.5">
-      {list.map((p) => (
-        <ProfileNode key={p.name} profile={p} />
-      ))}
+      {filtered.map((p) => {
+        const profileNameMatched =
+          !!query &&
+          (matchesSearch(p.name, query) ||
+            matchesSearch(p.backend ?? "", query));
+        return (
+          <ProfileNode
+            key={p.name}
+            profile={p}
+            query={query}
+            profileNameMatched={profileNameMatched}
+          />
+        );
+      })}
     </div>
   );
 }
 
-function ProfileNode({ profile }: { profile: DbProfileSummary }) {
+function ProfileNode({
+  profile,
+  query,
+  profileNameMatched,
+}: {
+  profile: DbProfileSummary;
+  query: string;
+  profileNameMatched: boolean;
+}) {
   const params = useParams();
   // Collapsed by default so the tree doesn't fire one fetch per
   // profile on first render. Expand sticky if the user is currently
-  // looking at this profile.
+  // looking at this profile, OR while a search query is active --
+  // a search hit is worthless if the children stay hidden behind
+  // a chevron the user has to click.
   const [open, setOpen] = useState<boolean>(params.profile === profile.name);
+  const effectiveOpen = open || !!query;
 
   return (
     <div>
@@ -167,7 +349,7 @@ function ProfileNode({ profile }: { profile: DbProfileSummary }) {
             : "text-ink hover:bg-surface-subtle",
         )}
       >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        {effectiveOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span className="truncate">{profile.name}</span>
         {profile.backend && (
           <span className="ml-auto text-[9px] font-normal normal-case tracking-normal text-ink-dim">
@@ -175,9 +357,13 @@ function ProfileNode({ profile }: { profile: DbProfileSummary }) {
           </span>
         )}
       </button>
-      {open && (
+      {effectiveOpen && (
         <div className="ml-3 mt-0.5 border-l border-border pl-2">
-          <ProfileScopeChildren profile={profile.name} />
+          <ProfileScopeChildren
+            profile={profile.name}
+            query={query}
+            parentMatched={profileNameMatched}
+          />
         </div>
       )}
     </div>
@@ -189,7 +375,15 @@ function ProfileNode({ profile }: { profile: DbProfileSummary }) {
  * (2-level). Probes /api/live/catalogs first; if the backend is
  * 2-level we fall through to /api/live/databases.
  */
-function ProfileScopeChildren({ profile }: { profile: string }) {
+function ProfileScopeChildren({
+  profile,
+  query,
+  parentMatched,
+}: {
+  profile: string;
+  query: string;
+  parentMatched: boolean;
+}) {
   const catalogs = useQuery({
     queryKey: ["live-catalogs", profile],
     queryFn: () => api.liveCatalogs({ profile }),
@@ -202,6 +396,13 @@ function ProfileScopeChildren({ profile }: { profile: string }) {
     enabled: catalogs.data ? !catalogs.data.supports_catalogs : false,
   });
 
+  // When the parent profile name matched the query, the user
+  // already found their target -- show every child unfiltered so
+  // they can drill in. Only filter children when the search
+  // narrows past the profile level.
+  const childFilter = (name: string): boolean =>
+    !query || parentMatched || matchesSearch(name, query);
+
   if (catalogs.isLoading) {
     return <div className="px-2 py-1 text-[11px] text-ink-dim">Loading…</div>;
   }
@@ -213,10 +414,17 @@ function ProfileScopeChildren({ profile }: { profile: string }) {
     );
   }
   if (catalogs.data?.supports_catalogs) {
-    const list = catalogs.data.catalogs;
-    if (list.length === 0) {
+    const list = catalogs.data.catalogs.filter(childFilter);
+    if (catalogs.data.catalogs.length === 0) {
       return (
         <div className="px-2 py-1 text-[11px] text-ink-dim">(no catalogs visible)</div>
+      );
+    }
+    if (list.length === 0) {
+      return (
+        <div className="px-2 py-1 text-[11px] text-ink-dim">
+          No catalogs match.
+        </div>
       );
     }
     return (
@@ -226,6 +434,8 @@ function ProfileScopeChildren({ profile }: { profile: string }) {
             key={name}
             scope={{ profile, catalog: name, kind: "catalog" }}
             label={name}
+            query={query}
+            parentMatched={parentMatched || matchesSearch(name, query)}
           />
         ))}
       </div>
@@ -241,12 +451,18 @@ function ProfileScopeChildren({ profile }: { profile: string }) {
       </div>
     );
   }
-  const dbList = databases.data?.databases ?? [];
-  if (dbList.length === 0) {
+  const allDbList = databases.data?.databases ?? [];
+  const dbList = allDbList.filter(childFilter);
+  if (allDbList.length === 0) {
     return (
       <div className="px-2 py-1 text-[11px] text-ink-dim">
         (no databases reachable)
       </div>
+    );
+  }
+  if (dbList.length === 0) {
+    return (
+      <div className="px-2 py-1 text-[11px] text-ink-dim">No databases match.</div>
     );
   }
   return (
@@ -256,19 +472,35 @@ function ProfileScopeChildren({ profile }: { profile: string }) {
           key={name}
           scope={{ profile, database: name, kind: "database" }}
           label={name}
+          query={query}
+          parentMatched={parentMatched || matchesSearch(name, query)}
         />
       ))}
     </div>
   );
 }
 
-function ScopeNode({ scope, label }: { scope: Scope; label: string }) {
+function ScopeNode({
+  scope,
+  label,
+  query,
+  parentMatched,
+}: {
+  scope: Scope;
+  label: string;
+  query: string;
+  parentMatched: boolean;
+}) {
   const params = useParams();
   const navigate = useNavigate();
   const isOnThis =
     params.profile === scope.profile &&
     (scope.database ? params.database === scope.database : params.catalog === scope.catalog);
   const [open, setOpen] = useState<boolean>(isOnThis);
+  // While the user is typing, force every level open so the
+  // search query reaches schemas + tables. Without this the tree
+  // would only filter the rows the user has already drilled into.
+  const effectiveOpen = open || !!query;
 
   return (
     <div>
@@ -285,19 +517,32 @@ function ScopeNode({ scope, label }: { scope: Scope; label: string }) {
             : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
         )}
       >
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        {effectiveOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <span className="truncate">{label}</span>
       </button>
-      {open && (
+      {effectiveOpen && (
         <div className="ml-3 mt-0.5 border-l border-border pl-2">
-          <SchemasUnderScope scope={scope} />
+          <SchemasUnderScope
+            scope={scope}
+            query={query}
+            parentMatched={parentMatched}
+          />
         </div>
       )}
     </div>
   );
 }
 
-function SchemasUnderScope({ scope }: { scope: Scope }) {
+function SchemasUnderScope({
+  scope,
+  query,
+  parentMatched,
+}: {
+  scope: Scope;
+  query: string;
+  parentMatched: boolean;
+}) {
+  const qc = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: [
       "live-schemas",
@@ -326,16 +571,49 @@ function SchemasUnderScope({ scope }: { scope: Scope }) {
   if (!data || data.schemas.length === 0) {
     return <div className="px-2 py-1 text-[11px] text-ink-dim">(no schemas)</div>;
   }
+  // When parentMatched is true, the user already hit on something
+  // higher up the chain (a profile / db / catalog) -- show every
+  // schema unfiltered. Otherwise narrow to schemas whose name
+  // matches OR that have a cached asset list with a table name
+  // match (so a typed table name keeps its parent schema visible
+  // even before the user clicks into it).
+  const schemas = query
+    ? data.schemas.filter(
+        (s) =>
+          parentMatched ||
+          matchesSearch(s, query) ||
+          schemaHasMatchingAssetInCache(qc, scope, s, query),
+      )
+    : data.schemas;
+  if (schemas.length === 0) {
+    return <div className="px-2 py-1 text-[11px] text-ink-dim">No schemas match.</div>;
+  }
   return (
     <div className="space-y-0.5">
-      {data.schemas.map((schema) => (
-        <SchemaNode key={schema} scope={scope} schema={schema} />
+      {schemas.map((schema) => (
+        <SchemaNode
+          key={schema}
+          scope={scope}
+          schema={schema}
+          query={query}
+          parentMatched={parentMatched || matchesSearch(schema, query)}
+        />
       ))}
     </div>
   );
 }
 
-function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
+function SchemaNode({
+  scope,
+  schema,
+  query,
+  parentMatched,
+}: {
+  scope: Scope;
+  schema: string;
+  query: string;
+  parentMatched: boolean;
+}) {
   const params = useParams();
   const navigate = useNavigate();
   const isOnThis =
@@ -343,6 +621,10 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
     (scope.database ? params.database === scope.database : params.catalog === scope.catalog) &&
     params.schema === schema;
   const [open, setOpen] = useState<boolean>(isOnThis);
+  // Force the assets list open while the user has a search query
+  // active so a table-name match pulls its parent schema's assets
+  // into view without an extra click.
+  const effectiveOpen = open || !!query;
 
   const { data: assets } = useQuery({
     queryKey: [
@@ -353,8 +635,13 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
       schema,
     ],
     queryFn: () => api.liveAssets(scope, schema),
-    enabled: open,
+    enabled: effectiveOpen,
   });
+
+  const filteredAssets =
+    assets?.assets && query && !parentMatched
+      ? assets.assets.filter((a) => matchesSearch(a.name, query))
+      : assets?.assets;
 
   return (
     <div>
@@ -371,13 +658,13 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
             : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
         )}
       >
-        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {effectiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         <span className="truncate">{schema}</span>
       </button>
-      {open && (
+      {effectiveOpen && (
         <div className="ml-3 border-l border-border pl-2">
-          {assets?.assets?.length ? (
-            assets.assets.map((asset) => (
+          {filteredAssets?.length ? (
+            filteredAssets.map((asset) => (
               <button
                 key={`${schema}.${asset.name}`}
                 type="button"
@@ -397,7 +684,11 @@ function SchemaNode({ scope, schema }: { scope: Scope; schema: string }) {
             ))
           ) : (
             <div className="px-2 py-1 text-[11px] text-ink-dim">
-              {assets ? "(empty)" : "Loading…"}
+              {assets
+                ? query && !parentMatched
+                  ? "No tables match."
+                  : "(empty)"
+                : "Loading…"}
             </div>
           )}
         </div>
