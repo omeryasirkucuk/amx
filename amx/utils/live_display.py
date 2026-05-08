@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -16,6 +17,70 @@ from rich.text import Text
 from rich.tree import Tree
 
 import amx
+
+
+# ── Thread-local subscriber bus ───────────────────────────────────────────
+#
+# AMX Studio's run-detail page relies on the same LiveDisplay calls the
+# CLI's Rich UI does ("Profiling address.state…", "Calling LLM (batch
+# 1/3)…", "Saved 12 suggestions"), but it fan-outs over SSE instead of a
+# Rich Live region. Without this bus, the Studio "Live progress" card
+# only saw the per-table ``activity.added/begin/complete`` events the
+# web worker emitted before / after each table — the multi-minute work
+# inside ``orchestrator.process_table()`` rendered as
+# "Waiting for the worker to begin…" until the table finished.
+#
+# Pattern: per-thread subscriber list. Each web worker installs a
+# subscriber when it starts a job (via :func:`push_subscriber`), the
+# subscriber forwards every LiveDisplay state change into the job's
+# SSE queue, and the worker pops the subscriber on exit. Threading-
+# local keeps concurrent jobs from leaking each other's events.
+
+_DisplaySubscriber = Callable[[str, dict[str, Any]], None]
+_local = threading.local()
+
+
+def push_subscriber(callback: _DisplaySubscriber) -> None:
+    """Install a subscriber on the current thread's display event bus.
+
+    The subscriber receives every ``(event_type, payload)`` produced by
+    LiveDisplay state-mutating methods on this thread. Stack-friendly:
+    nested ``push`` / ``pop`` pairs work without confusing siblings.
+    """
+    stack = getattr(_local, "stack", None)
+    if stack is None:
+        stack = []
+        _local.stack = stack
+    stack.append(callback)
+
+
+def pop_subscriber(callback: _DisplaySubscriber) -> None:
+    """Remove the most-recent matching subscriber from this thread."""
+    stack = getattr(_local, "stack", None) or []
+    try:
+        # ``list.remove`` removes the FIRST match; we want the LAST so
+        # nested context managers unwind in LIFO order.
+        for idx in range(len(stack) - 1, -1, -1):
+            if stack[idx] is callback:
+                del stack[idx]
+                break
+    except ValueError:
+        pass
+
+
+def _notify_subscribers(event_type: str, payload: dict[str, Any]) -> None:
+    """Best-effort fan-out to every subscriber on the current thread.
+
+    A subscriber that raises is logged-and-skipped so a buggy bridge
+    can't poison the rest of the run — the LiveDisplay UI / SSE stream
+    keeps moving.
+    """
+    stack = getattr(_local, "stack", None) or []
+    for callback in stack:
+        try:
+            callback(event_type, payload)
+        except Exception:  # pragma: no cover — bridge failures stay silent
+            pass
 
 
 class ActivityState(Enum):
@@ -260,6 +325,10 @@ class LiveDisplay:
             self._activities.append(act)
             idx = len(self._activities) - 1
         self._refresh()
+        _notify_subscribers(
+            "step.added",
+            {"idx": idx, "label": label, "token_estimate": token_estimate},
+        )
         return idx
 
     def begin_activity(self, idx: int) -> None:
@@ -267,7 +336,11 @@ class LiveDisplay:
             if 0 <= idx < len(self._activities):
                 self._activities[idx].state = ActivityState.ACTIVE
                 self._activities[idx].start_time = time.monotonic()
+                label = self._activities[idx].label
+            else:
+                label = ""
         self._refresh()
+        _notify_subscribers("step.begin", {"idx": idx, "label": label})
 
     def complete_activity(self, idx: int, detail: str = "") -> None:
         with self._lock:
@@ -277,7 +350,14 @@ class LiveDisplay:
                 act.end_time = time.monotonic()
                 if detail:
                     act.details.append(detail)
+                label = act.label
+            else:
+                label = ""
         self._refresh()
+        _notify_subscribers(
+            "step.complete",
+            {"idx": idx, "label": label, "detail": detail},
+        )
 
     def fail_activity(self, idx: int, detail: str = "") -> None:
         with self._lock:
@@ -287,13 +367,21 @@ class LiveDisplay:
                 act.end_time = time.monotonic()
                 if detail:
                     act.details.append(detail)
+                label = act.label
+            else:
+                label = ""
         self._refresh()
+        _notify_subscribers(
+            "step.fail",
+            {"idx": idx, "label": label, "detail": detail},
+        )
 
     def add_detail(self, idx: int, detail: str) -> None:
         with self._lock:
             if 0 <= idx < len(self._activities):
                 self._activities[idx].details.append(detail)
         self._refresh()
+        _notify_subscribers("step.detail", {"idx": idx, "detail": detail})
 
     def update_activity(
         self,
@@ -309,7 +397,14 @@ class LiveDisplay:
                     act.label = label
                 if reset_details:
                     act.details.clear()
+                resolved_label = act.label
+            else:
+                resolved_label = label or ""
         self._refresh()
+        if label is not None:
+            _notify_subscribers(
+                "step.update", {"idx": idx, "label": resolved_label}
+            )
 
     def update_tokens(self, idx: int, tokens_used: int) -> None:
         with self._lock:
@@ -338,6 +433,20 @@ class LiveDisplay:
                 self._total_cost_usd += float(cost_delta_usd or 0.0)
             except (TypeError, ValueError):
                 pass
+            tokens_in_total = self._total_tokens_in
+            tokens_out_total = self._total_tokens_out
+            cost_total = self._total_cost_usd
+        _notify_subscribers(
+            "tokens.delta",
+            {
+                "in": int(input_tokens or 0),
+                "out": int(output_tokens or 0),
+                "cost_usd": float(cost_delta_usd or 0.0),
+                "total_in": tokens_in_total,
+                "total_out": tokens_out_total,
+                "total_cost_usd": cost_total,
+            },
+        )
         self._refresh()
 
     # ── Thinking state ────────────────────────────────────────────────────
@@ -348,6 +457,7 @@ class LiveDisplay:
         self._thinking_start = time.monotonic()
         self._thinking_text = ""
         self._refresh()
+        _notify_subscribers("step.thinking", {"label": label})
 
     def update_thinking(self, text: str) -> None:
         """Replace the streaming reasoning snippet shown under the spinner.
@@ -369,6 +479,7 @@ class LiveDisplay:
         self._thinking = False
         self._thinking_text = ""
         self._refresh()
+        _notify_subscribers("step.thinking_done", {})
 
     def toggle_collapse(self) -> None:
         self._collapsed = not self._collapsed

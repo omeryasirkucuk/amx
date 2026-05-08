@@ -107,6 +107,16 @@ def launch_studio(
         return False
     import uvicorn
 
+    # Silence the parent CLI terminal for the duration of the Studio
+    # session. Third-party imports (transformers, litellm, bert-score,
+    # uvicorn[standard]) install root logger handlers at INFO/DEBUG;
+    # without this, amx.* records propagate to those handlers and the
+    # REPL gets flooded with progress noise the file log already
+    # captures. See amx.utils.logging.mute_root_logger_for_studio.
+    from amx.utils.logging import mute_root_logger_for_studio
+
+    mute_root_logger_for_studio()
+
     # Pre-install drivers for every saved DB profile BEFORE uvicorn
     # starts. A web request triggering pip-install mid-flight would
     # hang the request for 10–30 s while the browser shows a

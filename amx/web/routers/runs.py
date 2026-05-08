@@ -422,6 +422,24 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     final_error_text = ""
     final_status = "success"
 
+    # Bridge LiveDisplay events out to the SSE queue so the Studio
+    # run-detail page sees the same step-by-step narration the CLI
+    # gets. Without this, the page stalled on
+    # "Waiting for the worker to begin…" for the entire profile +
+    # RAG + LLM batch window — sometimes 5–30 minutes — because the
+    # web worker only emitted per-table activity events.
+    from amx.utils.live_display import (
+        pop_subscriber as _pop_display_subscriber,
+    )
+    from amx.utils.live_display import (
+        push_subscriber as _push_display_subscriber,
+    )
+
+    def _display_to_sse(event_type: str, payload: dict[str, Any]) -> None:
+        emit(job.queue, event_type, payload)
+
+    _push_display_subscriber(_display_to_sse)
+
     try:
         if use_batch:
             _process_scope_batch(
@@ -504,6 +522,11 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         job.status = "failed"
         job.error = final_error_text
         emit_terminal(job.queue, "job.failed", {"error": final_error_text})
+    finally:
+        # Always remove the bridge so a future job in this same worker
+        # thread doesn't accidentally inherit the previous job's
+        # subscribers.
+        _pop_display_subscriber(_display_to_sse)
 
     # Persist deferred review results into the pending queue regardless
     # of cancellation — the user may want to review what *did* finish.
