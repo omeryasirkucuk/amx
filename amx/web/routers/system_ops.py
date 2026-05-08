@@ -68,7 +68,15 @@ def usage(
             "live": bool(live),
             "message": "History store isn't initialised yet.",
         }
-    runs = hs.list_recent_runs(limit=10_000)
+    # ``command_filter=None`` so re-run + apply rows contribute their
+    # tokens too. The default filter keeps only ``analyze.run`` rows,
+    # which surfaced as a phantom-empty Overview when the user's
+    # history was dominated by re-runs (the dominant pattern after
+    # PR #244 made re-runs free per asset). The same filter mistake
+    # had to be fixed earlier in ``_build_enrichment_map``; mirror
+    # the fix here so the Overview cards + System usage table
+    # actually count work the user has done.
+    runs = hs.list_recent_runs(limit=10_000, command_filter=None)
     if window_sec is not None:
         cutoff = time.time() - float(window_sec)
         runs = [r for r in runs if float(r.get("started_at") or 0) >= cutoff]

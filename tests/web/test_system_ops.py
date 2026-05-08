@@ -97,6 +97,28 @@ def test_usage_aggregates_by_provider_model(client, auth_headers, monkeypatch) -
     assert by_model[("anthropic", "claude-haiku-4-5")]["runs"] == 1
 
 
+def test_usage_pulls_all_command_kinds(client, auth_headers, monkeypatch) -> None:
+    """The endpoint must request command_filter=None so re-run + apply
+    rows contribute their tokens too. The default
+    list_recent_runs(command_filter="analyze.run") used to drop those
+    rows on the floor, leaving the Overview cards rendering "—" for
+    users whose history was dominated by re-runs."""
+    captured: dict[str, object] = {}
+
+    def fake_list(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return []
+
+    fake_hs = MagicMock(list_recent_runs=fake_list)
+    monkeypatch.setattr("amx.storage.sqlite_store.history_store", lambda: fake_hs)
+
+    response = client.get("/api/usage?window=all", headers=auth_headers)
+    assert response.status_code == 200
+    # Endpoint passes command_filter=None explicitly so every run kind
+    # surfaces -- analyze, rerun, apply alike.
+    assert captured["kwargs"].get("command_filter") is None
+
+
 def test_usage_filters_by_window(client, auth_headers, monkeypatch) -> None:
     """Older runs must drop out when a finite window is set."""
     now = time.time()
