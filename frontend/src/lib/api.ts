@@ -90,6 +90,41 @@ export interface HealthResponse {
   ok: boolean;
   version: string;
 }
+/** Active LLM profile's tuning knobs, surfaced by /api/context so the
+ *  RunNew "Advanced LLM settings" disclosure can pre-fill defaults
+ *  without a second round-trip. Read-only mirror of `cfg.llm`; the
+ *  per-run override is sent on POST /api/runs (`llm_overrides`) and
+ *  never written back to the saved profile. */
+export interface LLMProfileDefaults {
+  temperature: number | null;
+  max_tokens: number | null;
+  n_alternatives: number | null;
+  column_batch_size: number | null;
+  prompt_detail: string | null;
+  description_verbosity: string | null;
+  thinking_budget: number | null;
+  logprob_high: number | null;
+  logprob_medium: number | null;
+  custom_input_cost_per_mtok: number | null;
+  custom_output_cost_per_mtok: number | null;
+}
+
+/** Per-run override of the active LLM profile's tuning knobs. Every
+ *  field is optional; omitted = use the saved profile's value. */
+export interface LLMOverrides {
+  temperature?: number;
+  max_tokens?: number;
+  n_alternatives?: number;
+  column_batch_size?: number;
+  prompt_detail?: string;
+  description_verbosity?: string;
+  thinking_budget?: number;
+  logprob_high?: number;
+  logprob_medium?: number;
+  custom_input_cost_per_mtok?: number | null;
+  custom_output_cost_per_mtok?: number | null;
+}
+
 export interface ContextResponse {
   // ``active_db_profile`` / ``active_db_profiles`` were dropped in
   // 0.13: every defined DB profile is selectable from Run / Ask /
@@ -105,6 +140,8 @@ export interface ContextResponse {
   llm_provider: string | null;
   llm_model: string | null;
   llm_supports_batch: boolean;
+  /** Tuning values from the active LLM profile (RunNew pre-fill). */
+  llm_profile_defaults: LLMProfileDefaults | null;
   /** Local OS user + hostname surfaced so the SPA can colour code
    *  apply events as "you" vs "{teammate}" without re-deriving the
    *  identity on every render. Both are nullable when the OS query
@@ -604,6 +641,11 @@ export const api = {
     db_profile?: string;
     database?: string;
     catalog?: string;
+    /** Per-run override of the active LLM profile's tuning knobs.
+     *  Pass only the fields the user actually changed; pass `undefined`
+     *  (or omit the key) when no override is needed for that field.
+     *  The backend never writes these back to the saved profile. */
+    llm_overrides?: LLMOverrides;
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
@@ -615,6 +657,7 @@ export const api = {
         db_profile: body.db_profile,
         database: body.database,
         catalog: body.catalog,
+        llm_overrides: body.llm_overrides,
       }),
     }),
   cancelRun: (jobId: string) =>

@@ -19,7 +19,12 @@ from fastapi import APIRouter, Depends
 from amx import __version__ as AMX_VERSION
 from amx.config import AMXConfig
 from amx.web.deps import get_cfg
-from amx.web.schemas import ContextResponse, HealthResponse, VersionResponse
+from amx.web.schemas import (
+    ContextResponse,
+    HealthResponse,
+    LLMProfileDefaults,
+    VersionResponse,
+)
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -89,6 +94,27 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
     except Exception:
         current_hostname = ""
 
+    # Mirror the active LLM profile's tuning knobs so RunNew's
+    # "Advanced LLM settings" disclosure can pre-fill defaults without
+    # a second round-trip. Read-only — the user override is sent on
+    # the POST /api/runs body (`llm_overrides`) and never written back
+    # to the saved profile.
+    profile_defaults: LLMProfileDefaults | None = None
+    if llm is not None and provider:
+        profile_defaults = LLMProfileDefaults(
+            temperature=getattr(llm, "temperature", None),
+            max_tokens=getattr(llm, "max_tokens", None),
+            n_alternatives=getattr(llm, "n_alternatives", None),
+            column_batch_size=getattr(llm, "column_batch_size", None),
+            prompt_detail=getattr(llm, "prompt_detail", None),
+            description_verbosity=getattr(llm, "description_verbosity", None),
+            thinking_budget=getattr(llm, "thinking_budget", None),
+            logprob_high=getattr(llm, "logprob_high", None),
+            logprob_medium=getattr(llm, "logprob_medium", None),
+            custom_input_cost_per_mtok=getattr(llm, "custom_input_cost_per_mtok", None),
+            custom_output_cost_per_mtok=getattr(llm, "custom_output_cost_per_mtok", None),
+        )
+
     # ``active_db_profile`` and ``active_db_profiles`` are intentionally
     # omitted: the SPA picks a DB profile per-action (RunNew, Ask,
     # Browse) and there is no longer an "active" badge anywhere in the
@@ -105,6 +131,7 @@ def context(cfg: AMXConfig = Depends(get_cfg)) -> ContextResponse:
         llm_provider=provider or None,
         llm_model=getattr(llm, "model", None) or None,
         llm_supports_batch=supports_batch,
+        llm_profile_defaults=profile_defaults,
         current_user=current_user or None,
         current_hostname=current_hostname or None,
     )

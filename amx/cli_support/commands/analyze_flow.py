@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import time
 from collections.abc import Callable
@@ -9,9 +10,10 @@ from typing import Any
 
 import click
 
-from amx.config import AMXConfig
+from amx.config import AMXConfig, LLMConfig
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
+    ask,
     ask_choice,
     confirm,
     console,
@@ -34,6 +36,210 @@ ResolveCodebaseForRun = Callable[
     [AMXConfig, object, dict[str, list[str]], str | None, bool], object | None
 ]
 LogEvent = Callable[..., None]
+
+
+def _ask_optional_float(
+    prompt: str,
+    *,
+    current: float | None,
+    lo: float,
+    hi: float,
+) -> tuple[bool, float | None]:
+    """Prompt for a bounded float, returning ``(changed, value)``.
+
+    ``current`` shows up as the default in the prompt. The user can:
+    * press Enter to keep the current value (changed=False)
+    * type ``-`` (a single dash) to clear the field (changed=True, value=None)
+    * type a number in [lo, hi] (changed=True, value=number)
+
+    Out-of-range or unparseable input is treated as "keep current"
+    with a warning so a typo never silently lands a bad override.
+    """
+    raw = ask(prompt, default="" if current is None else str(current)).strip()
+    if not raw:
+        return False, current
+    if raw == "-":
+        return current is not None, None
+    try:
+        value = float(raw)
+    except ValueError:
+        warn(f"Could not parse {raw!r} as a number; keeping {current}.")
+        return False, current
+    if value < lo or value > hi:
+        warn(f"Value {value} out of range [{lo}, {hi}]; keeping {current}.")
+        return False, current
+    return value != current, value
+
+
+def _ask_optional_int(
+    prompt: str,
+    *,
+    current: int,
+    lo: int,
+    hi: int,
+) -> tuple[bool, int]:
+    """Bounded integer prompt; same conventions as ``_ask_optional_float``."""
+    raw = ask(prompt, default=str(current)).strip()
+    if not raw:
+        return False, current
+    try:
+        value = int(raw)
+    except ValueError:
+        warn(f"Could not parse {raw!r} as an integer; keeping {current}.")
+        return False, current
+    if value < lo or value > hi:
+        warn(f"Value {value} out of range [{lo}, {hi}]; keeping {current}.")
+        return False, current
+    return value != current, value
+
+
+def _ask_optional_choice(
+    prompt: str,
+    *,
+    current: str,
+    choices: list[str],
+) -> tuple[bool, str]:
+    """Pick-from-list prompt with ``current`` as the default."""
+    selected = ask_choice(prompt, choices, default=current if current in choices else choices[0])
+    return selected != current, selected
+
+
+def _maybe_apply_llm_overrides_interactively(
+    cfg: AMXConfig,
+) -> tuple[Callable[[], None], dict[str, Any]]:
+    """Optionally let the user override LLM-profile knobs for THIS run only.
+
+    Asks once whether to override; if yes, walks through every tuning
+    field with the current profile value as the default. Builds a
+    derived :class:`LLMConfig` via :func:`dataclasses.replace`,
+    swaps it onto ``cfg.llm`` for the duration of the run, and returns
+    a ``restore_fn`` that the caller MUST invoke in a ``finally`` to
+    put the original profile config back. The on-disk profile is
+    never written.
+
+    Skipped silently when stdin is not a tty (e.g. piped non-interactive
+    runs) so automation paths default to the saved profile.
+
+    Returns ``(restore_fn, applied_dict)``. When the user declines or
+    no field changes, ``applied_dict`` is empty and ``restore_fn`` is
+    a no-op.
+    """
+    no_op: Callable[[], None] = lambda: None  # noqa: E731 - inline no-op
+    if not sys.stdin.isatty():
+        return no_op, {}
+    if not confirm("Override LLM settings for this run?", default=False):
+        return no_op, {}
+
+    original_llm: LLMConfig = cfg.llm
+    overrides: dict[str, Any] = {}
+
+    info("Generation (Enter to keep current):")
+    changed, value = _ask_optional_float(
+        "  Temperature (0.0-2.0)",
+        current=original_llm.temperature,
+        lo=0.0,
+        hi=2.0,
+    )
+    if changed:
+        overrides["temperature"] = value
+    changed, ivalue = _ask_optional_int(
+        "  Max output tokens",
+        current=original_llm.max_tokens,
+        lo=256,
+        hi=262_144,
+    )
+    if changed:
+        overrides["max_tokens"] = ivalue
+    changed, ivalue = _ask_optional_int(
+        "  Alternatives (1-5)",
+        current=original_llm.n_alternatives,
+        lo=1,
+        hi=5,
+    )
+    if changed:
+        overrides["n_alternatives"] = ivalue
+    changed, ivalue = _ask_optional_int(
+        "  Column batch size",
+        current=original_llm.column_batch_size,
+        lo=1,
+        hi=200,
+    )
+    if changed:
+        overrides["column_batch_size"] = ivalue
+    changed, svalue = _ask_optional_choice(
+        "  Prompt detail",
+        current=original_llm.prompt_detail,
+        choices=["minimal", "standard", "detailed", "full"],
+    )
+    if changed:
+        overrides["prompt_detail"] = svalue
+    changed, svalue = _ask_optional_choice(
+        "  Description verbosity",
+        current=original_llm.description_verbosity,
+        choices=["brief", "detailed", "comprehensive", "exhaustive"],
+    )
+    if changed:
+        overrides["description_verbosity"] = svalue
+    changed, ivalue = _ask_optional_int(
+        "  Thinking budget (Anthropic reasoning, 0 = off)",
+        current=original_llm.thinking_budget,
+        lo=0,
+        hi=64_000,
+    )
+    if changed:
+        overrides["thinking_budget"] = ivalue
+
+    info("Confidence thresholds (token probability 0.0-1.0):")
+    changed, value = _ask_optional_float(
+        "  High threshold",
+        current=original_llm.logprob_high,
+        lo=0.0,
+        hi=1.0,
+    )
+    if changed:
+        overrides["logprob_high"] = value
+    changed, value = _ask_optional_float(
+        "  Medium threshold",
+        current=original_llm.logprob_medium,
+        lo=0.0,
+        hi=1.0,
+    )
+    if changed:
+        overrides["logprob_medium"] = value
+
+    info("Cost overrides (USD per 1M tokens, '-' to clear):")
+    changed, value = _ask_optional_float(
+        "  Custom input cost",
+        current=original_llm.custom_input_cost_per_mtok,
+        lo=0.0,
+        hi=1_000_000.0,
+    )
+    if changed:
+        overrides["custom_input_cost_per_mtok"] = value
+    changed, value = _ask_optional_float(
+        "  Custom output cost",
+        current=original_llm.custom_output_cost_per_mtok,
+        lo=0.0,
+        hi=1_000_000.0,
+    )
+    if changed:
+        overrides["custom_output_cost_per_mtok"] = value
+
+    if not overrides:
+        info("No overrides applied; using saved profile values.")
+        return no_op, {}
+
+    derived_llm = dataclasses.replace(original_llm, **overrides)
+    cfg.llm = derived_llm
+    info(
+        "Applied per-run overrides: "
+        + ", ".join(f"{k}={v}" for k, v in overrides.items())
+    )
+
+    def _restore() -> None:
+        cfg.llm = original_llm
+
+    return _restore, overrides
 
 
 def _confirm_proceed_when_others_analyzed_scope(
@@ -549,6 +755,11 @@ def execute_analyze_run(
     review_strategy: str = "individual"
     use_dedup: bool = False
     dedup_outcome: Any | None = None
+    # Per-run LLM overrides — restore the saved profile config in
+    # ``finally`` regardless of how the run exits, so subsequent CLI
+    # commands always see the on-disk values.
+    restore_llm_overrides: Callable[[], None] = lambda: None
+    applied_llm_overrides: dict[str, Any] = {}
 
     try:
         token_tracker.reset()
@@ -567,6 +778,26 @@ def execute_analyze_run(
                 "`/add-llm-profile` to add a new one."
             )
             sys.exit(1)
+
+        # Optional per-run override of the active LLM profile's tuning
+        # knobs (Studio's RunNew "Advanced LLM settings" disclosure has
+        # the same surface). Saved profile is never mutated; ``restore``
+        # is invoked from the outer ``finally`` so the in-memory cfg
+        # bounces back to the profile's stored values once the run
+        # finishes (even on cancel / failure).
+        restore_llm_overrides, applied_llm_overrides = (
+            _maybe_apply_llm_overrides_interactively(cfg)
+        )
+        if applied_llm_overrides:
+            log_event(
+                event_type="run.llm_overrides",
+                status="applied",
+                command="analyze.run",
+                details={
+                    "trigger": "cli",
+                    "overrides": applied_llm_overrides,
+                },
+            )
 
         llm = LLMProvider(cfg.llm)
 
@@ -943,6 +1174,13 @@ def execute_analyze_run(
             all_results=all_results,
             final_error_text=final_error_text,
         )
+        # Always put the saved profile back on cfg.llm. ``restore`` is
+        # a no-op when the user declined the override gate or didn't
+        # change any field, so this is cheap.
+        try:
+            restore_llm_overrides()
+        except Exception:  # pragma: no cover - best effort
+            pass
         clear_request_id()
 
 
