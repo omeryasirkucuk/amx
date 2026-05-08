@@ -411,5 +411,67 @@
 <p class="empty">No aggregate metrics or per-column overlap to display for the selected runs.</p>
 {% endif %}
 
+{# ── Quality metrics card (Tier 0/1/2 academic metrics) ────────── #}
+{% if quality_per_run %}
+<section class="card quality">
+  <div class="card-header">
+    <h2 class="card-title">Quality metrics</h2>
+    <p class="card-desc">
+      Tier {{ quality_tier }} academic text-quality analysis.
+      {% if quality_references_summary %}References: {{ quality_references_summary }}.{% endif %}
+    </p>
+  </div>
+  <table class="report">
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th class="num">Length</th>
+        <th class="num">Diversity (TTR)</th>
+        <th class="num">Schema grounding</th>
+        <th class="num">chrF</th>
+        <th class="num">ROUGE-L</th>
+        <th class="num">Embed. agree.</th>
+        <th class="num">Judge win-rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in quality_per_run %}
+      <tr>
+        <td class="runid">#{{ row.run_id }}</td>
+        <td class="num">{% if row.length_appropriateness is not none %}{{ "%.0f"|format(row.length_appropriateness * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if row.type_token_ratio is not none %}{{ "%.0f"|format(row.type_token_ratio * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if row.schema_grounding is not none %}{{ "%.0f"|format(row.schema_grounding * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if row.chrf is not none %}{{ "%.0f"|format(row.chrf * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if row.rouge_l is not none %}{{ "%.0f"|format(row.rouge_l * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">{% if row.embedding_agreement is not none %}{{ "%.0f"|format(row.embedding_agreement * 100) }}%{% else %}—{% endif %}</td>
+        <td class="num">
+          {% if row.judge_win_rate is not none %}
+            {{ "%.0f"|format(row.judge_win_rate * 100) }}% ({{ row.judge_wins }}/{{ row.judge_pairings }})
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# ── Methods / academic citations (always shown if metrics ran) ──── #}
+{% if quality_citations %}
+<section class="card methods">
+  <div class="card-header">
+    <h2 class="card-title">Methods</h2>
+    <p class="card-desc">Bibliographic references for the metrics above.</p>
+  </div>
+  <div style="padding: 8pt 16pt 12pt 16pt;">
+    <ul style="margin: 0; padding-left: 18pt; color: var(--ink-muted); font-size: calc(var(--cell-fs) - 0.5pt); line-height: 1.5;">
+      {% for cite in quality_citations %}
+      <li><strong style="color: var(--ink);">{{ cite.label }}.</strong> {{ cite.citation }}{% if cite.url %} <span class="mono" style="color: var(--ink-dim);">{{ cite.url }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+
 </body>
 </html>

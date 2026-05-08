@@ -243,6 +243,27 @@ def list_apply_events(
 
 class CompareRequest(BaseModel):
     run_ids: list[int] = Field(..., min_length=1, description="Runs to compare side-by-side.")
+    quality_tier: int = Field(
+        default=0,
+        ge=0,
+        le=2,
+        description=(
+            "0 = Tier 0 only (offline metrics: chrF, ROUGE-L, schema "
+            "grounding); 1 = + Tier 1 local embeddings; 2 = + Tier 2 "
+            "LLM-as-judge (cost). Default 0 keeps the response cheap "
+            "for the auto-fired modal load; the Studio 'Run deeper "
+            "analysis' button posts to /compare/deep-analysis with 2."
+        ),
+    )
+    ground_truth_run_id: int | None = Field(
+        default=None,
+        description=(
+            "Pin one of the resolved runs as the ground-truth baseline "
+            "for reference-based metrics (chrF / ROUGE-L / Levenshtein). "
+            "Overrides the live DB COMMENT → catalog-applied → none "
+            "waterfall."
+        ),
+    )
 
 
 @router.post("/compare")
@@ -250,13 +271,90 @@ def compare(body: CompareRequest) -> dict[str, Any]:
     """Side-by-side run comparison payload. Mirrors what the CLI's
     ``/history compare`` command produces; the web UI uses the same
     helper so both surfaces stay in sync.
+
+    ``quality_tier`` defaults to 0 (offline metrics only) so the modal
+    auto-load stays cheap. Studio's "Run deeper analysis" button posts
+    to ``/compare/deep-analysis`` with tier=2 to opt into the LLM
+    judge (paid, slower).
     """
     # Force the store to be live before the helper queries it.
     _store()
     from amx.cli_support.commands.compare import compare_runs
 
     try:
-        return compare_runs(list(body.run_ids))
+        return compare_runs(
+            list(body.run_ids),
+            quality_tier=body.quality_tier,
+            ground_truth_run_id=body.ground_truth_run_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/compare/deep-analysis")
+def compare_deep_analysis(body: CompareRequest) -> dict[str, Any]:
+    """Tier 2 quality analysis — LLM judge tournament + Tier 1 embeddings.
+
+    Triggered by the Studio Compare modal's "Run deeper analysis"
+    button. Forces ``quality_tier=2`` regardless of the request body
+    so a deep-analysis hit always runs the full G-Eval pairwise
+    pipeline (Liu et al. 2023). Otherwise identical to the standard
+    /compare endpoint — same payload shape, just enriched with the
+    judge outcomes and embedding agreement.
+    """
+    _store()
+    from amx.cli_support.commands.compare import compare_runs
+
+    # Build an optional LLMProvider for the active scope. The judge
+    # tournament needs a working chat() entry point; surface a 503
+    # with a clean install hint when no LLM is configured so the UI
+    # can render an actionable error instead of a deep traceback.
+    llm_provider = None
+    db_connector = None
+    try:
+        from amx.config import AMXConfig
+        from amx.llm.provider import LLMProvider
+
+        cfg = AMXConfig.load()
+        if cfg.llm.provider and cfg.llm.model:
+            llm_provider = LLMProvider(cfg.llm)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_412_PRECONDITION_FAILED,
+                detail={
+                    "message": (
+                        "Deep quality analysis needs an active LLM "
+                        "profile. Open Settings → LLM and pick one."
+                    ),
+                    "hint": "configure-llm",
+                },
+            )
+        try:
+            from amx.db.connector import DatabaseConnector
+
+            db_connector = DatabaseConnector(cfg.db)
+        except Exception:
+            db_connector = None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Config / import failure should not 500 — return a clean 503.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not initialise LLM provider: {exc}",
+        ) from exc
+
+    try:
+        return compare_runs(
+            list(body.run_ids),
+            quality_tier=2,
+            ground_truth_run_id=body.ground_truth_run_id,
+            db_connector=db_connector,
+            llm_provider=llm_provider,
+        )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

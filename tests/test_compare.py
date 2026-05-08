@@ -1135,6 +1135,227 @@ class CompareAskToolTests(unittest.TestCase):
         self.assertIn("column_filter", params["properties"])
 
 
+class CompareQualityTests(unittest.TestCase):
+    """Quality framework tests — Tier 0 / Tier 1 / Tier 2 metrics plus
+    the reference-resolution waterfall and the academic citation list.
+
+    These pin the contract between the CLI / Studio / Ask AMX surfaces
+    and the quality module: a future refactor that drops chrF or
+    breaks the citation registry trips a red test instead of silently
+    shipping unattributed metrics.
+    """
+
+    def test_schema_grounding_rewards_descriptions_that_cite_column_metadata(
+        self,
+    ) -> None:
+        from amx.cli_support.quality import schema_grounding_score
+
+        # Description that names the column + dtype scores high.
+        good = schema_grounding_score(
+            "Primary key for the orders table, integer.",
+            schema="sales",
+            table="orders",
+            column="id",
+            dtype="integer",
+        )
+        # Generic description (no column/table/dtype mention) scores low.
+        bad = schema_grounding_score(
+            "A primary key value used internally by the system.",
+            schema="sales",
+            table="orders",
+            column="id",
+            dtype="integer",
+        )
+        self.assertGreater(good, bad)
+        self.assertGreaterEqual(good, 0.5)
+
+    def test_chrf_and_rouge_l_drop_when_no_reference(self) -> None:
+        from amx.cli_support.quality import chrf_score, rouge_l_score
+
+        self.assertIsNone(chrf_score("anything", ""))
+        self.assertIsNone(rouge_l_score("anything", ""))
+
+    def test_chrf_and_rouge_l_correlate_with_reference_overlap(self) -> None:
+        from amx.cli_support.quality import chrf_score, rouge_l_score
+
+        ref = "Primary key uniquely identifying each order record."
+        close = "Primary key uniquely identifying each order."
+        far = "A surrogate identifier on the table."
+        # Closer paraphrase scores higher on both metrics.
+        self.assertGreater(chrf_score(close, ref), chrf_score(far, ref))
+        self.assertGreater(rouge_l_score(close, ref), rouge_l_score(far, ref))
+
+    def test_reference_waterfall_user_pin_overrides_db_and_catalog(self) -> None:
+        from unittest.mock import MagicMock
+
+        from amx.cli_support.quality import resolve_reference_for_asset
+
+        store = MagicMock()
+        # Even if the live DB has a comment, the user pin should win.
+        db = MagicMock()
+        db.get_column_comments.return_value = {"id": "DB COMMENT TEXT"}
+        store.get_run_results.return_value = [
+            {
+                "schema_name": "sales",
+                "table_name": "orders",
+                "column_name": "id",
+                "chosen_description": "PIN TEXT",
+            }
+        ]
+        store.list_apply_events.return_value = []
+        ref = resolve_reference_for_asset(
+            schema="sales",
+            table="orders",
+            column="id",
+            runs=[{"id": 7}, {"id": 8}],
+            db_connector=db,
+            history_store=store,
+            ground_truth_run_id=7,
+        )
+        self.assertEqual(ref.source, "user_pinned")
+        self.assertEqual(ref.text, "PIN TEXT")
+        self.assertEqual(ref.run_id, 7)
+
+    def test_reference_waterfall_falls_back_to_db_then_catalog_then_none(
+        self,
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from amx.cli_support.quality import resolve_reference_for_asset
+
+        # (1) Live DB comment present → wins over catalog history.
+        db = MagicMock()
+        db.get_column_comments.return_value = {"id": "DB COMMENT"}
+        store = MagicMock()
+        store.list_apply_events.return_value = [
+            {
+                "schema_name": "sales",
+                "table_name": "orders",
+                "column_name": "id",
+                "new_comment": "OLD APPLIED",
+            }
+        ]
+        ref = resolve_reference_for_asset(
+            schema="sales",
+            table="orders",
+            column="id",
+            runs=[],
+            db_connector=db,
+            history_store=store,
+        )
+        self.assertEqual(ref.source, "db_comment")
+        self.assertEqual(ref.text, "DB COMMENT")
+
+        # (2) DB silent → catalog history wins.
+        db.get_column_comments.return_value = {"id": None}
+        ref = resolve_reference_for_asset(
+            schema="sales",
+            table="orders",
+            column="id",
+            runs=[],
+            db_connector=db,
+            history_store=store,
+        )
+        self.assertEqual(ref.source, "catalog_applied")
+        self.assertEqual(ref.text, "OLD APPLIED")
+
+        # (3) Both silent → none.
+        store.list_apply_events.return_value = []
+        ref = resolve_reference_for_asset(
+            schema="sales",
+            table="orders",
+            column="id",
+            runs=[],
+            db_connector=db,
+            history_store=store,
+        )
+        self.assertEqual(ref.source, "none")
+        self.assertEqual(ref.text, "")
+
+    def test_compute_quality_metrics_emits_per_run_and_citations(self) -> None:
+        from amx.cli_support.quality import compute_quality_metrics
+
+        # Synthetic compare payload — two runs, one shared column.
+        payload = {
+            "runs": [{"id": 1}, {"id": 2}],
+            "summary_rows": [{"run_id": 1}, {"run_id": 2}],
+            "aggregates": [],
+            "per_column": [
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": "id",
+                    "run_id": 1,
+                    "description": "Primary key for the orders table.",
+                    "dtype": "integer",
+                },
+                {
+                    "schema": "sales",
+                    "table": "orders",
+                    "column": "id",
+                    "run_id": 2,
+                    "description": "Generic identifier.",
+                    "dtype": "integer",
+                },
+            ],
+            "missing": [],
+        }
+        out = compute_quality_metrics(payload, tier=0)
+        self.assertEqual(len(out["per_run"]), 2)
+        # Schema grounding is reference-free, so it must always show up.
+        for row in out["per_run"]:
+            self.assertIn("schema_grounding", row)
+        # No reference resolved → reference-based citations are still
+        # listed even with zero hits, because the user might enable
+        # them later via --ground-truth-run.
+        labels = [c["label"] for c in out["citations"]]
+        self.assertIn("Type-token ratio", labels)
+        self.assertIn("Jaccard similarity (schema grounding)", labels)
+
+    def test_academic_references_registry_covers_every_metric(self) -> None:
+        """Pin the citation registry: every metric advertised in the
+        UI / PDF must have an entry, otherwise the methods footer
+        renders without attribution."""
+        from amx.cli_support.quality import ACADEMIC_REFERENCES
+
+        for key in (
+            "chrf",
+            "rouge_l",
+            "bertscore",
+            "g_eval",
+            "prometheus",
+            "type_token_ratio",
+            "levenshtein",
+            "jaccard",
+        ):
+            self.assertIn(key, ACADEMIC_REFERENCES)
+            self.assertTrue(ACADEMIC_REFERENCES[key]["citation"])
+            self.assertTrue(ACADEMIC_REFERENCES[key]["label"])
+
+    def test_compare_runs_payload_omits_quality_when_tier_zero_and_no_pin(
+        self,
+    ) -> None:
+        """The default ``compare_runs(run_ids)`` call (tier=0, no pin)
+        must NOT compute quality metrics — the modal auto-load stays
+        cheap. Quality only kicks in when explicitly requested.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from amx.cli_support.commands.compare import compare_runs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteHistoryStore(Path(tmp) / "history.db")
+            store.init()
+            _seed_run(store)
+            _seed_run(store, llm_profile="alt")
+            with patch(
+                "amx.cli_support.commands.compare.history_store",
+                return_value=store,
+            ):
+                payload = compare_runs([1, 2])
+        self.assertNotIn("quality_metrics", payload)
+
+
 class CompareDispatchUnderHistoryNamespaceTests(unittest.TestCase):
     """User feedback 2026-05-02: ``/compare`` belongs under ``/history``,
     not ``/search`` — comparing past runs is fundamentally an audit
