@@ -11,8 +11,8 @@ from amx.utils.optional_deps import ensure as _ensure
 # langchain ecosystem + unstructured's parser fleet). It only loads
 # on first ``/docs ingest`` / ``/run`` with docs / RAG-backed answer
 # — not on every CLI launch — so the install cost is amortised across
-# the whole tool's lifetime, paid once, by the user who actually uses
-# the feature.
+# the whole tool's lifetime, incurred once, by the user who actually
+# uses the feature.
 _ensure(
     [
         "chromadb",

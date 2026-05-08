@@ -97,7 +97,7 @@ class DatabricksAdapter(DatabaseAdapter):
         # issues a `SELECT 1` on every connection checkout from the pool —
         # cheap on a self-hosted PostgreSQL but on a Databricks SQL warehouse
         # each one keeps the warehouse warm and bills DBUs. A `/run` that
-        # checks out 200 connections paid for 200 extra `SELECT 1`s on top
+        # checks out 200 connections used to add 200 extra `SELECT 1`s on top
         # of the actual introspection workload. Use pool_recycle instead so
         # SQLAlchemy refreshes connections idle longer than the warehouse's
         # auto-stop window without issuing any keepalive query; if a stale

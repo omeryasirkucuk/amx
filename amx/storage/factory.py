@@ -296,7 +296,7 @@ class _LazyDualWriteStore:
         Reading this property triggers the lazy build because every
         existing ``hasattr(hs, "shared")`` consumer is gating a real
         write/read against the team backend; that work was always
-        going to be the moment we paid the bootstrap cost anyway.
+        going to be the moment we absorb the bootstrap cost anyway.
         """
         target = self._ensure_built()
         return getattr(target, "shared", None)

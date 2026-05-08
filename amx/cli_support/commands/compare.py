@@ -870,7 +870,8 @@ def compare_runs(
     ``quality_tier``:
       * ``0`` — Tier 0 only (offline, deterministic, free).
       * ``1`` — Tier 0 + Tier 1 (local sentence embeddings).
-      * ``2`` — Tier 0 + Tier 1 + Tier 2 (LLM judge — paid; needs
+      * ``2`` — Tier 0 + Tier 1 + Tier 2 (LLM judge — opt-in,
+        consumes tokens on the active LLM provider; needs
         ``llm_provider``).
 
     ``ground_truth_run_id`` lets the user pin a specific run as the
