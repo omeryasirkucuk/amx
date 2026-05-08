@@ -1702,7 +1702,6 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
     # Per-run aggregate table.
     table = Table(box=box.SIMPLE_HEAVY, show_lines=False, expand=False)
     table.add_column("Run", style="bold")
-    table.add_column("Length", justify="right")
     table.add_column("Diversity", justify="right")
     table.add_column("Schema grounding", justify="right")
     has_chrf = any(r.get("chrf") is not None for r in per_run)
@@ -1727,7 +1726,6 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
     for row in per_run:
         cells = [
             f"#{row['run_id']}",
-            _fmt_quality_cell(row.get("length_appropriateness")),
             _fmt_quality_cell(row.get("type_token_ratio")),
             _fmt_quality_cell(row.get("schema_grounding")),
         ]

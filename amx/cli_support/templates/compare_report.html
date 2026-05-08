@@ -425,7 +425,6 @@
     <thead>
       <tr>
         <th>Run</th>
-        <th class="num">Length</th>
         <th class="num">Diversity (TTR)</th>
         <th class="num">Schema grounding</th>
         <th class="num">chrF</th>
@@ -439,7 +438,6 @@
       {% for row in quality_per_run %}
       <tr>
         <td class="runid">#{{ row.run_id }}</td>
-        <td class="num">{% if row.length_appropriateness is not none %}{{ "%.0f"|format(row.length_appropriateness * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">{% if row.type_token_ratio is not none %}{{ "%.0f"|format(row.type_token_ratio * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">{% if row.schema_grounding is not none %}{{ "%.0f"|format(row.schema_grounding * 100) }}%{% else %}—{% endif %}</td>
         <td class="num">{% if row.chrf is not none %}{{ "%.0f"|format(row.chrf * 100) }}%{% else %}—{% endif %}</td>

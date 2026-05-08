@@ -5,9 +5,9 @@ framework that surfaces actual *correctness/quality* of the LLM-
 generated descriptions. Three tiers, opt-in by cost:
 
 * **Tier 0** — offline, deterministic, free.
-  Length appropriateness, type-token ratio (Templin 1957), schema
-  grounding (Jaccard 1912 token containment), chrF (Popović 2015),
-  ROUGE-L (Lin 2004), Levenshtein edit distance (Levenshtein 1966).
+  Type-token ratio (Templin 1957), schema grounding (Jaccard 1912
+  token containment), chrF (Popović 2015), ROUGE-L (Lin 2004),
+  Levenshtein edit distance (Levenshtein 1966).
 
 * **Tier 1** — local sentence embeddings (free, opt-in).
   Pairwise cosine agreement matrix and semantic schema grounding
@@ -146,26 +146,6 @@ def _char_count(text: str) -> int:
 
 def _word_count(text: str) -> int:
     return len(_tokenize(text))
-
-
-def length_appropriateness(text: str, *, target_min: int = 8, target_max: int = 60) -> float:
-    """Soft-bell score in [0, 1] for description length.
-
-    Schema descriptions in the wild cluster around 8–60 words; far
-    shorter is too terse, far longer is filler. Below ``target_min`` we
-    decay linearly to 0 at zero words; inside the band we return 1.0;
-    above ``target_max`` we decay toward 0 at twice the upper bound.
-    """
-    n = _word_count(text)
-    if n <= 0:
-        return 0.0
-    if n < target_min:
-        return n / float(target_min)
-    if n <= target_max:
-        return 1.0
-    overshoot = n - target_max
-    headroom = target_max  # decay over another full window
-    return max(0.0, 1.0 - (overshoot / float(headroom)))
 
 
 def type_token_ratio(text: str) -> float:
@@ -982,7 +962,6 @@ def compute_quality_metrics(
                 "table": table,
                 "column": column,
                 "run_id": rid,
-                "length_appropriateness": length_appropriateness(desc),
                 "type_token_ratio": type_token_ratio(desc),
                 "schema_grounding": schema_grounding_score(
                     desc,
@@ -1045,7 +1024,6 @@ def compute_quality_metrics(
     per_run: dict[int, dict[str, Any]] = {
         rid: {
             "run_id": rid,
-            "length_appropriateness": [],
             "type_token_ratio": [],
             "schema_grounding": [],
             "chrf": [],
@@ -1065,7 +1043,6 @@ def compute_quality_metrics(
         if target is None:
             continue
         for metric in (
-            "length_appropriateness",
             "type_token_ratio",
             "schema_grounding",
             "chrf",
@@ -1101,7 +1078,6 @@ def compute_quality_metrics(
         agg = per_run[rid]
         out = {
             "run_id": rid,
-            "length_appropriateness": _mean(agg["length_appropriateness"]),
             "type_token_ratio": _mean(agg["type_token_ratio"]),
             "schema_grounding": _mean(agg["schema_grounding"]),
             "chrf": _mean(agg["chrf"]),
@@ -1204,7 +1180,6 @@ __all__ = [
     "compute_quality_metrics",
     "embedding_agreement_for_asset",
     "judge_pairwise",
-    "length_appropriateness",
     "levenshtein_distance",
     "resolve_reference_for_asset",
     "rouge_l_score",
