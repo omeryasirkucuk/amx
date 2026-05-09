@@ -146,12 +146,8 @@ def test_merge_prompt_reminds_length_rule_applies_to_alternatives() -> None:
         assert "DESCRIPTION_2: <alternative>" not in formatted, (
             f"bare <alternative> placeholder leaked at preset={preset}"
         )
-        assert (
-            "DESCRIPTION_2: <alternative description — apply the SAME length rule" in formatted
-        )
-        assert (
-            "DESCRIPTION_3: <alternative description — apply the SAME length rule" in formatted
-        )
+        assert "DESCRIPTION_2: <alternative description — apply the SAME length rule" in formatted
+        assert "DESCRIPTION_3: <alternative description — apply the SAME length rule" in formatted
 
     # Same contract on the fill-up retry path so a column that came
     # back short does not get refilled with one-sentence briefs.

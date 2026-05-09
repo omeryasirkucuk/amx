@@ -106,7 +106,10 @@ def test_profile_agent_prompt_alternatives_carry_length_rule() -> None:
         assert "DESCRIPTION_2: <alternative description — apply the SAME length rule" in prompt
         assert "DESCRIPTION_3: <alternative description — apply the SAME length rule" in prompt
         # Same shape for the table-level alternatives block.
-        assert "TABLE_DESCRIPTION_2: <alternative table description — apply the SAME length rule" in prompt
+        assert (
+            "TABLE_DESCRIPTION_2: <alternative table description — apply the SAME length rule"
+            in prompt
+        )
 
 
 def test_profile_agent_prompt_n_alternatives_one_omits_reminder() -> None:
