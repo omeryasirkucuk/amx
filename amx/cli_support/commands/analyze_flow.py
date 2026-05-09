@@ -231,10 +231,7 @@ def _maybe_apply_llm_overrides_interactively(
 
     derived_llm = dataclasses.replace(original_llm, **overrides)
     cfg.llm = derived_llm
-    info(
-        "Applied per-run overrides: "
-        + ", ".join(f"{k}={v}" for k, v in overrides.items())
-    )
+    info("Applied per-run overrides: " + ", ".join(f"{k}={v}" for k, v in overrides.items()))
 
     def _restore() -> None:
         cfg.llm = original_llm
@@ -755,10 +752,13 @@ def execute_analyze_run(
     review_strategy: str = "individual"
     use_dedup: bool = False
     dedup_outcome: Any | None = None
+
     # Per-run LLM overrides — restore the saved profile config in
     # ``finally`` regardless of how the run exits, so subsequent CLI
     # commands always see the on-disk values.
-    restore_llm_overrides: Callable[[], None] = lambda: None
+    def restore_llm_overrides() -> None:
+        return None
+
     applied_llm_overrides: dict[str, Any] = {}
 
     try:
@@ -785,9 +785,7 @@ def execute_analyze_run(
         # is invoked from the outer ``finally`` so the in-memory cfg
         # bounces back to the profile's stored values once the run
         # finishes (even on cancel / failure).
-        restore_llm_overrides, applied_llm_overrides = (
-            _maybe_apply_llm_overrides_interactively(cfg)
-        )
+        restore_llm_overrides, applied_llm_overrides = _maybe_apply_llm_overrides_interactively(cfg)
         if applied_llm_overrides:
             log_event(
                 event_type="run.llm_overrides",

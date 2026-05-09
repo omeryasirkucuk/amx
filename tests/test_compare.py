@@ -747,9 +747,7 @@ class ComparePdfRenderingTests(unittest.TestCase):
             aggregates.append(
                 {"metric": "avg_logprob_score", "run_id": rid, "value": -0.5 - i * 0.1}
             )
-            aggregates.append(
-                {"metric": "pct_medium_confidence", "run_id": rid, "value": 33.3}
-            )
+            aggregates.append({"metric": "pct_medium_confidence", "run_id": rid, "value": 33.3})
             aggregates.append({"metric": "saved_results", "run_id": rid, "value": 7})
         per_column: list[dict] = []
         for i, rid in enumerate(run_ids):
@@ -800,9 +798,7 @@ class ComparePdfRenderingTests(unittest.TestCase):
         from amx.cli_support.commands.compare import _build_pdf_context
 
         ctx = _build_pdf_context(self._payload([10, 20, 30]))
-        logprob_row = next(
-            r for r in ctx["aggregate_rows"] if r["metric"] == "avg_logprob_score"
-        )
+        logprob_row = next(r for r in ctx["aggregate_rows"] if r["metric"] == "avg_logprob_score")
         winners = {rid for rid, cell in logprob_row["cells"].items() if cell["is_winner"]}
         # Run 10's logprob is -0.5 (closest to 0 = best).
         self.assertEqual(winners, {10})
@@ -1020,9 +1016,7 @@ class CompareAskToolTests(unittest.TestCase):
             store = SQLiteHistoryStore(Path(tmp) / "history.db")
             store.init()
             toolbox = self._build_toolbox()
-            with patch(
-                "amx.cli_support.commands.compare.history_store", return_value=store
-            ):
+            with patch("amx.cli_support.commands.compare.history_store", return_value=store):
                 empty = toolbox._tool_compare_runs(run_ids=[])
                 single = toolbox._tool_compare_runs(run_ids=[42])
         self.assertIn("error", empty)
@@ -1043,9 +1037,7 @@ class CompareAskToolTests(unittest.TestCase):
             store.init()
             rid_a, rid_b = self._seed_two_overlapping_runs(store)
             toolbox = self._build_toolbox()
-            with patch(
-                "amx.cli_support.commands.compare.history_store", return_value=store
-            ):
+            with patch("amx.cli_support.commands.compare.history_store", return_value=store):
                 payload = toolbox._tool_compare_runs(run_ids=[rid_a, rid_b])
 
         self.assertNotIn("per_column", payload)
@@ -1065,9 +1057,7 @@ class CompareAskToolTests(unittest.TestCase):
             store.init()
             rid_a, rid_b = self._seed_two_overlapping_runs(store)
             toolbox = self._build_toolbox()
-            with patch(
-                "amx.cli_support.commands.compare.history_store", return_value=store
-            ):
+            with patch("amx.cli_support.commands.compare.history_store", return_value=store):
                 payload = toolbox._tool_compare_runs(
                     run_ids=[rid_a, rid_b],
                     include_per_column=True,
@@ -1089,9 +1079,7 @@ class CompareAskToolTests(unittest.TestCase):
             store.init()
             rid_a, rid_b = self._seed_two_overlapping_runs(store)
             toolbox = self._build_toolbox()
-            with patch(
-                "amx.cli_support.commands.compare.history_store", return_value=store
-            ):
+            with patch("amx.cli_support.commands.compare.history_store", return_value=store):
                 payload = toolbox._tool_compare_runs(
                     run_ids=[rid_a, rid_b],
                     column_filter="id",
@@ -1108,9 +1096,7 @@ class CompareAskToolTests(unittest.TestCase):
             store = SQLiteHistoryStore(Path(tmp) / "history.db")
             store.init()
             toolbox = self._build_toolbox()
-            with patch(
-                "amx.cli_support.commands.compare.history_store", return_value=store
-            ):
+            with patch("amx.cli_support.commands.compare.history_store", return_value=store):
                 payload = toolbox._tool_compare_runs(
                     run_ids=["not-a-number", "also-bad"],  # type: ignore[list-item]
                 )
@@ -1121,11 +1107,7 @@ class CompareAskToolTests(unittest.TestCase):
         from amx.search.agent_tools import ToolBox
 
         entry = next(
-            (
-                s
-                for s in ToolBox.schemas()
-                if s.get("function", {}).get("name") == "compare_runs"
-            ),
+            (s for s in ToolBox.schemas() if s.get("function", {}).get("name") == "compare_runs"),
             None,
         )
         self.assertIsNotNone(entry, "compare_runs must appear in ToolBox.schemas()")
@@ -1406,7 +1388,7 @@ class CompareQualityTests(unittest.TestCase):
         must NOT compute quality metrics — the modal auto-load stays
         cheap. Quality only kicks in when explicitly requested.
         """
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from amx.cli_support.commands.compare import compare_runs
 

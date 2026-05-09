@@ -228,9 +228,14 @@ def _run_rerun_agents(
     if code_report is not None:
         jobs.append(("code", CodeAgent(llm, code_report)))
 
+    from amx.utils.live_display import run_in_thread
+
     out: list[MetadataSuggestion] = []
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        fut_to_label = {pool.submit(agent.run, ctx): label for label, agent in jobs}
+        # ``run_in_thread`` snapshots the parent's ``contextvars`` so
+        # subscriber bus / correlation IDs reach the sub-agent worker
+        # threads — same propagation as the analyze fan-out.
+        fut_to_label = {run_in_thread(pool, agent.run, ctx): label for label, agent in jobs}
         for fut in as_completed(fut_to_label):
             label = fut_to_label[fut]
             try:

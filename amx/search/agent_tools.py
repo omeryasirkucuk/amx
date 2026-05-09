@@ -5119,10 +5119,7 @@ class ToolBox:
             return {"error": f"Invalid run_ids: {exc}"}
         if len(normalized_ids) < 2:
             return {
-                "error": (
-                    "compare_runs needs at least 2 run IDs to make a "
-                    "comparison meaningful."
-                )
+                "error": ("compare_runs needs at least 2 run IDs to make a comparison meaningful.")
             }
 
         # Clamp tier so a malformed LLM call (tier=99) doesn't pull
@@ -5173,9 +5170,7 @@ class ToolBox:
         per_column = list(payload.get("per_column") or [])
         if column_filter:
             needle = column_filter.strip()
-            filtered = [
-                r for r in per_column if str(r.get("column") or "").strip() == needle
-            ]
+            filtered = [r for r in per_column if str(r.get("column") or "").strip() == needle]
         else:
             filtered = per_column
 

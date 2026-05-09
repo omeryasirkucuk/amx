@@ -235,8 +235,22 @@ function LiveRunStream({ jobId }: { jobId: string }) {
     return () => clearInterval(id);
   }, [closed]);
 
+  // Each render of this effect must process only the events that
+  // arrived since the previous render — iterating ``events`` from the
+  // start re-applies every state-mutating dispatch, so a single
+  // ``step.complete`` showed up three times in "RECENT STEPS" and the
+  // ``activity.added`` branch (no idempotence check) duplicated rows.
+  // ``processedRef`` tracks the high-water mark; resets to zero when
+  // the SSE hook clears ``events`` on a reconnect.
+  const liveProcessedRef = useRef(0);
   useEffect(() => {
-    for (const event of events) {
+    if (events.length < liveProcessedRef.current) {
+      liveProcessedRef.current = 0;
+    }
+    const start = liveProcessedRef.current;
+    liveProcessedRef.current = events.length;
+    for (let i = start; i < events.length; i++) {
+      const event = events[i];
       const t = String(event.type || "");
       if (t === "run.created" && typeof event.run_id === "number") {
         setResolvedRunId(event.run_id);
@@ -832,8 +846,20 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
     return () => clearInterval(id);
   }, [closed]);
 
+  // Same fix as ``LiveRunStream`` above: only iterate the *new* tail of
+  // ``events`` so each ``step.complete`` is appended to ``recentSteps``
+  // exactly once. Without this, every fresh SSE event re-ran the
+  // dispatch over the whole array, so a single completion showed up
+  // three times in the rolling history with the same ``+0s`` offset.
+  const persistedProcessedRef = useRef(0);
   useEffect(() => {
-    for (const event of events) {
+    if (events.length < persistedProcessedRef.current) {
+      persistedProcessedRef.current = 0;
+    }
+    const start = persistedProcessedRef.current;
+    persistedProcessedRef.current = events.length;
+    for (let i = start; i < events.length; i++) {
+      const event = events[i];
       const t = String(event.type || "");
       if (t === "activity.added") {
         setActivities((curr) => {

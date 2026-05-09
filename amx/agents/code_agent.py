@@ -12,6 +12,7 @@ from amx.agents.base import (
     apply_logprob_confidence,
 )
 from amx.codebase.analyzer import CodebaseReport, CodeReference
+from amx.llm.prompts import length_rule, per_col_token_budget
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
@@ -32,7 +33,7 @@ Based on how the code uses these assets, infer a description for EACH column.
 Output rules:
 - Write every description and reasoning string in **clear, business-friendly American English**.
 - Use complete sentences ending with a period.
-- Be concise — aim for ≤ 25 words per description.
+- Length rule (CRITICAL — honour the user's verbosity preset): {description_length_rule}
 - Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`) verbatim.
 
 Write descriptions assertively and directly (e.g. "Telephone extension number.").
@@ -63,12 +64,18 @@ REASONING: The code joins, filters, and groups records by this field across rela
 """
 
 
-def _build_system_prompt(n_alternatives: int) -> str:
+def _build_system_prompt(n_alternatives: int, description_verbosity: str = "brief") -> str:
     n = max(1, min(5, n_alternatives))
     desc_lines = (
         "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
     )
-    return _BASE_SYSTEM_PROMPT.format(desc_lines=desc_lines).strip() + "\n"
+    return (
+        _BASE_SYSTEM_PROMPT.format(
+            desc_lines=desc_lines,
+            description_length_rule=length_rule(description_verbosity),
+        ).strip()
+        + "\n"
+    )
 
 
 class CodeAgent(BaseAgent):
@@ -81,6 +88,13 @@ class CodeAgent(BaseAgent):
     @property
     def _n_alternatives(self) -> int:
         return max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
+
+    @property
+    def _description_verbosity(self) -> str:
+        return getattr(self.llm.cfg, "description_verbosity", "brief")
+
+    def _per_col_token_budget(self) -> int:
+        return per_col_token_budget(self._description_verbosity)
 
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
         """Build the Code Agent prompt messages. Returns ``None`` when no code context exists."""
@@ -153,11 +167,14 @@ class CodeAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Code references:\n\n" + "\n\n".join(all_code_blocks) + _user_instructions_block(ctx)
         )
-        system = _build_system_prompt(self._n_alternatives)
+        system = _build_system_prompt(self._n_alternatives, self._description_verbosity)
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
+
+    def _scaled_max_tokens(self, n_columns: int) -> int:
+        return max(self.llm.cfg.max_tokens, n_columns * self._per_col_token_budget())
 
     def collect_messages(self, ctx: AgentContext) -> list:
         """Return a ``BatchRequest`` for this table (or empty list when no code context)."""
@@ -166,11 +183,12 @@ class CodeAgent(BaseAgent):
         msgs = self._build_messages(ctx)
         if msgs is None:
             return []
+        n_columns = len(ctx.db_profile.get("columns", []) or [])
         return [
             BatchRequest(
                 custom_id=f"code:{ctx.schema}:{ctx.table}",
                 messages=msgs,
-                max_tokens=self.llm.cfg.max_tokens,
+                max_tokens=self._scaled_max_tokens(n_columns),
                 temperature=self.llm.cfg.temperature,
                 metadata={"schema": ctx.schema, "table": ctx.table},
             )
@@ -188,8 +206,9 @@ class CodeAgent(BaseAgent):
 
         columns = ctx.db_profile.get("columns", [])
         est = estimate_tokens(messages)
+        mt = self._scaled_max_tokens(len(columns))
         with step_spinner(f"Code Agent: {len(columns)} columns", token_estimate=est):
-            result = self.llm.chat(messages)
+            result = self.llm.chat(messages, max_tokens=mt)
         tracker.record_for("code_agent", est, self.llm, result.usage)
 
         suggestions = self._parse_response(result.content, ctx)
