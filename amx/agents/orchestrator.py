@@ -40,10 +40,20 @@ log = get_logger("agents.orchestrator")
 
 MERGE_PROMPT = """\
 You are merging metadata suggestions from multiple sources for database columns.
-Produce one best description per column using evidence discipline, not averaging.
+Produce up to {n_alternatives} ranked descriptions per column using evidence discipline, not averaging.
 
 Length rule (CRITICAL — honour the user's verbosity preset):
 {description_length_rule}
+
+Alternative descriptions:
+- DESCRIPTION_1 is the single best, most defensible description.
+- DESCRIPTION_2 .. DESCRIPTION_{n_alternatives} are distinct alternative
+  framings ranked by likelihood.
+- An "alternative" must offer a meaningfully different interpretation
+  (different business role, different unit, different scope) — not just
+  a rephrasing of DESCRIPTION_1.
+- If the evidence does not support a distinct alternative for a slot,
+  write a single em-dash "—" on that line. Do NOT pad with paraphrases.
 
 Output rules:
 - Write every description and reasoning string in **clear, business-friendly American English**.
@@ -51,7 +61,7 @@ Output rules:
 - No hedging language ("might", "possibly", "could be") unless the evidence really is ambiguous —
   in which case lower CONFIDENCE rather than soften the description.
 - Never start a description with the column name or "This column" — describe the *meaning*, not the row.
-- Keep the response labels (`COLUMN`, `BEST_DESCRIPTION`, `CONFIDENCE`, `REASONING`) verbatim.
+- Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`) verbatim.
 
 Source precedence:
 - Prefer descriptions supported by explicit code behavior or strong database/profile evidence.
@@ -71,9 +81,42 @@ Reasoning must mention which source types won and why.
 Respond in this exact format for EACH column (one block per column):
 
 COLUMN: <column_name>
-BEST_DESCRIPTION: <merged description>
+DESCRIPTION_1: <best merged description>
+{description_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why>
+"""
+
+MERGE_FILLUP_PROMPT = """\
+You previously produced merged descriptions for these columns, but some
+columns still need additional distinct alternative descriptions to reach
+the user's requested count of {n_alternatives}.
+
+Length rule (CRITICAL — honour the user's verbosity preset):
+{description_length_rule}
+
+For EACH column below:
+- Existing descriptions are listed under "Existing".
+- Produce additional ranked alternative descriptions labelled
+  DESCRIPTION_2 .. DESCRIPTION_{n_alternatives}, filling only the slots
+  that are missing from the existing list.
+- Each new alternative MUST offer a meaningfully different interpretation
+  from the existing ones — different business role, scope, or unit.
+- If the evidence truly does not support another distinct alternative for
+  a slot, write a single em-dash "—" on that line. Do NOT pad with
+  rephrasings of an existing description.
+
+Output rules:
+- Write every description in **clear, business-friendly American English**.
+- Use complete sentences. End every description with a period.
+- Keep the response labels (`COLUMN`, `DESCRIPTION_<i>`) verbatim.
+
+{columns_text}
+
+Respond in this exact format for EACH column (one block per column):
+
+COLUMN: <column_name>
+{fillup_response_lines}
 """
 
 SCHEMA_META_PROMPT = """\
@@ -1061,11 +1104,18 @@ class Orchestrator:
                 warn(f"{label.upper()} agent failed: {exc}")
                 return [], statuses
 
+        from amx.utils.live_display import run_in_thread
+
         out: list[MetadataSuggestion] = []
         cancel_observed = False
         pool = ThreadPoolExecutor(max_workers=len(jobs))
         try:
-            fut_to_label = {pool.submit(agent.run, ctx): label for label, agent in jobs}
+            # Use ``run_in_thread`` so each sub-agent's
+            # ``step_spinner`` emits reach the subscriber bus the
+            # web worker installed on the parent thread.
+            fut_to_label = {
+                run_in_thread(pool, agent.run, ctx): label for label, agent in jobs
+            }
             for fut in as_completed(fut_to_label):
                 label = fut_to_label[fut]
                 try:
@@ -1230,6 +1280,12 @@ class Orchestrator:
         # sentence. Without this the per-agent agents already write
         # the long form, but this LLM call summarises it back down.
         verbosity = getattr(self.llm.cfg, "description_verbosity", "brief")
+        cap = max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
+        description_lines = (
+            "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, cap + 1))
+            if cap > 1
+            else ""
+        )
         messages = [
             {"role": "system", "content": MERGE_SYSTEM_PROMPT},
             {
@@ -1237,6 +1293,8 @@ class Orchestrator:
                 "content": MERGE_PROMPT.format(
                     columns_text=columns_text,
                     description_length_rule=length_rule(verbosity),
+                    n_alternatives=cap,
+                    description_lines=description_lines,
                 ),
             },
         ]
@@ -1245,12 +1303,14 @@ class Orchestrator:
         # does: ~1600 tokens per column at the exhaustive preset, less
         # for shorter presets. Without this the merge call inherits
         # cfg.max_tokens (16k by default) and truncates mid-column on a
-        # multi-column comprehensive/exhaustive batch.
+        # multi-column comprehensive/exhaustive batch. Multiply by
+        # ``cap`` because we are now asking for up to N alternative
+        # descriptions per column instead of a single best.
         from amx.llm.prompts import per_col_token_budget
 
         merge_max_tokens = max(
             self.llm.cfg.max_tokens,
-            len(needs_merge) * per_col_token_budget(verbosity),
+            len(needs_merge) * per_col_token_budget(verbosity) * cap,
         )
         with step_spinner(f"Merging suggestions: {len(needs_merge)} columns", token_estimate=est):
             result = self.llm.chat(messages, max_tokens=merge_max_tokens)
@@ -1259,26 +1319,55 @@ class Orchestrator:
         parsed = self._parse_merge_response(result.content)
 
         merge_results: list[MetadataSuggestion] = []
+        per_column_state: dict[str | None, tuple[str, list[str]]] = {}
+        underfilled: dict[str | None, list[str]] = {}
         for col_name, col_suggestions in needs_merge.items():
             key = col_name or "(table-level)"
-            best, conf, reasoning = parsed.get(key, ("", Confidence.MEDIUM, ""))
+            merge_alts, conf, reasoning = parsed.get(key, ([], Confidence.MEDIUM, ""))
 
-            all_descs = [best] if best else []
+            all_descs: list[str] = []
+            for d in merge_alts:
+                if d and d not in all_descs:
+                    all_descs.append(d)
             for s in col_suggestions:
                 for d in s.suggestions:
-                    if d not in all_descs:
+                    if d and d not in all_descs:
                         all_descs.append(d)
+
+            per_column_state[col_name] = (key, all_descs)
+            if len(all_descs) < cap:
+                underfilled[col_name] = all_descs
 
             merge_results.append(
                 MetadataSuggestion(
                     schema=ctx.schema,
                     table=ctx.table,
                     column=col_name,
-                    suggestions=all_descs[:5],
+                    suggestions=all_descs[:cap],
                     confidence=conf,
                     reasoning=reasoning,
                     source="combined",
                 )
+            )
+
+        # ── Fill-up retry ────────────────────────────────────────────────
+        # Some columns came back with fewer than ``cap`` distinct
+        # alternatives — either the merge LLM emitted "—" abstain
+        # markers, or sub-agent suggestions de-duplicated against the
+        # merge "best". Make a single follow-up call asking only for
+        # the still-missing slots so the user-facing alt count is
+        # honoured. We cap the retry at one pass: if the LLM still
+        # cannot ground a distinct alternative after seeing the
+        # existing list, it has been asked twice and we accept the
+        # shorter answer.
+        if underfilled and cap > 1:
+            self._merge_fill_up(
+                ctx=ctx,
+                merge_results=merge_results,
+                per_column_state=per_column_state,
+                underfilled=underfilled,
+                verbosity=verbosity,
+                cap=cap,
             )
 
         merged.extend(
@@ -1291,6 +1380,98 @@ class Orchestrator:
             )
         )
         return merged
+
+    def _merge_fill_up(
+        self,
+        *,
+        ctx: AgentContext,
+        merge_results: list[MetadataSuggestion],
+        per_column_state: dict[str | None, tuple[str, list[str]]],
+        underfilled: dict[str | None, list[str]],
+        verbosity: str,
+        cap: int,
+    ) -> None:
+        """Make one follow-up LLM call to top up under-filled columns.
+
+        Mutates ``merge_results`` in place: each entry whose column
+        appears in ``underfilled`` has its ``suggestions`` list
+        extended with newly-grounded alternatives (deduped) up to
+        ``cap``. Logs ``agent.merge.fill_short`` for any column that
+        is still short after the retry — those are model-quality
+        signals worth surfacing to operators, not failures.
+        """
+        from amx.llm.prompts import per_col_token_budget
+
+        # Build a per-column block listing existing descriptions and
+        # the slot indices still to fill.
+        blocks: list[str] = []
+        for col_name, existing in underfilled.items():
+            label = col_name or "(table-level)"
+            existing_text = (
+                "\n".join(f"  - {d}" for d in existing) if existing else "  (none yet)"
+            )
+            missing_slots = ", ".join(
+                f"DESCRIPTION_{i}" for i in range(len(existing) + 1, cap + 1)
+            )
+            blocks.append(
+                f"### {label}\nExisting:\n{existing_text}\nStill to fill: {missing_slots}"
+            )
+
+        columns_text = "\n\n".join(blocks)
+        fillup_response_lines = "\n".join(
+            f"DESCRIPTION_{i}: <alternative or — if none is supported>"
+            for i in range(2, cap + 1)
+        )
+
+        messages = [
+            {"role": "system", "content": MERGE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": MERGE_FILLUP_PROMPT.format(
+                    n_alternatives=cap,
+                    description_length_rule=length_rule(verbosity),
+                    columns_text=columns_text,
+                    fillup_response_lines=fillup_response_lines,
+                ),
+            },
+        ]
+        est = estimate_tokens(messages)
+        fillup_max_tokens = max(
+            self.llm.cfg.max_tokens,
+            len(underfilled) * per_col_token_budget(verbosity) * cap,
+        )
+        with step_spinner(
+            f"Filling alternatives: {len(underfilled)} columns",
+            token_estimate=est,
+        ):
+            result = self.llm.chat(messages, max_tokens=fillup_max_tokens)
+        tracker.record_for("merge_fillup", est, self.llm, result.usage)
+
+        fill_parsed = self._parse_merge_response(result.content)
+
+        # Index merge_results by column so we can patch suggestions in place.
+        by_column: dict[str | None, MetadataSuggestion] = {
+            ms.column: ms for ms in merge_results
+        }
+        for col_name, existing in underfilled.items():
+            key, _ = per_column_state[col_name]
+            new_alts, _new_conf, _new_reasoning = fill_parsed.get(
+                key, ([], Confidence.MEDIUM, "")
+            )
+            combined = list(existing)
+            for d in new_alts:
+                if d and d not in combined:
+                    combined.append(d)
+            target = by_column.get(col_name)
+            if target is not None:
+                target.suggestions = combined[:cap]
+            if len(combined) < cap:
+                log.info(
+                    "agent.merge.fill_short column=%s have=%d want=%d",
+                    key,
+                    len(combined),
+                    cap,
+                )
 
     # ── Persistence helpers ───────────────────────────────────────────────────
 
@@ -1400,61 +1581,104 @@ class Orchestrator:
     @staticmethod
     def _parse_merge_response(
         text: str,
-    ) -> dict[str, tuple[str, Confidence, str]]:
-        """Parse batched merge response into {column: (description, confidence, reasoning)}.
+    ) -> dict[str, tuple[list[str], Confidence, str]]:
+        """Parse batched merge response into ``{column: (descriptions, confidence, reasoning)}``.
 
-        ``BEST_DESCRIPTION`` and ``REASONING`` may span multiple lines
-        when the user picks a verbose preset (``comprehensive`` /
-        ``exhaustive``) so we accumulate continuation lines into the
-        most recent multi-line field until another known label
-        appears. The pre-2026-05 single-line parser silently truncated
-        multi-paragraph answers to the first sentence.
+        Each ``DESCRIPTION_<i>`` slot may span multiple lines when the
+        user picks a verbose preset (``comprehensive`` / ``exhaustive``);
+        continuation lines accumulate into the most recently opened
+        slot until another known label appears. ``REASONING`` is
+        likewise multi-line capable. A standalone ``—`` (em-dash) on
+        a description line is treated as "abstained — no distinct
+        alternative supported by the evidence" and dropped from the
+        returned list, so callers see only descriptions actually
+        backed by source proposals.
+
+        ``BEST_DESCRIPTION:`` is accepted as a legacy synonym for
+        ``DESCRIPTION_1:`` so older fixtures still parse.
         """
         text = _strip_code_fences(text)
-        results: dict[str, tuple[str, Confidence, str]] = {}
+        results: dict[str, tuple[list[str], Confidence, str]] = {}
         current_col = ""
-        best_lines: list[str] = []
+        # Map of slot index -> list of lines (preserves rank order via sorted keys at flush).
+        desc_slots: dict[int, list[str]] = {}
         reasoning_lines: list[str] = []
         conf = Confidence.MEDIUM
-        active: str | None = None  # "best" | "reasoning" | None
+        # ``active_slot`` is the description slot currently absorbing
+        # continuation lines; ``active_field`` flags whether we're in
+        # a description slot or in REASONING.
+        active_slot: int | None = None
+        active_field: str | None = None  # "description" | "reasoning" | None
+
+        ABSTAIN_MARKERS = {"—", "-", "n/a", "none", ""}
 
         def _flush() -> None:
-            if current_col and best_lines:
-                description = "\n".join(line.rstrip() for line in best_lines).strip()
-                reasoning_text = "\n".join(
-                    line.rstrip() for line in reasoning_lines
-                ).strip()
-                results[current_col] = (description, conf, reasoning_text)
+            if not current_col:
+                return
+            ordered: list[str] = []
+            for idx in sorted(desc_slots.keys()):
+                joined = "\n".join(line.rstrip() for line in desc_slots[idx]).strip()
+                if joined.lower() in ABSTAIN_MARKERS:
+                    continue
+                if not joined:
+                    continue
+                ordered.append(joined)
+            reasoning_text = "\n".join(line.rstrip() for line in reasoning_lines).strip()
+            if ordered:
+                results[current_col] = (ordered, conf, reasoning_text)
+
+        desc_label = re.compile(r"^DESCRIPTION_(\d+)\s*:\s*(.*)$")
 
         for raw_line in text.splitlines():
             stripped = raw_line.strip()
             if stripped.startswith("COLUMN:"):
                 _flush()
                 current_col = stripped.split(":", 1)[1].strip()
-                best_lines = []
+                desc_slots = {}
                 reasoning_lines = []
                 conf = Confidence.MEDIUM
-                active = None
-            elif stripped.startswith("BEST_DESCRIPTION:"):
+                active_slot = None
+                active_field = None
+                continue
+
+            m = desc_label.match(stripped)
+            if m:
+                idx = int(m.group(1))
+                first = m.group(2).strip()
+                desc_slots[idx] = [first] if first else []
+                active_slot = idx
+                active_field = "description"
+                continue
+
+            if stripped.startswith("BEST_DESCRIPTION:"):
+                # Legacy label; treat as DESCRIPTION_1.
                 first = stripped.split(":", 1)[1].strip()
-                best_lines = [first] if first else []
-                active = "best"
-            elif stripped.startswith("CONFIDENCE:"):
+                desc_slots[1] = [first] if first else []
+                active_slot = 1
+                active_field = "description"
+                continue
+
+            if stripped.startswith("CONFIDENCE:"):
                 raw = stripped.split(":", 1)[1].strip().upper()
                 conf = Confidence[raw] if raw in Confidence.__members__ else Confidence.MEDIUM
-                active = None
-            elif stripped.startswith("REASONING:"):
+                active_slot = None
+                active_field = None
+                continue
+
+            if stripped.startswith("REASONING:"):
                 first = stripped.split(":", 1)[1].strip()
                 reasoning_lines = [first] if first else []
-                active = "reasoning"
-            else:
-                # Continuation line for the most recently opened
-                # multi-line field. Preserves blank lines so multi-
-                # paragraph answers keep their paragraph breaks.
-                if active == "best":
-                    best_lines.append(raw_line)
-                elif active == "reasoning":
-                    reasoning_lines.append(raw_line)
+                active_slot = None
+                active_field = "reasoning"
+                continue
+
+            # Continuation line for the most recently opened multi-line
+            # field. Preserves blank lines so multi-paragraph answers
+            # keep their paragraph breaks.
+            if active_field == "description" and active_slot is not None:
+                desc_slots.setdefault(active_slot, []).append(raw_line)
+            elif active_field == "reasoning":
+                reasoning_lines.append(raw_line)
 
         _flush()
         return results

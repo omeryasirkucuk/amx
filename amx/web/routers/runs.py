@@ -311,11 +311,43 @@ def _events_endpoint(job_id: str, jobs: JobRegistry) -> EventSourceResponse:
 
 
 def _event_generator(job: Job):
-    """Drain ``job.queue`` until a terminal event arrives.
+    """Replay the buffered event trail, then drain new events.
+
+    On a fresh subscriber (page refresh, transient reconnect, or a
+    user opening the run page after work has already started), the
+    SSE consumer would otherwise see a blank "Live progress" panel —
+    the worker's events were already drained by the previous
+    ``EventSource`` connection. ``BufferedQueue`` retains the recent
+    tail so we can replay it here before falling back to the
+    live-drain loop.
+
+    The two channels (replay buffer + live queue) carry overlapping
+    items, so the generator tracks which dict objects were yielded
+    during the replay phase by Python ``id()`` and skips re-yielding
+    the same dict when it later arrives via ``queue.get``. ``emit``
+    pushes the same dict instance into both channels so identity is
+    a stable dedup key for the lifetime of the connection.
 
     Sends a periodic SSE comment line as a keepalive so corporate
     proxies don't reap the connection during long worker steps.
     """
+    # ── Replay phase ─────────────────────────────────────────────────
+    # Snapshot the buffer first so a fresh subscriber re-hydrates the
+    # panel state even when the live queue is currently empty. If the
+    # buffer already contains a terminal event the worker has finished;
+    # there is nothing more to drain — exit immediately after replay.
+    replayed_terminal = False
+    replayed_ids: set[int] = set()
+    for event in job.queue.buffer_snapshot():
+        replayed_ids.add(id(event))
+        kind = str(event.get("type", ""))
+        yield {"event": kind, "data": json.dumps(event)}
+        if kind in {"job.done", "job.cancelled", "job.failed"}:
+            replayed_terminal = True
+    if replayed_terminal:
+        return
+
+    # ── Live drain phase ─────────────────────────────────────────────
     last_keepalive = time.monotonic()
     while True:
         try:
@@ -329,6 +361,11 @@ def _event_generator(job: Job):
                 # Worker terminated without a final event (shouldn't
                 # happen, but ensures we don't tail an idle queue).
                 break
+            continue
+        if id(event) in replayed_ids:
+            # Already delivered via the replay snapshot; skip the
+            # duplicate copy that ``put_nowait`` left on the live queue.
+            replayed_ids.discard(id(event))
             continue
         kind = str(event.get("type", ""))
         yield {"event": kind, "data": json.dumps(event)}
