@@ -25,7 +25,12 @@ or parser can't silently revive the bug.
 
 from __future__ import annotations
 
-from amx.agents.orchestrator import MERGE_PROMPT, MERGE_SYSTEM_PROMPT, Orchestrator
+from amx.agents.orchestrator import (
+    MERGE_FILLUP_PROMPT,
+    MERGE_PROMPT,
+    MERGE_SYSTEM_PROMPT,
+    Orchestrator,
+)
 from amx.llm.prompts import length_rule
 
 
@@ -38,13 +43,32 @@ def _format_merge_prompt(*, columns_text: str, preset: str, n: int = 1) -> str:
     contract.
     """
     description_lines = (
-        "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
+        "\n".join(
+            f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
+            for i in range(2, n + 1)
+        )
+        if n > 1
+        else ""
     )
     return MERGE_PROMPT.format(
         columns_text=columns_text,
         description_length_rule=length_rule(preset),
         n_alternatives=n,
         description_lines=description_lines,
+    )
+
+
+def _format_fillup_prompt(*, columns_text: str, preset: str, n: int = 3) -> str:
+    """Mirror of :func:`_format_merge_prompt` for the fill-up retry."""
+    fillup_response_lines = "\n".join(
+        f"DESCRIPTION_{i}: <alternative — apply the SAME length rule as DESCRIPTION_1, or — if none is supported>"
+        for i in range(2, n + 1)
+    )
+    return MERGE_FILLUP_PROMPT.format(
+        n_alternatives=n,
+        description_length_rule=length_rule(preset),
+        columns_text=columns_text,
+        fillup_response_lines=fillup_response_lines,
     )
 
 
@@ -90,6 +114,51 @@ def test_merge_prompt_lists_n_alternatives_slots() -> None:
     assert "DESCRIPTION_3" in formatted
     # The schema label that used to live here is gone.
     assert "BEST_DESCRIPTION" not in formatted
+
+
+def test_merge_prompt_reminds_length_rule_applies_to_alternatives() -> None:
+    """Regression test for the user-reported bug where DESCRIPTION_1
+    came back exhaustive but DESCRIPTION_2 / DESCRIPTION_3 collapsed
+    to one-sentence briefs even at
+    ``description_verbosity="exhaustive"``.
+
+    Two pinned guarantees:
+    1. ``MERGE_PROMPT`` body explicitly states that the length rule
+       applies EQUALLY to every DESCRIPTION_N slot, not just to
+       DESCRIPTION_1. The phrasing is checked by stable substrings so
+       a future copy-edit can move text around without breaking the
+       test, but a removal of the contract surfaces immediately.
+    2. The slot template no longer reads bare ``<alternative>`` —
+       every DESCRIPTION_<i> slot must carry the "apply the SAME
+       length rule" rider that fixes the bug.
+
+    The fill-up prompt carries the same contract.
+    """
+    for preset in ("brief", "detailed", "comprehensive", "exhaustive"):
+        formatted = _format_merge_prompt(
+            columns_text="### col\n  [profile_agent] (confidence=HIGH): d\n    reasoning: r",
+            preset=preset,
+            n=3,
+        )
+        assert "applies EQUALLY to DESCRIPTION_1" in formatted, (
+            f"merge prompt missing equal-length contract at preset={preset}"
+        )
+        assert "DESCRIPTION_2: <alternative>" not in formatted, (
+            f"bare <alternative> placeholder leaked at preset={preset}"
+        )
+        assert "DESCRIPTION_2: <alternative description — apply the SAME length rule" in formatted
+        assert "DESCRIPTION_3: <alternative description — apply the SAME length rule" in formatted
+
+    # Same contract on the fill-up retry path so a column that came
+    # back short does not get refilled with one-sentence briefs.
+    fillup = _format_fillup_prompt(
+        columns_text="### col\nExisting:\n  - first description.\nStill to fill: DESCRIPTION_2, DESCRIPTION_3",
+        preset="exhaustive",
+        n=3,
+    )
+    assert "applies EQUALLY to every DESCRIPTION_N slot" in fillup
+    assert "DESCRIPTION_2: <alternative or — if none is supported>" not in fillup
+    assert "DESCRIPTION_2: <alternative — apply the SAME length rule" in fillup
 
 
 def test_merge_system_prompt_warns_against_collapsing_long_form() -> None:

@@ -52,6 +52,11 @@ Alternative descriptions:
 - An "alternative" must offer a meaningfully different interpretation
   (different business role, different unit, different scope) — not just
   a rephrasing of DESCRIPTION_1.
+- The Length rule above applies EQUALLY to DESCRIPTION_1, DESCRIPTION_2,
+  ..., DESCRIPTION_{n_alternatives}. An alternative is a different
+  interpretation, not a shorter version. Do not collapse alternatives
+  into one-sentence summaries when the verbosity preset is comprehensive
+  or exhaustive.
 - If the evidence does not support a distinct alternative for a slot,
   write a single em-dash "—" on that line. Do NOT pad with paraphrases.
 
@@ -102,6 +107,10 @@ For EACH column below:
   that are missing from the existing list.
 - Each new alternative MUST offer a meaningfully different interpretation
   from the existing ones — different business role, scope, or unit.
+- The Length rule above applies EQUALLY to every DESCRIPTION_N slot you
+  fill. An alternative is a different interpretation, not a shorter
+  version — do not collapse alternatives into one-sentence summaries
+  when the verbosity preset is comprehensive or exhaustive.
 - If the evidence truly does not support another distinct alternative for
   a slot, write a single em-dash "—" on that line. Do NOT pad with
   rephrasings of an existing description.
@@ -1280,7 +1289,10 @@ class Orchestrator:
         verbosity = getattr(self.llm.cfg, "description_verbosity", "brief")
         cap = max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
         description_lines = (
-            "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, cap + 1))
+            "\n".join(
+                f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
+                for i in range(2, cap + 1)
+            )
             if cap > 1
             else ""
         )
@@ -1413,7 +1425,8 @@ class Orchestrator:
 
         columns_text = "\n\n".join(blocks)
         fillup_response_lines = "\n".join(
-            f"DESCRIPTION_{i}: <alternative or — if none is supported>" for i in range(2, cap + 1)
+            f"DESCRIPTION_{i}: <alternative — apply the SAME length rule as DESCRIPTION_1, or — if none is supported>"
+            for i in range(2, cap + 1)
         )
 
         messages = [

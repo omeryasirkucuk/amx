@@ -13,7 +13,11 @@ from amx.agents.base import (
     apply_logprob_confidence,
 )
 from amx.config import PromptDetail
-from amx.llm.prompts import length_rule, per_col_token_budget
+from amx.llm.prompts import (
+    ALTERNATIVES_LENGTH_RULE_REMINDER,
+    length_rule,
+    per_col_token_budget,
+)
 from amx.llm.provider import FatalLLMError, LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, get_logger
@@ -47,6 +51,7 @@ Coverage rule (CRITICAL): emit one COLUMN block for EVERY column listed in the i
 For EACH column provide:
 1. {description_length_rule}
 {alt_instruction}
+{alternatives_length_reminder}
 {extra_items}
 A confidence level: HIGH / MEDIUM / LOW.
 Brief reasoning for your choice.
@@ -91,18 +96,25 @@ def _build_system_prompt(
         extra_items = ""
         desc_lines = ""
         table_desc_lines = ""
+        alternatives_length_reminder = ""
     else:
         alt_instruction = f"Up to {n} alternative descriptions ranked by likelihood."
         extra_items = ""
-        desc_lines = "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1))
-        table_desc_lines = "\n".join(
-            f"TABLE_DESCRIPTION_{i}: <alternative table description>" for i in range(2, n + 1)
+        desc_lines = "\n".join(
+            f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
+            for i in range(2, n + 1)
         )
+        table_desc_lines = "\n".join(
+            f"TABLE_DESCRIPTION_{i}: <alternative table description — apply the SAME length rule as TABLE_DESCRIPTION_1>"
+            for i in range(2, n + 1)
+        )
+        alternatives_length_reminder = ALTERNATIVES_LENGTH_RULE_REMINDER
     description_length_rule = length_rule(description_verbosity)
     return (
         _BASE_SYSTEM_PROMPT.format(
             description_length_rule=description_length_rule,
             alt_instruction=alt_instruction,
+            alternatives_length_reminder=alternatives_length_reminder,
             extra_items=extra_items,
             desc_lines=desc_lines,
             table_desc_lines=table_desc_lines,

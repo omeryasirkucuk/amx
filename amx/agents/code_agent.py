@@ -12,7 +12,11 @@ from amx.agents.base import (
     apply_logprob_confidence,
 )
 from amx.codebase.analyzer import CodebaseReport, CodeReference
-from amx.llm.prompts import length_rule, per_col_token_budget
+from amx.llm.prompts import (
+    ALTERNATIVES_LENGTH_RULE_REMINDER,
+    length_rule,
+    per_col_token_budget,
+)
 from amx.llm.provider import LLMProvider
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
@@ -48,6 +52,7 @@ Confidence rules:
 - LOW: only superficial or sparse references exist.
 Reasoning must mention the concrete code patterns that justify the description.
 
+{alternatives_length_reminder}
 Respond in this format for each column (one block per column):
 
 COLUMN: <column_name>
@@ -66,13 +71,20 @@ REASONING: The code joins, filters, and groups records by this field across rela
 
 def _build_system_prompt(n_alternatives: int, description_verbosity: str = "brief") -> str:
     n = max(1, min(5, n_alternatives))
-    desc_lines = (
-        "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
-    )
+    if n > 1:
+        desc_lines = "\n".join(
+            f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
+            for i in range(2, n + 1)
+        )
+        alternatives_length_reminder = ALTERNATIVES_LENGTH_RULE_REMINDER
+    else:
+        desc_lines = ""
+        alternatives_length_reminder = ""
     return (
         _BASE_SYSTEM_PROMPT.format(
             desc_lines=desc_lines,
             description_length_rule=length_rule(description_verbosity),
+            alternatives_length_reminder=alternatives_length_reminder,
         ).strip()
         + "\n"
     )

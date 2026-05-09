@@ -43,6 +43,20 @@ DESCRIPTION_LENGTH_RULES: dict[str, str] = {
 }
 
 
+# Reminder line injected into every prompt that asks for N ranked
+# description alternatives. Without it the LLM treats DESCRIPTION_2..N
+# as "shorter rephrasings" of DESCRIPTION_1 — collapsing comprehensive /
+# exhaustive presets back to one-sentence briefs for every alternative
+# slot. Pinning the rule next to the slot template restores the
+# user-visible length expectation across all alternatives.
+ALTERNATIVES_LENGTH_RULE_REMINDER = (
+    "The Length rule above applies EQUALLY to every DESCRIPTION_N slot. "
+    "An alternative is a different interpretation, not a shorter version — "
+    "do not collapse alternatives into one-sentence summaries when the "
+    "verbosity preset is comprehensive or exhaustive."
+)
+
+
 # Per-column output budget used to size ``max_tokens`` for a batch.
 # Scaled by ``description_verbosity`` so a 100-column batch in
 # ``comprehensive`` / ``exhaustive`` mode doesn't truncate halfway
