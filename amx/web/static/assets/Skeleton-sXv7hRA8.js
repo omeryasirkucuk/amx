@@ -1,0 +1,1 @@
+import{j as r}from"./query-CZ0J3bn1.js";import{b as s}from"./index-D3lC0yhi.js";function a({className:o,shape:e="line"}){const n=e==="circle"?"rounded-full":e==="block"?"rounded-lg":"rounded";return r.jsx("span",{"aria-hidden":"true",className:s("amx-skeleton block",n,o)})}export{a as S};

@@ -116,12 +116,7 @@ export default function Landing() {
           the entry surface reads as a deliberate "you've arrived"
           moment rather than a left-pinned form header. */}
       <header className="flex flex-col items-center space-y-3 text-center">
-        <div className="flex items-baseline gap-2">
-          <Logo size={28} />
-          <span className="text-2xl font-semibold tracking-tight text-ink">
-            Studio
-          </span>
-        </div>
+        <Logo size={56} suffix="Studio" />
         <p className="text-base text-ink-muted">
           Your workspace for AI-inferred database metadata.
         </p>
