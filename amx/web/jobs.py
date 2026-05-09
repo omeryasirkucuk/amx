@@ -27,12 +27,57 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from queue import Queue
 from typing import Any, Literal
 
 JobKind = Literal["run", "apply", "ask", "rerun"]
 JobStatus = Literal["queued", "running", "cancelled", "done", "failed"]
+
+#: Cap on the per-job event replay buffer. The buffer keeps the most
+#: recent ``EVENT_BUFFER_MAX`` events so a refreshed browser tab can
+#: re-hydrate the "Live progress" panel instead of starting from a
+#: blank slate. Sized to comfortably cover a multi-table run with a
+#: chatty agent emitting per-batch ``step.*`` events; on overflow the
+#: oldest events are dropped (deque maxlen) — the user still sees the
+#: rolling tail of recent activity, just not the very first events.
+EVENT_BUFFER_MAX = 4000
+
+
+class BufferedQueue(Queue):
+    """``queue.Queue`` that also retains a bounded replay buffer.
+
+    Every ``put_nowait`` (the path used by :func:`amx.web.progress_bus.emit`)
+    appends a copy of the event into ``buffer`` so a reconnecting SSE
+    consumer can re-hydrate the in-flight panel by replaying recent
+    events first, then resuming live drain. The buffer's deque already
+    enforces ``maxlen``; a separate lock guards both ``buffer`` and
+    ``buffer_seq`` so concurrent producers / consumers see consistent
+    snapshots.
+
+    Reads (``get``, ``get_nowait``, ``empty``) inherit unchanged: the
+    SSE generator continues to consume new events through the queue;
+    the buffer is *additive* and lossless for the live consumer.
+    """
+
+    def __init__(self, maxsize: int = 0, *, buffer_max: int = EVENT_BUFFER_MAX) -> None:
+        super().__init__(maxsize=maxsize)
+        self.buffer: deque[dict[str, Any]] = deque(maxlen=buffer_max)
+        self.buffer_seq: int = 0
+        self.buffer_lock = threading.Lock()
+
+    def put_nowait(self, item: Any) -> None:  # type: ignore[override]
+        super().put_nowait(item)
+        if isinstance(item, dict):
+            with self.buffer_lock:
+                self.buffer.append(item)
+                self.buffer_seq += 1
+
+    def buffer_snapshot(self) -> list[dict[str, Any]]:
+        """Return a stable copy of the current replay buffer."""
+        with self.buffer_lock:
+            return list(self.buffer)
 
 
 @dataclass
@@ -52,7 +97,7 @@ class Job:
     summary: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
-    queue: Queue = field(default_factory=Queue)
+    queue: BufferedQueue = field(default_factory=BufferedQueue)
     # Set by the run worker once the orchestrator persists the run row,
     # so a Studio user navigating to ``/runs/{numeric_run_id}`` while
     # the worker is still running can find the live job and subscribe

@@ -47,9 +47,7 @@ def test_override_gate_noop_on_non_tty(cfg_with_profile, monkeypatch) -> None:
     """A piped invocation must never stall waiting for input."""
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
     saved_llm = cfg_with_profile.llm
-    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(
-        cfg_with_profile
-    )
+    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
     assert applied == {}
     assert cfg_with_profile.llm is saved_llm
     restore()  # no-op
@@ -67,9 +65,7 @@ def test_override_gate_noop_when_user_declines(cfg_with_profile, monkeypatch) ->
         lambda *_a, **_k: pytest.fail("ask must not be called when user declines"),
     )
     saved_llm = cfg_with_profile.llm
-    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(
-        cfg_with_profile
-    )
+    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
     assert applied == {}
     assert cfg_with_profile.llm is saved_llm
     restore()
@@ -116,9 +112,7 @@ def test_override_gate_applies_only_changed_fields(cfg_with_profile, monkeypatch
     monkeypatch.setattr(analyze_flow, "ask_choice", fake_ask_choice)
 
     saved_llm = cfg_with_profile.llm
-    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(
-        cfg_with_profile
-    )
+    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
 
     assert applied == {"temperature": 0.05}
     assert cfg_with_profile.llm is not saved_llm  # derived dataclass
@@ -133,9 +127,7 @@ def test_override_gate_applies_only_changed_fields(cfg_with_profile, monkeypatch
     assert cfg_with_profile.llm is saved_llm  # original instance back
 
 
-def test_override_gate_out_of_range_keeps_profile_value(
-    cfg_with_profile, monkeypatch
-) -> None:
+def test_override_gate_out_of_range_keeps_profile_value(cfg_with_profile, monkeypatch) -> None:
     """A typo (temperature = 5) is rejected with a warning rather
     than silently shipping; cfg.llm.temperature stays at the saved
     profile value."""
@@ -166,9 +158,7 @@ def test_override_gate_out_of_range_keeps_profile_value(
         lambda _q, _c, *, default="", **_k: default,
     )
 
-    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(
-        cfg_with_profile
-    )
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
     # The bogus 5.0 was discarded — no override slot for temperature.
     assert "temperature" not in applied
     assert cfg_with_profile.llm.temperature == 0.2
@@ -199,9 +189,7 @@ def test_override_gate_walks_choice_fields(cfg_with_profile, monkeypatch) -> Non
 
     monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
 
-    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(
-        cfg_with_profile
-    )
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
     assert applied == {
         "prompt_detail": "detailed",
         "description_verbosity": "comprehensive",

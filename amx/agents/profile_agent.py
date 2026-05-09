@@ -28,7 +28,7 @@ and its columns, infer what each column likely represents.
 Output rules:
 - Write every description and reasoning string in **clear, business-friendly American English**.
 - Use complete sentences ending with a period.
-- Be concise — aim for ≤ 25 words per description (the verbosity preset may relax this).
+- Length rule (CRITICAL — honour the user's verbosity preset): {description_length_rule}
 - Keep the response labels (`COLUMN`, `DESCRIPTION_1`, `CONFIDENCE`, `REASONING`, `TABLE_DESCRIPTION_1`, etc.) verbatim.
 
 Write descriptions assertively and directly (e.g. "Telephone extension number." or "Indicates the fax number.").
@@ -203,6 +203,8 @@ class ProfileAgent(BaseAgent):
                     )
                     log.error("Profile agent batch %d failed: %s", idx, exc)
         else:
+            from amx.utils.live_display import run_in_thread
+
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 fut_to_batch = {}
                 for idx, batch in enumerate(batches, 1):
@@ -215,7 +217,13 @@ class ProfileAgent(BaseAgent):
                         col_names,
                     )
                     batch_ctx = self._ctx_with_columns(ctx, batch)
-                    fut = ex.submit(
+                    # ``run_in_thread`` snapshots the parent's
+                    # ``contextvars`` (subscriber bus + correlation IDs)
+                    # so ``step_spinner`` events emitted *inside* this
+                    # batch's worker thread reach the SSE bridge the
+                    # web worker installed on the main thread.
+                    fut = run_in_thread(
+                        ex,
                         self._run_single_batch,
                         batch_ctx,
                         batch,

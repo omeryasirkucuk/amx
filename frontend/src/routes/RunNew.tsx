@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronDown, PlayCircle, Settings as SettingsIcon } from "lucide-react";
+import {
+  ChevronDown,
+  PlayCircle,
+  Search,
+  Settings as SettingsIcon,
+  X,
+} from "lucide-react";
 
 import { api, apiFetch } from "../lib/api";
 import type { LLMOverrides, LLMProfileDefaults, ModelPrice } from "../lib/api";
@@ -148,11 +154,12 @@ export default function RunNew() {
   const toast = useToast();
   const scope = useRunScope();
   const [picked, setPicked] = useState<SchemaPickState[]>([]);
-  const [missingOnly, setMissingOnly] = useState(true);
+  const [missingOnly, setMissingOnly] = useState(false);
   const [autoApply, setAutoApply] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
   const [overrides, setOverrides] = useState<OverrideFormState>(EMPTY_OVERRIDES);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [scopeQuery, setScopeQuery] = useState("");
 
   const ctx = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
   const supportsBatch = !!ctx.data?.llm_supports_batch;
@@ -211,6 +218,50 @@ export default function RunNew() {
   });
 
   const scopeUnavailable = !scope;
+
+  // When the user types in the Scope search box we want to match
+  // against asset names too, not just schema names. Tables are loaded
+  // per-schema lazily, so kick off parallel asset fetches for every
+  // schema only while the search is active. Results are cached so
+  // subsequent keystrokes hit memory.
+  const allSchemaNames = schemas.data?.schemas ?? [];
+  const trimmedScopeQuery = scopeQuery.trim().toLowerCase();
+  const searchActive = trimmedScopeQuery.length > 0;
+  const assetSearchQueries = useQueries({
+    queries: allSchemaNames.map((name) => ({
+      queryKey: [
+        "live-assets",
+        scope?.profile ?? "",
+        scope?.database ?? "",
+        scope?.catalog ?? "",
+        name,
+      ],
+      queryFn: () => api.liveAssets(scope!, name),
+      enabled: !!scope && searchActive,
+      staleTime: 60_000,
+    })),
+  });
+  const assetMatchesBySchema = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    if (!searchActive) return out;
+    allSchemaNames.forEach((name, idx) => {
+      const data = assetSearchQueries[idx]?.data;
+      if (!data) return;
+      const hits = data.assets
+        .map((a) => a.name)
+        .filter((n) => n.toLowerCase().includes(trimmedScopeQuery));
+      if (hits.length > 0) out[name] = hits;
+    });
+    return out;
+  }, [allSchemaNames, assetSearchQueries, searchActive, trimmedScopeQuery]);
+  const visibleSchemas = useMemo(() => {
+    if (!searchActive) return allSchemaNames;
+    return allSchemaNames.filter(
+      (name) =>
+        name.toLowerCase().includes(trimmedScopeQuery) ||
+        assetMatchesBySchema[name]?.length,
+    );
+  }, [allSchemaNames, searchActive, trimmedScopeQuery, assetMatchesBySchema]);
 
   const submit = useMutation({
     mutationFn: () =>
@@ -305,9 +356,35 @@ export default function RunNew() {
         </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-          <Card>
-            <CardHeader title="Scope" />
-            <CardBody className="p-0">
+          <Card className="lg:flex lg:h-full lg:flex-col lg:self-stretch">
+            <CardHeader
+              title="Scope"
+              actions={
+                schemas.data?.schemas?.length ? (
+                  <div className="relative flex h-8 w-56 items-center rounded-md border border-border bg-surface-raised pl-2.5 pr-2 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+                    <Search size={13} className="text-ink-dim" />
+                    <input
+                      type="text"
+                      value={scopeQuery}
+                      onChange={(e) => setScopeQuery(e.target.value)}
+                      placeholder="Search schema or table…"
+                      className="ml-1.5 h-full flex-1 bg-transparent text-sm text-ink placeholder:text-ink-dim focus:outline-none"
+                    />
+                    {scopeQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setScopeQuery("")}
+                        aria-label="Clear search"
+                        className="ml-1 rounded p-0.5 text-ink-dim hover:text-ink"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                ) : undefined
+              }
+            />
+            <CardBody className="p-0 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden">
               {schemas.isLoading ? (
                 <ul className="divide-y divide-border">
                   {Array.from({ length: 5 }).map((_, i) => (
@@ -324,45 +401,66 @@ export default function RunNew() {
                 <div className="px-5 py-6 text-sm text-ink-dim">
                   No schemas reachable.
                 </div>
+              ) : visibleSchemas.length === 0 ? (
+                <div className="px-5 py-6 text-sm text-ink-dim">
+                  No matches for “{scopeQuery.trim()}”.
+                </div>
               ) : (
-                <ul className="divide-y divide-border">
-                  {schemas.data.schemas.map((name) => (
-                    <li key={name}>
-                      <button
-                        type="button"
-                        onClick={() => toggleSchema(name)}
-                        className={cn(
-                          "flex w-full items-center justify-between px-5 py-2.5 text-left text-sm transition-colors duration-fast hover:bg-surface-subtle/50",
-                          isPicked(name) && "bg-accent-soft/40",
-                        )}
-                      >
-                        <span className="font-medium text-ink">{name}</span>
-                        <span
+                <ul className="max-h-[32rem] divide-y divide-border overflow-y-auto lg:max-h-none lg:flex-1 lg:basis-0">
+                  {visibleSchemas.map((name) => {
+                    const assetHits = assetMatchesBySchema[name];
+                    const matchedOnAsset =
+                      searchActive &&
+                      !!assetHits?.length &&
+                      !name.toLowerCase().includes(trimmedScopeQuery);
+                    return (
+                      <li key={name}>
+                        <button
+                          type="button"
+                          onClick={() => toggleSchema(name)}
                           className={cn(
-                            "text-[10.5px] uppercase tracking-wider",
-                            isPicked(name) ? "text-accent-ink" : "text-ink-dim",
+                            "flex w-full items-center justify-between px-5 py-2.5 text-left text-sm transition-colors duration-fast hover:bg-surface-subtle/50",
+                            isPicked(name) && "bg-accent-soft/40",
                           )}
                         >
-                          {isPicked(name) ? "selected" : "—"}
-                        </span>
-                      </button>
-                      {isPicked(name) && (
-                        <SchemaTablePicker
-                          schema={name}
-                          selected={
-                            picked.find((p) => p.schema === name)?.tables ?? []
-                          }
-                          onChange={(tables) =>
-                            setPicked((curr) =>
-                              curr.map((p) =>
-                                p.schema === name ? { ...p, tables } : p,
-                              ),
-                            )
-                          }
-                        />
-                      )}
-                    </li>
-                  ))}
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span className="font-medium text-ink">{name}</span>
+                            {matchedOnAsset && (
+                              <span className="truncate font-mono text-[10.5px] text-ink-dim">
+                                matches: {assetHits!.slice(0, 4).join(", ")}
+                                {assetHits!.length > 4
+                                  ? ` +${assetHits!.length - 4}`
+                                  : ""}
+                              </span>
+                            )}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-[10.5px] uppercase tracking-wider",
+                              isPicked(name) ? "text-accent-ink" : "text-ink-dim",
+                            )}
+                          >
+                            {isPicked(name) ? "selected" : "—"}
+                          </span>
+                        </button>
+                        {isPicked(name) && (
+                          <SchemaTablePicker
+                            schema={name}
+                            selected={
+                              picked.find((p) => p.schema === name)?.tables ?? []
+                            }
+                            onChange={(tables) =>
+                              setPicked((curr) =>
+                                curr.map((p) =>
+                                  p.schema === name ? { ...p, tables } : p,
+                                ),
+                              )
+                            }
+                          />
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </CardBody>

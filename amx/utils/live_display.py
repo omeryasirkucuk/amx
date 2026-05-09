@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from collections.abc import Callable
@@ -18,69 +19,98 @@ from rich.tree import Tree
 
 import amx
 
-
-# ── Thread-local subscriber bus ───────────────────────────────────────────
+# ── ContextVar-based subscriber bus ──────────────────────────────────────
 #
-# AMX Studio's run-detail page relies on the same LiveDisplay calls the
-# CLI's Rich UI does ("Profiling address.state…", "Calling LLM (batch
-# 1/3)…", "Saved 12 suggestions"), but it fan-outs over SSE instead of a
-# Rich Live region. Without this bus, the Studio "Live progress" card
-# only saw the per-table ``activity.added/begin/complete`` events the
-# web worker emitted before / after each table — the multi-minute work
-# inside ``orchestrator.process_table()`` rendered as
-# "Waiting for the worker to begin…" until the table finished.
+# AMX Studio's run-detail page relies on the same ``LiveDisplay`` calls
+# the CLI's Rich UI does ("Profiling address.state…", "Calling LLM
+# (batch 1/3)…", "Saved 12 suggestions") but fan-outs over SSE instead
+# of a Rich ``Live`` region. The web worker installs a subscriber on
+# job start; the subscriber forwards every LiveDisplay state change
+# into the job's SSE queue; the worker pops the subscriber on exit.
 #
-# Pattern: per-thread subscriber list. Each web worker installs a
-# subscriber when it starts a job (via :func:`push_subscriber`), the
-# subscriber forwards every LiveDisplay state change into the job's
-# SSE queue, and the worker pops the subscriber on exit. Threading-
-# local keeps concurrent jobs from leaking each other's events.
+# Originally this bus lived on a ``threading.local``. That worked
+# while every emit happened on the main worker thread, but agents
+# fan out per-batch / per-sub-agent through
+# :class:`concurrent.futures.ThreadPoolExecutor` and
+# ``threading.local`` does NOT follow a spawned worker — Studio's
+# "Live progress" card went silent the moment the parent run handed
+# work off to a pool. Only the spinner started on the main thread
+# (e.g. "Profiling X.Y structure and data") reached the SSE bridge;
+# every "Profile Agent batch 1/3", "Calling LLM", "RAG Agent" emit
+# was dropped.
+#
+# Switching to :mod:`contextvars` fixes that without making the bus
+# process-global: ``contextvars.copy_context()`` snapshots the
+# subscriber tuple and ``Context.run(fn)`` replays it inside the
+# spawned worker thread, so emits inside agents' worker threads now
+# fan out to whatever subscribers the parent thread had installed.
+# Pushes / pops in the spawned thread mutate that worker's copy of
+# the context only — the parent thread's bus is unaffected,
+# preserving the original isolation guarantee.
 
 _DisplaySubscriber = Callable[[str, dict[str, Any]], None]
-_local = threading.local()
+_subscribers: contextvars.ContextVar[tuple[_DisplaySubscriber, ...]] = contextvars.ContextVar(
+    "amx_display_subscribers", default=()
+)
 
 
 def push_subscriber(callback: _DisplaySubscriber) -> None:
-    """Install a subscriber on the current thread's display event bus.
+    """Install a subscriber on the current context's display event bus.
 
     The subscriber receives every ``(event_type, payload)`` produced by
-    LiveDisplay state-mutating methods on this thread. Stack-friendly:
-    nested ``push`` / ``pop`` pairs work without confusing siblings.
+    LiveDisplay state-mutating methods that run inside this context (or
+    any ``contextvars.copy_context()`` derived from it — i.e. spawned
+    worker threads via :func:`run_in_thread`). Stack-friendly: nested
+    ``push`` / ``pop`` pairs work without confusing siblings.
     """
-    stack = getattr(_local, "stack", None)
-    if stack is None:
-        stack = []
-        _local.stack = stack
-    stack.append(callback)
+    current = _subscribers.get()
+    _subscribers.set(current + (callback,))
 
 
 def pop_subscriber(callback: _DisplaySubscriber) -> None:
-    """Remove the most-recent matching subscriber from this thread."""
-    stack = getattr(_local, "stack", None) or []
-    try:
-        # ``list.remove`` removes the FIRST match; we want the LAST so
-        # nested context managers unwind in LIFO order.
-        for idx in range(len(stack) - 1, -1, -1):
-            if stack[idx] is callback:
-                del stack[idx]
-                break
-    except ValueError:
-        pass
+    """Remove the most-recent matching subscriber from the current context."""
+    current = _subscribers.get()
+    # ``tuple.index`` would only find the FIRST match; we want the LAST
+    # so nested context managers unwind in LIFO order.
+    for idx in range(len(current) - 1, -1, -1):
+        if current[idx] is callback:
+            _subscribers.set(current[:idx] + current[idx + 1 :])
+            return
 
 
 def _notify_subscribers(event_type: str, payload: dict[str, Any]) -> None:
-    """Best-effort fan-out to every subscriber on the current thread.
+    """Best-effort fan-out to every subscriber visible in this context.
 
     A subscriber that raises is logged-and-skipped so a buggy bridge
     can't poison the rest of the run — the LiveDisplay UI / SSE stream
     keeps moving.
     """
-    stack = getattr(_local, "stack", None) or []
-    for callback in stack:
+    for callback in _subscribers.get():
         try:
             callback(event_type, payload)
         except Exception:  # pragma: no cover — bridge failures stay silent
             pass
+
+
+def run_in_thread(executor: Any, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """``executor.submit`` wrapper that propagates the current context.
+
+    Agents (ProfileAgent batch fan-out, Orchestrator sub-agent pool,
+    rerun pool) use :class:`concurrent.futures.ThreadPoolExecutor` to
+    parallelise work. Without a deliberate hand-off, the spawned
+    worker thread's :class:`contextvars.Context` is empty and the
+    subscriber bus the parent installed is invisible — every
+    ``step.*`` emit inside the worker silently drops on the floor.
+
+    Snapshotting ``contextvars.copy_context()`` here and submitting
+    ``ctx.run`` instead of the raw callable replays the current
+    subscribers (and any other ``ContextVar`` state, e.g. trace
+    correlation IDs) inside the worker. Returns the
+    :class:`~concurrent.futures.Future` so callers stay shape-
+    compatible with :meth:`Executor.submit`.
+    """
+    ctx = contextvars.copy_context()
+    return executor.submit(ctx.run, fn, *args, **kwargs)
 
 
 class ActivityState(Enum):
@@ -456,9 +486,7 @@ class LiveDisplay:
                 resolved_label = label or ""
         self._refresh()
         if label is not None:
-            _notify_subscribers(
-                "step.update", {"idx": idx, "label": resolved_label}
-            )
+            _notify_subscribers("step.update", {"idx": idx, "label": resolved_label})
 
     def update_tokens(self, idx: int, tokens_used: int) -> None:
         with self._lock:

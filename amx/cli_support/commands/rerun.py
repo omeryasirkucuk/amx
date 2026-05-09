@@ -26,7 +26,6 @@ from typing import Any
 
 import click
 
-from amx.agents._orchestrator.rerun import rerun_items
 from amx.agents.rerun_context import RerunContextError
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
@@ -262,6 +261,8 @@ def register_rerun_command(
             f"(instructions={'yes' if (user_instructions or '').strip() else 'none'}, "
             f"temperature_override={temperature_override})…"
         )
+
+        from amx.agents._orchestrator.rerun import rerun_items
 
         try:
             new_run_id, outcomes = rerun_items(

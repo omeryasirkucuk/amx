@@ -62,10 +62,9 @@ export default function TopBar() {
         <Link
           to="/"
           aria-label="AMX Studio home"
-          className="group flex items-baseline gap-1.5 rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
+          className="group flex items-center rounded-md px-1.5 py-1 -mx-1 hover:bg-surface-subtle"
         >
-          <Logo size={16} />
-          <span className="text-sm font-medium text-ink">Studio</span>
+          <Logo size={22} suffix="Studio" />
         </Link>
         {crumbs.length > 0 && (
           <nav aria-label="Breadcrumb" className="hidden md:flex">
