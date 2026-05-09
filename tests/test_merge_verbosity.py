@@ -38,9 +38,7 @@ def _format_merge_prompt(*, columns_text: str, preset: str, n: int = 1) -> str:
     contract.
     """
     description_lines = (
-        "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1))
-        if n > 1
-        else ""
+        "\n".join(f"DESCRIPTION_{i}: <alternative>" for i in range(2, n + 1)) if n > 1 else ""
     )
     return MERGE_PROMPT.format(
         columns_text=columns_text,

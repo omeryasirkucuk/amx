@@ -1113,9 +1113,7 @@ class Orchestrator:
             # Use ``run_in_thread`` so each sub-agent's
             # ``step_spinner`` emits reach the subscriber bus the
             # web worker installed on the parent thread.
-            fut_to_label = {
-                run_in_thread(pool, agent.run, ctx): label for label, agent in jobs
-            }
+            fut_to_label = {run_in_thread(pool, agent.run, ctx): label for label, agent in jobs}
             for fut in as_completed(fut_to_label):
                 label = fut_to_label[fut]
                 try:
@@ -1407,20 +1405,15 @@ class Orchestrator:
         blocks: list[str] = []
         for col_name, existing in underfilled.items():
             label = col_name or "(table-level)"
-            existing_text = (
-                "\n".join(f"  - {d}" for d in existing) if existing else "  (none yet)"
-            )
-            missing_slots = ", ".join(
-                f"DESCRIPTION_{i}" for i in range(len(existing) + 1, cap + 1)
-            )
+            existing_text = "\n".join(f"  - {d}" for d in existing) if existing else "  (none yet)"
+            missing_slots = ", ".join(f"DESCRIPTION_{i}" for i in range(len(existing) + 1, cap + 1))
             blocks.append(
                 f"### {label}\nExisting:\n{existing_text}\nStill to fill: {missing_slots}"
             )
 
         columns_text = "\n\n".join(blocks)
         fillup_response_lines = "\n".join(
-            f"DESCRIPTION_{i}: <alternative or — if none is supported>"
-            for i in range(2, cap + 1)
+            f"DESCRIPTION_{i}: <alternative or — if none is supported>" for i in range(2, cap + 1)
         )
 
         messages = [
@@ -1450,14 +1443,10 @@ class Orchestrator:
         fill_parsed = self._parse_merge_response(result.content)
 
         # Index merge_results by column so we can patch suggestions in place.
-        by_column: dict[str | None, MetadataSuggestion] = {
-            ms.column: ms for ms in merge_results
-        }
+        by_column: dict[str | None, MetadataSuggestion] = {ms.column: ms for ms in merge_results}
         for col_name, existing in underfilled.items():
             key, _ = per_column_state[col_name]
-            new_alts, _new_conf, _new_reasoning = fill_parsed.get(
-                key, ([], Confidence.MEDIUM, "")
-            )
+            new_alts, _new_conf, _new_reasoning = fill_parsed.get(key, ([], Confidence.MEDIUM, ""))
             combined = list(existing)
             for d in new_alts:
                 if d and d not in combined:

@@ -345,7 +345,7 @@ def bert_score_for_pair(prediction: str, reference: str) -> float | None:
                 f"BERTScore (Tier 1.5) skipped — transformers "
                 f"{_transformers.__version__} pre-dates the tokenizers "
                 f"0.22 cutover. Run: pip install --upgrade "
-                f"\"transformers>=4.56\""
+                f'"transformers>=4.56"'
             )
             return None
     except (ImportError, ValueError, AttributeError):
@@ -508,9 +508,9 @@ def resolve_reference_for_asset(
     # (3) Catalog applied.
     if history_store is not None and hasattr(history_store, "list_apply_events"):
         try:
-            events = history_store.list_apply_events(
-                run_id=None, profile_name=None, limit=200
-            ) or []
+            events = (
+                history_store.list_apply_events(run_id=None, profile_name=None, limit=200) or []
+            )
             for ev in events:
                 if (
                     ev.get("schema_name") == schema
@@ -620,11 +620,11 @@ def embedding_agreement_for_asset(
     """
     valid = {rid: t for rid, t in descriptions_by_run.items() if t}
     if len(valid) < 2:
-        return {rid: 0.0 for rid in descriptions_by_run}
+        return dict.fromkeys(descriptions_by_run, 0.0)
     rids = sorted(valid.keys())
     texts = [valid[r] for r in rids]
     vectors = embedder.encode(texts, show_progress_bar=False).tolist()
-    by_run: dict[int, list[float]] = {rid: vec for rid, vec in zip(rids, vectors, strict=False)}
+    by_run: dict[int, list[float]] = dict(zip(rids, vectors, strict=False))
     agreement: dict[int, float] = {}
     for rid in rids:
         sims = [_cosine(by_run[rid], by_run[other]) for other in rids if other != rid]
@@ -656,9 +656,7 @@ def semantic_grounding_score(
         anchor = f"{anchor} ({dtype})"
     if not anchor:
         return 0.0
-    vec_anchor, vec_desc = embedder.encode(
-        [anchor, description], show_progress_bar=False
-    ).tolist()
+    vec_anchor, vec_desc = embedder.encode([anchor, description], show_progress_bar=False).tolist()
     return max(0.0, _cosine(vec_anchor, vec_desc))
 
 
@@ -683,9 +681,9 @@ _JUDGE_SYSTEM_PROMPT = (
     "schema metadata and two candidate descriptions, choose which is more "
     "accurate, complete, and useful for a downstream developer. Reply with "
     "ONLY a single JSON object, no markdown fences, no commentary. Schema:\n"
-    "  {\"winner\": \"A\"|\"B\"|\"tie\", "
-    "\"reasoning\": \"<one short sentence>\", "
-    "\"confidence\": <number 0-1>}"
+    '  {"winner": "A"|"B"|"tie", '
+    '"reasoning": "<one short sentence>", '
+    '"confidence": <number 0-1>}'
 )
 
 
@@ -858,7 +856,14 @@ def _build_citations(metric_keys: Iterable[str]) -> list[dict[str, str]]:
         if k in seen or k not in ACADEMIC_REFERENCES:
             continue
         ref = ACADEMIC_REFERENCES[k]
-        out.append({"key": k, "label": ref["label"], "citation": ref["citation"], "url": ref.get("url", "")})
+        out.append(
+            {
+                "key": k,
+                "label": ref["label"],
+                "citation": ref["citation"],
+                "url": ref.get("url", ""),
+            }
+        )
         seen.add(k)
     return out
 
@@ -1114,11 +1119,7 @@ def compute_quality_metrics(
     # snapshot. The judge cost is conceptually a /history compare
     # cost, not a per-run cost, and belongs alongside the existing
     # ``search_compare`` audit event.
-    if (
-        judge_outcomes
-        and history_store is not None
-        and hasattr(history_store, "log_event")
-    ):
+    if judge_outcomes and history_store is not None and hasattr(history_store, "log_event"):
         try:
             history_store.log_event(
                 event_type="quality_judge",
@@ -1139,9 +1140,7 @@ def compute_quality_metrics(
             pass
 
     has_any_reference = any(r["source"] != "none" for r in references)
-    has_bertscore = any(
-        r.get("bertscore") is not None for r in per_run_rows
-    )
+    has_bertscore = any(r.get("bertscore") is not None for r in per_run_rows)
     metric_keys = _used_metric_keys(tier, has_any_reference)
     if has_bertscore and "bertscore" not in metric_keys:
         # BERTScore (Tier 1.5) only contributes a citation when the

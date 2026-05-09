@@ -38,9 +38,9 @@ def test_profile_agent_prompt_drops_hardcoded_word_cap() -> None:
     for preset in ("brief", "detailed", "comprehensive", "exhaustive"):
         prompt = _build_system_prompt(3, description_verbosity=preset)
         assert "≤ 25 words" not in prompt, f"hardcoded cap leaked at preset={preset}"
-        assert (
-            "verbosity preset may relax this" not in prompt
-        ), f"legacy parenthetical leaked at preset={preset}"
+        assert "verbosity preset may relax this" not in prompt, (
+            f"legacy parenthetical leaked at preset={preset}"
+        )
 
 
 def test_profile_agent_prompt_injects_length_rule_for_each_preset() -> None:

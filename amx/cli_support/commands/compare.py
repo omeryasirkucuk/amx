@@ -1234,9 +1234,7 @@ def _pick_aggregate_winner(metric: str, vals: dict[int, Any]) -> int | None:
         if best_val is None:
             best_id, best_val = rid, v
             continue
-        if direction == "min" and v < best_val:
-            best_id, best_val = rid, v
-        elif direction == "max" and v > best_val:
+        if direction == "min" and v < best_val or direction == "max" and v > best_val:
             best_id, best_val = rid, v
     return best_id
 
@@ -1743,9 +1741,7 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
             wr = row.get("judge_win_rate")
             pairings = row.get("judge_pairings") or 0
             wins = row.get("judge_wins") or 0
-            cells.append(
-                f"{wr * 100:.0f}% ({wins}/{pairings})" if wr is not None else "—"
-            )
+            cells.append(f"{wr * 100:.0f}% ({wins}/{pairings})" if wr is not None else "—")
         table.add_row(*cells)
     console.print(table)
 
@@ -1758,9 +1754,7 @@ def _render_quality_panel(quality: dict[str, Any]) -> None:
         # https://amxcli.com/cli/history/#academic-methods.
         labels = " · ".join(f"{c['label']}" for c in citations)
         console.print(f"[dim]Methods: {labels}[/dim]")
-        console.print(
-            "[dim]Full citations: https://amxcli.com/cli/history/#academic-methods[/dim]"
-        )
+        console.print("[dim]Full citations: https://amxcli.com/cli/history/#academic-methods[/dim]")
 
 
 # ── Ask AMX hand-off ────────────────────────────────────────────────────────

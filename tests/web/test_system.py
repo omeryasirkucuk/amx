@@ -123,9 +123,7 @@ def test_context_surfaces_llm_profile_defaults(client, auth_headers, cfg) -> Non
     assert defaults["custom_output_cost_per_mtok"] == 2.5
 
 
-def test_context_omits_llm_profile_defaults_without_provider(
-    client, auth_headers, cfg
-) -> None:
+def test_context_omits_llm_profile_defaults_without_provider(client, auth_headers, cfg) -> None:
     """Without a configured provider the handler returns ``null`` so
     the SPA can render an "LLM not configured" empty state instead of
     showing a row of fake defaults."""

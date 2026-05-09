@@ -42,7 +42,7 @@ from amx.agents.orchestrator import (
     RunCancelled,
     apply_review_results_to_db,
 )
-from amx.config import AMXConfig, LLMConfig
+from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
 from amx.pending_review import clear_pending, load_pending, save_pending
@@ -152,7 +152,9 @@ class RunRequest(BaseModel):
     )
 
 
-def _apply_llm_overrides(cfg: AMXConfig, overrides: LLMOverrides | None) -> tuple[AMXConfig, dict[str, Any]]:
+def _apply_llm_overrides(
+    cfg: AMXConfig, overrides: LLMOverrides | None
+) -> tuple[AMXConfig, dict[str, Any]]:
     """Return ``(derived_cfg, applied_dict)``.
 
     When ``overrides`` is ``None`` or empty the input ``cfg`` is
@@ -589,7 +591,11 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     #    a single per-batch / per-agent label.
     from amx.utils.live_display import (
         get_display as _get_display,
+    )
+    from amx.utils.live_display import (
         pop_subscriber as _pop_display_subscriber,
+    )
+    from amx.utils.live_display import (
         push_subscriber as _push_display_subscriber,
     )
 
@@ -757,11 +763,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     # ``analyze.run`` interrupt path uses the same rule (see
     # ``amx/cli_support/commands/_analyze/interrupt.py:65``); web
     # parity here keeps both surfaces telling the user the same story.
-    if (
-        final_status == "success"
-        and pending_count > 0
-        and int(applied) == 0
-    ):
+    if final_status == "success" and pending_count > 0 and int(applied) == 0:
         final_status = "ready_for_review"
 
     if hs is not None and run_id is not None:

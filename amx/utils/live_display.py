@@ -49,8 +49,8 @@ import amx
 # preserving the original isolation guarantee.
 
 _DisplaySubscriber = Callable[[str, dict[str, Any]], None]
-_subscribers: contextvars.ContextVar[tuple[_DisplaySubscriber, ...]] = (
-    contextvars.ContextVar("amx_display_subscribers", default=())
+_subscribers: contextvars.ContextVar[tuple[_DisplaySubscriber, ...]] = contextvars.ContextVar(
+    "amx_display_subscribers", default=()
 )
 
 
@@ -486,9 +486,7 @@ class LiveDisplay:
                 resolved_label = label or ""
         self._refresh()
         if label is not None:
-            _notify_subscribers(
-                "step.update", {"idx": idx, "label": resolved_label}
-            )
+            _notify_subscribers("step.update", {"idx": idx, "label": resolved_label})
 
     def update_tokens(self, idx: int, tokens_used: int) -> None:
         with self._lock:
