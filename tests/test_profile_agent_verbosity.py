@@ -28,7 +28,7 @@ prompt cannot silently revive the bug.
 from __future__ import annotations
 
 from amx.agents.profile_agent import _build_system_prompt
-from amx.llm.prompts import length_rule
+from amx.llm.prompts import ALTERNATIVES_LENGTH_RULE_REMINDER, length_rule
 
 
 def test_profile_agent_prompt_drops_hardcoded_word_cap() -> None:
@@ -79,3 +79,39 @@ def test_profile_agent_prompt_n_alternatives_one_omits_alt_slots() -> None:
     prompt = _build_system_prompt(1, description_verbosity="brief")
     assert "DESCRIPTION_1:" in prompt
     assert "DESCRIPTION_2:" not in prompt
+
+
+def test_profile_agent_prompt_alternatives_carry_length_rule() -> None:
+    """Regression test for the bug where DESCRIPTION_1 came back
+    exhaustive but DESCRIPTION_2 / DESCRIPTION_3 collapsed to one-
+    sentence briefs even at ``description_verbosity="exhaustive"``.
+
+    Two pinned guarantees:
+    1. The shared :data:`ALTERNATIVES_LENGTH_RULE_REMINDER` blurb is
+       present in the prompt so the LLM sees the length rule applied
+       to every alternative slot, not just to DESCRIPTION_1.
+    2. Each ``DESCRIPTION_<i>`` slot template reads "apply the SAME
+       length rule as DESCRIPTION_1" — the bare ``<alternative>``
+       placeholder that caused the bug never returns.
+    """
+    for preset in ("brief", "detailed", "comprehensive", "exhaustive"):
+        prompt = _build_system_prompt(3, description_verbosity=preset)
+        assert ALTERNATIVES_LENGTH_RULE_REMINDER in prompt, (
+            f"alternatives reminder missing at preset={preset}"
+        )
+        assert "DESCRIPTION_2: <alternative>" not in prompt, (
+            f"bare <alternative> placeholder leaked at preset={preset}"
+        )
+        assert "DESCRIPTION_3: <alternative>" not in prompt
+        assert "DESCRIPTION_2: <alternative description — apply the SAME length rule" in prompt
+        assert "DESCRIPTION_3: <alternative description — apply the SAME length rule" in prompt
+        # Same shape for the table-level alternatives block.
+        assert "TABLE_DESCRIPTION_2: <alternative table description — apply the SAME length rule" in prompt
+
+
+def test_profile_agent_prompt_n_alternatives_one_omits_reminder() -> None:
+    """At ``n_alternatives=1`` there are no alternative slots to
+    govern, so the reminder should not appear — keeps the brief-mode
+    prompt as small as before the fix."""
+    prompt = _build_system_prompt(1, description_verbosity="brief")
+    assert ALTERNATIVES_LENGTH_RULE_REMINDER not in prompt
