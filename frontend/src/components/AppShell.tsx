@@ -9,9 +9,10 @@ import { cn } from "../lib/cn";
 /**
  * App shell. TopBar carries primary nav and global context; sidebar
  * is the collapsible asset tree; main canvas hosts the routed page.
- * Standardized padding + a wider max-width than before so 13"+
- * monitors get more usable space. Footer sits inside the main
- * canvas (not below the sidebar) so it scrolls with the content.
+ * Footer sits beside the sidebar in a fixed slot at the bottom of the
+ * viewport so it stays visible regardless of how tall the routed page
+ * is — previously it lived inside the scrolling main canvas, which
+ * pushed it below the fold on long pages.
  */
 export default function AppShell() {
   const sidebarCollapsed = useUi((s) => s.sidebarCollapsed);
@@ -27,14 +28,16 @@ export default function AppShell() {
         >
           <Sidebar collapsed={sidebarCollapsed} />
         </aside>
-        <main className="flex-1 min-w-0 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-[1280px] flex-col px-8 py-7">
-            <div className="flex-1">
+        <div className="flex flex-1 min-w-0 flex-col">
+          <main className="flex-1 min-h-0 overflow-y-auto">
+            <div className="mx-auto w-full max-w-[1280px] px-8 py-7">
               <Outlet />
             </div>
+          </main>
+          <div className="mx-auto w-full max-w-[1280px] px-8">
             <Footer />
           </div>
-        </main>
+        </div>
       </div>
     </div>
   );
