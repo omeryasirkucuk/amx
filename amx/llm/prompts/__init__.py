@@ -9,6 +9,7 @@ description is produced by ``ProfileAgent`` (bulk run) or
 """
 
 from amx.llm.prompts.length import (
+    ALTERNATIVES_LENGTH_RULE_REMINDER,
     DESCRIPTION_LENGTH_RULES,
     VERBOSITY_PER_COL_TOKEN_BUDGET,
     length_rule,
@@ -16,6 +17,7 @@ from amx.llm.prompts.length import (
 )
 
 __all__ = [
+    "ALTERNATIVES_LENGTH_RULE_REMINDER",
     "DESCRIPTION_LENGTH_RULES",
     "VERBOSITY_PER_COL_TOKEN_BUDGET",
     "length_rule",
