@@ -8,6 +8,24 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **``Refresh prices`` in Studio raised ``URLError: <urlopen error
+  [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable
+  to get local issuer certificate>`` against both LiteLLM and
+  OpenRouter on Windows.** ``amx/llm/pricing.py``'s ``_http_get_json``
+  called ``urllib.request.urlopen`` with no SSL context, so plain
+  Windows Python (no shipped CA bundle, system trust store not
+  consulted) failed every HTTPS request out of the box, and
+  corporate-network users were ignored even when they had set
+  ``AMX_CA_BUNDLE`` for the LLM client. Pricing now builds an
+  ``ssl.SSLContext`` that mirrors the LLM provider's contract:
+  ``AMX_INSECURE_SSL=1`` returns an unverified context;
+  ``AMX_CA_BUNDLE`` / ``SSL_CERT_FILE`` (when pointing at an existing
+  file) seed a custom CA list; otherwise ``certifi.where()`` provides
+  the bundled Mozilla CAs. The exception surface
+  (``urllib.error.URLError`` / ``json.JSONDecodeError``) is unchanged
+  so the toast wiring at ``amx/web/routers/pricing.py`` and the
+  fallback flow in ``refresh_prices`` keep working as before.
+
 - **First ``/studio`` boot crashed with ``RuntimeError: Form data
   requires "python-multipart" to be installed`` on environments
   installed without the ``studio`` extra.** ``launch_studio`` only
