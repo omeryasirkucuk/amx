@@ -171,6 +171,13 @@ def run_cli() -> None:
     rendered as a themed error line instead of a raw traceback. Set
     ``AMX_DEBUG=1`` (or pass ``--debug`` to ``amx``) to see the full traceback.
     """
+    # Route every later ``ssl.create_default_context()`` through the
+    # OS trust store BEFORE any HTTPS-touching import fires (pricing
+    # fetcher, scanner, litellm bootstrap). One-shot, idempotent.
+    from amx.utils.network_trust import configure_trust_store
+
+    configure_trust_store()
+
     if len(sys.argv) >= 4:
         _rewrite_sys_argv_for_codebase(sys.argv)
     try:

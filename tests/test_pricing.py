@@ -84,22 +84,45 @@ def _clear_pricing_ssl_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
-def test_build_ssl_context_uses_certifi_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression: plain Windows Python ships no default CA bundle, so a
-    bare ``urlopen`` raises CERTIFICATE_VERIFY_FAILED. The helper must
-    fall back to ``certifi.where()`` so the price fetch succeeds out of
-    the box without any user env-var configuration."""
-    pytest.importorskip("certifi")
+def test_build_ssl_context_defers_to_os_trust_store_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When neither ``AMX_CA_BUNDLE`` nor ``SSL_CERT_FILE`` is set the
+    helper must return ``ssl.create_default_context()`` with NO
+    ``cafile=`` argument so Python's ``load_default_certs()``
+    consults the OS trust store (Windows Cert Store / macOS Keychain
+    / Linux ``ca-certificates``).
 
+    The earlier behavior forced ``cafile=certifi.where()`` which
+    silently replaced the OS chain — exactly the failure mode users
+    reported behind a corporate TLS proxy where the corporate CA is
+    installed in the OS but not in certifi. Locking ``cafile`` to
+    None pins the fix against an innocent-looking edit that
+    re-introduces certifi forcing.
+    """
     _clear_pricing_ssl_env(monkeypatch)
+
+    captured: dict[str, object] = {}
+    real = ssl.create_default_context
+
+    def _spy(*args: object, **kwargs: object) -> ssl.SSLContext:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ssl, "create_default_context", _spy)
+
     ctx = _build_ssl_context()
 
     assert isinstance(ctx, ssl.SSLContext)
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True
-    # Loaded a non-empty CA list — the certifi branch only "works" if
-    # the bundled bundle actually populates the context.
-    assert ctx.get_ca_certs(), "expected certifi CA bundle to populate context"
+    assert captured["args"] == ()
+    assert "cafile" not in captured["kwargs"], (
+        "regression: _build_ssl_context forced an explicit cafile= and bypassed "
+        "the OS trust store; revert to plain ssl.create_default_context() so "
+        "load_default_certs() can read the system store."
+    )
 
 
 def test_build_ssl_context_honours_amx_ca_bundle(
@@ -386,6 +409,72 @@ def test_refresh_records_errors_without_raising(monkeypatch: pytest.MonkeyPatch)
     out = refresh_prices(force=True)
     assert any("litellm" in e for e in out["errors"])
     assert out["openrouter"] == 1
+
+
+def test_refresh_emits_actionable_hint_on_tls_verify_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Behind a corporate TLS proxy ``urlopen`` raises a ``URLError``
+    whose ``reason`` is an ``ssl.SSLCertVerificationError``. The
+    Studio toast was rendering the raw ``URLError: <urlopen error
+    [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+    self-signed certificate in certificate chain (_ssl.c:1032)>``
+    blob, which reads like a crash. The helper must specialise on
+    that case and emit one short hint per source that names the
+    ``AMX_CA_BUNDLE`` escape hatch.
+
+    Locking this in keeps the message from regressing to the raw
+    URLError repr through an innocent-looking refactor in the
+    exception handler.
+    """
+    import urllib.error
+
+    verify_failure = ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate in certificate chain"
+    )
+
+    def boom() -> dict[str, ModelPrice]:
+        raise urllib.error.URLError(verify_failure)
+
+    monkeypatch.setattr(pricing_mod, "fetch_litellm_prices", boom)
+    monkeypatch.setattr(pricing_mod, "fetch_openrouter_prices", boom)
+
+    out = refresh_prices(force=True)
+
+    assert len(out["errors"]) == 2
+    for msg in out["errors"]:
+        assert "TLS verification failed" in msg
+        assert "AMX_CA_BUNDLE" in msg
+        # Crucially the raw "URLError: <urlopen error ...>" repr must
+        # NOT leak into the user-facing toast — that was the bug.
+        assert "urlopen error" not in msg
+        assert "CERTIFICATE_VERIFY_FAILED" not in msg
+    # Source labels still routed correctly.
+    sources = {msg.split(":", 1)[0] for msg in out["errors"]}
+    assert sources == {"litellm", "openrouter"}
+
+
+def test_refresh_keeps_raw_format_for_non_ssl_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Genuine outages, JSON parse errors, and OS errors still get
+    the existing ``ClassName: message`` format so real problems
+    surface plainly rather than being masked by the friendly SSL
+    hint.
+    """
+    import urllib.error
+
+    def boom() -> dict[str, ModelPrice]:
+        raise urllib.error.URLError("Network is unreachable")
+
+    monkeypatch.setattr(pricing_mod, "fetch_litellm_prices", boom)
+    monkeypatch.setattr(pricing_mod, "fetch_openrouter_prices", boom)
+
+    out = refresh_prices(force=True)
+    for msg in out["errors"]:
+        assert "URLError" in msg
+        assert "Network is unreachable" in msg
+        assert "TLS verification" not in msg
 
 
 def test_cache_age_reports_none_before_first_fetch() -> None:
