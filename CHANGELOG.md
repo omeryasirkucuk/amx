@@ -8,6 +8,18 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Live input/output price under the active LLM profile in the
+  sidebar.** The sidebar's "LLM PROFILE" section showed only the
+  picker chip with the profile name; the rates the active model
+  actually bills at lived two clicks away in Settings. Extracted
+  the per-row price line introduced for Settings into a shared
+  ``frontend/src/components/LlmProfilePriceLine.tsx`` and mounted
+  a compact-density variant under the picker in
+  ``frontend/src/components/Sidebar.tsx``. Same TanStack Query key
+  ``["pricing", "model", provider, model]`` so a refresh of the
+  cache propagates to the sidebar, Settings, and the topbar dialog
+  in one shot.
+
 - **Browse and pick prices for any LLM model from Studio + CLI.**
   ``GET /api/pricing/models`` (``amx/web/routers/pricing.py``) returns
   a flat, deduped catalog built from

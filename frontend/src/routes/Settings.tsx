@@ -18,6 +18,7 @@ import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import StatusPill from "../components/StatusPill";
 import EmptyState from "../components/EmptyState";
+import LlmProfilePriceLine from "../components/LlmProfilePriceLine";
 import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
 import { api, apiFetch } from "../lib/api";
@@ -496,54 +497,6 @@ function coerceValue(field: string, raw: string): unknown {
 }
 
 // ── LLM profiles ──────────────────────────────────────────────────────
-
-/** Per-row "$X / $Y per 1M (source)" hint under each LLM profile.
- *
- * Reuses the same ``api.lookupPrice`` query the cost-override editor
- * already uses, so a refresh of the price cache propagates through
- * every row at once via the shared TanStack Query key. Profile rows
- * with a missing provider/model render nothing — falls back to the
- * provider · model line above with no awkward "—" placeholder. */
-function LlmProfilePriceLine({
-  provider,
-  model,
-  isActive,
-}: {
-  provider: string;
-  model: string;
-  isActive: boolean;
-}) {
-  const enabled = Boolean(provider && model);
-  const price = useQuery({
-    queryKey: ["pricing", "model", provider, model],
-    queryFn: () => api.lookupPrice(provider, model),
-    enabled,
-    refetchOnWindowFocus: false,
-    retry: false,
-  });
-  if (!enabled) return null;
-  if (price.isLoading) {
-    return (
-      <div className={cn("text-[11px]", isActive ? "text-ink-muted" : "text-ink-dim")}>
-        Loading price…
-      </div>
-    );
-  }
-  const data = price.data;
-  if (!data || data.source === "unknown") {
-    return (
-      <div className={cn("text-[11px]", "text-ink-dim")}>
-        no price data — refresh in topbar
-      </div>
-    );
-  }
-  return (
-    <div className={cn("text-[11px]", isActive ? "text-ink" : "text-ink-muted")}>
-      ${data.input_per_mtok.toFixed(4)} / ${data.output_per_mtok.toFixed(4)} per 1M{" "}
-      <span className="text-ink-dim">({data.source})</span>
-    </div>
-  );
-}
 
 function LlmProfilesSection() {
   const qc = useQueryClient();

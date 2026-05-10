@@ -17,6 +17,7 @@ import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import { scopePath } from "../lib/scope";
 import { InfoHint } from "./ui";
+import LlmProfilePriceLine from "./LlmProfilePriceLine";
 import ProfilePicker from "./topbar/ProfilePicker";
 
 interface Props {
@@ -234,6 +235,8 @@ function SectionTitle({
 
 function LlmSection() {
   const { data } = useQuery({ queryKey: ["context"], queryFn: () => api.context() });
+  const provider = data?.llm_provider ?? "";
+  const model = data?.llm_model ?? "";
   return (
     <div className="space-y-0.5 text-sm">
       <ProfilePicker
@@ -243,6 +246,15 @@ function LlmSection() {
         activeName={data?.active_llm_profile ?? null}
         tooltip={data?.llm_model ?? undefined}
       />
+      {provider && model && (
+        <LlmProfilePriceLine
+          provider={provider}
+          model={model}
+          isActive
+          density="compact"
+          className="px-1.5 pt-0.5"
+        />
+      )}
     </div>
   );
 }
