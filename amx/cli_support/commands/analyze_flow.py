@@ -27,6 +27,7 @@ from amx.utils.console import (
 )
 from amx.utils.live_commands import command_display
 from amx.utils.logging import get_logger
+from amx.utils.terminal_theme import accent_color
 from amx.utils.token_tracker import tracker as token_tracker
 
 log = get_logger("cli.analyze_flow")
@@ -591,8 +592,8 @@ def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> b
                 "All LLM requests will be submitted as a single batch job.\n"
                 "Typical turnaround: [bold]2–30 minutes[/bold]  |  Cost: [bold green]~50 % lower[/bold green]\n"
                 "[dim]Live polling status will appear below.[/dim]",
-                title="[#fb923c]Mode: Batch[/#fb923c]",
-                border_style="#fb923c",
+                title="[accent]Mode: Batch[/accent]",
+                border_style=accent_color(),
             )
         )
     else:

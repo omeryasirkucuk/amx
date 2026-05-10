@@ -595,9 +595,9 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
             rows.append(row)
         render_table("Preset comparison", ["Field", *PROMPT_DETAIL_LEVELS], rows)
         info(
-            f"Current level: [#22d3ee]{current}[/#22d3ee]  "
+            f"Current level: [info]{current}[/info]  "
             f"(n_alternatives={cfg.llm.n_alternatives})  "
-            "- run [#22d3ee]/prompt-detail <level>[/#22d3ee] to change."
+            "- run [info]/prompt-detail <level>[/info] to change."
         )
         return
 
@@ -611,7 +611,7 @@ def cmd_prompt_detail(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].prompt_detail = level
     cfg.save()
     success(
-        f"Prompt detail set to [#22d3ee]{level}[/#22d3ee] and saved "
+        f"Prompt detail set to [info]{level}[/info] and saved "
         f"for LLM profile '{cfg.active_llm_profile}'."
     )
     prompt_detail = prompt_detail_for(level)
@@ -660,9 +660,9 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
             "usage patterns and caveats.\n"
             "  exhaustive    — multi-paragraph reference-style entry; best for "
             "documentation generation, not interactive runs.\n"
-            f"\nCurrent: [#22d3ee]{current}[/#22d3ee] for LLM profile "
+            f"\nCurrent: [info]{current}[/info] for LLM profile "
             f"'{cfg.active_llm_profile or 'default'}'.\n"
-            f"Run [#22d3ee]/description-verbosity {levels_pipe}[/#22d3ee] to change."
+            f"Run [info]/description-verbosity {levels_pipe}[/info] to change."
         )
         return
 
@@ -676,7 +676,7 @@ def cmd_description_verbosity(cfg: AMXConfig, rest: list[str]) -> None:
         cfg.llm_profiles[cfg.active_llm_profile].description_verbosity = level
     cfg.save()
     success(
-        f"Description verbosity set to [#22d3ee]{level}[/#22d3ee] and saved "
+        f"Description verbosity set to [info]{level}[/info] and saved "
         f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
     )
     cost_hint = _DESCRIPTION_VERBOSITY_COST_HINTS.get(level)
@@ -692,9 +692,9 @@ def cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         current = getattr(cfg.llm, "n_alternatives", 3)
         info(
-            f"Current n_alternatives: [#22d3ee]{current}[/#22d3ee]  "
+            f"Current n_alternatives: [info]{current}[/info]  "
             "(1 = cheapest, 5 = maximum alternatives)  "
-            "- run [#22d3ee]/n-alternatives <N>[/#22d3ee] to change."
+            "- run [info]/n-alternatives <N>[/info] to change."
         )
         return
 
@@ -720,7 +720,7 @@ def cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
         5: "maximum context, highest cost",
     }.get(value, "")
     success(
-        f"n_alternatives set to [#22d3ee]{value}[/#22d3ee] ({cost_note}) and saved "
+        f"n_alternatives set to [info]{value}[/info] ({cost_note}) and saved "
         f"for LLM profile '{cfg.active_llm_profile}'."
     )
 
@@ -730,9 +730,9 @@ def cmd_llm_batch_size(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         current = getattr(cfg.llm, "column_batch_size", 10)
         info(
-            f"Current LLM batch size: [#22d3ee]{current}[/#22d3ee] columns  "
+            f"Current LLM batch size: [info]{current}[/info] columns  "
             "(Small = safer/more precise, Large = faster/cheaper)  "
-            "- run [#22d3ee]/llm-batch-size <N>[/#22d3ee] to change."
+            "- run [info]/llm-batch-size <N>[/info] to change."
         )
         return
 
@@ -766,9 +766,9 @@ def cmd_batch_context_columns(cfg: AMXConfig, rest: list[str]) -> None:
         else:
             current_label = f"{current} names"
         info(
-            f"Current batch context columns: [#22d3ee]{current_label}[/#22d3ee]. "
-            "Use [#22d3ee]/batch-context-columns off[/#22d3ee], [#22d3ee]all[/#22d3ee], "
-            "or [#22d3ee]/batch-context-columns <N>[/#22d3ee]."
+            f"Current batch context columns: [info]{current_label}[/info]. "
+            "Use [info]/batch-context-columns off[/info], [info]all[/info], "
+            "or [info]/batch-context-columns <N>[/info]."
         )
         return
 

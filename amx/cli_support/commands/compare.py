@@ -36,6 +36,7 @@ from amx.utils.console import (
     success,
     warn,
 )
+from amx.utils.terminal_theme import info_color
 
 LogEvent = Callable[..., None]
 
@@ -401,7 +402,7 @@ def _render_run_settings(runs: list[dict[str, Any]]) -> None:
         show_lines=True,
         box=box.SIMPLE_HEAVY,
     )
-    table.add_column("Run", style="#22d3ee", no_wrap=True)
+    table.add_column("Run", style=info_color(), no_wrap=True)
     table.add_column("Prompt detail", no_wrap=True)
     table.add_column("Language", no_wrap=True)
     table.add_column("Verbosity", no_wrap=True)
@@ -432,7 +433,7 @@ def _render_run_settings(runs: list[dict[str, Any]]) -> None:
     for r in runs:
         s = _settings_for_run(r)
         cells = [
-            Text(f"#{r.get('id')}", style="#22d3ee"),
+            Text(f"#{r.get('id')}", style=info_color()),
             Text(_opt(s, "prompt_detail")),
             Text(_opt(s, "language")),
             Text(_opt(s, "description_verbosity")),
@@ -456,10 +457,10 @@ def _render_run_summary(runs: list[dict[str, Any]], by: str) -> None:
         show_lines=True,
         box=box.SIMPLE_HEAVY,
     )
-    table.add_column("Run", style="#22d3ee", no_wrap=True)
-    table.add_column("Started", style="#22d3ee", no_wrap=True)
+    table.add_column("Run", style=info_color(), no_wrap=True)
+    table.add_column("Started", style=info_color(), no_wrap=True)
     table.add_column("Status", no_wrap=True)
-    table.add_column("Command", style="#22d3ee", no_wrap=True)
+    table.add_column("Command", style=info_color(), no_wrap=True)
     table.add_column("DB profile", no_wrap=True)
     table.add_column("LLM profile", no_wrap=True)
     table.add_column("Model", no_wrap=True)
@@ -484,7 +485,7 @@ def _render_run_summary(runs: list[dict[str, Any]], by: str) -> None:
             else "—"
         )
         cells = [
-            Text(f"#{r.get('id')}", style="#22d3ee"),
+            Text(f"#{r.get('id')}", style=info_color()),
             Text(_fmt_dt(r.get("started_at"))),
             Text(
                 str(r.get("status") or "—"),
@@ -554,7 +555,7 @@ def _render_per_column_pivot(
         show_lines=True,
         box=box.SIMPLE_HEAVY,
     )
-    table.add_column("Schema.Table.Column", style="#22d3ee", no_wrap=False, overflow="fold")
+    table.add_column("Schema.Table.Column", style=info_color(), no_wrap=False, overflow="fold")
     for r in runs:
         table.add_column(
             f"Run #{r.get('id')}",
@@ -585,7 +586,7 @@ def _render_per_column_pivot(
             base_row = runs_for_asset.get(int(runs[0]["id"]))
             baseline_text = _top_alternative(base_row) if base_row else ""
 
-        cells: list[Text] = [Text(label, style="#22d3ee")]
+        cells: list[Text] = [Text(label, style=info_color())]
         for col_idx, run in enumerate(runs):
             row = runs_for_asset.get(int(run["id"]))
             if not row:
@@ -633,12 +634,12 @@ def _render_aggregate_metrics(
         show_lines=True,
         box=box.SIMPLE_HEAVY,
     )
-    table.add_column("Metric", style="#22d3ee", no_wrap=True)
+    table.add_column("Metric", style=info_color(), no_wrap=True)
     for r in runs:
         table.add_column(f"Run #{r.get('id')}", justify="right")
 
     def _row(label: str, values: list[Any], best_idx: int | None) -> None:
-        cells: list[Text] = [Text(label, style="#22d3ee")]
+        cells: list[Text] = [Text(label, style=info_color())]
         for i, v in enumerate(values):
             text = Text(str(v))
             if i == best_idx:
