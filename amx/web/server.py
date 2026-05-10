@@ -77,6 +77,14 @@ def create_app(
         users get the pre-built dist; tests point it at a temp dir
         with stub files.
     """
+    # Route HTTPS calls made from Studio worker threads (pricing
+    # refresh, doc scanner, batch API SDKs) through the OS trust
+    # store. ``configure_trust_store`` is idempotent so the CLI entry
+    # point and Studio bootstrap can both call it safely.
+    from amx.utils.network_trust import configure_trust_store
+
+    configure_trust_store()
+
     app = FastAPI(
         title="AMX Studio",
         version=AMX_VERSION,

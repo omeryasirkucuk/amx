@@ -61,6 +61,13 @@ dependencies = [
     "litellm>=1.83.7",
     "requests>=2.31",
     "keyring>=24.0",
+    # ``truststore`` lets Python's ``ssl`` module consult the OS
+    # trust store (Windows Cert Store / macOS Keychain / Linux
+    # system bundle) through first-class OS APIs. AMX injects it at
+    # startup so corporate-CA-only certificates already imported into
+    # the OS for browsers / curl also work for AMX's HTTPS calls,
+    # without forcing the user to set ``AMX_CA_BUNDLE`` by hand.
+    "truststore>=0.10",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "sse-starlette>=2.0",

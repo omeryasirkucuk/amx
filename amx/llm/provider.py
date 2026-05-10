@@ -24,26 +24,26 @@ _litellm_module: ModuleType | None = None
 
 
 def _configure_ssl_environment() -> None:
-    """Honor ``AMX_CA_BUNDLE`` / ``AMX_INSECURE_SSL`` so corporate networks work.
+    """Apply ``AMX_INSECURE_SSL`` to the litellm / httpx stack.
 
-    Corporate environments routinely run TLS-inspecting proxies (Zscaler,
-    Netskope, etc.) that re-sign every HTTPS connection with an internal
-    root CA. Out of the box, ``httpx`` / ``openai`` / ``litellm`` don't
-    trust that CA → "self-signed certificate in certificate chain" and
-    every LLM call fails. We expose two env vars to make this fixable
-    without touching code:
+    Corporate environments routinely run TLS-inspecting proxies
+    (Zscaler, Netskope, etc.) that re-sign every HTTPS connection
+    with an internal root CA. The general fix lives in
+    :mod:`amx.utils.network_trust`: the startup helper there injects
+    ``truststore`` so Python's ``ssl`` module consults the OS trust
+    store (where the corporate CA is almost always already
+    installed), and fans ``AMX_CA_BUNDLE`` out to
+    ``REQUESTS_CA_BUNDLE`` / ``SSL_CERT_FILE`` / ``CURL_CA_BUNDLE``
+    for the third-party HTTP clients that read those env vars.
 
-    - ``AMX_CA_BUNDLE=/path/to/corp_root.pem`` — point requests / httpx /
-      curl at the corporate CA bundle. Most reliable fix.
-    - ``AMX_INSECURE_SSL=1`` — disable SSL verification entirely. Useful
-      for a one-shot test; do NOT use in production.
+    This function is now the litellm-specific extension of that
+    contract: when the user sets ``AMX_INSECURE_SSL=1`` for a
+    one-shot diagnostic, AMX flips litellm's own ``ssl_verify``
+    flag and the cross-library ``PYTHONHTTPSVERIFY`` env var so the
+    underlying httpx clients used by openai / anthropic SDKs also
+    bypass verification. ``AMX_INSECURE_SSL`` should never be set in
+    production.
     """
-    ca_bundle = os.getenv("AMX_CA_BUNDLE", "").strip()
-    if ca_bundle and os.path.exists(ca_bundle):
-        # ``requests`` / ``httpx`` / ``urllib3`` / ``curl`` all read these.
-        for var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
-            os.environ.setdefault(var, ca_bundle)
-
     insecure = os.getenv("AMX_INSECURE_SSL", "").strip().lower()
     if insecure in ("1", "true", "yes", "on"):
         try:
