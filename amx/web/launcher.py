@@ -99,6 +99,14 @@ def launch_studio(
                 "fastapi",
                 ("uvicorn", "uvicorn[standard]"),
                 ("sse_starlette", "sse-starlette"),
+                # FastAPI's ``Form(...)`` / ``File(...)`` parsers raise
+                # ``RuntimeError: Form data requires "python-multipart"
+                # to be installed`` the first time a multipart route is
+                # hit (e.g. the doc-upload drag-drop endpoint in
+                # ``amx/web/routers/docs_ops.py``). Wheel name is
+                # ``python-multipart``; modern versions (>=0.0.12)
+                # expose the importable module as ``python_multipart``.
+                ("python_multipart", "python-multipart"),
             ],
             feature="AMX Studio (/studio)",
         )
