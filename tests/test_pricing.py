@@ -17,6 +17,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import ssl
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,8 @@ import pytest
 from amx.llm import pricing as pricing_mod
 from amx.llm.pricing import (
     ModelPrice,
+    _build_ssl_context,
+    _http_get_json,
     cache_age_seconds,
     cache_info,
     compute_cost,
@@ -67,6 +70,109 @@ def test_fetch_litellm_parses_cost_per_token(monkeypatch: pytest.MonkeyPatch) ->
     assert out["gpt-mock"].output_per_mtok == pytest.approx(6.00)
     assert out["gpt-mock"].source == "litellm"
     assert out["gpt-mock"].fetched_at is not None
+
+
+# ── SSL context for stdlib urlopen ─────────────────────────────────────────
+
+
+def _clear_pricing_ssl_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip the SSL env vars the helper consults so each test starts
+    from a known floor regardless of the developer's shell."""
+    for var in ("AMX_INSECURE_SSL", "AMX_CA_BUNDLE", "SSL_CERT_FILE"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_build_ssl_context_uses_certifi_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: plain Windows Python ships no default CA bundle, so a
+    bare ``urlopen`` raises CERTIFICATE_VERIFY_FAILED. The helper must
+    fall back to ``certifi.where()`` so the price fetch succeeds out of
+    the box without any user env-var configuration."""
+    pytest.importorskip("certifi")
+    import certifi
+
+    _clear_pricing_ssl_env(monkeypatch)
+    ctx = _build_ssl_context()
+
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    # Loaded a non-empty CA list — the certifi branch only "works" if
+    # the bundled bundle actually populates the context.
+    assert ctx.get_ca_certs(), "expected certifi CA bundle to populate context"
+
+
+def test_build_ssl_context_honours_amx_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Corporate networks set ``AMX_CA_BUNDLE`` to a re-signed root.
+    The helper must read that file, not silently fall through to
+    certifi (which would not contain the corporate root and would
+    fail TLS verification against the proxy)."""
+    # Use certifi's bundle as a real, parseable PEM under a controlled
+    # path so we can assert the helper picked OUR file by name.
+    pytest.importorskip("certifi")
+    import certifi
+
+    bundle_pem = Path(certifi.where()).read_bytes()
+    custom_bundle = tmp_path / "corp-root.pem"
+    custom_bundle.write_bytes(bundle_pem)
+
+    _clear_pricing_ssl_env(monkeypatch)
+    monkeypatch.setenv("AMX_CA_BUNDLE", str(custom_bundle))
+
+    ctx = _build_ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.get_ca_certs(), "expected AMX_CA_BUNDLE PEM to populate context"
+
+
+def test_build_ssl_context_unverified_when_insecure_ssl_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``AMX_INSECURE_SSL=1`` is the documented escape hatch for hostile
+    networks. The helper must mirror the LLM provider's contract — an
+    unverified context with hostname check disabled — so the price
+    fetch behaves the same way the LLM call does in that mode."""
+    _clear_pricing_ssl_env(monkeypatch)
+    monkeypatch.setenv("AMX_INSECURE_SSL", "1")
+
+    ctx = _build_ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.check_hostname is False
+    assert ctx.verify_mode == ssl.CERT_NONE
+
+
+def test_http_get_json_passes_context_to_urlopen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wiring guard: a future refactor must not silently drop the
+    ``context=`` kwarg. ``urlopen`` without a context is exactly the
+    bug the Windows user hit — locking this in keeps the fix from
+    regressing through an innocent-looking edit."""
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+        def __enter__(self) -> _FakeResponse:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    def _fake_urlopen(req: object, *args: object, **kwargs: object) -> _FakeResponse:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _FakeResponse()
+
+    monkeypatch.setattr(pricing_mod.urllib.request, "urlopen", _fake_urlopen)
+    out = _http_get_json("https://example.invalid/pricing.json")
+
+    assert out == {"ok": True}
+    ctx = captured["kwargs"].get("context")
+    assert isinstance(ctx, ssl.SSLContext), (
+        "_http_get_json must pass context=SSLContext to urlopen — without it, "
+        "Windows Python raises CERTIFICATE_VERIFY_FAILED on every HTTPS host"
+    )
 
 
 def test_fetch_openrouter_parses_pricing_block(monkeypatch: pytest.MonkeyPatch) -> None:

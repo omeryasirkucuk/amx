@@ -38,6 +38,8 @@ All disk + network access is contained here. Other modules import
 from __future__ import annotations
 
 import json
+import os
+import ssl
 import threading
 import time
 import urllib.error
@@ -121,6 +123,54 @@ def _write_cache(payload: dict[str, Any]) -> None:
         log.debug("could not persist pricing cache: %s", exc)
 
 
+def _build_ssl_context() -> ssl.SSLContext:
+    """SSL context for the price-fetch ``urlopen`` calls.
+
+    Resolves a CA bundle in priority order so the same env vars users
+    already set for the LLM client (``AMX_CA_BUNDLE`` /
+    ``AMX_INSECURE_SSL``) also fix the pricing path:
+
+    1. ``AMX_INSECURE_SSL`` truthy — return an unverified context.
+       Mirrors :func:`amx.llm.provider._configure_ssl_environment`'s
+       contract; diagnostic-only escape hatch for hostile networks.
+    2. ``AMX_CA_BUNDLE`` set to an existing file — corporate CA bundle,
+       typical Zscaler / Netskope / on-prem MITM proxy fix.
+    3. ``SSL_CERT_FILE`` set to an existing file — already-set stdlib
+       env var, also written by ``_configure_ssl_environment`` so a
+       run that imported the LLM provider first is picked up here.
+    4. ``certifi.where()`` — bundled Mozilla CA list. This branch is
+       what fixes plain Windows Python: the CPython ``python.org``
+       distribution ships no default CA bundle and does not consult
+       the Windows trust store, so a bare ``urlopen`` raises
+       ``CERTIFICATE_VERIFY_FAILED`` against any HTTPS host.
+    5. System default — last resort when nothing above resolves.
+    """
+    insecure = os.getenv("AMX_INSECURE_SSL", "").strip().lower()
+    if insecure in ("1", "true", "yes", "on"):
+        return ssl._create_unverified_context()
+
+    cafile: str | None = None
+    for env_var in ("AMX_CA_BUNDLE", "SSL_CERT_FILE"):
+        candidate = os.getenv(env_var, "").strip()
+        if candidate and os.path.isfile(candidate):
+            cafile = candidate
+            break
+
+    if cafile is None:
+        try:
+            import certifi
+        except ImportError:
+            certifi = None  # type: ignore[assignment]
+        if certifi is not None:
+            bundled = certifi.where()
+            if bundled and os.path.isfile(bundled):
+                cafile = bundled
+
+    if cafile is not None:
+        return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
+
+
 def _http_get_json(url: str, *, headers: dict[str, str] | None = None) -> Any:
     """Minimal stdlib HTTP GET -> JSON. Stays out of httpx/urllib3 dep tree.
 
@@ -128,7 +178,9 @@ def _http_get_json(url: str, *, headers: dict[str, str] | None = None) -> Any:
     can swallow the failure and fall back to the next resolution layer.
     """
     req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_SEC) as resp:
+    with urllib.request.urlopen(
+        req, timeout=_HTTP_TIMEOUT_SEC, context=_build_ssl_context()
+    ) as resp:
         raw = resp.read().decode("utf-8")
     return json.loads(raw)
 
