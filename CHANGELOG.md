@@ -6,6 +6,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- **Browse and pick prices for any LLM model from Studio + CLI.**
+  ``GET /api/pricing/models`` (``amx/web/routers/pricing.py``) returns
+  a flat, deduped catalog built from
+  ``list_all_models()`` (``amx/llm/pricing.py``), priority litellm >
+  openrouter > fallback so the listing matches the resolution order
+  ``lookup_price`` would have used. The Studio topbar's "Prices: Xs
+  ago" chip is now clickable and opens a searchable model-browser
+  dialog (``frontend/src/components/PricingBrowser.tsx``) with
+  source-filter chips (LiteLLM / OpenRouter / Bundled) and a "Open
+  full pricing page" link to the new ``/pricing`` route
+  (``frontend/src/routes/Pricing.tsx``). The Settings LLM Profile
+  list shows a per-row ``$X.XXXX / $Y.YYYY per 1M (source)`` line
+  under each profile's ``provider · model``. The CLI ``/cost``
+  command (under ``/llm``) now opens an interactive single-select
+  picker after printing the active profile's price — type-to-filter
+  to see another model's rates without setting up a new profile.
+  Existing ``/cost <input> <output>`` and ``/cost reset`` semantics
+  are preserved exactly. Five new tests in
+  ``tests/test_cmd_cost.py``, four in ``tests/test_pricing.py``, and
+  four in ``tests/web/test_pricing_router.py`` cover the priority +
+  dedup + endpoint shape + picker flow.
+
 ### Fixed
 
 - **``Refresh prices`` in Studio raised ``URLError: <urlopen error
