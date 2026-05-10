@@ -22,10 +22,24 @@ interface Props {
   /** Bolder rendering for the active profile; muted otherwise. */
   isActive?: boolean;
   /** Visual density. ``compact`` is for the sidebar (smaller font,
-   *  no source label) where horizontal space is scarce; ``default``
-   *  is for the Settings list where the full hint reads naturally. */
+   *  one-line ``in $X · out $Y /1M`` with smart-trim decimals); the
+   *  ``default`` density is for the Settings list where the full
+   *  ``$0.0015 / $0.0050 per 1M (litellm)`` hint reads naturally and
+   *  needs to match the 4-decimal CLI ``/cost`` output. */
   density?: "compact" | "default";
   className?: string;
+}
+
+/** Sidebar-friendly rate formatter. Always returns at least two
+ *  decimals so a cheap-but-non-zero rate ($0.25) doesn't read as
+ *  "$0", but extends to four decimals when the rate is below a cent
+ *  per 1M tokens — that band is where Anthropic Haiku, OpenAI
+ *  ``gpt-5.4-nano``, and the cheap OpenRouter routes live, and 2-
+ *  decimal rounding would print "$0.00" for all of them. */
+function formatRateCompact(value: number): string {
+  if (value === 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
 }
 
 export default function LlmProfilePriceLine({
@@ -67,8 +81,13 @@ export default function LlmProfilePriceLine({
 
   if (density === "compact") {
     return (
-      <div className={cn(fontClass, baseTone, className)}>
-        ${data.input_per_mtok.toFixed(4)} / ${data.output_per_mtok.toFixed(4)} per 1M
+      <div className={cn(fontClass, baseTone, "tabular-nums", className)}>
+        <span className="text-ink-dim">in</span>{" "}
+        {formatRateCompact(data.input_per_mtok)}
+        <span className="px-1.5 text-ink-dim">·</span>
+        <span className="text-ink-dim">out</span>{" "}
+        {formatRateCompact(data.output_per_mtok)}
+        <span className="ml-1 text-ink-dim">/1M</span>
       </div>
     );
   }
