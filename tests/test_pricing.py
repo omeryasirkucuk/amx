@@ -477,6 +477,43 @@ def test_refresh_keeps_raw_format_for_non_ssl_failures(
         assert "TLS verification" not in msg
 
 
+def test_refresh_emits_actionable_hint_on_http_4xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corporate networks frequently blanket-block LLM endpoints at
+    the proxy layer, so ``fetch_openrouter_prices`` surfaces as
+    ``urllib.error.HTTPError: HTTP Error 403: Forbidden``. The
+    earlier toast rendered that string verbatim, which reads like
+    AMX is broken; the helper must produce a short hint that names
+    the host, the status code, and reassures the user that the
+    cached / fallback catalog still loaded.
+    """
+    import io
+    import urllib.error
+
+    def boom() -> dict[str, ModelPrice]:
+        raise urllib.error.HTTPError(
+            url=pricing_mod._OPENROUTER_URL,
+            code=403,
+            msg="Forbidden",
+            hdrs={},  # type: ignore[arg-type]
+            fp=io.BytesIO(b""),
+        )
+
+    monkeypatch.setattr(pricing_mod, "fetch_litellm_prices", boom)
+    monkeypatch.setattr(pricing_mod, "fetch_openrouter_prices", boom)
+
+    out = refresh_prices(force=True)
+
+    assert len(out["errors"]) == 2
+    for msg in out["errors"]:
+        assert "HTTP 403" in msg
+        assert "blocked by a network policy" in msg
+        # The raw "HTTPError: HTTP Error 403: Forbidden" string —
+        # which is what users saw before this fix — must NOT leak.
+        assert "HTTPError:" not in msg
+
+
 def test_cache_age_reports_none_before_first_fetch() -> None:
     assert cache_age_seconds() is None
     assert cache_info()["is_stale"] is True
