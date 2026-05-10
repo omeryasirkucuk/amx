@@ -8,6 +8,22 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **``Refresh prices`` toast read like AMX was broken when the
+  corporate proxy blanket-blocked OpenRouter.** Studio surfaced
+  ``openrouter: HTTPError: HTTP Error 403: Forbidden`` — the raw
+  ``HTTPError`` repr from stdlib — which looks like a crash to a
+  first-time user even though LiteLLM kept loading and AMX is fully
+  usable on the LiteLLM catalog alone. ``_format_fetch_error`` in
+  ``amx/llm/pricing.py`` now detects ``urllib.error.HTTPError`` with
+  a 4xx status and emits a one-line hint that names the host, the
+  status code, and reassures the user that the cached / fallback
+  catalog still loaded ("``<host>`` returned HTTP 403 — likely
+  blocked by a network policy …; AMX kept the cached / fallback
+  catalog for this source; ask your network admin to allow ``<host>``
+  if you need its model list"). The non-4xx and non-SSL paths keep
+  the existing ``ClassName: message`` format so genuine outages
+  still surface plainly.
+
 - **Pricing refresh failed with ``CERTIFICATE_VERIFY_FAILED`` on a
   fresh install behind a corporate TLS-inspecting proxy** (Zscaler /
   Netskope / Cloudflare WARP / similar). Studio rendered the toast

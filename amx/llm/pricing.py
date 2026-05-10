@@ -218,25 +218,46 @@ def _is_cert_verify_error(exc: BaseException) -> bool:
 def _format_fetch_error(source: str, url: str, exc: BaseException) -> str:
     """Render a fetch failure for the Studio toast / CLI log.
 
-    Specialises the message for TLS verification failures so the user
-    sees one short hint that names the env-var override, instead of a
-    multi-line ``URLError: <urlopen error [SSL:
-    CERTIFICATE_VERIFY_FAILED] ... self-signed certificate in
-    certificate chain ...>`` blob that reads like a crash. Every other
-    failure (genuine outage, JSON parse error, file system error)
-    keeps the existing class-name + message format so real problems
-    still surface plainly.
+    Specialises the message for the two failure modes that confuse
+    first-time users the most:
+
+    1. **TLS verification failure** (``ssl.SSLCertVerificationError``
+       — typical behind a corporate TLS-inspecting proxy). The raw
+       ``URLError: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED]
+       ... self-signed certificate in certificate chain ...>`` blob
+       reads like a crash; the hint names the
+       ``AMX_CA_BUNDLE`` override.
+    2. **HTTP 4xx Forbidden / blocked** (``urllib.error.HTTPError``
+       with a 4xx status). On corporate networks ``openrouter.ai``
+       is commonly classed as an LLM endpoint and blanket-blocked by
+       the proxy, surfacing as ``HTTP Error 403: Forbidden``. The
+       hint reassures the user that LiteLLM kept loading and the
+       block is on their network, not AMX.
+
+    Every other failure (genuine outage, JSON parse error, file
+    system error) keeps the existing class-name + message format so
+    real problems still surface plainly.
     """
+    try:
+        host = urllib.parse.urlparse(url).hostname or url
+    except ValueError:
+        host = url
+
     if _is_cert_verify_error(exc):
-        try:
-            host = urllib.parse.urlparse(url).hostname or url
-        except ValueError:
-            host = url
         return (
             f"{source}: TLS verification failed against {host} — usually a corporate proxy. "
             f"AMX consults the OS trust store automatically; if your company CA is still "
             f"missing, set AMX_CA_BUNDLE=/path/to/ca.pem and retry."
         )
+
+    if isinstance(exc, urllib.error.HTTPError) and 400 <= exc.code < 500:
+        return (
+            f"{source}: {host} returned HTTP {exc.code} — likely blocked by a network policy "
+            f"(corporate proxy, firewall, or rate limit). AMX kept the cached / fallback "
+            f"catalog for this source; ask your network admin to allow {host} if you need "
+            f"its model list."
+        )
+
     return f"{source}: {exc.__class__.__name__}: {exc}"
 
 
