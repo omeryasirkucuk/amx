@@ -54,7 +54,7 @@ class OpenAIBatchProvider(BatchProvider):
         model = self._resolve_model() or "gpt-4o-mini"
 
         console.print(
-            f"[bold #fb923c]Batch[/bold #fb923c] Preparing {len(requests)} request(s) "
+            f"[heading]Batch[/heading] Preparing {len(requests)} request(s) "
             f"→ model [yellow]{model}[/yellow]"
         )
 
@@ -278,7 +278,7 @@ class AnthropicBatchProvider(BatchProvider):
         model = self._resolve_model() or "claude-sonnet-4-20250514"
 
         console.print(
-            f"[bold #fb923c]Batch[/bold #fb923c] Preparing {len(requests)} request(s) "
+            f"[heading]Batch[/heading] Preparing {len(requests)} request(s) "
             f"→ model [yellow]{model}[/yellow]"
         )
 

@@ -23,15 +23,9 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-_theme = Theme(
-    {
-        "info": "#22d3ee",
-        "success": "bold green",
-        "warning": "bold yellow",
-        "error": "bold red",
-        "heading": "bold #fb923c",
-    }
-)
+from amx.utils.terminal_theme import accent_color, info_color, themed_palette
+
+_theme = Theme(themed_palette())
 
 _real_console = Console(theme=_theme)
 # Long-lived /dev/null sink the proxy routes to while a thread is in
@@ -116,6 +110,12 @@ def show_banner(force: bool = False) -> None:
     asterisks so the framing matches the Unicode block of the ASCII
     art instead of mixing vector glyphs with grid art.
 
+    The accent color is resolved at render time via
+    :func:`amx.utils.terminal_theme.accent_color`, which probes the
+    terminal background once per process and shifts the brand orange
+    one step darker on light terminals so the WCAG contrast clears
+    AA. The ASCII art and panel layout do not change.
+
     The version is intentionally NOT shown here. The "AMX Interactive
     Session" info block (rendered by the session module) already lists
     ``Version`` alongside the runtime Config / Database / LLM context;
@@ -128,7 +128,8 @@ def show_banner(force: bool = False) -> None:
     if os.getenv("AMX_NO_BANNER", "").lower() in {"1", "true", "yes"}:
         return
 
-    tagline = Text("┃  Agentic Metadata Extractor  ┃", style="bold #fb923c")
+    accent = accent_color()
+    tagline = Text("┃  Agentic Metadata Extractor  ┃", style=f"bold {accent}")
     art = Text(
         "\n".join(
             [
@@ -140,9 +141,9 @@ def show_banner(force: bool = False) -> None:
                 "╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝",
             ]
         ),
-        style="bold #fb923c",
+        style=f"bold {accent}",
     )
-    footer = Text("AI-inferred database descriptions", style="#fb923c")
+    footer = Text("AI-inferred database descriptions", style=accent)
 
     content = Text.assemble(
         tagline,
@@ -155,7 +156,7 @@ def show_banner(force: bool = False) -> None:
     console.print(
         Panel(
             Align.center(content),
-            border_style="#fb923c",
+            border_style=accent,
             box=box.DOUBLE_EDGE,
             padding=(1, 2),
         )
@@ -180,7 +181,7 @@ def info(text: str) -> None:
     console.print(f"[info]ℹ  {_markup_escape(text)}[/info]")
 
 
-def info_styled(label: str, value: str, *, value_style: str = "bold #fb923c") -> None:
+def info_styled(label: str, value: str, *, value_style: str | None = None) -> None:
     """``info()`` with the *value* visually emphasized.
 
     Renders ``ℹ  <label>: <styled value>``. Both ``label`` and ``value``
@@ -190,9 +191,16 @@ def info_styled(label: str, value: str, *, value_style: str = "bold #fb923c") ->
     Use this instead of ``info(f"... [bold]{x}[/]")`` — the plain
     :func:`info` helper escapes the whole string and turns those tags
     into literal text that leaks to the terminal.
+
+    ``value_style`` defaults to the bold brand accent resolved against
+    the current terminal background (orange-400 on dark, orange-800 on
+    light). Pass an explicit style to override (e.g. ``"bold green"``
+    for OK badges or ``info_color()`` for cyan emphasis).
     """
     if is_quiet():
         return
+    if value_style is None:
+        value_style = f"bold {accent_color()}"
     console.print(
         f"[info]ℹ  {_markup_escape(label)}: "
         f"[{value_style}]{_markup_escape(value)}[/{value_style}][/info]"
@@ -421,8 +429,9 @@ def confirm(question: str, default: bool = True) -> bool:
 
 def render_table(title: str, columns: list[str], rows: list[list[Any]]) -> None:
     table = Table(title=title, show_lines=True)
+    column_style = info_color()
     for col in columns:
-        table.add_column(col, style="#22d3ee")
+        table.add_column(col, style=column_style)
     for row in rows:
         table.add_row(*[str(v) for v in row])
     console.print(table)
@@ -523,7 +532,7 @@ def render_token_summary(tracker: object) -> None:
         return
     rows = tracker.summary()
     table = Table(title="Token usage", show_lines=True, box=box.SIMPLE_HEAVY)
-    table.add_column("Step", style="#22d3ee")
+    table.add_column("Step", style=info_color())
     table.add_column("Input", justify="right")
     table.add_column("Output", justify="right")
     table.add_column("Total", justify="right", style="bold")
