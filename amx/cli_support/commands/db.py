@@ -1325,7 +1325,7 @@ def cmd_inspect(cfg: AMXConfig, rest: list[str]) -> None:
 
     profile = cfg.db_profiles[profile_name]
     heading(f"DB profile: {profile_name}")
-    info_styled("  Backend", profile.backend, value_style="#22d3ee")
+    info_styled("  Backend", profile.backend, value_style="info")
     info(f"  Connection: {profile.display_summary}")
 
     # Print non-secret connection fields per backend so users can sanity-
@@ -1454,9 +1454,9 @@ def cmd_profiling(cfg: AMXConfig, rest: list[str]) -> None:
         max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
         info(
             "Current profiling guardrails: "
-            f"mode=[#22d3ee]{cfg.db.profiling_mode}[/#22d3ee], "
-            f"max_full_scan_rows=[#22d3ee]{max_label}[/#22d3ee], "
-            f"sample_size=[#22d3ee]{cfg.db.profiling_sample_size}[/#22d3ee]. "
+            f"mode=[info]{cfg.db.profiling_mode}[/info], "
+            f"max_full_scan_rows=[info]{max_label}[/info], "
+            f"sample_size=[info]{cfg.db.profiling_sample_size}[/info]. "
             "Use /profiling <full|sampled|metadata> [max_rows|off] [sample_size]."
         )
         return
@@ -1518,8 +1518,8 @@ def cmd_tls(cfg: AMXConfig, rest: list[str]) -> None:
         ca_path = str(getattr(cfg.db, "tls_trusted_ca_file", "") or "").strip() or "(none)"
         info(
             "Current Databricks TLS settings: "
-            f"tls_no_verify=[#22d3ee]{bool(getattr(cfg.db, 'tls_no_verify', False))}[/#22d3ee], "
-            f"trusted_ca=[#22d3ee]{ca_path}[/#22d3ee]. "
+            f"tls_no_verify=[info]{bool(getattr(cfg.db, 'tls_no_verify', False))}[/info], "
+            f"trusted_ca=[info]{ca_path}[/info]. "
             "Use /tls <on|off> [ca_path|clear]."
         )
         return

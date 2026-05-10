@@ -40,6 +40,7 @@ from amx.utils.console import (
 )
 from amx.utils.live_commands import command_display
 from amx.utils.live_display import get_display
+from amx.utils.terminal_theme import accent_color, info_color
 
 LogEvent = Callable[..., None]
 
@@ -131,10 +132,10 @@ def _render_search_rows(
         # Inventory rows have no useful score; render as a focused inventory table
         # rather than the generic Search matches grid.
         inventory = Table(title="Inventory", show_lines=True, box=box.SIMPLE_HEAVY)
-        inventory.add_column("Schema", style="#22d3ee", no_wrap=True)
-        inventory.add_column("Table", style="#22d3ee", no_wrap=True)
-        inventory.add_column("Columns", style="#22d3ee", no_wrap=True, justify="right")
-        inventory.add_column("Rows", style="#22d3ee", no_wrap=True, justify="right")
+        inventory.add_column("Schema", style=info_color(), no_wrap=True)
+        inventory.add_column("Table", style=info_color(), no_wrap=True)
+        inventory.add_column("Columns", style=info_color(), no_wrap=True, justify="right")
+        inventory.add_column("Rows", style=info_color(), no_wrap=True, justify="right")
         inventory.add_column("Cluster", style="white", overflow="fold", max_width=40)
         for row in rows:
             inventory.add_row(
@@ -163,7 +164,7 @@ def _render_search_rows(
                 title = f"Key columns — {schema_name}.{table_name}"
                 break
         summary_table = Table(title=title, show_lines=False, box=box.SIMPLE_HEAVY)
-        summary_table.add_column("Column", style="#22d3ee", no_wrap=True)
+        summary_table.add_column("Column", style=info_color(), no_wrap=True)
         summary_table.add_column("Type", style="white", no_wrap=True)
         summary_table.add_column("Description", style="white", overflow="fold", max_width=72)
         rendered = 0
@@ -198,17 +199,17 @@ def _render_search_rows(
     show_profile_col = len(profiles_in_view) > 1
     table = Table(title="Search matches", show_lines=True, box=box.SIMPLE_HEAVY)
     if show_profile_col:
-        table.add_column("Profile", style="#fb923c", no_wrap=True)
-    table.add_column("Schema.Table", style="#22d3ee", no_wrap=True)
+        table.add_column("Profile", style=accent_color(), no_wrap=True)
+    table.add_column("Schema.Table", style=info_color(), no_wrap=True)
     table.add_column("Match", no_wrap=True)
     table.add_column("Why", style="white", overflow="fold", max_width=32)
-    table.add_column("Rows", style="#22d3ee", no_wrap=True, justify="right")
-    table.add_column("Cols", style="#22d3ee", no_wrap=True, justify="right")
+    table.add_column("Rows", style=info_color(), no_wrap=True, justify="right")
+    table.add_column("Cols", style=info_color(), no_wrap=True, justify="right")
     table.add_column("Description", style="white", overflow="fold", max_width=60)
     if debug:
-        table.add_column("Score", style="#22d3ee", no_wrap=True, justify="right")
-        table.add_column("Source", style="#22d3ee", no_wrap=True)
-        table.add_column("Conf", style="#22d3ee", no_wrap=True)
+        table.add_column("Score", style=info_color(), no_wrap=True, justify="right")
+        table.add_column("Source", style=info_color(), no_wrap=True)
+        table.add_column("Conf", style=info_color(), no_wrap=True)
     for row in visible:
         score = float(row.get("rank_score") or row.get("score") or 0)
         match_label = _confidence_band(score)

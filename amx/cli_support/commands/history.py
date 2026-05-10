@@ -12,6 +12,7 @@ import click
 from amx.config import AMXConfig
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import confirm, console, error, heading, info, render_table, success, warn
+from amx.utils.terminal_theme import accent_color
 
 LogEvent = Callable[..., None]
 
@@ -181,7 +182,7 @@ def register_history_commands(
                         "failed": "[bold red]failed[/bold red]",
                         "cancelled": "[bold yellow]cancelled[/bold yellow]",
                         "ready_for_review": "[bold #fed7aa]ready_for_review[/bold #fed7aa]",
-                        "running": "[bold #fb923c]running[/bold #fb923c]",
+                        "running": "[heading]running[/heading]",
                     }.get(str(row.get("status", "")), str(row.get("status", ""))),
                     str(row.get("mode", "")),
                     str(row.get("db_backend", "")),
@@ -377,8 +378,8 @@ def register_history_commands(
                 console.print(
                     Panel(
                         "\n".join(lines),
-                        title=f"[bold #fb923c]{kind} DESCRIPTION[/bold #fb923c] - {asset_label}  [dim][{status_label}][/dim]",
-                        border_style="#fb923c",
+                        title=f"[heading]{kind} DESCRIPTION[/heading] - {asset_label}  [dim][{status_label}][/dim]",
+                        border_style=accent_color(),
                         expand=False,
                     )
                 )

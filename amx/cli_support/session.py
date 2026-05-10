@@ -266,12 +266,12 @@ def _print_session_help(*, namespace: str, cfg: AMXConfig) -> None:
         out.print(
             f"""
 [heading]Help — /db namespace[/heading]
-Engines: [#22d3ee]{engines}[/#22d3ee] — each profile stores one backend. /add-db-profile asks which engine first.
+Engines: [info]{engines}[/info] — each profile stores one backend. /add-db-profile asks which engine first.
 
 Context:
-  Active DB profile: [#22d3ee]{active}[/#22d3ee]
-  Current schema: [#22d3ee]{ctx_schema}[/#22d3ee]
-  Current table:  [#22d3ee]{ctx_table}[/#22d3ee]
+  Active DB profile: [info]{active}[/info]
+  Current schema: [info]{ctx_schema}[/info]
+  Current table:  [info]{ctx_table}[/info]
 
 Commands (in order):
   1) /back                         Return to root namespace
@@ -573,9 +573,9 @@ SQLite file:
         f"""
 [heading]Help — root[/heading]
 Context:
-  Active DB profile: [#22d3ee]{active}[/#22d3ee]
-  Current schema: [#22d3ee]{ctx_schema}[/#22d3ee]
-  Current table:  [#22d3ee]{ctx_table}[/#22d3ee]
+  Active DB profile: [info]{active}[/info]
+  Current schema: [info]{ctx_schema}[/info]
+  Current table:  [info]{ctx_table}[/info]
 
 Getting started (in order):
   1) /setup                        First-time wizard (DB + LLM + sources)
