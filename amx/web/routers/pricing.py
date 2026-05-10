@@ -57,6 +57,40 @@ class RefreshResponse(BaseModel):
     skipped: bool = False
 
 
+class ModelCatalogEntryResponse(BaseModel):
+    model_id: str = Field(..., description="Canonical lowercase key as stored in the cache.")
+    provider_hint: str = Field(
+        ...,
+        description=(
+            "First segment of the key when the key is provider-prefixed "
+            "('openrouter/openai/gpt-4o' -> 'openrouter'); empty string "
+            "for bare keys. Display only — never used for resolution."
+        ),
+    )
+    input_per_mtok: float
+    output_per_mtok: float
+    source: str = Field(..., description="'litellm' | 'openrouter' | 'fallback'.")
+    fetched_at: float | None = None
+
+
+class ModelCatalogResponse(BaseModel):
+    models: list[ModelCatalogEntryResponse]
+    fetched_at: float | None = Field(
+        default=None,
+        description=(
+            "Newest fetched_at across the catalog — drives the "
+            "freshness badge on the Studio model-browser dialog."
+        ),
+    )
+    is_stale: bool = Field(
+        ...,
+        description=(
+            "Mirror of cache_info().is_stale. When true, the dialog "
+            "renders a 'prices > 24h old, click Refresh' banner."
+        ),
+    )
+
+
 @router.get("/model", response_model=ModelPriceResponse)
 def lookup_model(
     provider: str = Query(...),
@@ -97,6 +131,35 @@ def refresh() -> dict[str, Any]:
         "openrouter": int(result.get("openrouter") or 0),
         "errors": list(result.get("errors") or []),
         "skipped": bool(result.get("skipped") or False),
+    }
+
+
+@router.get("/models", response_model=ModelCatalogResponse)
+def list_models() -> dict[str, Any]:
+    """Flat catalog of every model AMX has price data for.
+
+    Powers the topbar's model-browser dialog and the dedicated
+    ``/pricing`` page. The shape is intentionally cache-only — no
+    network access on this path — so the dialog stays snappy. Refresh
+    is still owned by ``POST /api/pricing/refresh``.
+    """
+    catalog = pricing.list_all_models()
+    info = pricing.cache_info()
+    fetched_values = [m.fetched_at for m in catalog if m.fetched_at is not None]
+    return {
+        "models": [
+            {
+                "model_id": m.model_id,
+                "provider_hint": m.provider_hint,
+                "input_per_mtok": m.input_per_mtok,
+                "output_per_mtok": m.output_per_mtok,
+                "source": m.source,
+                "fetched_at": m.fetched_at,
+            }
+            for m in catalog
+        ],
+        "fetched_at": max(fetched_values) if fetched_values else info.get("fetched_at"),
+        "is_stale": bool(info.get("is_stale", False)),
     }
 
 

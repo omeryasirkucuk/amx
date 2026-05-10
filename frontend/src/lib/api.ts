@@ -730,6 +730,14 @@ export const api = {
       openrouter_count: number;
       fallback_count: number;
     }>("/api/pricing/cache-info"),
+  /** Flat catalog of every model AMX has price data for.
+   *
+   * Powers the topbar's model-browser dialog and the dedicated
+   * ``/pricing`` page. Backend reads only from the in-memory cache —
+   * no network fetch — so the UI stays snappy when refetched.
+   */
+  listModelPrices: () =>
+    apiFetch<ModelCatalog>("/api/pricing/models"),
 };
 
 /** Shape returned by ``lookupPrice`` — mirrors the backend
@@ -742,6 +750,30 @@ export interface ModelPrice {
   output_per_mtok: number;
   source: string;
   fetched_at: number | null;
+}
+
+/** One row of the cross-source pricing catalog. Mirrors the backend
+ *  :class:`ModelCatalogEntryResponse`. ``provider_hint`` is the first
+ *  segment of the canonical key when prefixed (display only, never
+ *  used for resolution).
+ */
+export interface ModelCatalogEntry {
+  model_id: string;
+  provider_hint: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  source: string;
+  fetched_at: number | null;
+}
+
+/** Response from ``GET /api/pricing/models``. ``fetched_at`` is the
+ *  newest fetched_at across the catalog (drives the freshness badge);
+ *  ``is_stale`` mirrors :func:`cache_info`'s flag.
+ */
+export interface ModelCatalog {
+  models: ModelCatalogEntry[];
+  fetched_at: number | null;
+  is_stale: boolean;
 }
 
 /** Shape of one row in the re-run chain returned by ``resultHistory``.
