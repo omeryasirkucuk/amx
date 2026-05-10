@@ -44,6 +44,22 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Studio's "Live progress" card on /runs/<id> looked frozen on
+  long single-batch agent calls.** A ``ProfileAgent`` running
+  against a small table (≤ ``batch_size`` columns) emits exactly
+  one ``step_spinner`` for the whole 30-second LLM round-trip; the
+  "Now:" line set the label once and never visibly updated. CLI
+  hides this with a per-step elapsed-time tick on
+  ``console.status``; Studio had no equivalent. Both the
+  ``LiveRunStream`` banner and the ``LiveProgress`` card now
+  capture ``Date.now()`` whenever ``lastStep`` changes
+  (``step.added`` / ``step.begin`` / ``step.update`` /
+  ``step.thinking``), reset it on completion, and render
+  ``Now: ${label} (${Xs})`` with the timer ticking at 1 Hz.
+  ``frontend/src/routes/RunDetail.tsx``. The ``0/1`` counter pill
+  also picked up an explicit "table" / "tables" suffix and a
+  hover title so single-table runs no longer read as "0 % done".
+
 - **``Refresh prices`` in Studio raised ``URLError: <urlopen error
   [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable
   to get local issuer certificate>`` against both LiteLLM and
