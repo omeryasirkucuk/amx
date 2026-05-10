@@ -165,6 +165,21 @@ def test_mute_root_logger_blocks_amx_info_through_root_basicconfig_handler(
     saved_studio_flag = amx_logging._studio_mode_active
     monkeypatch.setattr(amx_logging, "_studio_mode_active", False, raising=False)
 
+    # Snapshot the ``propagate`` flag of every amx.* logger that
+    # exists right now, BEFORE mute_root_logger_for_studio flips them
+    # all to ``False``. Without this snapshot the teardown can only
+    # restore the three names we know about by hand, and any other
+    # amx.* logger that happens to have been imported by an earlier
+    # test (e.g. ``amx.agents._orchestrator.rerun``) stays muted for
+    # the rest of the session — pytest's ``caplog`` relies on
+    # propagation to the root logger, so the next test that asserts
+    # against a record from that logger silently fails.
+    saved_propagate: dict[str, bool] = {
+        name: existing.propagate
+        for name, existing in list(logging.Logger.manager.loggerDict.items())
+        if isinstance(existing, logging.Logger) and (name == "amx" or name.startswith("amx."))
+    }
+
     try:
         for handler in list(root.handlers):
             root.removeHandler(handler)
@@ -203,6 +218,14 @@ def test_mute_root_logger_blocks_amx_info_through_root_basicconfig_handler(
             root.addHandler(handler)
         root.setLevel(saved_level)
         amx_logging._studio_mode_active = saved_studio_flag
+        # Restore the propagate flag for every amx.* logger we
+        # observed before muting. Loggers created during the test
+        # (e.g. ``amx.agents.rag_after_mute`` and ``amx.db.connector``
+        # / ``amx.llm.provider`` if they did not pre-exist) inherit
+        # the default ``propagate = True`` after the next session
+        # so we restore them explicitly as well.
+        for name, prev in saved_propagate.items():
+            logging.getLogger(name).propagate = prev
         for name in ("amx.db.connector", "amx.llm.provider", "amx.agents.rag_after_mute"):
-            logger = logging.getLogger(name)
-            logger.propagate = True
+            if name not in saved_propagate:
+                logging.getLogger(name).propagate = True
