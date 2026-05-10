@@ -26,6 +26,7 @@ import pytest
 
 from amx.llm import pricing as pricing_mod
 from amx.llm.pricing import (
+    ModelCatalogEntry,
     ModelPrice,
     _build_ssl_context,
     _http_get_json,
@@ -34,6 +35,7 @@ from amx.llm.pricing import (
     compute_cost,
     fetch_litellm_prices,
     fetch_openrouter_prices,
+    list_all_models,
     lookup_price,
     refresh_prices,
     reset_state_for_tests,
@@ -249,6 +251,83 @@ def test_unknown_model_returns_zero_with_unknown_source() -> None:
     assert price.source == "unknown"
     assert price.input_per_mtok == 0.0
     assert price.output_per_mtok == 0.0
+
+
+# ── list_all_models — flat catalog for Studio + CLI browsers ───────────────
+
+
+def test_list_all_models_returns_bundled_fallback_when_caches_empty() -> None:
+    """Fresh / offline install: the bundled fallback alone must already
+    populate the catalog so the topbar dialog and the ``/cost`` CLI
+    picker are never empty on day one."""
+    catalog = list_all_models()
+    assert catalog, "expected at least the bundled fallback to be present"
+    sources = {entry.source for entry in catalog}
+    assert sources == {"fallback"}, (
+        f"only the bundled fallback should be present pre-refresh, got: {sources}"
+    )
+    # All entries are real ModelCatalogEntry instances (locks the
+    # public dataclass shape against silent dict-leak refactors).
+    assert all(isinstance(entry, ModelCatalogEntry) for entry in catalog)
+
+
+def test_list_all_models_dedupes_with_litellm_priority() -> None:
+    """When the same key appears in litellm + openrouter, the catalog
+    keeps the litellm row — same priority lookup_price uses, so the UI
+    cannot show a price that disagrees with what AMX would actually
+    bill against."""
+    pricing_mod._ensure_loaded()
+    pricing_mod._PRICES["litellm"]["openai/gpt-4o-mini"] = ModelPrice(
+        input_per_mtok=0.15, output_per_mtok=0.60, source="litellm", fetched_at=1.0
+    )
+    pricing_mod._PRICES["openrouter"]["openai/gpt-4o-mini"] = ModelPrice(
+        input_per_mtok=999.0, output_per_mtok=999.0, source="openrouter", fetched_at=2.0
+    )
+    catalog = list_all_models()
+    matching = [e for e in catalog if e.model_id == "openai/gpt-4o-mini"]
+    assert len(matching) == 1, "duplicate key must be deduped, not echoed twice"
+    assert matching[0].source == "litellm"
+    assert matching[0].input_per_mtok == 0.15  # litellm rate, not the 999 sentinel
+
+
+def test_list_all_models_provider_hint_parses_three_key_shapes() -> None:
+    """Verify the provider_hint parser for the three key conventions
+    LiteLLM and OpenRouter actually emit. Display-only field but it
+    drives the Studio table's Provider column, so locking the parse
+    keeps the UI consistent across cache refreshes."""
+    pricing_mod._ensure_loaded()
+    # Bare key (litellm shorthand for direct vendors).
+    pricing_mod._PRICES["litellm"]["bare-model"] = ModelPrice(
+        input_per_mtok=1.0, output_per_mtok=2.0, source="litellm", fetched_at=1.0
+    )
+    # Vendor-prefixed (openrouter convention + bundled fallback).
+    pricing_mod._PRICES["litellm"]["openai/gpt-vendor-test"] = ModelPrice(
+        input_per_mtok=1.0, output_per_mtok=2.0, source="litellm", fetched_at=1.0
+    )
+    # openrouter/<vendor>/<model> (litellm's openrouter-route convention).
+    pricing_mod._PRICES["litellm"]["openrouter/anthropic/claude-test"] = ModelPrice(
+        input_per_mtok=1.0, output_per_mtok=2.0, source="litellm", fetched_at=1.0
+    )
+    catalog = {e.model_id: e.provider_hint for e in list_all_models()}
+    assert catalog["bare-model"] == ""
+    assert catalog["openai/gpt-vendor-test"] == "openai"
+    assert catalog["openrouter/anthropic/claude-test"] == "openrouter"
+
+
+def test_list_all_models_sort_is_stable_alphabetical() -> None:
+    """Sort by model_id so two processes hitting the new endpoint
+    return the same order — the Studio dialog renders without a
+    flicker when react-query refetches and the order changed
+    underneath the DataTable."""
+    pricing_mod._ensure_loaded()
+    pricing_mod._PRICES["litellm"]["zzz-last-model"] = ModelPrice(
+        input_per_mtok=1.0, output_per_mtok=2.0, source="litellm", fetched_at=1.0
+    )
+    pricing_mod._PRICES["litellm"]["aaa-first-model"] = ModelPrice(
+        input_per_mtok=1.0, output_per_mtok=2.0, source="litellm", fetched_at=1.0
+    )
+    ids = [e.model_id for e in list_all_models()]
+    assert ids == sorted(ids), "list_all_models must sort by model_id"
 
 
 # ── Cache + refresh ────────────────────────────────────────────────────────
