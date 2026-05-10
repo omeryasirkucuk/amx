@@ -19,13 +19,12 @@ from typing import Any
 
 from amx.utils.optional_deps import ensure as _ensure
 
-# Idempotent after the first /search or /docs ingest — the cached set
-# inside ``optional_deps`` short-circuits subsequent imports. The
-# duplicate ``ensure`` calls across embeddings.py / index.py /
-# rag.py / code_rag.py exist because each of these modules can be
-# the very first chromadb-touching site depending on which feature
-# the user reaches first.
-_ensure(["chromadb"], feature="search index")
+# Shares the ``rag`` bundle (chromadb + splitter + tiktoken) with
+# /docs and /code. Idempotent after the first feature touches it —
+# the bundle registry in ``optional_deps`` is the single source of
+# truth, so /search no longer has to know which packages chromadb
+# brings along.
+_ensure("rag")
 
 import chromadb  # noqa: E402
 from chromadb.api.types import EmbeddingFunction  # noqa: E402

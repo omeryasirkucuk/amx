@@ -42,21 +42,33 @@ classifiers = [
 
 dependencies = [
     # ── Core: needed by EVERY ``amx`` invocation ────────────────────────
-    # Heavy clusters (RAG, /docs ingestion, AMX Studio, cloud sources,
-    # Batch APIs, gitpython, tiktoken) are auto-installed by AMX itself
-    # the first time the user reaches the relevant feature — see
-    # ``amx/utils/optional_deps.py``. This keeps ``pip install amx-cli``
-    # under ~50 MB and a few seconds for first-time users while still
-    # making every feature work end-to-end on demand.
+    # Heavier feature clusters (RAG document ingest, cloud sources,
+    # Batch APIs, gitpython, semantic embedding metrics) are auto-
+    # installed by AMX itself the first time the user reaches the
+    # relevant feature — see ``amx/utils/optional_deps.py``.
+    #
+    # AMX Studio (FastAPI / uvicorn / sse-starlette / multipart) and
+    # the DuckDB driver pair are part of the everyone-uses-them path,
+    # so they live in core: a single ``pip install amx-cli`` is
+    # sufficient to open ``/studio`` or query a local DuckDB profile
+    # without any second-stage download. Niche backends (Snowflake,
+    # Databricks, BigQuery, …) still install lazily per-profile.
     "click>=8.1",
     "rich>=13.0",
     "prompt_toolkit>=3.0.40",
     "sqlalchemy>=2.0",
     "pyyaml>=6.0",
-    "python-dotenv>=1.0",
     "litellm>=1.83.7",
     "requests>=2.31",
     "keyring>=24.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "sse-starlette>=2.0",
+    # Required by FastAPI's Form/File so the doc-upload drag-drop
+    # endpoint accepts multipart bodies.
+    "python-multipart>=0.0.7",
+    "duckdb>=1.0",
+    "duckdb-engine>=0.13",
 ]
 
 [project.urls]
@@ -92,14 +104,6 @@ docs = [
     # secure floor, so we pin one here. Drop this constraint once
     # ``unstructured``'s own pin catches up.
     "lxml>=6.1.0",
-]
-studio = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "sse-starlette>=2.0",
-    # Required by FastAPI's Form/File so the doc-upload drag-drop
-    # endpoint accepts multipart bodies.
-    "python-multipart>=0.0.7",
 ]
 # PDF report rendering for the Compare modal (auto-installed on
 # demand via amx.utils.optional_deps when the user clicks
@@ -146,7 +150,9 @@ batch = [
 git-sources = [
     "gitpython>=3.1",
 ]
-
+# Optional richer SQL parsing inside ``/code analyze``. When the
+# package is absent, the codebase analyzer falls back to a regex
+# scanner, so the feature degrades gracefully instead of failing.
 code-intel = [
     "sqlglot>=24.0",
 ]
@@ -186,9 +192,8 @@ clickhouse = [
     "clickhouse-connect>=0.7",
     "clickhouse-sqlalchemy>=0.3",
 ]
-duckdb = ["duckdb-engine>=0.13", "duckdb>=1.0"]
 all = [
-    # Every DB backend driver
+    # Niche DB backend drivers (DuckDB lives in core deps; not repeated here).
     "psycopg2-binary>=2.9",
     "snowflake-sqlalchemy>=1.6",
     "snowflake-connector-python>=3.6",
@@ -204,9 +209,9 @@ all = [
     "sqlalchemy-redshift>=0.8",
     "clickhouse-connect>=0.7",
     "clickhouse-sqlalchemy>=0.3",
-    "duckdb-engine>=0.13",
-    "duckdb>=1.0",
-    # Every feature cluster (auto-installed on demand otherwise)
+    # Every optional feature cluster (auto-installed on demand
+    # otherwise). Studio + DuckDB are core deps now and intentionally
+    # NOT repeated here.
     "chromadb>=0.5",
     "langchain-community>=0.3",
     "langchain-text-splitters>=0.3",
@@ -219,10 +224,6 @@ all = [
     # CVE-2026-41066 floor — see comment on the same pin in the
     # ``docs`` extra above.
     "lxml>=6.1.0",
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "sse-starlette>=2.0",
-    "python-multipart>=0.0.7",
     "weasyprint>=60",
     "jinja2>=3.1",
     "sacrebleu>=2.4",
@@ -257,10 +258,11 @@ dev = [
 #   pip install -e ".[perf]"
 #   pytest tests/perf -m perf --benchmark-only
 # Never auto-installed; never imported by the runtime amx package.
+# DuckDB is already a core dependency, so it is intentionally not
+# repeated here.
 perf = [
     "pytest-benchmark>=4.0",
     "psutil>=5.9",
-    "duckdb>=1.0",
 ]
 
 [project.scripts]
