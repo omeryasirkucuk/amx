@@ -88,7 +88,6 @@ def test_build_ssl_context_uses_certifi_by_default(monkeypatch: pytest.MonkeyPat
     fall back to ``certifi.where()`` so the price fetch succeeds out of
     the box without any user env-var configuration."""
     pytest.importorskip("certifi")
-    import certifi
 
     _clear_pricing_ssl_env(monkeypatch)
     ctx = _build_ssl_context()
