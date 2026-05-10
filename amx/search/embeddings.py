@@ -36,8 +36,8 @@ from amx.utils.optional_deps import ensure as _ensure
 # Pulled in here (rather than at the entry-point of every /search and
 # /docs flow) because ``chromadb.api.types`` is referenced as a base
 # class below — the import has to succeed before class definitions
-# execute. ``_ensure`` is a cached no-op once the package is installed.
-_ensure(["chromadb"], feature="search index")
+# execute. ``_ensure`` is a cached no-op once any RAG path has run.
+_ensure("rag")
 
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings  # noqa: E402
 

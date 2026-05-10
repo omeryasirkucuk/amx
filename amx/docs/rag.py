@@ -12,19 +12,9 @@ from amx.utils.optional_deps import ensure as _ensure
 # on first ``/docs ingest`` / ``/run`` with docs / RAG-backed answer
 # — not on every CLI launch — so the install cost is amortised across
 # the whole tool's lifetime, incurred once, by the user who actually
-# uses the feature.
-_ensure(
-    [
-        "chromadb",
-        ("langchain_community", "langchain-community"),
-        ("langchain_text_splitters", "langchain-text-splitters"),
-        "unstructured",
-        "pypdf",
-        ("docx", "python-docx"),
-        "openpyxl",
-    ],
-    feature="document RAG (/docs)",
-)
+# uses the feature. The bundle name is shared with /search and /code
+# so a user who has already touched any RAG path skips the install.
+_ensure("docs-extended")
 
 import chromadb  # noqa: E402
 from langchain_community.document_loaders import (  # noqa: E402

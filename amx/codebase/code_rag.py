@@ -8,16 +8,10 @@ from pathlib import Path
 
 from amx.utils.optional_deps import ensure as _ensure
 
-# Codebase RAG shares chromadb + the splitter with /docs RAG; if the
-# user has already used /docs the ensure() call here is a cached
-# no-op. Otherwise this is the first /code ingest and we pull both.
-_ensure(
-    [
-        "chromadb",
-        ("langchain_text_splitters", "langchain-text-splitters"),
-    ],
-    feature="codebase RAG (/code)",
-)
+# Codebase RAG shares the ``rag`` bundle (chromadb + splitter +
+# tiktoken) with /docs and /search; whichever feature the user
+# touches first pays the install once.
+_ensure("rag")
 
 import chromadb  # noqa: E402
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
