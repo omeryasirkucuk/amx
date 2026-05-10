@@ -6,8 +6,10 @@ unit suite can verify without spawning a real listener."""
 
 from __future__ import annotations
 
+import inspect
 import socket
 
+from amx.web import launcher as launcher_module
 from amx.web.launcher import _pick_port
 
 
@@ -33,3 +35,17 @@ def test_pick_port_falls_back_when_preferred_busy() -> None:
     finally:
         holder.close()
     assert chosen != busy_port or chosen == 0  # OS may reuse busy_port the instant we close
+
+
+def test_launcher_ensures_python_multipart_for_form_routes() -> None:
+    """Regression: ``launch_studio`` used to ``ensure([fastapi,
+    uvicorn[standard], sse-starlette])`` only. On a fresh install
+    without the ``studio`` extra, the first multipart request
+    (``amx/web/routers/docs_ops.py`` doc-upload) raised
+    ``RuntimeError: Form data requires "python-multipart" to be
+    installed`` mid-session. The ensure list must declare
+    ``python-multipart`` (importable as ``python_multipart``) so the
+    drag-drop endpoint works on the very first ``/studio`` boot."""
+    source = inspect.getsource(launcher_module.launch_studio)
+    assert '"python-multipart"' in source
+    assert '"python_multipart"' in source
