@@ -178,6 +178,11 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   // Calling LLM batch Y/Z / etc.). Empty string when nothing is in
   // flight (between activities).
   const [lastStep, setLastStep] = useState<string | null>(null);
+  // Wall-clock when the current step started — drives the per-step
+  // "(12s)" timer so a single long ``step_spinner`` (e.g. a
+  // ProfileAgent LLM round-trip on a small table) reads as active
+  // instead of frozen. Reset to null between steps.
+  const [lastStepStartedAt, setLastStepStartedAt] = useState<number | null>(null);
   const [startTime] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
 
@@ -303,12 +308,17 @@ function LiveRunStream({ jobId }: { jobId: string }) {
         t === "step.update"
       ) {
         const label = String(event.label ?? "").trim();
-        if (label) setLastStep(label);
+        if (label) {
+          setLastStep(label);
+          setLastStepStartedAt(Date.now());
+        }
       } else if (t === "step.thinking") {
         const label = String(event.label ?? "Thinking").trim();
         setLastStep(label ? `${label}…` : "Thinking…");
+        setLastStepStartedAt(Date.now());
       } else if (t === "step.complete" || t === "step.fail") {
         setLastStep(null);
+        setLastStepStartedAt(null);
       } else if (t === "tokens.delta") {
         const totalIn = Number(event.total_in ?? 0);
         const totalOut = Number(event.total_out ?? 0);
@@ -370,6 +380,17 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   }, [activities]);
   const completedCount = activities.filter((a) => a.status !== "running").length;
   const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
+  // Per-step elapsed seconds for the LiveRunStream banner. Same
+  // shape + semantics as the LiveProgress card below — see the
+  // comment block on ``currentStepElapsedSec`` there for the why.
+  const currentStepElapsedSec =
+    lastStep && lastStepStartedAt
+      ? Math.max(0, Math.floor((now - lastStepStartedAt) / 1000))
+      : null;
+  const stepTimerSuffix =
+    currentStepElapsedSec != null && currentStepElapsedSec > 0
+      ? ` (${formatElapsed(currentStepElapsedSec)})`
+      : "";
 
   return (
     <>
@@ -423,10 +444,10 @@ function LiveRunStream({ jobId }: { jobId: string }) {
             <span className="font-mono">
               {currentActivity
                 ? lastStep
-                  ? `${currentActivity.label} — ${lastStep}`
+                  ? `${currentActivity.label} — ${lastStep}${stepTimerSuffix}`
                   : currentActivity.label
                 : lastStep
-                  ? lastStep
+                  ? `${lastStep}${stepTimerSuffix}`
                   : "Waiting for the worker…"}
             </span>
           </span>
@@ -531,7 +552,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
           {activities.length === 0 ? (
             <div className="px-5 py-6 text-sm text-ink-dim">
               <Loader2 size={14} className="mr-2 inline animate-spin" />
-              {lastStep || "Waiting for the worker to begin…"}
+              {lastStep ? `${lastStep}${stepTimerSuffix}` : "Waiting for the worker to begin…"}
             </div>
           ) : (
             <ul className="divide-y divide-surface-border">
@@ -823,6 +844,13 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   // for the entire 5–30 minute window the agents took to drive a
   // single table through profile + RAG + LLM batch.
   const [lastStep, setLastStep] = useState<string | null>(null);
+  // Wall-clock when the current ``lastStep`` started. The "Now:"
+  // line uses this to render "(12s)" next to the step label and
+  // tick once per second, so a single long ``step_spinner`` (e.g.
+  // a Profile Agent LLM round-trip on a small table) reads as
+  // active instead of frozen. CLI's ``console.status`` does the
+  // same; this brings Studio to feature parity.
+  const [lastStepStartedAt, setLastStepStartedAt] = useState<number | null>(null);
   // Recently-completed sub-steps (last 5) so the user can see a
   // rolling "what just happened" trail instead of just the current
   // step. Each entry carries elapsed-from-start so the history reads
@@ -890,6 +918,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
           ),
         );
         setLastStep(null);
+        setLastStepStartedAt(null);
       } else if (t === "activity.fail") {
         setActivities((curr) =>
           curr.map((a) =>
@@ -899,16 +928,21 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
           ),
         );
         setLastStep(null);
+        setLastStepStartedAt(null);
       } else if (
         t === "step.added" ||
         t === "step.begin" ||
         t === "step.update"
       ) {
         const label = String(event.label ?? "").trim();
-        if (label) setLastStep(label);
+        if (label) {
+          setLastStep(label);
+          setLastStepStartedAt(Date.now());
+        }
       } else if (t === "step.thinking") {
         const label = String(event.label ?? "Thinking").trim();
         setLastStep(label ? `${label}…` : "Thinking…");
+        setLastStepStartedAt(Date.now());
       } else if (t === "step.complete" || t === "step.fail") {
         const label = String(event.label ?? "").trim();
         if (label) {
@@ -924,6 +958,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
           });
         }
         setLastStep(null);
+        setLastStepStartedAt(null);
       } else if (t === "tokens.snapshot") {
         setTokensSnapshot({
           total_tokens: Number(event.total_tokens ?? 0),
@@ -951,6 +986,20 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   const total = activities.length;
   const current = activities.find((a) => a.status === "running");
   const elapsedSec = Math.max(0, Math.floor((now - startTime) / 1000));
+  // Per-step elapsed seconds, ticking once per second as ``now``
+  // advances. Renders next to ``lastStep`` so a long-running
+  // single ``step_spinner`` (e.g. a 30s Profile Agent LLM call on
+  // a small table) reads as active. Falls back to null when no
+  // step is in flight so the description doesn't show a stale
+  // timer between steps.
+  const currentStepElapsedSec =
+    lastStep && lastStepStartedAt
+      ? Math.max(0, Math.floor((now - lastStepStartedAt) / 1000))
+      : null;
+  const stepTimerSuffix =
+    currentStepElapsedSec != null && currentStepElapsedSec > 0
+      ? ` (${formatElapsed(currentStepElapsedSec)})`
+      : "";
 
   return (
     <Card className="mb-4 border-accent/40">
@@ -966,8 +1015,15 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
             />
             Live progress
             {total > 0 && (
-              <span className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
-                {completed}/{total}
+              <span
+                className="rounded bg-surface-subtle px-1.5 py-0.5 font-mono text-[10px] text-ink-muted"
+                title={
+                  total === 1
+                    ? "Tables in this run."
+                    : `Tables completed (${completed} of ${total}).`
+                }
+              >
+                {completed}/{total} {total === 1 ? "table" : "tables"}
               </span>
             )}
             {!closed && (
@@ -986,10 +1042,10 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
             ? "Worker exited. The status badge above will refresh automatically."
             : current
               ? lastStep
-                ? `Now: ${current.label} — ${lastStep}`
+                ? `Now: ${current.label} — ${lastStep}${stepTimerSuffix}`
                 : `Now: ${current.label}`
               : lastStep
-                ? `Now: ${lastStep}`
+                ? `Now: ${lastStep}${stepTimerSuffix}`
                 : "Waiting for the worker to begin…"
         }
       />
@@ -1031,7 +1087,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
           <div className="px-5 py-4 text-sm text-ink-dim">
             <Loader2 size={14} className="mr-2 inline animate-spin" />
             {lastStep
-              ? `Now: ${lastStep}`
+              ? `Now: ${lastStep}${stepTimerSuffix}`
               : "Waiting for the worker to begin…"}
           </div>
         ) : (
