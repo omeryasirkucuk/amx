@@ -43,6 +43,7 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from importlib.resources import files as _resource_files
@@ -146,49 +147,97 @@ def _write_cache(payload: dict[str, Any]) -> None:
 def _build_ssl_context() -> ssl.SSLContext:
     """SSL context for the price-fetch ``urlopen`` calls.
 
-    Resolves a CA bundle in priority order so the same env vars users
-    already set for the LLM client (``AMX_CA_BUNDLE`` /
-    ``AMX_INSECURE_SSL``) also fix the pricing path:
+    Resolution order:
 
     1. ``AMX_INSECURE_SSL`` truthy — return an unverified context.
-       Mirrors :func:`amx.llm.provider._configure_ssl_environment`'s
-       contract; diagnostic-only escape hatch for hostile networks.
-    2. ``AMX_CA_BUNDLE`` set to an existing file — corporate CA bundle,
-       typical Zscaler / Netskope / on-prem MITM proxy fix.
-    3. ``SSL_CERT_FILE`` set to an existing file — already-set stdlib
-       env var, also written by ``_configure_ssl_environment`` so a
-       run that imported the LLM provider first is picked up here.
-    4. ``certifi.where()`` — bundled Mozilla CA list. This branch is
-       what fixes plain Windows Python: the CPython ``python.org``
-       distribution ships no default CA bundle and does not consult
-       the Windows trust store, so a bare ``urlopen`` raises
-       ``CERTIFICATE_VERIFY_FAILED`` against any HTTPS host.
-    5. System default — last resort when nothing above resolves.
+       Diagnostic-only escape hatch for hostile networks; mirrors
+       :func:`amx.llm.provider._configure_ssl_environment`'s contract.
+    2. ``AMX_CA_BUNDLE`` or ``SSL_CERT_FILE`` set to an existing file
+       — corporate CA bundle override; the typical fix for
+       Zscaler / Netskope / on-prem MITM proxies when the OS trust
+       store does NOT contain the corporate CA.
+    3. Otherwise — plain ``ssl.create_default_context()``. Python's
+       :func:`SSLContext.load_default_certs` (called by the default
+       context constructor) pulls in the OS trust store on every
+       supported platform: ``enum_certificates("ROOT")`` on Windows,
+       ``SecTrustCopyAnchorCertificates`` on macOS, the system
+       ``ca-certificates`` packages on Linux/BSD. The startup helper
+       ``amx.utils.network_trust.configure_trust_store`` additionally
+       injects ``truststore`` (when available) so the OS store is
+       consulted through first-class OS APIs instead of OpenSSL's
+       built-in resolution, which catches edge-cases like partial
+       chains and unusual Linux store layouts.
+
+    Earlier revisions of this function forced
+    ``ssl.create_default_context(cafile=certifi.where())`` whenever no
+    env var was set. That branch was intended to paper over Python
+    <= 3.3 on Windows (which shipped no default CA bundle), but on
+    Python 3.10+ — AMX's minimum — passing ``cafile=`` actively
+    *replaces* the default chain and prevents
+    ``load_default_certs()`` from reading the OS trust store, so the
+    corporate CA that browsers / curl already trust never reaches
+    the verifier. Removing the certifi forcing is the entire fix for
+    "Refresh prices returns CERTIFICATE_VERIFY_FAILED behind a
+    corporate proxy where curl works fine".
     """
     insecure = os.getenv("AMX_INSECURE_SSL", "").strip().lower()
     if insecure in ("1", "true", "yes", "on"):
         return ssl._create_unverified_context()
 
-    cafile: str | None = None
     for env_var in ("AMX_CA_BUNDLE", "SSL_CERT_FILE"):
         candidate = os.getenv(env_var, "").strip()
         if candidate and os.path.isfile(candidate):
-            cafile = candidate
-            break
+            return ssl.create_default_context(cafile=candidate)
 
-    if cafile is None:
-        try:
-            import certifi
-        except ImportError:
-            certifi = None  # type: ignore[assignment]
-        if certifi is not None:
-            bundled = certifi.where()
-            if bundled and os.path.isfile(bundled):
-                cafile = bundled
-
-    if cafile is not None:
-        return ssl.create_default_context(cafile=cafile)
     return ssl.create_default_context()
+
+
+def _is_cert_verify_error(exc: BaseException) -> bool:
+    """True when *exc* is (or wraps) a TLS certificate-verification failure.
+
+    Walks ``__cause__`` and ``URLError.reason`` so the
+    ``CERTIFICATE_VERIFY_FAILED`` signature is detected whether
+    Python surfaced it as ``ssl.SSLCertVerificationError`` directly,
+    wrapped it inside ``urllib.error.URLError``, or stacked it via
+    ``__cause__`` (the chain seen on Python 3.10–3.14).
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return True
+        reason = getattr(current, "reason", None)
+        if isinstance(reason, BaseException) and id(reason) not in seen:
+            current = reason
+            continue
+        current = current.__cause__
+    return False
+
+
+def _format_fetch_error(source: str, url: str, exc: BaseException) -> str:
+    """Render a fetch failure for the Studio toast / CLI log.
+
+    Specialises the message for TLS verification failures so the user
+    sees one short hint that names the env-var override, instead of a
+    multi-line ``URLError: <urlopen error [SSL:
+    CERTIFICATE_VERIFY_FAILED] ... self-signed certificate in
+    certificate chain ...>`` blob that reads like a crash. Every other
+    failure (genuine outage, JSON parse error, file system error)
+    keeps the existing class-name + message format so real problems
+    still surface plainly.
+    """
+    if _is_cert_verify_error(exc):
+        try:
+            host = urllib.parse.urlparse(url).hostname or url
+        except ValueError:
+            host = url
+        return (
+            f"{source}: TLS verification failed against {host} — usually a corporate proxy. "
+            f"AMX consults the OS trust store automatically; if your company CA is still "
+            f"missing, set AMX_CA_BUNDLE=/path/to/ca.pem and retry."
+        )
+    return f"{source}: {exc.__class__.__name__}: {exc}"
 
 
 def _http_get_json(url: str, *, headers: dict[str, str] | None = None) -> Any:
@@ -396,12 +445,12 @@ def refresh_prices(*, force: bool = False) -> dict[str, Any]:
         new_litellm = fetch_litellm_prices()
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
         new_litellm = {}
-        errors.append(f"litellm: {exc.__class__.__name__}: {exc}")
+        errors.append(_format_fetch_error("litellm", _LITELLM_URL, exc))
     try:
         new_openrouter = fetch_openrouter_prices()
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
         new_openrouter = {}
-        errors.append(f"openrouter: {exc.__class__.__name__}: {exc}")
+        errors.append(_format_fetch_error("openrouter", _OPENROUTER_URL, exc))
 
     with _PRICING_LOCK:
         if new_litellm:

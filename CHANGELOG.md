@@ -6,6 +6,60 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pricing refresh failed with ``CERTIFICATE_VERIFY_FAILED`` on a
+  fresh install behind a corporate TLS-inspecting proxy** (Zscaler /
+  Netskope / Cloudflare WARP / similar). Studio rendered the toast
+  ``Prices partially refreshed — litellm: URLError: <urlopen error
+  [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+  self-signed certificate in certificate chain ...>; openrouter:
+  URLError: <urlopen error ...>``, and the Prices listing
+  collapsed to the 32 bundled-fallback models with every row labelled
+  source = "Fallback". The same network proxy is one that the user's
+  Windows Cert Store / macOS Keychain / Linux ``ca-certificates``
+  already trusts (browsers and ``curl`` work fine), so the
+  user-visible failure was puzzling — and was caused entirely by AMX
+  itself, not the network. The pricing fetcher in
+  ``amx/llm/pricing.py`` forced ``ssl.create_default_context(cafile=certifi.where())``
+  whenever the user had not set ``AMX_CA_BUNDLE``. Passing
+  ``cafile=`` explicitly *replaces* the default certificate chain and
+  prevents ``load_default_certs()`` from reading the OS trust store,
+  so the corporate CA that browsers trust never reaches the verifier.
+  The certifi-forcing branch carried a docstring claiming it fixed
+  "plain Windows Python: ships no default CA bundle and does not
+  consult the Windows trust store", which was true of Python ≤ 3.3
+  but is no longer true on AMX's minimum Python 3.10.
+
+  The fix is three coordinated changes: (1) ``_build_ssl_context``
+  now returns plain ``ssl.create_default_context()`` when neither
+  ``AMX_INSECURE_SSL`` nor ``AMX_CA_BUNDLE`` / ``SSL_CERT_FILE`` is
+  set, so Python's default ``load_default_certs()`` consults the OS
+  trust store. (2) New ``amx.utils.network_trust.configure_trust_store``
+  helper called once at every CLI entrypoint (``run_cli``) and once
+  at Studio bootstrap (``create_app``) injects the PyPA-endorsed
+  ``truststore`` package (added as a core dependency) so the OS
+  store is consulted through first-class OS APIs even on edge-case
+  Linux / WSL openssl layouts; the same helper fans
+  ``AMX_CA_BUNDLE`` out to ``REQUESTS_CA_BUNDLE`` /
+  ``SSL_CERT_FILE`` / ``CURL_CA_BUNDLE`` so the override path keeps
+  working for users who deliberately point at an on-disk corporate
+  PEM. (3) ``refresh_prices`` now detects
+  ``ssl.SSLCertVerificationError`` specifically and emits one short
+  actionable hint per source ("TLS verification failed against
+  <host> — usually a corporate proxy. AMX consults the OS trust
+  store automatically; set AMX_CA_BUNDLE=/path/to/ca.pem if your
+  company CA is still missing") instead of the multi-line ``URLError:
+  <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] ...>`` blob.
+  Non-TLS failures keep the existing ``ClassName: message`` format so
+  real outages and parse errors still surface plainly.
+
+  Same fix transparently covers ``litellm`` / ``openai`` /
+  ``anthropic`` HTTPS calls and ``/docs scan`` downloads in
+  ``amx/docs/scanner.py``, since they all route through the same
+  default ``ssl.SSLContext`` that ``truststore.inject_into_ssl()``
+  rewrote.
+
 ### Changed
 
 - **Single-step install for the common AMX path.** A first-time
