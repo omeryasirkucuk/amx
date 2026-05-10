@@ -79,6 +79,26 @@ class ModelPrice:
         return self.source != "unknown"
 
 
+@dataclass
+class ModelCatalogEntry:
+    """One row of the cross-source pricing catalog.
+
+    Returned by :func:`list_all_models` so Studio's price-browser dialog
+    and the CLI ``/cost`` picker can render every model AMX has price
+    data for, without each surface having to walk ``_PRICES`` itself.
+    ``provider_hint`` is a best-effort split of the canonical key —
+    display only, never used for resolution (callers still hand
+    ``(provider, model)`` to :func:`lookup_price`).
+    """
+
+    model_id: str
+    provider_hint: str
+    input_per_mtok: float
+    output_per_mtok: float
+    source: str  # "litellm" | "openrouter" | "fallback"
+    fetched_at: float | None = None
+
+
 # ── Cache + fetch internals ────────────────────────────────────────────────
 
 _CACHE_TTL_SEC: float = 24 * 60 * 60  # 24h
@@ -560,6 +580,62 @@ def compute_cost(
     return in_usd, out_usd, in_usd + out_usd
 
 
+def _provider_hint_for_key(model_id: str) -> str:
+    """Best-effort provider split for a canonical price key.
+
+    LiteLLM keys come in three shapes: bare (``"gpt-4o-mini"``),
+    ``"<vendor>/<model>"`` (``"openai/gpt-4o-mini"``), and
+    ``"openrouter/<vendor>/<model>"`` (``"openrouter/openai/gpt-4o-mini"``).
+    Bundled fallback uses ``"<vendor>/<model>"``. We surface the first
+    segment as ``provider_hint`` so the UI can render a "Provider"
+    column without inventing one. Bare keys keep an empty hint —
+    truthful, since we genuinely don't know the provider from the key
+    alone.
+    """
+    if "/" not in model_id:
+        return ""
+    head = model_id.split("/", 1)[0]
+    return head if head else ""
+
+
+def list_all_models() -> list[ModelCatalogEntry]:
+    """Flat, deduped catalog of every model the price layer knows.
+
+    Walks ``_PRICES`` in priority order — litellm > openrouter >
+    fallback — matching :func:`lookup_price`'s resolution chain. The
+    first source to claim a given key wins; later sources for the same
+    key are skipped. Sorted alphabetically by ``model_id`` so the
+    result is stable across processes (the in-memory dicts are dict-
+    insertion-ordered, which would leak through to the UI otherwise).
+
+    Empty in-memory cache is fine — :func:`_ensure_loaded` runs first
+    and seeds the bundled fallback (~30 popular models) so a fresh /
+    offline install still has a non-empty list to browse.
+    """
+    _ensure_loaded()
+    seen: set[str] = set()
+    entries: list[ModelCatalogEntry] = []
+    with _PRICING_LOCK:
+        for source_key in ("litellm", "openrouter", "fallback"):
+            table = _PRICES.get(source_key) or {}
+            for model_id, price in table.items():
+                if model_id in seen:
+                    continue
+                seen.add(model_id)
+                entries.append(
+                    ModelCatalogEntry(
+                        model_id=model_id,
+                        provider_hint=_provider_hint_for_key(model_id),
+                        input_per_mtok=price.input_per_mtok,
+                        output_per_mtok=price.output_per_mtok,
+                        source=price.source,
+                        fetched_at=price.fetched_at,
+                    )
+                )
+    entries.sort(key=lambda e: e.model_id)
+    return entries
+
+
 def reset_state_for_tests() -> None:
     """Drop in-memory state so unit tests start from a clean slate."""
     global _FETCHED_AT, _BUNDLED_LOADED
@@ -572,12 +648,14 @@ def reset_state_for_tests() -> None:
 
 
 __all__ = [
+    "ModelCatalogEntry",
     "ModelPrice",
     "cache_age_seconds",
     "cache_info",
     "compute_cost",
     "fetch_litellm_prices",
     "fetch_openrouter_prices",
+    "list_all_models",
     "lookup_price",
     "refresh_prices",
     "reset_state_for_tests",

@@ -14,11 +14,13 @@
  * ``/refresh-prices`` from the CLI.
  */
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw } from "lucide-react";
 
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
+import PricingBrowser from "./PricingBrowser";
 import { useToast } from "./ui";
 
 const PRICING_CACHE_KEY = ["pricing", "cache-info"] as const;
@@ -35,6 +37,7 @@ function formatAge(seconds: number | null): string {
 export default function PricingBadge() {
   const { push: pushToast } = useToast();
   const queryClient = useQueryClient();
+  const [browserOpen, setBrowserOpen] = useState(false);
   const cacheInfo = useQuery({
     queryKey: PRICING_CACHE_KEY,
     queryFn: () => api.pricingCacheInfo(),
@@ -97,37 +100,51 @@ export default function PricingBadge() {
       : `Prices: ${formatAge(data.age_seconds)}`;
 
   return (
-    <span
-      className={cn(
-        "hidden h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium md:inline-flex",
-        tone === "warning"
-          ? "border-warning/40 bg-warning-soft/40 text-warning"
-          : "border-border bg-surface-subtle/60 text-ink-muted",
-      )}
-      title={
-        data.is_stale
-          ? `Price cache is older than ${Math.floor(data.ttl_seconds / 3600)}h. Click to refresh.`
-          : "Price cache freshness."
-      }
-    >
-      <span>{label}</span>
-      <button
-        type="button"
-        onClick={() => refresh.mutate()}
-        disabled={refresh.isPending}
-        aria-label="Refresh LLM price cache"
+    <>
+      <span
         className={cn(
-          "inline-flex h-5 w-5 items-center justify-center rounded text-ink-muted transition-colors",
-          "hover:bg-surface-border hover:text-ink",
-          "disabled:cursor-wait disabled:opacity-60",
+          "hidden h-7 items-center gap-1.5 rounded-md border pl-2 pr-1 text-[11px] font-medium md:inline-flex",
+          tone === "warning"
+            ? "border-warning/40 bg-warning-soft/40 text-warning"
+            : "border-border bg-surface-subtle/60 text-ink-muted",
         )}
       >
-        {refresh.isPending ? (
-          <Loader2 size={11} className="animate-spin" />
-        ) : (
-          <RefreshCw size={11} />
-        )}
-      </button>
-    </span>
+        <button
+          type="button"
+          onClick={() => setBrowserOpen(true)}
+          title="Browse model prices"
+          aria-label="Browse model prices"
+          className={cn(
+            "inline-flex h-full items-center rounded-sm pr-1 transition-colors",
+            "hover:text-ink",
+          )}
+        >
+          {label}
+        </button>
+        <button
+          type="button"
+          onClick={() => refresh.mutate()}
+          disabled={refresh.isPending}
+          aria-label="Refresh LLM price cache"
+          title={
+            data.is_stale
+              ? `Price cache is older than ${Math.floor(data.ttl_seconds / 3600)}h. Click to refresh.`
+              : "Refresh price cache"
+          }
+          className={cn(
+            "inline-flex h-5 w-5 items-center justify-center rounded text-ink-muted transition-colors",
+            "hover:bg-surface-border hover:text-ink",
+            "disabled:cursor-wait disabled:opacity-60",
+          )}
+        >
+          {refresh.isPending ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            <RefreshCw size={11} />
+          )}
+        </button>
+      </span>
+      <PricingBrowser open={browserOpen} onClose={() => setBrowserOpen(false)} />
+    </>
   );
 }

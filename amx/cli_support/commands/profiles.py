@@ -12,6 +12,7 @@ from amx.config import (
     normalize_llm_model,
 )
 from amx.utils.console import (
+    PromptCancelled,
     ask,
     ask_choice,
     ask_password,
@@ -300,6 +301,49 @@ def cmd_cost(cfg: AMXConfig, rest: list[str]) -> None:
             "Run /cost <input> <output> to override (e.g. /cost 0.50 2.50). "
             "/cost reset removes the override."
         )
+
+        # Interactive picker — let the user peek at any model's price
+        # without setting up a fresh profile. Existing scripted use
+        # ("/cost" piped through to a non-tty) still gets the printed
+        # block above; only an interactive caller will see the prompt.
+        from amx.llm.pricing import _normalize_model_id, list_all_models
+
+        catalog = list_all_models()
+        if not catalog:
+            return
+        choices = [entry.model_id for entry in catalog]
+        descriptions = {
+            entry.model_id: (
+                f"${entry.input_per_mtok:.4f} / ${entry.output_per_mtok:.4f}  ({entry.source})"
+            )
+            for entry in catalog
+        }
+        candidates = _normalize_model_id(cfg.llm.provider, cfg.llm.model)
+        default_choice = next((c for c in candidates if c in choices), "")
+
+        try:
+            picked = ask_choice(
+                "View pricing for which model? (Enter to keep current, type to filter)",
+                choices,
+                default=default_choice,
+                descriptions=descriptions,
+            )
+        except PromptCancelled:
+            return
+        if not picked or picked == default_choice:
+            return  # current model already printed above; nothing to add
+        entry = next(e for e in catalog if e.model_id == picked)
+        info_styled(
+            f"Cost for '{entry.model_id}' [input  $/Mtok]",
+            f"{entry.input_per_mtok:.4f}",
+            value_style="bold",
+        )
+        info_styled(
+            f"Cost for '{entry.model_id}' [output $/Mtok]",
+            f"{entry.output_per_mtok:.4f}",
+            value_style="bold",
+        )
+        info_styled("Source", entry.source)
         return
 
     head = (rest[0] or "").lower()
