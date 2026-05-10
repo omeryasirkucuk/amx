@@ -170,15 +170,17 @@ def get_logger(name: str) -> logging.Logger:
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
         logger.addFilter(_RequestIdFilter())
-        # ``propagate`` stays True so pytest's caplog can pick up
-        # amx.* records via the root logger (every test that asserts
-        # a log line goes through ``caplog.at_level(level,
-        # logger="amx.X")`` which relies on propagation). The
-        # corresponding Studio-terminal flood — INFO / DEBUG records
-        # from amx.db.connector / amx.llm.provider leaking out via a
-        # third-party basicConfig handler on root — is silenced
-        # process-wide by ``mute_root_logger_for_studio`` below,
-        # called from ``amx/web/launcher.py`` before uvicorn boots.
+        # ``propagate`` stays True by default so pytest's caplog can
+        # pick up amx.* records via the root logger (every test that
+        # asserts a log line goes through ``caplog.at_level(level,
+        # logger="amx.X")`` which relies on propagation). When AMX
+        # Studio boots, ``mute_root_logger_for_studio`` flips
+        # ``_studio_mode_active`` and the block below disables
+        # propagation for every amx.* logger going forward — the
+        # Studio-terminal flood (INFO / DEBUG records from
+        # amx.db.connector / amx.llm.provider escaping to a third-
+        # party ``basicConfig`` handler on root) is silenced without
+        # touching pytest paths, which never call the Studio mute.
         # Pin the on-disk log to UTF-8 explicitly. Without this, Python
         # on Windows opens the file with the platform default codec
         # (cp1252), and any log message containing →, —, … — including
@@ -203,35 +205,67 @@ def get_logger(name: str) -> logging.Logger:
         sh.setLevel(logging.WARNING)
         sh.setFormatter(_human_fmt)
         logger.addHandler(sh)
+    if _studio_mode_active:
+        logger.propagate = False
     return logger
 
 
 # ── Structured events ────────────────────────────────────────────────
 
 
+_studio_mode_active = False
+
+
 def mute_root_logger_for_studio() -> None:
-    """Force the root logger to WARNING for the AMX Studio process.
+    """Silence third-party root-logger noise for the AMX Studio process.
 
     Several third-party imports (``transformers``, ``litellm``,
     ``bert_score``, ``uvicorn[standard]``) call ``logging.basicConfig``
     at import time, which attaches a default stream handler to root at
-    INFO or DEBUG. Without this guard, every amx.* INFO / DEBUG record
+    ``NOTSET``. Without this guard, every amx.* INFO / DEBUG record
     that propagates to root produces a line on the user's REPL
     terminal — ``INFO:amx.db.connector:Connected via postgresql ...``,
     ``DEBUG:amx.llm.provider:LLM call ...``, plus the bert-score
     ``Some weights of RobertaModel were not initialized`` flood —
     drowning the prompt while AMX Studio is up.
 
-    Setting root to WARNING leaves amx.*'s own file handler (DEBUG)
-    and stderr handler (WARNING) intact: the disk log under
-    ``~/.amx/logs/amx.log`` still carries the full DEBUG trace, the
-    user still sees real WARNING / ERROR lines on screen, and pytest
-    test isolation is unaffected because this helper is only called
-    from the Studio launcher path.
+    Three layers of defense are needed because Python's
+    ``Logger.callHandlers`` consults *handler* levels (not ancestor
+    logger levels) when a record propagates upward:
+
+    1. Raise the root logger's level to WARNING so records originating
+       at root itself are filtered.
+    2. Bump every existing root handler that is still at ``NOTSET`` /
+       below WARNING up to WARNING — covers ``basicConfig`` handlers
+       installed before the Studio launcher runs.
+    3. Disable propagation on every existing amx.* logger and flip a
+       module-level flag so ``get_logger`` builds future amx.* loggers
+       with ``propagate=False`` — covers third-party ``basicConfig``
+       calls that fire later via lazy imports (e.g. the first
+       ``litellm`` call from a request handler).
+
+    The amx.* file handler (``~/.amx/logs/amx.log``, DEBUG) and stderr
+    handler (WARNING) are attached directly to each amx.* logger, so
+    losing propagation does not lose any disk records or any real
+    warning the user must see. Pytest test isolation is unaffected
+    because this helper is only invoked from the Studio launcher path
+    — the test suite never calls it, so ``caplog`` keeps working.
     """
+    global _studio_mode_active
+
     root = logging.getLogger()
     if root.level == logging.NOTSET or root.level < logging.WARNING:
         root.setLevel(logging.WARNING)
+    for handler in root.handlers:
+        if handler.level == logging.NOTSET or handler.level < logging.WARNING:
+            handler.setLevel(logging.WARNING)
+
+    _studio_mode_active = True
+    for logger_name, existing in list(logging.Logger.manager.loggerDict.items()):
+        if not isinstance(existing, logging.Logger):
+            continue
+        if logger_name == "amx" or logger_name.startswith("amx."):
+            existing.propagate = False
 
 
 def log_event(event_type: str, /, **fields: Any) -> None:
