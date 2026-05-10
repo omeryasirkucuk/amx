@@ -174,7 +174,12 @@ def _scan_sqlglot_sql_file(
     references: dict[str, list[CodeReference]],
     external_mentions: dict[str, list[CodeReference]],
 ) -> None:
-    """Optional richer SQL table mentions when ``sqlglot`` is installed (``pip install 'amx-cli[code-intel]'``)."""
+    """Optional richer SQL table mentions when ``sqlglot`` is installed.
+
+    Falls back silently to the regex scanner upstream when the
+    package is absent so a missing optional dependency cannot break
+    ``/code analyze``.
+    """
     try:
         import sqlglot
         from sqlglot import exp

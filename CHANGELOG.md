@@ -6,6 +6,44 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Single-step install for the common AMX path.** A first-time
+  ``pip install amx-cli`` was followed by a second wave of pip
+  subprocesses the first time the user opened ``/studio`` or queried
+  a DuckDB profile, which split the bring-up across two phases and
+  felt like the CLI was "still installing itself". FastAPI, uvicorn,
+  ``sse-starlette``, ``python-multipart`` and the DuckDB driver pair
+  graduated from optional extras into core ``[project.dependencies]``
+  in ``pyproject.toml``, so opening Studio or querying a local DuckDB
+  profile no longer triggers any post-install download. The matching
+  ``studio`` and ``duckdb`` extras were removed (a dropped ``studio``
+  extra is a no-op for users who only ever ran ``pip install amx-cli``;
+  anyone who explicitly invoked ``pip install 'amx-cli[studio]'``
+  already gets the same packages from core). The unused
+  ``python-dotenv`` core dependency was deleted in the same pass.
+
+- **Niche backends and RAG bundle stay lazy, but as one bundle.**
+  ``amx/utils/optional_deps.py`` gained a ``BUNDLES`` registry so the
+  three RAG entry points (``/docs``, ``/search``, ``/code``) reference
+  a single shared package list instead of each rebuilding their own,
+  preventing the three-way duplicate fetches that used to happen when
+  a user opened those features in succession. The ``ensure()`` helper
+  now serialises concurrent calls under a process-wide
+  ``threading.Lock`` so the Studio HTTP worker and the REPL cannot
+  race the same install, and prompts once before triggering the
+  large ML bundles (``sentence-transformers``, ``bert-score``) at
+  interactive sites.
+
+- **Studio no longer pre-installs every saved profile's driver at
+  open.** ``amx/web/launcher.py`` used to loop over every configured
+  ``cfg.db_profiles`` entry and call ``ensure_backend_driver()`` for
+  each backend before uvicorn started, so a user with profiles for
+  six warehouses paid for six driver installs even when they opened
+  Studio just to inspect one of them. The loop is gone — drivers
+  install lazily on the first request that actually touches a
+  profile, through the same unified ``ensure()`` path.
+
 ### Added
 
 - **Live input/output price under the active LLM profile in the
