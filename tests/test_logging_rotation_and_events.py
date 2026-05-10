@@ -146,3 +146,63 @@ def test_int_env_helper_clamps_below_minimum(monkeypatch: pytest.MonkeyPatch) ->
 def test_int_env_helper_falls_back_on_garbage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AMX_LOG_BACKUP_COUNT", "not-an-int")
     assert amx_logging._int_env("AMX_LOG_BACKUP_COUNT", 5, minimum=0) == 5
+
+
+def test_mute_root_logger_blocks_amx_info_through_root_basicconfig_handler(
+    isolated_log_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: Studio terminal used to flood with
+    ``INFO:amx.db.connector:...`` lines because a third-party
+    ``logging.basicConfig`` handler attached to root accepts records
+    propagated from amx.* (Python's ``callHandlers`` consults handler
+    levels, not ancestor logger levels). The mute helper must raise
+    that handler's level AND drop amx.* propagation so subsequent late
+    ``basicConfig`` calls also stay silent.
+    """
+    root = logging.getLogger()
+    saved_level = root.level
+    saved_handlers = list(root.handlers)
+    saved_studio_flag = amx_logging._studio_mode_active
+    monkeypatch.setattr(amx_logging, "_studio_mode_active", False, raising=False)
+
+    try:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+
+        sink = logging.StreamHandler()
+        sink.setLevel(logging.NOTSET)
+        root.addHandler(sink)
+
+        db_log = get_logger("db.connector")
+        llm_log = get_logger("llm.provider")
+
+        amx_logging.mute_root_logger_for_studio()
+
+        assert sink.level >= logging.WARNING
+        assert db_log.propagate is False
+        assert llm_log.propagate is False
+
+        # New amx.* loggers created after mute must inherit the silence.
+        new_log = get_logger("agents.rag_after_mute")
+        assert new_log.propagate is False
+
+        # Late basicConfig (lazy litellm import) installs a fresh
+        # NOTSET handler on root — the propagate=False guard means
+        # amx.* records still don't reach it.
+        logging.basicConfig(force=True)
+        late_handler = next(h for h in root.handlers if h is not sink)
+        try:
+            assert late_handler.level == logging.NOTSET
+            assert db_log.propagate is False
+        finally:
+            root.removeHandler(late_handler)
+    finally:
+        for handler in list(root.handlers):
+            root.removeHandler(handler)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        root.setLevel(saved_level)
+        amx_logging._studio_mode_active = saved_studio_flag
+        for name in ("amx.db.connector", "amx.llm.provider", "amx.agents.rag_after_mute"):
+            logger = logging.getLogger(name)
+            logger.propagate = True

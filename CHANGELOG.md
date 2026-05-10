@@ -8,6 +8,22 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Studio terminal flooded with `INFO:amx.db.connector:...` and
+  `DEBUG:amx.llm.provider:...` lines while a session was open.**
+  ``mute_root_logger_for_studio`` only set the root logger's level
+  to WARNING, but Python's ``Logger.callHandlers`` consults handler
+  levels — not ancestor logger levels — when a record propagates
+  upward, so amx.* records still flowed into a third-party
+  ``logging.basicConfig`` handler attached to root. The mute now
+  also raises every existing root handler's level to WARNING and
+  flips ``propagate=False`` on every existing and future amx.*
+  logger, so late-import ``basicConfig`` calls (e.g. from a lazy
+  ``litellm`` import on the first LLM request) cannot reintroduce
+  the leak. The on-disk log under ``~/.amx/logs/amx.log`` keeps
+  the full DEBUG trace, and real WARNING / ERROR lines still
+  surface via the amx-installed stderr handler attached directly
+  to each amx.* logger.
+
 - **Studio "Cost overrides" rows on /runs/new always showed
   `default —`.** The Advanced LLM settings disclosure read its
   default badge from the saved profile's
