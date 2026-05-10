@@ -10,8 +10,6 @@ would either flake on CI or open a permission dialog on macOS.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from amx.utils import terminal_theme as tt
@@ -353,9 +351,7 @@ def test_windows_terminal_skips_console_api(
 ) -> None:
     monkeypatch.setattr("os.name", "nt", raising=False)
     monkeypatch.setenv("WT_SESSION", "fake-session-guid")
-    monkeypatch.setattr(
-        tt, "_query_windows_console", lambda: pytest.fail("Console API reached")
-    )
+    monkeypatch.setattr(tt, "_query_windows_console", lambda: pytest.fail("Console API reached"))
     monkeypatch.setattr(tt, "_query_osc11", lambda: (1.0, 1.0, 1.0))
     assert tt.detect_background() == "light"
 

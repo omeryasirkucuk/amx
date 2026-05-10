@@ -20,9 +20,12 @@ Detection runs in tiers, ordered by reliability + cost:
        when ``WT_SESSION`` is unset; Windows Terminal supports OSC 11
        directly.
     5. OSC 11 escape query (xterm/iTerm2/Kitty/Alacritty/WezTerm/foot/
-       VS Code/Windows Terminal). Skipped on Apple_Terminal — the OS
-       Terminal.app does not respond and the timeout is wasted.
-    6. Fallback: "dark" (preserves the pre-detection behavior).
+       VS Code/Windows Terminal). 150 ms timeout.
+    6. Apple_Terminal AppleScript fallback (``osascript`` reads the
+       active tab's background color). Only fires when ``TERM_PROGRAM``
+       is ``Apple_Terminal`` and OSC 11 didn't reply — Terminal.app
+       does not implement OSC 11 across most macOS versions.
+    7. Fallback: "dark" (preserves the pre-detection behavior).
 
 The result is memoized for the process lifetime; banner rendering hits
 this once. Theme switches mid-session require restarting the CLI.
@@ -274,8 +277,7 @@ def _normalize_rgb_hex(r_hex: str, g_hex: str, b_hex: str) -> tuple[float, float
 
 
 _APPLESCRIPT_BG_QUERY = (
-    'tell application "Terminal" to get background color '
-    "of selected tab of window 1"
+    'tell application "Terminal" to get background color of selected tab of window 1'
 )
 _APPLESCRIPT_TIMEOUT_S = 0.5
 
