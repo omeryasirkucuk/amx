@@ -8,6 +8,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **First ``/studio`` boot crashed with ``RuntimeError: Form data
+  requires "python-multipart" to be installed`` on environments
+  installed without the ``studio`` extra.** ``launch_studio`` only
+  pre-installed ``fastapi`` / ``uvicorn[standard]`` /
+  ``sse-starlette`` via ``ensure(...)``, so the drag-drop document
+  upload (``amx/web/routers/docs_ops.py``) blew up the moment
+  FastAPI parsed the first multipart request body — the install
+  step looked successful, but the Studio session was dead on
+  arrival. The ensure list now also declares
+  ``("python_multipart", "python-multipart")`` so the wheel
+  ``pyproject.toml``'s ``studio`` extra already pins is also
+  guaranteed under the lazy on-demand path.
+
 - **Studio terminal flooded with `INFO:amx.db.connector:...` and
   `DEBUG:amx.llm.provider:...` lines while a session was open.**
   ``mute_root_logger_for_studio`` only set the root logger's level
