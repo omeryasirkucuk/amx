@@ -185,6 +185,100 @@ def test_spinner_suppressed_off_main_thread(duckdb_profile, monkeypatch) -> None
     )
 
 
+def test_databricks_pinned_schema_short_circuits_list_schemas(monkeypatch) -> None:
+    """Databricks ``cfg.database`` is a schema pin (the wizard prompt
+    reads "Schema / database (optional)"). When set, ``connector.
+    list_schemas`` must return ``[pinned]`` instead of the live list
+    — so the sidebar's catalog expand shows ONLY the user's schema,
+    not every schema in the catalog. Mirrors the catalog-picker
+    behaviour from PR #318."""
+    import sys
+    import types
+
+    from amx.config import DBConfig
+
+    # Stub out the databricks-sql / sqlalchemy imports so we can build
+    # a DatabaseConnector for a databricks profile without a live
+    # connection. The pin filter runs entirely on what the adapter
+    # returned, so we mock the adapter's ``list_schemas``.
+    db = DatabaseConnector(
+        DBConfig(
+            backend="databricks",
+            host="db.test",
+            access_token="t",
+            catalog="main",
+            database="sales",
+            http_path="/sql/1.0/warehouses/x",
+        ),
+        profile_name="dbx-test",
+    )
+    # Bypass cache + engine — feed the filter directly via the adapter.
+    monkeypatch.setattr(db, "_catalog_bulk_cache_is_fresh", lambda *_a, **_kw: False)
+    monkeypatch.setattr(db, "_populate_catalogs_cache", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        db._adapter,
+        "list_schemas",
+        lambda _engine, _catalog: ["sales", "marketing", "operations"],
+    )
+    # Pin set + present → filter to that one.
+    assert db.list_schemas() == ["sales"]
+
+
+def test_databricks_pinned_schema_falls_through_when_missing(monkeypatch) -> None:
+    """If the pinned schema is no longer in the live list (dropped
+    server-side, permissions revoked) ``list_schemas`` returns the
+    full list so the sidebar can surface its pinned-but-missing
+    warning instead of an empty page."""
+    from amx.config import DBConfig
+
+    db = DatabaseConnector(
+        DBConfig(
+            backend="databricks",
+            host="db.test",
+            access_token="t",
+            catalog="main",
+            database="archived_sales",
+            http_path="/sql/1.0/warehouses/x",
+        ),
+        profile_name="dbx-test",
+    )
+    monkeypatch.setattr(db, "_catalog_bulk_cache_is_fresh", lambda *_a, **_kw: False)
+    monkeypatch.setattr(db, "_populate_catalogs_cache", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        db._adapter,
+        "list_schemas",
+        lambda _engine, _catalog: ["sales", "marketing"],
+    )
+    # ``archived_sales`` is gone — return full list so the SPA can warn.
+    assert db.list_schemas() == ["sales", "marketing"]
+
+
+def test_unpinned_schema_returns_full_list(monkeypatch) -> None:
+    """When no schema is pinned the connector returns whatever the
+    backend has, untouched. Rule: optional is optional."""
+    from amx.config import DBConfig
+
+    db = DatabaseConnector(
+        DBConfig(
+            backend="databricks",
+            host="db.test",
+            access_token="t",
+            catalog="main",
+            database="",  # unpinned
+            http_path="/sql/1.0/warehouses/x",
+        ),
+        profile_name="dbx-test",
+    )
+    monkeypatch.setattr(db, "_catalog_bulk_cache_is_fresh", lambda *_a, **_kw: False)
+    monkeypatch.setattr(db, "_populate_catalogs_cache", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        db._adapter,
+        "list_schemas",
+        lambda _engine, _catalog: ["sales", "marketing", "operations"],
+    )
+    assert db.list_schemas() == ["sales", "marketing", "operations"]
+
+
 def test_list_schemas_uses_cache_after_first_call(tmp_path) -> None:
     """Catalog expand: ``list_schemas`` must NOT re-query the DB on
     repeat visits. DuckDB can't carry schema-level comments (the

@@ -154,6 +154,8 @@ export interface CatalogsResponse {
   supports_catalogs: boolean;
   catalogs: string[];
   active_catalog: string | null;
+  /** BigQuery's project — same role as a Databricks catalog. */
+  active_project?: string | null;
 }
 
 export interface DatabasesResponse {
@@ -171,6 +173,11 @@ export interface SchemasResponse {
   schemas: string[];
   /** Enriched list with per-schema existing comment. */
   items: SchemaItem[];
+  /** Databricks ``cfg.database`` — the wizard's "Schema / database
+   * (optional)" field. When set, the SPA renders only this schema. */
+  active_schema?: string | null;
+  /** BigQuery ``cfg.dataset`` — same role as a Databricks schema. */
+  active_dataset?: string | null;
 }
 
 export interface AssetRow {

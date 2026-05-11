@@ -21,6 +21,37 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Wizard-pinned scope is honoured at every level, including
+  schema.** Previous passes (#318 silenced the CLI catalog picker
+  when pinned; #321 filtered the sidebar's catalog + database
+  render) stopped at the wrong level. The wizard at
+  ``amx/cli_support/commands/db.py:883`` literally prompts for
+  ``"Schema / database (optional)"`` on Databricks — when the user
+  fills that, they pinned a SCHEMA, not a database. Same for
+  BigQuery's ``dataset`` field. The backend now returns a complete
+  ``active_*`` envelope (``active_catalog`` / ``active_project`` /
+  ``active_database`` / ``active_schema`` / ``active_dataset``)
+  computed by a new ``_active_scope_for_profile`` helper, with the
+  per-backend slot mapping in one place so a future adapter can't
+  silently leak the wrong field into the wrong slot. The connector's
+  ``list_schemas`` short-circuits to the pinned value when set AND
+  visible; falls through to the full list when pinned-but-missing
+  so the sidebar's pinned-but-missing warning surfaces. The Studio
+  sidebar's schema tree honours ``active_schema`` / ``active_dataset``
+  the same way it already honoured ``active_catalog``. **Rule:**
+  optional is optional. If the user filled a wizard field, narrow
+  to that value. If they left it blank, show everything.
+
+- **New Run page uses the same cache as the Sidebar.** Opening
+  ``/runs/new`` from the top nav (no URL scope params) used to show
+  an empty Schema picker until the user clicked a sidebar entry to
+  fill the URL — and the two ends used different React Query keys so
+  there was no cache sharing. The page now derives scope from the
+  active profile's pinned catalog / database when the URL is empty,
+  so the ``["live-schemas", profile, db, catalog]`` key matches what
+  the Sidebar populated on first navigation. Cache hit, single
+  network round-trip total.
+
 - **DB profile delete + edit now refresh the whole Studio UI without
   a page reload.** The Settings page's delete and save mutations only
   invalidated ``["profiles", "db"]``, leaving the Sidebar, topbar

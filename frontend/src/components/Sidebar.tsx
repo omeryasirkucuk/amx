@@ -194,6 +194,8 @@ interface CatalogsCache {
   supports_catalogs: boolean;
   catalogs: string[];
   active_catalog?: string | null;
+  /** BigQuery's project — same scope role as a catalog. */
+  active_project?: string | null;
 }
 interface DatabasesCache {
   databases: string[];
@@ -465,7 +467,12 @@ function ProfileScopeChildren({
     // what the role can see on the workspace. The backend still
     // returns the full list in ``catalogs`` so the user can switch
     // by editing the profile, but the sidebar respects the pin.
-    const pinned = (catalogs.data.active_catalog || "").trim();
+    //
+    // ``active_project`` is BigQuery's equivalent of a Databricks
+    // catalog (the wizard pins one or the other depending on
+    // backend); the rule is identical for both.
+    const pinned =
+      (catalogs.data.active_catalog || catalogs.data.active_project || "").trim();
     const pinnedMissing =
       pinned && !catalogs.data.catalogs.includes(pinned);
     const effective = pinned && !pinnedMissing
@@ -678,6 +685,23 @@ function SchemasUnderScope({
   if (!data || data.schemas.length === 0) {
     return <div className="px-2 py-1 text-[11px] text-ink-dim">(no schemas)</div>;
   }
+  // Honour the wizard's schema-level pin: Databricks pins via
+  // ``cfg.database`` (the wizard prompt literally reads "Schema /
+  // database (optional)") and BigQuery pins via ``cfg.dataset``.
+  // When the pin is set AND visible in the live list, render only
+  // that one. When the pin is set but missing (dropped server-side
+  // or permissions lost) fall through to the full list so the
+  // sidebar's pinned-but-missing warning surfaces — never fabricate
+  // a phantom row.
+  const pinnedSchema =
+    (data.active_schema || data.active_dataset || "").trim();
+  const pinnedSchemaMissing =
+    pinnedSchema && !data.schemas.includes(pinnedSchema);
+  const visibleSchemas =
+    pinnedSchema && !pinnedSchemaMissing
+      ? data.schemas.filter((s) => s === pinnedSchema)
+      : data.schemas;
+
   // When parentMatched is true, the user already hit on something
   // higher up the chain (a profile / db / catalog) -- show every
   // schema unfiltered. Otherwise narrow to schemas whose name
@@ -685,18 +709,24 @@ function SchemasUnderScope({
   // match (so a typed table name keeps its parent schema visible
   // even before the user clicks into it).
   const schemas = query
-    ? data.schemas.filter(
+    ? visibleSchemas.filter(
         (s) =>
           parentMatched ||
           matchesSearch(s, query) ||
           schemaHasMatchingAssetInCache(qc, scope, s, query),
       )
-    : data.schemas;
+    : visibleSchemas;
   if (schemas.length === 0) {
     return <div className="px-2 py-1 text-[11px] text-ink-dim">No schemas match.</div>;
   }
   return (
     <div className="space-y-0.5">
+      {pinnedSchemaMissing && (
+        <div className="px-2 py-1 text-[11px] text-warning">
+          Pinned schema &quot;{pinnedSchema}&quot; not visible. Edit
+          the profile via /db to re-pin.
+        </div>
+      )}
       {schemas.map((schema) => (
         <SchemaNode
           key={schema}

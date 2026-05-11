@@ -196,6 +196,78 @@ def _require_profile(profile: str | None) -> str:
     return name
 
 
+def _active_scope_for_profile(cfg: AMXConfig, profile_name: str) -> dict[str, Any]:
+    """Return the wizard-driven scope envelope for a profile.
+
+    The wizard captures different fields per backend (catalog vs.
+    project vs. database vs. dataset) but the rule the SPA needs is
+    always the same: "if the user filled this in, narrow the listing
+    to that value; if they left it blank, show everything". This
+    helper centralises the per-backend mapping so endpoints don't
+    each have to know which field is the catalog and which is the
+    schema for every adapter.
+
+    Field semantics by backend:
+
+    * Databricks: ``cfg.db.catalog`` → top-level catalog,
+      ``cfg.db.database`` → schema. The wizard prompt at line 883 of
+      ``cli_support/commands/db.py`` labels the field "Schema /
+      database (optional)" so users who pin one are pinning a schema.
+    * BigQuery: ``cfg.db.project`` → catalog-equivalent,
+      ``cfg.db.dataset`` → schema-equivalent.
+    * 2-level backends (Postgres / Snowflake / MySQL / Oracle / MSSQL
+      / Redshift / ClickHouse / DuckDB): ``cfg.db.database`` is the
+      only scope-narrowing knob. No schema-level pin.
+
+    Returned envelope (any value may be ``None``):
+
+    ``{active_catalog, active_project, active_database,
+       active_schema, active_dataset}``
+    """
+    base = cfg.db_profiles.get(profile_name) if profile_name else None
+    if base is None:
+        return {
+            "active_catalog": None,
+            "active_project": None,
+            "active_database": None,
+            "active_schema": None,
+            "active_dataset": None,
+        }
+    backend = (getattr(base, "backend", "") or "").lower()
+    catalog = (getattr(base, "catalog", "") or "").strip() or None
+    project = (getattr(base, "project", "") or "").strip() or None
+    database = (getattr(base, "database", "") or "").strip() or None
+    dataset = (getattr(base, "dataset", "") or "").strip() or None
+    # On Databricks the wizard's ``database`` field is the SCHEMA
+    # (third level of the catalog→schema→table hierarchy). For every
+    # other 2-level backend ``database`` is the catalog-equivalent
+    # top-level scope so it goes into ``active_database`` instead.
+    if backend == "databricks":
+        return {
+            "active_catalog": catalog,
+            "active_project": None,
+            "active_database": None,
+            "active_schema": database,  # ← the schema pin lives here
+            "active_dataset": None,
+        }
+    if backend == "bigquery":
+        return {
+            "active_catalog": None,
+            "active_project": project,
+            "active_database": None,
+            "active_schema": None,
+            "active_dataset": dataset,
+        }
+    # 2-level backends — only the database can be pinned.
+    return {
+        "active_catalog": None,
+        "active_project": None,
+        "active_database": database,
+        "active_schema": None,
+        "active_dataset": None,
+    }
+
+
 @router.get("/catalogs")
 def list_catalogs(
     profile: str = Query(...),
@@ -210,12 +282,15 @@ def list_catalogs(
     db = _connector_for_scope(cfg, name)
     supports = _coerce_or_500("Probing catalog support", db.supports_catalogs)
     catalogs = _coerce_or_500("Listing catalogs", db.list_catalogs) if supports else []
-    base = cfg.db_profiles.get(name)
-    pinned_catalog = (getattr(base, "catalog", "") or "") if base else ""
+    scope = _active_scope_for_profile(cfg, name)
     return {
         "supports_catalogs": bool(supports),
         "catalogs": list(catalogs),
-        "active_catalog": pinned_catalog or None,
+        # ``active_catalog`` is the legacy field the SPA already reads;
+        # ``active_project`` is its BigQuery equivalent so the sidebar
+        # filter can handle both 3-level backends uniformly.
+        "active_catalog": scope["active_catalog"],
+        "active_project": scope["active_project"],
     }
 
 
@@ -231,11 +306,10 @@ def list_databases(
     name = _require_profile(profile)
     db = _connector_for_scope(cfg, name)
     databases = _coerce_or_500("Listing databases", db.list_databases)
-    base = cfg.db_profiles.get(name)
-    pinned_db = (getattr(base, "database", "") or "") if base else ""
+    scope = _active_scope_for_profile(cfg, name)
     return {
         "databases": list(databases),
-        "active_database": pinned_db or None,
+        "active_database": scope["active_database"],
     }
 
 
@@ -264,10 +338,19 @@ def list_schemas(
         except Exception:
             comment = ""
         items.append({"name": schema_name, "comment": comment})
+    scope = _active_scope_for_profile(cfg, name)
     return {
         "catalog": catalog or None,
         "schemas": [it["name"] for it in items],
         "items": items,
+        # The schema-level pin lets the SPA filter the rendered list
+        # to a single schema (Databricks ``database`` field = schema)
+        # or a single dataset (BigQuery ``dataset``). The pin is
+        # **presentation only** — the schemas array still carries the
+        # full list the connector returned so a user who manually
+        # navigates outside the pin can still see what's available.
+        "active_schema": scope["active_schema"],
+        "active_dataset": scope["active_dataset"],
     }
 
 
