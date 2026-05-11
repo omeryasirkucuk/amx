@@ -1544,12 +1544,15 @@ def cmd_profiling(cfg: AMXConfig, rest: list[str]) -> None:
     if not rest:
         max_rows = int(getattr(cfg.db, "profiling_max_rows", 1_000_000) or 0)
         max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
+        approx = bool(getattr(cfg.db, "profiling_approximate", False))
         info(
             "Current profiling guardrails: "
             f"mode=[info]{cfg.db.profiling_mode}[/info], "
             f"max_full_scan_rows=[info]{max_label}[/info], "
-            f"sample_size=[info]{cfg.db.profiling_sample_size}[/info]. "
-            "Use /profiling <full|sampled|metadata> [max_rows|off] [sample_size]."
+            f"sample_size=[info]{cfg.db.profiling_sample_size}[/info], "
+            f"approximate=[info]{approx}[/info]. "
+            "Use /profiling <full|sampled|metadata> [max_rows|off] "
+            "[sample_size] [approximate]."
         )
         return
 
@@ -1584,19 +1587,35 @@ def cmd_profiling(cfg: AMXConfig, rest: list[str]) -> None:
             error("Sample size must be >= 0.")
             return
 
+    approximate = bool(getattr(cfg.db, "profiling_approximate", False))
+    if len(rest) >= 4:
+        raw = rest[3].lower().strip()
+        truthy = {"on", "true", "yes", "y", "1", "approx", "approximate"}
+        falsy = {"off", "false", "no", "n", "0", "exact"}
+        if raw in truthy:
+            approximate = True
+        elif raw in falsy:
+            approximate = False
+        else:
+            error(f"Expected approximate flag as on/off, got: {rest[3]!r}.")
+            return
+
     cfg.db.profiling_mode = mode
     cfg.db.profiling_max_rows = max_rows
     cfg.db.profiling_sample_size = sample_size
+    cfg.db.profiling_approximate = approximate
     if cfg.active_db_profile and cfg.active_db_profile in cfg.db_profiles:
         cfg.db_profiles[cfg.active_db_profile].profiling_mode = mode
         cfg.db_profiles[cfg.active_db_profile].profiling_max_rows = max_rows
         cfg.db_profiles[cfg.active_db_profile].profiling_sample_size = sample_size
+        cfg.db_profiles[cfg.active_db_profile].profiling_approximate = approximate
     cfg.save()
 
     max_label = "off" if max_rows <= 0 else f"{max_rows:,}"
     success(
         f"Profiling guardrails saved: mode={mode}, "
-        f"max_full_scan_rows={max_label}, sample_size={sample_size}."
+        f"max_full_scan_rows={max_label}, sample_size={sample_size}, "
+        f"approximate={approximate}."
     )
 
 

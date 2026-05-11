@@ -168,7 +168,7 @@ class SnowflakeAdapter(DatabaseAdapter):
         return (
             f"SELECT "
             f"  SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END) AS null_cnt, "
-            f"  COUNT(DISTINCT {quoted_col}) AS dist_cnt, "
+            f"  {self._distinct_count_expr(quoted_col)} AS dist_cnt, "
             f"  MIN({quoted_col}::VARCHAR) AS min_val, "
             f"  MAX({quoted_col}::VARCHAR) AS max_val "
             f"FROM {fqn}"
@@ -184,6 +184,15 @@ class SnowflakeAdapter(DatabaseAdapter):
         # Snowflake doesn't accept ``COUNT(*) FILTER (WHERE …)``; use the
         # SUM(CASE) form that the per-column path also uses.
         return f"SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END)"
+
+    def _distinct_count_expr(self, quoted_col: str) -> str:
+        # Snowflake's APPROX_COUNT_DISTINCT is an HLL implementation and
+        # bills a small fraction of an exact COUNT(DISTINCT) on wide
+        # / high-cardinality columns. Default behaviour unchanged
+        # (cfg flag defaults to False).
+        if getattr(self.cfg, "profiling_approximate", False):
+            return f"APPROX_COUNT_DISTINCT({quoted_col})"
+        return f"COUNT(DISTINCT {quoted_col})"
 
     def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
         return f"{agg}({quoted_col}::VARCHAR)"

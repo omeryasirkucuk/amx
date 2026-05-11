@@ -549,6 +549,16 @@ class DBConfig(_ObservableConfig):
     profiling_mode: str = "full"  # full | sampled | metadata
     profiling_max_rows: int = 1_000_000  # skip full column scans above this row estimate (0=off)
     profiling_sample_size: int = 5
+    # When True, metered backends (BigQuery / Snowflake / Databricks)
+    # emit ``APPROX_COUNT_DISTINCT`` / ``approx_count_distinct`` instead
+    # of ``COUNT(DISTINCT col)``. The exact aggregate scans every row in
+    # the sampled slice (TABLESAMPLE / SAMPLE only narrows the input,
+    # not the COUNT-DISTINCT hash), so wide tables with high-cardinality
+    # columns can rack up credits even with the 1% sample. The
+    # HyperLogLog approximation is within ~1-2% on realistic data and
+    # bills a small fraction of the credits. Defaults to False so
+    # existing behaviour is preserved.
+    profiling_approximate: bool = False
     # How many columns to compute null/distinct/min/max for in a single
     # bulk query. The connector chunks wide tables into batches of this
     # size — fewer queries on warehouse-billed backends, less memory
@@ -944,6 +954,7 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
         profiling_sample_size=int(m.get("profiling_sample_size", 5)),
         profiling_stats_batch_size=int(m.get("profiling_stats_batch_size", 50)),
+        profiling_approximate=bool(m.get("profiling_approximate", False)),
     )
 
 
@@ -1077,6 +1088,7 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
             "profiling_max_rows": int(db.profiling_max_rows),
             "profiling_sample_size": int(db.profiling_sample_size),
             "profiling_stats_batch_size": int(db.profiling_stats_batch_size),
+            "profiling_approximate": bool(db.profiling_approximate),
         }
     )
     return base
