@@ -16,6 +16,7 @@ import { ApiError, api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import { scopePath } from "../lib/scope";
+import { useUi } from "../lib/store";
 import { InfoHint } from "./ui";
 import LlmProfilePriceLine from "./LlmProfilePriceLine";
 import ProfilePicker from "./topbar/ProfilePicker";
@@ -56,13 +57,7 @@ interface DbProfilesResponse {
  */
 export default function Sidebar({ collapsed }: Props) {
   if (collapsed) {
-    return (
-      <div className="flex h-full flex-col items-center gap-3 py-3 text-ink-dim">
-        <Database size={16} />
-        <FolderTree size={16} />
-        <Layers size={16} />
-      </div>
-    );
+    return <CollapsedRail />;
   }
   return (
     <div className="flex h-full flex-col">
@@ -82,6 +77,41 @@ export default function Sidebar({ collapsed }: Props) {
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <ProfilesTree />
       </div>
+    </div>
+  );
+}
+
+/** Vertical rail rendered when the sidebar is collapsed.
+ *
+ * Each icon is a button bound to ``toggleSidebar`` so the user can
+ * pop the panel back open by clicking any of the section glyphs —
+ * the topbar's ``PanelLeft`` chevron is the formal toggle, but
+ * users instinctively reach for the visible icons first and the
+ * earlier pass left them as inert SVGs. The semantic ``aria-label``s
+ * and ``aria-expanded={false}`` let screen-reader users navigate
+ * the same way.
+ */
+function CollapsedRail() {
+  const toggleSidebar = useUi((s) => s.toggleSidebar);
+  const railIcons: Array<{ Icon: typeof Database; label: string }> = [
+    { Icon: Database, label: "Expand sidebar — DB profiles" },
+    { Icon: FolderTree, label: "Expand sidebar — profile tree" },
+    { Icon: Layers, label: "Expand sidebar — LLM profile" },
+  ];
+  return (
+    <div className="flex h-full flex-col items-center gap-1 py-3 text-ink-dim">
+      {railIcons.map(({ Icon, label }) => (
+        <button
+          key={label}
+          type="button"
+          onClick={toggleSidebar}
+          aria-label={label}
+          aria-expanded={false}
+          className="flex h-8 w-8 items-center justify-center rounded-md transition-colors duration-fast hover:bg-surface-subtle hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          <Icon size={16} />
+        </button>
+      ))}
     </div>
   );
 }
