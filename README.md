@@ -1,14 +1,17 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/amx-banner.png" alt="AMX — Agentic Metadata Extractor" width="760">
+
+https://github.com/user-attachments/assets/fdcb7498-928a-4250-b257-7d5aef5521bb
+
 </p>
 
 <p align="center">
-  <strong>Stop staring at <code>transactions.posting NUMBER(8)</code> wondering what it means.</strong>
+  <strong>Cryptic columns, reviewed comments.</strong>
 </p>
 
 <p align="center">
-  AI-powered guidance and reference for data analysts, data engineers,<br>
-  and catalog owners working with undocumented database schemas.
+  AMX walks your database, reads your codebase and docs, then drafts a
+  <code>COMMENT</code> for every table, view, and column — with confidence
+  scores and a human review before anything lands in the live database.
 </p>
 
 <p align="center">
@@ -23,9 +26,9 @@
 
 ---
 
-AMX walks your database, reads your documentation and codebase, then **drafts a description for every table, view, and column** — with confidence scores and a human review before anything lands in the live database. Three independent sub-agents (Profile, RAG, Code) gather evidence, an orchestrator merges and ranks them, you accept / edit / skip, and AMX writes approved descriptions back as native `COMMENT` statements on the engine.
+Three independent sub-agents — **Profile** (schema, stats, sample values), **RAG** (ingested docs), and **Code** (references mined from your repos) — gather evidence in parallel. An orchestrator merges and ranks them, you accept / edit / skip each suggestion, and AMX writes the approved text back as native `COMMENT` statements on the engine.
 
-Five minutes from `pip install` to your first reviewed description. **Ten supported database backends, seven LLM providers.**
+Five minutes from `pip install` to your first reviewed comment. **Ten database engines, seven LLM providers.**
 
 ## Install
 
@@ -41,7 +44,7 @@ The PyPI distribution is `amx-cli`; the import package is `amx` (`import amx`). 
 amx                       # open the interactive session (the AMX REPL)
 /setup                    # one-time wizard: DB profile + LLM profile
 /connect                  # sanity-check the active connection
-/run core.transactions          # generate suggestions, review, accept
+/run sales.orders         # generate suggestions, review, accept
 /apply                    # write approved descriptions back to the database
 ```
 
@@ -49,35 +52,62 @@ amx                       # open the interactive session (the AMX REPL)
 
 The full guided walkthrough is at the [5-minute quickstart](https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/) and [first-run walkthrough](https://omeryasirkucuk.github.io/amx-docs/getting-started/first-run/).
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/amx-banner.png" alt="AMX REPL — interactive session showing /run output with ranked suggestions, confidence scores, and review prompts" width="900">
+</p>
+
 ## `/studio` — same workflow on a local web UI
 
 `amx /studio` boots **AMX Studio**, a token-protected web UI on `127.0.0.1`, and opens your browser. Same review-and-apply workflow as the REPL — runs, results, the pending queue, the `/ask` chat, and full DB / LLM / Docs / Code profile management — but on a denser surface. **Browse** any database / schema / table to inline-edit comments or hit per-asset **Generate** to draft just one comment through the same human-in-the-loop queue. The SPA bundle ships inside `amx-cli`; no Node toolchain or extra install needed.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/studio-overview.png" alt="AMX Studio Overview page — sidebar with active SAP profile, four stat cards (active backend, LLM model, total runs, success rate), and a Recent runs feed" width="900">
+  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/studio-overview.png" alt="AMX Studio Overview page — sidebar with active profile, four stat cards (active backend, LLM model, total runs, success rate), and a Recent runs feed" width="900">
 </p>
 
 Full walkthrough at [`/studio`](https://omeryasirkucuk.github.io/amx-docs/cli/studio/).
 
-## What you get
-
-Cryptic identifier in:
+## How it works
 
 ```
-core.transactions.posting   NUMBER(8) NULL
+   ┌──────────────┐
+   │   Profile    │  schema, types, keys,
+   │    agent     │  cardinality, samples
+   └──────┬───────┘
+          │
+   ┌──────┴───────┐      ┌──────────────┐      ┌──────────────┐
+   │     RAG      │ ───▶ │ Orchestrator │ ───▶ │  You review  │
+   │    agent     │      │   (LLM rank)  │      │  accept/edit │
+   └──────┬───────┘      └──────────────┘      └──────┬───────┘
+          │                                            │
+   ┌──────┴───────┐                                    ▼
+   │     Code     │                            COMMENT ON COLUMN …
+   │    agent     │                          (native DDL on the engine)
+   └──────────────┘
 ```
 
-Reviewed description out:
+Each agent runs independently, surfaces its own evidence, and assigns its own confidence. The orchestrator picks the narrower, defensible description and ranks up to N alternatives. You never apply anything you didn't approve.
+
+### A column, before and after
+
+A typical column in `orders`, the kind every analytics codebase has:
 
 ```
-Posting date. The accounting period this transaction lands in, encoded
-as YYYYMMDD. Distinct from the system-level effective date (eff_dt)
-that records when the row physically arrived in the warehouse.
-
-  confidence: high · logprob: 0.91 · sources: code (3 refs), docs, db profile
+orders.shipped_dt   DATE   NULL   -- (no comment)
 ```
 
-Every column gets up to N ranked alternatives, every suggestion is grounded in evidence (db profile, code references, doc snippets), and every approval is recorded in local run history that you can re-evaluate later with `/history review`.
+What AMX produces, after you approve:
+
+```
+COMMENT ON COLUMN orders.shipped_dt IS
+  'Date the carrier scanned the package at origin. Distinct from
+   order_dt (when the customer placed the order) and delivered_dt
+   (when the carrier recorded proof of delivery).';
+
+confidence: high · logprob: 0.91
+sources: code (3 refs) · docs · db profile
+```
+
+Every approval is recorded in local run history — re-evaluate later with `/history review` to see how the same column scores under a different model, prompt detail, or evidence mix.
 
 ## Supported database backends
 
