@@ -399,28 +399,60 @@ class DatabaseConnector:
         # router fires right after — see _populate_catalogs_cache for
         # the bulk fill that warms this state.
         catalog = getattr(self.cfg, "catalog", "") or ""
+        live: list[str] | None = None
         if self._catalog_bulk_cache_is_fresh(catalog):
             cached = self._list_schemas_from_cache(catalog)
             if cached:
-                return [name for name, _ in cached]
-        if self._populate_catalogs_cache(catalog):
+                live = [name for name, _ in cached]
+        if live is None and self._populate_catalogs_cache(catalog):
             cached = self._list_schemas_from_cache(catalog)
             if cached:
-                return [name for name, _ in cached]
+                live = [name for name, _ in cached]
+        if live is None:
+            # Adapter-specific override (e.g. Databricks ``SHOW SCHEMAS
+            # IN <catalog>``) takes precedence so catalog-scoped
+            # backends don't fall through to the SQLAlchemy inspector —
+            # which ignores catalog and returns ambiguous results.
+            try:
+                adapter_result = self._adapter.list_schemas(self.engine, catalog)
+            except Exception:
+                adapter_result = None
+            if adapter_result is not None:
+                live = list(adapter_result)
+            else:
+                insp = inspect(self.engine)
+                system = self._adapter.system_schemas()
+                live = [s for s in insp.get_schema_names() if s not in system]
+        return self._apply_pinned_schema_filter(live)
 
-        # Adapter-specific override (e.g. Databricks ``SHOW SCHEMAS IN
-        # <catalog>``) takes precedence so catalog-scoped backends
-        # don't fall through to the SQLAlchemy inspector — which
-        # ignores catalog and returns ambiguous results.
-        try:
-            adapter_result = self._adapter.list_schemas(self.engine, catalog)
-        except Exception:
-            adapter_result = None
-        if adapter_result is not None:
-            return list(adapter_result)
-        insp = inspect(self.engine)
-        system = self._adapter.system_schemas()
-        return [s for s in insp.get_schema_names() if s not in system]
+    def _apply_pinned_schema_filter(self, schemas: list[str]) -> list[str]:
+        """Narrow the live schema list to the pinned value when set.
+
+        Implements the wizard-driven scope rule for the third level of
+        the hierarchy: Databricks's ``cfg.database`` is a SCHEMA pin
+        (the wizard prompt literally reads "Schema / database
+        (optional)"); BigQuery's ``cfg.dataset`` is the same idea.
+        Other backends have no schema-level pin so the list passes
+        through unchanged.
+
+        Fallback (mirrors the catalog picker from PR #318): when the
+        pinned value is no longer in the live list (schema dropped,
+        permissions lost), return the full live list so the sidebar's
+        pinned-but-missing warning can surface — never fabricate a
+        phantom row.
+        """
+        backend = (getattr(self._adapter, "name", "") or "").lower()
+        if backend == "databricks":
+            pinned = str(getattr(self.cfg, "database", "") or "").strip()
+        elif backend == "bigquery":
+            pinned = str(getattr(self.cfg, "dataset", "") or "").strip()
+        else:
+            return schemas
+        if not pinned:
+            return schemas
+        if pinned in schemas:
+            return [pinned]
+        return schemas
 
     def list_tables(self, schema: str) -> list[str]:
         # Adapter override path for catalog-scoped backends (Databricks

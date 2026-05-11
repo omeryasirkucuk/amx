@@ -136,17 +136,67 @@ function buildOverridesPayload(
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
+interface DbProfileSummary {
+  name: string;
+  backend: string;
+  host: string;
+  database: string;
+  catalog: string;
+  is_active: boolean;
+}
+
+interface DbProfilesListResponse {
+  profiles: DbProfileSummary[];
+  count: number;
+}
+
 /** Read scope from `?profile=…&database=…` (or `&catalog=…`) — the
- * Database/Schema/Table pages link here with the scope encoded. */
+ * Database/Schema/Table pages link here with the scope encoded.
+ *
+ * When the user opens ``/runs/new`` directly (top-nav, bookmark) the
+ * URL carries no scope. In that case we derive scope from the active
+ * profile's pinned catalog / database so the page is immediately
+ * usable AND the query keys match what the Sidebar already populated
+ * (sharing the live-schemas cache, no second fetch).
+ */
 function useRunScope(): Scope | null {
   const [params] = useSearchParams();
   const profile = params.get("profile") || "";
   const database = params.get("database") || "";
   const catalog = params.get("catalog") || "";
-  if (!profile) return null;
-  if (catalog) return { profile, catalog, kind: "catalog" };
-  if (database) return { profile, database, kind: "database" };
-  return null;
+
+  // Fetch the profiles list only when the URL has no profile param.
+  // Otherwise we trust the URL — the user clicked a sidebar entry and
+  // we should honour that scope verbatim, even if it differs from the
+  // active profile's pin.
+  const fallback = useQuery({
+    queryKey: ["profiles", "db"],
+    queryFn: () => apiFetch<DbProfilesListResponse>("/api/profiles/db"),
+    retry: false,
+    enabled: !profile,
+  });
+
+  if (profile) {
+    if (catalog) return { profile, catalog, kind: "catalog" };
+    if (database) return { profile, database, kind: "database" };
+    return null;
+  }
+
+  const active = fallback.data?.profiles.find((p) => p.is_active);
+  if (!active) return null;
+  if (active.catalog) {
+    return { profile: active.name, catalog: active.catalog, kind: "catalog" };
+  }
+  if (active.database) {
+    return { profile: active.name, database: active.database, kind: "database" };
+  }
+  // Active profile has no pinned scope — still emit a profile-only
+  // scope so the page can prompt the user for a catalog / database
+  // pick instead of staring at a dead loading state. ``kind`` defaults
+  // to ``database`` (2-level shape) which the schemas endpoint
+  // handles by falling back to the active database / catalog on the
+  // backend side.
+  return { profile: active.name, kind: "database" };
 }
 
 export default function RunNew() {
