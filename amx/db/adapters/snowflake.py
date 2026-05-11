@@ -215,6 +215,67 @@ class SnowflakeAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "INFORMATION_SCHEMA.TABLES"
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """Snowflake INFORMATION_SCHEMA queries are database-scoped, so
+        the active connection's database implicitly bounds the result —
+        no explicit ``catalog`` arg needed unless the caller crossed
+        warehouses, which AMX doesn't.
+
+        Snowflake folds identifiers to uppercase; ``schema`` is normalised
+        by the connector before reaching the adapter so a quoted match
+        works as expected.
+        """
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                table_rows = conn.execute(
+                    text(
+                        "SELECT TABLE_NAME, TABLE_TYPE, COMMENT "
+                        "FROM INFORMATION_SCHEMA.TABLES "
+                        "WHERE TABLE_SCHEMA = :schema"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+                for r in table_rows:
+                    raw_kind = str(r[1] or "").upper()
+                    if "VIEW" in raw_kind and "MATERIALIZED" in raw_kind:
+                        kind = "MATERIALIZED VIEW"
+                    elif "VIEW" in raw_kind:
+                        kind = "VIEW"
+                    else:
+                        kind = "TABLE"
+                    out[str(r[0])] = {
+                        "table_comment": str(r[2]) if r[2] else None,
+                        "columns": {},
+                        "kind": kind,
+                    }
+                col_rows = conn.execute(
+                    text(
+                        "SELECT TABLE_NAME, COLUMN_NAME, COMMENT "
+                        "FROM INFORMATION_SCHEMA.COLUMNS "
+                        "WHERE TABLE_SCHEMA = :schema "
+                        "ORDER BY TABLE_NAME, ORDINAL_POSITION"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            for r in col_rows:
+                entry = out.setdefault(
+                    str(r[0]),
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

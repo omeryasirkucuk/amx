@@ -411,6 +411,11 @@ export const api = {
     apiFetch<AssetsResponse>(
       withScope(`/api/live/schemas/${encodeURIComponent(schema)}/assets`, scope),
     ),
+  refreshSchemaMetadata: (scope: Scope, schema: string) =>
+    apiFetch<AssetsResponse>(
+      withScope(`/api/live/schemas/${encodeURIComponent(schema)}/refresh`, scope),
+      { method: "POST" },
+    ),
   liveColumns: (scope: Scope, schema: string, table: string) =>
     apiFetch<ColumnsResponse>(
       withScope(

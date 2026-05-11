@@ -213,6 +213,64 @@ class ClickHouseAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "system.parts (active parts only)"
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """Bulk fetch via ``system.tables`` + ``system.columns``.
+
+        In ClickHouse, "database" is the equivalent of a schema in
+        other backends. The caller passes the user-facing schema name
+        as ``schema`` and we map it to ``database`` for the query.
+        """
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                table_rows = conn.execute(
+                    text(
+                        "SELECT name, engine, comment "
+                        "FROM system.tables WHERE database = :db"
+                    ),
+                    {"db": schema},
+                ).fetchall()
+                for r in table_rows:
+                    engine_name = str(r[1] or "").lower()
+                    # MaterializedView is a CH-specific engine; the
+                    # generic View engine covers regular views.
+                    if "materializedview" in engine_name.replace(" ", ""):
+                        kind = "MATERIALIZED VIEW"
+                    elif "view" in engine_name:
+                        kind = "VIEW"
+                    else:
+                        kind = "TABLE"
+                    out[str(r[0])] = {
+                        "table_comment": str(r[2]) if r[2] else None,
+                        "columns": {},
+                        "kind": kind,
+                    }
+                col_rows = conn.execute(
+                    text(
+                        "SELECT table, name, comment "
+                        "FROM system.columns WHERE database = :db "
+                        "ORDER BY table, position"
+                    ),
+                    {"db": schema},
+                ).fetchall()
+            for r in col_rows:
+                entry = out.setdefault(
+                    str(r[0]),
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema (database) comments ───────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

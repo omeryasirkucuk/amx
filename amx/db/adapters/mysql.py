@@ -417,6 +417,61 @@ class MySQLAdapter(DatabaseAdapter):
             out["warnings"] = warnings
         return out
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """One ``INFORMATION_SCHEMA`` round-trip per schema.
+
+        MySQL's ``TABLE_COMMENT`` column carries the user-supplied
+        comment AND any innodb internal stats ("InnoDB free: 12345 kB").
+        We keep it verbatim — those internal-stat strings have a stable
+        prefix the SPA can strip if it ever matters, and the typical
+        case is a clean user comment.
+        """
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                table_rows = conn.execute(
+                    text(
+                        "SELECT TABLE_NAME, TABLE_TYPE, TABLE_COMMENT "
+                        "FROM INFORMATION_SCHEMA.TABLES "
+                        "WHERE TABLE_SCHEMA = :schema"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+                for r in table_rows:
+                    raw_kind = str(r[1] or "").upper()
+                    kind = "VIEW" if "VIEW" in raw_kind else "TABLE"
+                    out[str(r[0])] = {
+                        "table_comment": str(r[2]) if r[2] else None,
+                        "columns": {},
+                        "kind": kind,
+                    }
+                col_rows = conn.execute(
+                    text(
+                        "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_COMMENT "
+                        "FROM INFORMATION_SCHEMA.COLUMNS "
+                        "WHERE TABLE_SCHEMA = :schema "
+                        "ORDER BY TABLE_NAME, ORDINAL_POSITION"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            for r in col_rows:
+                entry = out.setdefault(
+                    str(r[0]),
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Comment writing ───────────────────────────────────────────────────
     #
     # MySQL has no ``COMMENT ON`` statement. Instead:
