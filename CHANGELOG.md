@@ -6,6 +6,29 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Neutral wording on the Databricks "Skip TLS verification" toggle
+  + actionable hint.** The CLI prompt at
+  ``amx/cli_support/commands/db.py:751`` and the Studio label at
+  ``frontend/src/routes/Settings.tsx`` both editorialised the toggle
+  as "insecure" ("Disable TLS certificate verification? (insecure;
+  use only if a trusted CA bundle is not available)" and "Skip TLS
+  verification (insecure)" respectively). On enterprise networks
+  with a TLS-inspecting proxy this is the *correct* and often
+  *only* option — the corporate root CA is what gets installed in
+  the OS trust store, not the upstream Databricks cert — so framing
+  it as a security demerit was misleading. Both surfaces now state
+  the choice neutrally ("Disable TLS certificate verification?" +
+  "Skip TLS verification") and surface a short hint in Studio (the
+  same ``i`` info icon as every other Settings field) explaining
+  that the user picks between the Trusted CA bundle path or the
+  skip toggle based on their IT policy. The CLI prompt carries the
+  same explanation inline. The Studio label is now visually
+  identical to the rest of the field row — the parenthesised
+  "(insecure)" suffix that drew the eye away from the surrounding
+  inputs is gone.
+
 ### Fixed
 
 - **Studio's collapsed-sidebar icons were inert** — when the user

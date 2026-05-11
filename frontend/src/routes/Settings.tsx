@@ -318,7 +318,14 @@ const DB_FIELD_LABELS: Record<string, string> = {
   cluster_identifier: "Redshift cluster id",
   secure: "Use HTTPS",
   tls_trusted_ca_file: "Trusted CA bundle path (optional)",
-  tls_no_verify: "Skip TLS verification (insecure)",
+  tls_no_verify: "Skip TLS verification",
+};
+
+const DB_FIELD_HINTS: Record<string, string> = {
+  tls_no_verify:
+    "On enterprise networks the TLS chain is rewritten by an inspection proxy. " +
+    "Either set the Trusted CA bundle path above to trust your corporate root, " +
+    "or enable this to skip verification. Pick whichever your IT policy allows.",
 };
 
 const DB_SECRET_FIELDS = new Set(["password", "access_token"]);
@@ -452,7 +459,12 @@ function DbProfileWizard({
         </Field>
         <div className="grid grid-cols-2 gap-3">
           {fields.map((f) => (
-            <Field key={f} label={DB_FIELD_LABELS[f] ?? f} narrow={f === "port"}>
+            <Field
+              key={f}
+              label={DB_FIELD_LABELS[f] ?? f}
+              hint={DB_FIELD_HINTS[f]}
+              narrow={f === "port"}
+            >
               {f === "secure" ||
               f === "encrypt" ||
               f === "trust_server_certificate" ||
