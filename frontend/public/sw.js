@@ -13,9 +13,12 @@
 // HTTP layer; over-caching at the SW would mean stale chunks on
 // every Studio upgrade). The Service Worker handles offline UX only.
 
-const CACHE_NAME = 'amx-studio-offline-v1';
+// Bump the cache name when changing PRECACHE_URLS so the ``activate``
+// handler wipes the old cache and the new payload (e.g. the AMX logo
+// added in v2) is fetched on the next install.
+const CACHE_NAME = 'amx-studio-offline-v2';
 const OFFLINE_URL = '/offline.html';
-const PRECACHE_URLS = [OFFLINE_URL, '/favicon.png'];
+const PRECACHE_URLS = [OFFLINE_URL, '/favicon.png', '/amx-logo.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

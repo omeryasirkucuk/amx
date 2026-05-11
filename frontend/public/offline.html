@@ -91,22 +91,22 @@
         border-color: rgba(244, 185, 66, 0.7);
         background: rgba(244, 185, 66, 0.07);
       }
-      .badge {
-        display: inline-block;
-        font-size: 11px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: #a8a39a;
-        padding: 4px 10px;
-        border: 1px solid rgba(231, 227, 218, 0.12);
-        border-radius: 999px;
-        margin-bottom: 18px;
+      .logo {
+        display: block;
+        margin: 0 auto 22px auto;
+        height: 56px;
+        width: auto;
+        /*
+         * The Service Worker pre-caches this image so it renders even
+         * when the local CLI is down. ``alt`` keeps the layout sane if
+         * the asset is ever evicted before the page is served.
+         */
       }
     </style>
   </head>
   <body>
     <main>
-      <div class="badge">AMX Studio</div>
+      <img class="logo" src="/amx-logo.png" alt="AMX Studio" />
       <h1>Connection to the AMX CLI was lost.</h1>
       <p>
         Studio runs locally — the page you were on is served by your CLI
