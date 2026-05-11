@@ -171,6 +171,35 @@ class PostgreSQLAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "pg_stat_user_tables"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """Pull every user schema + its comment in one ``pg_namespace`` scan.
+
+        Skips the system catalogs (``pg_*`` + ``information_schema``)
+        that ``DatabaseConnector.list_schemas`` would already filter
+        out — keeps the bulk result aligned with what the sidebar
+        actually shows.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT n.nspname, "
+                        "       obj_description(n.oid, 'pg_namespace') "
+                        "FROM pg_namespace n "
+                        "WHERE n.nspname NOT LIKE 'pg_%' "
+                        "  AND n.nspname <> 'information_schema'"
+                    )
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

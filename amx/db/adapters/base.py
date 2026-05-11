@@ -294,6 +294,27 @@ class DatabaseAdapter(ABC):
     def get_database_comment(self, engine: Engine) -> str | None:
         return None
 
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """Fetch ``{schema_name: schema_comment_or_none}`` for a whole catalog.
+
+        Backends that organise schemas under a catalog/database (every
+        backend AMX supports, in practice) can answer "what schemas
+        exist + what's their comment" in a single round-trip against
+        ``INFORMATION_SCHEMA.SCHEMATA`` / ``pg_namespace`` /
+        ``system.databases`` etc. The connector folds this into its
+        ``schemas_cache`` so subsequent sidebar expands skip the DB
+        entirely until TTL or a schema-write invalidation.
+
+        Returning ``None`` leaves the existing per-schema
+        ``get_schema_comment`` fallback in place — no regression for
+        backends that don't override this.
+        """
+        return None
+
     def bulk_schema_metadata(
         self,
         engine: Engine,

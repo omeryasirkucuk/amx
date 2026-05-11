@@ -141,6 +141,9 @@ def create_app(
             # bulk-schema metadata path — anything past 1h is wiped
             # so the next sidebar expand triggers a fresh fetch.
             _store.gc_column_comments_cache()
+            # And the schemas_cache that backs the catalog-expand
+            # bulk path.
+            _store.gc_schemas_cache()
     except Exception:
         # Startup must never crash on a GC hiccup; the executor's own
         # cleanup keeps the table tidy regardless.

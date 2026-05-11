@@ -215,6 +215,31 @@ class SnowflakeAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "INFORMATION_SCHEMA.TABLES"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """``INFORMATION_SCHEMA.SCHEMATA`` is database-scoped on
+        Snowflake; the active connection's database implicitly bounds
+        the result. Skips the always-empty ``INFORMATION_SCHEMA``
+        schema itself so the sidebar doesn't show it.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT SCHEMA_NAME, COMMENT "
+                        "FROM INFORMATION_SCHEMA.SCHEMATA "
+                        "WHERE SCHEMA_NAME <> 'INFORMATION_SCHEMA'"
+                    )
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

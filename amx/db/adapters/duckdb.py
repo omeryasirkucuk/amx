@@ -159,6 +159,26 @@ class DuckDBAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "row count (no scan counters)"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """All user-visible schemas + their comments via ``duckdb_schemas()``."""
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT schema_name, comment FROM duckdb_schemas() "
+                        "WHERE NOT internal"
+                    )
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

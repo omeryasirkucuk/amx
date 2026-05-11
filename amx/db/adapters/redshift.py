@@ -146,6 +146,30 @@ class RedshiftAdapter(DatabaseAdapter):
             ).fetchall()
         return [str(r[0]) for r in rows]
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """Same shape as Postgres' ``bulk_catalog_metadata`` since
+        Redshift forks ``pg_namespace`` / ``obj_description``."""
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT n.nspname, "
+                        "       obj_description(n.oid, 'pg_namespace') "
+                        "FROM pg_namespace n "
+                        "WHERE n.nspname NOT LIKE 'pg_%' "
+                        "  AND n.nspname <> 'information_schema'"
+                    )
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(
