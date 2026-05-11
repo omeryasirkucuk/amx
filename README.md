@@ -1,7 +1,5 @@
 <p align="center">
-
-https://github.com/user-attachments/assets/fdcb7498-928a-4250-b257-7d5aef5521bb
-
+  <video src="https://github.com/user-attachments/assets/fdcb7498-928a-4250-b257-7d5aef5521bb" controls muted playsinline width="760"></video>
 </p>
 
 <p align="center">
@@ -68,22 +66,9 @@ Full walkthrough at [`/studio`](https://omeryasirkucuk.github.io/amx-docs/cli/st
 
 ## How it works
 
-```
-   ┌──────────────┐
-   │   Profile    │  schema, types, keys,
-   │    agent     │  cardinality, samples
-   └──────┬───────┘
-          │
-   ┌──────┴───────┐      ┌──────────────┐      ┌──────────────┐
-   │     RAG      │ ───▶ │ Orchestrator │ ───▶ │  You review  │
-   │    agent     │      │   (LLM rank)  │      │  accept/edit │
-   └──────┬───────┘      └──────────────┘      └──────┬───────┘
-          │                                            │
-   ┌──────┴───────┐                                    ▼
-   │     Code     │                            COMMENT ON COLUMN …
-   │    agent     │                          (native DDL on the engine)
-   └──────────────┘
-```
+<p align="center">
+  <img src="https://amxcli.com/assets/amx-flow.png" alt="AMX flow — Profile, RAG, and Code agents feed evidence to an orchestrator that ranks suggestions; you review accept/edit/skip and AMX writes the approved text back as COMMENT ON COLUMN native DDL" width="900">
+</p>
 
 Each agent runs independently, surfaces its own evidence, and assigns its own confidence. The orchestrator picks the narrower, defensible description and ranks up to N alternatives. You never apply anything you didn't approve.
 
