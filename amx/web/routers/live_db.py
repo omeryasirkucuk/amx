@@ -84,6 +84,40 @@ def _evict_oldest() -> None:
         pass
 
 
+def evict_connector_cache(profile_name: str) -> int:
+    """Wipe every cached connector that belongs to ``profile_name``.
+
+    Called from the profile upsert / delete endpoints. The cache key
+    is ``(profile_name, *_profile_key(scoped))``, so an edit that
+    changes any of the URL-influencing fields naturally lands on a
+    new key and the old entry would simply sit unused until LRU. But
+    two correctness scenarios force the explicit eviction:
+
+    1. Password / access_token edits never change ``_profile_key``
+       (credentials aren't part of the URL-shaping tuple). Without
+       this helper the next request finds the old connector and
+       keeps using the stale credentials.
+    2. A delete leaves orphan connectors behind that hold pool
+       handles to a profile the user just removed; close-and-clear
+       releases those resources promptly.
+
+    Returns the number of entries removed.
+    """
+    name = (profile_name or "").strip()
+    if not name:
+        return 0
+    removed_keys: list[tuple] = []
+    for key in list(_CONNECTOR_CACHE.keys()):
+        if key and key[0] == name:
+            removed_keys.append(key)
+    for key in removed_keys:
+        try:
+            _CONNECTOR_CACHE.pop(key).close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+    return len(removed_keys)
+
+
 def _connector_for_scope(
     cfg: AMXConfig,
     profile: str,
