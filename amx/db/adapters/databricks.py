@@ -197,7 +197,7 @@ class DatabricksAdapter(DatabaseAdapter):
         return (
             f"SELECT "
             f"  SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END) AS null_cnt, "
-            f"  COUNT(DISTINCT {quoted_col}) AS dist_cnt, "
+            f"  {self._distinct_count_expr(quoted_col)} AS dist_cnt, "
             f"  MIN(CAST({quoted_col} AS STRING)) AS min_val, "
             f"  MAX(CAST({quoted_col} AS STRING)) AS max_val "
             f"FROM {fqn}"
@@ -213,6 +213,14 @@ class DatabricksAdapter(DatabaseAdapter):
         # Databricks Spark SQL has no ``FILTER (WHERE …)`` aggregate
         # modifier — use SUM(CASE) like the per-column path.
         return f"SUM(CASE WHEN {quoted_col} IS NULL THEN 1 ELSE 0 END)"
+
+    def _distinct_count_expr(self, quoted_col: str) -> str:
+        # Databricks Spark SQL exposes ``approx_count_distinct`` (HLL).
+        # Same billing logic as the BigQuery / Snowflake overrides — see
+        # ``DBConfig.profiling_approximate``. Default unchanged.
+        if getattr(self.cfg, "profiling_approximate", False):
+            return f"approx_count_distinct({quoted_col})"
+        return f"COUNT(DISTINCT {quoted_col})"
 
     def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
         # Databricks uses ``STRING`` rather than ``VARCHAR``.

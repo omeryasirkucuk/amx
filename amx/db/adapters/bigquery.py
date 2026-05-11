@@ -86,7 +86,7 @@ class BigQueryAdapter(DatabaseAdapter):
         return (
             f"SELECT "
             f"  COUNTIF({quoted_col} IS NULL) AS null_cnt, "
-            f"  COUNT(DISTINCT {quoted_col}) AS dist_cnt, "
+            f"  {self._distinct_count_expr(quoted_col)} AS dist_cnt, "
             f"  MIN(CAST({quoted_col} AS STRING)) AS min_val, "
             f"  MAX(CAST({quoted_col} AS STRING)) AS max_val "
             f"FROM {fqn}"
@@ -100,6 +100,19 @@ class BigQueryAdapter(DatabaseAdapter):
 
     def _null_count_expr(self, quoted_col: str) -> str:
         return f"COUNTIF({quoted_col} IS NULL)"
+
+    def _distinct_count_expr(self, quoted_col: str) -> str:
+        # BigQuery's APPROX_COUNT_DISTINCT uses HyperLogLog++ and bills a
+        # tiny fraction of an exact COUNT(DISTINCT) on wide / high-
+        # cardinality columns. The exact aggregate scans every row in
+        # the sampled slice — TABLESAMPLE SYSTEM (1 PERCENT) narrows
+        # the input but the distinct-hash itself still touches each
+        # sampled row, which is what produces the surprise credit
+        # spikes the profiling-billing fix targets. Default behaviour
+        # is unchanged (cfg flag defaults to False).
+        if getattr(self.cfg, "profiling_approximate", False):
+            return f"APPROX_COUNT_DISTINCT({quoted_col})"
+        return f"COUNT(DISTINCT {quoted_col})"
 
     def _aggregate_text_expr(self, agg: str, quoted_col: str) -> str:
         return f"{agg}(CAST({quoted_col} AS STRING))"
