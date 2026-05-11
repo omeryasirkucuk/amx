@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 
 import AppShell from "./components/AppShell";
 import ErrorBoundary from "./components/ErrorBoundary";
+import InstallBanner from "./components/InstallBanner";
 import { ToastProvider } from "./components/ui";
 
 // Each route is loaded on demand. The user landing on /ask no longer
@@ -53,6 +54,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ToastProvider>
+        <InstallBanner />
         <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route element={<AppShell />}>
