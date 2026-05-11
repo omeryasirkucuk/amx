@@ -8,6 +8,26 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Approximate distinct counts for metered backends (PR 3 / 4 of
+  the connector audit).** A new ``profiling_approximate`` flag on
+  ``DBConfig`` (default ``False``) switches the per-column and bulk
+  profiling SQL on BigQuery / Snowflake / Databricks from the exact
+  ``COUNT(DISTINCT col)`` to the backend's native HyperLogLog
+  variant:
+
+  - BigQuery: ``APPROX_COUNT_DISTINCT(col)``
+  - Snowflake: ``APPROX_COUNT_DISTINCT(col)``
+  - Databricks Spark SQL: ``approx_count_distinct(col)``
+
+  The exact aggregate hashes every row in the sampled slice
+  regardless of ``TABLESAMPLE`` / ``SAMPLE`` clauses, so wide /
+  high-cardinality tables racked up surprise credits even with the
+  1 % slice the adapters use today. HLL is within 1–2 % of the exact
+  value on realistic data and bills a tiny fraction of the credits.
+  Defaults preserve existing behaviour; flip the flag with
+  ``/profiling <mode> [max_rows] [sample_size] approximate`` (the
+  fourth positional argument is new) or save it via the profile YAML.
+
 - **TLS / SSL controls for every backend (PR 2 / 4 of the connector
   audit).** Surfaces driver-level TLS knobs in both the CLI wizard
   and the Studio Add-profile form for the backends that needed them.
