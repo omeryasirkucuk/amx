@@ -612,6 +612,19 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     )
     _push_display_subscriber(_display_to_sse)
 
+    # Make ``job.cancel`` visible to every nested LLM call via a
+    # ContextVar. The orchestrator's table-level cancel checks fire at
+    # phase boundaries (profile / filters / agents / apply), so a
+    # mid-table cancel had to wait for the whole agent fan-out to
+    # finish before observing the click. The provider now reads this
+    # same token and short-circuits the next ``litellm.completion()``
+    # — many minutes saved on slow reasoning models. The token is
+    # bound here and explicitly reset on the finally below so a
+    # worker thread re-used by a future job sees the new job's state.
+    from amx.utils.cancel import _active_cancel_token
+
+    _cancel_token_sentinel = _active_cancel_token.set(job.cancel)
+
     try:
         if use_batch:
             _process_scope_batch(
@@ -704,6 +717,13 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             _display.stop_headless()
         except Exception:  # pragma: no cover - defensive
             pass
+        # Restore the cancel-token ContextVar to whatever it was bound
+        # to before this job — required so a worker thread re-used by
+        # the next job doesn't observe this job's token as "active".
+        try:
+            _active_cancel_token.reset(_cancel_token_sentinel)
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     # Persist deferred review results into the pending queue regardless
     # of cancellation — the user may want to review what *did* finish.
@@ -756,6 +776,31 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             log.warning("Auto-apply after run failed: %s", exc)
             final_error_text = f"Auto-apply failed: {exc}"
 
+    # Late-cancel override. If the user clicked Cancel after the
+    # last table finished but BEFORE the worker reached this line —
+    # or any other window where the cancel set without a ``Run-
+    # Cancelled`` ever being raised — the run's true outcome is
+    # ``cancelled``, not ``success``. The token check here is what
+    # made the difference for the user-reported "I cancelled but it
+    # still flipped to success" case.
+    if final_status == "success" and job.cancel.is_set():
+        final_status = "cancelled"
+
+    # When no tables were actually processed but some failed, the run
+    # is a failure — surfacing it as ``success`` (the default) had
+    # been misleading users who saw zero output but a green pill. The
+    # cancelled / failed status branches above remain authoritative;
+    # this only fires when the worker exited cleanly with no produced
+    # results AND at least one table raised inside ``orchestrator.
+    # process_table``.
+    if final_status == "success" and len(processed_assets) == 0 and len(failed_assets) > 0:
+        final_status = "failed"
+        if not final_error_text:
+            first_path, first_err = failed_assets[0]
+            final_error_text = (
+                f"{len(failed_assets)} asset(s) failed; first: {first_path} → {first_err}"
+            )
+
     # Demote successful runs to ``ready_for_review`` when nothing was
     # actually written to the catalog. The worker finished cleanly but
     # 119/119 suggestions still sitting in the pending queue is not a
@@ -795,22 +840,45 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         except Exception as exc:
             log.warning("finish_run failed: %s", exc)
 
+    # Dispatch the terminal SSE event based on the FINAL status (after
+    # all the demotion / late-cancel / all-failed overrides above).
+    # Before this, the worker only emitted ``job.done`` for success /
+    # ready_for_review and relied on the ``RunCancelled`` exception
+    # handler to emit ``job.cancelled``. The late-cancel and all-
+    # failed overrides above don't raise — they only flip ``final_
+    # status`` — so without this branch the SPA's SSE consumer was
+    # left waiting indefinitely for a terminal event that never came.
+    summary = {
+        "run_id": run_id,
+        "processed": len(processed_assets),
+        "failed": len(failed_assets),
+        "pending": pending_count,
+        "applied": int(applied),
+        "run_status": final_status,
+    }
+    job.summary = summary
+    job.ended_at = time.time()
     if final_status in ("success", "ready_for_review"):
-        # Both terminal states close the job from the worker side; the
-        # SSE consumer treats ``job.done`` as "worker exited" and reads
-        # the persisted run status to decide whether the run actually
-        # succeeded or merely landed suggestions in the pending queue.
         job.status = "done"
-        job.summary = {
-            "run_id": run_id,
-            "processed": len(processed_assets),
-            "failed": len(failed_assets),
-            "pending": pending_count,
-            "applied": int(applied),
-            "run_status": final_status,
-        }
-        job.ended_at = time.time()
-        emit_terminal(job.queue, "job.done", {"summary": job.summary})
+        emit_terminal(job.queue, "job.done", {"summary": summary})
+    elif final_status == "cancelled":
+        # ``job.status`` may already be ``cancelled`` from the
+        # RunCancelled handler; setting it again is a no-op. The SSE
+        # emit, however, is gated on whether the handler fired — we
+        # only emit here when no terminal event was sent earlier, to
+        # avoid the consumer seeing two ``job.cancelled`` frames.
+        if job.status != "cancelled":
+            job.status = "cancelled"
+            emit_terminal(job.queue, "job.cancelled", {"summary": summary})
+    elif final_status == "failed":
+        if job.status != "failed":
+            job.status = "failed"
+            job.error = final_error_text or job.error
+            emit_terminal(
+                job.queue,
+                "job.failed",
+                {"error": final_error_text or "Run failed", "summary": summary},
+            )
 
 
 def _fail_job(job: Job, message: str) -> None:

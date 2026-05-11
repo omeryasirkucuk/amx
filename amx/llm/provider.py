@@ -1361,6 +1361,17 @@ class LLMProvider:
         resp = None
         last_exc: BaseException | None = None
         for attempt in range(MAX_LLM_RETRIES + 1):
+            # Cancel short-circuit. The orchestrator binds the active
+            # job's ``cancel_token`` via ``bind_cancel_token`` in the
+            # run worker; checking here means a Studio Cancel click
+            # bails out of the NEXT LLM call instead of waiting for
+            # the current chain of retries to complete naturally. The
+            # in-flight HTTP request can't be interrupted mid-call
+            # (litellm is synchronous), but every retry budget the
+            # token saves is many seconds the user no longer waits.
+            from amx.utils.cancel import raise_if_cancelled
+
+            raise_if_cancelled(phase=f"LLM call (attempt {attempt + 1})")
             try:
                 resp = _do_completion(call_api_base)
                 last_exc = None
