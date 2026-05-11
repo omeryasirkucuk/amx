@@ -276,6 +276,63 @@ def test_unknown_model_returns_zero_with_unknown_source() -> None:
     assert price.output_per_mtok == 0.0
 
 
+def test_lookup_matches_bare_model_id_when_provider_field_is_wrong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same physical endpoint (e.g. a Databricks model-serving
+    endpoint exposed via an OpenAI-compatible adapter) can be
+    configured with very different ``provider`` strings on different
+    machines: ``databricks`` on one, ``openai_compatible`` on another,
+    ``vllm`` on a third. LiteLLM's catalog keys are always shaped
+    ``<vendor>/<model>`` (e.g. ``databricks/databricks-meta-llama-3-3-70b-instruct``),
+    so the strict candidate list from ``_normalize_model_id`` only
+    hits when the profile's ``provider`` field happens to match the
+    catalog's vendor prefix.
+
+    Without this fallback, a user who configured the same model under
+    ``provider=openai_compatible`` would see the sidebar's Live LLM
+    price line disappear and ``/cost`` report $0 even though LiteLLM
+    has a perfectly good entry for that exact model id. The fallback
+    matches the bare model id against the ``<anything>/<model>``
+    suffix of every catalog key as a last resort.
+    """
+    monkeypatch.setitem(
+        pricing_mod._PRICES,
+        "litellm",
+        {
+            "databricks/databricks-meta-llama-3-3-70b-instruct": ModelPrice(
+                input_per_mtok=0.5,
+                output_per_mtok=1.5,
+                source="litellm",
+                fetched_at=time.time(),
+            ),
+        },
+    )
+
+    # provider field tells us the wrong prefix — normalize will try
+    # ``openai_compatible/databricks-meta-...`` which is not in the
+    # catalog, but the bare-id fallback still recovers.
+    price = lookup_price(
+        None,
+        provider="openai_compatible",
+        model="databricks-meta-llama-3-3-70b-instruct",
+    )
+    assert price.source == "litellm"
+    assert price.input_per_mtok == 0.5
+    assert price.output_per_mtok == 1.5
+
+    # And of course the strict-match path keeps working when the
+    # provider field is correct — the fallback never gets a chance
+    # to substitute a wrong key.
+    correct = lookup_price(
+        None,
+        provider="databricks",
+        model="databricks-meta-llama-3-3-70b-instruct",
+    )
+    assert correct.source == "litellm"
+    assert correct.input_per_mtok == 0.5
+
+
 # ── list_all_models — flat catalog for Studio + CLI browsers ───────────────
 
 
