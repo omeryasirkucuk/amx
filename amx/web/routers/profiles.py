@@ -212,6 +212,14 @@ def upsert_db(
     merged = _merge_db_patch(existing, body)
     cfg.upsert_db_profile(name, merged)
     cfg.save()
+    # A profile edit (host / catalog / database / password / token /
+    # anything) leaves the existing cached connector in ``live_db``'s
+    # _CONNECTOR_CACHE pointing at the OLD scope or OLD credentials.
+    # Evicting by profile name forces the next request to build a
+    # fresh connector against the just-saved DBConfig.
+    from amx.web.routers.live_db import evict_connector_cache
+
+    evict_connector_cache(name)
     return _mask_db(merged, name, is_active=True)
 
 
@@ -230,6 +238,11 @@ def delete_db(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
         )
     cfg.remove_db_profile(name)
     cfg.save()
+    # Close + drop any cached connector for the just-deleted profile
+    # so its pool handles don't outlive the profile itself.
+    from amx.web.routers.live_db import evict_connector_cache
+
+    evict_connector_cache(name)
     return {
         "ok": True,
         "name": name,

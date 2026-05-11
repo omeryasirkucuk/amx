@@ -21,6 +21,24 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **DB profile delete + edit now refresh the whole Studio UI without
+  a page reload.** The Settings page's delete and save mutations only
+  invalidated ``["profiles", "db"]``, leaving the Sidebar, topbar
+  profile picker, RunNew scope dropdowns, and ``/api/context`` snapshot
+  pointing at the pre-mutation state. This is what the user saw as
+  "delete pretends to work but doesn't" — the row disappeared in
+  Settings while every other surface still rendered the just-deleted
+  profile. The mutations now route through a shared
+  ``invalidateAfterDbProfileMutation`` helper (mirrors the working
+  pattern from the topbar profile activate mutation) that busts every
+  dependent ``live-*`` / ``profiles`` / ``context`` / ``recent-runs``
+  key in one shot. Backend side: the in-process ``_CONNECTOR_CACHE``
+  in ``live_db.py`` now evicts every entry for the affected profile
+  on upsert / delete via a new ``evict_connector_cache`` helper —
+  necessary because the cache key tuple doesn't include the password
+  or access token, so a credential-only edit would otherwise reuse a
+  stale connector.
+
 - **Studio sidebar honours the pinned catalog / database from the
   profile.** When the user chose a catalog at ``/db`` profile-
   creation time, the sidebar was still listing every catalog the
