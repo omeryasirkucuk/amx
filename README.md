@@ -50,13 +50,17 @@ amx                       # open the interactive session (the AMX REPL)
 
 The full guided walkthrough is at the [5-minute quickstart](https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/) and [first-run walkthrough](https://omeryasirkucuk.github.io/amx-docs/getting-started/first-run/).
 
+## AMX CLI
+
+A typical session — running `/run`, inspecting ranked suggestions inline, accepting or editing each one before it lands in the database.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/amx-banner.png" alt="AMX REPL — interactive session showing /run output with ranked suggestions, confidence scores, and review prompts" width="900">
 </p>
 
-## `/studio` — same workflow on a local web UI
+## AMX Studio (`/studio`) — same workflow on a local web UI
 
-`amx /studio` boots **AMX Studio**, a token-protected web UI on `127.0.0.1`, and opens your browser. Same review-and-apply workflow as the REPL — runs, results, the pending queue, the `/ask` chat, and full DB / LLM / Docs / Code profile management — but on a denser surface. **Browse** any database / schema / table to inline-edit comments or hit per-asset **Generate** to draft just one comment through the same human-in-the-loop queue. The SPA bundle ships inside `amx-cli`; no Node toolchain or extra install needed.
+From inside the REPL, `/studio` boots **AMX Studio**, a token-protected web UI on `127.0.0.1`, and opens your browser. Same review-and-apply workflow as the REPL — runs, results, the pending queue, the `/ask` chat, and full DB / LLM / Docs / Code profile management — but on a denser surface. **Browse** any database / schema / table to inline-edit comments or hit per-asset **Generate** to draft just one comment through the same human-in-the-loop queue. The SPA bundle ships inside `amx-cli`; no Node toolchain or extra install needed.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/studio-overview.png" alt="AMX Studio Overview page — sidebar with active profile, four stat cards (active backend, LLM model, total runs, success rate), and a Recent runs feed" width="900">
