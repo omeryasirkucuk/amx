@@ -216,5 +216,79 @@ class LiteLLMShimInstallationTests(unittest.TestCase):
         self.assertEqual(int(result.usage.completion_tokens or 0), 1)
 
 
+class MessageConstructorShimTests(unittest.TestCase):
+    """Layer-2 of the structured-content fix.
+
+    The Layer-1 patch on ``convert_to_model_response_object`` only
+    intercepts calls that go through the module-level symbol AFTER our
+    shim installed. LiteLLM has internal modules that did ``from …
+    import convert_to_model_response_object`` at THEIR module load
+    time, before our shim ran — those callers hold a frozen reference
+    to the original function and bypass the rebind. The bug surfaced
+    as a real ``ValidationError`` on Databricks gpt-oss-120b in the
+    field even though the Layer-1 tests above were green.
+
+    Patching ``Message.__init__`` directly closes the gap because
+    every code path eventually instantiates the same ``Message``
+    class. These tests pin that the patched constructor accepts a
+    list-content payload without raising.
+    """
+
+    def test_message_with_list_content_accepted_after_shim(self) -> None:
+        """``Message(content=[...])`` would raise a pydantic
+        ``ValidationError`` upstream without our patch. After the
+        shim installs the layer-2 wrapper, the same construction
+        must succeed and ``content`` becomes the flattened string."""
+        from amx.llm.provider import _litellm
+
+        _litellm()  # install the shim
+        from litellm.types.utils import Message
+
+        message = Message(
+            content=[
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "say OK"}]},
+                {"type": "text", "text": "OK"},
+            ],
+            role="assistant",
+        )
+        self.assertEqual(message.content, "OK")
+
+    def test_message_with_string_content_passes_through(self) -> None:
+        """The shim must NOT touch string content — that would be a
+        regression for the 99% case where the upstream API already
+        returned a clean string."""
+        from amx.llm.provider import _litellm
+
+        _litellm()
+        from litellm.types.utils import Message
+
+        message = Message(content="already a string", role="assistant")
+        self.assertEqual(message.content, "already a string")
+
+    def test_message_with_none_content_passes_through(self) -> None:
+        """``content=None`` is also valid (tool-only responses); the
+        shim must not coerce it to an empty string."""
+        from amx.llm.provider import _litellm
+
+        _litellm()
+        from litellm.types.utils import Message
+
+        message = Message(content=None, role="assistant")
+        self.assertIsNone(message.content)
+
+    def test_double_litellm_call_keeps_shim_idempotent(self) -> None:
+        """Re-importing ``_litellm`` must not stack the wrapper twice
+        — otherwise every Message construction would flatten the
+        same content two times with no extra benefit but visible cost."""
+        from amx.llm.provider import _litellm
+
+        _litellm()
+        from litellm.types.utils import Message
+
+        first_init = Message.__init__
+        _litellm()
+        self.assertIs(Message.__init__, first_init)
+
+
 if __name__ == "__main__":
     unittest.main()

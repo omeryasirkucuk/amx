@@ -177,32 +177,80 @@ def _normalize_response_dict_in_place(response_obj: Any) -> None:
 
 
 def _install_structured_content_shim(lm: ModuleType) -> None:
-    """Wrap ``litellm.litellm_core_utils...convert_to_model_response_object``
-    so it auto-flattens structured ``content`` lists before pydantic
-    validation. Idempotent — safe to call once per LiteLLM import.
+    """Belt-and-suspenders flatten of list-shaped ``message.content``.
+
+    Two layers because patching ``convert_to_model_response_object``
+    alone leaks: callers that did ``from … convert_dict_to_response
+    import convert_to_model_response_object`` at module load time hold
+    a frozen reference to the original function, and our module-level
+    rebind doesn't reach them. Patching the ``Message`` pydantic class
+    closes that gap because every code path eventually constructs the
+    same ``Message`` object — there's only one class.
+
+    Layer 1: wrap ``convert_to_model_response_object`` so the raw
+    response dict is normalised before the function ever builds a
+    Message. Cheap and covers the common path.
+
+    Layer 2: wrap ``Message.__init__`` so any direct Message(content=
+    [...]) construction also flattens. This is what actually defends
+    against the user-reported ``InternalServerError: Invalid response
+    object`` from Databricks Foundation Models (gpt-oss family) and
+    similar Responses-API-shaped endpoints — the first layer was
+    silently bypassed because litellm internally imports the
+    converter under a local alias.
+
+    Both layers are idempotent so repeat ``litellm()`` lookups never
+    install the wrapper twice.
     """
     try:
         from litellm.litellm_core_utils.llm_response_utils import (
             convert_dict_to_response as _conv_mod,
         )
     except Exception:  # pragma: no cover - defensive against LiteLLM internals shifting
-        return
-    if getattr(_conv_mod, "_amx_structured_content_shim", False):
-        return
-    original = _conv_mod.convert_to_model_response_object
+        _conv_mod = None  # type: ignore[assignment]
+    if _conv_mod is not None and not getattr(_conv_mod, "_amx_structured_content_shim", False):
+        original = _conv_mod.convert_to_model_response_object
 
-    def _patched(*args: Any, **kwargs: Any):
-        response_object = kwargs.get("response_object")
-        if response_object is None and args:
-            response_object = args[0]
-        try:
-            _normalize_response_dict_in_place(response_object)
-        except Exception:  # pragma: no cover - never block a real response on a flatten error
-            pass
-        return original(*args, **kwargs)
+        def _patched(*args: Any, **kwargs: Any):
+            response_object = kwargs.get("response_object")
+            if response_object is None and args:
+                response_object = args[0]
+            try:
+                _normalize_response_dict_in_place(response_object)
+            except Exception:  # pragma: no cover - never block on a flatten error
+                pass
+            return original(*args, **kwargs)
 
-    _conv_mod.convert_to_model_response_object = _patched
-    _conv_mod._amx_structured_content_shim = True
+        _conv_mod.convert_to_model_response_object = _patched
+        _conv_mod._amx_structured_content_shim = True
+
+    # Layer 2 — class-level Message patch. Captures every Message
+    # construction across litellm regardless of which module imported
+    # ``convert_to_model_response_object`` under what alias.
+    try:
+        from litellm.types.utils import Message as _LiteLLMMessage  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - litellm typing module relocated upstream
+        return
+    if getattr(_LiteLLMMessage, "_amx_structured_content_shim", False):
+        return
+    _orig_init = _LiteLLMMessage.__init__
+
+    def _patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        # Flatten BEFORE pydantic validation runs. The Responses-API
+        # output (reasoning + text typed parts) needs to collapse to
+        # the single text string Message's content field expects;
+        # reasoning is dropped here because the provider layer surfaces
+        # it through ``on_thinking`` already and embedding it in the
+        # content string would corrupt downstream JSON parsers.
+        content = kwargs.get("content")
+        if isinstance(content, list):
+            flattened = _flatten_structured_content(content)
+            if flattened is not None:
+                kwargs["content"] = flattened
+        return _orig_init(self, *args, **kwargs)
+
+    _LiteLLMMessage.__init__ = _patched_init  # type: ignore[assignment]
+    _LiteLLMMessage._amx_structured_content_shim = True  # type: ignore[attr-defined]
 
 
 PROVIDER_MODEL_PREFIX = {

@@ -21,6 +21,24 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **LLM call no longer fails on Responses-API-shaped reasoning
+  models.** Some hosted endpoints return ``message.content`` as a
+  list of typed parts (``[{"type": "reasoning", "summary": [...]},
+  {"type": "text", "text": "OK"}]``) instead of a plain string. The
+  v0.13 flatten shim that wrapped ``convert_to_model_response_object``
+  was being bypassed by litellm's own internal call paths, which
+  imported the function under a local alias before our shim ran —
+  the wrapped module-level symbol was rebound but the local alias
+  still pointed at the original function. The fix adds a second
+  layer that patches ``litellm.types.utils.Message.__init__``
+  directly: every code path eventually instantiates the same Message
+  class, so flattening in the constructor catches the list shape
+  regardless of which import path got us there. Surfaces as a
+  ``litellm.InternalServerError: Invalid response object`` /
+  ``ValidationError: content Input should be a valid string`` going
+  away on reasoning-capable hosted models that return Responses-API
+  content shapes.
+
 - **Runs list + Compare picker now show the actual asset, not just
   the schema-level scope.** ``scope_json`` only carries the schemas
   + tables the user originally picked, so a ``/rerun --column
