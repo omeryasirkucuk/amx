@@ -19,6 +19,21 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   just above the `/studio` section so it captions the REPL walkthrough
   rather than serving as a generic hero.
 
+### Fixed
+
+- **Catalog picker no longer re-prompts on every run when the profile
+  already pinned one.** A Databricks profile with ``catalog=main`` was
+  showing the "Current catalog: 'main'. Press Enter to keep it" prompt
+  on every ``/run``, every ``/search sync``, every REPL boot — the
+  user had already chosen the catalog at profile-creation time and
+  the repeat ask was pure friction. ``ensure_catalog_selected`` now
+  defaults to ``silent_when_set=True``, mirroring the 2-level
+  ``ensure_database_selected`` behaviour that has always been silent
+  for pinned ``cfg.database``. The picker still fires when the
+  catalog is unpinned, or when the pinned value is no longer visible
+  in ``SHOW CATALOGS`` (e.g. archived in Unity, or the role lost
+  access) — in both cases the user has a real decision to make.
+
 ### Added
 
 - **Bulk column-comment metadata across all 10 backends.** Replaces
