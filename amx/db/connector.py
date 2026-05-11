@@ -259,6 +259,22 @@ class DatabaseConnector:
     def capabilities(self) -> BackendCapabilities:
         return getattr(self._adapter, "capabilities", BackendCapabilities())
 
+    def _normalize_id(self, value: str) -> str:
+        """Fold a user-supplied identifier into the form the backend stores.
+
+        Delegated to ``adapter.normalize_identifier`` (pass-through on
+        most backends; UPPER on Oracle and Snowflake). Test fakes that
+        skip the method get a safe identity fallback — defensive because
+        the connector is exercised heavily with stub adapters.
+        """
+        normaliser = getattr(self._adapter, "normalize_identifier", None)
+        if normaliser is None:
+            return value
+        try:
+            return normaliser(value)
+        except Exception:
+            return value
+
     def test_connection_result(self) -> ConnectionTestResult:
         """Test the active connection, retrying once on transient failures.
 
@@ -387,6 +403,7 @@ class DatabaseConnector:
         # Unity Catalog ``SHOW TABLES IN <catalog>.<schema>``). When
         # the override returns None we fall back to the SQLAlchemy
         # inspector — same contract as ``list_schemas``.
+        schema = self._normalize_id(schema)
         catalog = getattr(self.cfg, "catalog", "") or ""
         try:
             adapter_result = self._adapter.list_tables(
@@ -402,6 +419,7 @@ class DatabaseConnector:
         return insp.get_table_names(schema=schema)
 
     def list_views(self, schema: str) -> list[str]:
+        schema = self._normalize_id(schema)
         catalog = getattr(self.cfg, "catalog", "") or ""
         try:
             adapter_result = self._adapter.list_views(
@@ -419,6 +437,7 @@ class DatabaseConnector:
     def list_materialized_views(self, schema: str) -> list[str]:
         if not self.capabilities.materialized_views:
             return []
+        schema = self._normalize_id(schema)
         return self._adapter.list_materialized_views(self.engine, schema)
 
     # ── Extended object types ─────────────────────────────────────────────
@@ -562,6 +581,8 @@ class DatabaseConnector:
 
     def list_column_profiles(self, schema: str, table: str) -> list[ColumnProfile]:
         """Return column names/types/nullability without scanning table data."""
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
         insp = inspect(self.engine)
         return [
             ColumnProfile(
@@ -574,6 +595,8 @@ class DatabaseConnector:
 
     def resolve_asset_kind(self, schema: str, name: str) -> AssetKind:
         """Determine whether *name* is a table, view, or materialized view."""
+        schema = self._normalize_id(schema)
+        name = self._normalize_id(name)
         tables = set(self.list_tables(schema))
         if name in tables:
             return AssetKind.TABLE
@@ -590,6 +613,8 @@ class DatabaseConnector:
     def get_table_comment(self, schema: str, table: str) -> str | None:
         if not self.capabilities.table_comments and not self.capabilities.view_comments:
             return None
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
         insp = inspect(self.engine)
         try:
             info = insp.get_table_comment(table, schema=schema)
@@ -600,6 +625,8 @@ class DatabaseConnector:
     def get_column_comments(self, schema: str, table: str) -> dict[str, str | None]:
         if not self.capabilities.column_comments:
             return {}
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
         insp = inspect(self.engine)
         cols = insp.get_columns(table, schema=schema)
         return {c["name"]: c.get("comment") for c in cols}
@@ -647,6 +674,13 @@ class DatabaseConnector:
         sample_size: int | None = None,
         asset_kind: AssetKind | None = None,
     ) -> TableProfile:
+        # Fold *once* at the entry point so every downstream
+        # inspector/adapter call (get_pk_constraint, get_columns,
+        # fully_qualified_name, etc.) sees identifiers in the form the
+        # backend stores them. Oracle / Snowflake fold to upper; other
+        # backends pass through unchanged.
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
         if asset_kind is None:
             asset_kind = self.resolve_asset_kind(schema, table)
         log.info("Profiling %s.%s (%s) via %s", schema, table, asset_kind.label, self.backend)
@@ -1126,6 +1160,8 @@ class DatabaseConnector:
     def get_incoming_foreign_keys(self, schema: str, table: str) -> list[dict[str, Any]]:
         if not self.capabilities.relationships:
             return []
+        schema = self._normalize_id(schema)
+        table = self._normalize_id(table)
         try:
             return self._adapter.get_incoming_foreign_keys(self.engine, schema, table)
         except Exception as exc:

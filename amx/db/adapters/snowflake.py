@@ -66,6 +66,13 @@ class SnowflakeAdapter(DatabaseAdapter):
     def system_schemas(self) -> frozenset[str]:
         return frozenset({"INFORMATION_SCHEMA", "information_schema"})
 
+    def normalize_identifier(self, value: str) -> str:
+        if not value:
+            return value
+        if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+            return value
+        return value.upper()
+
     def list_databases(self, engine: Engine) -> list[str]:
         """Return user-visible Snowflake databases via ``SHOW DATABASES``.
 
@@ -130,6 +137,30 @@ class SnowflakeAdapter(DatabaseAdapter):
 
     def quote_identifier(self, name: str) -> str:
         return f'"{name}"'
+
+    def fully_qualified_name(self, schema: str, table: str) -> str:
+        """Emit a 3-level ``"db"."schema"."table"`` name when the profile
+        pins a database.
+
+        Snowflake binds the active database at connection time, so
+        ``"schema"."table"`` is valid for sample / profiling queries that
+        run against the current database. Comment-write DDL
+        (``COMMENT ON TABLE``) is also fine without the database when
+        the writer is connected with the right DB. The 3-level form is
+        required only when a query references an object in a *different*
+        database than the active one — but emitting it whenever the
+        profile names a database is a no-op for the active-DB case and
+        avoids "object does not exist" errors when the user runs
+        cross-database lookups via the agent.
+        """
+        db = getattr(self.cfg, "database", "") or ""
+        if db:
+            return (
+                f"{self.quote_identifier(db)}."
+                f"{self.quote_identifier(schema)}."
+                f"{self.quote_identifier(table)}"
+            )
+        return f"{self.quote_identifier(schema)}.{self.quote_identifier(table)}"
 
     # ── Column profiling ──────────────────────────────────────────────────
 

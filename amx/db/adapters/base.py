@@ -113,6 +113,22 @@ class DatabaseAdapter(ABC):
         """Quote a single identifier for use in raw SQL."""
         return f'"{name}"'
 
+    def normalize_identifier(self, value: str) -> str:
+        """Return *value* folded to the case the backend stores by default.
+
+        Most dialects preserve the user's casing (MySQL, MSSQL, PG when
+        the object was quoted at create time). Oracle and Snowflake fold
+        *unquoted* identifiers to UPPER and then store them that way, so a
+        user typing ``scott.employees`` into the wizard does not match
+        the stored ``SCOTT.EMPLOYEES`` rows on listing / get_columns
+        queries — the previous behavior returned empty results silently.
+
+        Adapters override to apply the backend's fold rule. Values that
+        are already explicitly quoted (``"MixedCase"``) are returned
+        unchanged so power users can still target case-sensitive objects.
+        """
+        return value
+
     def quote_literal(self, value: str) -> str:
         """Quote a SQL string literal for dialects that do not allow binds in metadata commands."""
         return "'" + str(value).replace("'", "''") + "'"

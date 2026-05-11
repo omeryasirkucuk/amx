@@ -31,6 +31,54 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Backend correctness sweep (PR 1 / 4 of the connector audit).**
+  Closes the highest-impact "the connector says it works but the
+  result is wrong" findings from the per-backend audit:
+
+  - **Oracle / Snowflake identifier folding** —
+    ``DatabaseAdapter.normalize_identifier`` is a new hook with a
+    pass-through default and an UPPER override on the two backends
+    that fold unquoted identifiers at storage time. The connector
+    folds user-supplied ``schema`` / ``table`` arguments at every
+    metadata entry point (``list_tables``, ``list_views``,
+    ``list_materialized_views``, ``list_column_profiles``,
+    ``get_table_comment``, ``get_column_comments``,
+    ``resolve_asset_kind``, ``profile_table``,
+    ``get_incoming_foreign_keys``). Before the fix, typing
+    ``scott.employees`` on an Oracle profile returned an empty
+    listing because the SQLAlchemy inspector queried
+    ``ALL_TABLES`` with the literal lowercase predicate while
+    Oracle had stored the names as ``SCOTT.EMPLOYEES``.
+    Explicitly-quoted identifiers (``"MixedCase"``) are passed
+    through unchanged so power users can still target
+    case-sensitive objects.
+
+  - **Snowflake 3-level fully qualified names.** When the profile
+    binds a database, ``SnowflakeAdapter.fully_qualified_name``
+    now emits ``"db"."schema"."table"``. Comment-write DDL and the
+    cross-database agent path used to silently fall back to the
+    connection's active database; the new form makes the target
+    explicit and matches the comment-test fixture's expectation
+    (``test_comment_sql_generation_per_backend``).
+
+  - **Databricks Unity Catalog field is required at wizard time.**
+    ``/add-db-profile`` for Databricks profiles now refuses to
+    save when the Unity Catalog field is left blank — the legacy
+    code path returned ``None`` from
+    ``DatabricksAdapter.list_schemas`` for empty catalog and fell
+    back to SQLAlchemy's UC-incompatible inspector, which
+    produced the user-reported "fresh profile, listing returns
+    nothing" failure. Legacy hive-metastore-only workspaces type
+    ``hive_metastore`` explicitly so the choice is visible in the
+    saved YAML rather than hidden behind a silent fallback.
+
+  - **PostgreSQL surface friendly hint on wrong password.**
+    ``PostgreSQLAdapter.actionable_profile_error`` now matches
+    ``password authentication failed`` /
+    ``fe_sendauth: no password supplied`` / SQLSTATE ``28P01`` and
+    points the user at ``/edit``, instead of letting libpq's raw
+    ``OperationalError`` traceback bubble through ``/db test``.
+
 - **Studio's collapsed-sidebar icons were inert** — when the user
   hid the left sidebar (via the topbar's ``PanelLeft`` chevron),
   the three icons that remained visible on the narrow rail

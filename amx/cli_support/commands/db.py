@@ -777,17 +777,25 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
                 tls_trusted_ca_file=tls_trusted_ca_file,
                 tls_no_verify=tls_no_verify,
             )
+            # Catalog is required because the adapter's catalog-less
+            # ``SHOW SCHEMAS`` path falls back to SQLAlchemy's inspector,
+            # which on Unity Catalog returns ambiguous (or empty) results
+            # — the bug surfaced as "fresh profile, listing returns
+            # nothing" on every UC workspace. Legacy hive_metastore-only
+            # workspaces should type ``hive_metastore`` here explicitly.
             catalog = _ask_catalog_or_database_with_picker(
                 label="Unity Catalog",
                 current_value=defaults.catalog or "",
-                optional=True,
+                optional=False,
                 probe_cfg=probe_cfg_for_catalog,
                 listing_kind="catalogs",
             )
         else:
             catalog = _ask_update_text(
-                "Unity Catalog (optional)",
+                "Unity Catalog (required; type 'hive_metastore' for legacy workspaces)",
                 defaults.catalog or "",
+                required=True,
+                allow_clear=False,
             )
         database = _ask_update_text("Schema / database (optional)", defaults.database or "")
         return replace(

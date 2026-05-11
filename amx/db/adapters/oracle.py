@@ -175,6 +175,13 @@ class OracleAdapter(DatabaseAdapter):
     def system_schemas(self) -> frozenset[str]:
         return _ORACLE_SYSTEM_SCHEMAS
 
+    def normalize_identifier(self, value: str) -> str:
+        if not value:
+            return value
+        if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+            return value
+        return value.upper()
+
     def list_databases(self, engine: Engine) -> list[str]:
         # Oracle's "schema = user" model means there's no separate
         # database list; surface the user-visible schemas (owners with
