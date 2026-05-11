@@ -297,6 +297,14 @@ def test_db_backend_catalog_lists_supported_engines(client, auth_headers) -> Non
     assert databricks.get("supports_catalog") is True
     assert "http_path" in databricks["fields"]
     assert "access_token" in databricks["fields"]
+    # TLS fields surface in the Studio wizard so corporate networks
+    # configured via the web UI behave the same way as those added
+    # through the CLI ``/add-db-profile`` flow. Without these the
+    # databricks-sql connector errors on the first connect under a
+    # TLS-inspecting proxy because the profile is missing both the
+    # CA-bundle path and the verify-skip override.
+    assert "tls_trusted_ca_file" in databricks["fields"]
+    assert "tls_no_verify" in databricks["fields"]
 
 
 def test_llm_provider_catalog_marks_needs_base_correctly(client, auth_headers) -> None:

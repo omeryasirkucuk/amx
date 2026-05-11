@@ -73,7 +73,20 @@ _DB_BACKENDS: list[dict[str, Any]] = [
     {
         "id": "databricks",
         "label": "Databricks (Unity Catalog)",
-        "fields": ["host", "http_path", "access_token", "catalog"],
+        # The CLI's ``/add-db-profile`` wizard prompts for the same TLS
+        # pair (``amx/cli_support/commands/db.py``, ~line 747–754) so
+        # Studio-created profiles must surface them too — without
+        # them the databricks-sql connector rejects corporate
+        # TLS-inspecting proxies (``amx/db/adapters/databricks.py``
+        # reads both fields on every connect).
+        "fields": [
+            "host",
+            "http_path",
+            "access_token",
+            "catalog",
+            "tls_trusted_ca_file",
+            "tls_no_verify",
+        ],
         "supports_catalog": True,
     },
     {
