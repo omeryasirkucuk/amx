@@ -21,6 +21,25 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Bulk column-comment metadata across all 10 backends.** Replaces
+  the serial per-table ``DESCRIBE TABLE EXTENDED`` / SQLAlchemy
+  inspector loop with a single ``INFORMATION_SCHEMA`` / ``pg_
+  description`` / ``ALL_COL_COMMENTS`` / ``system.columns`` /
+  ``sys.extended_properties`` query per schema. On Databricks Unity a
+  200-table schema collapses from 200 round-trips (~30s) to one
+  ``system.information_schema.columns`` query (<1s). The same speedup
+  applies to Snowflake, BigQuery, PostgreSQL, MySQL, Oracle, MSSQL,
+  Redshift, ClickHouse and DuckDB; legacy Hive metastore Databricks
+  profiles transparently fall back to the per-table path.
+
+- **Studio sidebar refresh button + CLI cold-fetch spinner.** Hovering
+  any schema row in the Studio sidebar reveals a ``↻`` button that
+  drops the cache for that schema and re-pulls — useful when a DBA
+  edited descriptions outside AMX. The CLI shows a Rich spinner
+  (``Fetching column descriptions for {schema}… 1.2s``) the first
+  time it hits a cold schema; subsequent calls stay silent because
+  the cache short-circuits them.
+
 - **Column-comments cache foundation.** New per-table SQLite cache
   (``column_comments_cache``) wired into the connector layer so every
   Studio router AND every CLI flow that calls ``get_table_comment`` /

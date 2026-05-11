@@ -226,6 +226,86 @@ class MSSQLAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "sys.dm_db_partition_stats (estimate)"
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """One ``sys.extended_properties`` join per schema.
+
+        MSSQL stashes comments as extended properties named
+        ``MS_Description``. Table-level rows have ``class = 1`` and
+        ``minor_id = 0``; column rows share ``class = 1`` with a
+        non-zero ``minor_id`` pointing at the column id. We pull both
+        in a single query and split client-side.
+
+        The ``sys.tables`` + ``sys.views`` joins surface tables that
+        have no MS_Description property at all so they still appear in
+        the result (with ``table_comment = None``).
+        """
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                table_rows = conn.execute(
+                    text(
+                        "SELECT t.name, 'TABLE' AS kind, "
+                        "       CAST(ep.value AS NVARCHAR(MAX)) AS comment "
+                        "FROM sys.tables t "
+                        "JOIN sys.schemas s ON s.schema_id = t.schema_id "
+                        "LEFT JOIN sys.extended_properties ep "
+                        "  ON ep.major_id = t.object_id "
+                        "  AND ep.minor_id = 0 AND ep.class = 1 "
+                        "  AND ep.name = 'MS_Description' "
+                        "WHERE s.name = :schema "
+                        "UNION ALL "
+                        "SELECT v.name, 'VIEW' AS kind, "
+                        "       CAST(ep.value AS NVARCHAR(MAX)) AS comment "
+                        "FROM sys.views v "
+                        "JOIN sys.schemas s ON s.schema_id = v.schema_id "
+                        "LEFT JOIN sys.extended_properties ep "
+                        "  ON ep.major_id = v.object_id "
+                        "  AND ep.minor_id = 0 AND ep.class = 1 "
+                        "  AND ep.name = 'MS_Description' "
+                        "WHERE s.name = :schema"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+                for r in table_rows:
+                    out[str(r[0])] = {
+                        "table_comment": str(r[2]) if r[2] else None,
+                        "columns": {},
+                        "kind": str(r[1]),
+                    }
+                col_rows = conn.execute(
+                    text(
+                        "SELECT o.name AS table_name, c.name AS column_name, "
+                        "       CAST(ep.value AS NVARCHAR(MAX)) AS comment "
+                        "FROM sys.columns c "
+                        "JOIN sys.objects o ON o.object_id = c.object_id "
+                        "JOIN sys.schemas s ON s.schema_id = o.schema_id "
+                        "LEFT JOIN sys.extended_properties ep "
+                        "  ON ep.major_id = c.object_id "
+                        "  AND ep.minor_id = c.column_id AND ep.class = 1 "
+                        "  AND ep.name = 'MS_Description' "
+                        "WHERE s.name = :schema "
+                        "ORDER BY o.name, c.column_id"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            for r in col_rows:
+                entry = out.setdefault(
+                    str(r[0]),
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

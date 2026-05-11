@@ -150,6 +150,85 @@ class BigQueryAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "INFORMATION_SCHEMA.TABLES"
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """One ``INFORMATION_SCHEMA`` round-trip per dataset.
+
+        BigQuery exposes a per-dataset ``INFORMATION_SCHEMA`` view; the
+        catalog is the GCP project and the schema is the dataset name.
+        Nested STRUCT fields live in ``COLUMN_FIELD_PATHS`` rather than
+        ``COLUMNS``, but for the sidebar / inspect UX we only need
+        top-level columns — STRUCT introspection is a separate feature.
+        """
+        project = (catalog or getattr(self.cfg, "project", "") or "").strip()
+        info_path_tables = (
+            f"`{project}`.`{schema}`.INFORMATION_SCHEMA.TABLES"
+            if project
+            else f"`{schema}`.INFORMATION_SCHEMA.TABLES"
+        )
+        info_path_columns = (
+            f"`{project}`.`{schema}`.INFORMATION_SCHEMA.COLUMNS"
+            if project
+            else f"`{schema}`.INFORMATION_SCHEMA.COLUMNS"
+        )
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                table_rows = conn.execute(
+                    text(
+                        f"SELECT table_name, table_type, "
+                        f"  (SELECT option_value FROM "
+                        f"   `{project}`.`{schema}`.INFORMATION_SCHEMA.TABLE_OPTIONS o "
+                        f"   WHERE o.table_name = t.table_name AND option_name = 'description' "
+                        f"   LIMIT 1) AS table_comment "
+                        f"FROM {info_path_tables} t"
+                    )
+                ).fetchall()
+                for r in table_rows:
+                    raw_kind = str(r[1] or "").upper()
+                    if "MATERIALIZED" in raw_kind:
+                        kind = "MATERIALIZED VIEW"
+                    elif "VIEW" in raw_kind:
+                        kind = "VIEW"
+                    else:
+                        kind = "TABLE"
+                    # BigQuery wraps the option_value in double-quotes
+                    # ("foo") — strip them for a clean string.
+                    raw_comment = str(r[2]) if r[2] is not None else ""
+                    table_comment = (
+                        raw_comment[1:-1]
+                        if raw_comment.startswith('"') and raw_comment.endswith('"')
+                        else raw_comment
+                    )
+                    out[str(r[0])] = {
+                        "table_comment": table_comment or None,
+                        "columns": {},
+                        "kind": kind,
+                    }
+                col_rows = conn.execute(
+                    text(
+                        f"SELECT table_name, column_name, description "
+                        f"FROM {info_path_columns} "
+                        f"ORDER BY table_name, ordinal_position"
+                    )
+                ).fetchall()
+            for r in col_rows:
+                entry = out.setdefault(
+                    str(r[0]),
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:
