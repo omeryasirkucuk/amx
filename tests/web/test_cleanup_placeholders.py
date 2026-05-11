@@ -79,7 +79,7 @@ def test_endpoint_returns_helper_payload(client, auth_headers, monkeypatch, cfg)
     live_db._CONNECTOR_CACHE.clear()
 
     db = _stub_db_with_placeholders()
-    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _cfg: db)
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda *_a, **_kw: db)
 
     response = client.post(
         "/api/comments/cleanup-placeholders?profile=test-profile",
@@ -102,7 +102,7 @@ def test_endpoint_400_for_unknown_schema(client, auth_headers, monkeypatch, cfg)
     live_db._CONNECTOR_CACHE.clear()
 
     db = _stub_db_with_placeholders()
-    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _cfg: db)
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda *_a, **_kw: db)
 
     response = client.post(
         "/api/comments/cleanup-placeholders?profile=test-profile",

@@ -25,7 +25,7 @@ def stub_db(monkeypatch, cfg):
     instance = MagicMock()
     # Comments router builds connectors through _connector_for_scope,
     # which reaches DatabaseConnector inside live_db.
-    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _db: instance)
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda *_a, **_kw: instance)
     return instance
 
 
@@ -116,7 +116,7 @@ def test_table_comment_writes_to_named_profile_not_active(
     seen_dbconfigs: list[DBConfig] = []
     instance = MagicMock()
 
-    def _factory(db: DBConfig) -> MagicMock:
+    def _factory(db: DBConfig, **_kw) -> MagicMock:
         seen_dbconfigs.append(db)
         return instance
 
@@ -157,7 +157,7 @@ def test_database_overlay_does_not_mutate_target_profile(
     monkeypatch.setattr(
         live_db,
         "DatabaseConnector",
-        lambda db: seen.append(db) or MagicMock(),
+        lambda db, **_kw: seen.append(db) or MagicMock(),
     )
 
     response = client.put(

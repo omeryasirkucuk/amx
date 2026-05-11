@@ -21,6 +21,21 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Column-comments cache foundation.** New per-table SQLite cache
+  (``column_comments_cache``) wired into the connector layer so every
+  Studio router AND every CLI flow that calls ``get_table_comment`` /
+  ``get_column_comments`` short-circuits to a 1h-TTL cache hit after
+  the first read. The cache lookup lives *inside* the connector
+  (``amx/db/connector.py``) so CLI inspect commands, the orchestrator's
+  per-table profile loop, and the Studio sidebar / RunNew flows all
+  share the same warm cache. Five mutation paths (``set_database/
+  schema/table/column_comment`` plus ``apply_review_results_to_db``)
+  invalidate the affected scope before their HTTP response returns,
+  guaranteeing the next read is fresh — non-negotiable per the user.
+  A backend bulk-query path (one ``INFORMATION_SCHEMA`` / ``pg_
+  description`` round-trip in place of N per-table ``DESCRIBE``s) lands
+  in a follow-up PR; this groundwork makes the speedup drop-in.
+
 - **Polished UX for on-demand extras installs.** When the CLI lazy-
   installs an optional dependency (DB driver, LLM SDK, RAG bundle,
   weasyprint, bert-score, …), the terminal now renders a single Rich

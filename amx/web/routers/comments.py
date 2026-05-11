@@ -69,6 +69,11 @@ def set_database_comment(
     don't (e.g. SQLite)."""
     db = _scoped_connector(cfg, profile, database, catalog)
     _coerce_or_400("Setting database comment", lambda: db.set_database_comment(body.comment))
+    # Wipe the cached column-comments for this profile so the next
+    # read picks up the just-written value. Database-level writes are
+    # rare enough that nuking the whole profile is cheaper than
+    # tracking which schemas inherit the description.
+    db.invalidate_column_comments_cache()
     return {"ok": "true"}
 
 
@@ -86,6 +91,7 @@ def set_schema_comment(
         f"Setting schema comment on {schema}",
         lambda: db.set_schema_comment(schema, body.comment),
     )
+    db.invalidate_column_comments_cache(schema=schema)
     return {"ok": "true"}
 
 
@@ -108,6 +114,7 @@ def set_table_comment(
         f"Setting table comment on {schema}.{table}",
         lambda: db.set_table_comment(schema, table, body.comment, asset_kind=AssetKind.TABLE),
     )
+    db.invalidate_column_comments_cache(schema=schema, table=table)
     return {"ok": "true"}
 
 
@@ -130,6 +137,9 @@ def set_column_comment(
         f"Setting column comment on {schema}.{table}.{column}",
         lambda: db.set_column_comment(schema, table, column, body.comment),
     )
+    # Column-level granularity isn't worth the bookkeeping — the next
+    # fetch refreshes the entire table's column dict in one bulk call.
+    db.invalidate_column_comments_cache(schema=schema, table=table)
     return {"ok": "true"}
 
 
