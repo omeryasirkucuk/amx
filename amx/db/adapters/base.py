@@ -294,6 +294,31 @@ class DatabaseAdapter(ABC):
     def get_database_comment(self, engine: Engine) -> str | None:
         return None
 
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """Fetch comments + columns for every table in a schema in one query.
+
+        Returns ``{table_name: {"table_comment": str | None,
+        "columns": {col_name: comment_or_none}, "kind": "TABLE" | "VIEW" |
+        "MATERIALIZED VIEW"}}`` for the entire schema, or ``None`` when the
+        backend has no bulk catalog source — in which case the connector
+        falls back to the per-table inspector path.
+
+        Implementation note for overrides: this is the single biggest
+        Studio + CLI perf win on big warehouses. A 200-table Databricks
+        Unity schema currently issues 200 sequential ``DESCRIBE TABLE
+        EXTENDED`` calls (10-30s wall-clock); the bulk
+        ``system.information_schema.columns`` query covers them in one
+        round-trip (<1s). Keep the dict shape stable — the connector
+        cache layer keys off it.
+        """
+        return None
+
     def batch_get_table_comments(
         self,
         engine: Engine,

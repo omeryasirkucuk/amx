@@ -57,7 +57,7 @@ def _stub_connector(monkeypatch) -> list[DBConfig]:
     every DBConfig it was constructed with."""
     seen: list[DBConfig] = []
 
-    def _factory(db: DBConfig) -> MagicMock:
+    def _factory(db: DBConfig, **_kw) -> MagicMock:
         seen.append(db)
         m = MagicMock()
         m.cfg = db

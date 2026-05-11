@@ -197,7 +197,16 @@ def _is_transient_db_connection_error(exc: BaseException) -> bool:
 class DatabaseConnector:
     """Unified database connector that delegates backend-specific work to adapters."""
 
-    def __init__(self, cfg: DBConfig):
+    def __init__(self, cfg: DBConfig, *, profile_name: str = ""):
+        # ``profile_name`` is the AMXConfig key (e.g. "prod-snowflake")
+        # this connector was opened for. Used as the cache key for the
+        # column-comments cache (:mod:`amx.storage.sqlite_store`) so an
+        # invalidation triggered from the web router or a CLI write hits
+        # the exact rows the connector populated. Empty string is the
+        # legacy single-profile fallback — callers that have a profile
+        # name should always pass it.
+        self.profile_name = str(profile_name or "")
+
         # Sanitize unresolved keyring references on a COPY so the
         # adapter never tries to use ``keyring:db_profiles/<x>/password``
         # as a real secret (which would produce a confusing
@@ -610,26 +619,187 @@ class DatabaseConnector:
 
     # ── Comments (read) ───────────────────────────────────────────────────
 
+    @property
+    def _cache_profile_key(self) -> str:
+        """Stable identifier the column-comments cache keys off.
+
+        Prefers the AMX profile name when the caller supplied one
+        (every CLI / web router code path does in v0.14+). Falls back
+        to a short hash of the connection identity so anonymous
+        connectors — e.g. tests that build a connector directly from a
+        ``DBConfig`` — still get a deterministic, collision-free key.
+        """
+        if self.profile_name:
+            return self.profile_name
+        import hashlib
+
+        sig = (
+            f"{getattr(self.cfg, 'url', '') or ''}|"
+            f"{getattr(self.cfg, 'database', '') or ''}|"
+            f"{getattr(self.cfg, 'catalog', '') or ''}"
+        )
+        return "anon:" + hashlib.sha1(sig.encode("utf-8")).hexdigest()[:12]
+
+    def _cache_database_key(self) -> str:
+        """Database scope the cache narrows on within a profile."""
+        return str(getattr(self.cfg, "database", "") or getattr(self.cfg, "catalog", "") or "")
+
+    def _lookup_column_comments_cache(
+        self, schema: str, table: str
+    ) -> dict[str, Any] | None:
+        """Return a cached ``{table_comment, columns, kind, ...}`` or None."""
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return None
+        store = history_store()
+        if store is None:
+            return None
+        try:
+            return store.lookup_column_comments_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                schema=schema,
+                table=table,
+            )
+        except Exception as exc:
+            log.debug("column-comments cache lookup failed: %s", exc)
+            return None
+
+    def _save_column_comments_cache(
+        self,
+        schema: str,
+        entries: dict[str, dict[str, Any]],
+    ) -> None:
+        """Persist a per-schema metadata dict to the cache."""
+        if not entries:
+            return
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return
+        store = history_store()
+        if store is None:
+            return
+        try:
+            store.save_column_comments_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                schema=schema,
+                entries=entries,
+            )
+        except Exception as exc:
+            log.debug("column-comments cache save failed: %s", exc)
+
+    def invalidate_column_comments_cache(
+        self,
+        schema: str | None = None,
+        table: str | None = None,
+    ) -> None:
+        """Drop cached comment rows for this connector.
+
+        - ``schema`` + ``table`` → single row (one table COMMENT write).
+        - ``schema`` only → whole schema (schema COMMENT write).
+        - Both None → whole profile (database COMMENT or wholesale reset).
+        """
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return
+        store = history_store()
+        if store is None:
+            return
+        try:
+            store.invalidate_column_comments_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                schema=schema,
+                table=table,
+            )
+        except Exception as exc:
+            log.debug("column-comments cache invalidate failed: %s", exc)
+
+    def _populate_schema_metadata_cache(self, schema: str) -> bool:
+        """Run the adapter's bulk source for ``schema`` and cache results.
+
+        Returns ``True`` when the adapter populated the cache (any
+        backend that overrides :meth:`bulk_schema_metadata`) and
+        ``False`` when there is no bulk source — the caller then falls
+        back to per-table inspector calls. The fallback path also
+        caches its results entry-by-entry, so subsequent reads of any
+        cached table short-circuit either way.
+        """
+        try:
+            catalog = str(getattr(self.cfg, "catalog", "") or "")
+            payload = self._adapter.bulk_schema_metadata(
+                self.engine, schema, catalog=catalog
+            )
+        except Exception as exc:
+            log.debug(
+                "bulk_schema_metadata raised on %s for schema %s: %s",
+                self._adapter.name,
+                schema,
+                exc,
+            )
+            return False
+        if not payload:
+            return False
+        self._save_column_comments_cache(schema, payload)
+        return True
+
     def get_table_comment(self, schema: str, table: str) -> str | None:
         if not self.capabilities.table_comments and not self.capabilities.view_comments:
             return None
         schema = self._normalize_id(schema)
         table = self._normalize_id(table)
+        cached = self._lookup_column_comments_cache(schema, table)
+        if cached is not None:
+            return cached.get("table_comment")
+        # Try a single round-trip bulk source for the whole schema; on
+        # success every sibling table is now warm in the cache too. If
+        # the backend has no bulk source, drop to the per-table
+        # inspector call below and cache its result entry-by-entry.
+        if self._populate_schema_metadata_cache(schema):
+            cached = self._lookup_column_comments_cache(schema, table)
+            if cached is not None:
+                return cached.get("table_comment")
         insp = inspect(self.engine)
         try:
             info = insp.get_table_comment(table, schema=schema)
-            return info.get("text")
+            value = info.get("text")
         except Exception:
-            return None
+            value = None
+        # Even on the per-table path we cache the result so the next
+        # call within the TTL window skips the round-trip.
+        self._save_column_comments_cache(
+            schema,
+            {table: {"table_comment": value, "columns": {}, "kind": "TABLE"}},
+        )
+        return value
 
     def get_column_comments(self, schema: str, table: str) -> dict[str, str | None]:
         if not self.capabilities.column_comments:
             return {}
         schema = self._normalize_id(schema)
         table = self._normalize_id(table)
+        cached = self._lookup_column_comments_cache(schema, table)
+        if cached is not None and cached.get("columns"):
+            return dict(cached["columns"])
+        if self._populate_schema_metadata_cache(schema):
+            cached = self._lookup_column_comments_cache(schema, table)
+            if cached is not None and cached.get("columns"):
+                return dict(cached["columns"])
         insp = inspect(self.engine)
         cols = insp.get_columns(table, schema=schema)
-        return {c["name"]: c.get("comment") for c in cols}
+        out = {c["name"]: c.get("comment") for c in cols}
+        # Preserve any table-level comment we already cached for this
+        # row so the columns fill doesn't blank it out.
+        existing_tc = cached.get("table_comment") if cached else None
+        self._save_column_comments_cache(
+            schema,
+            {table: {"table_comment": existing_tc, "columns": out, "kind": "TABLE"}},
+        )
+        return out
 
     def column_comments_probe_query(self, schema: str, table: str) -> str:
         return self._adapter.column_comments_probe_query(schema, table)

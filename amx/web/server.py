@@ -137,6 +137,10 @@ def create_app(
             # schema doesn't quietly bias re-run prompts after the
             # user altered the table out-of-band.
             _store.gc_run_context_cache()
+            # Same for the column-comments cache that backs the
+            # bulk-schema metadata path — anything past 1h is wiped
+            # so the next sidebar expand triggers a fresh fetch.
+            _store.gc_column_comments_cache()
     except Exception:
         # Startup must never crash on a GC hiccup; the executor's own
         # cleanup keeps the table tidy regardless.

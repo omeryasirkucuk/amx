@@ -193,7 +193,7 @@ def test_pending_apply_spawns_apply_job(client, auth_headers, stub_pending, monk
         return 1
 
     monkeypatch.setattr(runs_router, "apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/pending/apply", headers=auth_headers)
     assert response.status_code == 200
@@ -223,7 +223,7 @@ def test_pending_apply_streams_via_apply_events_endpoint(
         return 1
 
     monkeypatch.setattr(runs_router, "apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/pending/apply", headers=auth_headers)
     job_id = response.json()["job_id"]
@@ -267,7 +267,7 @@ def test_pending_preview_returns_sql_per_row(
 
     monkeypatch.setattr(pending_router, "apply_review_results_to_db", fake_apply, raising=False)
     monkeypatch.setattr("amx.agents.orchestrator.apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr("amx.db.connector.DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr("amx.db.connector.DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/pending/preview", headers=auth_headers)
     assert response.status_code == 200
@@ -309,7 +309,7 @@ def test_pending_preview_handles_unsupported_assets(
 
     monkeypatch.setattr(pending_router, "apply_review_results_to_db", fake_apply, raising=False)
     monkeypatch.setattr("amx.agents.orchestrator.apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr("amx.db.connector.DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr("amx.db.connector.DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/pending/preview", headers=auth_headers)
     assert response.status_code == 200

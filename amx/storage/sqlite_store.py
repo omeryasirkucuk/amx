@@ -250,6 +250,40 @@ class SQLiteHistoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_run_context_cache_expires "
                     "ON run_context_cache(expires_at)"
                 )
+            # ── column_comments_cache: per-table existing-comment cache ──
+            # On large warehouses (Databricks especially) the per-table
+            # DESCRIBE EXTENDED loop the sidebar and CLI inspect flows used
+            # to hit became 30s+. The connector now folds the whole schema
+            # into one bulk INFORMATION_SCHEMA-style query and stashes the
+            # result here, keyed per-table so a single COMMENT write can
+            # invalidate just the row that changed. TTL is the second line
+            # of defence for DBA-edited comments that AMX never sees.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS column_comments_cache (
+                    cache_key      TEXT PRIMARY KEY,
+                    db_profile     TEXT NOT NULL,
+                    database_name  TEXT NOT NULL DEFAULT '',
+                    schema_name    TEXT NOT NULL,
+                    table_name     TEXT NOT NULL,
+                    table_comment  TEXT,
+                    columns_json   TEXT NOT NULL,
+                    kind           TEXT NOT NULL DEFAULT 'TABLE',
+                    fetched_at     REAL NOT NULL,
+                    expires_at     REAL NOT NULL
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ccc_profile_schema "
+                    "ON column_comments_cache(db_profile, database_name, schema_name)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ccc_expires "
+                    "ON column_comments_cache(expires_at)"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
@@ -1344,6 +1378,206 @@ class SQLiteHistoryStore:
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "DELETE FROM run_context_cache WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now,),
+            )
+            return int(cur.rowcount or 0)
+
+    # ── column_comments_cache: per-table existing-comment cache ──
+
+    @staticmethod
+    def _ccc_key(*, db_profile: str, database: str, schema: str, table: str) -> str:
+        return f"{db_profile}|{database or ''}|{schema}|{table}"
+
+    def save_column_comments_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        entries: dict[str, dict[str, Any]],
+        ttl_seconds: float = 3600.0,
+    ) -> int:
+        """Bulk upsert per-table entries after one ``bulk_schema_metadata`` call.
+
+        ``entries`` maps each ``table_name`` to a dict with keys:
+        ``table_comment`` (str | None), ``columns`` (dict[col_name, comment_or_none]),
+        ``kind`` ("TABLE" | "VIEW" | "MATERIALIZED VIEW"). Missing keys default
+        to ``None`` / empty / "TABLE" so callers can pass partial payloads
+        when the backend only returns column-level data.
+        """
+        if not entries:
+            return 0
+        now = time.time()
+        # ``ttl_seconds == 0`` defaults to one hour to match the helper's
+        # default kwarg; negative values are honoured verbatim so tests
+        # can stamp rows as already-expired.
+        if ttl_seconds == 0:
+            ttl_seconds = 3600.0
+        expires_at = now + float(ttl_seconds)
+        rows = [
+            (
+                self._ccc_key(
+                    db_profile=str(db_profile or ""),
+                    database=str(database or ""),
+                    schema=str(schema or ""),
+                    table=str(table or ""),
+                ),
+                str(db_profile or ""),
+                str(database or ""),
+                str(schema or ""),
+                str(table or ""),
+                payload.get("table_comment"),
+                json.dumps(payload.get("columns") or {}, ensure_ascii=True),
+                str(payload.get("kind") or "TABLE"),
+                now,
+                expires_at,
+            )
+            for table, payload in entries.items()
+        ]
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO column_comments_cache
+                    (cache_key, db_profile, database_name, schema_name, table_name,
+                     table_comment, columns_json, kind, fetched_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    table_comment = excluded.table_comment,
+                    columns_json  = excluded.columns_json,
+                    kind          = excluded.kind,
+                    fetched_at    = excluded.fetched_at,
+                    expires_at    = excluded.expires_at
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def lookup_column_comments_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+    ) -> dict[str, Any] | None:
+        """Return a single fresh cache entry, or ``None`` if missing/expired.
+
+        Returned shape: ``{"table_comment": ..., "columns": {...}, "kind": ...,
+        "fetched_at": ..., "expires_at": ...}``. Expired rows are kept on disk
+        (cheaper than rewriting) but the lookup pretends they're absent.
+        """
+        cache_key = self._ccc_key(
+            db_profile=str(db_profile or ""),
+            database=str(database or ""),
+            schema=str(schema or ""),
+            table=str(table or ""),
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT table_comment, columns_json, kind, fetched_at, expires_at
+                FROM column_comments_cache
+                WHERE cache_key = ?
+                """,
+                (cache_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        if float(row["expires_at"]) < time.time():
+            return None
+        try:
+            columns = json.loads(row["columns_json"])
+        except Exception:
+            columns = {}
+        return {
+            "table_comment": row["table_comment"],
+            "columns": columns,
+            "kind": row["kind"] or "TABLE",
+            "fetched_at": float(row["fetched_at"]),
+            "expires_at": float(row["expires_at"]),
+        }
+
+    def lookup_column_comments_cache_bulk(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{table_name: cached_entry}`` for every fresh row in a schema.
+
+        Used by the connector's bulk path to decide whether a refetch is
+        needed at all. Expired rows are skipped.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT table_name, table_comment, columns_json, kind, fetched_at, expires_at
+                FROM column_comments_cache
+                WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+                  AND expires_at >= ?
+                """,
+                (
+                    str(db_profile or ""),
+                    str(database or ""),
+                    str(schema or ""),
+                    now,
+                ),
+            ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                columns = json.loads(row["columns_json"])
+            except Exception:
+                columns = {}
+            out[str(row["table_name"])] = {
+                "table_comment": row["table_comment"],
+                "columns": columns,
+                "kind": row["kind"] or "TABLE",
+                "fetched_at": float(row["fetched_at"]),
+                "expires_at": float(row["expires_at"]),
+            }
+        return out
+
+    def invalidate_column_comments_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str = "",
+        schema: str | None = None,
+        table: str | None = None,
+    ) -> int:
+        """Drop cached rows at one of three granularities.
+
+        * ``schema`` + ``table`` set → single row (column/table comment write).
+        * ``schema`` set, ``table`` ``None`` → whole schema (schema comment write).
+        * Both ``None`` → whole profile (database comment write, profile reset).
+
+        Returns rowcount. Always safe — a no-op on a cold cache returns 0.
+        """
+        params: list[Any] = [str(db_profile or "")]
+        sql = "DELETE FROM column_comments_cache WHERE db_profile = ?"
+        # ``database_name`` is empty string when the profile is single-db;
+        # we filter on it whenever a schema is named so a multi-db profile
+        # only wipes the affected database.
+        if schema is not None:
+            sql += " AND database_name = ? AND schema_name = ?"
+            params.append(str(database or ""))
+            params.append(str(schema or ""))
+        if table is not None:
+            sql += " AND table_name = ?"
+            params.append(str(table or ""))
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return int(cur.rowcount or 0)
+
+    def gc_column_comments_cache(self) -> int:
+        """Sweep expired rows; called at process startup alongside other GC."""
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM column_comments_cache WHERE expires_at < ?",
                 (now,),
             )
             return int(cur.rowcount or 0)
