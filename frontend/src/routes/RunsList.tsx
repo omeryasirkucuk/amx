@@ -25,6 +25,9 @@ import {
   statusLabel,
   statusTone,
   summarizeScope,
+  summarizeProcessedAssets,
+  processedAssetsTooltip,
+  type ProcessedAssetsSummary,
 } from "../lib/runDisplay";
 import { cn } from "../lib/cn";
 
@@ -38,6 +41,10 @@ interface Row {
   // regardless of what the user actually picked.
   scope_json?: Record<string, unknown> | null;
   scope?: Record<string, unknown> | null;
+  /** Backend-aggregated record of the actual (schema, table, column)
+   * tuples the run processed. Surfaces column-level scope that
+   * ``scope_json`` doesn't carry. Null on legacy / still-running rows. */
+  processed_assets?: ProcessedAssetsSummary | null;
   status: string;
   duration_sec: number | null;
   llm_model?: string | null;
@@ -169,11 +176,28 @@ export default function RunsList() {
       {
         id: "scope",
         header: "Scope",
-        cell: (r) => (
-          <span className="truncate text-sm text-ink-muted">
-            {summarizeScope(r.scope_json ?? r.scope)}
-          </span>
-        ),
+        cell: (r) => {
+          // Prefer the concrete-asset label when the backend supplied
+          // ``processed_assets`` (schema.table.column for column-level
+          // runs, real schema.table for table-level). Fall back to the
+          // legacy schema-count summary for older history rows or for
+          // workers that are still running (the aggregate fills in
+          // when ``run_results`` rows are written, so an in-flight run
+          // has an empty sample until the first per-asset commit).
+          const fromAssets = summarizeProcessedAssets(r.processed_assets);
+          const label = fromAssets ?? summarizeScope(r.scope_json ?? r.scope);
+          const tooltip =
+            processedAssetsTooltip(r.processed_assets) ??
+            Object.keys(r.scope_json ?? r.scope ?? {}).join(", ");
+          return (
+            <span
+              className="truncate text-sm text-ink-muted"
+              title={tooltip || undefined}
+            >
+              {label}
+            </span>
+          );
+        },
         hideOnMobile: true,
       },
       {

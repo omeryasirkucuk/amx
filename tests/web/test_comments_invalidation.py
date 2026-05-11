@@ -72,9 +72,7 @@ def test_set_table_comment_wipes_only_that_row(client, auth_headers, stub_db) ->
         json={"comment": "Orders fact"},
     )
     assert response.status_code == 200
-    stub_db.invalidate_column_comments_cache.assert_called_once_with(
-        schema="sales", table="orders"
-    )
+    stub_db.invalidate_column_comments_cache.assert_called_once_with(schema="sales", table="orders")
 
 
 def test_set_column_comment_wipes_parent_table_row(client, auth_headers, stub_db) -> None:
@@ -87,6 +85,4 @@ def test_set_column_comment_wipes_parent_table_row(client, auth_headers, stub_db
         json={"comment": "Order primary key"},
     )
     assert response.status_code == 200
-    stub_db.invalidate_column_comments_cache.assert_called_once_with(
-        schema="sales", table="orders"
-    )
+    stub_db.invalidate_column_comments_cache.assert_called_once_with(schema="sales", table="orders")

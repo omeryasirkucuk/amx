@@ -331,8 +331,7 @@ class SQLiteHistoryStore:
                 )
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_sc_expires "
-                    "ON schemas_cache(expires_at)"
+                    "CREATE INDEX IF NOT EXISTS idx_sc_expires ON schemas_cache(expires_at)"
                 )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
@@ -1993,6 +1992,75 @@ class SQLiteHistoryStore:
                 """,
                 tuple(params),
             ).fetchall()
+            # Enrich each row with the actual (schema, table, column)
+            # tuples processed by the run. ``scope_json`` only carries
+            # the schema-level scope the user originally picked, so a
+            # column-level run (``/rerun --column x`` or analyze with
+            # ``column_overrides``) was indistinguishable from a full
+            # table run in the listing — users saw "sales · 1 table"
+            # for both and had to click into the run-detail view to
+            # find out what was actually processed. The aggregate below
+            # uses ``run_results`` (the per-asset write log) as the
+            # ground truth and surfaces a compact summary the SPA's
+            # Runs / Compare pages render as e.g. "sales.orders.status"
+            # or "sales.orders (3 columns)".
+            run_ids = [r["id"] for r in rows]
+            assets_by_run: dict[int, dict[str, Any]] = {}
+            if run_ids:
+                placeholders = ",".join("?" for _ in run_ids)
+                agg_rows = conn.execute(
+                    f"""
+                    SELECT run_id,
+                           COUNT(DISTINCT schema_name) AS schemas_count,
+                           COUNT(DISTINCT schema_name || '\\x1f' || table_name)
+                               AS tables_count,
+                           SUM(CASE
+                                   WHEN column_name IS NULL OR column_name = ''
+                                   THEN 0 ELSE 1
+                               END) AS column_rows
+                    FROM run_results
+                    WHERE run_id IN ({placeholders})
+                    GROUP BY run_id
+                    """,
+                    tuple(run_ids),
+                ).fetchall()
+                for ar in agg_rows:
+                    assets_by_run[int(ar["run_id"])] = {
+                        "schemas": int(ar["schemas_count"] or 0),
+                        "tables": int(ar["tables_count"] or 0),
+                        "columns": int(ar["column_rows"] or 0),
+                        "sample": [],
+                    }
+                # Pull a small sample of asset tuples per run so the
+                # SPA can render "schema.table.column" labels without
+                # a second roundtrip. Cap at 6 distinct tuples per run
+                # — enough to drive the headline label + a tooltip
+                # without bloating the payload on long-history lists.
+                sample_rows = conn.execute(
+                    f"""
+                    SELECT run_id, schema_name, table_name, column_name
+                    FROM run_results
+                    WHERE run_id IN ({placeholders})
+                    GROUP BY run_id, schema_name, table_name, COALESCE(column_name, '')
+                    ORDER BY run_id, schema_name, table_name, column_name
+                    """,
+                    tuple(run_ids),
+                ).fetchall()
+                for sr in sample_rows:
+                    rid = int(sr["run_id"])
+                    bucket = assets_by_run.setdefault(
+                        rid,
+                        {"schemas": 0, "tables": 0, "columns": 0, "sample": []},
+                    )
+                    if len(bucket["sample"]) >= 6:
+                        continue
+                    bucket["sample"].append(
+                        {
+                            "schema": sr["schema_name"],
+                            "table": sr["table_name"],
+                            "column": sr["column_name"] or None,
+                        }
+                    )
         out: list[dict[str, Any]] = []
         for r in rows:
             d = dict(r)
@@ -2007,6 +2075,10 @@ class SQLiteHistoryStore:
                 if isinstance(raw, str) and raw:
                     with contextlib.suppress(Exception):
                         d[key] = json.loads(raw)
+            d["processed_assets"] = assets_by_run.get(
+                int(d["id"]),
+                {"schemas": 0, "tables": 0, "columns": 0, "sample": []},
+            )
             out.append(d)
         return out
 

@@ -16,7 +16,6 @@ alongside the existing ``run_context_cache``. Three properties matter:
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -90,9 +89,7 @@ def test_lookup_bulk_returns_only_fresh_rows(store: SQLiteHistoryStore) -> None:
         entries={"stale": _entry("ok", {})},
         ttl_seconds=-1.0,
     )
-    bulk = store.lookup_column_comments_cache_bulk(
-        db_profile="prod", database="", schema="public"
-    )
+    bulk = store.lookup_column_comments_cache_bulk(db_profile="prod", database="", schema="public")
     assert "fresh" in bulk
     assert "stale" not in bulk
 
@@ -140,9 +137,7 @@ def test_invalidate_schema_drops_every_table_in_schema(store: SQLiteHistoryStore
         schema="marketing",
         entries={"campaigns": _entry("c", {})},
     )
-    dropped = store.invalidate_column_comments_cache(
-        db_profile="prod", database="", schema="sales"
-    )
+    dropped = store.invalidate_column_comments_cache(db_profile="prod", database="", schema="sales")
     assert dropped == 2
     # Different schema untouched.
     assert (
@@ -250,10 +245,7 @@ def test_bulk_filled_flag_separates_full_from_partial_caches(
         bulk_filled=False,
     )
     assert (
-        store.schema_has_bulk_filled_cache(
-            db_profile="prod", database="", schema="public"
-        )
-        is False
+        store.schema_has_bulk_filled_cache(db_profile="prod", database="", schema="public") is False
     )
     # Now a bulk fill drops in. ON CONFLICT promotes the flag to 1
     # via MAX(); a later bulk fill must never demote a partial row.
@@ -265,10 +257,7 @@ def test_bulk_filled_flag_separates_full_from_partial_caches(
         bulk_filled=True,
     )
     assert (
-        store.schema_has_bulk_filled_cache(
-            db_profile="prod", database="", schema="public"
-        )
-        is True
+        store.schema_has_bulk_filled_cache(db_profile="prod", database="", schema="public") is True
     )
 
 
@@ -331,9 +320,7 @@ def test_catalog_has_bulk_filled_cache_gate(store: SQLiteHistoryStore) -> None:
         bulk_filled=False,
     )
     assert (
-        store.catalog_has_bulk_filled_cache(
-            db_profile="prod", database="", catalog="warehouse"
-        )
+        store.catalog_has_bulk_filled_cache(db_profile="prod", database="", catalog="warehouse")
         is False
     )
     store.save_schemas_cache(
@@ -344,9 +331,7 @@ def test_catalog_has_bulk_filled_cache_gate(store: SQLiteHistoryStore) -> None:
         bulk_filled=True,
     )
     assert (
-        store.catalog_has_bulk_filled_cache(
-            db_profile="prod", database="", catalog="warehouse"
-        )
+        store.catalog_has_bulk_filled_cache(db_profile="prod", database="", catalog="warehouse")
         is True
     )
 

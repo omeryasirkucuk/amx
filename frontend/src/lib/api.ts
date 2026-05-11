@@ -229,6 +229,19 @@ export interface RunRow {
    *  side. Always read ``scope_json ?? scope``. */
   scope_json?: Record<string, string[]> | null;
   scope?: Record<string, string[]> | null;
+  /** Backend-aggregated record of the actual ``(schema, table,
+   *  column)`` tuples the run processed. Surfaces column-level scope
+   *  that ``scope_json`` doesn't carry (the latter only stores the
+   *  user-picked schema-level scope; a ``/rerun --column`` run looked
+   *  identical to a full-table run in the listing before this field).
+   *  Always treat as optional — legacy rows + still-running workers
+   *  may not have it populated. */
+  processed_assets?: {
+    schemas: number;
+    tables: number;
+    columns: number;
+    sample: Array<{ schema: string; table: string; column: string | null }>;
+  } | null;
   /** Set when a worker thread is still alive for this row in the
    *  job registry. The Studio uses the id to render an inline Cancel
    *  control on running rows; null/absent for finished rows. */
