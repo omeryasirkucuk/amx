@@ -78,6 +78,11 @@ interface DbBackend {
   field_specs?: DbFieldSpec[];
   default_port?: number;
   supports_catalog?: boolean;
+  // False on backends that cannot host AMX's run-history schema
+  // (DuckDB — local file, ClickHouse — no row UPDATE). Studio shows
+  // a non-blocking info banner so the user knows ``/history-store
+  // enable`` will refuse the backend.
+  supports_shared_history?: boolean;
 }
 
 interface LlmProvider {
@@ -471,6 +476,14 @@ function DbProfileWizard({
             ))}
           </select>
         </Field>
+        {chosenBackend && chosenBackend.supports_shared_history === false && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            Shared history is unavailable on this backend. AMX run history
+            stays on this machine only — ``/history-store enable`` will refuse
+            to bootstrap on {chosenBackend.label}. Use it as a sandbox /
+            personal connection, not as the team's history store.
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           {basicSpecs.map((s) => (
             <DbFieldInput
