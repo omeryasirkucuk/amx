@@ -267,6 +267,20 @@ def mute_root_logger_for_studio() -> None:
         if logger_name == "amx" or logger_name.startswith("amx."):
             existing.propagate = False
 
+    # The databricks-sql-connector library emits an ERROR-level record
+    # ("Retry request would exceed Retry policy max retry duration of
+    # N seconds") every time its internal retry budget runs down on a
+    # single request, EVEN WHEN the request later succeeds via a fresh
+    # connection. That chatter has no actionable value for the user —
+    # genuine failures still surface as exceptions through the
+    # connector layer above. Suppress at the library's root logger so
+    # the CLI terminal stays clean while Studio is serving requests
+    # against a busy / serverless warehouse.
+    for noisy in ("databricks.sql", "databricks.sqlalchemy"):
+        lib_logger = logging.getLogger(noisy)
+        lib_logger.setLevel(logging.CRITICAL)
+        lib_logger.propagate = False
+
 
 def log_event(event_type: str, /, **fields: Any) -> None:
     """Write a structured event line to the rotating JSON log.
