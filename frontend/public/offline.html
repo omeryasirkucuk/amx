@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0F0F0E" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <title>AMX Studio is offline</title>
+    <style>
+      /*
+       * Self-contained styling — this page is served from the Service
+       * Worker cache when the AMX CLI is no longer listening on the
+       * Studio port, so it must not depend on any external CSS chunk
+       * (which would 404 the same way the page navigation did).
+       */
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        background: #0f0f0e;
+        color: #e7e3da;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      main {
+        max-width: 540px;
+        padding: 40px 28px;
+        text-align: center;
+      }
+      h1 {
+        margin: 0 0 12px 0;
+        font-size: 22px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      p {
+        margin: 0 0 16px 0;
+        font-size: 14px;
+        line-height: 1.55;
+        color: #a8a39a;
+      }
+      code {
+        background: #1c1b18;
+        border: 1px solid rgba(231, 227, 218, 0.08);
+        border-radius: 4px;
+        padding: 2px 7px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        color: #f4b942;
+      }
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        margin-top: 28px;
+      }
+      .action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-radius: 6px;
+        border: 1px solid rgba(231, 227, 218, 0.18);
+        background: transparent;
+        color: #e7e3da;
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 500;
+        transition: border-color 0.15s ease, background 0.15s ease;
+      }
+      .action:hover {
+        border-color: rgba(231, 227, 218, 0.35);
+        background: rgba(231, 227, 218, 0.04);
+      }
+      .primary {
+        border-color: rgba(244, 185, 66, 0.4);
+        color: #f4b942;
+      }
+      .primary:hover {
+        border-color: rgba(244, 185, 66, 0.7);
+        background: rgba(244, 185, 66, 0.07);
+      }
+      .badge {
+        display: inline-block;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #a8a39a;
+        padding: 4px 10px;
+        border: 1px solid rgba(231, 227, 218, 0.12);
+        border-radius: 999px;
+        margin-bottom: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="badge">AMX Studio</div>
+      <h1>Connection to the AMX CLI was lost.</h1>
+      <p>
+        Studio runs locally — the page you were on is served by your CLI
+        process. If the CLI was stopped (Ctrl-C, terminal closed, or a
+        crash) the browser tab can no longer reach it.
+      </p>
+      <p>
+        To bring Studio back, open a terminal and run:
+      </p>
+      <p><code>amx /studio</code></p>
+      <p>
+        then refresh this tab. Your profiles and history are stored on
+        disk — nothing was lost.
+      </p>
+      <div class="stack">
+        <button class="action primary" onclick="window.location.reload()">
+          Try reconnecting
+        </button>
+        <a
+          class="action"
+          href="https://amxcli.com"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Documentation &nbsp;→&nbsp; amxcli.com
+        </a>
+      </div>
+    </main>
+  </body>
+</html>
