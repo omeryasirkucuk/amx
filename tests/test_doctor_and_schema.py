@@ -224,15 +224,48 @@ class DoctorRendererTests(unittest.TestCase):
 
 
 class DoctorEndToEndTests(unittest.TestCase):
-    def test_run_doctor_skip_network_completes_on_fresh_config(self) -> None:
+    def test_run_doctor_reports_empty_config_as_failure(self) -> None:
+        """A fresh install with zero DB / LLM profiles is NOT a healthy
+        state — it is "needs setup". Earlier doctor returned ``ok=True``
+        on those rows with detail "(none configured)", and Studio's
+        doctor view painted everything green on day one, telling the
+        user "all systems go" before they had plugged in any data
+        source. ``run_doctor`` must now return a non-zero exit code on
+        an empty config so the SPA renders the red badge and the user
+        knows they have setup to do.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             cfg = AMXConfig()
             cfg.CONFIG_DIR = tmp  # type: ignore[misc]
-            # No DB / LLM configured → those checks short-circuit. With
-            # --skip-network the run should always be 0 regardless of
-            # network reachability.
             exit_code = run_doctor(cfg, skip_network=True)
-            self.assertEqual(exit_code, 0)
+            self.assertGreater(
+                exit_code,
+                0,
+                "fresh config (no DB / LLM profile) must report failures",
+            )
+
+    def test_doctor_check_results_name_specific_setup_paths(self) -> None:
+        """The Studio doctor card lists individual check rows; each must
+        be actionable on its own. Fresh-config failures point the user at
+        a specific next step rather than dumping a generic
+        "configuration incomplete" line.
+        """
+        from amx.cli_support.commands.doctor import collect_doctor_checks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = AMXConfig()
+            cfg.CONFIG_DIR = tmp  # type: ignore[misc]
+            results = collect_doctor_checks(cfg, skip_network=True)
+
+        by_name = {r.name: r for r in results}
+        db_row = by_name["Active DB profile"]
+        llm_row = by_name["Active LLM profile"]
+        self.assertFalse(db_row.ok, "empty config must FAIL the DB-profile row")
+        self.assertFalse(llm_row.ok, "empty config must FAIL the LLM-profile row")
+        self.assertIn("no DB profile", db_row.detail)
+        self.assertIn("no LLM profile", llm_row.detail)
+        self.assertTrue(db_row.hint, "DB row must surface an actionable hint")
+        self.assertTrue(llm_row.hint, "LLM row must surface an actionable hint")
 
     def test_doctor_command_renders_report(self) -> None:
         runner = CliRunner()
@@ -245,7 +278,10 @@ class DoctorEndToEndTests(unittest.TestCase):
                 ["--config", str(path), "doctor", "--skip-network"],
                 catch_exceptions=False,
             )
-            self.assertEqual(result.exit_code, 0, msg=result.output)
+            # Fresh config -> non-zero exit (empty-config rows fail) but
+            # the report itself must still render so the user sees which
+            # rows need their attention.
+            self.assertGreater(result.exit_code, 0, msg=result.output)
             self.assertIn("AMX doctor report", result.output)
             self.assertIn("AMX version", result.output)
             self.assertIn("Python runtime", result.output)
