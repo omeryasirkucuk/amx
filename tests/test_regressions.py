@@ -592,9 +592,12 @@ class BackendCapabilityTests(unittest.TestCase):
             pg.set_table_comment_sql("public", "orders", "MATERIALIZED VIEW"),
             'COMMENT ON MATERIALIZED VIEW "public"."orders" IS :cmt',
         )
+        # Snowflake now emits a 3-level FQN when the profile binds a
+        # database; the 2-level form remains the fallback for unbound
+        # profiles (see ``test_snowflake_fully_qualified_name``).
         self.assertEqual(
             sf.set_column_comment_sql("PUBLIC", "ORDERS", "ID"),
-            'COMMENT ON COLUMN "PUBLIC"."ORDERS"."ID" IS :cmt',
+            'COMMENT ON COLUMN "sap"."PUBLIC"."ORDERS"."ID" IS :cmt',
         )
         self.assertEqual(
             dbx.set_database_comment_sql(),
@@ -1296,7 +1299,7 @@ class ProfilingGuardrailTests(unittest.TestCase):
         probe_gate_idx = next(
             i for i, p in enumerate(prompts) if "List the available Unity Catalog catalogs" in p
         )
-        catalog_idx = next(i for i, p in enumerate(prompts) if "Unity Catalog (optional)" in p)
+        catalog_idx = next(i for i, p in enumerate(prompts) if p.startswith("Unity Catalog"))
         self.assertLess(tls_ca_idx, probe_gate_idx, "TLS CA must precede probe gate")
         self.assertLess(tls_verify_idx, probe_gate_idx, "TLS verify must precede probe gate")
         self.assertLess(probe_gate_idx, catalog_idx, "Probe gate must precede catalog")

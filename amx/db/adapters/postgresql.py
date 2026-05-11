@@ -39,6 +39,22 @@ class PostgreSQLAdapter(DatabaseAdapter):
             )
         if "permission denied" in msg:
             return "Insufficient privileges for profiling. Grant SELECT on this object or use a higher-privileged role."
+        # libpq surfaces a wrong/missing password as ``FATAL: password
+        # authentication failed for user "<name>"`` (or
+        # ``28P01`` SQLSTATE). Without this branch the user sees the raw
+        # SQLAlchemy ``OperationalError`` traceback — the same UX gap
+        # the wizard's TLS-cert branch closes for Databricks.
+        if (
+            "password authentication failed" in msg
+            or "no password supplied" in msg
+            or "28p01" in msg
+        ):
+            return (
+                "PostgreSQL refused the credentials. Check the username and "
+                "password on this profile (open it with /edit). If the server "
+                "uses peer/ident auth, the user must match the OS account or "
+                "be remapped in pg_hba.conf."
+            )
         # Catch a missing-database error from the server. When the
         # ``database`` profile field is blank, AMX falls back to the
         # ``postgres`` system database (see ``DBConfig.url`` for
