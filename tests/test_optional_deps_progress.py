@@ -61,9 +61,7 @@ def test_parses_pip_milestones_into_phase_events(monkeypatch: pytest.MonkeyPatch
     events: list[dict[str, Any]] = []
     install_bus.subscribe(events.append)
 
-    monkeypatch.setattr(
-        od.subprocess, "Popen", lambda *a, **k: _FakePopen(PIP_OUTPUT_SUCCESS, 0)
-    )
+    monkeypatch.setattr(od.subprocess, "Popen", lambda *a, **k: _FakePopen(PIP_OUTPUT_SUCCESS, 0))
     # The Rich Live region tries to paint to the terminal in spinner
     # mode; force the headless path so the test stays deterministic.
     monkeypatch.setattr(od, "_stdout_is_a_tty", lambda: False)
@@ -76,9 +74,11 @@ def test_parses_pip_milestones_into_phase_events(monkeypatch: pytest.MonkeyPatch
     assert captured[0].startswith("Collecting openai")
     assert any(line.startswith("Successfully installed") for line in captured)
 
-    phases = [(e["type"], e.get("phase")) for e in events if "phase" in e or e["type"].endswith(
-        ("begin", "done", "failed")
-    )]
+    phases = [
+        (e["type"], e.get("phase"))
+        for e in events
+        if "phase" in e or e["type"].endswith(("begin", "done", "failed"))
+    ]
     # Lifecycle bookends present.
     assert phases[0][0] == "pip.install.begin"
     assert phases[-1][0] == "pip.install.done"
@@ -93,9 +93,7 @@ def test_emits_specific_payload_for_collecting_and_downloading(
     events: list[dict[str, Any]] = []
     install_bus.subscribe(events.append)
 
-    monkeypatch.setattr(
-        od.subprocess, "Popen", lambda *a, **k: _FakePopen(PIP_OUTPUT_SUCCESS, 0)
-    )
+    monkeypatch.setattr(od.subprocess, "Popen", lambda *a, **k: _FakePopen(PIP_OUTPUT_SUCCESS, 0))
     monkeypatch.setattr(od, "_stdout_is_a_tty", lambda: False)
 
     od._run_pip_with_progress(["pip", "install", "openai"], feature="x", packages=["openai"])
@@ -118,9 +116,7 @@ def test_failure_emits_failed_event_and_returns_captured_tail(
     events: list[dict[str, Any]] = []
     install_bus.subscribe(events.append)
 
-    monkeypatch.setattr(
-        od.subprocess, "Popen", lambda *a, **k: _FakePopen(PIP_OUTPUT_FAILURE, 1)
-    )
+    monkeypatch.setattr(od.subprocess, "Popen", lambda *a, **k: _FakePopen(PIP_OUTPUT_FAILURE, 1))
     monkeypatch.setattr(od, "_stdout_is_a_tty", lambda: False)
 
     rc, captured = od._run_pip_with_progress(

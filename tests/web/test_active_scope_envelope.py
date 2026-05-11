@@ -104,9 +104,7 @@ def test_bigquery_pins_project_and_dataset(cfg, stub_db, client, auth_headers):
     "backend",
     ["postgresql", "snowflake", "mysql", "oracle", "mssql", "redshift", "clickhouse"],
 )
-def test_two_level_backends_only_pin_database(
-    backend: str, cfg, stub_db, client, auth_headers
-):
+def test_two_level_backends_only_pin_database(backend: str, cfg, stub_db, client, auth_headers):
     """For every 2-level backend the wizard captures only ``database``.
     Neither ``active_schema`` nor ``active_dataset`` should ever
     surface a value here — those are schema-pin concepts that only

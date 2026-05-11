@@ -685,16 +685,19 @@ class DatabaseConnector:
                 ]
                 assets.sort(key=lambda x: x[0])
                 return assets
-        # Fallback — inspector-driven enumeration (legacy path).
-        assets: list[tuple[str, AssetKind]] = []
+        # Fallback — inspector-driven enumeration (legacy path). The
+        # variable name is reused across the cache-fast / cache-cold /
+        # legacy branches but each branch returns, so the apparent
+        # rebind here is dead code from the type-checker's POV.
+        fallback_assets: list[tuple[str, AssetKind]] = []
         for t in self.list_tables(schema):
-            assets.append((t, AssetKind.TABLE))
+            fallback_assets.append((t, AssetKind.TABLE))
         for v in self.list_views(schema):
-            assets.append((v, AssetKind.VIEW))
+            fallback_assets.append((v, AssetKind.VIEW))
         for mv in self.list_materialized_views(schema):
-            assets.append((mv, AssetKind.MATERIALIZED_VIEW))
-        assets.sort(key=lambda x: x[0])
-        return assets
+            fallback_assets.append((mv, AssetKind.MATERIALIZED_VIEW))
+        fallback_assets.sort(key=lambda x: x[0])
+        return fallback_assets
 
     def list_column_profiles(self, schema: str, table: str) -> list[ColumnProfile]:
         """Return column names/types/nullability without scanning table data."""
@@ -752,9 +755,7 @@ class DatabaseConnector:
         """Database scope the cache narrows on within a profile."""
         return str(getattr(self.cfg, "database", "") or getattr(self.cfg, "catalog", "") or "")
 
-    def _lookup_column_comments_cache(
-        self, schema: str, table: str
-    ) -> dict[str, Any] | None:
+    def _lookup_column_comments_cache(self, schema: str, table: str) -> dict[str, Any] | None:
         """Return a cached ``{table_comment, columns, kind, ...}`` or None."""
         try:
             from amx.storage.sqlite_store import history_store
@@ -827,9 +828,7 @@ class DatabaseConnector:
         except Exception:
             return False
 
-    def _lookup_column_comments_cache_bulk(
-        self, schema: str
-    ) -> dict[str, dict[str, Any]]:
+    def _lookup_column_comments_cache_bulk(self, schema: str) -> dict[str, dict[str, Any]]:
         try:
             from amx.storage.sqlite_store import history_store
         except Exception:
@@ -898,9 +897,7 @@ class DatabaseConnector:
 
     # ── schemas_cache helpers ─────────────────────────────────────────────
 
-    def _lookup_schemas_cache(
-        self, catalog: str, schema: str
-    ) -> dict[str, Any] | None:
+    def _lookup_schemas_cache(self, catalog: str, schema: str) -> dict[str, Any] | None:
         try:
             from amx.storage.sqlite_store import history_store
         except Exception:
@@ -935,9 +932,7 @@ class DatabaseConnector:
         except Exception:
             return False
 
-    def _list_schemas_from_cache(
-        self, catalog: str
-    ) -> list[tuple[str, str | None]]:
+    def _list_schemas_from_cache(self, catalog: str) -> list[tuple[str, str | None]]:
         try:
             from amx.storage.sqlite_store import history_store
         except Exception:
@@ -1041,15 +1036,8 @@ class DatabaseConnector:
             # a Studio sidebar expand (which runs on a uvicorn worker
             # thread) was bleeding "Cached column descriptions for X"
             # lines into the user's CLI shell.
-            on_main_thread = (
-                _threading.current_thread() is _threading.main_thread()
-            )
-            if (
-                _sys.stdout.isatty()
-                and not display_active
-                and on_main_thread
-                and not is_quiet()
-            ):
+            on_main_thread = _threading.current_thread() is _threading.main_thread()
+            if _sys.stdout.isatty() and not display_active and on_main_thread and not is_quiet():
                 from amx.utils.console import step_spinner
 
                 spinner_ctx = step_spinner(
@@ -1066,9 +1054,7 @@ class DatabaseConnector:
                         self.engine, schema, catalog=catalog
                     )
             else:
-                payload = self._adapter.bulk_schema_metadata(
-                    self.engine, schema, catalog=catalog
-                )
+                payload = self._adapter.bulk_schema_metadata(self.engine, schema, catalog=catalog)
         except Exception as exc:
             log.debug(
                 "bulk_schema_metadata raised on %s for schema %s: %s",
@@ -1177,9 +1163,7 @@ class DatabaseConnector:
             if cached is not None:
                 return cached.get("schema_comment")
         value = self._adapter.get_schema_comment(self.engine, schema)
-        self._save_schemas_cache(
-            catalog, {schema: value}, bulk_filled=False
-        )
+        self._save_schemas_cache(catalog, {schema: value}, bulk_filled=False)
         return value
 
     def get_database_comment(self) -> str | None:

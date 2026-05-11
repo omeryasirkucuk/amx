@@ -743,9 +743,7 @@ def apply_review_results_to_db(
                 # comments cache as the batch branch above. Keeps
                 # post-apply reads guaranteed-fresh.
                 try:
-                    db.invalidate_column_comments_cache(
-                        schema=r.schema, table=r.table or ""
-                    )
+                    db.invalidate_column_comments_cache(schema=r.schema, table=r.table or "")
                 except Exception as cache_exc:
                     log.debug(
                         "invalidate_column_comments_cache failed for %s.%s: %s",

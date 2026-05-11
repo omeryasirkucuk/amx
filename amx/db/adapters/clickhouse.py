@@ -257,10 +257,7 @@ class ClickHouseAdapter(DatabaseAdapter):
             out: dict[str, dict[str, Any]] = {}
             with engine.connect() as conn:
                 table_rows = conn.execute(
-                    text(
-                        "SELECT name, engine, comment "
-                        "FROM system.tables WHERE database = :db"
-                    ),
+                    text("SELECT name, engine, comment FROM system.tables WHERE database = :db"),
                     {"db": schema},
                 ).fetchall()
                 for r in table_rows:

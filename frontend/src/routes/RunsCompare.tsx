@@ -33,9 +33,11 @@ import {
   commandKind,
   type CommandKindFilter,
   humanizeCommand,
+  processedAssetsTooltip,
   relativeTime,
   shortModel,
   statusTone,
+  summarizeProcessedAssets,
   summarizeScope,
 } from "../lib/runDisplay";
 
@@ -343,8 +345,17 @@ export default function RunsCompare() {
         String(row.id),
         row.command ?? "",
         humanizeCommand(row.command, row.scope_json ?? row.scope),
+        summarizeProcessedAssets(row.processed_assets) ?? "",
         summarizeScope(row.scope_json ?? row.scope),
         Object.keys(row.scope_json ?? row.scope ?? {}).join(" "),
+        // Also search by the actual processed schema.table.column
+        // tuples so the user can find "the run that touched
+        // sales.orders.status" by typing any one of those parts.
+        ...(row.processed_assets?.sample ?? []).flatMap((a) => [
+          a.schema,
+          a.table,
+          a.column ?? "",
+        ]),
         shortModel(row.llm_model),
         row.llm_model ?? "",
         row.db_profile ?? "",
@@ -568,12 +579,28 @@ export default function RunsCompare() {
                     >
                       {humanizeCommand(row.command, row.scope_json ?? row.scope)}
                     </span>
-                    <span
-                      className="min-w-0 truncate text-ink-muted"
-                      title={Object.keys(scope ?? {}).join(", ")}
-                    >
-                      {summarizeScope(scope)}
-                    </span>
+                    {(() => {
+                      // Prefer the concrete-asset label from
+                      // ``processed_assets`` so column-level runs show
+                      // ``sales.orders.status`` instead of the
+                      // schema-level scope (``sales · 1 table``) the
+                      // user picked. Fall back to the legacy scope
+                      // summary for runs whose worker hasn't yet
+                      // written any ``run_results`` rows.
+                      const concrete = summarizeProcessedAssets(row.processed_assets);
+                      const label = concrete ?? summarizeScope(scope);
+                      const tooltip =
+                        processedAssetsTooltip(row.processed_assets) ??
+                        Object.keys(scope ?? {}).join(", ");
+                      return (
+                        <span
+                          className="min-w-0 truncate text-ink-muted"
+                          title={tooltip || undefined}
+                        >
+                          {label}
+                        </span>
+                      );
+                    })()}
                     {modelLabel && (
                       <span
                         className="hidden font-mono text-[11px] text-ink-dim md:inline"

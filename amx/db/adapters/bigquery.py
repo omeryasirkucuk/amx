@@ -167,15 +167,11 @@ class BigQueryAdapter(DatabaseAdapter):
         """
         project = (catalog or getattr(self.cfg, "project", "") or "").strip()
         info_path = (
-            f"`{project}`.INFORMATION_SCHEMA.SCHEMATA"
-            if project
-            else "INFORMATION_SCHEMA.SCHEMATA"
+            f"`{project}`.INFORMATION_SCHEMA.SCHEMATA" if project else "INFORMATION_SCHEMA.SCHEMATA"
         )
         try:
             with engine.connect() as conn:
-                rows = conn.execute(
-                    text(f"SELECT schema_name FROM {info_path}")
-                ).fetchall()
+                rows = conn.execute(text(f"SELECT schema_name FROM {info_path}")).fetchall()
             return {str(r[0]): None for r in rows}
         except Exception:
             return None
