@@ -749,7 +749,9 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             defaults.tls_trusted_ca_file or "",
         )
         tls_no_verify = _ask_update_bool(
-            "Disable TLS certificate verification? (insecure; use only if a trusted CA bundle is not available)",
+            "Disable TLS certificate verification? "
+            "(on enterprise networks: set the Trusted CA bundle path above, "
+            "or enable this — pick whichever your IT policy allows)",
             bool(defaults.tls_no_verify),
         )
         # Gate the catalog probe behind an explicit yes/no. Probing
