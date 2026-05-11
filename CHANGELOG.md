@@ -8,6 +8,32 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **``amx doctor`` / Studio doctor view rendered all-green on a
+  brand-new install even though no DB or LLM profile had been
+  configured yet.** ``_check_active_db_profile`` and
+  ``_check_active_llm_profile`` in ``amx/cli_support/commands/doctor.py``
+  treated "no profile saved" as ``ok=True`` with the polite detail
+  "(none configured)", and ``collect_doctor_checks`` then dropped
+  both rows entirely whenever ``--skip-network`` was on. Studio
+  always passes ``skip_network=False`` by default, so under the
+  remaining ``ok=True`` branch the SPA painted every check green
+  and the user concluded "all systems go" before they had plugged
+  in anything.
+
+  Both rows now FAIL on a fresh install with one of three actionable
+  detail strings depending on which setup gap is in play — "no DB
+  profile saved yet" (no profile at all), "saved profile(s) [...]
+  but none activated" (profile exists but is not the active one),
+  or "(incomplete — missing api_key / model / base_url)" (profile
+  is active but missing required fields). The matching ``hint``
+  field tells the user exactly which Settings page or CLI command
+  to run. ``--skip-network`` now only suppresses the live
+  ``test_connection`` / ``test_result`` probes — the setup-state
+  rows always run because they are config questions, not network
+  ones. ``run_doctor`` returns a non-zero exit code in any of these
+  states so Studio renders the red badge and the CLI surfaces the
+  failure count.
+
 - **Sidebar Live LLM price disappeared, ``/cost`` reported $0, and
   per-run cost columns showed ``unknown`` for models whose profile
   ``provider`` field did not match the LiteLLM catalog's vendor
