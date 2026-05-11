@@ -317,6 +317,8 @@ const DB_FIELD_LABELS: Record<string, string> = {
   driver: "ODBC driver",
   cluster_identifier: "Redshift cluster id",
   secure: "Use HTTPS",
+  tls_trusted_ca_file: "Trusted CA bundle path (optional)",
+  tls_no_verify: "Skip TLS verification (insecure)",
 };
 
 const DB_SECRET_FIELDS = new Set(["password", "access_token"]);
@@ -451,7 +453,10 @@ function DbProfileWizard({
         <div className="grid grid-cols-2 gap-3">
           {fields.map((f) => (
             <Field key={f} label={DB_FIELD_LABELS[f] ?? f} narrow={f === "port"}>
-              {f === "secure" || f === "encrypt" || f === "trust_server_certificate" ? (
+              {f === "secure" ||
+              f === "encrypt" ||
+              f === "trust_server_certificate" ||
+              f === "tls_no_verify" ? (
                 <input
                   type="checkbox"
                   checked={values[f] === "true"}
