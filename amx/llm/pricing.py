@@ -603,6 +603,28 @@ def lookup_price(
     import). Pass ``profile_name`` to target a specific LLM profile —
     the wizard / Settings hint reads this when the user has not
     activated the profile yet.
+
+    Resolution chain:
+
+    1. ``_user_override`` — the profile's own ``custom_*_cost_per_mtok``
+       fields. Wins over every catalog hit.
+    2. Exact-match candidates from :func:`_normalize_model_id` walked
+       across the three catalog sources in priority order
+       (``litellm`` → ``openrouter`` → ``fallback``). Covers the common
+       case where the profile's ``provider`` field correctly tells us
+       which prefix the catalog uses.
+    3. Bare-model suffix fallback: when the profile's ``provider``
+       field is wrong, missing, or set to a generic adapter name (the
+       same Databricks endpoint may be configured as ``openai_compatible``
+       on one machine and ``databricks`` on another), the normalize
+       step prefixes the wrong vendor and the candidate list misses
+       even though the catalog DOES have a ``<vendor>/<model>`` key
+       that matches the bare model id verbatim. The fallback scans
+       each source for a key that ends in ``"/" + model`` (or is the
+       bare model itself) and returns the first hit. This keeps the
+       sidebar's Live LLM price line, ``/cost``, and per-run cost
+       columns working for users whose profile providers we cannot
+       interrogate at lookup time.
     """
     _ensure_loaded()
     override = _user_override(cfg, profile_name)
@@ -615,6 +637,16 @@ def lookup_price(
             hit = table.get(cand)
             if hit is not None:
                 return hit
+
+    bare = (model or "").strip().lower()
+    if bare:
+        suffix = "/" + bare
+        for source_key in ("litellm", "openrouter", "fallback"):
+            table = _PRICES.get(source_key) or {}
+            for key_id, price in table.items():
+                if key_id == bare or key_id.endswith(suffix):
+                    return price
+
     key = f"{(provider or '').lower()}|{(model or '').lower()}"
     if key not in _UNKNOWN_PRICE_WARNED:
         _UNKNOWN_PRICE_WARNED.add(key)
