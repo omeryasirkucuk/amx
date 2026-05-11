@@ -21,6 +21,20 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Polished UX for on-demand extras installs.** When the CLI lazy-
+  installs an optional dependency (DB driver, LLM SDK, RAG bundle,
+  weasyprint, bert-score, …), the terminal now renders a single Rich
+  spinner — ``Installing libraries for {feature}…  12s`` with a live
+  one-line tail of pip's current artifact — instead of dumping pages
+  of raw ``Collecting / Downloading / Installing`` lines. AMX Studio
+  picks up the same lifecycle over a new global SSE stream
+  (``GET /api/installs/events``) and shows a sticky top-right banner so
+  a connection test that triggers a backend install no longer looks
+  like a hung request. Driven inside ``ensure()`` itself, so every one
+  of the existing extras call sites gets the new affordance without
+  per-site changes. On failure the captured pip tail is folded into
+  the ``RuntimeError`` so users can still debug.
+
 - **DuckDB / BigQuery extras + Studio shared-history banner
   (PR 4 / 4 of the connector audit).**
 

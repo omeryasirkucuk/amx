@@ -60,9 +60,12 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import threading
+import time
+import uuid
 from collections.abc import Iterable
 
 #: Cache keys for module/pip pairs we have already verified or
@@ -279,16 +282,6 @@ def ensure(
                 f"Run manually when ready: pip install {' '.join(still_missing)}"
             )
 
-        # Lazy console import — ``optional_deps`` itself sits at the
-        # top of feature modules, and we want it to stay cheap to load.
-        from amx.utils.console import info, success
-
-        info(
-            f"First-time setup for {feature} — installing "
-            f"{len(still_missing)} package{'s' if len(still_missing) > 1 else ''}: "
-            f"{', '.join(still_missing)}"
-        )
-        info("This downloads from PyPI; pip output streams below so you see progress.")
         cmd = [
             sys.executable,
             "-m",
@@ -297,25 +290,20 @@ def ensure(
             "--disable-pip-version-check",
             *still_missing,
         ]
-        # Deliberately NO ``capture_output=True`` and NO ``--quiet``: a
-        # multi-package install (langchain-community + unstructured +
-        # pypdf is ~80 MB / 30+ s on a fresh machine) with captured
-        # output looks like the CLI froze. Streaming pip's native
-        # progress bars to the user's terminal is the same UX they
-        # already know from any other ``pip install`` and removes the
-        # "did it crash?" doubt that captured output produces.
         try:
-            proc = subprocess.run(cmd, check=False)
+            returncode, captured = _run_pip_with_progress(cmd, feature, still_missing)
         except OSError as exc:
             manual = "pip install " + " ".join(still_missing)
             raise RuntimeError(f"Could not invoke pip ({exc}). Install manually: {manual}") from exc
 
-        if proc.returncode != 0:
+        if returncode != 0:
             for key in seen_keys:
                 _VERIFIED.discard(key)
             manual = "pip install " + " ".join(still_missing)
+            tail = "\n".join(captured[-20:]) if captured else "(no pip output captured)"
             raise RuntimeError(
-                f"pip install failed (exit code {proc.returncode}). Run manually: {manual}"
+                f"pip install failed (exit code {returncode}). "
+                f"Run manually: {manual}\n--- pip output (tail) ---\n{tail}"
             )
 
         # Newly-installed packages weren't on sys.path at process start;
@@ -323,4 +311,217 @@ def ensure(
         importlib.invalidate_caches()
         for key in seen_keys:
             _VERIFIED.add(key)
-        success(f"Installed: {', '.join(still_missing)}.")
+
+
+# ── Progress-rendering pip wrapper ──────────────────────────────────────────
+
+#: Regexes for the four pip milestones we surface as structured events.
+#: Pip's wording is stable enough across versions to anchor on these
+#: prefixes; anything we don't match still goes through as a generic
+#: ``"tail"`` event so the live stream stays continuous.
+_PIP_RE_COLLECTING = re.compile(r"^Collecting (\S+)")
+_PIP_RE_DOWNLOADING = re.compile(r"^\s*Downloading (\S+)(?:\s+\(([^)]+)\))?")
+_PIP_RE_INSTALLING = re.compile(r"^Installing collected packages:\s*(.+)")
+_PIP_RE_SUCCESS = re.compile(r"^Successfully installed (.+)")
+
+
+def _stdout_is_a_tty() -> bool:
+    """Indirection seam so tests can force the headless code path
+    without poking ``sys.stdout`` (which on most runtimes refuses
+    arbitrary attribute assignment)."""
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _run_pip_with_progress(
+    cmd: list[str],
+    feature: str,
+    packages: list[str],
+) -> tuple[int, list[str]]:
+    """Run ``pip install`` while emitting structured progress.
+
+    Pip's stdout/stderr are captured line-by-line (merged stream) so:
+
+    1. The CLI shows a single Rich spinner + a one-line "tail" of the
+       latest pip status instead of pages of raw output.
+    2. Each parsed milestone is published to the process-global install
+       bus so AMX Studio's banner can render the same progress in the
+       browser.
+    3. On failure the captured tail is returned to the caller and
+       included in the ``RuntimeError`` so users still have something
+       to grep.
+
+    Returns ``(returncode, captured_lines)``. Does not raise on a
+    non-zero exit — the caller decides how to surface it (matches the
+    previous ``subprocess.run(..., check=False)`` contract).
+    """
+    # Lazy imports: the install bus pulls FastAPI deps transitively when
+    # the routers import it, and we don't want to drag those into the
+    # cold-start path of every feature module that imports ``ensure``.
+    from amx.utils.console import console, success
+    from amx.web import install_bus
+
+    install_id = uuid.uuid4().hex[:12]
+    captured: list[str] = []
+    t_start = time.monotonic()
+
+    install_bus.publish(
+        "pip.install.begin",
+        {"install_id": install_id, "feature": feature, "packages": list(packages)},
+    )
+
+    latest_tail = ""
+    tail_lock = threading.Lock()
+
+    def _on_line(line: str) -> None:
+        nonlocal latest_tail
+        captured.append(line)
+        with tail_lock:
+            latest_tail = line
+        if m := _PIP_RE_COLLECTING.match(line):
+            install_bus.publish(
+                "pip.install.progress",
+                {"install_id": install_id, "phase": "collecting", "package": m.group(1)},
+            )
+        elif m := _PIP_RE_DOWNLOADING.match(line):
+            install_bus.publish(
+                "pip.install.progress",
+                {
+                    "install_id": install_id,
+                    "phase": "downloading",
+                    "artifact": m.group(1),
+                    "size": m.group(2),
+                },
+            )
+        elif m := _PIP_RE_INSTALLING.match(line):
+            install_bus.publish(
+                "pip.install.progress",
+                {"install_id": install_id, "phase": "installing", "packages": m.group(1)},
+            )
+        elif m := _PIP_RE_SUCCESS.match(line):
+            install_bus.publish(
+                "pip.install.progress",
+                {"install_id": install_id, "phase": "installed", "installed": m.group(1)},
+            )
+        # Always emit a raw-tail event so live consumers see continuous
+        # motion even between recognised milestones.
+        install_bus.publish(
+            "pip.install.progress",
+            {"install_id": install_id, "phase": "tail", "line": line},
+        )
+
+    label_base = f"Installing libraries for {feature}"
+    use_spinner = _stdout_is_a_tty()
+
+    # If a Rich Live is already painting (orchestrator's display during
+    # ``/run``), pause it for the duration of the install — nested Live
+    # regions garble the terminal.
+    paused_display = None
+    try:
+        from amx.utils.live_display import get_display
+
+        display = get_display()
+        if display is not None and getattr(display, "_live", None) is not None:
+            display.pause()
+            paused_display = display
+    except Exception:
+        paused_display = None
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        text=True,
+    )
+    assert proc.stdout is not None
+
+    if use_spinner:
+        from rich.console import Group
+        from rich.live import Live
+        from rich.spinner import Spinner
+        from rich.text import Text
+
+        stop_evt = threading.Event()
+
+        def _renderable():
+            elapsed = time.monotonic() - t_start
+            with tail_lock:
+                tail = latest_tail
+            header = Spinner(
+                "dots",
+                text=Text(f"{label_base}…  {elapsed:.0f}s", style="cyan"),
+            )
+            if tail:
+                truncated = tail if len(tail) <= 100 else tail[:97] + "…"
+                return Group(header, Text(f"  └─ {truncated}", style="dim"))
+            return header
+
+        try:
+            with Live(_renderable(), console=console, refresh_per_second=10, transient=True) as live:
+
+                def _tick() -> None:
+                    while not stop_evt.is_set():
+                        try:
+                            live.update(_renderable())
+                        except Exception:
+                            pass
+                        stop_evt.wait(0.1)
+
+                ticker = threading.Thread(target=_tick, daemon=True)
+                ticker.start()
+                try:
+                    for raw in proc.stdout:
+                        line = raw.rstrip("\r\n")
+                        if not line:
+                            continue
+                        _on_line(line)
+                    proc.wait()
+                finally:
+                    stop_evt.set()
+                    ticker.join(timeout=0.5)
+        finally:
+            pass
+    else:
+        for raw in proc.stdout:
+            line = raw.rstrip("\r\n")
+            if not line:
+                continue
+            _on_line(line)
+        proc.wait()
+
+    elapsed_s = time.monotonic() - t_start
+
+    if paused_display is not None:
+        try:
+            paused_display.resume()
+        except Exception:
+            pass
+
+    if proc.returncode == 0:
+        success(f"Installed libraries for {feature} ({elapsed_s:.1f}s)")
+        install_bus.publish(
+            "pip.install.done",
+            {
+                "install_id": install_id,
+                "feature": feature,
+                "packages": list(packages),
+                "elapsed_s": elapsed_s,
+            },
+        )
+    else:
+        install_bus.publish(
+            "pip.install.failed",
+            {
+                "install_id": install_id,
+                "feature": feature,
+                "packages": list(packages),
+                "elapsed_s": elapsed_s,
+                "returncode": proc.returncode,
+                "tail": captured[-20:],
+            },
+        )
+
+    return proc.returncode, captured
