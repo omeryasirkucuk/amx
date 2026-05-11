@@ -193,9 +193,11 @@ function matchesSearch(haystack: string, needle: string): boolean {
 interface CatalogsCache {
   supports_catalogs: boolean;
   catalogs: string[];
+  active_catalog?: string | null;
 }
 interface DatabasesCache {
   databases: string[];
+  active_database?: string | null;
 }
 interface AssetsCache {
   assets: { name: string; kind?: string }[];
@@ -458,10 +460,44 @@ function ProfileScopeChildren({
     );
   }
   if (catalogs.data?.supports_catalogs) {
-    const list = catalogs.data.catalogs.filter(childFilter);
+    // Honour the profile-level pin: when the user chose a catalog at
+    // /db profile creation we render only that one, regardless of
+    // what the role can see on the workspace. The backend still
+    // returns the full list in ``catalogs`` so the user can switch
+    // by editing the profile, but the sidebar respects the pin.
+    const pinned = (catalogs.data.active_catalog || "").trim();
+    const pinnedMissing =
+      pinned && !catalogs.data.catalogs.includes(pinned);
+    const effective = pinned && !pinnedMissing
+      ? catalogs.data.catalogs.filter((c) => c === pinned)
+      : catalogs.data.catalogs;
+    const list = effective.filter(childFilter);
     if (catalogs.data.catalogs.length === 0) {
       return (
         <div className="px-2 py-1 text-[11px] text-ink-dim">(no catalogs visible)</div>
+      );
+    }
+    if (pinnedMissing) {
+      // Pinned catalog is gone server-side; rather than silently
+      // showing the whole workspace (which would mask the misconfig)
+      // surface a hint and still render the visible list so the user
+      // can navigate.
+      return (
+        <div className="space-y-0.5">
+          <div className="px-2 py-1 text-[11px] text-warning">
+            Pinned catalog &quot;{pinned}&quot; not visible. Edit the
+            profile via /db to re-pin.
+          </div>
+          {list.map((name) => (
+            <ScopeNode
+              key={name}
+              scope={{ profile, catalog: name, kind: "catalog" }}
+              label={name}
+              query={query}
+              parentMatched={parentMatched || matchesSearch(name, query)}
+            />
+          ))}
+        </div>
       );
     }
     if (list.length === 0) {
@@ -495,8 +531,35 @@ function ProfileScopeChildren({
       </div>
     );
   }
-  const allDbList = databases.data?.databases ?? [];
+  // Same pin-honouring rule as the catalogs branch above: if the
+  // profile carries a pinned ``cfg.database`` we render only that
+  // database, even when the role can see more on the server.
+  const allDbListRaw = databases.data?.databases ?? [];
+  const pinnedDb = (databases.data?.active_database || "").trim();
+  const pinnedDbMissing = pinnedDb && !allDbListRaw.includes(pinnedDb);
+  const allDbList = pinnedDb && !pinnedDbMissing
+    ? allDbListRaw.filter((d) => d === pinnedDb)
+    : allDbListRaw;
   const dbList = allDbList.filter(childFilter);
+  if (pinnedDbMissing) {
+    return (
+      <div className="space-y-0.5">
+        <div className="px-2 py-1 text-[11px] text-warning">
+          Pinned database &quot;{pinnedDb}&quot; not visible. Edit the
+          profile via /db to re-pin.
+        </div>
+        {dbList.map((name) => (
+          <ScopeNode
+            key={name}
+            scope={{ profile, database: name, kind: "database" }}
+            label={name}
+            query={query}
+            parentMatched={parentMatched || matchesSearch(name, query)}
+          />
+        ))}
+      </div>
+    );
+  }
   if (allDbList.length === 0) {
     return (
       <div className="px-2 py-1 text-[11px] text-ink-dim">
