@@ -99,3 +99,32 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </React.StrictMode>,
 );
+
+// Register the offline-fallback Service Worker.
+//
+// The SW caches a single ``/offline.html`` page on install and serves
+// it whenever a navigation request fails — i.e. when the AMX CLI
+// process backing this tab stops (Ctrl-C / crash / terminal closed).
+// Without this, the browser falls to its built-in "This site can't be
+// reached" page which gives the user no clue about the right next
+// step (re-run ``amx /studio`` in a terminal).
+//
+// Production-only: Vite's dev server has its own HMR machinery and
+// caching the dev bundle through a SW makes the workflow brittle.
+// ``import.meta.env.PROD`` is true in any ``vite build`` output.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  // Defer registration until after the first paint so the SW
+  // install doesn't compete with the main bundle's network budget.
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("/sw.js")
+      .catch((err) => {
+        // SW registration failures are recoverable — Studio still works
+        // online, the user just loses the offline fallback. Log to the
+        // console so a power user can spot it; don't bother the
+        // ErrorBoundary or the toast layer.
+        // eslint-disable-next-line no-console
+        console.warn("[amx] service worker registration failed:", err);
+      });
+  });
+}

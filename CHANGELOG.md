@@ -92,6 +92,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **Offline fallback page when the AMX CLI stops while Studio is
+  open in the browser.** Previously, stopping the CLI (Ctrl-C,
+  terminal closed, crash) made the browser tab land on Chrome's
+  default "This site can't be reached" error, which gives the user
+  no clue that the right next step is to re-run ``amx /studio`` in a
+  terminal. A small Service Worker registered on first load now
+  caches a static ``/offline.html`` page; whenever a navigation
+  fetch fails (the CLI is no longer listening on the local port) the
+  SW serves that page instead. It carries the restart hint, a
+  one-click reload-and-retry button, and a link to the documentation
+  at ``amxcli.com``. SW handles navigation only — failed ``/api/*``
+  requests still bubble up to the SPA's own error handling.
+
 - **Bulk column-comment metadata across all 10 backends.** Replaces
   the serial per-table ``DESCRIBE TABLE EXTENDED`` / SQLAlchemy
   inspector loop with a single ``INFORMATION_SCHEMA`` / ``pg_
