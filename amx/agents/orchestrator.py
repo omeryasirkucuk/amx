@@ -656,6 +656,22 @@ def apply_review_results_to_db(
                                             item.table,
                                             cache_exc,
                                         )
+                                # Also invalidate the column-comments
+                                # cache for this table so the very next
+                                # sidebar / CLI inspect sees the freshly
+                                # written COMMENT and never the prior
+                                # placeholder.
+                                try:
+                                    db.invalidate_column_comments_cache(
+                                        schema=item.schema, table=item.table or ""
+                                    )
+                                except Exception as cache_exc:
+                                    log.debug(
+                                        "invalidate_column_comments_cache (batch) failed for %s.%s: %s",
+                                        item.schema,
+                                        item.table,
+                                        cache_exc,
+                                    )
                             index = next_index
                             continue
                     except Exception as batch_exc:
@@ -723,6 +739,20 @@ def apply_review_results_to_db(
                             r.table,
                             cache_exc,
                         )
+                # Same belt-and-braces invalidation for the column-
+                # comments cache as the batch branch above. Keeps
+                # post-apply reads guaranteed-fresh.
+                try:
+                    db.invalidate_column_comments_cache(
+                        schema=r.schema, table=r.table or ""
+                    )
+                except Exception as cache_exc:
+                    log.debug(
+                        "invalidate_column_comments_cache failed for %s.%s: %s",
+                        r.schema,
+                        r.table,
+                        cache_exc,
+                    )
             except Exception as exc:
                 if on_progress is not None:
                     on_progress(r, "failed", index + 1, total, str(exc))

@@ -130,7 +130,7 @@ def _connector_for_scope(
         return cached
     if len(_CONNECTOR_CACHE) >= _CONNECTOR_CACHE_MAX:
         _evict_oldest()
-    connector = DatabaseConnector(scoped)
+    connector = DatabaseConnector(scoped, profile_name=profile_name)
     _CONNECTOR_CACHE[key] = connector
     return connector
 

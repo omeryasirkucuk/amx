@@ -63,7 +63,7 @@ def test_apply_with_empty_body_uses_pending_queue(client, auth_headers, monkeypa
         return 1
 
     monkeypatch.setattr(runs_router, "apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/apply", headers=auth_headers, json={})
     assert response.status_code == 200
@@ -98,7 +98,7 @@ def test_apply_passes_explicit_body_results(client, auth_headers, monkeypatch) -
         runs_router, "load_pending", lambda: pytest.fail("load_pending must not run")
     )
     monkeypatch.setattr(runs_router, "apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post(
         "/api/apply",
@@ -157,7 +157,7 @@ def test_apply_cancel_flips_status_and_emits_event(client, auth_headers, monkeyp
         return 0
 
     monkeypatch.setattr(runs_router, "apply_review_results_to_db", slow_apply)
-    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/apply", headers=auth_headers, json={})
     job_id = response.json()["job_id"]
@@ -196,7 +196,7 @@ def test_apply_sse_stream_emits_json_events(client, auth_headers, monkeypatch) -
         return 1
 
     monkeypatch.setattr(runs_router, "apply_review_results_to_db", fake_apply)
-    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda cfg: MagicMock())
+    monkeypatch.setattr(runs_router, "DatabaseConnector", lambda *_a, **_kw: MagicMock())
 
     response = client.post("/api/apply", headers=auth_headers, json={})
     job_id = response.json()["job_id"]

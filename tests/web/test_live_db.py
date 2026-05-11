@@ -49,7 +49,7 @@ def _patch_connector(monkeypatch, builder) -> MagicMock:
     factory uses inside :mod:`amx.web.routers.live_db`. Returns the
     mock so the test can assert on call arguments."""
     instance = builder()
-    monkeypatch.setattr(live_db, "DatabaseConnector", lambda _db: instance)
+    monkeypatch.setattr(live_db, "DatabaseConnector", lambda *_a, **_kw: instance)
     return instance
 
 
@@ -126,7 +126,7 @@ def test_list_schemas_with_explicit_catalog_query_arg(client, auth_headers, monk
     fresh DBConfig via dataclasses.replace."""
     captured: dict[str, object] = {}
 
-    def factory(db_cfg):
+    def factory(db_cfg, **_kw):
         captured["catalog"] = db_cfg.catalog
         return MagicMock(
             list_schemas=MagicMock(return_value=["a", "b"]),
