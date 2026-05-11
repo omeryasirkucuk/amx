@@ -8,6 +8,39 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Opening the ``amx`` REPL on a fresh install still triggered a
+  second wave of pip subprocesses (chromadb + langchain-text-splitters
+  + tiktoken) even though PR #296 was supposed to make the bring-up
+  single-stage.** Root cause: ``amx/cli.py`` called
+  ``_install_embedding_provider(cfg)`` during the Click ``main``
+  callback so every ``amx`` invocation — including a bare ``amx``
+  that just opens the interactive session — imported
+  ``amx.search.embeddings``. That module runs a module-level
+  ``_ensure("rag")`` (the RAG bundle: chromadb, langchain-text-splitters,
+  tiktoken) before its class bodies can execute, because the three
+  ``EmbeddingFunction`` subclasses defined further down need
+  ``chromadb.api.types`` resolved at class-definition time.
+  Default-MiniLM users (the overwhelming majority on day one) thus
+  paid a multi-minute chromadb install at the very moment they
+  finally got to a working ``amx`` prompt, having just sat through
+  the first wave from ``pip install amx-cli``.
+
+  ``_install_embedding_provider`` now short-circuits without
+  importing ``amx.search.embeddings`` when the active
+  ``cfg.embedding.kind`` is the default MiniLM (or one of its
+  common spellings: ``""``, ``"default"``, ``"minilm-l6-v2"``,
+  case-insensitive). The default-MiniLM provider is exactly the
+  factory Chroma's ``SearchIndex`` falls back to when no
+  process-wide factory is installed, so taking the shortcut produces
+  the same runtime behaviour as the old eager path — just without
+  pulling 150 MB of wheels for a REPL that may never reach a RAG
+  feature. Custom-embedding users still hit the configure path
+  (and the chromadb install along with it) because they are by
+  definition heading for a RAG flow that would have required
+  chromadb regardless. Three new tests pin the boundary: the
+  default-kind shortcut, the alias variants of the default kind,
+  and the must-still-import path for custom kinds.
+
 - **Databricks profiles added through AMX Studio failed at first
   connect on corporate TLS-inspecting networks because the Studio
   form did not expose the two TLS fields the CLI wizard already
