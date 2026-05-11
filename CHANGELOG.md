@@ -8,6 +8,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Studio's collapsed-sidebar icons were inert** — when the user
+  hid the left sidebar (via the topbar's ``PanelLeft`` chevron),
+  the three icons that remained visible on the narrow rail
+  (``Database``, ``FolderTree``, ``Layers``) looked clickable but
+  had no ``onClick`` handler. The only way to re-open the sidebar
+  was to go back to the topbar chevron. ``Sidebar.tsx``'s
+  ``CollapsedRail`` now renders each icon as a real ``<button>``
+  bound to ``toggleSidebar``, with hover state, focus ring, and
+  ``aria-label`` / ``aria-expanded`` attributes for screen
+  readers. Tapping any of the three glyphs pops the panel back
+  open. The SPA bundle was rebuilt so ``web-build-freshness`` CI
+  stays green.
+
 - **Opening the ``amx`` REPL on a fresh install still triggered a
   second wave of pip subprocesses (chromadb + langchain-text-splitters
   + tiktoken) even though PR #296 was supposed to make the bring-up
