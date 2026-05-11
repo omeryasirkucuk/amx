@@ -249,14 +249,31 @@ def _check_optional_deps(active_backend: str | None = None) -> list[CheckResult]
     return results
 
 
-def _check_active_db_profile(cfg: AMXConfig) -> CheckResult:
-    """Test the active DB connection if one is configured."""
-    if not cfg.active_db_profile or not cfg.db_profiles:
+def _check_active_db_profile(cfg: AMXConfig, *, skip_network: bool = False) -> CheckResult:
+    """Test the active DB connection if one is configured.
+
+    Three setup-state failures (no profile saved, profile saved but
+    not activated, profile activated but incomplete) are surfaced
+    even with ``skip_network=True`` because they are purely config
+    questions — the earlier "skip the whole row when skip_network is
+    on" path is what produced an all-green doctor view on a brand
+    new install. Only the live ``test_connection`` probe is gated
+    behind ``skip_network`` since it is the part that actually hits
+    the wire.
+    """
+    if not cfg.db_profiles:
         return CheckResult(
             name="Active DB profile",
-            ok=True,
-            detail="(none configured)",
-            hint="Run /add-db-profile inside `amx` to add one.",
+            ok=False,
+            detail="(no DB profile saved yet)",
+            hint="Add a DB profile in Settings or run /add-db-profile in the CLI.",
+        )
+    if not cfg.active_db_profile:
+        return CheckResult(
+            name="Active DB profile",
+            ok=False,
+            detail=f"saved profile(s) {sorted(cfg.db_profiles)} but none activated",
+            hint="Pick one as the active profile in Settings or with /set-db-profile.",
         )
     if not cfg.db.is_connection_configured():
         return CheckResult(
@@ -264,6 +281,13 @@ def _check_active_db_profile(cfg: AMXConfig) -> CheckResult:
             ok=False,
             detail=f"profile '{cfg.active_db_profile}' (incomplete)",
             hint="Run /add-db-profile to fill in connection details.",
+        )
+    if skip_network:
+        label = f"{cfg.db.backend} · {cfg.db.display_summary}"
+        return CheckResult(
+            name="Active DB profile",
+            ok=True,
+            detail=f"profile '{cfg.active_db_profile}' → {label} (connection probe skipped)",
         )
     # Lazy import — DatabaseConnector pulls in heavy backend deps.
     from amx.db.connector import DatabaseConnector
@@ -287,14 +311,41 @@ def _check_active_db_profile(cfg: AMXConfig) -> CheckResult:
     )
 
 
-def _check_active_llm_profile(cfg: AMXConfig) -> CheckResult:
-    """Probe the active LLM endpoint if one is configured."""
-    if not cfg.active_llm_profile or not cfg.llm_profiles or not cfg.llm.is_configured():
+def _check_active_llm_profile(cfg: AMXConfig, *, skip_network: bool = False) -> CheckResult:
+    """Probe the active LLM endpoint if one is configured.
+
+    Setup-state checks (no profile saved, profile saved but not
+    activated, profile activated but missing required fields) run
+    even with ``skip_network=True`` — they are config questions, not
+    network ones. Only the live ``test_result`` probe is gated.
+    """
+    if not cfg.llm_profiles:
+        return CheckResult(
+            name="Active LLM profile",
+            ok=False,
+            detail="(no LLM profile saved yet)",
+            hint="Add an LLM profile in Settings or run /add-llm-profile in the CLI.",
+        )
+    if not cfg.active_llm_profile:
+        return CheckResult(
+            name="Active LLM profile",
+            ok=False,
+            detail=f"saved profile(s) {sorted(cfg.llm_profiles)} but none activated",
+            hint="Pick one as the active profile in Settings or with /set-llm-profile.",
+        )
+    if not cfg.llm.is_configured():
+        return CheckResult(
+            name="Active LLM profile",
+            ok=False,
+            detail=f"profile '{cfg.active_llm_profile}' (incomplete — missing api_key / model / base_url)",
+            hint="Open the profile in Settings and finish filling it in.",
+        )
+    if skip_network:
+        label = f"{cfg.llm.provider}/{cfg.llm.model}"
         return CheckResult(
             name="Active LLM profile",
             ok=True,
-            detail="(none configured)",
-            hint="Run /add-llm-profile inside `amx` to add one.",
+            detail=f"profile '{cfg.active_llm_profile}' → {label} (round-trip probe skipped)",
         )
     from amx.llm.provider import LLMProvider
 
@@ -378,9 +429,14 @@ def collect_doctor_checks(
     if cfg.active_db_profile and cfg.db_profiles:
         active_backend = getattr(cfg.db, "backend", None) or None
     results.extend(_check_optional_deps(active_backend))
-    if not skip_network:
-        results.append(_check_active_db_profile(cfg))
-        results.append(_check_active_llm_profile(cfg))
+    # DB and LLM profile rows always run — the setup-state branches
+    # (no profile / not activated / incomplete) are config questions,
+    # not network ones. The check helpers themselves honour
+    # ``skip_network`` for the actual on-the-wire probe so
+    # ``--skip-network`` keeps its meaning of "do not contact the DB
+    # or the LLM endpoint".
+    results.append(_check_active_db_profile(cfg, skip_network=skip_network))
+    results.append(_check_active_llm_profile(cfg, skip_network=skip_network))
     return results
 
 
