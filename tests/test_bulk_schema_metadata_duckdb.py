@@ -34,7 +34,9 @@ def duckdb_profile(tmp_path: Path) -> DBConfig:
     with engine.begin() as conn:
         conn.execute(sqlalchemy.text("CREATE SCHEMA IF NOT EXISTS sales"))
         conn.execute(sqlalchemy.text("CREATE TABLE sales.orders (id INTEGER, amount DOUBLE)"))
-        conn.execute(sqlalchemy.text("CREATE TABLE sales.line_items (order_id INTEGER, sku VARCHAR)"))
+        conn.execute(
+            sqlalchemy.text("CREATE TABLE sales.line_items (order_id INTEGER, sku VARCHAR)")
+        )
         conn.execute(sqlalchemy.text("COMMENT ON TABLE sales.orders IS 'All orders ever placed'"))
         conn.execute(sqlalchemy.text("COMMENT ON COLUMN sales.orders.id IS 'Order primary key'"))
         conn.execute(sqlalchemy.text("COMMENT ON COLUMN sales.orders.amount IS 'USD total'"))
@@ -192,8 +194,6 @@ def test_databricks_pinned_schema_short_circuits_list_schemas(monkeypatch) -> No
     — so the sidebar's catalog expand shows ONLY the user's schema,
     not every schema in the catalog. Mirrors the catalog-picker
     behaviour from PR #318."""
-    import sys
-    import types
 
     from amx.config import DBConfig
 

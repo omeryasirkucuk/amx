@@ -80,9 +80,105 @@ export function humanizeCommand(
   return head.charAt(0).toUpperCase() + head.slice(1);
 }
 
+/** Shape of the per-run ``processed_assets`` envelope the backend
+ * now returns alongside each row. Carries the actual ``(schema,
+ * table, column)`` tuples taken from ``run_results`` so the listing
+ * UI can show a concrete asset label instead of the schema-level
+ * scope ("sales · 1 table") the user originally picked.
+ */
+export interface ProcessedAssetsSummary {
+  schemas: number;
+  tables: number;
+  columns: number;
+  sample: Array<{
+    schema: string;
+    table: string;
+    column: string | null;
+  }>;
+}
+
+/**
+ * Format a run's actual processed assets into a one-line label. This
+ * is what RunsList + RunsCompare render in the "Scope" column.
+ *
+ *   - 1 column-level asset      → "sales.orders.status"
+ *   - 1 table, full-table run   → "sales.orders"
+ *   - 1 table, N columns        → "sales.orders (3 columns)"
+ *   - many tables, one schema   → "sales · 4 tables"
+ *   - many schemas              → "3 schemas · 12 tables"
+ *
+ * Returns ``null`` when the run has no processed-asset data yet
+ * (worker still running, or pre-0.14 row without the aggregate);
+ * callers should fall back to the legacy ``summarizeScope`` in that
+ * case so the cell never renders as empty.
+ */
+export function summarizeProcessedAssets(
+  assets: ProcessedAssetsSummary | null | undefined,
+): string | null {
+  if (!assets) return null;
+  const { schemas, tables, columns, sample } = assets;
+  if (tables === 0 && columns === 0) return null;
+
+  // Exactly one column processed across the whole run — happens when
+  // the user picked a single column or triggered ``/rerun --column``.
+  if (tables === 1 && columns === 1) {
+    const a = sample[0];
+    if (a) {
+      return a.column ? `${a.schema}.${a.table}.${a.column}` : `${a.schema}.${a.table}`;
+    }
+  }
+
+  // One table, many columns — typical "analyze one table" run.
+  if (tables === 1) {
+    const a = sample[0];
+    if (a) {
+      // Every sample row shares the same schema.table; surface the
+      // column count if any per-column rows exist, otherwise it's a
+      // pure table-level row.
+      if (columns > 0) {
+        return `${a.schema}.${a.table} (${columns} column${columns === 1 ? "" : "s"})`;
+      }
+      return `${a.schema}.${a.table}`;
+    }
+  }
+
+  // Many tables, one schema.
+  if (schemas === 1) {
+    const first = sample[0];
+    const schema = first ? first.schema : "";
+    return `${schema} · ${tables} table${tables === 1 ? "" : "s"}`;
+  }
+
+  // Cross-schema run.
+  return `${schemas} schemas · ${tables} table${tables === 1 ? "" : "s"}`;
+}
+
+/** Build a multi-line tooltip enumerating every distinct asset the
+ * run processed (capped at the backend's sample size). Used as the
+ * ``title=`` attribute so users hovering the cell see exactly what
+ * was run when the headline label collapses many assets into "N
+ * tables". */
+export function processedAssetsTooltip(
+  assets: ProcessedAssetsSummary | null | undefined,
+): string | undefined {
+  if (!assets || assets.sample.length === 0) return undefined;
+  const lines = assets.sample.map((a) =>
+    a.column ? `${a.schema}.${a.table}.${a.column}` : `${a.schema}.${a.table}`,
+  );
+  const more = Math.max(0, assets.tables + assets.columns - lines.length);
+  if (more > 0) lines.push(`… +${more} more`);
+  return lines.join("\n");
+}
+
 /**
  * Summarise a run's scope for an inline label. Returns a one-line
  * string suited for the secondary text in a run row.
+ *
+ * **Legacy helper** — preserved for compatibility with rows that
+ * don't yet carry the ``processed_assets`` envelope (worker still
+ * running, or old history rows). New code should prefer
+ * ``summarizeProcessedAssets`` which surfaces the actual
+ * schema.table.column the run touched.
  *
  *   - `{}` or null     → "All schemas"
  *   - one schema, []   → "sales (all tables)"

@@ -176,9 +176,7 @@ def test_pinned_catalog_is_used_silently_on_every_run(patch_picker_choice) -> No
     # The picker primitive must NOT be invoked at all when the
     # catalog is pinned. Asserting the choice fn was never called is
     # the strongest form of "no prompt shown to the user".
-    with patch(
-        "amx.cli_support.commands.manual._ask_choice_or_cancel"
-    ) as choice_mock:
+    with patch("amx.cli_support.commands.manual._ask_choice_or_cancel") as choice_mock:
         chosen = ensure_hierarchy_resolved(db)
     assert chosen == "main"
     assert db.cfg.catalog == "main"

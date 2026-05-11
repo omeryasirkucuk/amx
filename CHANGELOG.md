@@ -21,6 +21,27 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Runs list + Compare picker now show the actual asset, not just
+  the schema-level scope.** ``scope_json`` only carries the schemas
+  + tables the user originally picked, so a ``/rerun --column
+  status`` or an analyze with ``column_overrides`` looked identical
+  to a full-table run in the listing — both rendered as e.g.
+  "sales · 1 table" with no clue which table or whether columns were
+  filtered. The backend now joins ``run_results`` (the per-asset
+  write log) into ``list_recent_runs`` and emits a compact
+  ``processed_assets`` envelope: ``{schemas, tables, columns, sample}``.
+  Studio's Runs page + Compare picker render that into the concrete
+  label — ``sales.orders.status`` for a single-column run,
+  ``sales.orders (3 columns)`` for a partial table, ``sales · 4
+  tables`` for a wider schema run — and surface the full asset
+  list as a hover tooltip. Comparing two runs no longer requires
+  clicking into each one first to figure out what was run.
+
+  Lint cleanup: brings the codebase back to a clean ``ruff check``
+  /``ruff format --check`` baseline that had drifted on main —
+  reformats a handful of test + adapter files that were missed in
+  earlier PRs but never caught locally.
+
 - **Wizard-pinned scope is honoured at every level, including
   schema.** Previous passes (#318 silenced the CLI catalog picker
   when pinned; #321 filtered the sidebar's catalog + database

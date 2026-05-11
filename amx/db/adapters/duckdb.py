@@ -170,10 +170,7 @@ class DuckDBAdapter(DatabaseAdapter):
         try:
             with engine.connect() as conn:
                 rows = conn.execute(
-                    text(
-                        "SELECT schema_name, comment FROM duckdb_schemas() "
-                        "WHERE NOT internal"
-                    )
+                    text("SELECT schema_name, comment FROM duckdb_schemas() WHERE NOT internal")
                 ).fetchall()
             return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
         except Exception:

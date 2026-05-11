@@ -460,7 +460,9 @@ def _run_pip_with_progress(
             return header
 
         try:
-            with Live(_renderable(), console=console, refresh_per_second=10, transient=True) as live:
+            with Live(
+                _renderable(), console=console, refresh_per_second=10, transient=True
+            ) as live:
 
                 def _tick() -> None:
                     while not stop_evt.is_set():
