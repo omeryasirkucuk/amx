@@ -21,6 +21,36 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Cancel button in Studio now short-circuits the next LLM call,
+  and runs that produce nothing no longer flip to ``success``.** Two
+  user reports rolled up:
+  - **Cancel observed late.** The orchestrator's table-level loop
+    checks the cancel token between phases (profile / filters /
+    agents / apply), but the inner LLM-call retry loop in
+    ``amx.llm.provider`` had no view of the token — so a mid-table
+    cancel waited for the whole agent fan-out before the click took
+    effect. On slow reasoning models (Databricks Serving, OpenAI o-
+    series) the user could click Cancel and see no change for many
+    minutes. New ``amx/utils/cancel.py`` exposes the active token
+    through a ``ContextVar``; the run worker binds ``job.cancel``
+    once on entry, the provider's retry loop calls
+    ``raise_if_cancelled`` before every attempt. Next call after the
+    click bails immediately with ``RunCancelled``.
+  - **All-failed-and-cancel-late status.** The final-status logic
+    defaulted to ``success`` whenever no top-level exception fired.
+    Two paths slipped through: (a) every table raised inside
+    ``process_table`` and was swallowed by the per-table ``except``,
+    leaving the worker to exit "cleanly" with zero processed assets;
+    (b) the user clicked Cancel AFTER the last table finished but
+    BEFORE the worker reached the status assignment, so no
+    ``RunCancelled`` ever propagated. Both now flip ``final_status``
+    away from ``success`` — ``failed`` when assets failed without
+    any succeeding, ``cancelled`` when ``job.cancel.is_set()`` at
+    the end. The terminal SSE emit was generalised to dispatch the
+    matching ``job.cancelled`` / ``job.failed`` event, so the
+    Studio's SSE consumer never hangs waiting for a frame that the
+    worker forgot to send.
+
 - **LLM call no longer fails on Responses-API-shaped reasoning
   models.** Some hosted endpoints return ``message.content`` as a
   list of typed parts (``[{"type": "reasoning", "summary": [...]},
