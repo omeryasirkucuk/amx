@@ -27,6 +27,7 @@ from amx.config import (
     DBConfig,
     LLMConfig,
 )
+from amx.db.profile_schema import FieldSpec, spec_for, supported_backends
 from amx.web.deps import get_cfg
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -48,82 +49,62 @@ _LLM_SECRET_FIELDS = frozenset({"api_key"})
 # ── Backend / provider catalogs ────────────────────────────────────────
 
 
-# Same backend list the CLI's ``/add-db-profile`` wizard exposes. Each
-# entry hints at the fields the SPA's wizard should surface; the SPA
-# can still send any DBConfig field via PUT — these are just the
-# defaults that get rendered as labelled inputs.
-_DB_BACKENDS: list[dict[str, Any]] = [
-    {
-        "id": "postgresql",
-        "label": "PostgreSQL",
-        "fields": ["host", "port", "user", "password", "database"],
-        "default_port": 5432,
-    },
-    {
-        "id": "mysql",
-        "label": "MySQL / MariaDB",
-        "fields": ["host", "port", "user", "password", "database"],
-        "default_port": 3306,
-    },
-    {
-        "id": "snowflake",
-        "label": "Snowflake",
-        "fields": ["account", "user", "password", "database", "warehouse", "role"],
-    },
-    {
-        "id": "databricks",
-        "label": "Databricks (Unity Catalog)",
-        # The CLI's ``/add-db-profile`` wizard prompts for the same TLS
-        # pair (``amx/cli_support/commands/db.py``, ~line 747–754) so
-        # Studio-created profiles must surface them too — without
-        # them the databricks-sql connector rejects corporate
-        # TLS-inspecting proxies (``amx/db/adapters/databricks.py``
-        # reads both fields on every connect).
-        "fields": [
-            "host",
-            "http_path",
-            "access_token",
-            "catalog",
-            "tls_trusted_ca_file",
-            "tls_no_verify",
-        ],
-        "supports_catalog": True,
-    },
-    {
-        "id": "bigquery",
-        "label": "BigQuery",
-        "fields": ["project", "dataset", "credentials_path"],
-    },
-    {
-        "id": "oracle",
-        "label": "Oracle",
-        "fields": ["host", "port", "user", "password", "database", "service_name"],
-        "default_port": 1521,
-    },
-    {
-        "id": "mssql",
-        "label": "SQL Server",
-        "fields": ["host", "port", "user", "password", "database", "driver"],
-        "default_port": 1433,
-    },
-    {
-        "id": "redshift",
-        "label": "Redshift",
-        "fields": ["host", "port", "user", "password", "database", "cluster_identifier"],
-        "default_port": 5439,
-    },
-    {
-        "id": "clickhouse",
-        "label": "ClickHouse",
-        "fields": ["host", "port", "user", "password", "database", "secure"],
-        "default_port": 8123,
-    },
-    {
-        "id": "duckdb",
-        "label": "DuckDB",
-        "fields": ["database"],
-    },
-]
+# Backend-label and default-port metadata. The per-field details
+# (``fields``, ``field_specs``) are derived from
+# :mod:`amx.db.profile_schema` so Studio and the CLI wizard share one
+# source of truth — that is what stops the Databricks-TLS-style drift
+# (URL builder reads a field, Studio never offers it, user can't reach
+# the connection).
+_DB_BACKEND_META: dict[str, dict[str, Any]] = {
+    "postgresql": {"label": "PostgreSQL", "default_port": 5432},
+    "mysql": {"label": "MySQL / MariaDB", "default_port": 3306},
+    "snowflake": {"label": "Snowflake"},
+    "databricks": {"label": "Databricks (Unity Catalog)", "supports_catalog": True},
+    "bigquery": {"label": "BigQuery"},
+    "oracle": {"label": "Oracle", "default_port": 1521},
+    "mssql": {"label": "SQL Server", "default_port": 1433},
+    "redshift": {"label": "Redshift", "default_port": 5439},
+    "clickhouse": {"label": "ClickHouse", "default_port": 8123},
+    "duckdb": {"label": "DuckDB"},
+}
+
+
+def _serialize_field(spec: FieldSpec) -> dict[str, Any]:
+    """JSON shape of a FieldSpec for the Studio API.
+
+    Frontend reads ``kind`` to pick a renderer (text / password / int /
+    bool / select), ``group`` to bucket into basic vs. advanced, and
+    ``help`` for the field tooltip. Older Studio bundles that only know
+    about ``fields: list[str]`` keep working because that legacy array
+    is still returned alongside this enrichment.
+    """
+    return {
+        "name": spec.name,
+        "kind": spec.kind,
+        "label": spec.label or spec.name,
+        "help": spec.help,
+        "secret": spec.secret,
+        "required": spec.required,
+        "group": spec.group,
+        "options": list(spec.options),
+    }
+
+
+def _backend_entry(backend: str) -> dict[str, Any]:
+    meta = _DB_BACKEND_META.get(backend, {})
+    specs = spec_for(backend)
+    return {
+        "id": backend,
+        "label": meta.get("label", backend.title()),
+        # Legacy list of field-name strings — kept for clients that
+        # haven't migrated to ``field_specs`` yet.
+        "fields": [s.name for s in specs],
+        "field_specs": [_serialize_field(s) for s in specs],
+        **{k: v for k, v in meta.items() if k != "label"},
+    }
+
+
+_DB_BACKENDS: list[dict[str, Any]] = [_backend_entry(b) for b in supported_backends()]
 
 
 _LLM_PROVIDERS: list[dict[str, Any]] = [

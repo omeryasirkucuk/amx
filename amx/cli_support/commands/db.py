@@ -665,6 +665,26 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             probe_cfg=probe_cfg_for_db,
             listing_kind="databases",
         )
+        # Advanced TLS — gated so the basic flow stays terse for the
+        # 90% case (libpq's default ``prefer`` is fine on local Postgres).
+        # Corporate / managed PG (RDS, CloudSQL, Azure Database for PG)
+        # increasingly requires ``verify-full`` against a private CA;
+        # surface those knobs here so users don't fall back to manual
+        # YAML editing the way the Databricks-TLS gap forced them to.
+        sslmode = defaults.sslmode or ""
+        sslrootcert = defaults.sslrootcert or ""
+        if _ask_update_bool(
+            "Configure TLS / SSL (sslmode, sslrootcert)?",
+            current=bool(defaults.sslmode or defaults.sslrootcert),
+        ):
+            sslmode = _ask_update_text(
+                "sslmode (disable / allow / prefer / require / verify-ca / verify-full)",
+                defaults.sslmode or "",
+            )
+            sslrootcert = _ask_update_text(
+                "Path to SSL root cert (required for verify-ca / verify-full)",
+                defaults.sslrootcert or "",
+            )
         return replace(
             defaults,
             backend="postgresql",
@@ -673,6 +693,8 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             user=user,
             password=password,
             database=database,
+            sslmode=sslmode,
+            sslrootcert=sslrootcert,
         )
 
     if backend == "snowflake":
@@ -706,6 +728,23 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Warehouse (optional, e.g. COMPUTE_WH)", defaults.warehouse or ""
         )
         role = _ask_update_text("Role (optional, e.g. ANALYST)", defaults.role or "")
+        # Advanced TLS / OCSP — most users don't need it, but corporate
+        # proxies that block the OCSP responder hang the connect
+        # handshake until ``ocsp_fail_open=True`` is set.
+        insecure_mode = bool(defaults.insecure_mode)
+        ocsp_fail_open = bool(defaults.ocsp_fail_open)
+        if _ask_update_bool(
+            "Configure TLS / OCSP escape hatches (corporate proxies)?",
+            current=insecure_mode or ocsp_fail_open,
+        ):
+            insecure_mode = _ask_update_bool(
+                "Disable Snowflake TLS validation (insecure_mode)?",
+                current=insecure_mode,
+            )
+            ocsp_fail_open = _ask_update_bool(
+                "Allow connect when OCSP responder is blocked (ocsp_fail_open)?",
+                current=ocsp_fail_open,
+            )
         return replace(
             defaults,
             backend="snowflake",
@@ -715,6 +754,8 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             database=database,
             warehouse=warehouse,
             role=role,
+            insecure_mode=insecure_mode,
+            ocsp_fail_open=ocsp_fail_open,
         )
 
     if backend == "databricks":
@@ -871,6 +912,25 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             probe_cfg=probe_cfg_for_db,
             listing_kind="databases",
         )
+        # MySQL TLS — same pattern as PG. Default behaviour (the driver
+        # negotiates TLS opportunistically) needs no input; the gate is
+        # for users who must point at a private CA bundle or who must
+        # explicitly opt out for legacy intra-DC links.
+        ssl_disabled = bool(defaults.ssl_disabled)
+        ssl_ca = defaults.ssl_ca or ""
+        if _ask_update_bool(
+            "Configure TLS (ssl_disabled / ssl_ca)?",
+            current=ssl_disabled or bool(ssl_ca),
+        ):
+            ssl_disabled = _ask_update_bool(
+                "Disable TLS entirely (legacy intra-DC only)?",
+                current=ssl_disabled,
+            )
+            if not ssl_disabled:
+                ssl_ca = _ask_update_text(
+                    "Path to SSL CA bundle (optional, for private CA)",
+                    ssl_ca,
+                )
         return replace(
             defaults,
             backend="mysql",
@@ -879,6 +939,8 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             user=user,
             password=password,
             database=database,
+            ssl_disabled=ssl_disabled,
+            ssl_ca=ssl_ca,
         )
 
     if backend == "oracle":
@@ -1089,6 +1151,24 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             probe_cfg=probe_cfg_for_db,
             listing_kind="databases",
         )
+        # ClickHouse TLS — only meaningful on HTTPS. ``ca_cert`` lets
+        # users point at a private CA bundle; ``verify=False`` is the
+        # last-resort drop for TLS-inspecting proxies that present a
+        # non-distributable root.
+        ca_cert = defaults.ca_cert or ""
+        verify = bool(defaults.verify) if defaults.verify is not None else True
+        if secure and _ask_update_bool(
+            "Configure TLS verification (ca_cert / verify)?",
+            current=bool(ca_cert) or not verify,
+        ):
+            ca_cert = _ask_update_text(
+                "Path to CA bundle (optional, for private root)",
+                ca_cert,
+            )
+            verify = _ask_update_bool(
+                "Verify TLS certificate (off only for inspecting proxies)?",
+                current=verify,
+            )
         return replace(
             defaults,
             backend="clickhouse",
@@ -1098,6 +1178,8 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             password=password,
             database=database,
             secure=secure,
+            ca_cert=ca_cert,
+            verify=verify,
         )
 
     if backend == "duckdb":
