@@ -57,10 +57,25 @@ interface CodeProfile {
   linked_db_profiles?: string[];
 }
 
+interface DbFieldSpec {
+  name: string;
+  kind: "text" | "password" | "int" | "bool" | "select";
+  label: string;
+  help: string;
+  secret: boolean;
+  required: boolean;
+  group: "basic" | "advanced";
+  options: string[];
+}
+
 interface DbBackend {
   id: string;
   label: string;
+  // Legacy list of field-name strings — kept while older bundles
+  // (cached service-workers, etc.) still reference it. ``field_specs``
+  // carries the richer metadata Studio actually renders.
   fields: string[];
+  field_specs?: DbFieldSpec[];
   default_port?: number;
   supports_catalog?: boolean;
 }
@@ -298,37 +313,32 @@ function DbProfilesSection() {
   );
 }
 
-const DB_FIELD_LABELS: Record<string, string> = {
+// Field rendering metadata used to come from frontend-side maps; it
+// now arrives in each backend's ``field_specs`` so Studio and the CLI
+// wizard share one source of truth. The frontend keeps a tiny fallback
+// in case an older API bundle returns plain ``fields: string[]``.
+const FALLBACK_FIELD_LABELS: Record<string, string> = {
   host: "Host",
   port: "Port",
   user: "User",
   password: "Password",
   database: "Database",
-  catalog: "Catalog",
-  account: "Snowflake account",
-  warehouse: "Warehouse",
-  role: "Role",
-  http_path: "HTTP path",
-  access_token: "Access token",
-  project: "GCP project",
-  dataset: "BigQuery dataset",
-  credentials_path: "Credentials JSON path",
-  service_name: "Oracle service name",
-  driver: "ODBC driver",
-  cluster_identifier: "Redshift cluster id",
-  secure: "Use HTTPS",
-  tls_trusted_ca_file: "Trusted CA bundle path (optional)",
-  tls_no_verify: "Skip TLS verification",
 };
 
-const DB_FIELD_HINTS: Record<string, string> = {
-  tls_no_verify:
-    "On enterprise networks the TLS chain is rewritten by an inspection proxy. " +
-    "Either set the Trusted CA bundle path above to trust your corporate root, " +
-    "or enable this to skip verification. Pick whichever your IT policy allows.",
-};
+const FALLBACK_SECRET_FIELDS = new Set(["password", "access_token"]);
 
-const DB_SECRET_FIELDS = new Set(["password", "access_token"]);
+function fallbackSpec(name: string): DbFieldSpec {
+  return {
+    name,
+    kind: FALLBACK_SECRET_FIELDS.has(name) ? "password" : "text",
+    label: FALLBACK_FIELD_LABELS[name] ?? name,
+    help: "",
+    secret: FALLBACK_SECRET_FIELDS.has(name),
+    required: false,
+    group: "basic",
+    options: [],
+  };
+}
 
 function DbProfileWizard({
   open,
@@ -376,16 +386,20 @@ function DbProfileWizard({
   }, [isEdit, existing.data, editingName, hydratedFor]);
 
   const chosenBackend = backends.data?.backends.find((b) => b.id === backend);
-  const fields = chosenBackend?.fields ?? ["host", "port", "user", "password", "database"];
+  const specs: DbFieldSpec[] =
+    chosenBackend?.field_specs ??
+    (chosenBackend?.fields ?? ["host", "port", "user", "password", "database"]).map(fallbackSpec);
+  const basicSpecs = specs.filter((s) => s.group !== "advanced");
+  const advancedSpecs = specs.filter((s) => s.group === "advanced");
 
   const save = useMutation({
     mutationFn: () => {
       const body: Record<string, unknown> = { backend };
-      for (const f of fields) {
-        const raw = values[f];
+      for (const s of specs) {
+        const raw = values[s.name];
         if (raw === undefined) continue;
-        if (DB_SECRET_FIELDS.has(f) && raw === "********") continue;
-        body[f] = coerceValue(f, raw);
+        if (s.secret && raw === "********") continue;
+        body[s.name] = coerceSpecValue(s, raw);
       }
       return apiFetch(`/api/profiles/db/${encodeURIComponent(name)}`, {
         method: "PUT",
@@ -458,41 +472,34 @@ function DbProfileWizard({
           </select>
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          {fields.map((f) => (
-            <Field
-              key={f}
-              label={DB_FIELD_LABELS[f] ?? f}
-              hint={DB_FIELD_HINTS[f]}
-              narrow={f === "port"}
-            >
-              {f === "secure" ||
-              f === "encrypt" ||
-              f === "trust_server_certificate" ||
-              f === "tls_no_verify" ? (
-                <input
-                  type="checkbox"
-                  checked={values[f] === "true"}
-                  onChange={(e) =>
-                    setValues({ ...values, [f]: e.target.checked ? "true" : "false" })
-                  }
-                  className="h-4 w-4 cursor-pointer accent-current"
-                />
-              ) : (
-                <input
-                  type={DB_SECRET_FIELDS.has(f) ? "password" : "text"}
-                  value={values[f] ?? ""}
-                  onChange={(e) => setValues({ ...values, [f]: e.target.value })}
-                  placeholder={
-                    f === "port" && chosenBackend?.default_port
-                      ? String(chosenBackend.default_port)
-                      : ""
-                  }
-                  className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-                />
-              )}
-            </Field>
+          {basicSpecs.map((s) => (
+            <DbFieldInput
+              key={s.name}
+              spec={s}
+              value={values[s.name]}
+              defaultPort={chosenBackend?.default_port}
+              onChange={(v) => setValues({ ...values, [s.name]: v })}
+            />
           ))}
         </div>
+        {advancedSpecs.length > 0 && (
+          <details className="rounded-md border border-surface-border bg-surface-subtle px-3 py-2 text-sm">
+            <summary className="cursor-pointer font-medium text-ink-muted">
+              Advanced (TLS / SSL / driver options)
+            </summary>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              {advancedSpecs.map((s) => (
+                <DbFieldInput
+                  key={s.name}
+                  spec={s}
+                  value={values[s.name]}
+                  defaultPort={chosenBackend?.default_port}
+                  onChange={(v) => setValues({ ...values, [s.name]: v })}
+                />
+              ))}
+            </div>
+          </details>
+        )}
         {save.isError && (
           <div className="rounded-md border border-critical/40 bg-critical/5 px-3 py-2 text-xs text-critical">
             {save.error instanceof Error ? save.error.message : "Save failed."}
@@ -503,14 +510,66 @@ function DbProfileWizard({
   );
 }
 
-function coerceValue(field: string, raw: string): unknown {
-  if (field === "port") {
+function coerceSpecValue(spec: DbFieldSpec, raw: string): unknown {
+  if (spec.kind === "int") {
     const n = Number(raw);
     return Number.isFinite(n) ? n : raw;
   }
-  if (raw === "true") return true;
-  if (raw === "false") return false;
+  if (spec.kind === "bool") {
+    return raw === "true";
+  }
   return raw;
+}
+
+function DbFieldInput({
+  spec,
+  value,
+  defaultPort,
+  onChange,
+}: {
+  spec: DbFieldSpec;
+  value: string | undefined;
+  defaultPort: number | undefined;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <Field
+      label={spec.label}
+      hint={spec.help || undefined}
+      narrow={spec.kind === "int"}
+    >
+      {spec.kind === "bool" ? (
+        <input
+          type="checkbox"
+          checked={value === "true"}
+          onChange={(e) => onChange(e.target.checked ? "true" : "false")}
+          className="h-4 w-4 cursor-pointer accent-current"
+        />
+      ) : spec.kind === "select" ? (
+        <select
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+        >
+          {spec.options.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt || "(default)"}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type={spec.kind === "password" ? "password" : "text"}
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={
+            spec.name === "port" && defaultPort ? String(defaultPort) : ""
+          }
+          className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+        />
+      )}
+    </Field>
+  );
 }
 
 // ── LLM profiles ──────────────────────────────────────────────────────
