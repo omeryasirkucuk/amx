@@ -23,6 +23,7 @@ import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
 import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
+import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
 import { InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 
 type Tab = "db" | "llm" | "docs" | "code";
@@ -180,7 +181,12 @@ function DbProfilesSection() {
   const remove = useMutation({
     mutationFn: (name: string) =>
       apiFetch(`/api/profiles/db/${encodeURIComponent(name)}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["profiles", "db"] }),
+    // ``profiles/db`` alone left the Sidebar / Topbar / RunNew with
+    // stale ``live-*`` and ``context`` queries — the row disappeared
+    // here but the deleted profile kept driving downstream UI until
+    // a page reload. ``invalidateAfterDbProfileMutation`` fires the
+    // full set of dependent keys at once.
+    onSuccess: () => invalidateAfterDbProfileMutation(qc),
   });
 
   const test = useMutation({
@@ -412,7 +418,10 @@ function DbProfileWizard({
       });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["profiles", "db"] });
+      // Same broad invalidation as the delete path so a host /
+      // catalog / database / credential edit reflows every
+      // downstream Studio surface without a page reload.
+      invalidateAfterDbProfileMutation(qc);
       qc.invalidateQueries({ queryKey: ["profiles", "db", name] });
       onClose();
     },
