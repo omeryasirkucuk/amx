@@ -512,6 +512,21 @@ class DBConfig(_ObservableConfig):
 
     # ClickHouse — HTTPS toggle. HTTP port is 8123, HTTPS is 8443.
     secure: bool = False
+
+    # DuckDB extras — ``read_only`` lets multiple AMX processes attach
+    # the same ``.duckdb`` file (the connector library otherwise grabs
+    # an exclusive lock). ``motherduck_token`` carries the MotherDuck
+    # PAT when the user pins a ``md:`` / ``md:<db>`` database path so
+    # the cloud-attach flow doesn't fall back to the env var.
+    read_only: bool = False
+    motherduck_token: str = ""
+
+    # BigQuery extras — ``location`` pins query jobs to a specific GCP
+    # region (EU, US, asia-east1, …) so cross-region data isn't moved
+    # invisibly. ``impersonate_service_account`` lets developers sign
+    # queries as a workload identity without minting personal SA keys.
+    location: str = ""
+    impersonate_service_account: str = ""
     # ClickHouse TLS verification (visible only when ``secure=True``).
     # ``ca_cert`` lets corporate users point at a private CA bundle;
     # ``verify=False`` is the escape hatch when even the CA path can't be
@@ -635,8 +650,20 @@ class DBConfig(_ObservableConfig):
             url = f"bigquery://{self.project}"
             if self.dataset:
                 url += f"/{self.dataset}"
+            params: list[str] = []
             if self.credentials_path:
-                url += f"?credentials_path={quote_plus(self.credentials_path)}"
+                params.append(f"credentials_path={quote_plus(self.credentials_path)}")
+            if self.location:
+                # sqlalchemy-bigquery forwards ``location`` to the
+                # BigQuery client so query jobs run in the pinned
+                # region instead of the project's default.
+                params.append(f"location={quote_plus(self.location)}")
+            if self.impersonate_service_account:
+                params.append(
+                    f"impersonate_service_account={quote_plus(self.impersonate_service_account)}"
+                )
+            if params:
+                url += "?" + "&".join(params)
             return url
 
         if self.backend == "mysql":
@@ -745,9 +772,28 @@ class DBConfig(_ObservableConfig):
 
         if self.backend == "duckdb":
             # File-based or in-memory. ``database`` carries the path
-            # (or ``:memory:``). No host/port/user/password.
+            # (or ``:memory:``, or ``md:[<db>]`` for MotherDuck). No
+            # host/port/user/password.
             target = self.database or ":memory:"
-            return f"duckdb:///{target}"
+            url = f"duckdb:///{target}"
+            params: list[str] = []
+            if self.read_only:
+                # duckdb-engine forwards ``read_only=true`` to
+                # ``duckdb.connect`` so two AMX processes can share the
+                # same file without fighting over the exclusive write
+                # lock. The flag is ignored for ``:memory:`` and
+                # MotherDuck URIs.
+                params.append("read_only=true")
+            if self.motherduck_token and (target.startswith("md:") or target == "md"):
+                # MotherDuck attach: the token is passed via the
+                # ``motherduck_token`` query parameter so it never
+                # surfaces in process listings or shell history. The
+                # MOTHERDUCK_TOKEN env var also works but explicit is
+                # better when the profile pins the cloud DB.
+                params.append(f"motherduck_token={quote_plus(self.motherduck_token)}")
+            if params:
+                url += "?" + "&".join(params)
+            return url
 
         # Default: PostgreSQL. When the user leaves ``database`` blank
         # (the ``/add-db-profile`` wizard advertises it as optional —
@@ -950,6 +996,10 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         ssl_ca=str(m.get("ssl_ca", "")),
         insecure_mode=bool(m.get("insecure_mode", False)),
         ocsp_fail_open=bool(m.get("ocsp_fail_open", False)),
+        read_only=bool(m.get("read_only", False)),
+        motherduck_token=str(m.get("motherduck_token", "")),
+        location=str(m.get("location", "")),
+        impersonate_service_account=str(m.get("impersonate_service_account", "")),
         profiling_mode=str(m.get("profiling_mode", "full")),
         profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
         profiling_sample_size=int(m.get("profiling_sample_size", 5)),
@@ -1004,6 +1054,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "project": db.project,
                 "dataset": db.dataset,
                 "credentials_path": db.credentials_path,
+                "location": db.location,
+                "impersonate_service_account": db.impersonate_service_account,
             }
         )
     elif db.backend == "mysql":
@@ -1070,6 +1122,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
         base.update(
             {
                 "database": db.database,
+                "read_only": db.read_only,
+                "motherduck_token": db.motherduck_token,
             }
         )
     else:
