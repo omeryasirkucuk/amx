@@ -91,6 +91,13 @@
         border-color: rgba(244, 185, 66, 0.7);
         background: rgba(244, 185, 66, 0.07);
       }
+      .status {
+        font-size: 12px;
+        color: #f4b942;
+        text-align: center;
+        margin-top: -4px;
+        line-height: 1.45;
+      }
       .logo {
         display: block;
         margin: 0 auto 22px auto;
@@ -122,9 +129,10 @@
         disk — nothing was lost.
       </p>
       <div class="stack">
-        <button class="action primary" onclick="window.location.reload()">
+        <button id="reconnect" class="action primary" type="button">
           Try reconnecting
         </button>
+        <div id="status" class="status" hidden></div>
         <a
           class="action"
           href="https://amxcli.com"
@@ -135,5 +143,64 @@
         </a>
       </div>
     </main>
+    <script>
+      // ``Try reconnecting`` used to call ``window.location.reload()``
+      // unconditionally. The reload would re-enter the Service Worker
+      // immediately, the SW would re-detect the dead CLI, and bounce
+      // back to this same offline page — the user clicked the button
+      // and nothing visible changed, so it looked broken. The script
+      // below probes ``/api/system/healthz`` (the same lightweight
+      // health endpoint the CLI exposes) BEFORE reloading and surfaces
+      // a "still offline" hint when the probe fails. ``cache: 'no-store'``
+      // + the timestamp query param sidestep the SW so the probe sees
+      // the live network, not our cached offline response.
+      const button = document.getElementById('reconnect');
+      const status = document.getElementById('status');
+
+      function setBusy(busy) {
+        button.disabled = busy;
+        button.textContent = busy ? 'Reconnecting…' : 'Try reconnecting';
+      }
+
+      async function probe() {
+        // ``/`` is auth-free (the catch-all serves index.html with no
+        // bearer check). Using a JS ``fetch`` keeps the request out of
+        // ``navigate`` mode so the Service Worker doesn't intercept it
+        // and serve the cached offline page — the probe always sees
+        // the real network status. The bust query nudges any
+        // intermediary proxy to revalidate.
+        const url = '/?__amx_probe=' + Date.now();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        try {
+          const r = await fetch(url, {
+            cache: 'no-store',
+            signal: controller.signal,
+          });
+          return r.ok;
+        } catch (_err) {
+          return false;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      button.addEventListener('click', async () => {
+        setBusy(true);
+        status.hidden = true;
+        const alive = await probe();
+        if (alive) {
+          // CLI is back — let the browser fetch the live page. The
+          // SW will see a successful response from network and pass
+          // it through instead of serving the cached offline page.
+          window.location.reload();
+          return;
+        }
+        setBusy(false);
+        status.hidden = false;
+        status.textContent =
+          'Still offline. Run "amx /studio" in your terminal, then click again.';
+      });
+    </script>
   </body>
 </html>

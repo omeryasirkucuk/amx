@@ -13,12 +13,17 @@
 // HTTP layer; over-caching at the SW would mean stale chunks on
 // every Studio upgrade). The Service Worker handles offline UX only.
 
-// Bump the cache name when changing PRECACHE_URLS so the ``activate``
-// handler wipes the old cache and the new payload (e.g. the AMX logo
-// added in v2) is fetched on the next install.
-const CACHE_NAME = 'amx-studio-offline-v2';
+// Bump the cache name when changing PRECACHE_URLS or fetch logic so
+// the ``activate`` handler wipes the old cache and the new payload
+// is fetched on the next install.
+const CACHE_NAME = 'amx-studio-offline-v3';
 const OFFLINE_URL = '/offline.html';
-const PRECACHE_URLS = [OFFLINE_URL, '/favicon.png', '/amx-logo.png'];
+const PRECACHE_URLS = [
+  OFFLINE_URL,
+  '/favicon.png',
+  '/favicon.svg',
+  '/amx-logo.png',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -44,27 +49,63 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Precached asset URLs as an absolute-path Set for cheap lookup.
+const PRECACHED_PATHS = new Set(PRECACHE_URLS);
+
+function isPrecachedAsset(url) {
+  try {
+    const u = new URL(url);
+    return PRECACHED_PATHS.has(u.pathname);
+  } catch (_err) {
+    return false;
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  // Only intercept navigation requests. Other resources (JS chunks,
-  // API calls, images) bubble up to the SPA's own error handling —
-  // a failed ``/api/runs`` call should still surface as a toast or
-  // banner inside the SPA when it's loaded, not be silently masked
-  // by the offline page.
-  if (request.mode !== 'navigate') {
+  const url = request.url;
+
+  // 1. Navigation requests — serve the offline page when network fails.
+  //    This is the headline UX: the user refreshes a Studio tab whose
+  //    CLI has died and lands on our branded page instead of Chrome's
+  //    "site can't be reached".
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request).catch(() =>
+        caches
+          .match(OFFLINE_URL, { cacheName: CACHE_NAME })
+          .then((cached) =>
+            cached ||
+            new Response(
+              '<h1>AMX Studio is offline</h1><p>Run <code>amx /studio</code> to restart.</p>',
+              { status: 503, headers: { 'Content-Type': 'text/html' } },
+            ),
+          ),
+      ),
+    );
     return;
   }
-  event.respondWith(
-    fetch(request).catch(() =>
-      caches
-        .match(OFFLINE_URL, { cacheName: CACHE_NAME })
-        .then((cached) =>
-          cached ||
-          new Response(
-            '<h1>AMX Studio is offline</h1><p>Run <code>amx /studio</code> to restart.</p>',
-            { status: 503, headers: { 'Content-Type': 'text/html' } },
-          ),
+
+  // 2. Precached static assets (favicon, logo) — these are loaded by
+  //    the offline page itself, so they must resolve even when the
+  //    CLI is down. Try network first (so an updated logo lands
+  //    naturally on the next visit) and fall back to cache. Without
+  //    this branch the offline page would show a broken-image icon
+  //    for the logo and the browser tab would show a blank favicon
+  //    while the CLI is offline.
+  if (isPrecachedAsset(url)) {
+    event.respondWith(
+      fetch(request).catch(() =>
+        caches.match(request, { cacheName: CACHE_NAME }).then(
+          (cached) => cached || new Response('', { status: 504 }),
         ),
-    ),
-  );
+      ),
+    );
+    return;
+  }
+
+  // 3. Everything else (JS chunks, API calls) — bubble up to the
+  //    SPA's own error handling. A failed ``/api/runs`` should still
+  //    surface as a toast in the SPA when it's loaded, not be
+  //    silently masked by the offline page.
 });
