@@ -8,6 +8,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Sidebar Live LLM price disappeared, ``/cost`` reported $0, and
+  per-run cost columns showed ``unknown`` for models whose profile
+  ``provider`` field did not match the LiteLLM catalog's vendor
+  prefix.** A user with a Databricks-served Llama configured the
+  profile model as ``databricks-meta-llama-3-3-70b-instruct``
+  (Databricks's own format, no slash) while LiteLLM keys the same
+  model as ``databricks/databricks-meta-llama-3-3-70b-instruct``.
+  When the profile's ``provider`` field correctly read ``databricks``,
+  ``_normalize_model_id`` already prefixed the catalog key and the
+  lookup hit. But the same physical endpoint can be configured under
+  ``provider=openai_compatible`` (or ``vllm``, ``databricks_genai``,
+  …) when accessed through an OpenAI-compatible adapter, and in that
+  case the prefix step generated a vendor that the catalog does not
+  use — so the lookup missed and the sidebar's
+  ``LlmProfilePriceLine`` rendered ``null`` (``source === "unknown"``
+  branch), giving the impression that "Refresh prices" had not
+  worked. ``lookup_price`` in ``amx/llm/pricing.py`` now adds a
+  bare-model suffix fallback: after the strict ``_normalize_model_id``
+  candidates are exhausted, it scans each source's keys for a key
+  that ends with ``"/" + model`` (or equals ``model`` outright) and
+  returns the first hit. ``user_override`` and the strict-match path
+  still win when they apply, so existing behaviour for correctly-
+  prefixed providers is unchanged.
+
 - **``Refresh prices`` toast read like AMX was broken when the
   corporate proxy blanket-blocked OpenRouter.** Studio surfaced
   ``openrouter: HTTPError: HTTP Error 403: Forbidden`` — the raw
