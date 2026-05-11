@@ -6,6 +6,19 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **README overhaul.** Replaces the static top banner with an inline
+  intro video, reframes the lead around the "cryptic columns, reviewed
+  comments" pitch, drops the cheaper `NUMBER(8)` cryptic-identifier
+  opener, swaps "warehouse" for engine-neutral phrasing (Postgres /
+  MySQL / Oracle / SQL Server / Snowflake / BigQuery / Redshift /
+  Databricks / ClickHouse / DuckDB are all first-class), and adds a
+  short "How it works" section with the three-agent flow and a
+  before-and-after on `orders.shipped_dt`. The CLI screenshot now sits
+  just above the `/studio` section so it captions the REPL walkthrough
+  rather than serving as a generic hero.
+
 ### Added
 
 - **DuckDB / BigQuery extras + Studio shared-history banner
