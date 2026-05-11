@@ -20,7 +20,17 @@ class DatabricksAdapter(DatabaseAdapter):
     name = "databricks"
     connect_timeout_seconds = 15
     connect_retry_attempts = 3
-    connect_retry_duration_seconds = 20
+    # ``_retry_stop_after_attempts_duration`` is the total budget the
+    # databricks-sql-connector spends retrying a single request. It
+    # caps connection-establishment retries AND query retries with the
+    # same value, so on a slow/serverless warehouse a real-world bulk
+    # metadata query (e.g. ``system.information_schema.columns`` over
+    # a 1000-table schema) was hitting the previous 20s cap and
+    # surfacing as a noisy "Retry request would exceed Retry policy
+    # max retry duration" log line. 120s covers transient hiccups
+    # without masking a genuinely dead warehouse — the per-attempt
+    # socket timeout above (15s) still bites individual round-trips.
+    connect_retry_duration_seconds = 120
     capabilities = BackendCapabilities(
         database_comments=True,
         materialized_view_comments=False,

@@ -995,12 +995,29 @@ class DatabaseConnector:
         spinner_ctx = None
         try:
             import sys as _sys
+            import threading as _threading
 
+            from amx.utils.console import is_quiet
             from amx.utils.live_display import get_display
 
             display = get_display()
             display_active = display is not None and getattr(display, "_live", None) is not None
-            if _sys.stdout.isatty() and not display_active:
+            # Only paint a spinner when this call comes from the CLI's
+            # foreground REPL — i.e. main thread, TTY, no Rich Live
+            # region already active, and the thread-local quiet flag
+            # the Studio worker installs is off. Without these guards
+            # a Studio sidebar expand (which runs on a uvicorn worker
+            # thread) was bleeding "Cached column descriptions for X"
+            # lines into the user's CLI shell.
+            on_main_thread = (
+                _threading.current_thread() is _threading.main_thread()
+            )
+            if (
+                _sys.stdout.isatty()
+                and not display_active
+                and on_main_thread
+                and not is_quiet()
+            ):
                 from amx.utils.console import step_spinner
 
                 spinner_ctx = step_spinner(

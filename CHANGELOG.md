@@ -21,6 +21,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **CLI no longer leaks Studio activity into the foreground terminal.**
+  ``_populate_schema_metadata_cache`` was painting a ``step_spinner``
+  ("Cached column descriptions for X") whenever it was invoked with a
+  TTY stdout, regardless of which thread asked. Studio's uvicorn
+  worker threads were therefore drawing spinner lines into the shell
+  the user launched ``/studio`` from. The guard now skips the spinner
+  unless we're on the main thread AND ``is_quiet()`` is off — the
+  worker-thread / Studio-mode cases satisfy neither, so the CLI stays
+  clean while sidebar reads run silently in the background.
+
+- **Databricks retry budget raised + internal retry chatter silenced
+  in Studio mode.** ``connect_retry_duration_seconds`` was 20s, which
+  the databricks-sql-connector applies to BOTH connection
+  establishment and every query retry. On a slow / serverless
+  warehouse a real bulk metadata query (``system.information_
+  schema.columns`` over a 1000-table schema) was bumping the cap and
+  surfacing a noisy "Retry request would exceed Retry policy max
+  retry duration of 20.0 seconds" log line. Bumped to 120s. Also
+  added ``databricks.sql`` / ``databricks.sqlalchemy`` to the
+  Studio-mode log mute list so even when the cap *is* hit on an
+  unhealthy warehouse, the connector's internal chatter doesn't bleed
+  into the CLI — the real failure still surfaces as an exception
+  through the request handler.
+
 - **Cache now actually covers ``list_assets`` and the per-schema
   ``DESCRIBE SCHEMA`` loop.** The v0.13 cache short-circuited
   ``get_table_comment`` and ``get_column_comments`` but left the
