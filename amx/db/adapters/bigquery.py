@@ -150,6 +150,36 @@ class BigQueryAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "INFORMATION_SCHEMA.TABLES"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """BigQuery doesn't store a free-text dataset description in
+        ``INFORMATION_SCHEMA.SCHEMATA`` — descriptions live on the
+        dataset resource itself, fetched via the Google client. The
+        bulk query still wins because it replaces one
+        ``SELECT … FROM `project`.INFORMATION_SCHEMA.SCHEMATA`` for
+        the schema list with N per-dataset client calls the legacy
+        path would make.
+        """
+        project = (catalog or getattr(self.cfg, "project", "") or "").strip()
+        info_path = (
+            f"`{project}`.INFORMATION_SCHEMA.SCHEMATA"
+            if project
+            else "INFORMATION_SCHEMA.SCHEMATA"
+        )
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(f"SELECT schema_name FROM {info_path}")
+                ).fetchall()
+            return {str(r[0]): None for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

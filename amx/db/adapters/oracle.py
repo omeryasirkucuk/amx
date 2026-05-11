@@ -271,6 +271,35 @@ class OracleAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "ALL_TABLES.NUM_ROWS (optimiser stats; may be stale)"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """Oracle has no schema-level COMMENT (schemas are users). Use
+        ``ALL_USERS`` as the schema source; every entry carries
+        ``None`` as the comment so the bulk path purely saves the
+        sidebar's per-schema enumeration round-trips, no comment polish.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT USERNAME FROM ALL_USERS "
+                        "WHERE USERNAME NOT IN ("
+                        "'SYS','SYSTEM','OUTLN','XS$NULL','DBSNMP','APPQOSSYS',"
+                        "'ANONYMOUS','XDB','GSMADMIN_INTERNAL','GSMCATUSER','GSMUSER',"
+                        "'DIP','REMOTE_SCHEDULER_AGENT','SI_INFORMTN_SCHEMA',"
+                        "'ORDDATA','ORDPLUGINS','ORDSYS','OJVMSYS','LBACSYS',"
+                        "'CTXSYS','MDSYS','MDDATA','OLAPSYS','WMSYS','EXFSYS')"
+                    )
+                ).fetchall()
+            return {str(r[0]): None for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

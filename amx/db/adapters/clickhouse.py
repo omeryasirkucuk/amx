@@ -213,6 +213,31 @@ class ClickHouseAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "system.parts (active parts only)"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """``system.databases`` covers every CH "schema" + its comment.
+
+        ClickHouse 22.5+ ships the ``comment`` column on this view; on
+        older builds we degrade silently (the ``except`` branch fires)
+        and the connector falls back to its per-schema path.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT name, comment FROM system.databases "
+                        "WHERE name NOT IN ('system','INFORMATION_SCHEMA','information_schema')"
+                    )
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

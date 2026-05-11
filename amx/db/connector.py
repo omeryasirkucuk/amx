@@ -392,11 +392,26 @@ class DatabaseConnector:
         self._engine = None
 
     def list_schemas(self) -> list[str]:
+        # Cache fast path: the schemas_cache holds (schema, comment)
+        # pairs per (profile, database, catalog). Reading here lets the
+        # sidebar's catalog-expand short-circuit BOTH the schema
+        # enumeration AND the per-schema get_schema_comment loop the
+        # router fires right after — see _populate_catalogs_cache for
+        # the bulk fill that warms this state.
+        catalog = getattr(self.cfg, "catalog", "") or ""
+        if self._catalog_bulk_cache_is_fresh(catalog):
+            cached = self._list_schemas_from_cache(catalog)
+            if cached:
+                return [name for name, _ in cached]
+        if self._populate_catalogs_cache(catalog):
+            cached = self._list_schemas_from_cache(catalog)
+            if cached:
+                return [name for name, _ in cached]
+
         # Adapter-specific override (e.g. Databricks ``SHOW SCHEMAS IN
         # <catalog>``) takes precedence so catalog-scoped backends
         # don't fall through to the SQLAlchemy inspector — which
         # ignores catalog and returns ambiguous results.
-        catalog = getattr(self.cfg, "catalog", "") or ""
         try:
             adapter_result = self._adapter.list_schemas(self.engine, catalog)
         except Exception:
@@ -577,7 +592,68 @@ class DatabaseConnector:
         return self._list_extended("external_tables", "list_external_tables", schema)
 
     def list_assets(self, schema: str) -> list[tuple[str, AssetKind]]:
-        """All analyzable assets (tables, views, materialized views) in a schema."""
+        """All analyzable assets (tables, views, materialized views) in a schema.
+
+        Cache fast path: when the column-comments cache for this
+        schema is bulk-filled (the adapter's ``bulk_schema_metadata``
+        ran for it within the TTL window), we already know every table
+        + view + MV name and their kinds — return them without
+        re-issuing SHOW TABLES / SHOW VIEWS. This is the difference
+        the user observed between "expand schema" hitting the DB
+        every time and a true warm cache.
+
+        Cold path: try the bulk fetch via
+        ``_populate_schema_metadata_cache`` to also fill the cache for
+        every sibling read in the same session. If the backend has no
+        bulk source (or it fails), fall through to the existing
+        per-list inspector calls and DO NOT pretend the result is
+        bulk-filled — that flag is reserved for the adapter path that
+        promises an exhaustive enumeration.
+        """
+        normalised = self._normalize_id(schema)
+        # Fast path — cache covers the schema; derive list from rows.
+        if self._schema_bulk_cache_is_fresh(normalised):
+            cached = self._lookup_column_comments_cache_bulk(normalised)
+            if cached:
+                kind_map = {
+                    "TABLE": AssetKind.TABLE,
+                    "VIEW": AssetKind.VIEW,
+                    "MATERIALIZED VIEW": AssetKind.MATERIALIZED_VIEW,
+                }
+                assets = [
+                    (
+                        name,
+                        kind_map.get(
+                            str(entry.get("kind", "TABLE")).upper(),
+                            AssetKind.TABLE,
+                        ),
+                    )
+                    for name, entry in cached.items()
+                ]
+                assets.sort(key=lambda x: x[0])
+                return assets
+        # Cold path — try the bulk adapter so the next call is warm.
+        if self._populate_schema_metadata_cache(normalised):
+            cached = self._lookup_column_comments_cache_bulk(normalised)
+            if cached:
+                kind_map = {
+                    "TABLE": AssetKind.TABLE,
+                    "VIEW": AssetKind.VIEW,
+                    "MATERIALIZED VIEW": AssetKind.MATERIALIZED_VIEW,
+                }
+                assets = [
+                    (
+                        name,
+                        kind_map.get(
+                            str(entry.get("kind", "TABLE")).upper(),
+                            AssetKind.TABLE,
+                        ),
+                    )
+                    for name, entry in cached.items()
+                ]
+                assets.sort(key=lambda x: x[0])
+                return assets
+        # Fallback — inspector-driven enumeration (legacy path).
         assets: list[tuple[str, AssetKind]] = []
         for t in self.list_tables(schema):
             assets.append((t, AssetKind.TABLE))
@@ -670,8 +746,17 @@ class DatabaseConnector:
         self,
         schema: str,
         entries: dict[str, dict[str, Any]],
+        *,
+        bulk_filled: bool = False,
     ) -> None:
-        """Persist a per-schema metadata dict to the cache."""
+        """Persist a per-schema metadata dict to the cache.
+
+        ``bulk_filled`` is ``True`` only when the entries dict came
+        from the adapter's bulk source — i.e. covers every table in
+        the schema. Per-table fallback writes pass ``False`` so the
+        cache row is usable for column-comment short-circuits but not
+        for ``list_assets``.
+        """
         if not entries:
             return
         try:
@@ -687,9 +772,47 @@ class DatabaseConnector:
                 database=self._cache_database_key(),
                 schema=schema,
                 entries=entries,
+                bulk_filled=bulk_filled,
             )
         except Exception as exc:
             log.debug("column-comments cache save failed: %s", exc)
+
+    def _schema_bulk_cache_is_fresh(self, schema: str) -> bool:
+        """Cheap check used by ``list_assets`` before re-running SHOW TABLES."""
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return False
+        store = history_store()
+        if store is None:
+            return False
+        try:
+            return store.schema_has_bulk_filled_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                schema=schema,
+            )
+        except Exception:
+            return False
+
+    def _lookup_column_comments_cache_bulk(
+        self, schema: str
+    ) -> dict[str, dict[str, Any]]:
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return {}
+        store = history_store()
+        if store is None:
+            return {}
+        try:
+            return store.lookup_column_comments_cache_bulk(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                schema=schema,
+            )
+        except Exception:
+            return {}
 
     def invalidate_column_comments_cache(
         self,
@@ -701,6 +824,10 @@ class DatabaseConnector:
         - ``schema`` + ``table`` → single row (one table COMMENT write).
         - ``schema`` only → whole schema (schema COMMENT write).
         - Both None → whole profile (database COMMENT or wholesale reset).
+
+        Schema-level invalidations also wipe the matching
+        ``schemas_cache`` row so a re-read of ``get_schema_comment``
+        sees the fresh value, not the pre-write copy.
         """
         try:
             from amx.storage.sqlite_store import history_store
@@ -718,6 +845,132 @@ class DatabaseConnector:
             )
         except Exception as exc:
             log.debug("column-comments cache invalidate failed: %s", exc)
+        # Mirror the invalidation into the schemas_cache. Granularity
+        # mapping: ``table`` writes don't touch schema metadata so we
+        # skip them; ``schema`` writes wipe that one schema row; whole-
+        # profile invalidations (both None) wipe everything in the
+        # catalog cache too.
+        if table is not None:
+            return
+        try:
+            store.invalidate_schemas_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                catalog=str(getattr(self.cfg, "catalog", "") or ""),
+                schema=schema,
+            ) if schema is not None else store.invalidate_schemas_cache(
+                db_profile=self._cache_profile_key,
+            )
+        except Exception as exc:
+            log.debug("schemas cache invalidate failed: %s", exc)
+
+    # ── schemas_cache helpers ─────────────────────────────────────────────
+
+    def _lookup_schemas_cache(
+        self, catalog: str, schema: str
+    ) -> dict[str, Any] | None:
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return None
+        store = history_store()
+        if store is None:
+            return None
+        try:
+            return store.lookup_schemas_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                catalog=catalog,
+                schema=schema,
+            )
+        except Exception:
+            return None
+
+    def _catalog_bulk_cache_is_fresh(self, catalog: str) -> bool:
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return False
+        store = history_store()
+        if store is None:
+            return False
+        try:
+            return store.catalog_has_bulk_filled_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                catalog=catalog,
+            )
+        except Exception:
+            return False
+
+    def _list_schemas_from_cache(
+        self, catalog: str
+    ) -> list[tuple[str, str | None]]:
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return []
+        store = history_store()
+        if store is None:
+            return []
+        try:
+            return store.list_schemas_from_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                catalog=catalog,
+            )
+        except Exception:
+            return []
+
+    def _save_schemas_cache(
+        self,
+        catalog: str,
+        entries: dict[str, str | None],
+        *,
+        bulk_filled: bool = False,
+    ) -> None:
+        if not entries:
+            return
+        try:
+            from amx.storage.sqlite_store import history_store
+        except Exception:
+            return
+        store = history_store()
+        if store is None:
+            return
+        try:
+            store.save_schemas_cache(
+                db_profile=self._cache_profile_key,
+                database=self._cache_database_key(),
+                catalog=catalog,
+                entries=entries,
+                bulk_filled=bulk_filled,
+            )
+        except Exception as exc:
+            log.debug("schemas cache save failed: %s", exc)
+
+    def _populate_catalogs_cache(self, catalog: str) -> bool:
+        """Run the adapter's ``bulk_catalog_metadata`` and cache it.
+
+        Returns ``True`` when the adapter delivered a non-empty dict
+        (every reachable schema in the catalog) and ``False`` when the
+        backend has no bulk source — the caller then falls back to
+        per-schema enumeration + per-schema comment lookups.
+        """
+        try:
+            payload = self._adapter.bulk_catalog_metadata(self.engine, catalog)
+        except Exception as exc:
+            log.debug(
+                "bulk_catalog_metadata raised on %s for catalog %r: %s",
+                self._adapter.name,
+                catalog,
+                exc,
+            )
+            return False
+        if not payload:
+            return False
+        self._save_schemas_cache(catalog, payload, bulk_filled=True)
+        return True
 
     def _populate_schema_metadata_cache(self, schema: str) -> bool:
         """Run the adapter's bulk source for ``schema`` and cache results.
@@ -777,7 +1030,7 @@ class DatabaseConnector:
             return False
         if not payload:
             return False
-        self._save_column_comments_cache(schema, payload)
+        self._save_column_comments_cache(schema, payload, bulk_filled=True)
         return True
 
     def get_table_comment(self, schema: str, table: str) -> str | None:
@@ -861,7 +1114,24 @@ class DatabaseConnector:
     def get_schema_comment(self, schema: str) -> str | None:
         if not self.capabilities.schema_comments:
             return None
-        return self._adapter.get_schema_comment(self.engine, schema)
+        catalog = str(getattr(self.cfg, "catalog", "") or "")
+        # Cache fast path: hit the schemas_cache before any DB call.
+        cached = self._lookup_schemas_cache(catalog, schema)
+        if cached is not None:
+            return cached.get("schema_comment")
+        # Cold path: bulk-fill the whole catalog in one shot so the
+        # sidebar's per-schema loop becomes O(1) cache hits after the
+        # first call. If the adapter has no bulk source, drop to the
+        # legacy per-schema call and cache its single-row result.
+        if self._populate_catalogs_cache(catalog):
+            cached = self._lookup_schemas_cache(catalog, schema)
+            if cached is not None:
+                return cached.get("schema_comment")
+        value = self._adapter.get_schema_comment(self.engine, schema)
+        self._save_schemas_cache(
+            catalog, {schema: value}, bulk_filled=False
+        )
+        return value
 
     def get_database_comment(self) -> str | None:
         if not self.capabilities.database_comments:

@@ -345,6 +345,39 @@ class DatabricksAdapter(DatabaseAdapter):
         except Exception:
             return None
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """Unity Catalog: every schema in ``catalog`` + its comment in
+        one ``system.information_schema.schemata`` query.
+
+        Replaces the sidebar's per-schema ``DESCRIBE SCHEMA`` loop on
+        Databricks, which is the single most expensive bit of metadata
+        polish when expanding a catalog with many schemas. Legacy Hive
+        metastore profiles return ``None`` (no ``system.information_
+        schema``) and fall back to per-schema fetch.
+        """
+        cat = (catalog or getattr(self.cfg, "catalog", "") or "").strip()
+        if not cat:
+            return None
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT schema_name, comment "
+                        "FROM system.information_schema.schemata "
+                        "WHERE catalog_name = :cat AND schema_name <> 'information_schema'"
+                    ),
+                    {"cat": cat},
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(
