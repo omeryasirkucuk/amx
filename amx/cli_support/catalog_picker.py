@@ -5,11 +5,15 @@ BigQuery projects, etc.).
 Lives at the package level rather than inside ``commands/manual.py``
 so every flow that lists schemas / tables before knowing the
 catalog (``/connect``, ``/run``, ``/run-apply``, ``/search sync``,
-``/edit``) can call the same helper. Per the v0.10.13 UX rule the
-picker is always shown when the backend supports catalogs — the
-existing ``cfg.catalog`` seeds the default so a user happy with
-their previous pick just presses Enter, and a user who wants to
-switch catalogs picks a different one.
+``/edit``) can call the same helper.
+
+UX rule (revised post-v0.13): when the profile already has a
+``cfg.catalog`` pinned, use it silently — same as the 2-level
+``ensure_database_selected`` already does for ``cfg.database``.
+Prompting on every run for a value the user has already chosen at
+profile-creation time was noise; the original "always prompt with
+Enter to keep" rule was rolled back. To explicitly change the pin,
+the user re-runs ``/db`` and edits the profile.
 
 The helper is intentionally a pure function with no side effects
 beyond updating ``db.cfg.catalog`` for the active in-memory
@@ -30,26 +34,27 @@ log = get_logger("cli.catalog_picker")
 def ensure_catalog_selected(
     db: Any,
     *,
-    silent_when_set: bool = False,
+    silent_when_set: bool = True,
 ) -> str:
-    """Prompt the user for a catalog, defaulting to the current pick.
+    """Prompt the user for a catalog only when nothing is pinned.
 
     Args:
         db: A live :class:`DatabaseConnector`. The helper checks
             ``db.supports_catalogs()`` and short-circuits when False
             so PG / Snowflake / BigQuery (without project switching)
             connections are unaffected.
-        silent_when_set: When True, skip the prompt entirely if
-            ``cfg.catalog`` is already populated and the catalog
-            list is non-empty. Useful for non-interactive flows
-            where the user has already pinned a catalog and any
-            extra prompt would be noise. Default False — the picker
-            shows every time, mirroring the v0.10.13 UX rule.
+        silent_when_set: When True (the default since v0.13), skip
+            the prompt entirely if ``cfg.catalog`` is already pinned
+            in the profile AND visible in ``list_catalogs()``. This
+            mirrors what :func:`ensure_database_selected` already
+            does for 2-level backends — pinned == use directly, no
+            re-ask on every run. Pass False to force the picker
+            (e.g. an explicit "switch catalog" sub-command).
 
     Returns:
-        The selected catalog name (or the existing one when the
-        user pressed Enter to keep it). Returns "" when the
-        backend doesn't support catalogs or when the user cancelled.
+        The selected catalog name (the pinned value when silent,
+        the user's pick otherwise). Returns "" when the backend
+        doesn't support catalogs or when the user cancelled.
     """
     # Lazy import to avoid coupling cli_support → commands.manual at
     # import time. The text-prompt helpers come from utils.console
