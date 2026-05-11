@@ -110,3 +110,65 @@ def test_invalidation_forces_refetch(duckdb_profile) -> None:
     # Without invalidation the cache would still serve the old value.
     db.invalidate_column_comments_cache(schema="sales", table="orders")
     assert db.get_table_comment("sales", "orders") == "Updated comment"
+
+
+def test_list_assets_uses_cache_after_first_call(duckdb_profile) -> None:
+    """The user's reported friction: ``list_assets`` was hitting
+    SHOW TABLES every sidebar expand because the v0.13 cache only
+    covered column comments, not the asset list itself. After the
+    bulk_filled-aware cache lands, the second ``list_assets`` for the
+    same schema must NOT touch the engine.
+    """
+    db = DatabaseConnector(duckdb_profile, profile_name="duckdb-test")
+    # First call — cold path, bulk fetch populates the cache.
+    assets = db.list_assets("sales")
+    names = sorted([n for n, _ in assets])
+    assert names == ["line_items", "orders"]
+    # Trap the engine so any DB hit on the second call raises loudly.
+    real_engine = db._engine
+
+    class _Trap:
+        def __getattr__(self, _name):  # pragma: no cover - guard
+            raise AssertionError("expected cache hit; engine was reached")
+
+    db._engine = _Trap()  # type: ignore[assignment]
+    try:
+        cached_assets = db.list_assets("sales")
+    finally:
+        db._engine = real_engine
+    assert sorted([n for n, _ in cached_assets]) == ["line_items", "orders"]
+
+
+def test_list_schemas_uses_cache_after_first_call(tmp_path) -> None:
+    """Catalog expand: ``list_schemas`` must NOT re-query the DB on
+    repeat visits. DuckDB can't carry schema-level comments (the
+    backend NotImplementedException's COMMENT ON SCHEMA), but the
+    schema enumeration itself absolutely must be cache-served — that
+    is the reported friction on the catalog-expand path.
+    """
+    db_path = tmp_path / "schemas.duckdb"
+    engine = sqlalchemy.create_engine(f"duckdb:///{db_path}")
+    with engine.begin() as conn:
+        conn.execute(sqlalchemy.text("CREATE SCHEMA finance"))
+        conn.execute(sqlalchemy.text("CREATE SCHEMA marketing"))
+    engine.dispose()
+
+    db = DatabaseConnector(
+        DBConfig(backend="duckdb", database=str(db_path)),
+        profile_name="duckdb-schemas-test",
+    )
+    schemas = db.list_schemas()
+    assert {"finance", "marketing"} <= set(schemas)
+
+    real_engine = db._engine
+
+    class _Trap:
+        def __getattr__(self, _name):  # pragma: no cover - guard
+            raise AssertionError("expected cache hit; engine was reached")
+
+    db._engine = _Trap()  # type: ignore[assignment]
+    try:
+        again = db.list_schemas()
+    finally:
+        db._engine = real_engine
+    assert {"finance", "marketing"} <= set(again)

@@ -233,6 +233,124 @@ def test_save_is_upsert_on_repeat_writes(store: SQLiteHistoryStore) -> None:
     assert hit["columns"] == {"id": "new"}
 
 
+def test_bulk_filled_flag_separates_full_from_partial_caches(
+    store: SQLiteHistoryStore,
+) -> None:
+    """``list_assets`` can only trust the cache when a bulk fetch
+    populated it (the adapter promises every table in the schema).
+    Per-table fallback writes leave the flag off, so the helper
+    returns ``False`` until a bulk fill lands.
+    """
+    # Per-table fallback write — single entry, bulk_filled=0.
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="",
+        schema="public",
+        entries={"orders": _entry("o", {})},
+        bulk_filled=False,
+    )
+    assert (
+        store.schema_has_bulk_filled_cache(
+            db_profile="prod", database="", schema="public"
+        )
+        is False
+    )
+    # Now a bulk fill drops in. ON CONFLICT promotes the flag to 1
+    # via MAX(); a later bulk fill must never demote a partial row.
+    store.save_column_comments_cache(
+        db_profile="prod",
+        database="",
+        schema="public",
+        entries={"orders": _entry("o", {}), "users": _entry("u", {})},
+        bulk_filled=True,
+    )
+    assert (
+        store.schema_has_bulk_filled_cache(
+            db_profile="prod", database="", schema="public"
+        )
+        is True
+    )
+
+
+def test_schemas_cache_roundtrip_and_invalidation(store: SQLiteHistoryStore) -> None:
+    """``schemas_cache`` mirrors ``column_comments_cache`` shape:
+    save → lookup with same scope returns the entry; invalidating
+    a catalog wipes all schemas under it but leaves siblings alone.
+    """
+    store.save_schemas_cache(
+        db_profile="prod-databricks",
+        database="main",
+        catalog="warehouse",
+        entries={"sales": "GL + AR + AP", "marketing": None},
+        bulk_filled=True,
+    )
+    store.save_schemas_cache(
+        db_profile="prod-databricks",
+        database="main",
+        catalog="archive",
+        entries={"old_sales": None},
+        bulk_filled=True,
+    )
+
+    hit = store.lookup_schemas_cache(
+        db_profile="prod-databricks",
+        database="main",
+        catalog="warehouse",
+        schema="sales",
+    )
+    assert hit is not None and hit["schema_comment"] == "GL + AR + AP"
+    assert hit["bulk_filled"] is True
+
+    # Catalog-level invalidate drops all schemas under that catalog.
+    dropped = store.invalidate_schemas_cache(
+        db_profile="prod-databricks",
+        database="main",
+        catalog="warehouse",
+    )
+    assert dropped == 2
+    # Sibling catalog untouched.
+    assert (
+        store.lookup_schemas_cache(
+            db_profile="prod-databricks",
+            database="main",
+            catalog="archive",
+            schema="old_sales",
+        )
+        is not None
+    )
+
+
+def test_catalog_has_bulk_filled_cache_gate(store: SQLiteHistoryStore) -> None:
+    """``list_schemas`` may only short-circuit the DB when the catalog
+    cache was filled in bulk — same invariant the column cache has."""
+    store.save_schemas_cache(
+        db_profile="prod",
+        database="",
+        catalog="warehouse",
+        entries={"sales": None},
+        bulk_filled=False,
+    )
+    assert (
+        store.catalog_has_bulk_filled_cache(
+            db_profile="prod", database="", catalog="warehouse"
+        )
+        is False
+    )
+    store.save_schemas_cache(
+        db_profile="prod",
+        database="",
+        catalog="warehouse",
+        entries={"sales": None, "marketing": None},
+        bulk_filled=True,
+    )
+    assert (
+        store.catalog_has_bulk_filled_cache(
+            db_profile="prod", database="", catalog="warehouse"
+        )
+        is True
+    )
+
+
 def test_lookup_is_database_scoped(store: SQLiteHistoryStore) -> None:
     """A multi-database profile (e.g. Postgres with several databases
     or Databricks with multiple catalogs) must not let a table in

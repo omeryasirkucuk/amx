@@ -21,6 +21,28 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Cache now actually covers ``list_assets`` and the per-schema
+  ``DESCRIBE SCHEMA`` loop.** The v0.13 cache short-circuited
+  ``get_table_comment`` and ``get_column_comments`` but left the
+  upstream SHOW TABLES / per-schema DESCRIBE SCHEMA queries firing
+  on every sidebar visit. Two fixes:
+  - ``column_comments_cache`` now records *how* an entry was written
+    (``bulk_filled=1`` for adapter-bulk fetches, ``0`` for per-table
+    inspector fallback). ``connector.list_assets`` reads the asset
+    list directly from the cache when at least one bulk-filled row
+    exists for the schema, so a re-visit no longer issues SHOW
+    TABLES at all.
+  - New ``schemas_cache`` table + per-backend ``bulk_catalog_
+    metadata`` (Databricks Unity, Snowflake, Postgres, BigQuery,
+    MySQL, Oracle, MSSQL, Redshift, ClickHouse, DuckDB) so expanding
+    a catalog in the sidebar runs **one** ``INFORMATION_SCHEMA.
+    SCHEMATA`` query instead of N per-schema DESCRIBE SCHEMA round-
+    trips. ``connector.list_schemas`` and ``get_schema_comment``
+    both read off this cache. The invalidation hooks in
+    ``set_schema_comment`` / ``set_database_comment`` were extended
+    to drop the matching schemas_cache rows so a post-write read is
+    guaranteed fresh.
+
 - **Catalog picker no longer re-prompts on every run when the profile
   already pinned one.** A Databricks profile with ``catalog=main`` was
   showing the "Current catalog: 'main'. Press Enter to keep it" prompt

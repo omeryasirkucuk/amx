@@ -226,6 +226,38 @@ class MSSQLAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "sys.dm_db_partition_stats (estimate)"
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """``sys.schemas`` joined to ``sys.extended_properties`` for the
+        ``MS_Description`` extended property on schema-level (class=3).
+        Skips the built-in ``dbo``-adjacent system schemas the sidebar
+        already filters.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT s.name, CAST(ep.value AS NVARCHAR(MAX)) "
+                        "FROM sys.schemas s "
+                        "LEFT JOIN sys.extended_properties ep "
+                        "  ON ep.major_id = s.schema_id "
+                        "  AND ep.class = 3 AND ep.name = 'MS_Description' "
+                        "WHERE s.name NOT IN ("
+                        "'sys','INFORMATION_SCHEMA','guest','db_accessadmin',"
+                        "'db_backupoperator','db_datareader','db_datawriter',"
+                        "'db_ddladmin','db_denydatareader','db_denydatawriter',"
+                        "'db_owner','db_securityadmin')"
+                    )
+                ).fetchall()
+            return {str(r[0]): (str(r[1]) if r[1] else None) for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(

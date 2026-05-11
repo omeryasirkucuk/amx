@@ -284,6 +284,56 @@ class SQLiteHistoryStore:
                     "CREATE INDEX IF NOT EXISTS idx_ccc_expires "
                     "ON column_comments_cache(expires_at)"
                 )
+            # ``bulk_filled`` differentiates two write paths:
+            #   - ``1`` — entry came from a successful
+            #     ``adapter.bulk_schema_metadata`` call, which by
+            #     contract returns EVERY table in the schema. Presence
+            #     of any such row for a schema means the cache covers
+            #     the whole schema and ``list_assets`` can read from it
+            #     directly without re-issuing SHOW TABLES.
+            #   - ``0`` — entry came from the per-table inspector
+            #     fallback. The schema may have other uncached tables;
+            #     ``list_assets`` must NOT trust this state.
+            # Added as a migration so existing histories pick it up.
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "ALTER TABLE column_comments_cache "
+                    "ADD COLUMN bulk_filled INTEGER NOT NULL DEFAULT 0"
+                )
+            # ── schemas_cache: per-catalog schema-level metadata ──
+            # Catalog expand in the sidebar fires ``list_schemas`` (one
+            # query — fast) and then ``get_schema_comment`` per schema
+            # (DESCRIBE SCHEMA / pg_namespace lookup — slow loop).
+            # This table absorbs both: a single ``bulk_catalog_metadata``
+            # query fills schema names + comments for the whole catalog
+            # in one round-trip, and the result lives here under a
+            # ``(profile, database, catalog)`` scope. The freshness
+            # marker on individual rows mirrors the column cache.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schemas_cache (
+                    cache_key       TEXT PRIMARY KEY,
+                    db_profile      TEXT NOT NULL,
+                    database_name   TEXT NOT NULL DEFAULT '',
+                    catalog_name    TEXT NOT NULL DEFAULT '',
+                    schema_name     TEXT NOT NULL,
+                    schema_comment  TEXT,
+                    bulk_filled     INTEGER NOT NULL DEFAULT 0,
+                    fetched_at      REAL NOT NULL,
+                    expires_at      REAL NOT NULL
+                )
+                """
+            )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sc_profile_catalog "
+                    "ON schemas_cache(db_profile, database_name, catalog_name)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sc_expires "
+                    "ON schemas_cache(expires_at)"
+                )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_run_results_run_id ON run_results(run_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_run_results_asset "
@@ -1396,6 +1446,7 @@ class SQLiteHistoryStore:
         schema: str,
         entries: dict[str, dict[str, Any]],
         ttl_seconds: float = 3600.0,
+        bulk_filled: bool = False,
     ) -> int:
         """Bulk upsert per-table entries after one ``bulk_schema_metadata`` call.
 
@@ -1404,6 +1455,12 @@ class SQLiteHistoryStore:
         ``kind`` ("TABLE" | "VIEW" | "MATERIALIZED VIEW"). Missing keys default
         to ``None`` / empty / "TABLE" so callers can pass partial payloads
         when the backend only returns column-level data.
+
+        ``bulk_filled`` records *how* the entries arrived: ``True`` for a
+        successful bulk-adapter call (the dict covers every table in the
+        schema by contract), ``False`` for per-table fallback writes. The
+        flag is what lets ``list_assets`` know whether the cache is safe
+        to read instead of re-issuing SHOW TABLES.
         """
         if not entries:
             return 0
@@ -1414,6 +1471,7 @@ class SQLiteHistoryStore:
         if ttl_seconds == 0:
             ttl_seconds = 3600.0
         expires_at = now + float(ttl_seconds)
+        flag = 1 if bulk_filled else 0
         rows = [
             (
                 self._ccc_key(
@@ -1431,6 +1489,7 @@ class SQLiteHistoryStore:
                 str(payload.get("kind") or "TABLE"),
                 now,
                 expires_at,
+                flag,
             )
             for table, payload in entries.items()
         ]
@@ -1439,18 +1498,53 @@ class SQLiteHistoryStore:
                 """
                 INSERT INTO column_comments_cache
                     (cache_key, db_profile, database_name, schema_name, table_name,
-                     table_comment, columns_json, kind, fetched_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     table_comment, columns_json, kind, fetched_at, expires_at, bulk_filled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(cache_key) DO UPDATE SET
                     table_comment = excluded.table_comment,
                     columns_json  = excluded.columns_json,
                     kind          = excluded.kind,
                     fetched_at    = excluded.fetched_at,
-                    expires_at    = excluded.expires_at
+                    expires_at    = excluded.expires_at,
+                    bulk_filled   = MAX(column_comments_cache.bulk_filled, excluded.bulk_filled)
                 """,
                 rows,
             )
         return len(rows)
+
+    def schema_has_bulk_filled_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+    ) -> bool:
+        """``True`` when at least one fresh ``bulk_filled=1`` row exists
+        for ``(profile, database, schema)``.
+
+        Presence of one bulk-filled row implies the whole schema is
+        covered by the cache (bulk_schema_metadata returns every table
+        in the schema by contract). ``list_assets`` keys off this flag
+        to decide whether reading from cache is safe — partial caches
+        produced by the per-table fallback path are not.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM column_comments_cache
+                WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+                  AND bulk_filled = 1 AND expires_at >= ?
+                LIMIT 1
+                """,
+                (
+                    str(db_profile or ""),
+                    str(database or ""),
+                    str(schema or ""),
+                    now,
+                ),
+            ).fetchone()
+        return row is not None
 
     def lookup_column_comments_cache(
         self,
@@ -1578,6 +1672,204 @@ class SQLiteHistoryStore:
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "DELETE FROM column_comments_cache WHERE expires_at < ?",
+                (now,),
+            )
+            return int(cur.rowcount or 0)
+
+    # ── schemas_cache: per-catalog schema-level cache ─────────────
+
+    @staticmethod
+    def _sc_key(*, db_profile: str, database: str, catalog: str, schema: str) -> str:
+        return f"{db_profile}|{database or ''}|{catalog or ''}|{schema}"
+
+    def save_schemas_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        catalog: str,
+        entries: dict[str, str | None],
+        ttl_seconds: float = 3600.0,
+        bulk_filled: bool = False,
+    ) -> int:
+        """Bulk upsert schema-level entries for one catalog.
+
+        ``entries`` maps schema name → schema comment (``None`` when the
+        schema has no comment). ``bulk_filled`` mirrors the column
+        cache's flag: ``True`` when a single ``bulk_catalog_metadata``
+        call produced the dict (covers every schema in the catalog),
+        ``False`` for per-schema fallback writes.
+        """
+        if not entries:
+            return 0
+        now = time.time()
+        if ttl_seconds == 0:
+            ttl_seconds = 3600.0
+        expires_at = now + float(ttl_seconds)
+        flag = 1 if bulk_filled else 0
+        rows = [
+            (
+                self._sc_key(
+                    db_profile=str(db_profile or ""),
+                    database=str(database or ""),
+                    catalog=str(catalog or ""),
+                    schema=str(schema or ""),
+                ),
+                str(db_profile or ""),
+                str(database or ""),
+                str(catalog or ""),
+                str(schema or ""),
+                comment,
+                flag,
+                now,
+                expires_at,
+            )
+            for schema, comment in entries.items()
+        ]
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO schemas_cache
+                    (cache_key, db_profile, database_name, catalog_name, schema_name,
+                     schema_comment, bulk_filled, fetched_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    schema_comment = excluded.schema_comment,
+                    bulk_filled    = MAX(schemas_cache.bulk_filled, excluded.bulk_filled),
+                    fetched_at     = excluded.fetched_at,
+                    expires_at     = excluded.expires_at
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def lookup_schemas_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        catalog: str,
+        schema: str,
+    ) -> dict[str, Any] | None:
+        """Return one fresh schema entry or ``None`` if missing/expired."""
+        cache_key = self._sc_key(
+            db_profile=str(db_profile or ""),
+            database=str(database or ""),
+            catalog=str(catalog or ""),
+            schema=str(schema or ""),
+        )
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT schema_comment, bulk_filled, fetched_at, expires_at
+                FROM schemas_cache WHERE cache_key = ?
+                """,
+                (cache_key,),
+            ).fetchone()
+        if row is None or float(row["expires_at"]) < time.time():
+            return None
+        return {
+            "schema_comment": row["schema_comment"],
+            "bulk_filled": bool(row["bulk_filled"]),
+            "fetched_at": float(row["fetched_at"]),
+            "expires_at": float(row["expires_at"]),
+        }
+
+    def catalog_has_bulk_filled_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        catalog: str,
+    ) -> bool:
+        """``True`` when at least one fresh ``bulk_filled=1`` row exists
+        for ``(profile, database, catalog)``.
+
+        ``list_schemas`` keys off this flag to decide whether reading
+        schema names from the cache is safe instead of re-issuing
+        SHOW SCHEMAS / pg_namespace lookups.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM schemas_cache
+                WHERE db_profile = ? AND database_name = ? AND catalog_name = ?
+                  AND bulk_filled = 1 AND expires_at >= ?
+                LIMIT 1
+                """,
+                (
+                    str(db_profile or ""),
+                    str(database or ""),
+                    str(catalog or ""),
+                    now,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def list_schemas_from_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        catalog: str,
+    ) -> list[tuple[str, str | None]]:
+        """Return ``[(schema_name, schema_comment), …]`` for every fresh
+        row of this catalog. Caller is responsible for checking
+        ``catalog_has_bulk_filled_cache`` first if it needs to know
+        whether the list is exhaustive.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT schema_name, schema_comment FROM schemas_cache
+                WHERE db_profile = ? AND database_name = ? AND catalog_name = ?
+                  AND expires_at >= ?
+                ORDER BY schema_name
+                """,
+                (
+                    str(db_profile or ""),
+                    str(database or ""),
+                    str(catalog or ""),
+                    now,
+                ),
+            ).fetchall()
+        return [(str(r[0]), r[1]) for r in rows]
+
+    def invalidate_schemas_cache(
+        self,
+        *,
+        db_profile: str,
+        database: str = "",
+        catalog: str | None = None,
+        schema: str | None = None,
+    ) -> int:
+        """Drop schema-cache rows at one of three granularities.
+
+        * ``catalog`` + ``schema`` set → single schema row.
+        * ``catalog`` only → whole catalog.
+        * Both ``None`` → whole profile.
+        """
+        params: list[Any] = [str(db_profile or "")]
+        sql = "DELETE FROM schemas_cache WHERE db_profile = ?"
+        if catalog is not None:
+            sql += " AND database_name = ? AND catalog_name = ?"
+            params.append(str(database or ""))
+            params.append(str(catalog or ""))
+        if schema is not None:
+            sql += " AND schema_name = ?"
+            params.append(str(schema or ""))
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(sql, params)
+            return int(cur.rowcount or 0)
+
+    def gc_schemas_cache(self) -> int:
+        """Sweep expired schemas_cache rows."""
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM schemas_cache WHERE expires_at < ?",
                 (now,),
             )
             return int(cur.rowcount or 0)

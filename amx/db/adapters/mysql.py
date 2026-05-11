@@ -417,6 +417,32 @@ class MySQLAdapter(DatabaseAdapter):
             out["warnings"] = warnings
         return out
 
+    # ── Bulk catalog metadata ─────────────────────────────────────────────
+
+    def bulk_catalog_metadata(
+        self,
+        engine: Engine,
+        catalog: str = "",
+    ) -> dict[str, str | None] | None:
+        """MySQL stores schemas in ``INFORMATION_SCHEMA.SCHEMATA``; no
+        schema-level comment exists in the protocol, so every entry's
+        comment is ``None``. The bulk path still wins because we avoid
+        per-schema DESCRIBE round-trips driven by the sidebar's
+        expand-all loop.
+        """
+        try:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA "
+                        "WHERE SCHEMA_NAME NOT IN "
+                        "('information_schema','mysql','performance_schema','sys')"
+                    )
+                ).fetchall()
+            return {str(r[0]): None for r in rows}
+        except Exception:
+            return None
+
     # ── Bulk schema metadata ──────────────────────────────────────────────
 
     def bulk_schema_metadata(
