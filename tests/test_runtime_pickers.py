@@ -156,3 +156,46 @@ def test_ensure_hierarchy_resolved_falls_through_to_database_picker(patch_picker
         chosen = ensure_hierarchy_resolved(db)
     assert chosen == "app"
     assert db.cfg.database == "app"
+
+
+def test_pinned_catalog_is_used_silently_on_every_run(patch_picker_choice) -> None:
+    """Profile with ``cfg.catalog`` already set must not re-prompt on
+    every ``/run``. Mirrors what the 2-level database picker already
+    does for ``cfg.database`` — pinned == use directly, no re-ask.
+
+    Regression guard for the user-reported friction: a Databricks
+    profile with ``catalog=main`` was showing the picker on every
+    run, forcing the user to press Enter even though they had already
+    pinned a catalog at profile-creation time.
+    """
+    db = _FakeDB(
+        cfg=_FakeCfg(backend="databricks", catalog="main"),
+        _catalogs=["main", "analytics"],
+        _supports_catalogs=True,
+    )
+    # The picker primitive must NOT be invoked at all when the
+    # catalog is pinned. Asserting the choice fn was never called is
+    # the strongest form of "no prompt shown to the user".
+    with patch(
+        "amx.cli_support.commands.manual._ask_choice_or_cancel"
+    ) as choice_mock:
+        chosen = ensure_hierarchy_resolved(db)
+    assert chosen == "main"
+    assert db.cfg.catalog == "main"
+    choice_mock.assert_not_called()
+
+
+def test_pinned_catalog_no_longer_visible_falls_back_to_picker(patch_picker_choice) -> None:
+    """Defence: if the pinned catalog has been dropped on the server
+    (or the role lost access), the silent path can't honour the pin
+    — show the picker so the user can choose a still-valid catalog
+    instead of returning a name the next list_schemas would 404 on."""
+    db = _FakeDB(
+        cfg=_FakeCfg(backend="databricks", catalog="archived"),
+        _catalogs=["main", "analytics"],
+        _supports_catalogs=True,
+    )
+    with patch_picker_choice("main"):
+        chosen = ensure_hierarchy_resolved(db)
+    assert chosen == "main"
+    assert db.cfg.catalog == "main"
