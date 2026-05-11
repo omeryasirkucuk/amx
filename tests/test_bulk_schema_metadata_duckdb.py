@@ -139,6 +139,52 @@ def test_list_assets_uses_cache_after_first_call(duckdb_profile) -> None:
     assert sorted([n for n, _ in cached_assets]) == ["line_items", "orders"]
 
 
+def test_spinner_suppressed_off_main_thread(duckdb_profile, monkeypatch) -> None:
+    """Regression for the Studio leak: ``_populate_schema_metadata_cache``
+    used to paint a Rich ``step_spinner`` whenever stdout was a TTY,
+    no matter which thread invoked it. Studio's uvicorn worker
+    threads were therefore drawing "Cached column descriptions for X"
+    lines into the CLI shell the user launched ``/studio`` from. The
+    guard now skips the spinner unless we're on the main thread AND
+    not inside a ``quiet_console()`` context — Studio worker threads
+    satisfy neither.
+    """
+    import threading
+
+    # Force the TTY branch on so the only suppression in play is the
+    # thread + quiet guards. Without the fix this monkeypatch would
+    # make the worker-thread test attempt to render Rich output.
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    db = DatabaseConnector(duckdb_profile, profile_name="duckdb-test")
+
+    step_spinner_calls: list[str] = []
+
+    def _track_step_spinner(label, **_kw):
+        step_spinner_calls.append(label)
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _noop():
+            yield
+
+        return _noop()
+
+    import amx.utils.console as console_mod
+
+    monkeypatch.setattr(console_mod, "step_spinner", _track_step_spinner)
+
+    def _worker():
+        db.get_table_comment("sales", "orders")
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+
+    assert step_spinner_calls == [], (
+        f"step_spinner must not be invoked from a non-main thread; was {step_spinner_calls}"
+    )
+
+
 def test_list_schemas_uses_cache_after_first_call(tmp_path) -> None:
     """Catalog expand: ``list_schemas`` must NOT re-query the DB on
     repeat visits. DuckDB can't carry schema-level comments (the
