@@ -130,8 +130,22 @@ _SCENARIOS: dict[str, list[tuple[str, dict[str, object], list[str]]]] = {
     "bigquery": [
         (
             "with-creds",
-            {"project": "pj", "dataset": "ds", "credentials_path": "/run/sa.json"},
-            ["pj", "ds", "credentials_path", "sa.json"],
+            {
+                "project": "pj",
+                "dataset": "ds",
+                "credentials_path": "/run/sa.json",
+                "location": "EU",
+                "impersonate_service_account": "svc@pj.iam",
+            },
+            [
+                "pj",
+                "ds",
+                "credentials_path",
+                "sa.json",
+                "location=EU",
+                "impersonate_service_account",
+                "svc%40pj.iam",
+            ],
         ),
     ],
     "oracle": [
@@ -225,14 +239,19 @@ _SCENARIOS: dict[str, list[tuple[str, dict[str, object], list[str]]]] = {
     ],
     "duckdb": [
         (
-            "file-path",
-            {"database": "/tmp/local.duckdb"},
-            ["/tmp/local.duckdb"],
+            "file-path-readonly",
+            {"database": "/tmp/local.duckdb", "read_only": True},
+            ["/tmp/local.duckdb", "read_only=true"],
         ),
         (
             "in-memory",
             {"database": ""},
             [":memory:"],
+        ),
+        (
+            "motherduck",
+            {"database": "md:warehouse", "motherduck_token": "tok-1"},
+            ["md:warehouse", "motherduck_token=tok-1"],
         ),
     ],
 }

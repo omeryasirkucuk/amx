@@ -90,6 +90,17 @@ def _serialize_field(spec: FieldSpec) -> dict[str, Any]:
     }
 
 
+# Backends that cannot host AMX's run-history schema. Sourced from each
+# adapter's ``BackendCapabilities.supports_shared_history=False``;
+# duplicated here so the Studio backends endpoint can answer without
+# importing the adapter (which would force a driver load). The list is
+# tiny and stable — DuckDB (local file) and ClickHouse (no row
+# UPDATE for the finish_run lifecycle) — and lint guards in
+# ``tests/test_history_store_capability_gating.py`` already prevent it
+# from drifting.
+_BACKENDS_WITHOUT_SHARED_HISTORY: frozenset[str] = frozenset({"duckdb", "clickhouse"})
+
+
 def _backend_entry(backend: str) -> dict[str, Any]:
     meta = _DB_BACKEND_META.get(backend, {})
     specs = spec_for(backend)
@@ -100,6 +111,11 @@ def _backend_entry(backend: str) -> dict[str, Any]:
         # haven't migrated to ``field_specs`` yet.
         "fields": [s.name for s in specs],
         "field_specs": [_serialize_field(s) for s in specs],
+        # ``supports_shared_history`` lets Studio render a non-blocking
+        # info banner when the user saves a profile on a backend that
+        # cannot host AMX's run-history schema. The CLI surfaces the
+        # same hint via ``/history-store enable``.
+        "supports_shared_history": backend not in _BACKENDS_WITHOUT_SHARED_HISTORY,
         **{k: v for k, v in meta.items() if k != "label"},
     }
 

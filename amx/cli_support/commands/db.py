@@ -57,6 +57,46 @@ _BACKEND_DRIVER_PROBES: dict[str, tuple[str, str]] = {
 }
 
 
+def _print_system_prereq_hint(backend: str) -> None:
+    """Surface platform-specific system-package install instructions.
+
+    Pure-Python drivers (psycopg2-binary, snowflake-sqlalchemy, …)
+    pip-install fine on every supported platform. ODBC-based drivers
+    (MSSQL via pyodbc) require a separate system package — without it
+    the connection fails with ``Can't open lib 'ODBC Driver 18 for SQL
+    Server'`` even after ``pip install amx-cli[mssql]`` succeeds.
+    Print the right command for the user's OS so they don't have to
+    google the error.
+    """
+    import platform
+
+    if backend != "mssql":
+        return
+
+    system = platform.system()
+    if system == "Darwin":
+        info(
+            "Note: macOS also needs the Microsoft ODBC system driver. "
+            "If the connection fails with 'Can't open lib', run:\n"
+            "    brew tap microsoft/mssql-release "
+            "https://github.com/Microsoft/homebrew-mssql-release\n"
+            "    brew install msodbcsql18 mssql-tools18"
+        )
+    elif system == "Linux":
+        info(
+            "Note: Linux also needs the Microsoft ODBC system driver. "
+            "See https://learn.microsoft.com/sql/connect/odbc/linux-mac/"
+            "installing-the-microsoft-odbc-driver-for-sql-server for "
+            "your distro's package (``msodbcsql18`` on Debian / RHEL)."
+        )
+    elif system == "Windows":
+        info(
+            "Note: Windows installers for the Microsoft ODBC driver "
+            "are bundled with SSMS or downloadable from "
+            "https://learn.microsoft.com/sql/connect/odbc/."
+        )
+
+
 def _offer_to_install_backend_driver(backend: str) -> None:
     """Auto-install *backend*'s driver during the ``/add-db-profile`` wizard.
 
@@ -74,6 +114,8 @@ def _offer_to_install_backend_driver(backend: str) -> None:
     if not probe:
         return
     from amx.db.drivers import ensure_backend_driver
+
+    _print_system_prereq_hint(backend)
 
     try:
         ensure_backend_driver(backend)
@@ -866,12 +908,22 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
             "Service account JSON path (optional, e.g. /etc/gcp/sa.json — uses ADC if empty)",
             defaults.credentials_path or "",
         )
+        location = _ask_update_text(
+            "Query location (optional, e.g. EU / US / europe-west3 — empty uses project default)",
+            defaults.location or "",
+        )
+        impersonate = _ask_update_text(
+            "Impersonate service-account email (optional, for workload-identity flows)",
+            defaults.impersonate_service_account or "",
+        )
         return replace(
             defaults,
             backend="bigquery",
             project=project,
             dataset=dataset,
             credentials_path=creds,
+            location=location,
+            impersonate_service_account=impersonate,
         )
 
     if backend == "mysql":
@@ -1184,15 +1236,36 @@ def interactive_db_block(defaults: DBConfig | None = None) -> DBConfig:
 
     if backend == "duckdb":
         database = _ask_update_text(
-            "Path to .duckdb file (or ':memory:' for an ephemeral database)",
+            "Path to .duckdb file (or ':memory:' / 'md:<db>' for MotherDuck)",
             defaults.database or ":memory:",
             required=True,
             allow_clear=False,
         )
+        read_only = bool(defaults.read_only)
+        motherduck_token = defaults.motherduck_token or ""
+        is_motherduck = database.startswith("md:") or database == "md"
+        if is_motherduck:
+            # MotherDuck always needs a token. ``read_only`` is moot for
+            # the cloud-attach flow, so we skip the prompt.
+            motherduck_token = _ask_update_secret(
+                "MotherDuck token (PAT from your MotherDuck account)",
+                motherduck_token,
+                required=True,
+            )
+        elif database != ":memory:":
+            # Local file — offer the read-only toggle so multiple AMX
+            # processes can share the file without fighting for the
+            # exclusive lock. ``:memory:`` doesn't need it.
+            read_only = _ask_update_bool(
+                "Open read-only? (lets a second AMX process attach the same file)",
+                current=read_only,
+            )
         return replace(
             defaults,
             backend="duckdb",
             database=database,
+            read_only=read_only,
+            motherduck_token=motherduck_token,
         )
 
     return defaults

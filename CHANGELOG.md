@@ -8,6 +8,31 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- **DuckDB / BigQuery extras + Studio shared-history banner
+  (PR 4 / 4 of the connector audit).**
+
+  - **DuckDB** — ``read_only`` lets a second AMX process attach the
+    same ``.duckdb`` file without fighting the exclusive write lock,
+    and ``motherduck_token`` carries the PAT when the database path
+    starts with ``md:``. The wizard prompts for the right one based
+    on the path (``md:warehouse`` → token; ``/tmp/x.duckdb`` →
+    read-only toggle; ``:memory:`` → neither).
+  - **BigQuery** — ``location`` pins query jobs to a specific GCP
+    region (EU / US / europe-west3 / …) and
+    ``impersonate_service_account`` signs queries as a workload
+    identity without minting personal SA keys.
+  - **MSSQL system-prereq hint** — ``/add-db-profile`` now prints
+    the platform-specific ODBC install command (``brew install
+    msodbcsql18`` on macOS, distro pointer on Linux) before pyodbc
+    pulls so the user doesn't hit ``Can't open lib 'ODBC Driver
+    18'`` later.
+  - **Studio shared-history banner** — ``/api/profiles/db/backends``
+    now exposes ``supports_shared_history`` per backend (False for
+    DuckDB and ClickHouse). Studio renders a non-blocking amber
+    info banner when the user picks one of those so the
+    "``/history-store enable`` refuses this backend" message stops
+    being a surprise.
+
 - **Approximate distinct counts for metered backends (PR 3 / 4 of
   the connector audit).** A new ``profiling_approximate`` flag on
   ``DBConfig`` (default ``False``) switches the per-column and bulk
@@ -172,7 +197,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   ``EmbeddingFunction`` subclasses defined further down need
   ``chromadb.api.types`` resolved at class-definition time.
   Default-MiniLM users (the overwhelming majority on day one) thus
-  paid a multi-minute chromadb install at the very moment they
+  absorbed a multi-minute chromadb install at the very moment they
   finally got to a working ``amx`` prompt, having just sat through
   the first wave from ``pip install amx-cli``.
 
@@ -367,7 +392,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
   open.** ``amx/web/launcher.py`` used to loop over every configured
   ``cfg.db_profiles`` entry and call ``ensure_backend_driver()`` for
   each backend before uvicorn started, so a user with profiles for
-  six warehouses paid for six driver installs even when they opened
+  six warehouses incurred six driver installs even when they opened
   Studio just to inspect one of them. The loop is gone — drivers
   install lazily on the first request that actually touches a
   profile, through the same unified ``ensure()`` path.
@@ -4015,7 +4040,7 @@ The previous early-return path treated catalog as a one-time pinning decision; i
 - **`DatabaseConnector.list_tables` / `list_views`** consult the adapter override before falling back to the inspector. Reads `cfg.catalog` so the v0.10.11 wizard pick propagates without needing a `USE CATALOG` round-trip on the engine.
 
 ### Why this matters
-v0.10.11 fixed half the path (schemas) but stopped before the table layer. The user's reproducer ("aynı hata, catalog seçtirdi ama None.dev'e SHOW TABLES FROM atıyo") was exactly that gap. With both layers now catalog-aware, the `/edit` wizard on Databricks Unity Catalog should walk catalog → schema → table without falling through to the inspector.
+v0.10.11 fixed half the path (schemas) but stopped before the table layer. The user's reproducer ("same error, the catalog picker fired but SHOW TABLES still ran against `None.dev`") was exactly that gap. With both layers now catalog-aware, the `/edit` wizard on Databricks Unity Catalog should walk catalog → schema → table without falling through to the inspector.
 
 ### Followups
 - The same override should extend to `list_materialized_views` and to `list_column_profiles` / `get_column_comments` — the SQLAlchemy `inspect().get_columns(table, schema=schema)` path may still issue catalog-less SQL when the user opens `/edit`'s column picker. Tracked but not yet hit because the user got blocked at the table layer first.
@@ -4057,7 +4082,7 @@ The same hooks are available for any other 3-level backend; adding BigQuery proj
 - **"how is X uploaded / loaded / populated / refreshed?" was being routed to `detect_scd_pattern`** (which answers "how is HISTORY kept", a different concern). Reproducer: user asked "how is vbak uploaded?", agent ran the SCD detector, returned the canned "no SCD signals; provide a business_key" recovery message — completely off-topic.
 
 ### Changed
-- **System prompt new routing rule** (`amx/search/tool_agent.py`). When the user asks the LOAD-MECHANISM question (English: "how is X uploaded / loaded / populated / ingested / refreshed", Turkish: "nasıl yükleniyor / besleniyor / ETL süreci nasıl / data nasıl geliyor"), the agent should:
+- **System prompt new routing rule** (`amx/search/tool_agent.py`). When the user asks the LOAD-MECHANISM question ("how is X uploaded / loaded / populated / ingested / refreshed", phrased in any natural-language variant), the agent should:
   1. Call `describe_table` and read `analytics.last_modified` — the most recent write timestamp.
   2. Call `inspect_data_quality` on the main temporal column (`created_at` / `erdat` / `load_date` / `ingestion_ts`) — `min_value` is when data first appeared, `max_value` is the latest record, the gap + row_count is a rough load-cadence hint.
   3. If columns shaped like CDC are present (`created_at` + `updated_at`, `deleted_at` flag), call them out as an in-band CDC signal.
@@ -4165,7 +4190,7 @@ User: "AMX should answer dimensional-modeling questions — what's the main/fact
 ```
 
 ### Why this matters
-Same single-tool / multi-signal / always-quote-evidence pattern as `detect_scd_pattern` (v0.10.6), `find_joinable_tables` (v0.9.7 inference_source), `find_columns_by_dtype` (v0.10.4 kind tagging). Together these tools make AMX able to talk about **how a schema is organised** — not just what's in it. Real-world data analyst questions land directly on a tool now: "this schema'ın ana tablosu nedir?", "fact ve dim hangileri?", "this is a star or snowflake?", "bu lookup mu transaction mı?".
+Same single-tool / multi-signal / always-quote-evidence pattern as `detect_scd_pattern` (v0.10.6), `find_joinable_tables` (v0.9.7 inference_source), `find_columns_by_dtype` (v0.10.4 kind tagging). Together these tools make AMX able to talk about **how a schema is organised** — not just what's in it. Real-world data analyst questions land directly on a tool now: "what is the main table in this schema?", "which are the fact and dim tables?", "is this a star or snowflake schema?", "is this a lookup or a transaction table?".
 
 ### Followups
 - **Cross-schema linkage** — when a fact table references a dimension that lives in a SHARED dimensional schema (Kimball "conformed dimensions"), surface that link in the schema-level pattern. Currently per-schema only.
@@ -4175,7 +4200,7 @@ Same single-tool / multi-signal / always-quote-evidence pattern as `detect_scd_p
 ## [0.10.6] - 2026-05-01
 ### Added — `detect_scd_pattern` tool
 
-User: "AMX should answer SCD-type questions ('how does this table hold history?', 'is this Type 2?', 'değişiklik aynı satırda mı yeni satır mı?', 'eski değerler ayrı kolonda mı?') WITHOUT relying on comments. Lots of variations could come."
+User: "AMX should answer SCD-type questions ('how does this table hold history?', 'is this Type 2?', 'are changes recorded in the same row or a new one?', 'are previous values kept in a separate column?') WITHOUT relying on comments. Lots of variations could come."
 
 Right — this is a single-tool design problem, not whack-a-mole. New `detect_scd_pattern(schema, table, business_key?)` infers the pattern from data signals only:
 
@@ -4215,7 +4240,7 @@ Right — this is a single-tool design problem, not whack-a-mole. New `detect_sc
 }
 ```
 
-**System prompt rule:** "User asks 'how does X hold history' / 'is this SCD2' / 'değişiklik tek satırda mı yeni satır mı' / 'eski değerler nasıl tutuluyor' → call `detect_scd_pattern`. The result includes `scd_type_hypothesis`, `confidence`, `evidence` (ALWAYS quote in the answer; the hypothesis alone is misleading), and `alternative_hypotheses` for hybrid cases. When evidence is empty, suggest the user provide a candidate `business_key` so the rows-per-key probe can disambiguate Type 1 vs Type 2."
+**System prompt rule:** "User asks 'how does X hold history' / 'is this SCD2' / 'are changes recorded in the same row or a new one' / 'how are previous values retained' → call `detect_scd_pattern`. The result includes `scd_type_hypothesis`, `confidence`, `evidence` (ALWAYS quote in the answer; the hypothesis alone is misleading), and `alternative_hypotheses` for hybrid cases. When evidence is empty, suggest the user provide a candidate `business_key` so the rows-per-key probe can disambiguate Type 1 vs Type 2."
 
 ### Why this matters
 SCD detection is the kind of pattern recognition that could spawn a dozen ad-hoc patches over time ("did you check is_current?", "did you check valid_from?", "is there a history table?"). One purpose-built tool with a structured return + multiple signal sources covers the whole question class, lets the LLM be honest about confidence, and surfaces hybrid (Type 6) cases instead of forcing a single label. Same `kind` / `inference_source` / `evidence` design pattern as v0.9.7-v0.10.4.
@@ -4278,7 +4303,7 @@ Two more cases where the agent fell back to literal "I don't know" / "give me co
   The LLM now has data to work with on the first round. The system prompt was updated with a matching routing rule: "user asks 'is there duplication' WITHOUT naming a candidate key → call inspect_data_quality first, propose the most likely composite key, offer to verify; NEVER bounce back asking for columns".
 
 - **"is there any update on vbak tables soon?"** — pre-v0.10.3 the agent answered "I don't have access to information about upcoming updates", which is technically true but useless. AMX *does* know when the table was LAST modified (via `analytics.last_modified` from v0.10.0), and *does not* yet have an ETL/orchestrator tap. The honest answer is both halves of that, not one or the other. New system prompt rule:
-  > User asks 'when was X last updated' / 'is there an update soon' / 'son güncelleme' / 'next refresh' / 'ETL ne zaman çalıştı' → call describe_table and read `analytics.last_modified`. NEVER answer "I don't know about future updates" as a flat response — instead surface the LAST known modification time AND state explicitly: "AMX can see vbak was last modified at `<ts>` (from `<backend's freshness signal>`). Scheduled future updates require an ETL / orchestrator tap that AMX doesn't currently expose — that's a planned v0.11 feature."
+  > User asks 'when was X last updated' / 'is there an update soon' / 'last refresh' / 'next refresh' / 'when did the ETL last run' → call describe_table and read `analytics.last_modified`. NEVER answer "I don't know about future updates" as a flat response — instead surface the LAST known modification time AND state explicitly: "AMX can see vbak was last modified at `<ts>` (from `<backend's freshness signal>`). Scheduled future updates require an ETL / orchestrator tap that AMX doesn't currently expose — that's a planned v0.11 feature."
 
 ### Why this matters
 Both bugs were the same shape as v0.9.7-v0.9.11: tool returned a thin/empty primary result and the LLM treated that as the answer. The fix pattern is the same too: enrich the tool response with a wider-net field (here: auto-derived `duplicate_summary`) and teach the system prompt to surface what's available + name the limit explicitly. That's the v0.9.11 "interpretive answering" rule applied to two new question shapes.
@@ -4294,20 +4319,20 @@ User shared a wishlist of questions their analyst friends would actually ask AMX
 
 - **`check_uniqueness(schema, table, columns?)`** — runs `SELECT COUNT(*), COUNT(DISTINCT (col1, col2, ...))` and reports `total_rows`, `distinct_rows`, `duplicate_rows`, `uniqueness_ratio`, `is_unique`. When `columns` is omitted it falls back to the table's declared primary key. Answers questions like "is `id` a unique key or do I need `(id, time, op)`?", "are the PKs duplicated?", "do composite PKs collapse if I drop one column?".
 
-- **`inspect_data_quality(schema, table, columns?)`** — per-column live-DB stats: `null_count`, `null_ratio`, `distinct_count`, `distinct_ratio`, `min_value`, `max_value`, plus `detected_format` for varchar/text columns whose samples look like dates. Format detection covers ISO 8601, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYYMMDD`, `DD-MM-YYYY`, `DD/MM/YYYY`, `DD.MM.YYYY`, and a few short forms — first-match-wins with a 60% confidence threshold so a table that just happens to have a few date-shaped strings doesn't get mislabelled. Answers "how many nulls in `email`?", "date format `ddmmyyyy` mi?", "ne zamandır tutuluyor?" (read `min_value`/`max_value` of the date column), "çoklama oranı?".
+- **`inspect_data_quality(schema, table, columns?)`** — per-column live-DB stats: `null_count`, `null_ratio`, `distinct_count`, `distinct_ratio`, `min_value`, `max_value`, plus `detected_format` for varchar/text columns whose samples look like dates. Format detection covers ISO 8601, `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYYMMDD`, `DD-MM-YYYY`, `DD/MM/YYYY`, `DD.MM.YYYY`, and a few short forms — first-match-wins with a 60% confidence threshold so a table that just happens to have a few date-shaped strings doesn't get mislabelled. Answers "how many nulls in `email`?", "is the date format `ddmmyyyy`?", "how far back does this data go?" (read `min_value`/`max_value` of the date column), "what's the duplication ratio?".
 
 ### Changed
-- **System prompt** routes the new questions to the right tool. Concrete examples in the prompt: "is X a primary key" / "(id, time) unique mi" / "composite PK gerekli mi yoksa id yeter mi" → `check_uniqueness`; "date format nedir" / "ne zamandır tutuluyor" / "çoklama oranı" / "how nullable is X" → `inspect_data_quality`.
+- **System prompt** routes the new questions to the right tool. Concrete examples in the prompt: "is X a primary key" / "is (id, time) unique" / "do I need a composite PK or is id enough" → `check_uniqueness`; "what is the date format" / "how far back does this data go" / "what is the duplication ratio" / "how nullable is X" → `inspect_data_quality`.
 
 ### Why this matters
 
-The user's analyst friends asked questions like "PK duplicate oluyor mu?", "date'in formatı ddmmyyyy mı yoksa dd-mm-yy mi?", "ne zamandır tutuluyor?", "çoklama durumları var mı?". Pre-v0.10.2 the agent had no tool that answered these directly — `describe_table` knew the structure but never queried actual values, and the catalog rarely carries this information. With these two tools the agent can give grounded data-aware answers without falling back to "you'd need to check that yourself".
+The user's analyst friends asked questions like "is the PK producing duplicates?", "is the date format ddmmyyyy or dd-mm-yy?", "how far back does this data go?", "are there duplication issues?". Pre-v0.10.2 the agent had no tool that answered these directly — `describe_table` knew the structure but never queried actual values, and the catalog rarely carries this information. With these two tools the agent can give grounded data-aware answers without falling back to "you'd need to check that yourself".
 
 ### Followups
 
-- **Datamart / aggregate-table detection** ("Bu tablo için belirli bir tarih ya da segment için oluşturulmuş datamart var mı") — naming-pattern heuristic (`_summary` / `_dm` / `_mart` / `_history` / `_snapshot` / `_agg_` / `_daily_` / `_monthly_`) over the catalog. Planned for v0.10.3.
-- **ETL / refresh-frequency inference** ("update edilme nasıl işliyor") — needs query-history tap (same prerequisite as lineage; v0.11).
-- **Best-join cardinality estimate** ("en uygun joinleme mantığı") — extend `find_joinable_tables` rows with sample-based join-cardinality (1:1 / 1:N / N:M) when the user has SELECT permission on both sides. Planned for v0.10.3.
+- **Datamart / aggregate-table detection** ("is there a datamart built for this table for a specific date or segment") — naming-pattern heuristic (`_summary` / `_dm` / `_mart` / `_history` / `_snapshot` / `_agg_` / `_daily_` / `_monthly_`) over the catalog. Planned for v0.10.3.
+- **ETL / refresh-frequency inference** ("how does the update mechanism work") — needs query-history tap (same prerequisite as lineage; v0.11).
+- **Best-join cardinality estimate** ("what is the most appropriate join strategy") — extend `find_joinable_tables` rows with sample-based join-cardinality (1:1 / 1:N / N:M) when the user has SELECT permission on both sides. Planned for v0.10.3.
 
 ## [0.10.1] - 2026-05-01
 ### Fixed
@@ -4966,7 +4991,7 @@ Open-source users who don't know a command exists won't ever run it. Slash-comma
 ## [0.6.0] - 2026-04-30
 ### Added
 - **`/llm description-verbosity` slash command** + `description_verbosity` LLM-profile field (`amx/config.py`, `amx/cli_support/commands/profiles.py`, `amx/cli_support/session.py`): two presets, `brief` (default — current 1-sentence-per-column behavior) and `detailed` (2–4 sentences covering purpose + typical values + relationships when supported by evidence). Wired into `ProfileAgent._build_system_prompt` so the model emits longer descriptions when asked. Detailed mode roughly doubles per-column output cost; the slash command warns about that.
-- **`find_assets_missing_comment` agent tool** (`amx/search/agent_tools.py`): queries the LIVE DB (NOT the catalog) to list tables and/or columns with no comment. Routes via the system prompt for questions like "are there any tables without descriptions?" / "açıklaması olmayan tablolar". Catalog can lag right after `/run-apply`, so this tool is the source of truth for coverage questions.
+- **`find_assets_missing_comment` agent tool** (`amx/search/agent_tools.py`): queries the LIVE DB (NOT the catalog) to list tables and/or columns with no comment. Routes via the system prompt for questions like "are there any tables without descriptions?" / "which tables are missing comments". Catalog can lag right after `/run-apply`, so this tool is the source of truth for coverage questions.
 - **`Orchestrator._ensure_run_columns` helper** (`amx/storage/sqlite_store.py`): idempotent migration that adds `selected_count / planned_count / processed_count / applied_count / review_strategy` to `analysis_runs`. Runs on every `init()` AND now also at the top of every `create_run` as a belt-and-suspenders for users whose `init()` ran on stale code under a pipx editable install.
 
 ### Fixed
@@ -5089,7 +5114,7 @@ This was the user-reported case where a 100-table SAP database had been partiall
 - **Memory pairing fix for short-circuits** (`amx/search/agent.py`): chitchat / meta-query / reaffirmation handlers now write a synthetic assistant row to `ChatSessionStore` before returning. Previously `ask()` wrote the user-side row at the top of the call but the short-circuits skipped writing an assistant row, leaving orphan user entries that confused the next `_memory_summary` pass.
 - **Tool agent skips the duplicated current-question user turn** (`amx/search/agent.py:_answer_via_tool_agent`): `ask()` writes the current user question to the session store before short-circuits run, so by the time we read `_memory_summary()` the latest entry IS the question we're about to ask the LLM. Forwarding it as both prior context AND the live user message duplicated the question and broke follow-up resolution (`"Only those?"` came back as "your question is incomplete or unclear"). We now drop the trailing entry whose `question` matches the current one and has no paired assistant answer yet.
 - **Memory summary bumps assistant truncation to 1000 chars** (`amx/search/agent.py:_memory_summary`): the previous 200-char cap was tuned for the JSON planner payload and cut off long answers (e.g. the boolean-column response). The tool agent feeds these straight into a chat history; 1000 chars stays comfortably under the 24K input budget while keeping enough context for follow-ups to resolve.
-- **System prompt routing guidance covers dtype + joinable-tables tools and emphasises follow-ups** (`amx/search/tool_agent.py`): added explicit hints for `find_columns_by_dtype`, `find_joinable_tables`, plus stronger language reminding the model to read prior turns BEFORE calling a new tool when the question is a short follow-up (`"Only those?"`, `"sadece bunlar mı?"`, `"gerçekten?"`).
+- **System prompt routing guidance covers dtype + joinable-tables tools and emphasises follow-ups** (`amx/search/tool_agent.py`): added explicit hints for `find_columns_by_dtype`, `find_joinable_tables`, plus stronger language reminding the model to read prior turns BEFORE calling a new tool when the question is a short follow-up (`"Only those?"`, `"just those?"`, `"really?"`).
 
 ### Fixed
 - **`"Only those?"` no longer returns "your question is incomplete or unclear"** — duplicated user-message bug + over-aggressive truncation of the prior answer summary kept the agent from resolving the follow-up. With the dedup fix and the 1000-char summary budget, the model now sees the prior boolean-column answer in context and can answer in one round.
@@ -5121,7 +5146,7 @@ The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak 
 ### Added
 - **Strong-vs-weak explicit-mention strength** (`amx/search/agent.py:_explicit_table_mentions_for_question`): mentions captured from `<token> table` / `table <token>` / `schema.table` patterns are tagged `strength="strong"` (the user explicitly called the noun a table); subject-form patterns (`what's the X` / `describe X` / `X nedir`) are tagged `strength="weak"` (the noun could be a column or a generic entity). The alignment guard now reads this signal to override LLM mode unconditionally for strong mentions and require catalog/live-DB confirmation for weak ones.
 - **Live-DB fallback in `_catalog_resolvable_subject`** (`amx/search/agent.py`): when the catalog has no entry but the user is in a `current_schema`, we now also probe `_live_table_exists(current_schema, token)`. This handles the user-reported case where vbrk lives in live PostgreSQL but hasn't been `/search sync`'d into the catalog yet.
-- **Follow-up reaffirmation short-circuit** (`amx/search/agent.py:_handle_followup_reaffirmation`): brief push-back questions ("Are you sure?", "really?", "is that right?", "why?", "emin misin?", "gerçekten mi?", "neden?", "öyle mi?") no longer fall into clarification — instead, the most recent assistant turn from `ChatSessionStore.recent_turns` is restated verbatim with a confirmation prefix. Bilingual reply, deterministic, zero LLM calls.
+- **Follow-up reaffirmation short-circuit** (`amx/search/agent.py:_handle_followup_reaffirmation`): brief push-back questions ("Are you sure?", "really?", "is that right?", "why?", and short equivalents in other languages) no longer fall into clarification — instead, the most recent assistant turn from `ChatSessionStore.recent_turns` is restated verbatim with a confirmation prefix. Deterministic, zero LLM calls.
 - **Two new tests** in `tests/test_search_catalog.py`: `test_strong_table_mention_wins_when_catalog_is_empty` (asserts "which schema have vbrk table" routes to `table_explain` even with an empty catalog, as long as live DB has it under `current_schema`); `test_followup_reaffirmation_restates_prior_assistant_turn` (asserts "Are you sure?" reuses the prior assistant turn without consuming a new LLM response).
 
 ### Changed
@@ -5134,18 +5159,18 @@ The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak 
 ## [0.3.4] - 2026-04-30
 ### Added
 - **Catalog-grounded alignment guard** (`amx/search/agent.py:_catalog_resolvable_subject`): pre-check whether an extracted subject token from the question is actually an exact-name table in the catalog before forcing `table_explain`. This narrows the override to high-confidence cases — `vbrk` (real table) gets re-routed; `vbrk_id` (column-shaped, no table match) does not. Used by both `_align_plan_shape` and the clarification-skip guard.
-- **Chitchat short-circuit** (`amx/search/agent.py:_handle_chitchat`): one-line friendly redirect for greetings ("nasılsın", "hi", "hello", "merhaba", "selam", "naber", "iyi misin", "thanks", "teşekkürler", "ok", "günaydın"). Bilingual reply explains what AMX does and gives an example question. Pre-empts the LLM planner so users no longer get a confusing "Could you clarify the exact scope (database/schema/table)?" reply for "nasılsın".
-- **Meta-query short-circuit** (`amx/search/agent.py:_handle_meta_query`): "what was my previous question?", "bir önceki sorum neydi", "ben ne sordum", "son sorum neydi" now answer directly from `ChatSessionStore.recent_turns` rather than going through the LLM planner. Returns the literal prior user-turn text, or "this is the first question in this session" when there's nothing on record.
-- **Two new tests** in `tests/test_search_catalog.py`: `test_chitchat_short_circuits_without_llm_call` (asserts no LLM call is made for "nasılsın" / "hi"), `test_meta_query_returns_prior_question_from_session_store` (asserts "what was my previous question?" returns the actual prior question text).
+- **Chitchat short-circuit** (`amx/search/agent.py:_handle_chitchat`): one-line friendly redirect for greetings ("hi", "hello", "hey", "thanks", "ok", "good morning", and short greetings in other languages). Explains what AMX does and gives an example question. Pre-empts the LLM planner so users no longer get a confusing "Could you clarify the exact scope (database/schema/table)?" reply for a simple greeting.
+- **Meta-query short-circuit** (`amx/search/agent.py:_handle_meta_query`): "what was my previous question?", "what did I just ask?", "what was my last question?" now answer directly from `ChatSessionStore.recent_turns` rather than going through the LLM planner. Returns the literal prior user-turn text, or "this is the first question in this session" when there's nothing on record.
+- **Two new tests** in `tests/test_search_catalog.py`: `test_chitchat_short_circuits_without_llm_call` (asserts no LLM call is made for a greeting), `test_meta_query_returns_prior_question_from_session_store` (asserts "what was my previous question?" returns the actual prior question text).
 
 ### Changed
-- **`_align_plan_shape` is more aggressive about overriding the LLM's mode** (`amx/search/agent.py`): previously the guard skipped any plan whose `search_mode` was in `{table_explain, join_candidates, joinable_tables, schema_inventory, list_databases, list_schemas, count_tables, check_coverage}` — far too permissive. The user reported `"vbrk tablosu var mı bizde"` getting routed to `list_databases` and answered with "we have info about: SAP". Now the protected set is narrowed to `{table_explain, join_candidates, joinable_tables, count_tables, check_coverage}`. Inventory-style modes (`list_databases`, `list_schemas`, `schema_inventory`) and generic semantic/lookup modes (`semantic_concept`, `name_lookup`, `compare_entities`) get re-routed to `table_explain` whenever the question carries a catalog-confirmed subject token. The override also pins `decision_confidence="high"` so the rerouted plan does not loop back into clarification.
+- **`_align_plan_shape` is more aggressive about overriding the LLM's mode** (`amx/search/agent.py`): previously the guard skipped any plan whose `search_mode` was in `{table_explain, join_candidates, joinable_tables, schema_inventory, list_databases, list_schemas, count_tables, check_coverage}` — far too permissive. The user reported a "do we have the vbrk table?" style question getting routed to `list_databases` and answered with "we have info about: SAP". Now the protected set is narrowed to `{table_explain, join_candidates, joinable_tables, count_tables, check_coverage}`. Inventory-style modes (`list_databases`, `list_schemas`, `schema_inventory`) and generic semantic/lookup modes (`semantic_concept`, `name_lookup`, `compare_entities`) get re-routed to `table_explain` whenever the question carries a catalog-confirmed subject token. The override also pins `decision_confidence="high"` so the rerouted plan does not loop back into clarification.
 - **Clarification round is skipped when the user named a real table** (`amx/search/agent.py`): when `should_clarify` is True but `_catalog_resolvable_subject(clean_question)` finds an exact-name catalog match, we re-run `_align_plan_shape` with the new high-confidence plan and proceed with retrieval — instead of asking "could you clarify the exact scope?" right after the user named a table by exact name.
 
 ### Fixed
-- **`/ask` no longer drifts to "we have info about: SAP" when asked about a real table** (`amx/search/agent.py`): the user-reported sequence — "vbrk tablosu var mı bizde" → list_databases response, "Peki hangi schema'da?" → "Could you specify which database?", "OK. which schema have vbrk table?" → "I couldn't find any direct evidence" — was caused by the LLM planner picking inventory modes for clearly table-scoped questions. With the catalog-grounded alignment guard and tightened protected-mode set, all four phrasings now route to `table_explain` for `vbrk` and return the live metadata.
-- **Greetings no longer return the clarification fallback** (`amx/search/agent.py`): "nasılsın" used to land in `should_clarify` with empty `clarification_question` and emit "Dogru yonlendirme icin tam kapsami...". Now the chitchat short-circuit replies with a friendly redirect that names the kind of question AMX is built for.
-- **Meta-queries about the chat itself now resolve from session storage** (`amx/search/agent.py`): "bir önceki sorum neydi" used to also land in clarification. Now we read `ChatSessionStore.recent_turns` and return the literal prior question.
+- **`/ask` no longer drifts to "we have info about: SAP" when asked about a real table** (`amx/search/agent.py`): the user-reported sequence — "do we have the vbrk table?" → list_databases response, "OK, in which schema?" → "Could you specify which database?", "which schema has vbrk?" → "I couldn't find any direct evidence" — was caused by the LLM planner picking inventory modes for clearly table-scoped questions. With the catalog-grounded alignment guard and tightened protected-mode set, all four phrasings now route to `table_explain` for `vbrk` and return the live metadata.
+- **Greetings no longer return the clarification fallback** (`amx/search/agent.py`): a simple greeting used to land in `should_clarify` with an empty `clarification_question` and emit a confusing "give me the full scope" message. Now the chitchat short-circuit replies with a friendly redirect that names the kind of question AMX is built for.
+- **Meta-queries about the chat itself now resolve from session storage** (`amx/search/agent.py`): "what was my previous question?" used to also land in clarification. Now we read `ChatSessionStore.recent_turns` and return the literal prior question.
 
 ## [0.3.3] - 2026-04-30
 ### Added
@@ -5153,11 +5178,11 @@ The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak 
 - **`SearchCatalog.find_tables_by_exact_name`** (`amx/search/catalog.py`): returns every catalog table whose `table_name` matches the given identifier exactly, ordered by `schema_name`. Used by the new unqualified-name resolver to disambiguate a bare token like `vbrk` across schemas.
 
 ### Changed
-- **`/ask` answers no longer drift to an unrelated table when the user names a missing one** (`amx/search/agent.py`): four new regex branches in `_explicit_table_mentions_for_question` catch the table name in subject-form questions ("what's the X / what is X / describe X / explain X / tell me about X / X nedir / X hakkında / anlat bana X / açıkla X"). Without these, a question like "what's the vbrk" left the planner with no entity hints, and the live probe drifted to whatever `current_table` or fuzzy match the LLM happened to suggest (the user-reported case where asking about `vbrk` returned columns of an unrelated `setheadert` table). Stopword list expanded with `table/tables/tablo/tablosu` and Turkish case forms (`tablosunda/tablosuna/tablosundan/tablosunu/tabloları`), `column/columns/kolon/kolonlar`, `field/fields/alan`, `data/info/information/metadata/veri/bilgi`, `schema/schemas/şema/şemalar/database/databases/veritabanı`, plus generic adjectives (`most/least/popular/common/total/average/newest/oldest/recent`).
-- **`_align_plan_shape` re-routes subject-form questions to `table_explain` mode** (`amx/search/agent.py`): when a question carries an explicit subject-form mention but the LLM picked `semantic_concept` / `name_lookup`, the alignment pass now forces `search_mode=table_explain, question_class=table_understanding, target_entity=table` so target resolution actually runs. Without this guard the unresolved-explicit path didn't fire and the live probe could pick an unrelated table. Skipped when the question contains join keywords (`join/link/relate/relationship/bağ/ilişk`).
+- **`/ask` answers no longer drift to an unrelated table when the user names a missing one** (`amx/search/agent.py`): four new regex branches in `_explicit_table_mentions_for_question` catch the table name in subject-form questions ("what's the X / what is X / describe X / explain X / tell me about X" and equivalents in other languages). Without these, a question like "what's the vbrk" left the planner with no entity hints, and the live probe drifted to whatever `current_table` or fuzzy match the LLM happened to suggest (the user-reported case where asking about `vbrk` returned columns of an unrelated `setheadert` table). Stopword list expanded with English and common non-English noun/case forms for table/column/field/data/schema/database, plus generic adjectives (`most/least/popular/common/total/average/newest/oldest/recent`).
+- **`_align_plan_shape` re-routes subject-form questions to `table_explain` mode** (`amx/search/agent.py`): when a question carries an explicit subject-form mention but the LLM picked `semantic_concept` / `name_lookup`, the alignment pass now forces `search_mode=table_explain, question_class=table_understanding, target_entity=table` so target resolution actually runs. Without this guard the unresolved-explicit path didn't fire and the live probe could pick an unrelated table. Skipped when the question contains join-related keywords.
 - **`_resolve_table_targets` handles unqualified mentions via catalog lookup** (`amx/search/agent.py`): mentions without a `schema.table` qualifier (path == "") used to be silently skipped, falling through to LLM-hint resolution. Now they round-trip through `catalog.find_tables_by_exact_name`: exactly one match → resolved with high/medium confidence; two-or-more matches → marked `ambiguous_unqualified_table` with all candidates surfaced; zero matches → `explicit_table_not_found_live` with fuzzy `find_table_candidates` results offered as suggestions only.
 - **`_target_resolution_details` reports an `ambiguous_unqualified` flag** (`amx/search/agent.py`) so downstream code can distinguish "this name maps to multiple tables in different schemas" from "this name doesn't exist at all" and surface different deterministic answers for each case.
-- **`_deterministic_target_resolution_answer` rewrites both messages** (`amx/search/agent.py`): "not found" answers now read as plain English/Turkish ("I could not find a table named `vbrk` in this DB profile's catalog or live metadata") with a `/search sync` hint when no fuzzy candidates exist; ambiguous names get a dedicated message ("`orders` exists as a table in more than one schema. Could you clarify which one you mean? Candidates: `sap_a.orders`, `sap_b.orders`."). Suppressed the older "exact olarak doğrulayamadım" jargon that confused users.
+- **`_deterministic_target_resolution_answer` rewrites both messages** (`amx/search/agent.py`): "not found" answers now read as plain English ("I could not find a table named `vbrk` in this DB profile's catalog or live metadata") with a `/search sync` hint when no fuzzy candidates exist; ambiguous names get a dedicated message ("`orders` exists as a table in more than one schema. Could you clarify which one you mean? Candidates: `sap_a.orders`, `sap_b.orders`."). Suppressed the older "couldn't verify exactly" jargon that confused users.
 - **`/ask` output is uncluttered by default** (`amx/cli_support/commands/search.py`, `amx/search/catalog.py`): the `Provenance:` and `Confidence:` info lines now require either `--debug` or an explicit opt-in via `/search config show_provenance true` / `show_confidence true`. The two settings flipped default from `"true"` to `"false"`. The natural-language summary plus the result panel are all most users want; the diagnostic strings drowned out the answer.
 - **`table_summary` rendering drops the empty header row and lifts schema.table into the panel title** (`amx/cli_support/commands/search.py`): the previous render pulled the `row_type="table"` row to the top of a 5-column grid, leaving a "—" line in the Column cell and duplicating Schema/Table on every subsequent row. New layout shows `Key columns — schema.table` as the title and a 3-column Column | Type | Description grid below it, with rows whose `column_name` is empty filtered out so users never see "-" placeholders.
 
@@ -5165,7 +5190,7 @@ The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak 
 - **`what's the <X>` no longer returns an arbitrary table** (`amx/search/agent.py`, `amx/search/catalog.py`, `amx/cli_support/commands/search.py`): the user reported that `/ask "what's the vbrk"` returned columns of `sap_s6p.setheadert` (an unrelated table) with high confidence and an "agent-planned live metadata probe" provenance trail. With the new subject-form regex + alignment guard + unqualified-name resolver, the same question now either resolves to the real `vbrk` (when present), surfaces all schemas containing a `vbrk` table (when ambiguous), or replies "I could not find a table named `vbrk` in this DB profile's catalog or live metadata" with fuzzy suggestions — never silently swapping in another table.
 
 ### Tests
-- **`tests/test_search_catalog.py`** gains three subject-form coverage tests: `test_subject_form_unknown_table_returns_not_found` (asks "what's the vbrk" against a catalog without vbrk and asserts the answer says "could not find" with no live probe operations), `test_subject_form_existing_table_resolves_unqualified` (resolves "describe adrc" with no `current_schema` to `sap_s6p.adrc`), and `test_find_tables_by_exact_name_disambiguates_across_schemas` (same name in two schemas returns both candidates). Existing `test_explicit_missing_table_is_not_replaced_by_fuzzy_candidate` updated to match the new Turkish wording (`bulunamadı` instead of `exact olarak doğrulayamadım`).
+- **`tests/test_search_catalog.py`** gains three subject-form coverage tests: `test_subject_form_unknown_table_returns_not_found` (asks "what's the vbrk" against a catalog without vbrk and asserts the answer says "could not find" with no live probe operations), `test_subject_form_existing_table_resolves_unqualified` (resolves "describe adrc" with no `current_schema` to `sap_s6p.adrc`), and `test_find_tables_by_exact_name_disambiguates_across_schemas` (same name in two schemas returns both candidates). Existing `test_explicit_missing_table_is_not_replaced_by_fuzzy_candidate` updated to match the new English wording ("could not find" instead of the older "couldn't verify exactly").
 
 ## [0.3.2.post1] - prior unreleased work below
 ### Added
@@ -5547,7 +5572,7 @@ The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak 
 
 ## [0.1.114] — 2026-04-28
 ### Fixed
-- **Column discovery no longer becomes table snapshots**: Global semantic column questions such as "city ile alakalı tüm kolon isimlerini getir" no longer run a live table metadata snapshot just because conversation memory or fuzzy matching can resolve a nearby table.
+- **Column discovery no longer becomes table snapshots**: Global semantic column questions such as "list all column names related to city" no longer run a live table metadata snapshot just because conversation memory or fuzzy matching can resolve a nearby table.
 - **Live probe scope guardrails**: Live-first probing is now limited to explicit table-scoped factual questions and table-understanding requests; open-ended column discovery stays on catalog/vector retrieval and synthesis.
 
 ### Added
@@ -5606,7 +5631,7 @@ The 0.3.x line accumulated a lot of regex-based routing patches (strong-vs-weak 
 
 ## [0.1.107] — 2026-04-27
 ### Changed
-- **Table-level semantic discovery in `/search`**: `/search` now distinguishes between semantic questions about columns and semantic questions about tables, so prompts like "içinde adres detayları olan tüm tablolar" no longer fall back to `count_tables` inventory answers.
+- **Table-level semantic discovery in `/search`**: `/search` now distinguishes between semantic questions about columns and semantic questions about tables, so prompts like "all tables containing address details" no longer fall back to `count_tables` inventory answers.
 - **Smarter search-plan correction**: The Search Agent now repairs common interpreter misroutes by rerouting table-listing concept questions from inventory/count mode into table-focused semantic discovery before retrieval runs.
 
 ### Added

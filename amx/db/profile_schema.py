@@ -199,10 +199,23 @@ _SCHEMA: dict[str, tuple[FieldSpec, ...]] = {
         FieldSpec(name="project", kind="text", label="GCP project", required=True),
         FieldSpec(name="dataset", kind="text", label="Default dataset"),
         FieldSpec(
+            name="location",
+            kind="text",
+            label="Query location",
+            help="GCP region (EU / US / europe-west3 / …). Empty = project default.",
+        ),
+        FieldSpec(
             name="credentials_path",
             kind="text",
             label="Service-account JSON path",
             help="Leave blank to use Application Default Credentials.",
+        ),
+        FieldSpec(
+            name="impersonate_service_account",
+            kind="text",
+            label="Impersonate service account",
+            help="Workload-identity email; signs queries without a personal SA key.",
+            group="advanced",
         ),
     ),
     "oracle": (
@@ -292,7 +305,22 @@ _SCHEMA: dict[str, tuple[FieldSpec, ...]] = {
             kind="text",
             label="Database path",
             required=True,
-            help="Path to a .duckdb file, or ':memory:'.",
+            help="Path to a .duckdb file, ':memory:', or 'md:<db>' for MotherDuck.",
+        ),
+        FieldSpec(
+            name="read_only",
+            kind="bool",
+            label="Read-only",
+            help="Let multiple AMX processes attach the same file. Ignored for ':memory:' / MotherDuck.",
+            group="advanced",
+        ),
+        FieldSpec(
+            name="motherduck_token",
+            kind="password",
+            label="MotherDuck token",
+            help="Required when database starts with 'md:'. Stored as a secret.",
+            secret=True,
+            group="advanced",
         ),
     ),
 }
