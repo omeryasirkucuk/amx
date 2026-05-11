@@ -8,6 +8,30 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Databricks profiles added through AMX Studio failed at first
+  connect on corporate TLS-inspecting networks because the Studio
+  form did not expose the two TLS fields the CLI wizard already
+  collects.** The CLI's ``/add-db-profile`` wizard prompts for a
+  Trusted CA bundle path (``tls_trusted_ca_file``) and a "skip TLS
+  verification" toggle (``tls_no_verify``) — both fields live on the
+  generic ``DBConfig`` dataclass and the Databricks adapter reads
+  both on every connect to wire ``_tls_trusted_ca_file`` and
+  ``_tls_no_verify`` into the ``databricks-sql`` connector and the
+  matching SQLAlchemy engine. The Studio backend endpoint already
+  accepted them — ``_merge_db_patch`` writes any valid ``DBConfig``
+  field through — but the per-backend field catalogue at
+  ``amx/web/routers/profiles.py`` listed only ``["host", "http_path",
+  "access_token", "catalog"]`` for Databricks, so the SPA form never
+  rendered inputs for the TLS pair and never sent them in the PUT
+  body. Profiles created via Studio therefore reached the connector
+  with empty TLS settings and errored on the first connect under a
+  Zscaler / Netskope / Cloudflare WARP proxy. The Databricks entry
+  in ``_DB_BACKENDS`` now also lists ``tls_trusted_ca_file`` and
+  ``tls_no_verify``; Studio's profile wizard renders the bundle
+  path as a regular text input and the verify-skip flag as a
+  checkbox; and a test pins the regression so the two field names
+  cannot be dropped from the catalogue without CI noticing.
+
 - **``amx doctor`` / Studio doctor view rendered all-green on a
   brand-new install even though no DB or LLM profile had been
   configured yet.** ``_check_active_db_profile`` and
