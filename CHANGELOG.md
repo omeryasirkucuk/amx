@@ -21,6 +21,16 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- **Studio sidebar honours the pinned catalog / database from the
+  profile.** When the user chose a catalog at ``/db`` profile-
+  creation time, the sidebar was still listing every catalog the
+  role could see on the workspace — same friction as the CLI catalog
+  picker before #318. The sidebar now renders only the pinned scope.
+  If the pinned value is no longer visible (dropped server-side or
+  permissions lost), a clear warning surfaces with the still-visible
+  list as a fallback so the user can navigate while they fix the
+  profile.
+
 - **CLI no longer leaks Studio activity into the foreground terminal.**
   ``_populate_schema_metadata_cache`` was painting a ``step_spinner``
   ("Cached column descriptions for X") whenever it was invoked with a
