@@ -6,6 +6,53 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- **TLS / SSL controls for every backend (PR 2 / 4 of the connector
+  audit).** Surfaces driver-level TLS knobs in both the CLI wizard
+  and the Studio Add-profile form for the backends that needed them.
+  The new fields:
+
+  - **PostgreSQL** — ``sslmode`` (libpq enum, default "" = driver
+    default) and ``sslrootcert`` (path to a private CA bundle). The
+    combination ``sslmode=verify-full`` + ``sslrootcert=/path/to/ca.pem``
+    is what corporate / managed PG (RDS, CloudSQL, Azure Database for
+    PostgreSQL) increasingly requires.
+  - **MySQL** — ``ssl_disabled`` (legacy intra-DC opt-out) and
+    ``ssl_ca`` (private CA bundle path).
+  - **Snowflake** — ``insecure_mode`` (last-resort TLS bypass via
+    ``snowflake.connector.connect``) and ``ocsp_fail_open`` (continue
+    when the corporate proxy blocks the OCSP responder).
+  - **ClickHouse** — ``ca_cert`` and ``verify`` (HTTPS only).
+  - **MSSQL Studio symmetry** — ``encrypt`` and
+    ``trust_server_certificate`` already lived on ``DBConfig`` and in
+    the URL builder; the Studio backends catalog now lists them so
+    users can toggle them from the form instead of editing
+    ``~/.amx/config.yml`` by hand. The exact pre-#303 Databricks-TLS
+    gap, reproduced for MSSQL and now closed.
+
+  The DBConfig defaults keep the driver-native behaviour for every
+  field, so existing profiles continue to negotiate TLS the same way
+  they did before.
+
+- **``amx/db/profile_schema.py`` — single source of truth for
+  per-backend fields.** Declarative spec carries ``kind`` (text /
+  password / int / bool / select), ``group`` (basic / advanced),
+  ``label``, ``help``, ``required``, and crucially
+  ``applies_to_url`` for every field. The Studio backends API
+  (``GET /api/profiles/db/backends``) now returns a richer
+  ``field_specs`` array derived from the spec, and the Studio Add-
+  profile form renders kind-aware inputs (select for sslmode,
+  checkboxes for booleans, password for secrets). Advanced fields
+  collapse under a ``<details>`` block so the basic flow stays as
+  terse as before.
+
+  The regression test ``test_profile_schema_url_coverage.py`` walks
+  every spec field marked ``applies_to_url=True`` and asserts the URL
+  builder actually consumes it under at least one realistic
+  configuration. **That test would have caught the Databricks-TLS gap
+  before PR #303 ever shipped.**
+
 ### Changed
 
 - **Neutral wording on the Databricks "Skip TLS verification" toggle

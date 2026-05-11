@@ -512,6 +512,38 @@ class DBConfig(_ObservableConfig):
 
     # ClickHouse — HTTPS toggle. HTTP port is 8123, HTTPS is 8443.
     secure: bool = False
+    # ClickHouse TLS verification (visible only when ``secure=True``).
+    # ``ca_cert`` lets corporate users point at a private CA bundle;
+    # ``verify=False`` is the escape hatch when even the CA path can't be
+    # configured (e.g., TLS-inspecting proxy with a non-distributable
+    # root). Mirrors the Databricks / MSSQL TLS surface.
+    ca_cert: str = ""
+    verify: bool = True
+
+    # PostgreSQL TLS — corporate / managed PG (RDS, CloudSQL) increasingly
+    # requires verify-full with a private root. The default is libpq's
+    # ``prefer`` which negotiates TLS but does not validate the server
+    # cert, matching today's behaviour. Setting ``sslmode`` to
+    # ``verify-ca`` / ``verify-full`` activates path validation against
+    # ``sslrootcert`` (file path).
+    sslmode: str = ""
+    sslrootcert: str = ""
+
+    # MySQL TLS — MySQL accepts ``ssl_disabled`` and ``ssl_ca`` as
+    # connect kwargs (forwarded by SQLAlchemy via URL params). The
+    # default matches the driver default (TLS preferred when the
+    # server advertises it).
+    ssl_disabled: bool = False
+    ssl_ca: str = ""
+
+    # Snowflake TLS / OCSP — corporate proxies that block OCSP
+    # responder traffic time out the connect handshake. Setting
+    # ``ocsp_fail_open=True`` lets the driver continue when the OCSP
+    # check itself fails (still validates the cert path). ``insecure_mode``
+    # is the last-resort bypass, matching the connector's
+    # ``snowflake.connector.connect(..., insecure_mode=True)`` flag.
+    insecure_mode: bool = False
+    ocsp_fail_open: bool = False
 
     # Profiling guardrails
     profiling_mode: str = "full"  # full | sampled | metadata
@@ -554,6 +586,15 @@ class DBConfig(_ObservableConfig):
                 params.append(f"warehouse={quote_plus(self.warehouse)}")
             if self.role:
                 params.append(f"role={quote_plus(self.role)}")
+            # Snowflake driver-level TLS / OCSP. Both arrive via
+            # snowflake-sqlalchemy as URL query params, then surface as
+            # ``snowflake.connector.connect(..., insecure_mode=..., ocsp_fail_open=...)``
+            # kwargs. Default values (False) match the driver default so
+            # opting out is a no-op until the user toggles them.
+            if self.insecure_mode:
+                params.append("insecure_mode=true")
+            if self.ocsp_fail_open:
+                params.append("ocsp_fail_open=true")
             if params:
                 url += "?" + "&".join(params)
             return url
@@ -598,6 +639,18 @@ class DBConfig(_ObservableConfig):
             )
             if self.database:
                 url += f"/{quote_plus(self.database)}"
+            # MySQL TLS via PyMySQL connect kwargs surfaced as URL query
+            # params. ``ssl_disabled=true`` explicitly opts out of TLS for
+            # legacy intra-data-centre setups; ``ssl_ca`` activates path
+            # validation against a private CA bundle. Neither is set by
+            # default so the driver keeps negotiating opportunistically.
+            params: list[str] = []
+            if self.ssl_disabled:
+                params.append("ssl_disabled=true")
+            elif self.ssl_ca:
+                params.append(f"ssl_ca={quote_plus(self.ssl_ca)}")
+            if params:
+                url += "?" + "&".join(params)
             return url
 
         if self.backend == "oracle":
@@ -664,6 +717,20 @@ class DBConfig(_ObservableConfig):
             )
             if self.database:
                 url += f"/{quote_plus(self.database)}"
+            # ClickHouse TLS knobs are only meaningful on HTTPS. The
+            # ``verify=false`` toggle drops cert validation entirely
+            # (escape hatch for TLS-inspecting proxies that present a
+            # non-distributable root); ``ca_cert`` activates path
+            # validation against a private bundle. Both arrive at the
+            # urllib3 layer via clickhouse-connect's standard kwargs.
+            if self.secure:
+                params: list[str] = []
+                if self.ca_cert:
+                    params.append(f"ca_cert={quote_plus(self.ca_cert)}")
+                if not self.verify:
+                    params.append("verify=false")
+                if params:
+                    url += "?" + "&".join(params)
             return url
 
         if self.backend == "duckdb":
@@ -693,6 +760,19 @@ class DBConfig(_ObservableConfig):
             f"@{self.host}:{self.port}"
         )
         url += f"/{quote_plus(self.database) if self.database else 'postgres'}"
+        # PostgreSQL TLS: libpq honours ``sslmode`` and ``sslrootcert``
+        # as URL query params, which is the SQLAlchemy convention for
+        # psycopg2. ``sslmode=verify-full`` plus ``sslrootcert=<path>`` is
+        # the corporate / managed-PG (RDS, CloudSQL, Azure Database for
+        # PostgreSQL) idiom; the empty default keeps libpq's negotiation
+        # behaviour unchanged for users who don't touch the field.
+        pg_params: list[str] = []
+        if self.sslmode:
+            pg_params.append(f"sslmode={quote_plus(self.sslmode)}")
+        if self.sslrootcert:
+            pg_params.append(f"sslrootcert={quote_plus(self.sslrootcert)}")
+        if pg_params:
+            url += "?" + "&".join(pg_params)
         return url
 
     @property
@@ -849,6 +929,17 @@ def _db_from_mapping(m: dict[str, Any]) -> DBConfig:
         trust_server_certificate=bool(m.get("trust_server_certificate", False)),
         cluster_identifier=str(m.get("cluster_identifier", "")),
         secure=bool(m.get("secure", False)),
+        # TLS fields surfaced in PR 2 of the connector audit. The
+        # defaults match the driver-native defaults so existing YAML
+        # without these keys behaves identically.
+        ca_cert=str(m.get("ca_cert", "")),
+        verify=bool(m.get("verify", True)),
+        sslmode=str(m.get("sslmode", "")),
+        sslrootcert=str(m.get("sslrootcert", "")),
+        ssl_disabled=bool(m.get("ssl_disabled", False)),
+        ssl_ca=str(m.get("ssl_ca", "")),
+        insecure_mode=bool(m.get("insecure_mode", False)),
+        ocsp_fail_open=bool(m.get("ocsp_fail_open", False)),
         profiling_mode=str(m.get("profiling_mode", "full")),
         profiling_max_rows=int(m.get("profiling_max_rows", 1_000_000)),
         profiling_sample_size=int(m.get("profiling_sample_size", 5)),
@@ -867,6 +958,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "user": db.user,
                 "password": db.password,
                 "database": db.database,
+                "sslmode": db.sslmode,
+                "sslrootcert": db.sslrootcert,
             }
         )
     elif db.backend == "snowflake":
@@ -878,6 +971,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "database": db.database,
                 "warehouse": db.warehouse,
                 "role": db.role,
+                "insecure_mode": db.insecure_mode,
+                "ocsp_fail_open": db.ocsp_fail_open,
             }
         )
     elif db.backend == "databricks":
@@ -908,6 +1003,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "user": db.user,
                 "password": db.password,
                 "database": db.database,
+                "ssl_disabled": db.ssl_disabled,
+                "ssl_ca": db.ssl_ca,
             }
         )
     elif db.backend == "oracle":
@@ -954,6 +1051,8 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
                 "password": db.password,
                 "database": db.database,
                 "secure": db.secure,
+                "ca_cert": db.ca_cert,
+                "verify": db.verify,
             }
         )
     elif db.backend == "duckdb":
