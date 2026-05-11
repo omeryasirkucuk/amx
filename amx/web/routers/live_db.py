@@ -262,6 +262,36 @@ def list_assets(
     return {"schema": schema, "assets": items, "count": len(items)}
 
 
+@router.post("/schemas/{schema}/refresh")
+def refresh_schema_metadata(
+    schema: str,
+    profile: str = Query(...),
+    database: str | None = Query(default=None),
+    catalog: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Drop the column-comments cache for ``schema`` and re-list.
+
+    Backs the sidebar's manual refresh affordance. The TTL + write-path
+    invalidations already keep the cache fresh in all normal flows;
+    this endpoint exists for the out-of-band edit case (DBA tweaking
+    comments directly in the warehouse console). The response shape
+    matches ``list_assets`` so the SPA can swap the result in-place.
+    """
+    name = _require_profile(profile)
+    db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
+    db.invalidate_column_comments_cache(schema=schema)
+    raw = _coerce_or_500(f"Refreshing assets in {schema}", lambda: db.list_assets(schema))
+    items: list[dict[str, Any]] = []
+    for asset_name, kind in raw:
+        try:
+            comment = db.get_table_comment(schema, asset_name) or ""
+        except Exception:
+            comment = ""
+        items.append({"name": asset_name, "kind": kind.value, "comment": comment})
+    return {"schema": schema, "assets": items, "count": len(items), "refreshed": True}
+
+
 @router.get("/schemas/{schema}/volumes")
 def list_volumes(
     schema: str,

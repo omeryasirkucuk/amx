@@ -171,6 +171,64 @@ class PostgreSQLAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "pg_stat_user_tables"
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """Single ``pg_catalog`` query for every table + column comment.
+
+        Joins ``pg_class`` to ``pg_attribute`` so the result already has
+        the column list per table; uses ``obj_description`` for the
+        table-level comment and ``col_description`` for each column.
+        Tables that have no columns still appear because of the LEFT
+        JOIN — important for empty placeholders the user may have left
+        behind during a half-finished migration.
+        """
+        sql = (
+            "SELECT c.relname AS table_name, "
+            "       c.relkind AS relkind, "
+            "       obj_description(c.oid, 'pg_class') AS table_comment, "
+            "       a.attname AS column_name, "
+            "       col_description(c.oid, a.attnum) AS column_comment "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "LEFT JOIN pg_attribute a ON a.attrelid = c.oid "
+            "  AND a.attnum > 0 AND NOT a.attisdropped "
+            "WHERE n.nspname = :schema "
+            "  AND c.relkind IN ('r', 'v', 'm', 'p', 'f') "
+            "ORDER BY c.relname, a.attnum"
+        )
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                rows = conn.execute(text(sql), {"schema": schema}).fetchall()
+            for r in rows:
+                tname = str(r[0])
+                relkind = str(r[1])
+                kind = {
+                    "r": "TABLE",
+                    "p": "TABLE",
+                    "f": "TABLE",
+                    "v": "VIEW",
+                    "m": "MATERIALIZED VIEW",
+                }.get(relkind, "TABLE")
+                entry = out.setdefault(
+                    tname,
+                    {"table_comment": r[2], "columns": {}, "kind": kind},
+                )
+                entry["kind"] = kind
+                entry["table_comment"] = r[2]
+                if r[3] is not None:
+                    entry["columns"][str(r[3])] = r[4]
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

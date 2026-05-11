@@ -159,6 +159,75 @@ class DuckDBAdapter(DatabaseAdapter):
     def stats_label(self) -> str:
         return "row count (no scan counters)"
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """One round-trip for every table + column comment in *schema*.
+
+        Source: ``duckdb_tables()`` / ``duckdb_views()`` for the
+        table-level comment + kind, and ``duckdb_columns()`` for the
+        per-column comment. Returning ``None`` on any exception drops
+        the caller back to the per-table inspector path so a missing
+        ``catalog`` or a permission glitch never breaks the read.
+        """
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                # Tables + materialized views (DuckDB exposes the latter
+                # via the ``temporary`` flag in duckdb_tables(); for our
+                # purposes they share the same ``TABLE`` kind).
+                table_rows = conn.execute(
+                    text(
+                        "SELECT table_name, comment FROM duckdb_tables() "
+                        "WHERE schema_name = :schema"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+                for r in table_rows:
+                    out[str(r[0])] = {
+                        "table_comment": str(r[1]) if r[1] else None,
+                        "columns": {},
+                        "kind": "TABLE",
+                    }
+                view_rows = conn.execute(
+                    text(
+                        "SELECT view_name, comment FROM duckdb_views() "
+                        "WHERE schema_name = :schema AND NOT internal"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+                for r in view_rows:
+                    out[str(r[0])] = {
+                        "table_comment": str(r[1]) if r[1] else None,
+                        "columns": {},
+                        "kind": "VIEW",
+                    }
+                col_rows = conn.execute(
+                    text(
+                        "SELECT table_name, column_name, comment "
+                        "FROM duckdb_columns() "
+                        "WHERE schema_name = :schema "
+                        "ORDER BY table_name, column_index"
+                    ),
+                    {"schema": schema},
+                ).fetchall()
+            for r in col_rows:
+                tname = str(r[0])
+                entry = out.setdefault(
+                    tname,
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema comments ───────────────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

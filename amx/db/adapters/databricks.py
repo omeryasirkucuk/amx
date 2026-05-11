@@ -345,6 +345,74 @@ class DatabricksAdapter(DatabaseAdapter):
         except Exception:
             return None
 
+    # ── Bulk schema metadata ──────────────────────────────────────────────
+
+    def bulk_schema_metadata(
+        self,
+        engine: Engine,
+        schema: str,
+        *,
+        catalog: str = "",
+    ) -> dict[str, dict[str, Any]] | None:
+        """Bulk fetch via Unity Catalog's ``system.information_schema``.
+
+        Two queries — one for tables/views, one for columns — both
+        filtered on ``table_catalog`` + ``table_schema``. This is the
+        single biggest perf win in the entire AMX-Databricks story: a
+        200-table schema collapses from 200 sequential ``DESCRIBE TABLE
+        EXTENDED`` calls to two ``INFORMATION_SCHEMA`` queries (~1s).
+
+        Legacy Hive metastore profiles have no ``system.information_
+        schema`` so the query raises and we return ``None`` — the
+        connector then falls back to the per-table inspector path that
+        Hive callers have always used. No regression for that case.
+        """
+        cat = (catalog or getattr(self.cfg, "catalog", "") or "").strip()
+        if not cat:
+            return None
+        try:
+            out: dict[str, dict[str, Any]] = {}
+            with engine.connect() as conn:
+                table_rows = conn.execute(
+                    text(
+                        "SELECT table_name, table_type, comment "
+                        "FROM system.information_schema.tables "
+                        "WHERE table_catalog = :cat AND table_schema = :schema"
+                    ),
+                    {"cat": cat, "schema": schema},
+                ).fetchall()
+                for r in table_rows:
+                    raw_kind = str(r[1] or "").upper()
+                    if "MATERIALIZED" in raw_kind:
+                        kind = "MATERIALIZED VIEW"
+                    elif "VIEW" in raw_kind:
+                        kind = "VIEW"
+                    else:
+                        kind = "TABLE"
+                    out[str(r[0])] = {
+                        "table_comment": str(r[2]) if r[2] else None,
+                        "columns": {},
+                        "kind": kind,
+                    }
+                col_rows = conn.execute(
+                    text(
+                        "SELECT table_name, column_name, comment "
+                        "FROM system.information_schema.columns "
+                        "WHERE table_catalog = :cat AND table_schema = :schema "
+                        "ORDER BY table_name, ordinal_position"
+                    ),
+                    {"cat": cat, "schema": schema},
+                ).fetchall()
+            for r in col_rows:
+                entry = out.setdefault(
+                    str(r[0]),
+                    {"table_comment": None, "columns": {}, "kind": "TABLE"},
+                )
+                entry["columns"][str(r[1])] = str(r[2]) if r[2] else None
+            return out or None
+        except Exception:
+            return None
+
     # ── Schema / database comments ────────────────────────────────────────
 
     def get_schema_comment(self, engine: Engine, schema: str) -> str | None:

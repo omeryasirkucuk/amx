@@ -728,12 +728,45 @@ class DatabaseConnector:
         back to per-table inspector calls. The fallback path also
         caches its results entry-by-entry, so subsequent reads of any
         cached table short-circuit either way.
+
+        Long-first-fetch CLI affordance: when stdout is a TTY and no
+        Rich Live region is already painting (so we are in an
+        interactive command, not the middle of a ``/run`` orchestrator
+        pipeline), the bulk query is wrapped in ``step_spinner`` so the
+        user sees ``Fetching column descriptions for {schema}…  Xs``
+        rather than a frozen prompt during the cold pull. Subsequent
+        cache hits stay silent — there is no spinner because there is
+        no DB hit.
         """
+        catalog = str(getattr(self.cfg, "catalog", "") or "")
+        spinner_ctx = None
         try:
-            catalog = str(getattr(self.cfg, "catalog", "") or "")
-            payload = self._adapter.bulk_schema_metadata(
-                self.engine, schema, catalog=catalog
-            )
+            import sys as _sys
+
+            from amx.utils.live_display import get_display
+
+            display = get_display()
+            display_active = display is not None and getattr(display, "_live", None) is not None
+            if _sys.stdout.isatty() and not display_active:
+                from amx.utils.console import step_spinner
+
+                spinner_ctx = step_spinner(
+                    f"Fetching column descriptions for {schema}",
+                    done_message=f"Cached column descriptions for {schema}",
+                )
+        except Exception:
+            spinner_ctx = None
+
+        try:
+            if spinner_ctx is not None:
+                with spinner_ctx:
+                    payload = self._adapter.bulk_schema_metadata(
+                        self.engine, schema, catalog=catalog
+                    )
+            else:
+                payload = self._adapter.bulk_schema_metadata(
+                    self.engine, schema, catalog=catalog
+                )
         except Exception as exc:
             log.debug(
                 "bulk_schema_metadata raised on %s for schema %s: %s",

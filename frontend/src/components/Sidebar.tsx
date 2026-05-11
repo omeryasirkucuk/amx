@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -8,6 +8,8 @@ import {
   Database,
   FolderTree,
   Layers,
+  Loader2,
+  RefreshCw,
   Search,
   X,
 } from "lucide-react";
@@ -668,16 +670,31 @@ function SchemaNode({
   // into view without an extra click.
   const effectiveOpen = open || !!query;
 
+  const queryKey = [
+    "live-assets",
+    scope.profile,
+    scope.database ?? "",
+    scope.catalog ?? "",
+    schema,
+  ];
   const { data: assets } = useQuery({
-    queryKey: [
-      "live-assets",
-      scope.profile,
-      scope.database ?? "",
-      scope.catalog ?? "",
-      schema,
-    ],
+    queryKey,
     queryFn: () => api.liveAssets(scope, schema),
     enabled: effectiveOpen,
+  });
+
+  // Manual cache-busting refresh: hits POST /api/live/schemas/{s}/refresh
+  // which clears the column-comments cache on the backend and returns
+  // the fresh asset list. The result is fed back into the same TanStack
+  // Query so the sidebar swaps in-place without a flicker. Useful when
+  // a DBA edited descriptions outside AMX — AMX-internal writes already
+  // invalidate the cache before their HTTP response returns.
+  const qcLocal = useQueryClient();
+  const refresh = useMutation({
+    mutationFn: () => api.refreshSchemaMetadata(scope, schema),
+    onSuccess: (data) => {
+      qcLocal.setQueryData(queryKey, data);
+    },
   });
 
   const filteredAssets =
@@ -686,23 +703,51 @@ function SchemaNode({
       : assets?.assets;
 
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => {
-          setOpen((v) => !v);
-          navigate(scopePath(scope, schema));
-        }}
-        className={cn(
-          "flex w-full items-center gap-1 rounded px-2 py-1 text-left text-[12px] transition-colors duration-fast",
-          isOnThis
-            ? "bg-accent-soft text-accent-ink"
-            : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
-        )}
-      >
-        {effectiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <span className="truncate">{schema}</span>
-      </button>
+    <div className="group/row">
+      <div className="flex w-full items-center">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen((v) => !v);
+            navigate(scopePath(scope, schema));
+          }}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-1 rounded px-2 py-1 text-left text-[12px] transition-colors duration-fast",
+            isOnThis
+              ? "bg-accent-soft text-accent-ink"
+              : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
+          )}
+        >
+          {effectiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          <span className="truncate">{schema}</span>
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            refresh.mutate();
+          }}
+          disabled={refresh.isPending}
+          aria-label={`Refresh ${schema}`}
+          title="Refresh column descriptions for this schema"
+          className={cn(
+            "ml-1 shrink-0 rounded p-1 text-ink-dim transition-opacity",
+            // Hidden by default, revealed on row hover. Always visible
+            // while the refresh is in flight so the user has a visible
+            // spinner anchor even if their cursor leaves.
+            refresh.isPending
+              ? "opacity-100"
+              : "opacity-0 group-hover/row:opacity-100",
+            "hover:bg-surface-subtle hover:text-ink",
+          )}
+        >
+          {refresh.isPending ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            <RefreshCw size={11} />
+          )}
+        </button>
+      </div>
       {effectiveOpen && (
         <div className="ml-3 border-l border-border pl-2">
           {filteredAssets?.length ? (
