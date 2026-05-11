@@ -78,6 +78,14 @@ const NAMED_EVENTS = [
   "step.thinking",
   "step.thinking_done",
   "tokens.delta",
+  // Global pip-install bus events — emitted by amx.utils.optional_deps
+  // whenever the backend lazy-installs an optional dependency. Drives
+  // the floating InstallBanner so users see "Installing libraries for
+  // Snowflake…" instead of a silent 30s delay.
+  "pip.install.begin",
+  "pip.install.progress",
+  "pip.install.done",
+  "pip.install.failed",
 ] as const;
 
 export function useEventSource({

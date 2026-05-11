@@ -20,7 +20,6 @@ the import chain.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from unittest.mock import patch
 
@@ -69,28 +68,30 @@ def test_ensure_noops_when_already_installed(_no_sys_modules_shortcut) -> None:
     fake_spec = object()
     with (
         patch.object(od.importlib.util, "find_spec", return_value=fake_spec) as fs,
-        patch.object(od.subprocess, "run") as run,
+        patch.object(od, "_run_pip_with_progress") as runner,
     ):
         od.ensure(["chromadb", ("docx", "python-docx")], feature="x")
 
     assert fs.call_count == 2
-    run.assert_not_called()
+    runner.assert_not_called()
     # Cache populated so a second call is O(0) — neither find_spec
     # nor subprocess hit again.
     with (
         patch.object(od.importlib.util, "find_spec") as fs2,
-        patch.object(od.subprocess, "run") as run2,
+        patch.object(od, "_run_pip_with_progress") as runner2,
     ):
         od.ensure(["chromadb", ("docx", "python-docx")], feature="x")
     fs2.assert_not_called()
-    run2.assert_not_called()
+    runner2.assert_not_called()
 
 
 def test_ensure_pip_installs_missing_packages(_no_sys_modules_shortcut) -> None:
-    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    """A single pip subprocess covers the union of missing packages,
+    targeting the running interpreter so the install lands in the same
+    site-packages AMX is about to import from."""
     with (
         patch.object(od.importlib.util, "find_spec", return_value=None),
-        patch.object(od.subprocess, "run", return_value=completed) as run,
+        patch.object(od, "_run_pip_with_progress", return_value=(0, [])) as runner,
         patch.object(od.importlib, "invalidate_caches") as invalidate,
     ):
         od.ensure(
@@ -98,38 +99,28 @@ def test_ensure_pip_installs_missing_packages(_no_sys_modules_shortcut) -> None:
             feature="document RAG",
         )
 
-    assert run.call_count == 1
-    cmd = run.call_args.args[0]
-    # Single pip call for the union; lands in the same interpreter
-    # as AMX. Output is NOT captured and ``--quiet`` is NOT passed —
-    # a multi-package install on a fresh machine takes long enough
-    # that hidden output reads as a frozen CLI to the user, so pip's
-    # native progress bars stream through the terminal.
+    assert runner.call_count == 1
+    cmd, feature, packages = runner.call_args.args
     assert cmd[0] == sys.executable
     assert cmd[1:4] == ["-m", "pip", "install"]
     assert "--quiet" not in cmd
     assert "--disable-pip-version-check" in cmd
-    # capture_output=True / stdout=… would suppress pip's progress;
-    # the call must inherit the parent's stdio.
-    kwargs = run.call_args.kwargs
-    assert "capture_output" not in kwargs or kwargs.get("capture_output") is False
-    assert "stdout" not in kwargs
     assert "chromadb" in cmd
     assert "python-docx" in cmd
     assert "uvicorn[standard]" in cmd
+    assert feature == "document RAG"
+    assert set(packages) == {"chromadb", "python-docx", "uvicorn[standard]"}
     invalidate.assert_called_once()
 
 
 def test_ensure_raises_with_manual_command_when_pip_fails(_no_sys_modules_shortcut) -> None:
-    failed = subprocess.CompletedProcess(
-        args=[],
-        returncode=1,
-        stdout="",
-        stderr="ERROR: Could not find a version that satisfies the requirement bogus",
-    )
+    pip_tail = [
+        "Collecting bogus-package",
+        "ERROR: Could not find a version that satisfies the requirement bogus-package",
+    ]
     with (
         patch.object(od.importlib.util, "find_spec", return_value=None),
-        patch.object(od.subprocess, "run", return_value=failed),
+        patch.object(od, "_run_pip_with_progress", return_value=(1, pip_tail)),
     ):
         with pytest.raises(RuntimeError) as exc_info:
             od.ensure(["bogus-package"], feature="bogus feature")
@@ -137,6 +128,9 @@ def test_ensure_raises_with_manual_command_when_pip_fails(_no_sys_modules_shortc
     msg = str(exc_info.value)
     assert "pip install bogus-package" in msg
     assert "exit code 1" in msg
+    # Captured pip tail is included so the user has enough context to
+    # debug without re-running pip by hand.
+    assert "ERROR: Could not find a version" in msg
     # Cache must NOT retain the failed entries — a retry is expected
     # to call find_spec/pip again.
     assert "bogus-package|bogus-package" not in od._VERIFIED
@@ -147,7 +141,7 @@ def test_ensure_raises_when_pip_executable_missing(_no_sys_modules_shortcut) -> 
     the same actionable manual-install hint."""
     with (
         patch.object(od.importlib.util, "find_spec", return_value=None),
-        patch.object(od.subprocess, "run", side_effect=OSError("no pip on PATH")),
+        patch.object(od, "_run_pip_with_progress", side_effect=OSError("no pip on PATH")),
     ):
         with pytest.raises(RuntimeError) as exc_info:
             od.ensure(["chromadb"], feature="search index")
@@ -161,7 +155,6 @@ def test_ensure_resolves_tuple_form_correctly(_no_sys_modules_shortcut) -> None:
     """``("docx", "python-docx")`` checks the import name but installs
     the pip distribution name — confusion between these two has bitten
     every other "ensure-on-demand" pattern in the wild."""
-    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     captured: dict[str, object] = {}
 
     def fake_find_spec(name: str, *args, **kwargs):
@@ -170,12 +163,12 @@ def test_ensure_resolves_tuple_form_correctly(_no_sys_modules_shortcut) -> None:
 
     with (
         patch.object(od.importlib.util, "find_spec", side_effect=fake_find_spec),
-        patch.object(od.subprocess, "run", return_value=completed) as run,
+        patch.object(od, "_run_pip_with_progress", return_value=(0, [])) as runner,
         patch.object(od.importlib, "invalidate_caches"),
     ):
         od.ensure([("docx", "python-docx")], feature="docs")
 
     assert captured["find_spec_name"] == "docx"
-    cmd = run.call_args.args[0]
+    cmd, _feature, _packages = runner.call_args.args
     assert "python-docx" in cmd
     assert "docx" not in cmd
