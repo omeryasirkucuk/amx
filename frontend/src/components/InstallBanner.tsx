@@ -39,6 +39,13 @@ const PHASE_LABEL: Record<string, string> = {
   tail: "Working",
 };
 
+// Module-level constant so the useEventSource useEffect dep never sees
+// a new reference. Inlining ``[]`` here made the hook tear down and
+// re-open the EventSource on every render of every parent — a slow
+// connection churn that on Windows + Chrome can manifest as the SPA
+// failing to settle and leaving a black screen.
+const NO_TERMINAL_TYPES: readonly string[] = [];
+
 function formatElapsed(ms: number): string {
   if (ms < 1000) return "0s";
   const s = Math.floor(ms / 1000);
@@ -114,7 +121,7 @@ export default function InstallBanner() {
   // never auto-closes.
   const { events } = useEventSource({
     path: "/api/installs/events",
-    terminalTypes: [],
+    terminalTypes: NO_TERMINAL_TYPES,
   });
 
   const [installs, setInstalls] = useState<Map<string, InstallState>>(new Map());
