@@ -5340,6 +5340,12 @@ class ToolBox:
                     "source_type": meta.get("source_type") or "",
                     "snippet": text,
                     "distance": h.get("distance"),
+                    # PR E: chunk_idx round-trips from RAGStore's ingest
+                    # metadata so the /ask citation summary renders
+                    # ``pdf.pdf:5`` exactly like PR C's RunDetail rows.
+                    # Falls back to 0 when missing so older collections
+                    # without the metadata key don't blow up the parse.
+                    "chunk_idx": int(meta.get("chunk_idx") or 0),
                 }
             )
         return {

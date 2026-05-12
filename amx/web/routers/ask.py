@@ -686,15 +686,17 @@ def _ask_worker(
             emit(job.queue, "thinking.delta", {"text": chunk})
 
     def _on_tool_call(summary: dict[str, Any]) -> None:
-        emit(
-            job.queue,
-            "tool.call",
-            {
-                "name": summary.get("name", ""),
-                "arguments": summary.get("arguments", "{}"),
-                "result_preview": summary.get("result_preview", ""),
-            },
-        )
+        payload: dict[str, Any] = {
+            "name": summary.get("name", ""),
+            "arguments": summary.get("arguments", "{}"),
+            "result_preview": summary.get("result_preview", ""),
+        }
+        # PR E: structured citations for ``search_docs`` calls so the
+        # SPA can render a compact hit table inside the tool-call
+        # expander instead of the truncated single-line preview.
+        if "citations" in summary:
+            payload["citations"] = list(summary.get("citations") or [])
+        emit(job.queue, "tool.call", payload)
 
     # Hydrate the prior-turn context so a resumed chat can resolve
     # follow-up references ("that table", "the second one"). Pulled
@@ -791,6 +793,22 @@ def _ask_worker(
                 )
 
     emit(job.queue, "thinking.stop", {})
+    # PR E: aggregate citations across every ``search_docs`` call in the
+    # turn, deduped by (source, chunk_idx) while preserving the LLM's
+    # reasoning order (first call wins). The SPA renders this list as a
+    # "Sources" disclosure under the final answer — same format as the
+    # PR C citations block on the Run detail page.
+    aggregated_citations: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, int]] = set()
+    for tc_summary in result.tool_calls or []:
+        for cit in tc_summary.get("citations") or []:
+            if not isinstance(cit, dict):
+                continue
+            key = (str(cit.get("source") or ""), int(cit.get("chunk_idx") or 0))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            aggregated_citations.append(cit)
     emit(
         job.queue,
         "answer.final",
@@ -800,6 +818,7 @@ def _ask_worker(
             "iterations": result.iterations,
             "usage": dict(result.usage),
             "finish_reason": result.finish_reason,
+            "citations": aggregated_citations,
             # Multi-profile observability: which profiles were in
             # scope, which one the system prompt flagged as the
             # auto-detected focus, and where the time went. The

@@ -633,11 +633,65 @@ def _convert_message_for_litellm(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
-    return {
+    summary: dict[str, Any] = {
         "name": tool_call.name,
         "arguments": tool_call.arguments,
         "result_preview": result[:280] + ("…" if len(result) > 280 else ""),
     }
+    # PR E: surface structured citations for ``search_docs`` calls so the
+    # /ask SSE stream can render a Sources block under the answer and a
+    # per-hit table inside the tool-call expander. We parse the JSON
+    # tool-result here (toolbox.invoke returns a ``_safe_json`` string)
+    # and pull each hit's source / chunk_idx / score / snippet. The
+    # extraction is best-effort — any parse failure falls back to an
+    # empty list so existing callers keep working unchanged.
+    if tool_call.name == "search_docs":
+        citations: list[dict[str, Any]] = []
+        try:
+            import json as _json
+
+            parsed = _json.loads(result) if isinstance(result, str) else result
+            hits = parsed.get("hits") if isinstance(parsed, dict) else None
+            if isinstance(hits, list):
+                for hit in hits:
+                    if not isinstance(hit, dict):
+                        continue
+                    meta = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+                    source = str(hit.get("source") or meta.get("source") or "")
+                    chunk_idx = hit.get("chunk_idx")
+                    if chunk_idx is None and isinstance(meta, dict):
+                        chunk_idx = meta.get("chunk_idx")
+                    try:
+                        chunk_idx_int = int(chunk_idx) if chunk_idx is not None else 0
+                    except (TypeError, ValueError):
+                        chunk_idx_int = 0
+                    distance = hit.get("distance")
+                    score_val = hit.get("score")
+                    if score_val is None and isinstance(distance, (int, float)):
+                        # Chroma reports distance (lower = better); flip
+                        # to a normalised 0..1 similarity score so the
+                        # frontend can render a single "score 0.84" line
+                        # consistent with PR C's RunDetail citations.
+                        score_val = max(0.0, 1.0 - float(distance))
+                    try:
+                        score_float = float(score_val) if score_val is not None else 0.0
+                    except (TypeError, ValueError):
+                        score_float = 0.0
+                    snippet = str(hit.get("snippet") or hit.get("text") or "")
+                    if len(snippet) > 200:
+                        snippet = snippet[:200]
+                    citations.append(
+                        {
+                            "source": source,
+                            "chunk_idx": chunk_idx_int,
+                            "score": score_float,
+                            "snippet": snippet,
+                        }
+                    )
+        except Exception:
+            citations = []
+        summary["citations"] = citations
+    return summary
 
 
 def run_tool_agent(
