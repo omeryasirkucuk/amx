@@ -29,6 +29,17 @@ interface AskContextResponse {
   }>;
 }
 
+/** PR E: structured citation pulled from a ``search_docs`` tool call.
+ *  Same shape as the PR C ``Citation`` interface used on RunDetail —
+ *  kept independent so AskChat can render the Sources block without
+ *  importing from a route module. */
+export interface Citation {
+  source: string;
+  chunk_idx: number;
+  score: number;
+  snippet: string;
+}
+
 export interface SubmittedTurn {
   role: "user" | "assistant";
   content: string;
@@ -37,11 +48,17 @@ export interface SubmittedTurn {
     arguments: string;
     result_preview: string;
     latency_ms?: number;
+    /** PR E: per-call citations (only present on ``search_docs``). */
+    citations?: Citation[];
   }>;
   /** Multi-profile observability stamped on assistant turns. */
   scopeProfiles?: string[];
   focusProfile?: string | null;
   totalLatencyMs?: number;
+  /** PR E: aggregated citations across every ``search_docs`` call in
+   *  the turn, deduped by ``(source, chunk_idx)``. Rendered as a
+   *  Sources block under the answer. */
+  citations?: Citation[];
 }
 
 interface SubmitResponse {
@@ -180,13 +197,14 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, finalAnswer, toolCalls, finalMeta, jobFailure } = useMemo(() => {
+  const { thinking, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
       arguments: string;
       result_preview: string;
       latency_ms?: number;
+      citations?: Citation[];
     }> = [];
     let finalText: string | null = null;
     let meta: {
@@ -194,6 +212,7 @@ export default function AskChat({
       focusProfile?: string | null;
       totalLatencyMs?: number;
     } = {};
+    let citations: Citation[] = [];
     let failure: { message: string; hint?: string } | null = null;
     for (const event of events) {
       if (event.type === "thinking.delta" && typeof event.text === "string") {
@@ -205,6 +224,9 @@ export default function AskChat({
           result_preview: String(event.result_preview || ""),
           latency_ms:
             typeof event.latency_ms === "number" ? event.latency_ms : undefined,
+          citations: Array.isArray(event.citations)
+            ? (event.citations as Citation[])
+            : undefined,
         });
       } else if (event.type === "answer.final" && typeof event.answer === "string") {
         finalText = event.answer;
@@ -221,6 +243,9 @@ export default function AskChat({
               ? (event.total_latency_ms as number)
               : undefined,
         };
+        if (Array.isArray(event.citations)) {
+          citations = event.citations as Citation[];
+        }
       } else if (event.type === "job.failed") {
         failure = {
           message: String(event.error || "Ask failed."),
@@ -233,6 +258,7 @@ export default function AskChat({
       finalAnswer: finalText,
       toolCalls: tools,
       finalMeta: meta,
+      finalCitations: citations,
       jobFailure: failure,
     };
   }, [events]);
@@ -258,6 +284,7 @@ export default function AskChat({
             scopeProfiles: finalMeta.scopeProfiles,
             focusProfile: finalMeta.focusProfile ?? null,
             totalLatencyMs: finalMeta.totalLatencyMs,
+            citations: finalCitations.length > 0 ? finalCitations : undefined,
           },
         ];
       });
@@ -284,7 +311,7 @@ export default function AskChat({
     setSubmitErrorHint("configure-llm");
     setActiveJob(null);
     clearAskActiveJob(sessionKey);
-  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, sessionKey, clearAskActiveJob]);
+  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob]);
 
   async function submitText(rawText: string) {
     const text = (rawText || "").trim();
@@ -437,6 +464,11 @@ export default function AskChat({
               <ToolCallList calls={turn.toolCalls} />
             )}
             {turn.role === "assistant" &&
+              turn.citations &&
+              turn.citations.length > 0 && (
+                <CitationsList citations={turn.citations} />
+              )}
+            {turn.role === "assistant" &&
               (turn.scopeProfiles?.length || turn.totalLatencyMs != null) && (
                 <AnswerMeta
                   scopeProfiles={turn.scopeProfiles}
@@ -454,6 +486,9 @@ export default function AskChat({
               <span className="text-sm text-ink-dim">Reasoning…</span>
             )}
             {toolCalls.length > 0 && <ToolCallList calls={toolCalls} live />}
+            {finalCitations.length > 0 && (
+              <CitationsList citations={finalCitations} />
+            )}
           </Bubble>
         )}
         {submitError && (
@@ -681,7 +716,14 @@ function ToolCallList({
   calls,
   live,
 }: {
-  calls: SseEvent[] | Array<{ name: string; arguments: string; result_preview: string }>;
+  calls:
+    | SseEvent[]
+    | Array<{
+        name: string;
+        arguments: string;
+        result_preview: string;
+        citations?: Citation[];
+      }>;
   live?: boolean;
 }) {
   return (
@@ -691,7 +733,37 @@ function ToolCallList({
       </summary>
       <ul className="mt-2 space-y-1 text-xs">
         {calls.map((call, idx) => {
-          const c = call as { name: string; arguments: string; result_preview: string };
+          const c = call as {
+            name: string;
+            arguments: string;
+            result_preview: string;
+            citations?: Citation[];
+          };
+          // PR E: search_docs renders a compact hit table inside the
+          // expander instead of the truncated result_preview line so
+          // the user can read sources / scores at a glance without
+          // chasing the answer's Sources block.
+          const isSearchDocs = c.name === "search_docs";
+          const hits = Array.isArray(c.citations) ? c.citations : [];
+          if (isSearchDocs && hits.length > 0) {
+            return (
+              <li key={idx} className="rounded-md bg-surface px-2 py-1 text-[11px] text-ink-muted">
+                <div className="font-mono">
+                  <span className="text-accent">{c.name}</span>(
+                  <span className="text-ink-dim">{c.arguments}</span>) →{" "}
+                  {hits.length} hit{hits.length === 1 ? "" : "s"}
+                </div>
+                <ul className="mt-1 space-y-0.5 pl-3 font-mono text-[10.5px] text-ink-dim">
+                  {hits.map((h, hidx) => (
+                    <li key={`${h.source}-${h.chunk_idx}-${hidx}`}>
+                      • <span className="text-ink-muted">{h.source}</span>:{h.chunk_idx}{" "}
+                      <span className="opacity-70">— score {h.score.toFixed(2)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            );
+          }
           return (
             <li key={idx} className="rounded-md bg-surface px-2 py-1 font-mono text-[11px] text-ink-muted">
               <span className="text-accent">{c.name}</span>(
@@ -829,6 +901,38 @@ function AnswerMeta({
   return (
     <div className="mt-2 text-[10.5px] italic text-ink-dim">
       {parts.join(" · ")}
+    </div>
+  );
+}
+
+/**
+ * PR E: Sources block under an assistant turn. Same format as PR C's
+ * CitationsDisclosure on RunDetail (path:chunk_idx · score · snippet)
+ * so the user gets the same provenance read-out in both surfaces.
+ *
+ * Kept as a copy here rather than imported from RunDetail to avoid
+ * coupling the chat component to a route module. TODO: extract a
+ * shared ``CitationsList`` component once the citation shape stops
+ * evolving — both surfaces should track each other byte-for-byte.
+ */
+function CitationsList({ citations }: { citations: Citation[] }) {
+  if (citations.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1 rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-xs text-ink-muted">
+      <div className="text-[10px] uppercase tracking-wider text-ink-dim">Sources</div>
+      {citations.map((c, i) => (
+        <div key={`${c.source}-${c.chunk_idx}-${i}`}>
+          <div className="font-mono">
+            <span className="text-ink">{c.source}</span>:{c.chunk_idx}
+            <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
+          </div>
+          {c.snippet && (
+            <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
+              &ldquo;{c.snippet}&hellip;&rdquo;
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

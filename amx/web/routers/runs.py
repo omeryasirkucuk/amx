@@ -150,6 +150,19 @@ class RunRequest(BaseModel):
             "Saved profile is never mutated."
         ),
     )
+    doc_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "PR E: one-shot multi-doc-profile override for this run. "
+            "When set, the worker temporarily flips ``cfg.run_doc_profiles`` "
+            "to this list and the orchestrator unions every profile's "
+            "source paths into a single RAGStore retrieval scope. "
+            "Pass ``None`` (or omit) to fall back to ``cfg.active_doc_profile`` "
+            "/ ``cfg.run_doc_profiles`` on disk. The saved config is never "
+            "mutated — the override is reverted in the worker's ``finally`` "
+            "regardless of how the run terminates."
+        ),
+    )
 
 
 def _apply_llm_overrides(
@@ -441,6 +454,27 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     cfg, applied_overrides = _apply_llm_overrides(cfg, body.llm_overrides)
     if applied_overrides:
         emit(job.queue, "run.llm_overrides", {"overrides": applied_overrides})
+
+    # PR E: per-run doc-profile override. The dialog lets the user pick
+    # which doc profiles feed the RAG agent for *this* run only; we
+    # apply the list to ``cfg.run_doc_profiles`` here and revert it in
+    # the finally block at the bottom of the worker. The saved config
+    # on disk is never mutated. ``None`` / empty falls through to the
+    # active profile (legacy behaviour).
+    _doc_profiles_saved: list[str] = list(cfg.run_doc_profiles or [])
+    _doc_profiles_overridden = False
+    if body.doc_profiles is not None:
+        cleaned_doc_profiles = [str(p).strip() for p in body.doc_profiles if str(p or "").strip()]
+        try:
+            object.__setattr__(cfg, "run_doc_profiles", cleaned_doc_profiles)
+        except Exception:  # pragma: no cover - defensive
+            cfg.run_doc_profiles = cleaned_doc_profiles
+        _doc_profiles_overridden = True
+        emit(
+            job.queue,
+            "run.doc_profiles",
+            {"doc_profiles": cleaned_doc_profiles},
+        )
         try:
             log_event(
                 "run.llm_overrides",
@@ -558,9 +592,46 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         except Exception as exc:
             log.warning("Could not persist run history: %s", exc)
 
+    # PR E: open a RAG store for the run when a doc profile is active
+    # (or the per-run override above asked for one). Mirrors the CLI's
+    # analyze_flow logic — failure to open is downgraded to a one-line
+    # ``rag_unavailable_reason`` on the run record (PR A) so the SPA's
+    # Run detail page can surface "Docs unavailable: …" instead of a
+    # silent run with no doc context.
+    rag_store_for_run = None
+    rag_extra_metrics: dict[str, Any] = {}
+    effective_run_doc_paths: list[str] = []
+    try:
+        from amx.config import DISABLED_PROFILE as _DISABLED_PROFILE
+        from amx.docs.rag import RAGStore as _RAGStore
+
+        if cfg.active_doc_profile and cfg.active_doc_profile != _DISABLED_PROFILE:
+            effective_run_doc_paths = list(cfg.effective_run_doc_paths())
+            _store = _RAGStore(source_filters=effective_run_doc_paths)
+            if _store.doc_count > 0:
+                rag_store_for_run = _store
+    except Exception as exc:  # pragma: no cover - storage-side defensive
+        from amx.cli_support.commands.analyze_flow import _record_rag_unavailable_reason
+
+        _record_rag_unavailable_reason(rag_extra_metrics, exc)
+        log.warning("RAGStore init failed in studio run: %s", exc, exc_info=True)
+
+    # Profiles list resolved for this run (union of effective doc
+    # profiles when the multi-profile override is set, else the single
+    # active profile). Surfaced on metrics_json so the Run detail page
+    # can render "Docs: profile-a, profile-b · N hits".
+    if cfg.run_doc_profiles:
+        rag_extra_metrics["doc_profiles_used"] = list(cfg.run_doc_profiles)
+    elif cfg.active_doc_profile:
+        rag_extra_metrics["doc_profiles_used"] = [cfg.active_doc_profile]
+    else:
+        rag_extra_metrics["doc_profiles_used"] = []
+    rag_extra_metrics["effective_run_doc_paths"] = list(effective_run_doc_paths)
+
     orchestrator = Orchestrator(
         db=db,
         llm=llm,
+        rag_store=rag_store_for_run,
         run_id=run_id,
         missing_only=bool(body.missing_only),
     )
@@ -724,6 +795,15 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             _active_cancel_token.reset(_cancel_token_sentinel)
         except Exception:  # pragma: no cover - defensive
             pass
+        # PR E: revert the one-shot doc-profile override. The saved
+        # config on disk was never mutated; this only restores the
+        # in-memory cfg so subsequent workers using this same cfg
+        # singleton see the user's persisted run_doc_profiles list.
+        if _doc_profiles_overridden:
+            try:
+                object.__setattr__(cfg, "run_doc_profiles", _doc_profiles_saved)
+            except Exception:  # pragma: no cover - defensive
+                cfg.run_doc_profiles = _doc_profiles_saved
 
     # Persist deferred review results into the pending queue regardless
     # of cancellation — the user may want to review what *did* finish.
@@ -813,21 +893,35 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
 
     if hs is not None and run_id is not None:
         try:
+            metrics_payload: dict[str, Any] = {
+                "duration_sec": round(time.monotonic() - run_started, 3),
+                "total_assets": total_assets,
+                "total_schemas": len(scope),
+                "processed_assets_count": len(processed_assets),
+                "processed_assets": processed_assets,
+                "skipped_assets_count": len(skipped_assets),
+                "skipped_assets": skipped_assets,
+                "failed_assets_count": len(failed_assets),
+                "applied_flag": bool(body.apply),
+                "applied_count": int(applied),
+            }
+            # PR E: merge the RAG-diagnostic keys (doc_profiles_used,
+            # effective_run_doc_paths, rag_unavailable_reason,
+            # rag_hits_total). Base metrics win on collision so an
+            # accidental key reuse can never shadow run accounting.
+            try:
+                if rag_store_for_run is not None:
+                    rag_extra_metrics.setdefault(
+                        "rag_hits_total", int(getattr(rag_store_for_run, "doc_count", 0) or 0)
+                    )
+            except Exception:  # pragma: no cover - defensive
+                pass
+            for k, v in rag_extra_metrics.items():
+                metrics_payload.setdefault(k, v)
             hs.finish_run(
                 run_id,
                 status=final_status,
-                metrics={
-                    "duration_sec": round(time.monotonic() - run_started, 3),
-                    "total_assets": total_assets,
-                    "total_schemas": len(scope),
-                    "processed_assets_count": len(processed_assets),
-                    "processed_assets": processed_assets,
-                    "skipped_assets_count": len(skipped_assets),
-                    "skipped_assets": skipped_assets,
-                    "failed_assets_count": len(failed_assets),
-                    "applied_flag": bool(body.apply),
-                    "applied_count": int(applied),
-                },
+                metrics=metrics_payload,
                 tokens={
                     "total_tokens": token_tracker.total_tokens,
                     "total_cost_usd": round(token_tracker.total_cost_usd, 8),
