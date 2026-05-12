@@ -645,7 +645,13 @@ def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
     # and pull each hit's source / chunk_idx / score / snippet. The
     # extraction is best-effort — any parse failure falls back to an
     # empty list so existing callers keep working unchanged.
-    if tool_call.name == "search_docs":
+    # PR γ: ``search_code`` joins ``search_docs`` here so the /ask SSE
+    # stream renders the same Sources block + per-call hit table for
+    # code retrievals as it does for docs. The hit shape differs
+    # (code hits carry ``rel_path`` + ``start_line`` / ``end_line``
+    # instead of ``source`` + plain ``chunk_idx``); the citation dict
+    # is the unified shape both surfaces emit.
+    if tool_call.name in ("search_docs", "search_code"):
         citations: list[dict[str, Any]] = []
         try:
             import json as _json
@@ -658,7 +664,16 @@ def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
                         continue
                     raw_meta = hit.get("metadata")
                     meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
-                    source = str(hit.get("source") or meta.get("source") or "")
+                    # ``rel_path`` is the user-friendly key for code
+                    # hits (``src/foo.py``); fall back to the absolute
+                    # ``source`` only when ``rel_path`` is absent.
+                    source = str(
+                        hit.get("rel_path")
+                        or hit.get("source")
+                        or meta.get("rel_path")
+                        or meta.get("source")
+                        or ""
+                    )
                     chunk_idx = hit.get("chunk_idx")
                     if chunk_idx is None:
                         chunk_idx = meta.get("chunk_idx")
@@ -681,12 +696,32 @@ def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
                     snippet = str(hit.get("snippet") or hit.get("text") or "")
                     if len(snippet) > 200:
                         snippet = snippet[:200]
+                    # PR γ: pull line range from the hit (code-RAG)
+                    # falling back to metadata. ``None`` when the
+                    # chunk pre-dates the line-bound rollout so the
+                    # frontend can fall back to ``path:chunk_idx``.
+                    start_line = hit.get("start_line")
+                    if start_line is None:
+                        start_line = meta.get("start_line")
+                    end_line = hit.get("end_line")
+                    if end_line is None:
+                        end_line = meta.get("end_line")
+                    line_range: list[int] | None = None
+                    if start_line is not None:
+                        try:
+                            sl = int(start_line)
+                            el = int(end_line) if end_line is not None else sl
+                            if sl > 0:
+                                line_range = [sl, el]
+                        except (TypeError, ValueError):
+                            line_range = None
                     citations.append(
                         {
                             "source": source,
                             "chunk_idx": chunk_idx_int,
                             "score": score_float,
                             "snippet": snippet,
+                            "line_range": line_range,
                         }
                     )
         except Exception:

@@ -352,6 +352,14 @@ class PromptDetail:
     rag_table_hits: int = 5  # Doc chunks fetched for the table-level query
     rag_col_hits: int = 1  # Doc chunks fetched per column query
     rag_max_chunks: int = 8  # Hard cap on total chunks injected into the RAG prompt
+    # PR γ: per-column code-RAG fan-out, parallel to ``rag_col_hits``.
+    # ``0`` preserves the pre-PR-γ behaviour (one neutral
+    # ``"<schema> <table>"`` semantic query only). Higher values let the
+    # CodeAgent also issue one ``<table>.<col>`` query per column so
+    # column-specific call-sites surface as separate citations. Kept
+    # conservative by default because each query costs a Chroma round
+    # trip and embedding tokens on metered providers.
+    code_col_hits: int = 0
 
 
 PROMPT_DETAIL_LEVELS = ("minimal", "standard", "detailed", "full")
@@ -396,6 +404,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
             rag_table_hits=3,
             rag_col_hits=0,
             rag_max_chunks=5,
+            code_col_hits=0,
         )
     if lv == "detailed":
         return PromptDetail(
@@ -414,6 +423,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
             rag_table_hits=8,
             rag_col_hits=2,
             rag_max_chunks=12,
+            code_col_hits=1,
         )
     if lv == "full":
         return PromptDetail(
@@ -432,6 +442,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
             rag_table_hits=5,
             rag_col_hits=2,
             rag_max_chunks=15,
+            code_col_hits=1,
         )
     # "standard" — default
     return PromptDetail(
@@ -450,6 +461,7 @@ def prompt_detail_for(level: str) -> PromptDetail:
         rag_table_hits=5,
         rag_col_hits=1,
         rag_max_chunks=8,
+        code_col_hits=0,
     )
 
 
