@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://www.youtube.com/watch?v=NmEVxqkfZdI">
-    <img src="https://img.youtube.com/vi/NmEVxqkfZdI/maxresdefault.jpg" alt="Watch AMX in action on YouTube" width="760">
+    <img src="docs/assets/amx-demo-thumb.jpg" alt="Watch AMX in action on YouTube" width="760">
   </a>
 </p>
 
