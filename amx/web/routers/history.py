@@ -13,6 +13,7 @@ refactor lives in ``amx/cli_support/commands/compare.py``.
 
 from __future__ import annotations
 
+import fnmatch
 import io
 from typing import Any
 
@@ -292,6 +293,230 @@ def compare(body: CompareRequest) -> dict[str, Any]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+
+
+def _row_matches_cell(
+    row: dict[str, Any],
+    schema: str,
+    table: str,
+    column: str | None,
+) -> bool:
+    """Return True if a run_results row matches the given cell key.
+
+    A 3-part cell key (db.schema.table) matches table-level rows
+    (``column_name`` is null/empty). A 4-part key requires an exact
+    column match.
+    """
+    if str(row.get("schema_name") or "") != schema:
+        return False
+    if str(row.get("table_name") or "") != table:
+        return False
+    row_col = row.get("column_name") or ""
+    if column is None:
+        return not row_col
+    return str(row_col) == column
+
+
+def _row_glob_matches(
+    row: dict[str, Any],
+    schema_pat: str,
+    table_pat: str,
+    column_pat: str | None,
+) -> bool:
+    """Return True if a row matches all glob patterns. ``column_pat=None``
+    means table-level only."""
+    s = str(row.get("schema_name") or "")
+    t = str(row.get("table_name") or "")
+    c = row.get("column_name") or ""
+    if not fnmatch.fnmatch(s, schema_pat):
+        return False
+    if not fnmatch.fnmatch(t, table_pat):
+        return False
+    if column_pat is None:
+        return not c
+    return bool(c) and fnmatch.fnmatch(str(c), column_pat)
+
+
+def _row_to_per_run_entry(row: dict[str, Any], run_id: int) -> dict[str, Any]:
+    """Project a run_results row into the per-run shape returned by
+    ``/compare/cell``. Keeps the payload small — only fields the cell
+    comparison view renders."""
+    desc = row.get("chosen_description") or ""
+    if not desc:
+        alts = row.get("alternatives_json")
+        if isinstance(alts, list) and alts:
+            desc = str(alts[0]) if alts[0] else ""
+    return {
+        "run_id": run_id,
+        "result_id": row.get("id"),
+        "description": desc,
+        "confidence": row.get("confidence"),
+        "logprob_score": row.get("logprob_score"),
+        "citations": row.get("citations_json") or [],
+        "source": row.get("source"),
+        "evaluation": row.get("evaluation"),
+        "accepted": (row.get("evaluation") or "").lower() == "accepted",
+        "applied_at": row.get("applied_at"),
+    }
+
+
+def _best_run_id(per_run: list[dict[str, Any] | None]) -> int | None:
+    """Pick the best run for a cell by logprob_score (higher is better).
+
+    Mirrors :func:`amx.cli_support.commands.compare._highlight_best`
+    semantics — returns None when fewer than 2 non-null entries exist
+    or all tied. Returns the ``run_id`` rather than the index so the
+    SPA / CLI can render the highlight without re-deriving the order.
+    """
+    indexed: list[tuple[int, float]] = []
+    for entry in per_run:
+        if not entry:
+            continue
+        score = entry.get("logprob_score")
+        try:
+            indexed.append((int(entry["run_id"]), float(score)))
+        except (TypeError, ValueError, KeyError):
+            continue
+    if len(indexed) < 2:
+        return None
+    distinct = {v for _, v in indexed}
+    if len(distinct) == 1:
+        return None
+    rid, _ = max(indexed, key=lambda iv: iv[1])
+    return rid
+
+
+@router.get("/compare/cell")
+def compare_cell(
+    cell: str = Query(
+        ...,
+        description=(
+            "Cell key: ``db.schema.table.column`` (column optional for "
+            "table-level). May contain ``*`` glob wildcards in any "
+            "segment to match multiple cells."
+        ),
+    ),
+    runs: str = Query(..., description="Comma-separated run IDs."),
+) -> dict[str, Any]:
+    """Compare the same cell (or a glob of cells) across multiple runs.
+
+    Single-cell mode (no ``*`` in the key)::
+
+        { "cell": {database, schema, table, column},
+          "per_run": [ {run_id, description, ...} | null, ... ],
+          "best_run_id": int | null }
+
+    Glob mode (``*`` anywhere in the key)::
+
+        { "cells": [ {cell, per_run, best_run_id}, ... ],
+          "count": int }
+
+    A ``null`` entry under ``per_run`` means the cell didn't appear in
+    that run.
+    """
+    store = _store()
+
+    parts = cell.split(".")
+    if len(parts) < 3 or len(parts) > 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="cell must be db.schema.table or db.schema.table.column",
+        )
+    db_part, schema_part, table_part = parts[0], parts[1], parts[2]
+    column_part: str | None = parts[3] if len(parts) == 4 else None
+
+    try:
+        run_ids = [int(x) for x in runs.split(",") if x.strip()]
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid run id list: {exc}",
+        ) from exc
+    if not run_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="at least one run id required",
+        )
+
+    rows_by_run: dict[int, list[dict[str, Any]]] = {}
+    for rid in run_ids:
+        try:
+            rows_by_run[rid] = store.get_run_results(rid)
+        except Exception:
+            rows_by_run[rid] = []
+
+    is_glob = "*" in cell
+
+    if not is_glob:
+        per_run: list[dict[str, Any] | None] = []
+        for rid in run_ids:
+            match = next(
+                (
+                    r
+                    for r in rows_by_run[rid]
+                    if _row_matches_cell(r, schema_part, table_part, column_part)
+                ),
+                None,
+            )
+            per_run.append(_row_to_per_run_entry(match, rid) if match else None)
+        return {
+            "cell": {
+                "database": db_part,
+                "schema": schema_part,
+                "table": table_part,
+                "column": column_part,
+            },
+            "per_run": per_run,
+            "best_run_id": _best_run_id(per_run),
+        }
+
+    # Glob mode — collect distinct matching cells across all runs.
+    distinct: dict[tuple[str, str, str | None], dict[str, Any]] = {}
+    for rid in run_ids:
+        for r in rows_by_run[rid]:
+            if not _row_glob_matches(r, schema_part, table_part, column_part):
+                continue
+            key = (
+                str(r.get("schema_name") or ""),
+                str(r.get("table_name") or ""),
+                (r.get("column_name") or None),
+            )
+            if key not in distinct:
+                distinct[key] = {
+                    "database": db_part,
+                    "schema": key[0],
+                    "table": key[1],
+                    "column": key[2],
+                }
+
+    cells_out: list[dict[str, Any]] = []
+    # Sort for deterministic output (schema → table → column).
+    for cell_meta in sorted(
+        distinct.values(),
+        key=lambda c: (c["schema"], c["table"], c["column"] or ""),
+    ):
+        per_run = []
+        for rid in run_ids:
+            match = next(
+                (
+                    r
+                    for r in rows_by_run[rid]
+                    if _row_matches_cell(
+                        r, cell_meta["schema"], cell_meta["table"], cell_meta["column"]
+                    )
+                ),
+                None,
+            )
+            per_run.append(_row_to_per_run_entry(match, rid) if match else None)
+        cells_out.append(
+            {
+                "cell": cell_meta,
+                "per_run": per_run,
+                "best_run_id": _best_run_id(per_run),
+            }
+        )
+
+    return {"cells": cells_out, "count": len(cells_out)}
 
 
 @router.post("/compare/deep-analysis")
