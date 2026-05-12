@@ -96,6 +96,35 @@ def test_resolve_local_single_binary_file_is_skipped(tmp_path: Path) -> None:
     assert paths == []
 
 
+def test_resolve_local_keeps_pdf_with_nul_bytes(tmp_path: Path) -> None:
+    """Regression: PDFs are a binary format and almost always carry NUL
+    bytes in their stream. The NUL-byte heuristic used to filter them
+    out, so users who drag-dropped a resume PDF onto a doc profile
+    ended up with 0 ingested chunks and a search index that only knew
+    about the ``.amx-manifest.json`` sidecar. Binary-loader extensions
+    (``.pdf``, ``.docx``, ``.xlsx``, ...) must bypass the heuristic."""
+    f = tmp_path / "resume.pdf"
+    f.write_bytes(b"%PDF-1.4\n\x00\x00binary stream data with \x00 nul bytes")
+    paths = _scan(f)
+    assert paths == [str(f)]
+
+
+def test_resolve_local_skips_amx_manifest_sidecar(tmp_path: Path) -> None:
+    """The ``~/.amx/uploads/<profile>/.amx-manifest.json`` sidecar tracks
+    original filenames for hashed uploads. Pre-fix the scanner ingested
+    it as if it were user content, so every "Search docs" query
+    surfaced the manifest as the top hit — there was nothing else to
+    return on a fresh profile."""
+    keep = tmp_path / "notes.md"
+    keep.write_text("real content", encoding="utf-8")
+    manifest = tmp_path / ".amx-manifest.json"
+    manifest.write_text('{"files": {}}', encoding="utf-8")
+    paths = _scan(tmp_path)
+    names = [Path(p).name for p in paths]
+    assert "notes.md" in names
+    assert ".amx-manifest.json" not in names
+
+
 def test_resolve_local_unknown_path_returns_nothing(tmp_path: Path) -> None:
     """Non-existent paths short-circuit cleanly; no exception."""
     missing = tmp_path / "does-not-exist"
