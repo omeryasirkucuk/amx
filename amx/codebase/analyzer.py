@@ -411,9 +411,13 @@ def analyze_codebase(
                 re.IGNORECASE,
             )
 
-        code_files = [
-            f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in CODE_EXTENSIONS
-        ]
+        # Walk the tree via the shared helper so both the regex/AST
+        # analyzer and the semantic indexer agree on which files are
+        # in scope (skipping ``node_modules``, ``.git``, etc. and
+        # honouring ``.gitignore`` when ``pathspec`` is installed).
+        from amx.codebase.walker import walk_code_files
+
+        code_files = list(walk_code_files(root))
         report.total_files = len(code_files)
         if report.total_files == 0:
             exts = ", ".join(sorted(CODE_EXTENSIONS))
@@ -504,10 +508,15 @@ def analyze_codebase(
             ext_n,
         )
         if index_semantic and report.total_files:
-            try:
-                from amx.codebase.code_rag import index_codebase_tree
+            from amx.codebase.code_rag import CodeEmbeddingMismatch, index_codebase_tree
 
+            try:
                 index_codebase_tree(root, report=report, source_root=path)
+            except CodeEmbeddingMismatch:
+                # Propagate so the run-record helper can tag the
+                # failure with ``embedding_mismatch:`` instead of
+                # swallowing it as a generic warning.
+                raise
             except Exception as exc:
                 log.warning("Semantic code index failed: %s", exc)
         return report
