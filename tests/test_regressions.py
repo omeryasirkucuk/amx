@@ -306,6 +306,36 @@ class DocumentScannerTests(unittest.TestCase):
         self.assertEqual(paths, {"team-a/spec.md", "team-b/spec.md"})
 
 
+class CodebaseEmptyAssetsTests(unittest.TestCase):
+    def test_scan_with_empty_assets_handles_blank_lines(self) -> None:
+        """Regression: ``analyze_codebase`` used to compile ``r"$^"`` as
+        a "never match" placeholder when the caller passed no table /
+        column names. That pattern actually matches once on every blank
+        line under default mode (``$`` and ``^`` are both zero-width
+        and overlap at position 0 in an empty string), and the loop
+        body then called ``match.group(1)`` on a pattern with no
+        capture group — raising ``IndexError: no such group`` and
+        flipping the /code-scan job to ``failed``. The Studio surfaced
+        it as "Last index failed: IndexError: no such group" on any
+        code profile that hadn't seen a DB sync yet.
+
+        Now the empty-asset branch sets ``pattern = None`` and the
+        per-line loop skips it, so a fresh code profile with no
+        synced tables scans cleanly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "job.sql"
+            # A blank line is the trigger — without one the bug stays
+            # latent. Real-world SQL files have lots of them.
+            f.write_text("SELECT 1;\n\n-- nothing else\n", encoding="utf-8")
+
+            report = analyze_codebase(tmp, [])  # empty asset list
+
+        self.assertEqual(report.scanned_files, 1)
+        # No matches because there are no assets to match, but the
+        # scan itself completed without crashing.
+        self.assertEqual(report.references, {})
+
+
 class CodebaseCleanupTests(unittest.TestCase):
     def test_remote_codebase_clone_is_removed_after_scan(self) -> None:
         cloned: list[str] = []
