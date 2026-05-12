@@ -195,8 +195,14 @@ def launch_studio(
 
 
 def _snapshot_stdin_tty() -> Any:
-    """Return the current termios attrs for stdin, or ``None`` when
-    stdin is not a tty / termios is unavailable (Windows, piped input)."""
+    """Return a snapshot of stdin's terminal state, or ``None`` when
+    stdin is not a tty / termios is unavailable (Windows, piped input).
+
+    Captures both the termios attrs AND the blocking flag; uvicorn's
+    asyncio loop in a daemon thread can flip stdin to non-blocking
+    on macOS, which termios alone does not cover. The returned tuple
+    is opaque — pass it back to :func:`_restore_stdin_tty`.
+    """
     if os.name == "nt":
         return None
     try:
@@ -206,14 +212,29 @@ def _snapshot_stdin_tty() -> Any:
     fd = _stdin_fd()
     if fd is None:
         return None
+    attrs = None
     try:
-        return termios.tcgetattr(fd)
+        attrs = termios.tcgetattr(fd)
     except (termios.error, OSError):
         return None
+    blocking = True
+    try:
+        blocking = os.get_blocking(fd)
+    except (AttributeError, OSError):
+        blocking = True
+    return (attrs, blocking)
 
 
 def _restore_stdin_tty(saved: Any) -> None:
-    """Re-apply a previously-snapshotted termios state to stdin."""
+    """Re-apply a previously-snapshotted stdin state.
+
+    Three layers of restoration so the next ``prompt_toolkit`` session
+    finds the terminal in the same shape it was in before ``/studio``:
+    drain pending output, reapply termios attrs (cooked/raw, echo,
+    control chars), and re-set the blocking flag. On macOS all three
+    can drift after uvicorn's asyncio teardown; restoring just one
+    leaves arrow keys broken.
+    """
     if saved is None:
         return
     try:
@@ -223,8 +244,19 @@ def _restore_stdin_tty(saved: Any) -> None:
     fd = _stdin_fd()
     if fd is None:
         return
+    attrs, blocking = saved
     with suppress(termios.error, OSError):
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        termios.tcdrain(fd)
+    with suppress(termios.error, OSError):
+        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
+    with suppress(AttributeError, OSError):
+        os.set_blocking(fd, bool(blocking))
+    # Flush any half-written prompt_toolkit escape codes pending on
+    # stdout/stderr so the next prompt redraws cleanly.
+    with suppress(Exception):
+        sys.stdout.flush()
+    with suppress(Exception):
+        sys.stderr.flush()
 
 
 def _stdin_fd() -> int | None:
