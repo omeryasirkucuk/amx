@@ -23,6 +23,7 @@ import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
 import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
+import { humanizeDelta } from "../lib/humanizeDelta";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
 import { InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 import { StyleReferenceCard } from "../components/StyleReferenceCard";
@@ -1277,6 +1278,85 @@ function DocUploadDropZone({
   );
 }
 
+interface DocProfileHealth {
+  name: string;
+  chunk_count: number;
+  last_ingested_at: number | null;
+  last_error: string | null;
+  embedding_model: string | null;
+  embedding_provider: string | null;
+  paths: string[];
+  linked_db_profiles: string[];
+}
+
+/**
+ * PR E: inline health summary rendered under each doc-profile card.
+ * Pulls from ``GET /api/profiles/docs/{name}/health`` (shipped in
+ * PR D) so the user can see at a glance how many chunks are indexed,
+ * when the last ingest finished, and which embedding model the
+ * Chroma collection was built with — without dropping to the CLI.
+ *
+ * When the endpoint reports a non-null ``last_error``, the line
+ * flips to a red warning row with an "Inspect" toggle that expands
+ * the full error message inline. Empty / 200-with-zeros responses
+ * (e.g. profile never ingested) render a neutral "not indexed yet"
+ * hint instead of a misleading "0 chunks · never" line.
+ */
+function DocProfileHealthLine({ name }: { name: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const health = useQuery({
+    queryKey: ["profiles", "docs", name, "health"],
+    queryFn: () =>
+      apiFetch<DocProfileHealth>(
+        `/api/profiles/docs/${encodeURIComponent(name)}/health`,
+      ),
+    retry: false,
+    staleTime: 10_000,
+  });
+  if (health.isLoading) {
+    return (
+      <div className="mt-2 pl-3 text-[10.5px] text-ink-dim">Loading health…</div>
+    );
+  }
+  if (health.error || !health.data) return null;
+  const data = health.data;
+  const chunks = data.chunk_count || 0;
+  const ingested =
+    data.last_ingested_at && data.last_ingested_at > 0
+      ? humanizeDelta(data.last_ingested_at)
+      : null;
+  const parts: string[] = [];
+  if (chunks > 0) {
+    parts.push(`📚 ${chunks.toLocaleString()} chunk${chunks === 1 ? "" : "s"}`);
+  } else {
+    parts.push("📚 not indexed yet");
+  }
+  if (ingested) parts.push(`indexed ${ingested}`);
+  if (data.embedding_model) parts.push(`model ${data.embedding_model}`);
+  return (
+    <div className="mt-2 pl-3 text-[10.5px]">
+      <div className="text-ink-dim">{parts.join(" · ")}</div>
+      {data.last_error && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 block w-full text-left text-critical/90 hover:text-critical"
+        >
+          <span className="mr-1">⚠ Last ingest failed:</span>
+          {expanded ? (
+            <span className="font-mono">{data.last_error}</span>
+          ) : (
+            <span className="line-clamp-1 font-mono">{data.last_error}</span>
+          )}
+          <span className="ml-1 opacity-70">
+            ({expanded ? "hide" : "Inspect"})
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function DocProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
@@ -1435,6 +1515,7 @@ function DocProfilesSection() {
                       ))}
                     </ul>
                   )}
+                  <DocProfileHealthLine name={p.name} />
                   {(p.linked_db_profiles?.length ?? 0) > 0 && (
                     <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-3 text-[10px] text-ink-dim">
                       <span>Links:</span>
