@@ -47,6 +47,31 @@ SUPPORTED_BACKENDS = (
     "duckdb",
 )
 DISABLED_PROFILE = "__none__"
+
+#: Environment variable that overrides the default ``~/.amx`` config
+#: directory. Useful for running an isolated dev/test session in
+#: parallel with a production AMX setup that lives at the default
+#: path — set ``AMX_CONFIG_DIR=$HOME/.amx-dev amx`` to keep the two
+#: from sharing config, history.db, uploads, or chroma_db. The
+#: doctor command at ``amx/cli_support/commands/doctor.py`` already
+#: documents this variable; the implementation just resolves it
+#: here so every AMXConfig instance picks it up automatically.
+_CONFIG_DIR_ENV_VAR = "AMX_CONFIG_DIR"
+
+
+def _resolve_config_dir() -> str:
+    """Return the path AMX should use as its config / state directory.
+
+    Resolution order:
+      1. ``$AMX_CONFIG_DIR`` if set + non-empty (expanded for ``~``).
+      2. ``~/.amx`` (the historical default).
+    """
+    override = os.environ.get(_CONFIG_DIR_ENV_VAR, "").strip()
+    if override:
+        return str(Path(override).expanduser())
+    return str(Path.home() / ".amx")
+
+
 PROFILING_MODES = ("full", "sampled", "metadata")
 SUPPORTED_EMBEDDING_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
 DEFAULT_EMBEDDING_KIND = "minilm"
@@ -1486,7 +1511,7 @@ class AMXConfig:
     # current REPL is appending to. Reset to None on every load.
     active_chat_session_id: int | None = field(default=None)
 
-    CONFIG_DIR: str = field(default_factory=lambda: str(Path.home() / ".amx"), init=False)
+    CONFIG_DIR: str = field(default_factory=lambda: _resolve_config_dir(), init=False)
     _config_path: str = field(default="", init=False, repr=False)
     _autosave_ready: bool = field(default=False, init=False, repr=False)
     _autosave_suspended: int = field(default=0, init=False, repr=False)
