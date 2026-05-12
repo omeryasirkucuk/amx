@@ -72,6 +72,32 @@ def apply_logprob_confidence(
     return suggestions
 
 
+@dataclass(frozen=True)
+class Citation:
+    """Machine-readable provenance for a RAG-derived suggestion.
+
+    Attached to every :class:`MetadataSuggestion` whose context was
+    populated from documentation retrieval. Carries the chunk
+    coordinates and the rerank score that ``RAGStore.query`` produced
+    so the CLI summary, Studio run detail page, and downstream audit
+    tools can deterministically trace a suggestion back to the exact
+    documentation excerpts the prompt was built from -- independent
+    of whatever free-text reasoning the LLM emitted.
+    """
+
+    #: Repo-relative path or URL of the source document, mirroring
+    #: ``chunk.metadata["source"]`` recorded at ingest time.
+    source: str
+    #: Zero-based index of the chunk within the source file.
+    chunk_idx: int
+    #: Post-rerank score from :meth:`RAGStore.query`. Higher means more
+    #: relevant to the query that surfaced this chunk.
+    score: float
+    #: First 200 chars of the chunk text, used by the UI to render a
+    #: lightweight preview next to the citation.
+    snippet: str
+
+
 @dataclass
 class MetadataSuggestion:
     schema: str
@@ -83,6 +109,11 @@ class MetadataSuggestion:
     source: str  # db_profile | rag | codebase | combined
     accepted: str | None = None  # final user-approved value
     logprob_score: float | None = None
+    #: Provenance trail for RAG-derived suggestions. Empty list for
+    #: non-RAG agents (profile, codebase) and for merge outputs whose
+    #: inputs had no citations, so legacy callers see no behaviour
+    #: change.
+    citations: list[Citation] = field(default_factory=list)
 
 
 @dataclass
