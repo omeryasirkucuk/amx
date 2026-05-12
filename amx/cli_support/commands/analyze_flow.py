@@ -32,6 +32,18 @@ from amx.utils.token_tracker import tracker as token_tracker
 
 log = get_logger("cli.analyze_flow")
 
+
+def _review_sort_keys() -> tuple[str, ...]:
+    """Return the canonical bulk-review sort keys.
+
+    Imported lazily so the Click decorator block above does not pay
+    for the review-filter module at import time on every CLI startup.
+    """
+    from amx.cli_support.review_filter import SORT_KEYS
+
+    return SORT_KEYS
+
+
 FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, list[str]] | None]
 ResolveCodebaseForRun = Callable[
     [AMXConfig, object, dict[str, list[str]], str | None, bool], object | None
@@ -773,6 +785,9 @@ def execute_analyze_run(
     finalize_scope: FinalizeScope,
     resolve_codebase_for_run: ResolveCodebaseForRun,
     log_event: LogEvent,
+    summary_filter: str | None = None,
+    summary_sort: str | None = None,
+    summary_group: str = "none",
 ) -> None:
     from amx.cli_support.commands._analyze import (
         handle_keyboard_interrupt,
@@ -1205,6 +1220,9 @@ def execute_analyze_run(
             dedup_outcome=dedup_outcome,
             run_id=run_id,
             history_store_fn=history_store,
+            summary_filter=summary_filter,
+            summary_sort=summary_sort,
+            summary_group=summary_group,
         )
 
         final_status = "success"
@@ -1357,6 +1375,34 @@ def register_analyze_run_command(
             "is used. Mirrors --doc."
         ),
     )
+    # PR A — bulk-review UX: shape the post-run summary table. These
+    # flags do NOT alter the agent run itself — they only filter / sort
+    # / group the rendered summary so a 200-suggestion run is browsable.
+    # The same vocabulary (sort keys, group keys) drives the Studio
+    # ResultsFilterBar; see amx/cli_support/review_filter.py.
+    @click.option(
+        "--filter",
+        "summary_filter",
+        default=None,
+        help=(
+            "Regex filter for the post-run summary table. Matches "
+            "against 'schema.table.column'. Case-insensitive."
+        ),
+    )
+    @click.option(
+        "--sort",
+        "summary_sort",
+        type=click.Choice(list(_review_sort_keys()), case_sensitive=False),
+        default=None,
+        help=("Sort order for the post-run summary. Default keeps natural row order."),
+    )
+    @click.option(
+        "--group-by",
+        "summary_group",
+        type=click.Choice(["none", "schema", "table"], case_sensitive=False),
+        default="none",
+        help="Render the post-run summary as one table per schema / table.",
+    )
     @click.pass_obj
     def analyze_run(
         cfg: AMXConfig,
@@ -1370,6 +1416,9 @@ def register_analyze_run_command(
         db_profile_override: tuple[str, ...],
         doc_profile_override: tuple[str, ...],
         code_profile_override: tuple[str, ...],
+        summary_filter: str | None,
+        summary_sort: str | None,
+        summary_group: str,
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
@@ -1499,6 +1548,9 @@ def register_analyze_run_command(
                     finalize_scope=finalize_scope,
                     resolve_codebase_for_run=resolve_codebase_for_run,
                     log_event=log_event,
+                    summary_filter=summary_filter,
+                    summary_sort=summary_sort,
+                    summary_group=summary_group,
                 )
         except KeyboardInterrupt:
             warn("User interrupted process.")
@@ -1518,3 +1570,226 @@ def register_analyze_run_command(
             # PR δ: same rollback contract for the code-profile override.
             if code_override_saved is not None:
                 object.__setattr__(cfg, "run_code_profiles", code_override_saved)
+
+
+def register_analyze_review_command(
+    analyze: click.Group,
+    *,
+    log_event: LogEvent,
+) -> None:
+    """Attach the PR A ``/analyze review`` (alias ``/review``) command.
+
+    Surfaces a previously-completed run's suggestions through the
+    bulk-review filter / sort / group vocabulary. Read-only by design:
+    this command never mutates the run, the pending queue, or the live
+    database — it is a focused viewer that mirrors the Studio
+    ResultsFilterBar so a reviewer can decide what to act on next.
+    """
+
+    @analyze.command("review")
+    @click.argument("run_id_arg", required=False, metavar="[RUN_ID]")
+    @click.option(
+        "--filter",
+        "review_filter",
+        default=None,
+        help="Case-insensitive regex against schema.table.column.",
+    )
+    @click.option(
+        "--sort",
+        "review_sort",
+        type=click.Choice(list(_review_sort_keys()), case_sensitive=False),
+        default=None,
+        help="Order the rendered table (conf-asc | conf-desc | logprob-asc | …).",
+    )
+    @click.option(
+        "--group-by",
+        "review_group",
+        type=click.Choice(["none", "schema", "table"], case_sensitive=False),
+        default="none",
+        help="Render one Rich table per schema / table.",
+    )
+    @click.option(
+        "--only-unreviewed",
+        is_flag=True,
+        default=False,
+        help="Drop rows already accepted / skipped / applied.",
+    )
+    @click.option(
+        "--only-low-conf",
+        is_flag=True,
+        default=False,
+        help="Keep rows with confidence < 0.7 (low).",
+    )
+    @click.pass_obj
+    def analyze_review(
+        cfg: AMXConfig,
+        run_id_arg: str | None,
+        review_filter: str | None,
+        review_sort: str | None,
+        review_group: str,
+        only_unreviewed: bool,
+        only_low_conf: bool,
+    ) -> None:
+        """Review a completed run's suggestions with filter/sort/group flags."""
+        from amx.agents.base import Confidence
+        from amx.agents.orchestrator import ReviewResult
+        from amx.cli_support.review_filter import (
+            STATUS_ACCEPTED,
+            STATUS_APPLIED,
+            STATUS_PENDING,
+            STATUS_SKIPPED,
+            apply_filters,
+            apply_sort,
+            derive_status,
+            format_summary_footer,
+            group_rows,
+        )
+        from amx.pending_review import load_pending
+
+        hs = history_store()
+        if hs is None:
+            error(
+                "Run history is not initialised. Run an analyze first "
+                "(``/run``) so suggestions land in the local history "
+                "store."
+            )
+            return
+
+        if run_id_arg:
+            try:
+                run_id = int(run_id_arg)
+            except ValueError:
+                error(f"Run id must be an integer; got {run_id_arg!r}.")
+                return
+        else:
+            # Default to the most recent run with persisted results.
+            recents = hs.list_runs_with_result_counts(limit=1)
+            if not recents:
+                info("No completed runs yet. Run ``/run`` to create one.")
+                return
+            run_id = int(recents[0].get("id") or recents[0].get("run_id"))
+
+        rows = hs.get_run_results(run_id)
+        if not rows:
+            info(f"Run #{run_id} produced no suggestions to review.")
+            return
+
+        # Build a pending-id set keyed by result_id so the status helper
+        # can distinguish ``accepted`` (queued but not yet written) from
+        # ``pending`` (untouched).
+        pending_ids: set[int] = set()
+        for entry in load_pending():
+            rid = getattr(entry, "result_id", None)
+            if rid is not None:
+                pending_ids.add(int(rid))
+
+        # Coerce SQLite dict rows to ReviewResult-shaped objects so the
+        # review_filter helpers can read attributes cleanly. The orch's
+        # ReviewResult carries all the fields the helpers expect.
+        def _coerce(d: dict[str, Any]) -> ReviewResult:
+            conf_raw = str(d.get("confidence", "medium")).lower()
+            try:
+                conf = Confidence(conf_raw)
+            except ValueError:
+                conf = Confidence.MEDIUM
+            return ReviewResult(
+                schema=str(d.get("schema_name", "")),
+                table=str(d.get("table_name", "")),
+                column=d.get("column_name"),
+                final_description=str(d.get("chosen_description") or ""),
+                confidence=conf,
+                source=str(d.get("source") or ""),
+                applied=bool(d.get("applied_at")),
+                asset_kind=str(d.get("asset_kind") or "table"),
+                result_id=(int(d["id"]) if d.get("id") is not None else None),
+                logprob_score=(
+                    float(d["logprob_score"]) if d.get("logprob_score") is not None else None
+                ),
+                citations=list(d.get("citations_json") or []),
+            )
+
+        coerced = [_coerce(r) for r in rows]
+
+        # Attach a ``skipped`` flag so derive_status() can resolve to
+        # STATUS_SKIPPED when the row was explicitly dropped from the
+        # pending queue but was never applied. The ReviewResult dataclass
+        # does not carry this field, so we tag it dynamically (rows
+        # whose result_id is missing from pending_ids AND have no
+        # applied_at AND are not part of any queued revision).
+        def _is_pending(r: ReviewResult) -> bool:
+            return r.result_id is not None and r.result_id in pending_ids
+
+        total = len(coerced)
+        xs = apply_filters(
+            coerced,
+            pattern=review_filter,
+            only_unreviewed=only_unreviewed,
+            only_low_conf=only_low_conf,
+            is_pending=_is_pending,
+        )
+        if review_sort:
+            xs = apply_sort(xs, sort_key=review_sort, is_pending=_is_pending)
+        grouped = group_rows(xs, by=review_group)
+
+        heading(f"Review · Run #{run_id}")
+
+        status_label = {
+            STATUS_PENDING: "[dim]· Pending[/dim]",
+            STATUS_ACCEPTED: "[green]✓ Accepted[/green]",
+            STATUS_SKIPPED: "[yellow]✗ Skipped[/yellow]",
+            STATUS_APPLIED: "[bold green]✓ Applied[/bold green]",
+        }
+        columns = [
+            "Asset",
+            "Status",
+            "Description",
+            "Confidence",
+            "Logprob",
+            "Source",
+        ]
+
+        visible = 0
+        for group_label, group_list in grouped:
+            visible += len(group_list)
+            if not group_list:
+                continue
+            title = f"Run #{run_id} · {group_label}" if group_label else f"Run #{run_id}"
+            render_table(
+                title,
+                columns,
+                [
+                    [
+                        f"{r.schema}.{r.table}.{r.column}"
+                        if r.column
+                        else (f"{r.schema}.{r.table}" if r.table else r.schema),
+                        status_label.get(
+                            derive_status(r, is_pending=_is_pending),
+                            status_label[STATUS_PENDING],
+                        ),
+                        (r.final_description or "")[:60],
+                        r.confidence.value,
+                        (f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A"),
+                        r.source,
+                    ]
+                    for r in group_list
+                ],
+            )
+
+        info(
+            format_summary_footer(
+                total=total,
+                visible=visible,
+                pattern=review_filter,
+                sort_key=review_sort,
+                group_by=review_group,
+            )
+        )
+        log_event(
+            "analyze_review_rendered",
+            run_id=run_id,
+            total=total,
+            visible=visible,
+            filter=review_filter or "",
+            sort=review_sort or "",
+            group_by=review_group or "none",
+        )

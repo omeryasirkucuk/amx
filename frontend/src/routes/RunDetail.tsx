@@ -11,6 +11,12 @@ import JobProgress from "../components/JobProgress";
 import StatusPill from "../components/StatusPill";
 import { ConfidencePill, LogprobBadge } from "../components/ui/InsightBadges";
 import RerunDialog from "../components/RerunDialog";
+import ResultsFilterBar, {
+  type GroupKey,
+  type ReviewPreset,
+  type SortKey,
+  type StatusFilter,
+} from "../components/ResultsFilterBar";
 import { cn } from "../lib/cn";
 import {
   AlertDialog,
@@ -1964,7 +1970,83 @@ function ResultsTab({
       }),
   });
 
-  const grouped = useMemo(() => groupByTable(rows), [rows]);
+  // PR A — bulk-review filter / sort / group / status state. All
+  // client-side in v1 (the spec defers server-side filtering to PR B);
+  // a ``useMemo`` recomputes the filtered + sorted view on every state
+  // change without re-rendering rows that haven't moved.
+  const [filterQuery, setFilterQuery] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("natural");
+  const [groupBy, setGroupBy] = useState<GroupKey>("table");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [presetActive, setPresetActive] = useState<ReviewPreset>(null);
+
+  // Apply the active preset on top of the user's filters. Toggle-off
+  // restores the underlying filter combo. The preset never mutates
+  // ``query`` / ``statusFilter`` directly — it just narrows the rows
+  // here so the user can clear it and immediately see their previous
+  // selection.
+  const filteredRows = useMemo(() => {
+    let xs = rows.slice();
+    if (filterQuery.trim()) {
+      xs = xs.filter((r) => rowMatchesQuery(r, filterQuery));
+    }
+    if (statusFilter !== "all") {
+      xs = xs.filter((r) =>
+        statusFilterMatches(r, statusFilter, pendingByResultId),
+      );
+    }
+    if (presetActive === "low_conf") {
+      xs = xs.filter((r) => confidenceWeight(r) < 0.7);
+    } else if (presetActive === "has_citations") {
+      xs = xs.filter((r) => (r.citations_json ?? []).length > 0);
+    } else if (presetActive === "table_only") {
+      xs = xs.filter((r) => r.column_name == null);
+    }
+    if (sortKey === "status") {
+      const order = { pending: 0, accepted: 1, skipped: 2, applied: 3 };
+      xs.sort(
+        (a, b) =>
+          order[rowStatus(a, pendingByResultId)] -
+          order[rowStatus(b, pendingByResultId)],
+      );
+    } else if (sortKey !== "natural") {
+      xs.sort(SORT_COMPARATORS[sortKey]);
+    }
+    return xs;
+  }, [rows, filterQuery, sortKey, statusFilter, presetActive, pendingByResultId]);
+
+  // Status-chip counts reflect the post-search, pre-status-filter set
+  // so the chips always show what's *available* under the current
+  // search — clicking ``Accepted`` then surfaces only those rows.
+  const statusCounts = useMemo(() => {
+    const after_search = filterQuery.trim()
+      ? rows.filter((r) => rowMatchesQuery(r, filterQuery))
+      : rows;
+    let pending = 0;
+    let accepted = 0;
+    let skipped = 0;
+    for (const r of after_search) {
+      const s = rowStatus(r, pendingByResultId);
+      if (s === "pending") pending++;
+      else if (s === "accepted") accepted++;
+      else if (s === "skipped") skipped++;
+    }
+    return {
+      all: after_search.length,
+      unreviewed: pending,
+      accepted,
+      skipped,
+    };
+  }, [rows, filterQuery, pendingByResultId]);
+
+  const grouped = useMemo(() => {
+    // When ``Group`` is ``Table`` we honour the historical sort-within-
+    // group (table-level row first, then columns alphabetically); for
+    // ``Schema`` and ``None`` we render in the filteredRows order so a
+    // user-selected sort applies uniformly.
+    if (groupBy === "table") return groupByTable(filteredRows);
+    return groupRowsBy(filteredRows, groupBy);
+  }, [filteredRows, groupBy]);
 
   if (loading) {
     return <Card><CardBody>Loading results…</CardBody></Card>;
@@ -2212,12 +2294,40 @@ function ResultsTab({
           queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
         }}
       />
+      <ResultsFilterBar
+        query={filterQuery}
+        onQueryChange={setFilterQuery}
+        sort={sortKey}
+        onSortChange={setSortKey}
+        group={groupBy}
+        onGroupChange={setGroupBy}
+        statusFilter={statusFilter}
+        onStatusChange={setStatusFilter}
+        presetActive={presetActive}
+        onPresetChange={setPresetActive}
+        totalCount={rows.length}
+        visibleCount={filteredRows.length}
+        statusCounts={statusCounts}
+      />
+      {filteredRows.length === 0 && (
+        <Card>
+          <CardBody className="text-sm text-ink-dim">
+            No suggestions match the current filter combo. Clear the
+            search or status chip to see more rows.
+          </CardBody>
+        </Card>
+      )}
       {grouped.map(({ key, rows: tableRows }) => (
-        <Card key={key}>
-          <CardHeader
-            title={<span className="font-mono text-base">{key}</span>}
-            description={`${tableRows.length} suggestion${tableRows.length === 1 ? "" : "s"}`}
-          />
+        <Card key={key || "ungrouped"}>
+          {key ? (
+            // Hide the group header when groupBy is "none" — without
+            // the suppression the card still rendered with an empty
+            // title strip, leaving a stray separator above the rows.
+            <CardHeader
+              title={<span className="font-mono text-base">{key}</span>}
+              description={`${tableRows.length} suggestion${tableRows.length === 1 ? "" : "s"}`}
+            />
+          ) : null}
           <CardBody className="p-0">
             <ul className="divide-y divide-border">
               {tableRows.map((r) => {
@@ -2441,15 +2551,20 @@ function ResultRowItemImpl({
         ? "warning"
         : "neutral"
       : "warning";
+  // PR A — bulk-review UX: align the per-row badge wording with the
+  // FilterBar status chips. ``queued`` rows surface as ``accepted``
+  // (the user picked an alternative; the next Apply writes it);
+  // untouched rows surface as ``unreviewed`` so a reviewer scanning
+  // the table sees the same vocabulary as the chip filter row above.
   const statusLabel = isAppliedClean
     ? "applied"
     : queued
       ? applied
         ? "applied · revising"
-        : "queued"
+        : "accepted"
       : skipped
         ? "skipped"
-        : (row.evaluation || "pending");
+        : (row.evaluation || "unreviewed");
 
   // Re-Run state lives per-row. ``rerunJobId`` becomes non-null after
   // the modal submits successfully; the SSE hook below tails the job
@@ -2720,6 +2835,118 @@ function normalizeAlternativeStrings(raw: unknown[]): string[] {
     seen.add(d);
     return true;
   });
+}
+
+/**
+ * PR A — bulk-review UX. The next three helpers mirror
+ * ``amx/cli_support/review_filter.py`` so the Studio and CLI use the
+ * same vocabulary. Keep them in lockstep — any change here MUST land
+ * on the Python side too (tests at tests/test_review_filter_sort_group.py
+ * pin the shared contract).
+ */
+
+const CONFIDENCE_WEIGHTS: Record<string, number> = {
+  low: 0.3,
+  medium: 0.6,
+  high: 0.9,
+};
+
+function confidenceWeight(row: ResultRow): number {
+  const raw = (row.confidence || "medium").toLowerCase();
+  return CONFIDENCE_WEIGHTS[raw] ?? 0.6;
+}
+
+function rowStatus(
+  row: ResultRow,
+  pendingByResultId: Map<number, unknown>,
+): "applied" | "accepted" | "skipped" | "pending" {
+  // ``Applied`` wins over everything: the live-DB COMMENT was written.
+  if (row.applied_at) return "applied";
+  // ``Accepted`` = queued in the pending file (a revision counts too —
+  // the user explicitly chose this alternative for the next apply).
+  if (row.id != null && pendingByResultId.has(row.id)) return "accepted";
+  // Skipped: the row dropped out of pending (user clicked Skip) and
+  // was never applied.
+  // We cannot distinguish "user skipped" from "never touched" from
+  // ``ResultRow`` fields alone — the conservative call is to surface
+  // them all as "pending". The CLI's ``derive_status`` does the same.
+  return "pending";
+}
+
+function statusFilterMatches(
+  row: ResultRow,
+  filter: StatusFilter,
+  pendingByResultId: Map<number, unknown>,
+): boolean {
+  if (filter === "all") return true;
+  const s = rowStatus(row, pendingByResultId);
+  if (filter === "unreviewed") return s === "pending";
+  if (filter === "accepted") return s === "accepted";
+  if (filter === "skipped") return s === "skipped";
+  return true;
+}
+
+function rowMatchesQuery(row: ResultRow, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const haystack = [
+    row.schema_name,
+    row.table_name,
+    row.column_name ?? "",
+    row.chosen_description ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(q);
+}
+
+const SORT_COMPARATORS: Record<
+  SortKey,
+  (a: ResultRow, b: ResultRow) => number
+> = {
+  natural: () => 0,
+  "conf-asc": (a, b) => confidenceWeight(a) - confidenceWeight(b),
+  "conf-desc": (a, b) => confidenceWeight(b) - confidenceWeight(a),
+  "logprob-asc": (a, b) => {
+    // Missing logprobs sort to the end (asc); the inf trick mirrors
+    // the CLI's ``_logprob_or``.
+    const av = a.logprob_score ?? Number.POSITIVE_INFINITY;
+    const bv = b.logprob_score ?? Number.POSITIVE_INFINITY;
+    return av - bv;
+  },
+  "logprob-desc": (a, b) => {
+    const av = a.logprob_score ?? Number.NEGATIVE_INFINITY;
+    const bv = b.logprob_score ?? Number.NEGATIVE_INFINITY;
+    return bv - av;
+  },
+  "name-asc": (a, b) => {
+    if (a.schema_name !== b.schema_name)
+      return a.schema_name.localeCompare(b.schema_name);
+    if (a.table_name !== b.table_name)
+      return a.table_name.localeCompare(b.table_name);
+    // Table-level rows (column null) sort BEFORE column rows.
+    if (a.column_name == null && b.column_name != null) return -1;
+    if (a.column_name != null && b.column_name == null) return 1;
+    return (a.column_name ?? "").localeCompare(b.column_name ?? "");
+  },
+  status: () => 0, // Replaced inline in ResultsTab (needs pendingByResultId).
+};
+
+function groupRowsBy(
+  rows: ResultRow[],
+  by: GroupKey,
+): { key: string; rows: ResultRow[] }[] {
+  if (by === "none") {
+    return [{ key: "", rows }];
+  }
+  const map = new Map<string, ResultRow[]>();
+  for (const r of rows) {
+    const key = by === "schema" ? r.schema_name : `${r.schema_name}.${r.table_name}`;
+    const list = map.get(key) ?? [];
+    list.push(r);
+    map.set(key, list);
+  }
+  return Array.from(map.entries()).map(([key, list]) => ({ key, rows: list }));
 }
 
 function groupByTable(rows: ResultRow[]) {
