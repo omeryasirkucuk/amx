@@ -239,7 +239,15 @@ def _scan_worker_body(job: Job, paths: list[str]) -> None:
     try:
         from amx.docs.scanner import scan_all_sources, total_size_mb
 
-        documents = scan_all_sources(paths)
+        scan_outcome = scan_all_sources(paths)
+        # ``ScanResult`` exposes ``.documents`` and ``.failures``; if a
+        # caller has stubbed the function (tests), it may still return
+        # a bare list — ``getattr`` keeps both shapes working.
+        documents = list(getattr(scan_outcome, "documents", scan_outcome) or [])
+        failures = [
+            {"path": src, "error": reason}
+            for src, reason in (getattr(scan_outcome, "failures", None) or [])
+        ]
         size = total_size_mb(documents)
         emit(
             job.queue,
@@ -255,10 +263,15 @@ def _scan_worker_body(job: Job, paths: list[str]) -> None:
                     }
                     for d in documents[:200]  # cap for SSE payload size
                 ],
+                "failures": failures,
             },
         )
         job.status = "done"
-        job.summary = {"total": len(documents), "size_mb": round(size, 2)}
+        job.summary = {
+            "total": len(documents),
+            "size_mb": round(size, 2),
+            "failures": failures,
+        }
         job.ended_at = time.time()
         emit(
             job.queue,
@@ -288,7 +301,14 @@ def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
         from amx.docs.rag import RAGStore
         from amx.docs.scanner import scan_all_sources, total_size_mb
 
-        documents = scan_all_sources(paths)
+        scan_outcome = scan_all_sources(paths)
+        # ``ScanResult`` exposes ``.documents`` and ``.failures``; some
+        # tests still stub a bare list, which ``getattr`` keeps working.
+        documents = list(getattr(scan_outcome, "documents", scan_outcome) or [])
+        scan_failures = [
+            {"path": src, "error": reason}
+            for src, reason in (getattr(scan_outcome, "failures", None) or [])
+        ]
         size = total_size_mb(documents)
         emit(
             job.queue,
@@ -318,6 +338,7 @@ def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
                 "refresh": bool(refresh),
                 "succeeded": succeeded_count,
                 "failed": failed_list,
+                "scan_failures": scan_failures,
             },
         )
         job.status = "done"
@@ -326,6 +347,7 @@ def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
             "chunks": chunks_added,
             "succeeded": succeeded_count,
             "failed": failed_list,
+            "scan_failures": scan_failures,
         }
         job.ended_at = time.time()
         emit(

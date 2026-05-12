@@ -28,6 +28,17 @@ FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, l
 WarnNoPaths = Callable[..., None]
 
 
+def _render_scan_failures(scan_outcome: object) -> None:
+    """Print ``Failed to scan: <source> — <reason>`` for each entry on
+    a :class:`amx.docs.scanner.ScanResult`. Silently no-ops if the
+    caller passed a bare ``list[DocInfo]`` (legacy stubbed return)."""
+    failures = list(getattr(scan_outcome, "failures", []) or [])
+    if not failures:
+        return
+    for src, reason in failures:
+        error(f"  failed to scan: {src} — {reason}")
+
+
 def _render_ingest_summary(summary: object, *, total_files: int) -> None:
     """Print the per-file ingest outcome line + any failure detail.
 
@@ -158,6 +169,7 @@ def register_docs_commands(
             ):
                 with step_spinner(f"Scanning {upload_root}"):
                     documents = scan_all_sources([upload_root])
+                _render_scan_failures(documents)
                 size = total_size_mb(documents)
                 info(f"Found {len(documents)} document(s) ({size:.1f} MB)")
                 store = RAGStore()
@@ -198,6 +210,7 @@ def register_docs_commands(
             with command_display(mode="docs-scan", provider=cfg.llm.provider, model=cfg.llm.model):
                 with step_spinner("Scanning document sources"):
                     documents = scan_all_sources(all_paths)
+                _render_scan_failures(documents)
                 size = total_size_mb(documents)
 
                 render_table(
@@ -271,6 +284,7 @@ def register_docs_commands(
             ):
                 with step_spinner("Scanning document sources"):
                     documents = scan_all_sources(all_paths)
+                _render_scan_failures(documents)
                 size = total_size_mb(documents)
 
                 info(f"Found {len(documents)} documents ({size:.1f} MB)")
