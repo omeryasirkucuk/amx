@@ -30,6 +30,8 @@ export default function Table() {
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   // PR E: per-run doc profile override for the bulk path.
   const [runDocProfiles, setRunDocProfiles] = useState<string[] | null>(null);
+  // PR δ: parallel code-profile override forwarded to api.submitRun.
+  const [runCodeProfiles, setRunCodeProfiles] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (scope && schema && table) {
@@ -158,6 +160,7 @@ export default function Table() {
         database: scope?.database,
         catalog: scope?.catalog,
         doc_profiles: runDocProfiles ?? undefined,
+        code_profiles: runCodeProfiles ?? undefined,
       }),
     onSuccess: (result) => {
       setConfirmGenerate(false);
@@ -335,6 +338,8 @@ export default function Table() {
         onClose={() => setConfirmGenerate(false)}
         docProfiles={runDocProfiles}
         onDocProfilesChange={setRunDocProfiles}
+        codeProfiles={runCodeProfiles}
+        onCodeProfilesChange={setRunCodeProfiles}
         title={`Generate description for ${schema}.${table}`}
         description="Pick the scope. Just-the-table writes only the table's own COMMENT (one fast LLM call). Bulk run also generates a description for every column."
         singleOption={{

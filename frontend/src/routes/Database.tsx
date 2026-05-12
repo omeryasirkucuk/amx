@@ -29,6 +29,8 @@ export default function Database() {
   // use the config default; otherwise the chosen list is forwarded
   // to ``api.submitRun`` and applied for this run only.
   const [runDocProfiles, setRunDocProfiles] = useState<string[] | null>(null);
+  // PR δ: parallel multi-code-profile override for the bulk path.
+  const [runCodeProfiles, setRunCodeProfiles] = useState<string[] | null>(null);
 
   // Hooks must run unconditionally; we early-return below on missing
   // scope. The queries get `enabled: !!scope` so they no-op until the
@@ -128,6 +130,7 @@ export default function Database() {
         database: scope?.database,
         catalog: scope?.catalog,
         doc_profiles: runDocProfiles ?? undefined,
+        code_profiles: runCodeProfiles ?? undefined,
       });
     },
     onSuccess: (result) => {
@@ -295,6 +298,8 @@ export default function Database() {
         onClose={() => setConfirmGenerate(false)}
         docProfiles={runDocProfiles}
         onDocProfilesChange={setRunDocProfiles}
+        codeProfiles={runCodeProfiles}
+        onCodeProfilesChange={setRunCodeProfiles}
         title={`Generate description for ${headingLabel}`}
         description={
           scope.kind === "catalog"

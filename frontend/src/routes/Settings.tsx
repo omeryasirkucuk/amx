@@ -2168,6 +2168,80 @@ function CodeAnalyzeModal({
   );
 }
 
+interface CodeProfileHealth {
+  name: string;
+  paths: string[];
+  chunk_count: number;
+  last_indexed_at: number | null;
+  last_error: string | null;
+  embedding_model: string | null;
+  embedding_provider: string | null;
+  linked_db_profiles: string[];
+}
+
+/**
+ * PR δ: inline health summary rendered under each code-profile card.
+ * Mirrors :component:`DocProfileHealthLine`. Pulls from
+ * ``GET /api/profiles/code/{name}/health`` so the user can see at a
+ * glance how many chunks are indexed for this profile, when the last
+ * index finished, and which embedding model the collection was built
+ * with — without dropping to the CLI.
+ */
+function CodeProfileHealthLine({ name }: { name: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const health = useQuery({
+    queryKey: ["profiles", "code", name, "health"],
+    queryFn: () =>
+      apiFetch<CodeProfileHealth>(
+        `/api/profiles/code/${encodeURIComponent(name)}/health`,
+      ),
+    retry: false,
+    staleTime: 10_000,
+  });
+  if (health.isLoading) {
+    return (
+      <div className="mt-2 pl-3 text-[10.5px] text-ink-dim">Loading health…</div>
+    );
+  }
+  if (health.error || !health.data) return null;
+  const data = health.data;
+  const chunks = data.chunk_count || 0;
+  const indexed =
+    data.last_indexed_at && data.last_indexed_at > 0
+      ? humanizeDelta(data.last_indexed_at)
+      : null;
+  const parts: string[] = [];
+  if (chunks > 0) {
+    parts.push(`💻 ${chunks.toLocaleString()} chunk${chunks === 1 ? "" : "s"}`);
+  } else {
+    parts.push("💻 not indexed yet");
+  }
+  if (indexed) parts.push(`indexed ${indexed}`);
+  if (data.embedding_model) parts.push(`model ${data.embedding_model}`);
+  return (
+    <div className="mt-2 pl-3 text-[10.5px]">
+      <div className="text-ink-dim">{parts.join(" · ")}</div>
+      {data.last_error && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 block w-full text-left text-critical/90 hover:text-critical"
+        >
+          <span className="mr-1">⚠ Last index failed:</span>
+          {expanded ? (
+            <span className="font-mono">{data.last_error}</span>
+          ) : (
+            <span className="line-clamp-1 font-mono">{data.last_error}</span>
+          )}
+          <span className="ml-1 opacity-70">
+            ({expanded ? "hide" : "Inspect"})
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CodeProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
@@ -2239,7 +2313,8 @@ function CodeProfilesSection() {
           ) : profiles.data?.profiles?.length ? (
             <ul className="divide-y divide-surface-border">
               {profiles.data.profiles.map((p) => (
-                <li key={p.name} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
+                <li key={p.name} className="px-5 py-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="font-medium">{p.name}</div>
                     <div className="truncate font-mono text-xs text-ink-dim">{p.path}</div>
@@ -2315,6 +2390,8 @@ function CodeProfilesSection() {
                       <Trash2 size={14} />
                     </button>
                   </div>
+                  </div>
+                  <CodeProfileHealthLine name={p.name} />
                 </li>
               ))}
             </ul>
