@@ -303,6 +303,131 @@ class EntityCrudMixin:
         self._update_search_text(conn, entity_id)
         return int(winner["id"])
 
+    def fetch_table_metadata(
+        self,
+        db_profile: str,
+        schema_name: str,
+        table_name: str,
+    ) -> dict | None:
+        """Read a fully-resolved table+column snapshot from the catalog.
+
+        Returns ``None`` when no ``entity_kind='table'`` row exists for
+        the (profile, schema, table) tuple — caller falls back to a
+        live query. Otherwise returns::
+
+            {
+                "table_comment": str,
+                "row_count": int,
+                "last_synced_at": float,
+                "columns": [
+                    {"name", "dtype", "nullable", "comment"}, ...
+                ],
+            }
+
+        ``comment`` on each column is the catalog's currently effective
+        description (joined through ``effective_description_id``). The
+        cache-first agent tools consume this to skip live ``profile_table``
+        calls whenever ``/search sync`` has already covered the table.
+        """
+        with self._connect() as conn:
+            table_row = conn.execute(
+                """
+                SELECT ce.row_count, ce.last_synced_at,
+                       cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ? AND ce.schema_name = ? AND ce.table_name = ?
+                  AND ce.entity_kind = 'table'
+                LIMIT 1
+                """,
+                (db_profile, schema_name, table_name),
+            ).fetchone()
+            if table_row is None:
+                return None
+            col_rows = conn.execute(
+                """
+                SELECT ce.column_name, ce.dtype, ce.nullable,
+                       cd.description_text AS effective_description
+                FROM catalog_entities ce
+                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                WHERE ce.db_profile = ? AND ce.schema_name = ? AND ce.table_name = ?
+                  AND ce.entity_kind = 'column'
+                ORDER BY ce.id
+                """,
+                (db_profile, schema_name, table_name),
+            ).fetchall()
+        columns: list[dict] = []
+        for r in col_rows:
+            name = str(r["column_name"] or "").strip()
+            if not name:
+                continue
+            columns.append(
+                {
+                    "name": name,
+                    "dtype": str(r["dtype"] or ""),
+                    "nullable": bool(int(r["nullable"] or 0)),
+                    "comment": str(r["effective_description"] or ""),
+                }
+            )
+        return {
+            "table_comment": str(table_row["effective_description"] or ""),
+            "row_count": int(table_row["row_count"] or 0),
+            "last_synced_at": float(table_row["last_synced_at"] or 0.0),
+            "columns": columns,
+        }
+
+    def fetch_distinct_schemas(self, db_profile: str) -> list[dict]:
+        """Return distinct ``schema_name`` rows for *db_profile* with
+        each schema's freshest ``last_synced_at``. Used by the
+        cache-first ``list_schemas`` agent tool when /search sync has
+        covered the profile."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT schema_name, MAX(last_synced_at) AS last_synced_at
+                FROM catalog_entities
+                WHERE db_profile = ? AND entity_kind = 'table'
+                  AND schema_name != ''
+                GROUP BY schema_name
+                ORDER BY schema_name
+                """,
+                (db_profile,),
+            ).fetchall()
+        return [
+            {
+                "name": str(r["schema_name"] or ""),
+                "last_synced_at": float(r["last_synced_at"] or 0.0),
+            }
+            for r in rows
+            if r["schema_name"]
+        ]
+
+    def fetch_distinct_tables_in_schema(
+        self, db_profile: str, schema_name: str
+    ) -> list[dict]:
+        """Return distinct ``table_name`` rows under (profile, schema)
+        with each table's freshest ``last_synced_at``."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT table_name, MAX(last_synced_at) AS last_synced_at
+                FROM catalog_entities
+                WHERE db_profile = ? AND schema_name = ?
+                  AND entity_kind = 'table' AND table_name != ''
+                GROUP BY table_name
+                ORDER BY table_name
+                """,
+                (db_profile, schema_name),
+            ).fetchall()
+        return [
+            {
+                "name": str(r["table_name"] or ""),
+                "last_synced_at": float(r["last_synced_at"] or 0.0),
+            }
+            for r in rows
+            if r["table_name"]
+        ]
+
     def _index_entity(self, conn: sqlite3.Connection, entity_id: int) -> None:
         row = conn.execute("SELECT * FROM catalog_entities WHERE id = ?", (entity_id,)).fetchone()
         if not row:

@@ -243,6 +243,15 @@ def _agent_system_prompt(
         f"{profiles_block}\n"
         + scope_block
         + focus_block
+        + "\nCache-vs-live provenance: every read tool surfaces `source` and `age_seconds`.\n"
+        "  `source=catalog` means the data came from /search sync's persisted index — surface\n"
+        "  the age in one short hint when `age_seconds` is over a week ('catalog is X days old,\n"
+        "  consider /search sync for fresh data') and continue with the question. `source=live_cache`\n"
+        "  means we served from a 24h memo; treat as authoritative. `source=live` means we just\n"
+        "  paid for a live round-trip — quote the result confidently. Pass `force_fresh=true` ONLY\n"
+        "  when the user explicitly asks for the current live state ('right now', 'after my\n"
+        "  apply', 'fresh from the warehouse') or when the cached age is incompatible with the\n"
+        "  question. Don't add `force_fresh=true` defensively — it's metered.\n"
         + "\nRouting guidance — choose the smallest correct path:\n"
         "* User names an exact identifier ('vbrk', 'adrc') → call find_table_by_name first; if it\n"
         "  returns one match, call describe_table on it. If multiple, surface ALL matches and ask.\n"
