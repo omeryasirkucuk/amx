@@ -1572,6 +1572,113 @@ def register_analyze_run_command(
                 object.__setattr__(cfg, "run_code_profiles", code_override_saved)
 
 
+def _bulk_accept_rows(
+    rows: list[Any],
+    *,
+    log_event: LogEvent,
+    run_id: int,
+) -> None:
+    """Queue every row for apply by re-saving the pending review file.
+
+    Mirrors what the standard /review flow does on an Accept: stamp
+    ``applied=True`` so :func:`save_pending` picks it up, then write the file.
+    Idempotent — calling twice with the same rows produces the same queue.
+    """
+    from amx.pending_review import load_pending, save_pending
+
+    by_rid: dict[int, Any] = {}
+    for entry in load_pending():
+        rid = getattr(entry, "result_id", None)
+        if rid is not None:
+            by_rid[int(rid)] = entry
+    queued = 0
+    for r in rows:
+        # Skip rows without a description (nothing to accept) and rows
+        # that are already applied to the live DB.
+        if not (r.final_description or "").strip() or getattr(r, "applied", False):
+            continue
+        accepted = dataclasses.replace(r, applied=True)
+        rid = getattr(r, "result_id", None)
+        if rid is not None:
+            by_rid[int(rid)] = accepted
+        else:
+            by_rid[id(r)] = accepted  # synthetic key for ID-less rows
+        queued += 1
+    save_pending(list(by_rid.values()))
+    info(f"Queued {queued} row(s) for apply — see /apply to write them to the DB.")
+    log_event(
+        "analyze_review_bulk_accept",
+        run_id=run_id,
+        accepted_count=queued,
+    )
+
+
+def _bulk_skip_rows(
+    rows: list[Any],
+    *,
+    log_event: LogEvent,
+    run_id: int,
+) -> None:
+    """Drop every row from the pending queue (the CLI's analogue of Skip)."""
+    from amx.pending_review import load_pending, save_pending
+
+    drop_ids: set[int] = set()
+    for r in rows:
+        rid = getattr(r, "result_id", None)
+        if rid is not None:
+            drop_ids.add(int(rid))
+    if not drop_ids:
+        info("No rows had a stored result_id — nothing to skip.")
+        log_event("analyze_review_bulk_skip", run_id=run_id, skipped_count=0)
+        return
+    survivors = [
+        entry
+        for entry in load_pending()
+        if getattr(entry, "result_id", None) is None or int(entry.result_id) not in drop_ids
+    ]
+    save_pending(survivors)
+    info(f"Skipped {len(drop_ids)} row(s) from the pending queue.")
+    log_event(
+        "analyze_review_bulk_skip",
+        run_id=run_id,
+        skipped_count=len(drop_ids),
+    )
+
+
+def _bulk_apply_rows(
+    cfg: AMXConfig,
+    rows: list[Any],
+    *,
+    log_event: LogEvent,
+    run_id: int,
+) -> None:
+    """Accept rows into pending, then immediately apply to the live database."""
+    from amx.agents.orchestrator import apply_review_results_to_db
+    from amx.db.connector import DatabaseConnector
+
+    if not cfg.db.backend:
+        error("No database configured. Cannot apply.")
+        return
+    db = DatabaseConnector(cfg.db)
+    if not db.test_connection():
+        error("Cannot connect to database.")
+        return
+
+    accepted = [
+        dataclasses.replace(r, applied=True) for r in rows if (r.final_description or "").strip()
+    ]
+    if not accepted:
+        info("No rows with a non-empty description — nothing to apply.")
+        return
+    applied = apply_review_results_to_db(db, accepted)
+    info(f"Applied {applied} metadata comment(s) to the database.")
+    log_event(
+        "analyze_review_bulk_apply",
+        run_id=run_id,
+        applied_count=applied,
+    )
+
+
 def register_analyze_review_command(
     analyze: click.Group,
     *,
@@ -1620,6 +1727,49 @@ def register_analyze_review_command(
         default=False,
         help="Keep rows with confidence < 0.7 (low).",
     )
+    @click.option(
+        "--pick",
+        is_flag=True,
+        default=False,
+        help=(
+            "After applying --filter/--sort, open an interactive multi-select "
+            "picker (fzf when available, numbered prompt otherwise). "
+            "Renders only the picked rows."
+        ),
+    )
+    @click.option(
+        "--paginate",
+        type=int,
+        default=0,
+        help=(
+            "Render the summary table in pages of N rows with a "
+            "[space]/[q] prompt between pages. 0 (default) disables."
+        ),
+    )
+    @click.option(
+        "--accept-filtered",
+        is_flag=True,
+        default=False,
+        help=(
+            "Non-interactively accept every row matching the active filter "
+            "(after a one-shot count confirmation)."
+        ),
+    )
+    @click.option(
+        "--skip-filtered",
+        is_flag=True,
+        default=False,
+        help="Non-interactively skip every row matching the active filter.",
+    )
+    @click.option(
+        "--apply-filtered",
+        is_flag=True,
+        default=False,
+        help=(
+            "Non-interactively apply every row matching the active filter to "
+            "the live database (requires two confirmations)."
+        ),
+    )
     @click.pass_obj
     def analyze_review(
         cfg: AMXConfig,
@@ -1629,6 +1779,11 @@ def register_analyze_review_command(
         review_group: str,
         only_unreviewed: bool,
         only_low_conf: bool,
+        pick: bool,
+        paginate: int,
+        accept_filtered: bool,
+        skip_filtered: bool,
+        apply_filtered: bool,
     ) -> None:
         """Review a completed run's suggestions with filter/sort/group flags."""
         from amx.agents.base import Confidence
@@ -1729,6 +1884,78 @@ def register_analyze_review_command(
         )
         if review_sort:
             xs = apply_sort(xs, sort_key=review_sort, is_pending=_is_pending)
+
+        # PR B — interactive multi-select picker. Applied AFTER filter + sort
+        # so the user picks from the already-narrowed set; the picked rows
+        # then flow through the rest of the rendering / bulk-action pipeline.
+        if pick and xs:
+            from amx.cli_support.review_picker import pick_rows as _pick_rows
+
+            labels = [
+                (
+                    f"{r.schema}.{r.table}.{r.column}"
+                    if r.column
+                    else (f"{r.schema}.{r.table}" if r.table else r.schema)
+                )
+                + f"  conf={r.confidence.value}"
+                + (f"  logprob={r.logprob_score:.3f}" if r.logprob_score is not None else "")
+                for r in xs
+            ]
+            picked = _pick_rows(labels)
+            if not picked:
+                info("No rows picked — nothing to review.")
+                return
+            xs = [xs[i] for i in picked if 0 <= i < len(xs)]
+
+        # PR B — bulk filtered actions. ``--accept-filtered`` /
+        # ``--skip-filtered`` / ``--apply-filtered`` operate on the
+        # post-filter/sort/pick set ``xs`` and short-circuit the render.
+        if accept_filtered or skip_filtered or apply_filtered:
+            from amx.cli_support.review_picker import bulk_confirm
+
+            if not xs:
+                info("No rows match the active filter — nothing to do.")
+                return
+
+            sample_labels = [
+                (
+                    f"{r.schema}.{r.table}.{r.column}"
+                    if r.column
+                    else (f"{r.schema}.{r.table}" if r.table else r.schema)
+                )
+                for r in xs
+            ]
+
+            if accept_filtered:
+                if not bulk_confirm(action="accept", count=len(xs), sample=sample_labels):
+                    info("Cancelled — no rows accepted.")
+                    return
+                _bulk_accept_rows(xs, log_event=log_event, run_id=run_id)
+                return
+            if skip_filtered:
+                if not bulk_confirm(action="skip", count=len(xs), sample=sample_labels):
+                    info("Cancelled — no rows skipped.")
+                    return
+                _bulk_skip_rows(xs, log_event=log_event, run_id=run_id)
+                return
+            if apply_filtered:
+                if not bulk_confirm(action="apply", count=len(xs), sample=sample_labels):
+                    info("Cancelled — no rows applied.")
+                    return
+                if not bulk_confirm(
+                    action="apply",
+                    count=len(xs),
+                    sample=[],
+                    extra_warning=(
+                        "Apply writes COMMENT statements to the live database; "
+                        "the change is permanent. Type 'yes' again to proceed."
+                    ),
+                ):
+                    info("Cancelled at the live-DB confirmation — no rows applied.")
+                    return
+                _bulk_apply_rows(cfg, xs, log_event=log_event, run_id=run_id)
+                return
+
         grouped = group_rows(xs, by=review_group)
 
         heading(f"Review · Run #{run_id}")
@@ -1748,32 +1975,59 @@ def register_analyze_review_command(
             "Source",
         ]
 
+        def _row_cells(r: ReviewResult) -> list[str]:
+            return [
+                (
+                    f"{r.schema}.{r.table}.{r.column}"
+                    if r.column
+                    else (f"{r.schema}.{r.table}" if r.table else r.schema)
+                ),
+                status_label.get(
+                    derive_status(r, is_pending=_is_pending),
+                    status_label[STATUS_PENDING],
+                ),
+                (r.final_description or "")[:60],
+                r.confidence.value,
+                (f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A"),
+                r.source,
+            ]
+
         visible = 0
         for group_label, group_list in grouped:
             visible += len(group_list)
             if not group_list:
                 continue
             title = f"Run #{run_id} · {group_label}" if group_label else f"Run #{run_id}"
-            render_table(
-                title,
-                columns,
-                [
-                    [
-                        f"{r.schema}.{r.table}.{r.column}"
-                        if r.column
-                        else (f"{r.schema}.{r.table}" if r.table else r.schema),
-                        status_label.get(
-                            derive_status(r, is_pending=_is_pending),
-                            status_label[STATUS_PENDING],
-                        ),
-                        (r.final_description or "")[:60],
-                        r.confidence.value,
-                        (f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A"),
-                        r.source,
-                    ]
-                    for r in group_list
-                ],
-            )
+
+            if paginate and paginate > 0 and len(group_list) > paginate:
+                # PR B — paginated render. Each page is its own Rich table so
+                # the user can ``q`` between pages on huge runs without
+                # losing context (page index annotates the header).
+                from amx.cli_support.review_picker import paginate_with_prompt
+
+                def _render(
+                    page_idx: int,
+                    total_pages: int,
+                    slice_: list[ReviewResult],
+                    _title: str = title,
+                ) -> None:
+                    render_table(
+                        f"{_title} · page {page_idx}/{total_pages}",
+                        columns,
+                        [_row_cells(r) for r in slice_],
+                    )
+
+                paginate_with_prompt(
+                    list(group_list),
+                    page_size=paginate,
+                    render_page=_render,
+                )
+            else:
+                render_table(
+                    title,
+                    columns,
+                    [_row_cells(r) for r in group_list],
+                )
 
         info(
             format_summary_footer(
