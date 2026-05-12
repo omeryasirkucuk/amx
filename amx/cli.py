@@ -9,7 +9,10 @@ import click
 
 from amx import __version__
 from amx.cli_support import run_interactive_session
-from amx.cli_support.commands.analyze_flow import register_analyze_run_command
+from amx.cli_support.commands.analyze_flow import (
+    register_analyze_review_command,
+    register_analyze_run_command,
+)
 from amx.cli_support.commands.chat_session import register_chat_session_commands
 from amx.cli_support.commands.code import register_code_commands
 from amx.cli_support.commands.compare import register_compare_command
@@ -369,6 +372,7 @@ register_analyze_run_command(
     resolve_codebase_for_run=_resolve_codebase_for_run,
     log_event=_log_app_event,
 )
+register_analyze_review_command(analyze, log_event=_log_app_event)
 register_rerun_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_docs_commands(
     main,

@@ -1066,6 +1066,10 @@ def session_to_click_args(namespace: str, parts: list[str]) -> list[str] | None:
         "run": ["analyze", "run"],
         "run-apply": ["analyze", "run", "--apply"],
         "apply": ["analyze", "apply"],
+        # PR A — bulk-review UX. /review delegates to `analyze review`
+        # (filter / sort / group viewer over a completed run's
+        # suggestions). Routed here so it's reachable from any tab.
+        "review": ["analyze", "review"],
         "code-scan": ["code", "scan"],
         "code-search": ["code", "search"],
         "code-refresh": ["code", "refresh"],
