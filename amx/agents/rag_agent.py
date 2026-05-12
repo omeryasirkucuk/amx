@@ -20,6 +20,7 @@ from amx.llm.prompts import (
     per_col_token_budget,
 )
 from amx.llm.provider import LLMProvider
+from amx.llm.style.guard import scrub_placeholders
 from amx.llm.style.injector import render_style_section
 from amx.llm.style.loader import load_active_style_profile
 from amx.llm.style.profile import StyleProfile
@@ -28,6 +29,18 @@ from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.rag")
+
+
+def _scrub_suggestions(
+    suggestions: list[MetadataSuggestion],
+    active_profile: StyleProfile | None,
+) -> list[MetadataSuggestion]:
+    """Scrub placeholder literals from suggestion text when a style profile is active."""
+    if active_profile is None:
+        return suggestions
+    for s in suggestions:
+        s.suggestions = [scrub_placeholders(text) for text in s.suggestions]
+    return suggestions
 
 _BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert using documentation to understand database assets.
@@ -205,7 +218,8 @@ class RAGAgent(BaseAgent):
 
     def parse_batch_result(self, content: str, ctx: AgentContext) -> list[MetadataSuggestion]:
         """Parse a raw LLM text response; used after Batch API completes."""
-        return self._parse_response(content, ctx)
+        suggestions = self._parse_response(content, ctx)
+        return _scrub_suggestions(suggestions, self._style_profile)
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
         messages = self._build_messages(ctx)
@@ -221,6 +235,7 @@ class RAGAgent(BaseAgent):
         tracker.record_for("rag_agent", est, self.llm, result.usage)
 
         suggestions = self._parse_response(result.content, ctx)
+        suggestions = _scrub_suggestions(suggestions, self._style_profile)
         return apply_logprob_confidence(
             suggestions,
             result.logprobs,

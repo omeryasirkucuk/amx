@@ -19,6 +19,7 @@ from amx.llm.prompts import (
     per_col_token_budget,
 )
 from amx.llm.provider import FatalLLMError, LLMProvider
+from amx.llm.style.guard import scrub_placeholders
 from amx.llm.style.injector import render_style_section
 from amx.llm.style.loader import load_active_style_profile
 from amx.llm.style.profile import StyleProfile
@@ -27,6 +28,19 @@ from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.profile")
+
+
+def _scrub_suggestions(
+    suggestions: list[MetadataSuggestion],
+    active_profile: StyleProfile | None,
+) -> list[MetadataSuggestion]:
+    """Scrub placeholder literals from suggestion text when a style profile is active."""
+    if active_profile is None:
+        return suggestions
+    for s in suggestions:
+        s.suggestions = [scrub_placeholders(text) for text in s.suggestions]
+    return suggestions
+
 
 _BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert. Given database profile information for a table
@@ -369,6 +383,7 @@ class ProfileAgent(BaseAgent):
             suggestions = self._parse_response_loose(content, ctx)
         if not suggestions:
             suggestions = self._parse_by_known_column_names(content, ctx)
+        suggestions = _scrub_suggestions(suggestions, self._style_profile)
         return suggestions
 
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
@@ -440,6 +455,7 @@ class ProfileAgent(BaseAgent):
             suggestions = self._parse_response_loose(response, ctx)
         if not suggestions:
             suggestions = self._parse_by_known_column_names(response, ctx)
+        suggestions = _scrub_suggestions(suggestions, self._style_profile)
 
         if not suggestions:
             self._save_failed_response_for_debug(response, ctx)
