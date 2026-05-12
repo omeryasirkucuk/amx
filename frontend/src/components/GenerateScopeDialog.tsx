@@ -4,6 +4,7 @@ import { Sparkles } from "lucide-react";
 import Dialog from "./ui/Dialog";
 import Button from "./ui/Button";
 import DocProfileChips from "./DocProfileChips";
+import CodeProfileChips from "./CodeProfileChips";
 
 interface ScopeOption {
   label: string;
@@ -30,6 +31,12 @@ interface Props {
    *  the per-run override. */
   docProfiles?: string[] | null;
   onDocProfilesChange?: (next: string[] | null) => void;
+  /** PR δ: parallel multi-select for code profiles. Wiring rules mirror
+   *  the docs chips — opt in by passing both ``codeProfiles`` and
+   *  ``onCodeProfilesChange``, then forward the selection to
+   *  ``api.submitRun`` as ``body.code_profiles``. */
+  codeProfiles?: string[] | null;
+  onCodeProfilesChange?: (next: string[] | null) => void;
 }
 
 /**
@@ -49,10 +56,14 @@ export default function GenerateScopeDialog({
   cancelLabel = "Cancel",
   docProfiles,
   onDocProfilesChange,
+  codeProfiles,
+  onCodeProfilesChange,
 }: Props) {
   const anyLoading = !!(singleOption.loading || bulkOption.loading);
   const showDocChips =
     docProfiles !== undefined && typeof onDocProfilesChange === "function";
+  const showCodeChips =
+    codeProfiles !== undefined && typeof onCodeProfilesChange === "function";
   return (
     <Dialog
       open={open}
@@ -79,6 +90,13 @@ export default function GenerateScopeDialog({
             <DocProfileChips
               selected={docProfiles ?? null}
               onChange={onDocProfilesChange!}
+              disabled={anyLoading}
+            />
+          )}
+          {showCodeChips && (
+            <CodeProfileChips
+              selected={codeProfiles ?? null}
+              onChange={onCodeProfilesChange!}
               disabled={anyLoading}
             />
           )}

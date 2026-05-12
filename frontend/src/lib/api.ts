@@ -676,6 +676,11 @@ export const api = {
      *  means "no docs for this run". The saved config is never
      *  mutated — the worker reverts the override on exit. */
     doc_profiles?: string[];
+    /** PR δ: parallel multi-code-profile override. Identical semantics
+     *  to ``doc_profiles`` — ``undefined`` defaults to
+     *  ``cfg.active_code_profile``; an empty array scopes the run to
+     *  no code profiles at all. */
+    code_profiles?: string[];
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
@@ -689,6 +694,7 @@ export const api = {
         catalog: body.catalog,
         llm_overrides: body.llm_overrides,
         doc_profiles: body.doc_profiles,
+        code_profiles: body.code_profiles,
       }),
     }),
   cancelRun: (jobId: string) =>

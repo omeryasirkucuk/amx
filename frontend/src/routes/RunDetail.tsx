@@ -944,6 +944,56 @@ function RunHeaderRagBadge({ run }: { run: RunDetailPayload }) {
   );
 }
 
+/** PR δ: read-only chip surfacing which code profiles fed the Code
+ *  agent for this run plus the total chunk count and any
+ *  ``code_unavailable_reason`` recorded at finalize-time. Hidden when
+ *  ``metrics_json`` carries no code keys (legacy runs from before
+ *  PR δ persisted them).
+ */
+function RunHeaderCodeBadge({ run }: { run: RunDetailPayload }) {
+  const metrics = (run.metrics_json ?? {}) as Record<string, unknown>;
+  const profiles = Array.isArray(metrics.code_profiles_used)
+    ? (metrics.code_profiles_used as string[]).filter((p) => p && p.length > 0)
+    : [];
+  const reason =
+    typeof metrics.code_unavailable_reason === "string"
+      ? (metrics.code_unavailable_reason as string)
+      : null;
+  const hitsTotal =
+    typeof metrics.code_hits_total === "number"
+      ? (metrics.code_hits_total as number)
+      : null;
+  if (profiles.length === 0 && !reason && hitsTotal == null) {
+    return null;
+  }
+  return (
+    <>
+      <span
+        className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface-subtle/60 px-2 py-0.5 font-mono text-[11px] text-ink-muted"
+        title="Code profiles fed into the Code agent for this run."
+      >
+        <span className="text-ink-dim">code</span>
+        <span className="text-ink">
+          {profiles.length === 0
+            ? "no code used"
+            : profiles.join(", ")}
+          {hitsTotal != null && hitsTotal > 0
+            ? ` · ${hitsTotal.toLocaleString()} chunks`
+            : ""}
+        </span>
+      </span>
+      {reason && (
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-critical/30 bg-critical/5 px-2 py-0.5 font-mono text-[11px] text-critical"
+          title="The Code RAG store could not be opened. The run proceeded without code context."
+        >
+          ⚠ Code unavailable: {reason}
+        </span>
+      )}
+    </>
+  );
+}
+
 /** Render token counts with K/M compaction so the header chip stays
  *  one line on narrow viewports. Mirrors the Home overview cards'
  *  formatter so the two surfaces feel consistent. */
@@ -1363,6 +1413,7 @@ function PersistedRunView({ runId }: { runId: number }) {
               <RunHeaderTokenCost run={run.data} />
               <RunHeaderScope run={run.data} />
               <RunHeaderRagBadge run={run.data} />
+              <RunHeaderCodeBadge run={run.data} />
             </span>
           ) : undefined
         }
