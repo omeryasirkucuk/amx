@@ -671,6 +671,11 @@ export const api = {
      *  (or omit the key) when no override is needed for that field.
      *  The backend never writes these back to the saved profile. */
     llm_overrides?: LLMOverrides;
+    /** PR E: per-run multi-doc-profile override. ``undefined`` falls
+     *  back to ``cfg.active_doc_profile``; an explicit empty array
+     *  means "no docs for this run". The saved config is never
+     *  mutated — the worker reverts the override on exit. */
+    doc_profiles?: string[];
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
@@ -683,6 +688,7 @@ export const api = {
         database: body.database,
         catalog: body.catalog,
         llm_overrides: body.llm_overrides,
+        doc_profiles: body.doc_profiles,
       }),
     }),
   cancelRun: (jobId: string) =>

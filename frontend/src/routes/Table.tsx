@@ -28,6 +28,8 @@ export default function Table() {
   const toast = useToast();
   const navigate = useNavigate();
   const [confirmGenerate, setConfirmGenerate] = useState(false);
+  // PR E: per-run doc profile override for the bulk path.
+  const [runDocProfiles, setRunDocProfiles] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (scope && schema && table) {
@@ -155,6 +157,7 @@ export default function Table() {
         db_profile: scope?.profile,
         database: scope?.database,
         catalog: scope?.catalog,
+        doc_profiles: runDocProfiles ?? undefined,
       }),
     onSuccess: (result) => {
       setConfirmGenerate(false);
@@ -330,6 +333,8 @@ export default function Table() {
       <GenerateScopeDialog
         open={confirmGenerate}
         onClose={() => setConfirmGenerate(false)}
+        docProfiles={runDocProfiles}
+        onDocProfilesChange={setRunDocProfiles}
         title={`Generate description for ${schema}.${table}`}
         description="Pick the scope. Just-the-table writes only the table's own COMMENT (one fast LLM call). Bulk run also generates a description for every column."
         singleOption={{

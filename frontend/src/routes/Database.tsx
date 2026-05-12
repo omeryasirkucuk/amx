@@ -25,6 +25,10 @@ export default function Database() {
   const navigate = useNavigate();
   const [draftDescription, setDraftDescription] = useState("");
   const [confirmGenerate, setConfirmGenerate] = useState(false);
+  // PR E: per-run doc profile override for the bulk path. ``null`` =
+  // use the config default; otherwise the chosen list is forwarded
+  // to ``api.submitRun`` and applied for this run only.
+  const [runDocProfiles, setRunDocProfiles] = useState<string[] | null>(null);
 
   // Hooks must run unconditionally; we early-return below on missing
   // scope. The queries get `enabled: !!scope` so they no-op until the
@@ -123,6 +127,7 @@ export default function Database() {
         db_profile: scope?.profile,
         database: scope?.database,
         catalog: scope?.catalog,
+        doc_profiles: runDocProfiles ?? undefined,
       });
     },
     onSuccess: (result) => {
@@ -288,6 +293,8 @@ export default function Database() {
       <GenerateScopeDialog
         open={confirmGenerate}
         onClose={() => setConfirmGenerate(false)}
+        docProfiles={runDocProfiles}
+        onDocProfilesChange={setRunDocProfiles}
         title={`Generate description for ${headingLabel}`}
         description={
           scope.kind === "catalog"

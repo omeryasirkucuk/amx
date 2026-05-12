@@ -3,6 +3,7 @@ import { Sparkles } from "lucide-react";
 
 import Dialog from "./ui/Dialog";
 import Button from "./ui/Button";
+import DocProfileChips from "./DocProfileChips";
 
 interface ScopeOption {
   label: string;
@@ -22,6 +23,13 @@ interface Props {
   /** "All children" — bulk run, spawns analyze worker. Rendered as the primary button. */
   bulkOption: ScopeOption;
   cancelLabel?: string;
+  /** PR E: optional multi-select doc profile chips rendered below the
+   *  title. Only shown when the parent opts in by passing both the
+   *  current selection and the onChange callback. The bulk-run path
+   *  is expected to forward ``docProfiles`` to ``api.submitRun`` as
+   *  the per-run override. */
+  docProfiles?: string[] | null;
+  onDocProfilesChange?: (next: string[] | null) => void;
 }
 
 /**
@@ -39,8 +47,12 @@ export default function GenerateScopeDialog({
   singleOption,
   bulkOption,
   cancelLabel = "Cancel",
+  docProfiles,
+  onDocProfilesChange,
 }: Props) {
   const anyLoading = !!(singleOption.loading || bulkOption.loading);
+  const showDocChips =
+    docProfiles !== undefined && typeof onDocProfilesChange === "function";
   return (
     <Dialog
       open={open}
@@ -62,6 +74,13 @@ export default function GenerateScopeDialog({
           <h2 className="text-sm font-semibold text-ink">{title}</h2>
           {description && (
             <p className="mt-1 text-sm text-ink-muted">{description}</p>
+          )}
+          {showDocChips && (
+            <DocProfileChips
+              selected={docProfiles ?? null}
+              onChange={onDocProfilesChange!}
+              disabled={anyLoading}
+            />
           )}
           <div className="mt-4 flex flex-col gap-2">
             <ScopeButton option={singleOption} variant="secondary" disabled={anyLoading} />
