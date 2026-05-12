@@ -181,7 +181,6 @@ export default function TopBar() {
       <PinnedCellsDrawer
         open={pinnedOpen}
         onClose={() => setPinnedOpen(false)}
-        dbProfile={null}
       />
     </header>
   );
