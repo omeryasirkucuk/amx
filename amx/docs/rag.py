@@ -452,7 +452,12 @@ class RAGStore:
             distance_score = max(0.0, 2.0 - float(distance)) if distance is not None else 0.0
             return distance_score + overlap * 0.4 + explanatory * 0.35 - header_penalty
 
-        return sorted(hits, key=_score, reverse=True)
+        # Persist the rerank score onto each hit so callers can carry
+        # it through to user-facing citations (PR C) without having to
+        # recompute the same heuristic at the agent layer.
+        for hit in hits:
+            hit["score"] = float(_score(hit))
+        return sorted(hits, key=lambda h: h["score"], reverse=True)
 
     @property
     def doc_count(self) -> int:

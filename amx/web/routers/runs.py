@@ -1022,6 +1022,11 @@ def _column_details_for_table(
                 # forwarding it here, the SPA's live-progress card
                 # could never display it for in-flight runs.
                 "reasoning": row.get("reasoning") or "",
+                # PR C: provenance trail for RAG-derived suggestions.
+                # Empty list on non-RAG / legacy rows so the Studio
+                # RunDetail component can render conditionally
+                # without null guards in every consumer.
+                "citations": row.get("citations_json") or [],
             }
         )
     return out
