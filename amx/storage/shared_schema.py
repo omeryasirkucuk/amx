@@ -803,6 +803,93 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
     )
 
+    Table(
+        "style_profiles",
+        md,
+        Column(
+            "id",
+            Integer,
+            primary_key=True,
+            autoincrement=True,
+            comment="Surrogate primary key.",
+        ),
+        Column(
+            "llm_profile",
+            String(256),
+            nullable=False,
+            unique=True,
+            comment=(
+                "Name of the LLM profile this style record belongs to. "
+                "Matches the llm_profile key used in AMXConfig."
+            ),
+        ),
+        Column(
+            "source_ref",
+            String(1024),
+            nullable=False,
+            comment=(
+                "Fully-qualified reference to the table or column set whose "
+                "comments were used to derive this profile (e.g. "
+                "'warehouse.sales.orders')."
+            ),
+        ),
+        Column(
+            "source_db_kind",
+            String(64),
+            nullable=False,
+            comment=(
+                "Database kind identifier of the source (e.g. 'snowflake', "
+                "'duckdb', 'bigquery'). Stored for diagnostic and audit purposes."
+            ),
+        ),
+        Column(
+            "profile_json",
+            Text,
+            nullable=False,
+            comment=(
+                "JSON-serialised StyleProfile dataclass. Deserialised by "
+                "StyleProfile.from_json() on read."
+            ),
+        ),
+        Column(
+            "enabled",
+            Integer,
+            nullable=False,
+            default=1,
+            comment=(
+                "Whether this style profile is active (1) or disabled (0). "
+                "Disabled profiles are stored but not injected into prompts."
+            ),
+        ),
+        Column(
+            "sample_count",
+            Integer,
+            nullable=False,
+            comment=(
+                "Number of source description samples that were analysed to "
+                "produce the profile. Used as a confidence indicator."
+            ),
+        ),
+        Column(
+            "created_at",
+            Text,
+            nullable=False,
+            comment="Stored as TEXT representation of a Unix timestamp float, mirroring the local SQLite schema.",
+        ),
+        Column(
+            "updated_at",
+            Text,
+            nullable=False,
+            comment="Stored as TEXT representation of a Unix timestamp float, mirroring the local SQLite schema.",
+        ),
+        comment=(
+            "One row per LLM profile containing the derived StyleProfile that "
+            "summarises the user's description writing conventions. The profile "
+            "is injected into run-time prompts to keep generated descriptions "
+            "consistent with the existing corpus style."
+        ),
+    )
+
     return md
 
 

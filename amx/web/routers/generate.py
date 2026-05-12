@@ -52,6 +52,8 @@ from amx.config import AMXConfig, PromptDetail
 from amx.db.connector import ColumnProfile, DatabaseConnector, TableProfile
 from amx.llm.prompts import length_rule
 from amx.llm.provider import LLMProvider
+from amx.llm.style.injector import render_style_section
+from amx.llm.style.profile import StyleProfile
 from amx.pending_review import load_pending, save_pending
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger
@@ -113,17 +115,21 @@ def _settings(cfg: AMXConfig) -> tuple[int, str, float, PromptDetail]:
     return n, verbosity, temperature, pd
 
 
-def _build_system_prompt(n: int, verbosity: str) -> str:
+def _build_system_prompt(
+    n: int,
+    verbosity: str,
+    style_profile: StyleProfile | None = None,
+) -> str:
     rule = length_rule(verbosity)
     base = f"{_SYSTEM_BASE} {rule}"
     if n <= 1:
-        return base
+        return base + render_style_section(style_profile)
     label_lines = "\n".join(f"DESCRIPTION_{i}: <text>" for i in range(1, n + 1))
     return (
         f"{base}\n"
         f"Provide exactly {n} alternative descriptions ranked by likelihood. "
         "Use this format, one alternative per line, no preamble:\n"
-        f"{label_lines}"
+        f"{label_lines}" + render_style_section(style_profile)
     )
 
 
@@ -193,7 +199,7 @@ def _generate(
     Each endpoint resets the tracker at the top of the request to
     avoid bleeding state across concurrent jobs.
     """
-    system_prompt = _build_system_prompt(n, verbosity)
+    system_prompt = _build_system_prompt(n, verbosity, style_profile=None)
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

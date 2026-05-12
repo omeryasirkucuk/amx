@@ -228,6 +228,19 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "Show/set number of alternatives per column (/n-alternatives [1-5])",
     ),
     SlashCommand(
+        "/style",
+        "llm",
+        "Reference table for description style",
+        long_desc=(
+            "Attach a reference table to the active LLM profile so AMX "
+            "matches your description style on /run. Reads metadata only; "
+            "never copies entity names. "
+            "Subcommands: /style [wizard] · /style set <db>.<schema>.<table> · "
+            "/style show · /style clear · /style on · /style off."
+        ),
+        cross_namespace=True,
+    ),
+    SlashCommand(
         "/temperature",
         "llm",
         "Show/set LLM sampling temperature (/temperature [0.0-2.0])",
