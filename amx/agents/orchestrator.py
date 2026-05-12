@@ -1376,6 +1376,21 @@ class Orchestrator:
             if len(all_descs) < cap:
                 underfilled[col_name] = all_descs
 
+            # Union citations from every input suggestion (RAG + DB +
+            # codebase) onto the merged output, deduped by
+            # ``(source, chunk_idx)``. Without this the merge step
+            # would silently drop the provenance trail RAGAgent
+            # attached to its per-agent suggestion.
+            merged_citations: list = []
+            seen_citations: set = set()
+            for s in col_suggestions:
+                for c in getattr(s, "citations", None) or []:
+                    key_ = (c.source, c.chunk_idx)
+                    if key_ in seen_citations:
+                        continue
+                    seen_citations.add(key_)
+                    merged_citations.append(c)
+
             merge_results.append(
                 MetadataSuggestion(
                     schema=ctx.schema,
@@ -1385,6 +1400,7 @@ class Orchestrator:
                     confidence=conf,
                     reasoning=reasoning,
                     source="combined",
+                    citations=merged_citations,
                 )
             )
 
