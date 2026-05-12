@@ -121,3 +121,51 @@ export function pinnedCellFromToken(token: string): PinnedCell | null {
     column: parts[2] ?? null,
   };
 }
+
+/** A pinned cell plus the localStorage bucket slug it came from.
+ *
+ * The TopBar count sums across every ``amx.compare.pinnedCells.*``
+ * bucket, but the original single-bucket ``readPinnedCells`` meant the
+ * drawer could only render one slice. Carrying the bucket slug here
+ * lets the drawer enumerate the full set AND removes the right entry
+ * on unpin without guessing which profile produced it. */
+export interface PinnedCellEntry extends PinnedCell {
+  bucket: string;
+}
+
+/** Read every ``amx.compare.pinnedCells.*`` localStorage bucket and
+ *  return the union, tagged with the bucket slug each entry came from. */
+export function readAllPinnedCells(): PinnedCellEntry[] {
+  if (typeof window === "undefined") return [];
+  const out: PinnedCellEntry[] = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i);
+    if (!key || !key.startsWith(STORAGE_PREFIX)) continue;
+    const bucket = key.slice(STORAGE_PREFIX.length);
+    const entries = safeParse(window.localStorage.getItem(key));
+    for (const entry of entries) out.push({ ...entry, bucket });
+  }
+  return out;
+}
+
+/** Remove ``cell`` from a specific bucket (used by the drawer when
+ *  the user clicks the per-row unpin button on an entry it surfaced
+ *  via :func:`readAllPinnedCells`). */
+export function unpinCellAt(bucket: string, cell: PinnedCell): void {
+  if (typeof window === "undefined") return;
+  const slug = bucket || "__global";
+  const profile = slug === "__global" ? null : slug;
+  unpinCell(profile, cell);
+}
+
+/** Clear every ``amx.compare.pinnedCells.*`` bucket so the drawer's
+ *  "Clear all" button matches the TopBar's union semantics. */
+export function clearAllPinnedCells(): void {
+  if (typeof window === "undefined") return;
+  const toRemove: string[] = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const key = window.localStorage.key(i);
+    if (key && key.startsWith(STORAGE_PREFIX)) toRemove.push(key);
+  }
+  for (const key of toRemove) window.localStorage.removeItem(key);
+}
