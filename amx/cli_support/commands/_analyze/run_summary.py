@@ -16,6 +16,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from amx.cli_support.review_filter import (
+    STATUS_ACCEPTED,
+    STATUS_APPLIED,
+    STATUS_PENDING,
+    STATUS_SKIPPED,
+    apply_filters,
+    apply_sort,
+    derive_status,
+    format_summary_footer,
+    group_rows,
+)
 from amx.utils.console import (
     confirm,
     heading,
@@ -30,6 +41,23 @@ from amx.utils.token_tracker import tracker as token_tracker
 log = get_logger("cli.analyze_flow.run_summary")
 
 
+# Rich markup map for the STATUS column. The CLI summary calls the
+# "accepted" state ``Accepted`` to match the Studio FilterBar chip;
+# ``Pending`` is used for unreviewed rows so a reader scanning the
+# table sees the same vocabulary the Studio surface does.
+_STATUS_LABELS: dict[str, str] = {
+    STATUS_PENDING: "[dim]· Pending[/dim]",
+    STATUS_ACCEPTED: "[green]✓ Accepted[/green]",
+    STATUS_SKIPPED: "[yellow]✗ Skipped[/yellow]",
+    STATUS_APPLIED: "[bold green]✓ Applied[/bold green]",
+}
+
+
+def _format_status_cell(row: Any) -> str:
+    """Return the Rich-markup STATUS cell for a ReviewResult-shaped row."""
+    return _STATUS_LABELS.get(derive_status(row), _STATUS_LABELS[STATUS_PENDING])
+
+
 def render_summary_and_apply(
     *,
     all_results: list[Any],
@@ -40,6 +68,9 @@ def render_summary_and_apply(
     dedup_outcome: Any,
     run_id: int | None,
     history_store_fn: Any,
+    summary_filter: str | None = None,
+    summary_sort: str | None = None,
+    summary_group: str = "none",
 ) -> tuple[list[Any], list[Any]]:
     """Render the post-loop summary and execute the apply branch.
 
@@ -81,22 +112,12 @@ def render_summary_and_apply(
 
     # ── (5) Approved metadata table ──
     if approved:
-        render_table(
-            "Approved metadata",
-            ["Asset", "Description", "Confidence", "Logprob", "Source", "Sources"],
-            [
-                [
-                    f"{r.schema}.{r.table}.{r.column}"
-                    if r.column
-                    else (f"{r.schema}.{r.table}" if r.table else r.schema),
-                    (r.final_description or "")[:60],
-                    r.confidence.value,
-                    f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A",
-                    r.source,
-                    _format_sources_cell(r),
-                ]
-                for r in approved
-            ],
+        _render_results_table(
+            all_rows=all_results,
+            approved=approved,
+            summary_filter=summary_filter,
+            summary_sort=summary_sort,
+            summary_group=summary_group,
         )
 
     # ── (6) Save pending ──
@@ -121,6 +142,78 @@ def render_summary_and_apply(
     )
 
     return approved, skipped
+
+
+def _render_results_table(
+    *,
+    all_rows: list[Any],
+    approved: list[Any],
+    summary_filter: str | None,
+    summary_sort: str | None,
+    summary_group: str,
+) -> None:
+    """Render the post-run summary as one or more Rich tables.
+
+    The render path is shared by the inline post-``/run`` summary and
+    the standalone ``/inspect-run`` slash command in PR A. Filter →
+    sort → group ordering matches the Studio FilterBar so the two
+    surfaces stay in lockstep.
+
+    The STATUS column is rendered for the full row set (not just
+    approved), but when the caller passes ``approved`` only — today's
+    behaviour — those are all that's drawn. The ``all_rows`` total is
+    used by the footer so a "Showing 12 of 187" line stays honest even
+    when the filter narrows the visible set.
+    """
+    xs = approved
+    total_before_filter = len(xs)
+    if summary_filter:
+        xs = apply_filters(xs, pattern=summary_filter)
+    if summary_sort:
+        xs = apply_sort(xs, sort_key=summary_sort)
+    grouped = group_rows(xs, by=summary_group or "none")
+
+    columns = [
+        "Asset",
+        "Status",
+        "Description",
+        "Confidence",
+        "Logprob",
+        "Source",
+        "Sources",
+    ]
+
+    def _row_cells(r: Any) -> list[str]:
+        return [
+            f"{r.schema}.{r.table}.{r.column}"
+            if r.column
+            else (f"{r.schema}.{r.table}" if r.table else r.schema),
+            _format_status_cell(r),
+            (r.final_description or "")[:60],
+            r.confidence.value,
+            f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A",
+            r.source,
+            _format_sources_cell(r),
+        ]
+
+    for group_label, group_rows_list in grouped:
+        title = f"Approved metadata — {group_label}" if group_label else "Approved metadata"
+        render_table(
+            title,
+            columns,
+            [_row_cells(r) for r in group_rows_list],
+        )
+
+    visible = sum(len(g[1]) for g in grouped)
+    info(
+        format_summary_footer(
+            total=total_before_filter,
+            visible=visible,
+            pattern=summary_filter,
+            sort_key=summary_sort,
+            group_by=summary_group or "none",
+        )
+    )
 
 
 def _format_sources_cell(review_result: Any) -> str:

@@ -316,6 +316,36 @@ _ANALYZE_COMMANDS: tuple[SlashCommand, ...] = (
         "/run-apply", "analyze", "Run + apply (/run-apply [ASSET …] [--schema …] [--table …])"
     ),
     SlashCommand("/apply", "analyze", "Write pending comments to the database"),
+    # PR A — bulk-review UX: a focused entry point for reviewing a
+    # previously-completed run's suggestions with filter / sort /
+    # status / group flags. Reads the pending-review queue + the
+    # ``run_results`` rows for ``<run_id>`` (defaults to the most
+    # recent completed run when omitted) and renders the same
+    # Rich-table view the post-run summary uses.
+    SlashCommand(
+        "/review",
+        "analyze",
+        (
+            "Review a run's suggestions (/review [<run_id>] "
+            "[--filter REGEX] [--sort KEY] [--group-by schema|table] "
+            "[--only-unreviewed] [--only-low-conf])"
+        ),
+        long_desc=(
+            "Surfaces the suggestions of a completed analyze run with "
+            "the same filter / sort / group vocabulary the Studio "
+            "ResultsFilterBar uses. Without ``--filter`` and friends, "
+            "the command renders every approved row in natural order.\n"
+            "Flags:\n"
+            "  --filter REGEX        case-insensitive regex against "
+            "schema.table.column\n"
+            "  --sort KEY            conf-asc | conf-desc | "
+            "logprob-asc | logprob-desc | name-asc | status\n"
+            "  --group-by KIND       none | schema | table\n"
+            "  --only-unreviewed     drop rows already accepted / "
+            "skipped / applied\n"
+            "  --only-low-conf       keep rows with confidence < 0.7"
+        ),
+    ),
 )
 
 _SEARCH_COMMANDS: tuple[SlashCommand, ...] = (
