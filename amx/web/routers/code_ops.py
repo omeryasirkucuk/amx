@@ -63,6 +63,28 @@ def _resolve_path(body: _CodeScanRequest, cfg: AMXConfig) -> str:
     return str(cfg.code_profiles.get(profile, "") or "")
 
 
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: str,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> dict[str, Any]:
+    """Signal an in-flight code scan worker to stop.
+
+    The worker polls ``job.cancel`` between files (never mid-file —
+    that would orphan a partial Chroma upsert until the idempotent
+    delete lands in a follow-up PR). Returns 200 when the job exists
+    and the flag is set, 404 when the job id is unknown.
+    """
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+    job.cancel.set()
+    return {"job_id": job_id, "cancelled": True, "status": job.status}
+
+
 @router.post("/scan")
 def submit_scan(
     body: _CodeScanRequest,
@@ -77,6 +99,13 @@ def submit_scan(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No path to scan. Pass path=, profile=, or activate a code profile.",
         )
+    # Resolve the profile name used for cache + catalog sync so the
+    # subsequent ``/api/code/analyze`` and ``/api/code/search`` calls
+    # can find the persisted report. Matches the CLI's fallback chain
+    # in ``commands/code.py`` so the two surfaces share a cache key.
+    profile_name = (
+        (body.profile or "").strip() or (cfg.active_code_profile or "").strip() or "default"
+    )
     job = jobs.new_job("code_scan")
     thread = threading.Thread(
         target=_scan_worker,
@@ -89,6 +118,7 @@ def submit_scan(
             body.db_profile,
             body.db_database,
             body.db_catalog,
+            profile_name,
         ),
         name=f"amx-code-scan-{job.id}",
         daemon=True,
@@ -101,16 +131,19 @@ def submit_scan(
 def search_code(
     q: str,
     n: int = 5,
-    profile: str | None = None,
+    profile: list[str] = Query(default_factory=list),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Synchronous embedding-only search over the ``amx_code`` Chroma
     index — the Studio counterpart to ``GET /api/docs/search``. No LLM
     call; the SPA renders results directly.
 
-    Pass ``profile`` to scope the hit list to one code profile's source
-    paths (the same gate the /ask ``search_code`` tool applies). Omit
-    to search across every indexed snippet.
+    ``profile`` is repeatable: ``?profile=foo&profile=bar`` searches
+    the union of those code profiles' source paths. When the parameter
+    is omitted, the search falls back to ``cfg.effective_code_paths()``
+    — i.e. the active code profile — so search hits stay scoped to
+    whatever the user has selected, matching how ``/ask`` resolves
+    code context. Pass an explicit list to override.
     """
     query = (q or "").strip()
     if not query:
@@ -126,28 +159,34 @@ def search_code(
             detail=f"Code RAG dependencies not installed: {exc}",
         ) from exc
 
-    profile_name = (profile or "").strip()
+    profile_names = [p.strip() for p in (profile or []) if p and p.strip()]
     source_filters: list[str] = []
-    if profile_name:
-        if profile_name not in cfg.code_profiles:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Unknown code profile {profile_name!r}.",
-            )
-        path = (cfg.code_profiles.get(profile_name) or "").strip()
-        if path:
-            source_filters = [path]
+    explicit_profiles = bool(profile_names)
+    if explicit_profiles:
+        for name in profile_names:
+            if name not in cfg.code_profiles:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Unknown code profile {name!r}.",
+                )
+            path = (cfg.code_profiles.get(name) or "").strip()
+            if path and path not in source_filters:
+                source_filters.append(path)
+    else:
+        # Default to the active code profile's paths — same scope rule
+        # as ``/api/docs/search`` uses via ``effective_doc_paths()``.
+        for path in cfg.effective_code_paths() or []:
+            cleaned = (path or "").strip()
+            if cleaned and cleaned not in source_filters:
+                source_filters.append(cleaned)
 
     if code_collection_count(source_filters=source_filters or None) == 0:
-        return {
-            "hits": [],
-            "count": 0,
-            "message": (
-                f"No indexed code for profile {profile_name!r} — run /code-scan first."
-                if profile_name
-                else "amx_code index is empty — run /code-scan first."
-            ),
-        }
+        if explicit_profiles:
+            label = ", ".join(profile_names)
+            message = f"No indexed code for profile {label!r} — run /code-scan first."
+        else:
+            message = "amx_code index is empty — run /code-scan first."
+        return {"hits": [], "count": 0, "message": message}
 
     hits = query_code_snippets(
         query,
@@ -384,6 +423,7 @@ def _scan_worker(
     db_profile: str | None = None,
     db_database: str | None = None,
     db_catalog: str | None = None,
+    profile_name: str = "default",
 ) -> None:
     with quiet_console():
         _scan_worker_body(
@@ -395,6 +435,7 @@ def _scan_worker(
             db_profile,
             db_database,
             db_catalog,
+            profile_name,
         )
 
 
@@ -407,6 +448,7 @@ def _scan_worker_body(
     db_profile: str | None = None,
     db_database: str | None = None,
     db_catalog: str | None = None,
+    profile_name: str = "default",
 ) -> None:
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Collecting catalog assets"})
@@ -461,12 +503,101 @@ def _scan_worker_body(
         emit(job.queue, "activity.added", {"idx": 1, "label": f"Scanning {path}"})
         emit(job.queue, "activity.begin", {"idx": 1})
 
-        # 2. Run the analyzer.
-        report = analyze_codebase(
-            path,
-            table_names=table_names,
-            column_names=column_names or None,
-        )
+        # Per-file progress callback. ``analyze_codebase`` calls this
+        # with ``("__total__", total_files)`` once, then
+        # ``("__advance__", file_name)`` for each scanned file. Bridge
+        # those events to the SSE bus so the SPA renders per-file
+        # progress instead of a single "Scanning…" line — and use the
+        # same hook to poll ``job.cancel`` between files (never
+        # mid-file, to avoid orphaning a partial Chroma upsert).
+        progress_state: dict[str, int] = {"total": 0, "processed": 0}
+        cancelled = False
+
+        class _Cancelled(RuntimeError):
+            pass
+
+        def _scan_progress(action: str, value: object) -> None:
+            nonlocal cancelled
+            if action == "__total__":
+                progress_state["total"] = int(value or 0)
+                emit(
+                    job.queue,
+                    "code.scan.progress",
+                    {
+                        "file_path": "",
+                        "processed_count": 0,
+                        "total_count": progress_state["total"],
+                    },
+                )
+                return
+            if action == "__advance__":
+                # Poll cancellation BETWEEN files — raise out of the
+                # analyzer so the in-progress walk stops cleanly. The
+                # outer ``except _Cancelled`` finalizes a cancelled
+                # summary; any partial work is left for the operator
+                # to clear with ``/code-refresh`` (the same recovery
+                # path the docs ingest cancellation uses today).
+                if job.cancel.is_set():
+                    cancelled = True
+                    raise _Cancelled()
+                progress_state["processed"] += 1
+                emit(
+                    job.queue,
+                    "code.scan.progress",
+                    {
+                        "file_path": str(value or ""),
+                        "processed_count": progress_state["processed"],
+                        "total_count": progress_state["total"] or progress_state["processed"],
+                    },
+                )
+
+        # 2. Run the analyzer with semantic indexing so the ``amx_code``
+        # Chroma collection is populated — Studio /code-scan reached
+        # functional parity with the CLI here. Without this, /ask's
+        # ``search_code`` tool and /api/code/search return empty.
+        try:
+            report = analyze_codebase(
+                path,
+                table_names=table_names,
+                column_names=column_names or None,
+                index_semantic=True,
+                progress_callback=_scan_progress,
+            )
+        except _Cancelled:
+            # User cancelled mid-walk. Emit a cancelled summary and
+            # exit cleanly — no exception trail in the SSE stream.
+            scan_summary = {
+                "path": path,
+                "total_files": progress_state.get("total", 0),
+                "scanned_files": progress_state.get("processed", 0),
+                "catalog_assets": 0,
+                "external_assets": 0,
+                "catalog": [],
+                "external": [],
+                "cancelled": True,
+                "status": "cancelled",
+            }
+            emit(
+                job.queue,
+                "code.scan.summary",
+                {
+                    "scanned_files": scan_summary["scanned_files"],
+                    "catalog_assets": 0,
+                    "external_assets": 0,
+                    "cancelled": True,
+                    "status": "cancelled",
+                },
+            )
+            emit(
+                job.queue,
+                "activity.complete",
+                {"idx": 1, "detail": "scan cancelled"},
+            )
+            job.status = "cancelled"
+            job.summary = scan_summary
+            job.ended_at = time.time()
+            emit_terminal(job.queue, "job.cancelled", {"summary": scan_summary})
+            return
 
         # 3. Compact the report into something the SPA can render.
         # analyze_codebase emits per-asset CodeReference objects; we
@@ -516,6 +647,51 @@ def _scan_worker_body(
                 "external_assets": scan_summary["external_assets"],
             },
         )
+
+        # Persist the cached report so a follow-up ``/api/code/analyze``
+        # (and the CLI's ``/code-results``) finds it under the same
+        # slug the CLI writes. Without this step, Studio scans never
+        # populate the cache and downstream code-analyze 500s with
+        # "No cached code-scan".
+        # Cache manifests need a single schema label. ``schema_filter``
+        # wins when set; otherwise fall back to ``cfg.current_schema``
+        # — and finally to the literal "all" so a multi-schema scan
+        # still produces a stable, reload-able cache key.
+        schema_for_cache = (
+            (schema_filter or "").strip() or (cfg.current_schema or "").strip() or "all"
+        )
+        try:
+            from amx.codebase.cache import save_cached_report
+
+            save_cached_report(
+                profile_name=profile_name,
+                source_path=path,
+                schema=schema_for_cache,
+                tables=table_names,
+                column_names=column_names,
+                report=report,
+            )
+        except Exception as exc:
+            log.warning("Could not save code-scan cache: %s", exc)
+
+        # Sync the report into the search catalog so /search surfaces
+        # the same code-evidence rows the CLI's ``/code-scan`` writes.
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog_store = SearchCatalog.from_history_store()
+            if catalog_store is not None:
+                catalog_store.sync_code_report(
+                    db_profile=cfg.active_db_profile or "default",
+                    db_backend=cfg.db.backend,
+                    database_name=(cfg.db.database or cfg.db.catalog or cfg.db.project or ""),
+                    schema_name=schema_for_cache,
+                    source_path=path,
+                    report=report,
+                )
+        except Exception as exc:
+            log.warning("Could not sync code report into /search catalog: %s", exc)
+
         emit(
             job.queue,
             "activity.complete",
