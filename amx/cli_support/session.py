@@ -118,6 +118,7 @@ from amx.cli_support.commands.profiles import (
 from amx.cli_support.commands.profiles import (
     cmd_use_rag_llm as _cmd_use_rag_llm,
 )
+from amx.cli_support.commands.style import cmd_style as _cmd_style
 from amx.cli_support.commands.usage import cmd_usage as _cmd_usage
 from amx.cli_support.slash_commands import (
     cmd_heads_for_namespace as _registry_cmd_heads,
@@ -844,6 +845,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "n-alternatives"):
             return True
         _cmd_n_alternatives(cfg, parts[1:])
+        return True
+    if head == "style":
+        if not _require_namespace(head, namespace, "llm", "style"):
+            return True
+        _cmd_style(cfg, parts[1:])
         return True
     if head == "llm-batch-size":
         if not _require_namespace(head, namespace, "llm", "llm-batch-size"):
