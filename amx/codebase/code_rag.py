@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import hashlib
 import json
 from pathlib import Path
@@ -480,7 +481,19 @@ def query_code_snippets(
     source_filters: list[str] | None = None,
     *,
     cfg: Any | None = None,
+    timeout: float | None = None,
 ) -> list[dict]:
+    """Semantic retrieval over the ``amx_code`` collection.
+
+    PR δ (I4): when ``timeout`` is a positive float, wrap the underlying
+    ``coll.query`` call in a single-thread executor so the wall-clock
+    cap is honoured even when Chroma stalls. On timeout we raise
+    :class:`amx.docs.rag.RAGQueryTimeout` (the shared exception class
+    docs RAG uses since PR D) so callers — :class:`CodeAgent`, the
+    ``/code-search`` CLI command, and Studio's ``/api/code-search``
+    endpoint — can branch on the timeout case and surface a user-facing
+    diagnostic instead of returning an ambiguous empty hit list.
+    """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     client = chromadb.PersistentClient(path=persist)
     try:
@@ -502,7 +515,32 @@ def query_code_snippets(
         return []
     filters = [_normalize_source_filter(s) for s in (source_filters or []) if s]
     query_n = n_results if not filters else max(n_results * 4, n_results)
-    res = coll.query(query_texts=[question], n_results=query_n)
+
+    def _do_query() -> Any:
+        return coll.query(query_texts=[question], n_results=query_n)
+
+    if timeout is not None and float(timeout) > 0:
+        # Re-using docs-RAG's :class:`RAGQueryTimeout` keeps the
+        # diagnostic shape identical across the two retrieval surfaces
+        # — the agents catch one exception class regardless of whether
+        # the stall happened in the code or docs collection.
+        from amx.docs.rag import RAGQueryTimeout
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(_do_query)
+            try:
+                res = future.result(timeout=float(timeout))
+            except concurrent.futures.TimeoutError as e:
+                log.warning(
+                    "Code RAG retrieval exceeded %.2fs timeout, proceeding without context",
+                    float(timeout),
+                )
+                future.cancel()
+                raise RAGQueryTimeout(
+                    f"Code retrieval exceeded {float(timeout):.2f}s timeout"
+                ) from e
+    else:
+        res = _do_query()
     hits: list[dict] = []
     for i in range(len(res["documents"][0])):
         meta = res["metadatas"][0][i]
@@ -524,18 +562,82 @@ def code_collection_count(
     persist_dir: str | None = None,
     source_filters: list[str] | None = None,
 ) -> int:
+    """Return the number of indexed code chunks under the source filters.
+
+    PR δ (I11): when ``source_filters`` is set, push the filter down to
+    Chroma via its ``where={...}`` operator instead of pulling every
+    metadata row into Python and filtering client-side. On large code
+    indexes (10k+ chunks) the python-side scan walked the whole
+    collection on every call site that asked "is there anything for
+    this profile?" — the orchestrator hits this on every ``/run``,
+    every doctor check, and every Studio profile-health refresh.
+
+    Falls back to a per-filter aggregate when the installed Chroma
+    rejects ``$or`` (older versions do); a final fallback to the
+    historical full-scan path keeps the function shape backwards-
+    compatible if every server-side route errors.
+    """
     persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
     try:
         client = chromadb.PersistentClient(path=persist)
         coll = client.get_collection(COLLECTION)
         filters = [_normalize_source_filter(s) for s in (source_filters or []) if s]
-        if filters:
-            rows = coll.get(include=["metadatas"])
-            metas = rows.get("metadatas") or []
-            return sum(1 for m in metas if _source_allowed(m, filters))
-        return int(coll.count())
+        if not filters:
+            return int(coll.count())
+
+        # Preferred path: single server-side ``$or`` filter so Chroma
+        # walks its own index instead of round-tripping every metadata
+        # blob through Python.
+        try:
+            or_clauses = [{"source_root": {"$eq": p}} for p in filters]
+            where = {"$or": or_clauses} if len(or_clauses) > 1 else or_clauses[0]
+            result = coll.get(where=where, include=[])
+            return len(result.get("ids") or [])
+        except Exception as exc:
+            log.debug("code_collection_count: $or where failed (%s); per-filter fallback", exc)
+
+        # Fallback 1: aggregate per-filter so each request stays small.
+        # We still avoid the historical full-scan because every clause
+        # ships an indexed equality match.
+        try:
+            seen: set[str] = set()
+            for p in filters:
+                result = coll.get(where={"source_root": {"$eq": p}}, include=[])
+                for rid in result.get("ids") or []:
+                    seen.add(rid)
+            return len(seen)
+        except Exception as exc:
+            log.debug(
+                "code_collection_count: per-filter where failed (%s); full-scan fallback",
+                exc,
+            )
+
+        # Fallback 2: the historical python-side scan. Slow on large
+        # collections but guaranteed to work on any Chroma build.
+        rows = coll.get(include=["metadatas"])
+        metas = rows.get("metadatas") or []
+        return sum(1 for m in metas if _source_allowed(m, filters))
     except Exception:
         return 0
+
+
+def code_collection_metadata(persist_dir: str | None = None) -> dict[str, Any]:
+    """Best-effort read of the ``amx_code`` collection's recorded metadata.
+
+    Returns ``{"embedding_provider": ..., "embedding_model": ...,
+    "amx_schema_version": ...}`` when the collection exists, or an
+    empty dict on any failure (no collection yet, persist dir missing,
+    chroma init blew up). Used by Studio's
+    ``GET /api/profiles/code/{name}/health`` so the SPA can render the
+    embedding the user's chunks are indexed with.
+    """
+    persist = persist_dir or str(Path.home() / ".amx" / "chroma_db")
+    try:
+        client = chromadb.PersistentClient(path=persist)
+        coll = client.get_collection(COLLECTION)
+        return dict(coll.metadata or {})
+    except Exception:
+        return {}
 
 
 def delete_code_collection(
@@ -589,6 +691,7 @@ __all__ = [
     "CodeEmbeddingMismatch",
     "COLLECTION",
     "code_collection_count",
+    "code_collection_metadata",
     "delete_code_collection",
     "index_codebase_tree",
     "query_code_snippets",
