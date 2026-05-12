@@ -83,6 +83,8 @@ class ToolBox:
         db_factory: Callable[[], DatabaseConnector] | None = None,
         db_profiles: list[str] | tuple[str, ...] | None = None,
         db_connectors: dict[str, DatabaseConnector] | None = None,
+        doc_profiles: list[str] | tuple[str, ...] | None = None,
+        code_profiles: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.cfg = cfg
         self.catalog = catalog
@@ -115,6 +117,23 @@ class ToolBox:
             scope.append(name)
         self.db_profiles: list[str] = scope
         self.db_profile: str = scope[0]  # anchor for legacy single-profile reads
+        # Explicit doc/code profile overrides. ``None`` (default) keeps
+        # the historic auto-resolution from the DB scope via the link
+        # maps; an explicit list (incl. ``[]``) lets Studio + the CLI
+        # decouple "what docs apply" from the DB choice — the user can
+        # opt into 2 doc profiles regardless of which DBs are in scope,
+        # or opt OUT of doc retrieval entirely while still asking
+        # DB-grounded questions.
+        self._doc_profiles_override: list[str] | None = (
+            [str(name).strip() for name in doc_profiles if str(name).strip()]
+            if doc_profiles is not None
+            else None
+        )
+        self._code_profiles_override: list[str] | None = (
+            [str(name).strip() for name in code_profiles if str(name).strip()]
+            if code_profiles is not None
+            else None
+        )
         self._db_factory = db_factory or (lambda: DatabaseConnector(cfg.db))
         # Only build the live DB connector lazily — many tools never need it.
         self._db: DatabaseConnector | None = None
@@ -5290,12 +5309,21 @@ class ToolBox:
             return {"hits": [], "count": 0, "reason": "empty_query"}
         n = max(1, min(int(n_results or 5), 10))
 
-        profiles = resolve_doc_profiles_for_scope(self.cfg, self.db_profiles)
+        if self._doc_profiles_override is not None:
+            # Explicit user pick from the Studio dropdown or the CLI
+            # ``--doc-profile`` flag. Empty list = "skip doc retrieval
+            # for this question" — honoured without falling back to
+            # the auto-resolved set.
+            profiles = [p for p in self._doc_profiles_override if p in self.cfg.doc_profiles]
+            override_in_effect = True
+        else:
+            profiles = resolve_doc_profiles_for_scope(self.cfg, self.db_profiles)
+            override_in_effect = False
         if not profiles:
             return {
                 "hits": [],
                 "count": 0,
-                "reason": "no_docs_for_scope",
+                "reason": "no_docs_selected" if override_in_effect else "no_docs_for_scope",
                 "scope_dbs": list(self.db_profiles),
             }
 
@@ -5369,12 +5397,17 @@ class ToolBox:
             return {"hits": [], "count": 0, "reason": "empty_query"}
         n = max(1, min(int(n_results or 5), 10))
 
-        profiles = resolve_code_profiles_for_scope(self.cfg, self.db_profiles)
+        if self._code_profiles_override is not None:
+            profiles = [p for p in self._code_profiles_override if p in self.cfg.code_profiles]
+            code_override_in_effect = True
+        else:
+            profiles = resolve_code_profiles_for_scope(self.cfg, self.db_profiles)
+            code_override_in_effect = False
         if not profiles:
             return {
                 "hits": [],
                 "count": 0,
-                "reason": "no_code_for_scope",
+                "reason": "no_code_selected" if code_override_in_effect else "no_code_for_scope",
                 "scope_dbs": list(self.db_profiles),
             }
 

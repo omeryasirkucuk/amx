@@ -86,6 +86,30 @@ def test_end_session_404_when_missing(client, auth_headers, stub_session_store) 
     assert response.status_code == 404
 
 
+def test_delete_session_drops_row_and_clears_active_pointer(
+    client, auth_headers, cfg, stub_session_store
+) -> None:
+    """``DELETE /api/ask/sessions/{id}`` hard-removes the session row
+    and every turn under it (CLI ``/session end`` only marks ended).
+    Mirrors the Studio sidebar trash icon. The active-session pointer
+    flips back to 0 if it was referencing the just-deleted id."""
+    stub_session_store.get_session.return_value = {"id": 12, "title": "throwaway"}
+    stub_session_store.delete_session.return_value = True
+    cfg.active_chat_session_id = 12
+
+    response = client.delete("/api/ask/sessions/12", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["session_id"] == 12
+    stub_session_store.delete_session.assert_called_once_with(12)
+    assert cfg.active_chat_session_id == 0
+
+
+def test_delete_session_404_when_missing(client, auth_headers, stub_session_store) -> None:
+    stub_session_store.get_session.return_value = None
+    response = client.delete("/api/ask/sessions/9999", headers=auth_headers)
+    assert response.status_code == 404
+
+
 def test_get_session_returns_turns(client, auth_headers, stub_session_store) -> None:
     stub_session_store.get_session.return_value = {"id": 7, "title": "t"}
     stub_session_store.recent_turns = MagicMock(
