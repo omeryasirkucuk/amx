@@ -361,6 +361,17 @@ class TableProcessor:
         for message in dict.fromkeys(profile_diagnostics):
             warn(message)
 
+        # ``RAGAgent`` mirrors :class:`ProfileAgent`'s diagnostics
+        # pattern (PR A). When retrieval returned no matching chunks
+        # the agent appends "RAG: no relevant documents found ..." so
+        # the user knows the ingested docs didn't match this table
+        # instead of seeing zero RAG output with no explanation.
+        rag_agent = getattr(self.orch, "rag_agent", None)
+        if rag_agent is not None and hasattr(rag_agent, "consume_diagnostics"):
+            rag_diagnostics = rag_agent.consume_diagnostics()
+            for message in dict.fromkeys(rag_diagnostics):
+                info(message)
+
         merged = self.orch._merge_suggestions(all_suggestions, ctx)
         if not merged:
             warn(

@@ -10,34 +10,16 @@ import subprocess
 import tempfile
 import urllib.parse
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import requests
 
+from amx.docs.extensions import SUPPORTED_EXTENSIONS
 from amx.utils.logging import get_logger
 
 log = get_logger("docs.scanner")
-
-SUPPORTED_EXTENSIONS = {
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".txt",
-    ".md",
-    ".csv",
-    ".xlsx",
-    ".xls",
-    ".html",
-    ".htm",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".rst",
-    ".rtf",
-    ".pptx",
-}
 
 
 @dataclass
@@ -776,14 +758,54 @@ def scan_source(path: str) -> list[DocInfo]:
     return _tag(list(_resolve_local(path)))
 
 
-def scan_all_sources(paths: list[str]) -> list[DocInfo]:
+@dataclass(frozen=True)
+class ScanResult:
+    """Outcome of a multi-source scan.
+
+    ``documents`` is the same list :func:`scan_all_sources` used to
+    return; ``failures`` carries one ``(source_path, short message)``
+    tuple per source path the resolver raised on (e.g. a private S3
+    URI without credentials, an unreachable GitHub URL).
+
+    The class is also list-like over ``documents`` so historic callers
+    that wrote ``for doc in scan_all_sources(paths):`` or
+    ``len(scan_all_sources(paths))`` continue to work without a
+    lock-step rewrite. New surfaces (CLI scan summary, Studio
+    ``scan.summary`` SSE event) read ``.failures`` explicitly.
+    """
+
+    documents: list[DocInfo] = field(default_factory=list)
+    failures: list[tuple[str, str]] = field(default_factory=list)
+
+    def __iter__(self):
+        return iter(self.documents)
+
+    def __len__(self) -> int:
+        return len(self.documents)
+
+    def __getitem__(self, index):
+        return self.documents[index]
+
+
+def scan_all_sources(paths: list[str]) -> ScanResult:
+    """Resolve every configured source path and aggregate the docs.
+
+    Errors during one source no longer disappear into a ``log.error``
+    line nobody reads — they're returned on ``ScanResult.failures`` so
+    the CLI summary and the Studio worker can surface them. The shape
+    is iterable/lengthy over ``documents`` for backwards compatibility
+    with callers that treated the return value as ``list[DocInfo]``.
+    """
     all_docs: list[DocInfo] = []
+    failures: list[tuple[str, str]] = []
     for p in paths:
         try:
             all_docs.extend(scan_source(p))
         except Exception as exc:
+            reason = f"{exc.__class__.__name__}: {exc}"
             log.error("Failed to scan %s: %s", p, exc)
-    return all_docs
+            failures.append((p, reason))
+    return ScanResult(documents=all_docs, failures=failures)
 
 
 def total_size_mb(docs: list[DocInfo]) -> float:
