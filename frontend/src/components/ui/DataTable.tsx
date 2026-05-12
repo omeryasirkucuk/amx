@@ -52,6 +52,10 @@ interface Props<T> {
   isLoading?: boolean;
   /** Fatal error message. */
   error?: string | null;
+  /** Tone for the error row. ``warning`` is for advisory/recoverable
+   * states (e.g. "history store not initialized — activate a DB
+   * profile") where the red ``critical`` tone overstates the severity. */
+  errorTone?: "critical" | "warning";
   /** Slot rendered when there are zero rows after filtering. */
   emptyState?: ReactNode;
   /** Page size; pass 0 to disable pagination. */
@@ -80,6 +84,7 @@ export default function DataTable<T>({
   filters,
   isLoading,
   error,
+  errorTone = "critical",
   emptyState,
   pageSize = 50,
   className,
@@ -283,7 +288,11 @@ export default function DataTable<T>({
                 <tr>
                   <td
                     colSpan={columns.length}
-                    className="px-4 py-6 text-center text-sm text-critical"
+                    className={
+                      errorTone === "warning"
+                        ? "px-4 py-6 text-center text-sm text-warning"
+                        : "px-4 py-6 text-center text-sm text-critical"
+                    }
                   >
                     {error}
                   </td>

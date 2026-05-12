@@ -394,6 +394,12 @@ export default function RunsList() {
         filters={filters}
         isLoading={runs.isLoading}
         error={runs.error ? (runs.error as Error).message : null}
+        errorTone={
+          runs.error &&
+          /history store isn't initialized/i.test((runs.error as Error).message || "")
+            ? "warning"
+            : "critical"
+        }
         initialSort={{ id: "id", direction: "desc" }}
         emptyState={
           <EmptyState
