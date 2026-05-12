@@ -1,26 +1,30 @@
 """Boot AMX Studio from the ``/studio`` slash command.
 
-The launcher:
+Architecture (triple-layer defense after PRs #353/#354/#355 each
+fixed a layer but left a sibling open):
 
-1. Picks a port (preferred 47821, otherwise an ephemeral one).
-2. Generates a one-shot URL-safe Bearer token.
-3. Spawns a **subprocess** running :mod:`amx.web._studio_subprocess`
-   which boots uvicorn in a conventional foreground configuration.
-4. Polls ``127.0.0.1:<port>`` until the child binds (or the startup
-   timeout elapses), then opens the user's default browser.
-5. Blocks the parent on ``proc.wait()``; Ctrl-C in the terminal
-   reaches the child via the shared process group and uvicorn's own
-   SIGINT handler shuts it down cleanly. The parent then escalates
-   to SIGTERM / SIGKILL only if the child overstays its grace
-   period.
+1. Pick a port (preferred 47821, otherwise an ephemeral one).
+2. Generate a one-shot URL-safe Bearer token.
+3. Spawn a **subprocess** running :mod:`amx.web._studio_subprocess`
+   under ``start_new_session=True`` so the child gets its own
+   session, its own process group, and **no controlling tty**. The
+   parent's foreground process group keeps Ctrl-C, the child does
+   not see it directly; we forward via ``os.killpg`` instead.
+4. Redirect the child's stdout and stderr to
+   ``~/.amx/logs/studio-<port>.log`` so uvicorn logs and shutdown
+   tracebacks land in a file the user can ``tail -f`` instead of
+   on the parent's terminal — where they would corrupt
+   ``prompt_toolkit``'s rendered state.
+5. Poll ``127.0.0.1:<port>`` until the child binds, then open the
+   browser.
+6. Block the parent on ``proc.wait()``; on Ctrl-C, ``os.killpg``
+   the child group with SIGINT and escalate to SIGTERM/SIGKILL on
+   timeout. Wrap escalation against a second Ctrl-C so we never
+   leak an orphan.
 
-The subprocess model replaces an earlier in-process daemon-thread
-implementation that left stdin in a flushed-but-non-canonical state
-on macOS — arrow keys echoed as literal ``^[[C`` after Ctrl-C and
-the user had to restart the CLI. termios-level restoration (PRs
-#353/#354) did not fully recover. Process isolation does, because
-uvicorn's asyncio loop, signal handlers, and file-descriptor edits
-all live in a separate Python interpreter.
+The third layer — :func:`amx.cli_support.session._rebuild_prompt_input`
+called by the prompt loop — handles the remaining failure mode
+where ``Vt100Input`` has cached a stale ``_fileno`` / parser state.
 
 Returns ``True`` once the launch attempt completes (server may or
 may not have responded — the URL is still printed) and ``False``
@@ -31,6 +35,7 @@ renders an actionable error in that case.
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import socket
 import subprocess
@@ -39,6 +44,7 @@ import time
 import webbrowser
 from contextlib import suppress
 from pathlib import Path as _Path
+from typing import IO
 
 from amx.config import AMXConfig
 
@@ -49,14 +55,20 @@ log = logging.getLogger("amx.web.launcher")
 #: rule. Falls back to an ephemeral port when busy.
 PREFERRED_PORT = 47821
 
-#: How long to wait for uvicorn to flip ``server.started`` to True
-#: before opening the browser. Tarpits past this (rare on localhost)
-#: still launch the browser, the user just sees a load spinner.
+#: How long to wait for uvicorn to bind the listening socket before
+#: opening the browser. Tarpits past this (rare on localhost) still
+#: launch the browser; the user just sees a load spinner.
 STARTUP_TIMEOUT_SEC = 5.0
 
-#: Grace period for uvicorn to drain on shutdown. After this we move
-#: on so Ctrl-C feels responsive even if a hung connection lingers.
+#: Grace period for uvicorn to drain on shutdown. After this we
+#: escalate to SIGTERM so Ctrl-C feels responsive even when a hung
+#: connection lingers.
 SHUTDOWN_TIMEOUT_SEC = 3.0
+
+#: SIGTERM-to-SIGKILL grace period — uvicorn ignored SIGINT/SIGTERM,
+#: we force-kill the group after this.
+TERMINATE_TIMEOUT_SEC = 2.0
+KILL_TIMEOUT_SEC = 1.0
 
 
 def _pick_port(preferred: int) -> int:
@@ -77,6 +89,27 @@ def _pick_port(preferred: int) -> int:
         sock.close()
 
 
+def _studio_log_path(cfg: AMXConfig, port: int) -> _Path:
+    """Resolve ``~/.amx/logs/studio-<port>.log`` (creating the dir)."""
+    base = getattr(cfg, "CONFIG_DIR", None) or str(_Path.home() / ".amx")
+    log_dir = _Path(base) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"studio-{port}.log"
+
+
+def _signal_child_group(proc: subprocess.Popen, sig: int) -> None:
+    """Send ``sig`` to the child's process group.
+
+    The child was spawned with ``start_new_session=True``, so it is
+    its own session leader and ``proc.pid`` equals the pgid. Using
+    ``killpg`` covers any uvicorn worker subprocesses that may have
+    been forked by ``--reload`` etc., even though we don't enable
+    those today — costs nothing to be correct.
+    """
+    with suppress(ProcessLookupError, OSError):
+        os.killpg(proc.pid, sig)
+
+
 def launch_studio(
     cfg: AMXConfig,
     *,
@@ -86,20 +119,11 @@ def launch_studio(
 ) -> bool:
     """Start AMX Studio for one ``/studio`` invocation.
 
-    Studio runs as a CHILD PROCESS — see
-    :mod:`amx.web._studio_subprocess`. The parent CLI then has zero
-    risk of inheriting uvicorn's asyncio loop, signal handler edits,
-    or stdin file-descriptor state; Ctrl-C reaches the child via the
-    shared process group and the child exits cleanly via its own
-    SIGINT handler. After the child exits, the parent's terminal is
-    in exactly the state it was in before ``/studio`` and the next
-    ``prompt_toolkit`` session resumes normally.
-
-    Earlier in-process daemon-thread implementation left stdin in a
-    flushed-but-non-canonical state on macOS — arrow keys echoed as
-    literal ``^[[C`` after Ctrl-C and the user had to restart the
-    CLI. termios restoration (PRs #353/#354) didn't fully recover.
-    Process isolation does.
+    See module docstring for the architecture. The parent never sees
+    uvicorn's stdout, never shares a process group with the child,
+    and never relies on terminal Ctrl-C reaching the child — every
+    aspect of the failing-CLI-after-Ctrl-C symptom is closed at the
+    source.
 
     Parameters
     ----------
@@ -116,20 +140,31 @@ def launch_studio(
     block
         When ``True`` (the default), block until the child exits.
         Pass ``False`` in tests so the function returns once the
-        child has been spawned (the caller controls shutdown).
+        child has been spawned (the caller controls shutdown and is
+        responsible for closing the log file).
     """
     chosen_port = port if port is not None else _pick_port(PREFERRED_PORT)
 
     # Generate the bearer token in the PARENT so we can immediately
-    # surface the URL to the user without round-tripping through the
-    # child's app.state.token. The child accepts the token via CLI
-    # arg and seeds it onto the FastAPI app at startup.
+    # surface the URL without round-tripping through the child's
+    # ``app.state.token``. The child accepts the token via CLI arg
+    # and seeds it onto the FastAPI app at startup.
     from amx.web.auth import generate_token
 
     token = generate_token()
     url = f"http://127.0.0.1:{chosen_port}/?t={token}"
 
     config_path = getattr(cfg, "_config_path", "") or str(_Path(cfg.CONFIG_DIR) / "config.yml")
+
+    log_path = _studio_log_path(cfg, chosen_port)
+    # Line-buffered append so ``tail -f`` shows uvicorn output as it
+    # happens, and a second ``/studio`` invocation on the same port
+    # appends rather than truncating somebody else's debugging.
+    # Lifetime spans the whole ``proc.wait()`` window — closed in the
+    # ``finally`` below, so a ``with`` block doesn't fit.
+    log_fd: IO[str] = open(log_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
+    log_fd.write(f"\n--- studio launch {time.strftime('%Y-%m-%d %H:%M:%S')} pid=parent ---\n")
+    log_fd.flush()
 
     cmd = [
         sys.executable,
@@ -142,7 +177,17 @@ def launch_studio(
         "--config-path",
         config_path,
     ]
-    proc = subprocess.Popen(cmd)
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=log_fd,
+        stderr=subprocess.STDOUT,
+        # setsid() in the child: new session + new process group +
+        # no controlling tty. Terminal-generated SIGINT no longer
+        # reaches the child; we forward explicitly via killpg.
+        start_new_session=True,
+        close_fds=True,
+    )
 
     started = _wait_for_http(chosen_port, STARTUP_TIMEOUT_SEC)
     if not started:
@@ -153,7 +198,9 @@ def launch_studio(
         )
 
     print(  # user-facing — keep print, not log
-        f"AMX Studio running → {url}\nPress Ctrl-C in this terminal to stop AMX Studio."
+        f"AMX Studio running → {url}\n"
+        f"AMX Studio logs    → {log_path}\n"
+        "Press Ctrl-C in this terminal to stop AMX Studio."
     )
     if open_browser:
         try:
@@ -162,46 +209,67 @@ def launch_studio(
             log.debug("Could not auto-open browser: %s", exc)
 
     if not block:
+        # Caller (tests) owns the lifecycle; leave the log file open
+        # for them to inspect or close.
         return True
 
     try:
-        proc.wait()
-    except KeyboardInterrupt:
-        # The terminal Ctrl-C reaches the whole foreground process
-        # group, so the child has typically already received SIGINT
-        # and is shutting down. Send another SIGINT for good measure
-        # and then wait briefly for graceful exit before escalating
-        # to SIGTERM / SIGKILL.
-        with suppress(ProcessLookupError, OSError):
-            proc.send_signal(signal.SIGINT)
         try:
-            proc.wait(timeout=SHUTDOWN_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:  # pragma: no cover - graceful path
-            log.warning(
-                "AMX Studio child did not exit within %.1fs; sending SIGTERM.",
-                SHUTDOWN_TIMEOUT_SEC,
-            )
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                log.warning("AMX Studio child still alive; sending SIGKILL.")
-                proc.kill()
-                with suppress(subprocess.TimeoutExpired):
-                    proc.wait(timeout=1.0)
+            proc.wait()
+        except KeyboardInterrupt:
+            # Child is in its own session — no implicit SIGINT
+            # delivery, so forward explicitly. Wrap escalation
+            # against a second Ctrl-C so we don't leave an orphan
+            # if the user mashes the key twice.
+            _shutdown_child(proc)
+    finally:
+        with suppress(Exception):
+            log_fd.close()
     print("AMX Studio stopped.")
     return True
+
+
+def _shutdown_child(proc: subprocess.Popen) -> None:
+    """Send SIGINT to the child group; escalate to SIGTERM then SIGKILL.
+
+    Each escalation is wrapped against a second ``KeyboardInterrupt``
+    so a user mashing Ctrl-C never leaves an orphan child process.
+    """
+    _signal_child_group(proc, signal.SIGINT)
+    try:
+        proc.wait(timeout=SHUTDOWN_TIMEOUT_SEC)
+        return
+    except subprocess.TimeoutExpired:
+        log.warning(
+            "AMX Studio child did not exit within %.1fs; sending SIGTERM.",
+            SHUTDOWN_TIMEOUT_SEC,
+        )
+    except KeyboardInterrupt:  # pragma: no cover - mash-Ctrl-C path
+        pass
+
+    _signal_child_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=TERMINATE_TIMEOUT_SEC)
+        return
+    except subprocess.TimeoutExpired:
+        log.warning("AMX Studio child still alive after SIGTERM; sending SIGKILL.")
+    except KeyboardInterrupt:  # pragma: no cover
+        pass
+
+    _signal_child_group(proc, signal.SIGKILL)
+    with suppress(subprocess.TimeoutExpired, KeyboardInterrupt):
+        proc.wait(timeout=KILL_TIMEOUT_SEC)
 
 
 def _wait_for_http(port: int, timeout: float) -> bool:
     """Poll a TCP connect on ``127.0.0.1:port`` until it succeeds or
     the deadline elapses.
 
-    Used to confirm the Studio child has bound its listening socket
-    before the parent prints the URL and opens the browser. Replaces
-    the old daemon-thread ``server.started`` probe — with the child
-    in a separate process the parent no longer has direct access to
-    uvicorn's internal state, so we fall back to the network signal.
+    Confirms the Studio child has bound its listening socket before
+    the parent prints the URL and opens the browser. The parent no
+    longer has direct access to uvicorn's ``server.started`` flag
+    (it lives in the child interpreter); the network signal is the
+    next best thing.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

@@ -140,6 +140,58 @@ PrintDbHint = Callable[[], None]
 _NS_STATE: dict[str, str] = {"namespace": ""}
 
 
+def _rebuild_prompt_input() -> None:
+    """Force prompt_toolkit to drop its cached ``Vt100Input``.
+
+    Background: ``PromptSession`` constructs an ``Input`` once at
+    startup and reuses it for every ``prompt()`` call (the instance
+    caches ``_fileno``, a ``PosixStdinReader``, and a ``Vt100Parser``).
+    When an external subprocess such as ``/studio`` runs between
+    iterations and leaves stdin in a weird state, the next call to
+    ``Vt100Input.raw_mode().__enter__`` hits ``termios.tcgetattr`` —
+    which on error **silently no-ops** — and the terminal stays in
+    cooked mode. ICANON then buffers arrow-key escapes and the user
+    sees ``^[[C`` echo until the CLI is restarted.
+
+    The fix is to invalidate the AppSession's cached input so the
+    next ``prompt()`` rebuilds it via ``create_input()``, which
+    snapshots a fresh fileno from ``sys.stdin`` and constructs new
+    reader/parser objects. We also do a defensive ``tcflush`` to
+    drain any stale bytes the subprocess may have left in the
+    kernel-side input queue.
+
+    Cheap (one syscall + one attribute set); safe to call every
+    iteration of the prompt loop.
+    """
+    # Flush kernel-side stale input bytes. Platform/tty guarded so
+    # it's a no-op on Windows / piped input / detached tty.
+    try:
+        import os as _os
+        import sys as _sys
+        import termios as _termios
+
+        fd = _sys.stdin.fileno()
+        if _os.isatty(fd):
+            _termios.tcflush(fd, _termios.TCIFLUSH)
+    except (ImportError, AttributeError, ValueError, OSError):
+        pass
+    except Exception:  # pragma: no cover - termios.error on some platforms
+        pass
+
+    # Drop the AppSession's cached Vt100Input. ``_input`` is the
+    # documented (via source) cache slot; setting it to ``None``
+    # triggers a fresh ``create_input()`` on next access.
+    try:
+        from prompt_toolkit.application.current import get_app_session
+
+        app_session = get_app_session()
+        # Lazy property — setting to None invalidates the cache so the
+        # next read recreates a Vt100Input from sys.stdin.
+        app_session._input = None  # type: ignore[assignment]
+    except Exception:  # pragma: no cover - prompt_toolkit internals shift
+        pass
+
+
 def _canonical_namespace(namespace: str) -> str:
     return "metadata" if namespace == "manual" else namespace
 
@@ -1309,6 +1361,18 @@ def run_interactive_session(
                     "cli.cfg_reload_failed",
                     error=str(exc),
                 )
+
+            # Recover from any external subprocess (notably ``/studio``)
+            # that may have left stdin in a weird state. prompt_toolkit
+            # caches a single ``Vt100Input`` instance per AppSession,
+            # whose ``raw_mode.__enter__`` silently no-ops on
+            # ``termios.error`` — leaving the terminal in cooked mode
+            # and ICANON-buffering arrow-key escapes as literal
+            # ``^[[C``. Forcing the AppSession to rebuild its input
+            # gives the next ``session.prompt()`` a fresh fd snapshot,
+            # PosixStdinReader, and Vt100Parser. One TCIFLUSH + one
+            # object replacement; harmless when nothing was wrong.
+            _rebuild_prompt_input()
 
             if raw == "__amx_exit__":
                 console.print()
