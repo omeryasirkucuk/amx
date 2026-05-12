@@ -64,9 +64,7 @@ def _hits_to_citations(prompt_hits: list[dict]) -> list[Citation]:
             score = 0.0
         text = h.get("text") or h.get("document") or ""
         snippet = str(text)[:200].strip()
-        citations.append(
-            Citation(source=source, chunk_idx=chunk_idx, score=score, snippet=snippet)
-        )
+        citations.append(Citation(source=source, chunk_idx=chunk_idx, score=score, snippet=snippet))
     return citations
 
 
@@ -216,9 +214,7 @@ class RAGAgent(BaseAgent):
     def _prompt_detail(self) -> PromptDetail:
         return self.llm.cfg.prompt_detail_cfg
 
-    def _build_messages(
-        self, ctx: AgentContext
-    ) -> tuple[list[dict[str, str]], list[dict]] | None:
+    def _build_messages(self, ctx: AgentContext) -> tuple[list[dict[str, str]], list[dict]] | None:
         """Build the RAG prompt messages and remember the retrieval hits.
 
         Returns ``None`` when no context is available; otherwise a

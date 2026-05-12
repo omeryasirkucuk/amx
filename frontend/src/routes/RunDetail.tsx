@@ -59,6 +59,20 @@ interface RunDetailPayload {
   live_job_id?: string | null;
 }
 
+/** PR C (citation chain): machine-readable provenance for a
+ *  RAG-derived suggestion. ``source`` is the repo-relative path or
+ *  URL of the document, ``chunk_idx`` the zero-based offset inside
+ *  it, ``score`` the post-rerank relevance, and ``snippet`` a
+ *  200-char preview. Optional on every consumer for backwards
+ *  compatibility with pre-PR-C runs that have no citations recorded.
+ */
+interface Citation {
+  source: string;
+  chunk_idx: number;
+  score: number;
+  snippet: string;
+}
+
 interface ResultRow {
   id: number;
   run_id: number;
@@ -73,6 +87,9 @@ interface ResultRow {
   chosen_description: string | null;
   evaluation: string | null;
   applied_at: number | null;
+  /** Citations attached to the suggestion. Empty / undefined on
+   *  non-RAG sources and on legacy rows that predate this field. */
+  citations_json?: Citation[];
   /** One-sentence justification the LLM emitted alongside the
    *  description ("REASONING:" line in the prompt). Persisted in
    *  ``run_results.reasoning`` and surfaced to the CLI's interactive
@@ -142,6 +159,9 @@ interface ColumnDetail {
    *  per-column card surfaces it in the same place the persisted
    *  Run detail page does. Empty string when missing. */
   reasoning?: string;
+  /** PR C: provenance trail forwarded by the live SSE column detail
+   *  shape so the live card matches the persisted Run detail page. */
+  citations?: Citation[];
 }
 
 interface ActivityRow {
@@ -619,6 +639,7 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
         )}
       </div>
       <ReasoningDisclosure reasoning={detail.reasoning ?? ""} />
+      <CitationsDisclosure citations={detail.citations} />
       <div className="mt-2 space-y-1">
         {alts.length === 0 ? (
           <div className="text-xs text-ink-dim">{detail.chosen_description || "—"}</div>
@@ -657,6 +678,35 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
  *  Hidden entirely when the value is empty / missing so legacy
  *  rows that predate the prompt change don't render an empty stub.
  */
+/** PR C (citation chain): renders the documentation chunks that
+ *  informed a RAG-derived suggestion. Each row is rendered in
+ *  monospace as ``path:chunk_idx`` with the rerank score next to it
+ *  and the snippet (first 200 chars of the chunk text) shown below
+ *  in italic muted text. Returns ``null`` when ``citations`` is
+ *  missing or empty so non-RAG / legacy rows render no empty stub.
+ */
+function CitationsDisclosure({ citations }: { citations?: Citation[] }) {
+  if (!citations || citations.length === 0) return null;
+  return (
+    <div className="mt-2 space-y-1 rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-xs text-ink-muted">
+      <div className="text-[10px] uppercase tracking-wider text-ink-dim">Sources</div>
+      {citations.map((c, i) => (
+        <div key={`${c.source}-${c.chunk_idx}-${i}`}>
+          <div className="font-mono">
+            <span className="text-ink">{c.source}</span>:{c.chunk_idx}
+            <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
+          </div>
+          {c.snippet && (
+            <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
+              &ldquo;{c.snippet}&hellip;&rdquo;
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ReasoningDisclosure({ reasoning }: { reasoning: string }) {
   const [expanded, setExpanded] = useState(false);
   const trimmed = (reasoning || "").trim();
@@ -2439,6 +2489,7 @@ function ResultRowItemImpl({
         </div>
       )}
       <ReasoningDisclosure reasoning={displayRow.reasoning ?? ""} />
+      <CitationsDisclosure citations={displayRow.citations_json} />
       <div className="mt-2 space-y-1">
         {visible.length === 0 ? (
           <p className="text-xs text-ink-dim">{chosen || "—"}</p>
