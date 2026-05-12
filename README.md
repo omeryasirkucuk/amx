@@ -1,7 +1,5 @@
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=NmEVxqkfZdI">
-    <img src="https://img.youtube.com/vi/NmEVxqkfZdI/maxresdefault.jpg" alt="Watch AMX in action on YouTube" width="760">
-  </a>
+  <video src="https://www.youtube.com/watch?v=NmEVxqkfZdI" controls muted playsinline width="760"></video>
 </p>
 
 <p align="center">
