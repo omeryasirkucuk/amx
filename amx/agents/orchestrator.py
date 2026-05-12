@@ -280,6 +280,12 @@ class ReviewResult:
     result_id: int | None = None  # FK to run_results.id (for re-evaluation)
     alternatives: list[str] = field(default_factory=list)
     logprob_score: float | None = None
+    #: PR C: citation trail copied from the originating
+    #: :class:`MetadataSuggestion` so the CLI run summary can render
+    #: a "Sources" column without re-querying the run record. Empty
+    #: list on non-RAG / merge-only results to keep the rendering
+    #: branch a single ``if citations:`` check.
+    citations: list = field(default_factory=list)
 
 
 class RunCancelled(RuntimeError):
@@ -1807,6 +1813,7 @@ class Orchestrator:
                         asset_kind=asset_kind,
                         result_id=rid,
                         logprob_score=s.logprob_score,
+                        citations=list(getattr(s, "citations", None) or []),
                     )
                     self._record_evaluation(
                         rid, chosen_description=s.suggestions[0], evaluation="accepted"
@@ -1828,6 +1835,7 @@ class Orchestrator:
                         asset_kind=asset_kind,
                         result_id=rid,
                         logprob_score=s.logprob_score,
+                        citations=list(getattr(s, "citations", None) or []),
                     )
                     self._record_evaluation(rid, chosen_description="", evaluation="skipped")
                     results.append(rr)
@@ -1982,6 +1990,7 @@ class Orchestrator:
                 asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
+                citations=list(getattr(s, "citations", None) or []),
             )
         elif choice == "Other (type your own)":
             custom = ask("Enter your description")
@@ -1997,6 +2006,7 @@ class Orchestrator:
                 asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
+                citations=list(getattr(s, "citations", None) or []),
             )
         else:
             self._record_evaluation(result_id, chosen_description=choice, evaluation="accepted")
@@ -2011,6 +2021,7 @@ class Orchestrator:
                 asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
+                citations=list(getattr(s, "citations", None) or []),
             )
 
     # ── Batch mode ────────────────────────────────────────────────────────────
