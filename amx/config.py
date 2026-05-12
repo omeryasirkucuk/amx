@@ -1199,6 +1199,13 @@ class LLMConfig(_ObservableConfig):
     # the user at "free input + market output" or vice versa.
     custom_input_cost_per_mtok: float | None = None
     custom_output_cost_per_mtok: float | None = None
+    # Per-query wall-clock cap on Chroma similarity retrieval. When the
+    # underlying ``RAGStore.query`` call exceeds this many seconds AMX
+    # logs a structured warning, surfaces a diagnostic to the
+    # orchestrator, and proceeds with an empty hit list so the run is
+    # not blocked by a stalled vector store. Set to ``0`` (or a negative
+    # value) to disable the timeout entirely.
+    rag_query_timeout_sec: float = 5.0
 
     @property
     def prompt_detail_cfg(self) -> PromptDetail:
@@ -1238,6 +1245,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         thinking_budget=int(m.get("thinking_budget", 1024)),
         custom_input_cost_per_mtok=_optional_nonneg_float(m.get("custom_input_cost_per_mtok")),
         custom_output_cost_per_mtok=_optional_nonneg_float(m.get("custom_output_cost_per_mtok")),
+        rag_query_timeout_sec=float(m.get("rag_query_timeout_sec", 5.0) or 5.0),
     )
 
 
@@ -1284,6 +1292,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "thinking_budget": llm.thinking_budget,
         "custom_input_cost_per_mtok": llm.custom_input_cost_per_mtok,
         "custom_output_cost_per_mtok": llm.custom_output_cost_per_mtok,
+        "rag_query_timeout_sec": llm.rag_query_timeout_sec,
     }
 
 
@@ -1400,6 +1409,23 @@ class AMXConfig:
     rag_llm_profile: str = ""
     doc_profiles: dict[str, list[str]] = field(default_factory=dict)
     active_doc_profile: str = ""
+    # Multi-profile override for ``/run``. When non-empty, the
+    # orchestrator unions every named profile's
+    # :meth:`effective_doc_paths` into a single ``RAGStore`` source
+    # filter for the run, so a single ``/run`` can pull context from
+    # multiple doc collections at once. Empty list (the default) means
+    # "use ``active_doc_profile`` exactly like before" — no migration
+    # needed for existing configs.
+    run_doc_profiles: list[str] = field(default_factory=list)
+    # Per-doc-profile health telemetry updated at the end of every
+    # ``RAGStore.ingest`` call. ``last_ingested_at`` is a Unix
+    # timestamp (or ``0.0`` when the profile has never been ingested);
+    # ``last_error`` carries a one-line reason from the most recent
+    # failure (or ``""`` when the last run was clean). Surfaced by
+    # ``GET /api/profiles/docs/{name}/health`` and the Studio Settings
+    # page.
+    doc_profiles_last_ingested_at: dict[str, float] = field(default_factory=dict)
+    doc_profiles_last_error: dict[str, str] = field(default_factory=dict)
     code_profiles: dict[str, str] = field(default_factory=dict)
     active_code_profile: str = ""
     # Map a doc/code profile to the DB profiles it documents. Empty list
@@ -1458,6 +1484,9 @@ class AMXConfig:
             "rag_llm_profile",
             "doc_profiles",
             "active_doc_profile",
+            "run_doc_profiles",
+            "doc_profiles_last_ingested_at",
+            "doc_profiles_last_error",
             "code_profiles",
             "active_code_profile",
             "doc_profile_linked_dbs",
@@ -1569,6 +1598,26 @@ class AMXConfig:
                         cfg.doc_profiles[str(name)] = [paths]
 
             cfg.active_doc_profile = str(data.get("active_doc_profile") or "")
+
+            run_doc_raw = data.get("run_doc_profiles") or []
+            if isinstance(run_doc_raw, list):
+                cfg.run_doc_profiles = [
+                    str(name).strip()
+                    for name in run_doc_raw
+                    if isinstance(name, str) and str(name).strip()
+                ]
+
+            doc_last_ingested_raw = data.get("doc_profiles_last_ingested_at") or {}
+            if isinstance(doc_last_ingested_raw, dict):
+                for name, ts in doc_last_ingested_raw.items():
+                    try:
+                        cfg.doc_profiles_last_ingested_at[str(name)] = float(ts)
+                    except (TypeError, ValueError):
+                        continue
+            doc_last_error_raw = data.get("doc_profiles_last_error") or {}
+            if isinstance(doc_last_error_raw, dict):
+                for name, err in doc_last_error_raw.items():
+                    cfg.doc_profiles_last_error[str(name)] = str(err or "")
 
             code_prof_raw = data.get("code_profiles") or {}
             if isinstance(code_prof_raw, dict):
@@ -1751,6 +1800,13 @@ class AMXConfig:
             data["doc_paths"] = doc_paths_yaml
             data["doc_profiles"] = {k: list(v) for k, v in self.doc_profiles.items()}
             data["active_doc_profile"] = self.active_doc_profile
+            data["run_doc_profiles"] = list(self.run_doc_profiles)
+            data["doc_profiles_last_ingested_at"] = {
+                k: float(v) for k, v in self.doc_profiles_last_ingested_at.items()
+            }
+            data["doc_profiles_last_error"] = {
+                k: str(v) for k, v in self.doc_profiles_last_error.items() if v
+            }
             data["code_paths"] = code_paths_yaml
             data["code_profiles"] = dict(self.code_profiles)
             data["active_code_profile"] = self.active_code_profile
@@ -2180,7 +2236,57 @@ class AMXConfig:
             with suppress(Exception):
                 object.__setattr__(profile, "_amx_owner", self)
 
-    def effective_doc_paths(self) -> list[str]:
+    def record_doc_profile_ingest(self, profile_name: str, *, error: str | None = None) -> None:
+        """Stamp the doc profile's health telemetry after an ingest run.
+
+        Always updates ``last_ingested_at`` so even a failed ingest is
+        reflected in the Studio Settings "Last indexed" line — users
+        need to see that something happened, not that the profile is
+        untouched. ``last_error`` records a one-line reason on
+        failure or clears to ``""`` on success.
+        """
+        name = (profile_name or "").strip()
+        if not name:
+            return
+        import time as _time
+
+        self.doc_profiles_last_ingested_at[name] = _time.time()
+        self.doc_profiles_last_error[name] = str(error or "")
+        with suppress(Exception):
+            self._autosave_nested()
+
+    def effective_run_doc_paths(self) -> list[str]:
+        """Doc paths the orchestrator should pass to ``RAGStore`` for ``/run``.
+
+        When ``run_doc_profiles`` is non-empty (multi-profile override
+        set by ``/run --doc foo --doc bar`` or the Studio Run dialog),
+        return the **union** of every named profile's paths so a single
+        run can pull retrieval context from multiple doc collections.
+        Empty list → fall back to the single active profile, matching
+        the pre-PR-D single-profile behaviour byte-for-byte.
+        """
+        names = [n for n in (self.run_doc_profiles or []) if n]
+        if not names:
+            return self.effective_doc_paths()
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in names:
+            if name == DISABLED_PROFILE:
+                continue
+            paths = self.doc_profiles.get(name) or []
+            for p in paths:
+                if p and p not in seen:
+                    seen.add(p)
+                    out.append(p)
+        return out
+
+    def effective_doc_paths(self, name: str | None = None) -> list[str]:
+        if name is not None:
+            if name == DISABLED_PROFILE:
+                return []
+            if name in self.doc_profiles:
+                return list(self.doc_profiles[name])
+            return []
         if self.doc_profiles:
             name = self.active_doc_profile
             if name == DISABLED_PROFILE:

@@ -61,8 +61,16 @@ def test_ingest_streams_chunk_count(client, auth_headers, cfg, monkeypatch) -> N
     monkeypatch.setattr("amx.docs.scanner.scan_all_sources", lambda paths: ["doc1", "doc2"])
     monkeypatch.setattr("amx.docs.scanner.total_size_mb", lambda docs: 0.5)
 
+    # Per-document loop (PR D): the worker calls ``ingest`` once per
+    # document so it can poll ``job.cancel`` between docs. The
+    # ``IngestSummary`` shape is faked here so ``int(...)`` still
+    # answers the chunk count.
+    from amx.docs.rag import IngestSummary
+
     fake_store = MagicMock()
-    fake_store.ingest = MagicMock(return_value=42)
+    fake_store.ingest = MagicMock(
+        side_effect=lambda docs, **kw: IngestSummary(succeeded=[docs[0]], failed=[], chunk_count=21)
+    )
     monkeypatch.setattr("amx.docs.rag.RAGStore", lambda *a, **kw: fake_store)
 
     response = client.post(
@@ -73,9 +81,11 @@ def test_ingest_streams_chunk_count(client, auth_headers, cfg, monkeypatch) -> N
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     body = _wait_for_status(client, job_id, "done")
+    # 21 chunks per doc × 2 docs = 42 total chunks across the batch.
     assert body["summary"]["chunks"] == 42
     assert body["summary"]["documents"] == 2
-    fake_store.ingest.assert_called_once_with(["doc1", "doc2"], refresh=False)
+    assert body["summary"]["cancelled"] is False
+    assert fake_store.ingest.call_count == 2
 
 
 def test_search_rejects_empty_query(client, auth_headers) -> None:

@@ -186,6 +186,11 @@ class RAGAgent(BaseAgent):
         # that aren't fatal but the user still needs to see — today,
         # "RAG returned no relevant documents".
         self._diagnostics: list[str] = []
+        # Snapshot of the exact ``prompt_hits`` fed into the most recent
+        # LLM call per ``(schema, table)``. The orchestrator drains this
+        # after each table so the run-context cache (PR D) can persist
+        # the actual chunks for deterministic re-runs.
+        self.last_prompt_hits: dict[tuple[str, str], list[dict]] = {}
 
     def consume_diagnostics(self) -> list[str]:
         diagnostics = list(self._diagnostics)
@@ -214,6 +219,34 @@ class RAGAgent(BaseAgent):
     def _prompt_detail(self) -> PromptDetail:
         return self.llm.cfg.prompt_detail_cfg
 
+    def _rag_query_timeout(self) -> float | None:
+        """Resolved per-query timeout for retrieval (seconds), or ``None`` to disable."""
+        raw = getattr(self.llm.cfg, "rag_query_timeout_sec", 5.0)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _query_with_timeout(self, question: str, n_results: int) -> tuple[list[dict], bool]:
+        """Run ``RAGStore.query`` honouring the configured timeout.
+
+        Returns ``(hits, timed_out)`` so the caller can branch on the
+        timeout case to record a user-facing diagnostic. The timeout
+        path returns an empty hit list so retrieval falls back to
+        "no docs used" instead of blocking the run on a stalled
+        vector store. ``timeout=None`` (or ``<=0``) on the config
+        runs the query without the executor wrapper.
+        """
+        from amx.docs.rag import RAGQueryTimeout
+
+        timeout = self._rag_query_timeout()
+        try:
+            hits = self.rag.query(question, n_results=n_results, timeout=timeout)
+            return (hits, False)
+        except RAGQueryTimeout:
+            return ([], True)
+
     def _build_messages(self, ctx: AgentContext) -> tuple[list[dict[str, str]], list[dict]] | None:
         """Build the RAG prompt messages and remember the retrieval hits.
 
@@ -225,36 +258,59 @@ class RAGAgent(BaseAgent):
         from a known-good provenance source instead of trusting the
         LLM's free-text reasoning.
         """
-        if self.rag.doc_count == 0:
-            return None
-
         columns = ctx.db_profile.get("columns", [])
         if not columns:
             return None
 
         pd = self._prompt_detail
 
-        table_hits = self.rag.query(
-            f"table {ctx.table} in schema {ctx.schema}", n_results=pd.rag_table_hits
-        )
-        seen_docs: set[str] = set()
-        unique_hits = list(table_hits)
+        # Re-run replay path: when the orchestrator hydrated the
+        # AgentContext from a snapshot that already carries the exact
+        # hits the original run consumed, skip the live Chroma queries
+        # entirely. This makes re-runs deterministic across re-ingests
+        # and avoids re-paying retrieval latency on every re-run.
+        snapshot_hits = list(getattr(ctx, "rag_hits", None) or [])
+        any_timed_out = False
+        if snapshot_hits:
+            unique_hits = snapshot_hits
+        else:
+            if self.rag.doc_count == 0:
+                return None
+            table_hits, table_timed_out = self._query_with_timeout(
+                f"table {ctx.table} in schema {ctx.schema}", pd.rag_table_hits
+            )
+            seen_docs: set[str] = set()
+            unique_hits = list(table_hits)
+            any_timed_out = table_timed_out
 
-        if pd.rag_col_hits > 0:
-            for col in columns:
-                col_hits = self.rag.query(
-                    f"{ctx.table}.{col['name']} column", n_results=pd.rag_col_hits
-                )
-                for h in col_hits:
-                    key = h["text"][:120]
-                    if key not in seen_docs:
-                        seen_docs.add(key)
-                        unique_hits.append(h)
+            if pd.rag_col_hits > 0:
+                for col in columns:
+                    col_hits, col_timed_out = self._query_with_timeout(
+                        f"{ctx.table}.{col['name']} column", pd.rag_col_hits
+                    )
+                    if col_timed_out:
+                        any_timed_out = True
+                    for h in col_hits:
+                        key = h["text"][:120]
+                        if key not in seen_docs:
+                            seen_docs.add(key)
+                            unique_hits.append(h)
+
+        if any_timed_out:
+            timeout = self._rag_query_timeout() or 0.0
+            self._record_diagnostic(
+                f"RAG: retrieval timed out after {timeout:.1f}s for "
+                f"{ctx.schema}.{ctx.table}; no docs used for this table"
+            )
 
         if not unique_hits:
             return None
 
         prompt_hits = list(unique_hits[: pd.rag_max_chunks])
+        # Stash for downstream snapshot writers; keyed by (schema,
+        # table) since the agent is reused across many tables in one
+        # run.
+        self.last_prompt_hits[(ctx.schema, ctx.table)] = list(prompt_hits)
         doc_chunks = [
             f"[{h['metadata'].get('source', 'unknown')}]\n{h['text']}" for h in prompt_hits
         ]

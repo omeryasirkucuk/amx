@@ -52,6 +52,34 @@ class RerunContextError(RuntimeError):
     """
 
 
+def _serialize_rag_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    """Lean JSON projection of one ``RAGStore.query`` hit for the snapshot.
+
+    Keeps ``text``, ``metadata`` (the per-chunk provenance dict
+    written at ingest time — ``source``, ``source_root``,
+    ``source_type``, ``chunk_idx``), ``distance``, and ``score`` so
+    the re-run replay reproduces the same prompt and the citations
+    layer can still attribute alternatives to their original
+    chunks. Other keys (loader-specific debug fields, embedding
+    vectors if any caller ever sticks one in) are intentionally
+    dropped to keep the snapshot small.
+    """
+    meta = hit.get("metadata") or {}
+    return {
+        "text": str(hit.get("text") or ""),
+        "metadata": {
+            "source": str(meta.get("source") or ""),
+            "source_root": str(meta.get("source_root") or ""),
+            "source_type": str(meta.get("source_type") or ""),
+            "chunk_idx": int(meta.get("chunk_idx") or 0)
+            if str(meta.get("chunk_idx") or "0").lstrip("-").isdigit()
+            else 0,
+        },
+        "distance": float(hit.get("distance") or 0.0) if hit.get("distance") is not None else None,
+        "score": float(hit.get("score") or 0.0),
+    }
+
+
 def _connector_for_db_profile(cfg: AMXConfig, profile_name: str) -> DatabaseConnector:
     """Open a fresh ``DatabaseConnector`` against a named DB profile.
 
@@ -248,6 +276,7 @@ def build_context_snapshot(
         "asset_kind": asset_kind_raw,
         "db_profile": {},
         "rag_context": [],
+        "rag_hits": [],
         "code_context": [],
         "existing_metadata": {},
         "user_instructions": (user_instructions or "").strip(),
@@ -306,10 +335,14 @@ def build_context_snapshot(
     )
     db_profile_dict: dict[str, Any] | None = None
     existing_metadata: dict[str, Any] | None = None
+    cached_rag_hits: list[dict[str, Any]] = []
     if cached and isinstance(cached.get("payload"), dict):
         cached_payload = cached["payload"]
         cached_db_profile = cached_payload.get("db_profile")
         cached_existing = cached_payload.get("existing_metadata")
+        cached_rag = cached_payload.get("rag_hits")
+        if isinstance(cached_rag, list):
+            cached_rag_hits = [h for h in cached_rag if isinstance(h, dict)]
         if isinstance(cached_db_profile, dict) and isinstance(cached_existing, dict):
             db_profile_dict = _slice_cached_profile(
                 cached_db_profile, only_column=column if column else None
@@ -339,6 +372,8 @@ def build_context_snapshot(
 
     payload["db_profile"] = db_profile_dict
     payload["existing_metadata"] = existing_metadata
+    if cached_rag_hits:
+        payload["rag_hits"] = cached_rag_hits
 
     snapshot_id = uuid.uuid4().hex
     hs.save_rerun_snapshot(
@@ -363,6 +398,7 @@ def hydrate_context(payload: dict[str, Any]) -> AgentContext:
         asset_kind=str(payload.get("asset_kind") or "table"),
         db_profile=dict(payload.get("db_profile") or {}),
         rag_context=list(payload.get("rag_context") or []),
+        rag_hits=[h for h in (payload.get("rag_hits") or []) if isinstance(h, dict)],
         code_context=list(payload.get("code_context") or []),
         existing_metadata=dict(payload.get("existing_metadata") or {}),
         user_instructions=str(payload.get("user_instructions") or ""),
@@ -385,6 +421,7 @@ def cache_table_profile(
     db_profile_name: str,
     database: str,
     run_id: int | None = None,
+    rag_hits: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Persist the freshly-built table profile for re-use on re-run.
 
@@ -401,10 +438,16 @@ def cache_table_profile(
         return False
     try:
         db_profile_dict, existing_metadata = _table_profile_to_dicts(profile, db)
-        payload = {
+        payload: dict[str, Any] = {
             "db_profile": db_profile_dict,
             "existing_metadata": existing_metadata,
         }
+        if rag_hits:
+            # Persist a lean projection of each hit — just the fields
+            # the re-run replay path needs to reconstruct the prompt.
+            # Dropping the raw distance/score keeps the JSON column
+            # small without losing provenance.
+            payload["rag_hits"] = [_serialize_rag_hit(h) for h in rag_hits if h]
         hs.save_run_context_cache(
             db_profile=str(db_profile_name or ""),
             database=str(database or ""),
