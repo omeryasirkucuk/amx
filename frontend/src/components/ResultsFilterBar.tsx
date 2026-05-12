@@ -11,7 +11,7 @@
  * keys, status names). Any change here MUST land on the CLI side too.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { Search, X } from "lucide-react";
 
 import { cn } from "../lib/cn";
@@ -51,6 +51,9 @@ interface Props {
     accepted: number;
     skipped: number;
   };
+  /** PR B — forwarded ref so the parent's ``/`` keybinding can focus
+   * the search input without reaching across the component boundary. */
+  searchInputRef?: RefObject<HTMLInputElement>;
 }
 
 /**
@@ -111,6 +114,7 @@ export default function ResultsFilterBar({
   totalCount,
   visibleCount,
   statusCounts,
+  searchInputRef,
 }: Props) {
   // Local mirror of the search box so typing feels instant; the
   // debounced value is what propagates upward and triggers re-filter.
@@ -140,6 +144,7 @@ export default function ResultsFilterBar({
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-dim"
           />
           <input
+            ref={searchInputRef}
             type="text"
             value={localQuery}
             onChange={(e) => setLocalQuery(e.target.value)}
