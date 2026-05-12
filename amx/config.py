@@ -515,6 +515,19 @@ class PromptDetail:
     rag_table_hits: int = 5  # Doc chunks fetched for the table-level query
     rag_col_hits: int = 1  # Doc chunks fetched per column query
     rag_max_chunks: int = 8  # Hard cap on total chunks injected into the RAG prompt
+    # Minimum cosine similarity a chunk must carry before it can feed
+    # into a column-description prompt. Chroma's default cosine
+    # distance is ``1 - cosine_similarity`` in the range [0, 2], so
+    # ``min_similarity = 0.40`` drops every chunk with distance > 0.60.
+    # Calibrated against the bug a user reported: a resume PDF whose
+    # chunks returned distances 0.66–1.02 against a ``zip_code``
+    # column (cosine_sim ≈ 0.34 down to -0.02 — basically orthogonal)
+    # was still being treated as authoritative evidence and the LLM
+    # synthesised absurd "address alias / exclusion" descriptions from
+    # it. With the filter, those chunks are dropped before they reach
+    # the prompt and the agent falls back to db_profile-only synthesis.
+    # Set to ``0.0`` to disable the filter (legacy behaviour).
+    rag_min_similarity: float = 0.40
     # PR γ: per-column code-RAG fan-out, parallel to ``rag_col_hits``.
     # ``0`` preserves the pre-PR-γ behaviour (one neutral
     # ``"<schema> <table>"`` semantic query only). Higher values let the
