@@ -26,7 +26,7 @@ import { getStoredToken } from "../lib/auth";
 import { cn } from "../lib/cn";
 import { humanizeDelta } from "../lib/humanizeDelta";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
-import { InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
+import { AlertDialog, InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
 import { StyleReferenceCard } from "../components/StyleReferenceCard";
 
 type Tab = "db" | "llm" | "docs" | "code";
@@ -163,6 +163,7 @@ export default function Settings() {
 function DbProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; message: string }>>({});
 
   const profiles = useQuery({
@@ -293,7 +294,7 @@ function DbProfilesSection() {
                           <button
                             type="button"
                             onClick={() => {
-                              if (confirm(`Delete DB profile '${p.name}'?`)) remove.mutate(p.name);
+                              setPendingDelete(p.name);
                             }}
                             className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
                             title="Delete"
@@ -323,6 +324,24 @@ function DbProfilesSection() {
           onClose={() => setEditing(null)}
         />
       )}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onClose={() => {
+          if (!remove.isPending) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (pendingDelete) {
+            const name = pendingDelete;
+            remove.mutate(name, {
+              onSettled: () => setPendingDelete((current) => (current === name ? null : current)),
+            });
+          }
+        }}
+        title={`Delete DB profile '${pendingDelete ?? ""}'?`}
+        description="This removes the connection and unbinds it from any linked doc or code profiles. The action cannot be undone."
+        confirmLabel="Delete"
+        loading={remove.isPending}
+      />
     </>
   );
 }
@@ -602,6 +621,7 @@ function DbFieldInput({
 function LlmProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   const profiles = useQuery({
     queryKey: ["profiles", "llm"],
@@ -682,7 +702,7 @@ function LlmProfilesSection() {
                       <button
                         type="button"
                         onClick={() => {
-                          if (confirm(`Delete LLM profile '${p.name}'?`)) remove.mutate(p.name);
+                          setPendingDelete(p.name);
                         }}
                         className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
                         title="Delete"
@@ -707,6 +727,24 @@ function LlmProfilesSection() {
       {editing && (
         <LlmProfileWizard open editingName={editing.name} onClose={() => setEditing(null)} />
       )}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onClose={() => {
+          if (!remove.isPending) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (pendingDelete) {
+            const name = pendingDelete;
+            remove.mutate(name, {
+              onSettled: () => setPendingDelete((current) => (current === name ? null : current)),
+            });
+          }
+        }}
+        title={`Delete LLM profile '${pendingDelete ?? ""}'?`}
+        description="This removes the provider credentials and any chat-style defaults bound to it. The action cannot be undone."
+        confirmLabel="Delete"
+        loading={remove.isPending}
+      />
     </>
   );
 }
@@ -1450,6 +1488,7 @@ function DocProfileHealthLine({ name }: { name: string }) {
 function DocProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [activeOp, setActiveOp] = useState<{ jobId: string; label: string } | null>(null);
 
   const profiles = useQuery({
@@ -1587,7 +1626,7 @@ function DocProfilesSection() {
                       <button
                         type="button"
                         onClick={() => {
-                          if (confirm(`Delete doc profile '${p.name}'?`)) remove.mutate(p.name);
+                          setPendingDelete(p.name);
                         }}
                         className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
                         title="Delete"
@@ -1657,6 +1696,24 @@ function DocProfilesSection() {
           onClose={() => setEditing(null)}
         />
       )}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onClose={() => {
+          if (!remove.isPending) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (pendingDelete) {
+            const name = pendingDelete;
+            remove.mutate(name, {
+              onSettled: () => setPendingDelete((current) => (current === name ? null : current)),
+            });
+          }
+        }}
+        title={`Delete doc profile '${pendingDelete ?? ""}'?`}
+        description="Drops the ingested document index and unbinds this profile from any linked DB connections. The action cannot be undone."
+        confirmLabel="Delete"
+        loading={remove.isPending}
+      />
     </>
   );
 }
@@ -2343,6 +2400,7 @@ function CodeProfileHealthLine({ name }: { name: string }) {
 function CodeProfilesSection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ name: string | null } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState<string | null>(null);
   const [activeOp, setActiveOp] = useState<{ jobId: string; label: string } | null>(null);
 
@@ -2480,7 +2538,7 @@ function CodeProfilesSection() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (confirm(`Delete code profile '${p.name}'?`)) remove.mutate(p.name);
+                        setPendingDelete(p.name);
                       }}
                       className="rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical"
                       title="Delete"
@@ -2528,6 +2586,24 @@ function CodeProfilesSection() {
           onJobStarted={(jobId, label) => setActiveOp({ jobId, label })}
         />
       )}
+      <AlertDialog
+        open={pendingDelete !== null}
+        onClose={() => {
+          if (!remove.isPending) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (pendingDelete) {
+            const name = pendingDelete;
+            remove.mutate(name, {
+              onSettled: () => setPendingDelete((current) => (current === name ? null : current)),
+            });
+          }
+        }}
+        title={`Delete code profile '${pendingDelete ?? ""}'?`}
+        description="Drops the indexed repository snapshot and unbinds this profile from any linked DB connections. The action cannot be undone."
+        confirmLabel="Delete"
+        loading={remove.isPending}
+      />
     </>
   );
 }
