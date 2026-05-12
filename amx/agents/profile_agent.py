@@ -19,6 +19,8 @@ from amx.llm.prompts import (
     per_col_token_budget,
 )
 from amx.llm.provider import FatalLLMError, LLMProvider
+from amx.llm.style.injector import render_style_section
+from amx.llm.style.profile import StyleProfile
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
@@ -80,6 +82,7 @@ REASONING: The column participates in key relationships, has identifier-like sam
 def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
+    style_profile: "StyleProfile | None" = None,
 ) -> str:
     """Build the system prompt dynamically for the requested number of alternatives.
 
@@ -120,6 +123,7 @@ def _build_system_prompt(
             table_desc_lines=table_desc_lines,
         ).strip()
         + "\n"
+        + render_style_section(style_profile)
     )
 
 
@@ -371,6 +375,7 @@ class ProfileAgent(BaseAgent):
         system = _build_system_prompt(
             self._n_alternatives,
             description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
+            style_profile=None,
         )
         return [
             {"role": "system", "content": system},

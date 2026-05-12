@@ -20,6 +20,8 @@ from amx.llm.prompts import (
     per_col_token_budget,
 )
 from amx.llm.provider import LLMProvider
+from amx.llm.style.injector import render_style_section
+from amx.llm.style.profile import StyleProfile
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
@@ -71,7 +73,11 @@ REASONING: The retrieved excerpts describe monetary amounts and refer to a compa
 """
 
 
-def _build_system_prompt(n_alternatives: int, description_verbosity: str = "brief") -> str:
+def _build_system_prompt(
+    n_alternatives: int,
+    description_verbosity: str = "brief",
+    style_profile: "StyleProfile | None" = None,
+) -> str:
     n = max(1, min(5, n_alternatives))
     if n > 1:
         desc_lines = "\n".join(
@@ -89,6 +95,7 @@ def _build_system_prompt(n_alternatives: int, description_verbosity: str = "brie
             alternatives_length_reminder=alternatives_length_reminder,
         ).strip()
         + "\n"
+        + render_style_section(style_profile)
     )
 
 
@@ -170,7 +177,7 @@ class RAGAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Relevant documentation:\n{doc_text}" + _user_instructions_block(ctx)
         )
-        system = _build_system_prompt(self._n_alternatives, self._description_verbosity)
+        system = _build_system_prompt(self._n_alternatives, self._description_verbosity, style_profile=None)
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
