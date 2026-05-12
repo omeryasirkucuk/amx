@@ -621,14 +621,17 @@ def _record_code_unavailable_reason(
     """
     from amx.codebase.code_rag import CodeEmbeddingMismatch
 
+    rag_query_timeout_cls: type[BaseException] | None
     try:
-        from amx.docs.rag import RAGQueryTimeout
+        from amx.docs.rag import RAGQueryTimeout as _RAGQueryTimeout
+
+        rag_query_timeout_cls = _RAGQueryTimeout
     except Exception:  # pragma: no cover - docs RAG optional dep
-        RAGQueryTimeout = None  # type: ignore[assignment]
+        rag_query_timeout_cls = None
 
     if isinstance(exc, CodeEmbeddingMismatch):
         extra_metrics["code_unavailable_reason"] = f"embedding_mismatch: {exc}"
-    elif RAGQueryTimeout is not None and isinstance(exc, RAGQueryTimeout):
+    elif rag_query_timeout_cls is not None and isinstance(exc, rag_query_timeout_cls):
         extra_metrics["code_unavailable_reason"] = f"query_timeout: {exc}"
     else:
         extra_metrics["code_unavailable_reason"] = f"index_error: {exc.__class__.__name__}: {exc}"
