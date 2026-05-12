@@ -1287,6 +1287,21 @@ function DocUploadDropZone({
   );
 }
 
+interface DocProfileFile {
+  path: string;
+  name: string;
+  size_bytes: number;
+  modified_at: number;
+  source_root: string;
+}
+
+interface DocProfileFileTruncated {
+  __truncated__: true;
+  source_root: string;
+}
+
+type DocProfileFileEntry = DocProfileFile | DocProfileFileTruncated;
+
 interface DocProfileHealth {
   name: string;
   chunk_count: number;
@@ -1296,6 +1311,17 @@ interface DocProfileHealth {
   embedding_provider: string | null;
   paths: string[];
   linked_db_profiles: string[];
+  /** Lightweight FS walk of each local path so the user sees which
+   *  files are staged under the profile without launching a scan. */
+  local_files?: DocProfileFileEntry[];
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 /**
@@ -1342,9 +1368,45 @@ function DocProfileHealthLine({ name }: { name: string }) {
   }
   if (ingested) parts.push(`indexed ${ingested}`);
   if (data.embedding_model) parts.push(`model ${data.embedding_model}`);
+  const files = (data.local_files ?? []).filter(
+    (entry): entry is DocProfileFile => !("__truncated__" in entry),
+  );
+  const truncated = (data.local_files ?? []).some(
+    (entry) => "__truncated__" in entry,
+  );
+  if (files.length > 0) {
+    parts.push(`📄 ${files.length}${truncated ? "+" : ""} file${files.length === 1 ? "" : "s"}`);
+  }
   return (
     <div className="mt-2 pl-3 text-[10.5px]">
       <div className="text-ink-dim">{parts.join(" · ")}</div>
+      {files.length > 0 && (
+        <details className="mt-1 text-ink-muted">
+          <summary className="cursor-pointer select-none text-[10.5px] text-ink-dim hover:text-ink">
+            Show / hide files
+          </summary>
+          <ul className="mt-1.5 max-h-64 space-y-0.5 overflow-y-auto pr-2">
+            {files.map((file, idx) => (
+              <li
+                key={`${file.path}-${idx}`}
+                className="flex items-baseline gap-2 font-mono text-[10.5px]"
+              >
+                <span className="truncate text-ink" title={file.path}>
+                  {file.name}
+                </span>
+                <span className="ml-auto shrink-0 text-ink-dim">
+                  {formatFileSize(file.size_bytes)}
+                </span>
+              </li>
+            ))}
+            {truncated && (
+              <li className="text-[10.5px] italic text-ink-dim">
+                … more files exist; run Scan to see the full inventory.
+              </li>
+            )}
+          </ul>
+        </details>
+      )}
       {data.last_error && (
         <button
           type="button"

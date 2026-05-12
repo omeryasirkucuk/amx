@@ -176,6 +176,17 @@ _METADATA_COMMANDS: tuple[SlashCommand, ...] = (
 
 _DOCS_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/doc-profiles", "docs", "List document profiles"),
+    SlashCommand(
+        "/doc-files",
+        "docs",
+        "Show files staged under a doc profile (/doc-files [<name>])",
+        long_desc=(
+            "Walks each local path in the profile and prints a table of "
+            "files with sizes and last-modified times so you can confirm "
+            "what's actually attached. Remote paths (http/s3/gs) are "
+            "listed as '(remote)' — use /scan for their full inventory."
+        ),
+    ),
     SlashCommand("/use-doc", "docs", "Switch document profile (/use-doc <name>)"),
     SlashCommand("/add-doc-profile", "docs", "Add/update document profile"),
     SlashCommand(

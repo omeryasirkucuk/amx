@@ -68,6 +68,9 @@ from amx.cli_support.commands.profiles import (
     cmd_description_verbosity as _cmd_description_verbosity,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_doc_files as _cmd_doc_files,
+)
+from amx.cli_support.commands.profiles import (
     cmd_doc_link as _cmd_doc_link,
 )
 from amx.cli_support.commands.profiles import (
@@ -890,6 +893,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "docs", "doc-profiles"):
             return True
         _cmd_doc_profiles(cfg)
+        return True
+    if head == "doc-files":
+        if not _require_namespace(head, namespace, "docs", "doc-files"):
+            return True
+        _cmd_doc_files(cfg, parts[1:])
         return True
     if head == "use-doc":
         if not _require_namespace(head, namespace, "docs", "use-doc"):

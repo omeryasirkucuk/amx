@@ -863,6 +863,112 @@ def cmd_doc_profiles(cfg: AMXConfig) -> None:
     render_table("Document profiles (* = active)", ["Profile", "# paths", "Preview"], rows)
 
 
+def cmd_doc_files(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show the actual files staged under a doc profile.
+
+    ``/doc-profiles`` only prints the configured paths, which is
+    confusing for upload-staged profiles whose single path is
+    ``~/.amx/uploads/<name>``. This command walks each local path,
+    skips remote schemes (http / s3 / gs), filters by the supported
+    extension whitelist, and prints a table of names + sizes + mtime
+    so the user can confirm what they actually attached.
+    """
+    import time
+    from pathlib import Path
+
+    from amx.docs.extensions import SUPPORTED_EXTENSIONS
+
+    if not cfg.doc_profiles:
+        info("No document profiles. Use /add-doc-profile <name>")
+        return
+    name = (
+        rest[0]
+        if len(rest) >= 1
+        else ask_choice("Show files for which profile", sorted(cfg.doc_profiles.keys()))
+    )
+    paths = list(cfg.doc_profiles.get(name) or [])
+    if not paths:
+        error(f"Doc profile {name!r} has no paths.")
+        return
+    remote_prefixes = ("http://", "https://", "s3://", "gs://")
+    rows: list[list[str]] = []
+    for raw in paths:
+        spec = (raw or "").strip()
+        if not spec:
+            continue
+        lowered = spec.lower()
+        if any(lowered.startswith(p) for p in remote_prefixes):
+            rows.append([raw, "(remote)", "—", "—"])
+            continue
+        if lowered.startswith("file://"):
+            spec = spec[len("file://") :]
+        base = Path(spec).expanduser().resolve()
+        if base.is_file():
+            st = base.stat()
+            rows.append(
+                [
+                    base.name,
+                    _humanize_bytes(int(st.st_size)),
+                    _humanize_age(time.time() - st.st_mtime),
+                    str(base.parent),
+                ]
+            )
+            continue
+        if not base.is_dir():
+            rows.append([raw, "(missing)", "—", "—"])
+            continue
+        found_any = False
+        for f in sorted(base.rglob("*")):
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            rows.append(
+                [
+                    f.name,
+                    _humanize_bytes(int(st.st_size)),
+                    _humanize_age(time.time() - st.st_mtime),
+                    str(base),
+                ]
+            )
+            found_any = True
+        if not found_any:
+            rows.append([f"({base.name})", "(no indexable files)", "—", str(base)])
+    if not rows:
+        info(f"No local files staged under doc profile {name!r}.")
+        return
+    render_table(
+        f"Files under doc profile '{name}' ({len(rows)})",
+        ["Name", "Size", "Modified", "Source root"],
+        rows,
+    )
+
+
+def _humanize_bytes(n: int) -> str:
+    """Render byte counts in CLI-friendly units (kB / MB / GB)."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n = n / 1024  # type: ignore[assignment]
+    return f"{n} B"
+
+
+def _humanize_age(seconds: float) -> str:
+    """Render a seconds-ago delta as 'just now' / '3h ago' / '5d ago'."""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
+
+
 def cmd_use_doc(cfg: AMXConfig, rest: list[str]) -> None:
     if len(rest) >= 1:
         raw = rest[0].strip().lower()

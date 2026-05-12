@@ -436,7 +436,83 @@ def doc_profile_health(
         "embedding_provider": embedding_provider,
         "paths": paths,
         "linked_db_profiles": list(cfg.doc_profile_linked_dbs.get(name, []) or []),
+        "local_files": _list_local_files_for_paths(paths),
     }
+
+
+def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
+    """Walk each local entry in ``paths`` and return a flat file
+    inventory ``[{path, name, size_bytes, modified_at, source_root}, …]``.
+
+    Lets the doc-profile health card show the user which files are
+    actually staged under a profile without forcing them to launch a
+    scan job. Remote schemes (``http://``, ``s3://``, ``gs://``) are
+    skipped — those need the full scan worker to enumerate. Result is
+    capped at 200 entries with a trailing ``{"__truncated__": true}``
+    marker so the UI can render a "more files exist" hint.
+    """
+    from pathlib import Path
+
+    from amx.docs.extensions import SUPPORTED_EXTENSIONS
+
+    remote_prefixes = ("http://", "https://", "s3://", "gs://")
+    cap = 200
+    out: list[dict[str, Any]] = []
+    for raw in paths:
+        spec = (raw or "").strip()
+        if not spec:
+            continue
+        lowered = spec.lower()
+        if any(lowered.startswith(p) for p in remote_prefixes):
+            continue
+        if lowered.startswith("file://"):
+            spec = spec[len("file://") :]
+        try:
+            base = Path(spec).expanduser().resolve()
+        except Exception:
+            continue
+        if base.is_file():
+            try:
+                st = base.stat()
+            except Exception:
+                continue
+            out.append(
+                {
+                    "path": str(base),
+                    "name": base.name,
+                    "size_bytes": int(st.st_size),
+                    "modified_at": float(st.st_mtime),
+                    "source_root": str(base.parent),
+                }
+            )
+            continue
+        if not base.is_dir():
+            continue
+        truncated = False
+        for f in sorted(base.rglob("*")):
+            if len(out) >= cap:
+                truncated = True
+                break
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            try:
+                st = f.stat()
+            except Exception:
+                continue
+            out.append(
+                {
+                    "path": str(f),
+                    "name": f.name,
+                    "size_bytes": int(st.st_size),
+                    "modified_at": float(st.st_mtime),
+                    "source_root": str(base),
+                }
+            )
+        if truncated:
+            out.append({"__truncated__": True, "source_root": str(base)})
+    return out
 
 
 @router.get("/code/{name}/health")
