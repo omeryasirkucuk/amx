@@ -439,6 +439,55 @@ def doc_profile_health(
     }
 
 
+@router.get("/code/{name}/health")
+def code_profile_health(
+    name: str,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Per-code-profile health card for Studio Settings (PR δ).
+
+    Parallel to :func:`doc_profile_health`. Combines on-disk Chroma
+    stats (chunk count for this profile's paths, recorded embedding
+    metadata) with config-side telemetry (last indexed timestamp,
+    last error one-liner) so the user can tell at a glance whether
+    the profile is wired up and indexed without dropping to the CLI.
+
+    Returns 404 when the profile is unknown so the SPA can distinguish
+    "no telemetry yet" (200 with zeros) from a typo in the URL.
+    """
+    if name not in cfg.code_profiles:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail=f"Code profile '{name}' not found.")
+    paths = cfg.effective_code_paths(name)
+    chunk_count = 0
+    embedding_model: str | None = None
+    embedding_provider: str | None = None
+    try:
+        from amx.codebase.code_rag import code_collection_count, code_collection_metadata
+
+        chunk_count = int(code_collection_count(source_filters=paths or None))
+        meta = code_collection_metadata()
+        embedding_model = str(meta.get("embedding_model")) if meta.get("embedding_model") else None
+        embedding_provider = (
+            str(meta.get("embedding_provider")) if meta.get("embedding_provider") else None
+        )
+    except Exception as exc:
+        log.debug("code_profile_health: code RAG probe failed: %s", exc)
+    last_indexed = cfg.code_profile_last_indexed_at.get(name, 0.0) or 0.0
+    last_error = cfg.code_profile_last_error.get(name, "") or ""
+    return {
+        "name": name,
+        "paths": list(paths or []),
+        "chunk_count": chunk_count,
+        "last_indexed_at": float(last_indexed) if last_indexed else None,
+        "last_error": last_error or None,
+        "embedding_model": embedding_model,
+        "embedding_provider": embedding_provider,
+        "linked_db_profiles": list(cfg.code_profile_linked_dbs.get(name, []) or []),
+    }
+
+
 @router.get("/code")
 def list_code(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     """Code profiles are ``dict[name -> repo_path_or_url]``."""
