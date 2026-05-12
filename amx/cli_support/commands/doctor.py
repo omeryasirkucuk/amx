@@ -374,6 +374,75 @@ def _check_active_llm_profile(cfg: AMXConfig, *, skip_network: bool = False) -> 
     )
 
 
+def _check_rag_store(cfg: AMXConfig) -> CheckResult:
+    """Open the docs RAG collection and report its health.
+
+    Three failure modes the user actually cares about:
+
+    1. The active embedding provider/model doesn't match the one the
+       collection was created with — raising
+       :class:`EmbeddingProviderMismatch`. The hint points at the
+       remediation (``/docs reindex``).
+    2. Chroma/Embedding deps aren't installed — surface the
+       :class:`ImportError` instead of a 500 from the inner traceback.
+    3. The collection opens but is empty — pass with a warning-style
+       detail (not an error: an empty collection is "nothing ingested
+       yet", a perfectly normal first-run state).
+    """
+    try:
+        from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
+    except Exception as exc:
+        return CheckResult(
+            name="RAG store",
+            ok=True,
+            detail="RAG dependencies not installed (optional)",
+            hint=f"pip install 'amx-cli[docs]' ({exc.__class__.__name__})",
+        )
+    try:
+        store = RAGStore(cfg=cfg)
+    except EmbeddingProviderMismatch as exc:
+        return CheckResult(
+            name="RAG store",
+            ok=False,
+            detail=str(exc),
+            hint="Run `/docs reindex` to rebuild the collection, or switch the active embedding profile back.",
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="RAG store",
+            ok=False,
+            detail=f"{exc.__class__.__name__}: {exc}",
+            hint="Check ~/.amx/chroma_db permissions and the embedding provider settings.",
+        )
+    try:
+        store.collection.get(limit=1)
+    except Exception as exc:
+        return CheckResult(
+            name="RAG store",
+            ok=False,
+            detail=f"collection.get failed — {exc.__class__.__name__}: {exc}",
+            hint="The persist directory may be unreadable. Re-run with elevated permissions or delete ~/.amx/chroma_db and re-ingest.",
+        )
+    chunk_count = 0
+    try:
+        chunk_count = int(store.collection.count())
+    except Exception:
+        chunk_count = 0
+    embedding = f"{store.embedding_provider}/{store.embedding_model}"
+    if chunk_count == 0:
+        return CheckResult(
+            name="RAG store",
+            ok=True,
+            detail=f"opens with {embedding}, 0 chunks indexed",
+            hint="Empty collection — run `/ingest` (or upload via Studio) to populate it.",
+        )
+    return CheckResult(
+        name="RAG store",
+        ok=True,
+        detail=f"opens with {embedding}, {chunk_count} chunks indexed",
+    )
+
+
 # ── Rendering ───────────────────────────────────────────────────────────────
 
 
@@ -437,6 +506,7 @@ def collect_doctor_checks(
     # or the LLM endpoint".
     results.append(_check_active_db_profile(cfg, skip_network=skip_network))
     results.append(_check_active_llm_profile(cfg, skip_network=skip_network))
+    results.append(_check_rag_store(cfg))
     return results
 
 
