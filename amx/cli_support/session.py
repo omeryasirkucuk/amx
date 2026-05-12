@@ -1299,7 +1299,16 @@ def run_interactive_session(
             # where a doc profile added in Studio was invisible in CLI.
             # Single stat() per prompt; load happens only on mtime
             # change so the steady-state cost is one syscall per turn.
-            cfg.reload_if_stale()
+            # Defensive try/except: a transient disk failure or a YAML
+            # midway through being written must NEVER take down the
+            # interactive prompt loop. The next call retries.
+            try:
+                cfg.reload_if_stale()
+            except Exception as exc:  # pragma: no cover - defensive
+                log_event(
+                    "cli.cfg_reload_failed",
+                    error=str(exc),
+                )
 
             if raw == "__amx_exit__":
                 console.print()
