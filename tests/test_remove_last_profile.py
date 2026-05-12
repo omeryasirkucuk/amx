@@ -113,6 +113,41 @@ def test_llm_available_returns_false_after_last_delete(cfg_one_db_one_llm) -> No
     assert hasattr(SessionMemoryMixin, "_llm_available")
 
 
+def test_remove_last_db_profile_through_loaded_config_persists(tmp_path) -> None:
+    """Regression: deleting the last DB profile through a write-through
+    ``AMXConfig.load()`` instance must actually drop the entry — both in
+    memory and in the YAML. The pre-fix shape was: mid-removal,
+    ``active_db_profiles = [...]`` reassignment tripped ``__setattr__`` ->
+    autosave, and ``save()``'s "mirror active profile data into
+    ``db_profiles[active]``" contract resurrected the just-popped row
+    because ``active_db_profile`` was still pointing at it. The CLI then
+    reported success while the profile silently came back."""
+    import yaml
+
+    cfg_path = tmp_path / "config.yml"
+    cfg_path.write_text(
+        "schema_version: 1\n"
+        "db_profiles:\n"
+        "  dbr:\n"
+        "    backend: databricks\n"
+        "    host: dbc-example.cloud.databricks.com\n"
+        "active_db_profile: dbr\n"
+        "active_db_profiles: [dbr]\n"
+    )
+    cfg = AMXConfig.load(str(cfg_path))
+    assert "dbr" in cfg.db_profiles
+
+    cfg.remove_db_profile("dbr")
+
+    assert cfg.db_profiles == {}
+    assert cfg.active_db_profile == ""
+    assert cfg.active_db_profiles == []
+
+    on_disk = yaml.safe_load(cfg_path.read_text()) or {}
+    assert on_disk.get("db_profiles") in ({}, None)
+    assert (on_disk.get("active_db_profile") or "") == ""
+
+
 def test_remove_unknown_profile_still_raises() -> None:
     """Trying to remove a name that doesn't exist still raises
     KeyError — no silent failure that masks typos."""
