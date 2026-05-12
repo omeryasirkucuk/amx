@@ -1,10 +1,11 @@
 import { Link, NavLink, useLocation, useParams } from "react-router-dom";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
   ChevronRight,
   PanelLeft,
+  Pin,
   ScrollText,
   Sparkles,
   History as HistoryIcon,
@@ -13,8 +14,10 @@ import {
 
 import { useUi } from "../lib/store";
 import { cn } from "../lib/cn";
+import { readPinnedCells } from "../lib/pinnedCells";
 import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
+import PinnedCellsDrawer from "./PinnedCellsDrawer";
 import PricingBadge from "./PricingBadge";
 
 // 0.13: ``/`` is the calm Landing page (entry surface). The
@@ -44,6 +47,42 @@ export default function TopBar() {
   const toggleSidebar = useUi((s) => s.toggleSidebar);
   const location = useLocation();
   const params = useParams();
+
+  // PR C — pinned-cells drawer. ``dbProfile`` is null at the TopBar
+  // level (we don't have a per-page profile in scope here), so the
+  // drawer reads the ``__global`` bucket — which is also the bucket
+  // ``ResultRowItem`` writes to when run.db_profile is null. When
+  // the active profile is known on the page side (e.g. RunDetail),
+  // the writes land in that profile's bucket and the global drawer
+  // simply doesn't see them; future iterations can lift the active
+  // profile into a global store and pass it down here.
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+  const [pinnedCount, setPinnedCount] = useState<number>(0);
+
+  // Refresh the count badge whenever the pinned set changes. We also
+  // refresh on mount so a fresh page load reflects whatever the user
+  // pinned in a previous session.
+  useEffect(() => {
+    function refresh() {
+      // Sum across all profile buckets so the badge reflects the
+      // user's total pin count regardless of which profile they're
+      // looking at. Cheap because localStorage is in-process.
+      if (typeof window === "undefined") return;
+      let total = 0;
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const key = window.localStorage.key(i);
+        if (!key || !key.startsWith("amx.compare.pinnedCells.")) continue;
+        // readPinnedCells expects the profile slug (after the prefix).
+        const profile = key.slice("amx.compare.pinnedCells.".length);
+        total += readPinnedCells(profile === "__global" ? null : profile).length;
+      }
+      setPinnedCount(total);
+    }
+    refresh();
+    window.addEventListener("amx:pinned-cells-changed", refresh);
+    return () =>
+      window.removeEventListener("amx:pinned-cells-changed", refresh);
+  }, []);
 
   const crumbs = useMemo(
     () => buildCrumbs(location.pathname, params),
@@ -99,6 +138,24 @@ export default function TopBar() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPinnedOpen(true)}
+            aria-label={`Open pinned-cells drawer (${pinnedCount} pinned)`}
+            className={cn(
+              "relative inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors",
+              pinnedCount > 0
+                ? "text-accent hover:bg-surface-subtle"
+                : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
+            )}
+          >
+            <Pin size={13} />
+            {pinnedCount > 0 && (
+              <span className="rounded-full bg-accent px-1.5 text-[10px] font-bold text-accent-soft">
+                {pinnedCount}
+              </span>
+            )}
+          </button>
           <PricingBadge />
           <nav className="flex items-center gap-0.5">
           {navItems.map((item) => (
@@ -121,6 +178,11 @@ export default function TopBar() {
           </nav>
         </div>
       </div>
+      <PinnedCellsDrawer
+        open={pinnedOpen}
+        onClose={() => setPinnedOpen(false)}
+        dbProfile={null}
+      />
     </header>
   );
 }

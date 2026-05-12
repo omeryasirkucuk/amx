@@ -1781,6 +1781,216 @@ def _build_compare_ask_seed(runs: list[dict[str, Any]]) -> str:
 # ── Public registration ─────────────────────────────────────────────────────
 
 
+# ── Cell-mode compare (PR C — column-level compare) ───────────────────────
+#
+# Cell mode pivots the comparison axis: instead of "one row per (schema,
+# table, column), one column per run" (the existing per-column pivot), we
+# render "one table per cell, one row per run". Use it when the question
+# is "how did THIS specific column's description differ across runs?" —
+# typically after pinning rows from RunDetail in the Studio drawer or
+# typing ``/compare --cell sales.orders.customer_id --runs 10,12,15``
+# in the CLI.
+
+_CELL_GLOB_CAP = 50
+
+
+def _parse_cell_key(cell: str) -> tuple[str, str, str, str | None]:
+    """Split a ``db.schema.table[.column]`` cell key.
+
+    Returns ``(db, schema, table, column_or_None)``. Raises
+    :class:`ValueError` on a malformed key — the caller surfaces the
+    message to the user.
+    """
+    parts = cell.split(".")
+    if len(parts) < 3 or len(parts) > 4:
+        raise ValueError("cell must be db.schema.table or db.schema.table.column")
+    db, schema, table = parts[0], parts[1], parts[2]
+    column = parts[3] if len(parts) == 4 else None
+    return db, schema, table, column
+
+
+def _cell_matches_row(
+    row: dict[str, Any],
+    schema_pat: str,
+    table_pat: str,
+    column_pat: str | None,
+    *,
+    glob: bool,
+) -> bool:
+    """Return True if ``row`` matches the given cell key (exact or glob).
+
+    When ``column_pat`` is ``None`` we only match table-level rows
+    (``column_name`` empty); when it's a non-empty pattern we require
+    the row to have a column AND match it.
+    """
+    import fnmatch as _fn
+
+    s = str(row.get("schema_name") or "")
+    t = str(row.get("table_name") or "")
+    c = row.get("column_name") or ""
+    if glob:
+        if not _fn.fnmatch(s, schema_pat):
+            return False
+        if not _fn.fnmatch(t, table_pat):
+            return False
+        if column_pat is None:
+            return not c
+        return bool(c) and _fn.fnmatch(str(c), column_pat)
+    if s != schema_pat or t != table_pat:
+        return False
+    if column_pat is None:
+        return not c
+    return str(c) == column_pat
+
+
+def _collect_cell_matches(
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+    schema_pat: str,
+    table_pat: str,
+    column_pat: str | None,
+    *,
+    glob: bool,
+) -> list[tuple[tuple[str, str, str | None], dict[int, dict[str, Any]]]]:
+    """Find all cells matching the key. Returns a sorted list of
+    ``((schema, table, column), {run_id: row})`` tuples."""
+    matches: dict[tuple[str, str, str | None], dict[int, dict[str, Any]]] = {}
+    for run in runs:
+        rid = int(run["id"])
+        for row in results_by_run.get(rid, []):
+            if not _cell_matches_row(row, schema_pat, table_pat, column_pat, glob=glob):
+                continue
+            key = (
+                str(row.get("schema_name") or ""),
+                str(row.get("table_name") or ""),
+                (row.get("column_name") or None),
+            )
+            matches.setdefault(key, {})[rid] = row
+    return sorted(matches.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2] or ""))
+
+
+def _render_single_cell_table(
+    runs: list[dict[str, Any]],
+    cell_key: tuple[str, str, str | None],
+    rows_by_run: dict[int, dict[str, Any]],
+    *,
+    db_label: str,
+) -> None:
+    """Render one Rich table for a single cell.
+
+    Columns: ``Run #``, ``Confidence``, ``Logprob``, ``Source``,
+    ``Description (truncated)``. Best-pick row (by logprob) bolded green.
+    Footer line gives the full path and citation count.
+    """
+    schema_n, table_n, col_n = cell_key
+    full_path = (
+        ".".join(p for p in (db_label or None, schema_n, table_n, col_n) if p) or "(unknown)"
+    )
+    cell_type = "column-level" if col_n else "table-level"
+
+    table = Table(
+        title=f"{full_path}  ({cell_type})",
+        show_lines=True,
+        box=box.SIMPLE_HEAVY,
+    )
+    table.add_column("Run #", style=info_color(), no_wrap=True)
+    table.add_column("Confidence")
+    table.add_column("Logprob")
+    table.add_column("Source")
+    table.add_column("Description (truncated)", overflow="fold", max_width=72)
+
+    scores: list[float | None] = []
+    for run in runs:
+        row = rows_by_run.get(int(run["id"]))
+        scores.append(
+            float(row["logprob_score"]) if row and row.get("logprob_score") is not None else None
+        )
+    winner_idx = _highlight_best(scores, higher_is_better=True)
+
+    citation_count = 0
+    for idx, run in enumerate(runs):
+        rid = int(run["id"])
+        row = rows_by_run.get(rid)
+        if not row:
+            table.add_row(
+                f"#{rid}",
+                Text("—", style="dim"),
+                Text("—", style="dim"),
+                Text("—", style="dim"),
+                Text("(not in this run)", style="dim"),
+            )
+            continue
+        band = str(row.get("confidence") or "").lower() or "—"
+        logprob = (
+            _fmt_float(row.get("logprob_score"), places=2)
+            if row.get("logprob_score") is not None
+            else "—"
+        )
+        source = str(row.get("source") or "—")
+        desc = _truncate(_top_alternative(row), max_len=72) or "(empty)"
+        cites = row.get("citations_json") or []
+        if isinstance(cites, list):
+            citation_count += len(cites)
+        logprob_text = Text(
+            logprob,
+            style=("bold green" if idx == winner_idx else "white"),
+        )
+        table.add_row(
+            f"#{rid}",
+            Text(band, style=_confidence_style(band)),
+            logprob_text,
+            source,
+            desc,
+        )
+
+    console.print(table)
+    console.print(f"[dim]Full path: {full_path} · citations: {citation_count}[/dim]")
+
+
+def _render_cell_compare(
+    cell: str,
+    runs: list[dict[str, Any]],
+    results_by_run: dict[int, list[dict[str, Any]]],
+) -> int:
+    """Render cell-mode comparison. Returns the number of cells rendered."""
+    try:
+        db_part, schema_pat, table_pat, column_pat = _parse_cell_key(cell)
+    except ValueError as exc:
+        error(str(exc))
+        return 0
+
+    is_glob = "*" in cell
+    matches = _collect_cell_matches(
+        runs,
+        results_by_run,
+        schema_pat,
+        table_pat,
+        column_pat,
+        glob=is_glob,
+    )
+
+    if not matches:
+        warn(
+            f"No matching cells for '{cell}' across the selected runs. "
+            "Check the schema/table/column spelling or widen the glob."
+        )
+        return 0
+
+    total = len(matches)
+    if total > _CELL_GLOB_CAP:
+        warn(
+            f"Showing first {_CELL_GLOB_CAP} of {total} matched cells — "
+            "narrow the glob to see more."
+        )
+        matches = matches[:_CELL_GLOB_CAP]
+
+    for i, (cell_key, rows_by_run) in enumerate(matches):
+        if i > 0:
+            console.print("")
+        _render_single_cell_table(runs, cell_key, rows_by_run, db_label=db_part)
+    return len(matches)
+
+
 def register_compare_command(
     search_group: click.Group,
     *,
@@ -1900,6 +2110,28 @@ def register_compare_command(
             "(reference-based metrics skip)."
         ),
     )
+    @click.option(
+        "--cell",
+        "cell_key",
+        default="",
+        help=(
+            "Switch to cell-mode comparison — render one table per "
+            "matching cell, rows = runs. Key format: "
+            "``db.schema.table.column`` (column optional for "
+            "table-level). Supports ``*`` glob in any segment "
+            "(e.g. ``sales.orders.*``), capped at 50 cells."
+        ),
+    )
+    @click.option(
+        "--runs",
+        "runs_csv",
+        default="",
+        help=(
+            "Comma-separated run IDs. Convenient with --cell so the "
+            "key + the runs land on one line. When omitted, falls "
+            "back to positional run IDs or --last/scope resolution."
+        ),
+    )
     @pass_config
     def search_compare(
         cfg: AMXConfig,
@@ -1916,8 +2148,17 @@ def register_compare_command(
         json_path: str | None,
         quality_mode: str,
         ground_truth_run_id: int | None,
+        cell_key: str,
+        runs_csv: str,
     ) -> None:
         """Compare runs side-by-side: descriptions, logprobs, timing, tokens."""
+        # ``--runs 10,12,15`` is a convenience alias for positional run
+        # IDs that pairs naturally with ``--cell``. Merge the two so
+        # both spellings are accepted on the same line.
+        if runs_csv:
+            csv_ids = tuple(x.strip() for x in runs_csv.split(",") if x.strip())
+            run_ids = run_ids + csv_ids
+
         runs = _resolve_runs(
             cfg=cfg,
             run_ids=run_ids,
@@ -1943,6 +2184,26 @@ def register_compare_command(
         results_by_run: dict[int, list[dict[str, Any]]] = {
             int(r["id"]): hs.get_run_results(int(r["id"])) for r in runs
         }
+
+        # Cell-mode short-circuits the existing run-id-level rendering.
+        # Same resolved runs + results, just a different pivot. The
+        # other render paths (summary, settings, aggregate, quality
+        # panel) are skipped because they don't apply to a single
+        # cell — the cell table itself is the whole output.
+        if cell_key:
+            rendered = _render_cell_compare(cell_key, runs, results_by_run)
+            log_event(
+                event_type="search_compare",
+                status="success",
+                command="search.compare",
+                details={
+                    "mode": "cell",
+                    "cell_key": cell_key,
+                    "run_ids": [int(r["id"]) for r in runs],
+                    "rendered_cells": rendered,
+                },
+            )
+            return
 
         resolved_by = _detect_by(runs) if by == "auto" else _BY_TO_RUN_KEY.get(by, by)
         info(

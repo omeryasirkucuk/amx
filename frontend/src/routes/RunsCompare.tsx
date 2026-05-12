@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ChevronLeft,
   ChevronRight,
@@ -167,6 +167,19 @@ function buildCompareSeedPrompt(data: CompareResponse): string {
 export default function RunsCompare() {
   const navigate = useNavigate();
   const toast = useToast();
+  // PR C — top-of-page tab between the existing run-id-level picker
+  // ("By Run") and the new cell-mode view ("By Cell"). The mode is
+  // mirrored to the URL so deep-links from the pinned-cells drawer
+  // land directly on the cell-mode tab with the cell list pre-loaded.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode = searchParams.get("mode") === "cell" ? "cell" : "run";
+  const cellsParam = searchParams.get("cells") ?? "";
+  function setMode(next: "run" | "cell") {
+    const params = new URLSearchParams(searchParams);
+    if (next === "cell") params.set("mode", "cell");
+    else params.delete("mode");
+    setSearchParams(params, { replace: true });
+  }
   const [selected, setSelected] = useState<number[]>([]);
   const [search, setSearch] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<CommandKindFilter>("all");
@@ -394,6 +407,29 @@ export default function RunsCompare() {
         }
       />
 
+      <div className="mb-4 flex items-center gap-1 border-b border-border">
+        {(["run", "cell"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            aria-pressed={mode === m}
+            className={cn(
+              "relative -mb-px px-3 py-2 text-sm font-medium transition-colors",
+              mode === m
+                ? "border-b-2 border-accent text-ink"
+                : "border-b-2 border-transparent text-ink-muted hover:text-ink",
+            )}
+          >
+            {m === "run" ? "By Run" : "By Cell"}
+          </button>
+        ))}
+      </div>
+
+      {mode === "cell" ? (
+        <CellCompareView cellsParam={cellsParam} />
+      ) : (
+      <>
       <Card className="mb-4">
         <div className="sticky top-0 z-10 bg-surface">
           <CardHeader
@@ -776,6 +812,8 @@ export default function RunsCompare() {
           et al. 2024).
         </p>
       </Dialog>
+      </>
+      )}
     </>
   );
 }
@@ -1271,6 +1309,237 @@ function PerColumnPivot({
                   </td>
                 );
               })}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ── PR C — cell-mode comparison ────────────────────────────────────────────
+//
+// Reads the pinned cells from the URL (``?mode=cell&cells=schema.table.col:rid,..``)
+// and renders one section per distinct cell with rows = runs. Talks to
+// ``GET /api/history/compare/cell`` — one request per distinct cell.
+// The backend marks the winning run per cell so the SPA only has to
+// highlight; it doesn't recompute logprob ordering client-side.
+
+interface CellComparePerRun {
+  run_id: number;
+  result_id?: number | null;
+  description: string;
+  confidence?: string | null;
+  logprob_score?: number | null;
+  source?: string | null;
+  citations?: unknown[];
+  accepted?: boolean;
+  applied_at?: number | null;
+}
+
+interface CellCompareSingleResponse {
+  cell: {
+    database: string | null;
+    schema: string;
+    table: string;
+    column: string | null;
+  };
+  per_run: Array<CellComparePerRun | null>;
+  best_run_id: number | null;
+}
+
+/** Parse the ``cells`` query param token list — same wire format the
+ *  drawer emits via ``pinnedCellToToken``. Returns ``[]`` on a missing
+ *  or malformed param so the panel renders an empty state instead of
+ *  crashing on a manually-edited URL. */
+function parseCellsParam(
+  raw: string | null,
+): Array<{ path: string; run_id: number }> {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((tok) => tok.trim())
+    .filter(Boolean)
+    .map((tok) => {
+      const [path, ridRaw] = tok.split(":");
+      const rid = Number(ridRaw);
+      if (!path || !Number.isFinite(rid)) return null;
+      return { path, run_id: rid };
+    })
+    .filter((x): x is { path: string; run_id: number } => x !== null);
+}
+
+/** Build the set of distinct cell paths + the union of run IDs the
+ *  user pinned across them. Used to fire one ``/compare/cell`` request
+ *  per distinct cell with the full run list, so two pins of the same
+ *  cell from different runs still compare across both. */
+function groupCellsByPath(
+  tokens: Array<{ path: string; run_id: number }>,
+): Array<{ path: string; runs: number[] }> {
+  const map = new Map<string, Set<number>>();
+  for (const t of tokens) {
+    const s = map.get(t.path) ?? new Set<number>();
+    s.add(t.run_id);
+    map.set(t.path, s);
+  }
+  return Array.from(map.entries()).map(([path, runs]) => ({
+    path,
+    runs: Array.from(runs).sort((a, b) => a - b),
+  }));
+}
+
+function CellCompareView({ cellsParam }: { cellsParam: string }) {
+  const tokens = useMemo(() => parseCellsParam(cellsParam), [cellsParam]);
+  const grouped = useMemo(() => groupCellsByPath(tokens), [tokens]);
+
+  if (grouped.length === 0) {
+    return (
+      <EmptyState
+        title="No pinned cells yet"
+        description="Use the pin icon on any run-detail row to add cells here, then click 'Compare pinned cells' from the topbar drawer."
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {grouped.map(({ path, runs }) => (
+        <CellCompareSection key={path} path={path} runs={runs} />
+      ))}
+    </div>
+  );
+}
+
+function CellCompareSection({
+  path,
+  runs,
+}: {
+  path: string;
+  runs: number[];
+}) {
+  // We don't actually know the database segment client-side — the
+  // pin tokens elide it. The endpoint accepts any non-empty string
+  // there, so we pass a placeholder; the response echoes ``null``
+  // back in ``cell.database`` and we render only the path the user
+  // pinned. Future iterations can lift the active db into the token.
+  const cellKey = `db.${path}`;
+  const query = useQuery({
+    queryKey: ["compare-cell", path, runs.join(",")],
+    queryFn: () =>
+      apiFetch<CellCompareSingleResponse>(
+        `/api/history/compare/cell?cell=${encodeURIComponent(cellKey)}&runs=${runs.join(",")}`,
+      ),
+    retry: false,
+  });
+
+  const isColumnLevel = path.split(".").length === 3;
+
+  return (
+    <Card>
+      <CardHeader
+        title={
+          <span className="font-mono text-sm">{path}</span>
+        }
+        description={
+          isColumnLevel ? "Column-level cell" : "Table-level cell"
+        }
+      />
+      <CardBody className="p-0">
+        {query.isLoading ? (
+          <div className="px-5 py-4 text-xs text-ink-dim">Loading…</div>
+        ) : query.isError ? (
+          <div className="px-5 py-4 text-xs text-warning-ink">
+            Failed to load cell comparison: {(query.error as Error).message}
+          </div>
+        ) : query.data ? (
+          <CellCompareTable data={query.data} />
+        ) : null}
+      </CardBody>
+    </Card>
+  );
+}
+
+function CellCompareTable({ data }: { data: CellCompareSingleResponse }) {
+  return (
+    <table className="w-full text-xs">
+      <thead className="bg-surface-subtle/40 text-[10px] uppercase tracking-wider text-ink-dim">
+        <tr>
+          <th className="px-3 py-2 text-left">Run #</th>
+          <th className="px-3 py-2 text-left">Description</th>
+          <th className="px-3 py-2 text-left">Confidence</th>
+          <th className="px-3 py-2 text-left">Logprob</th>
+          <th className="px-3 py-2 text-left">Source</th>
+          <th className="px-3 py-2 text-left">Citations</th>
+          <th className="px-3 py-2 text-left"></th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-border">
+        {data.per_run.map((entry, idx) => {
+          if (!entry) {
+            return (
+              <tr key={`empty-${idx}`} className="text-ink-dim">
+                <td className="px-3 py-2 font-mono">—</td>
+                <td className="px-3 py-2" colSpan={6}>
+                  (not present in this run)
+                </td>
+              </tr>
+            );
+          }
+          const isBest = data.best_run_id === entry.run_id;
+          const citeCount = Array.isArray(entry.citations)
+            ? entry.citations.length
+            : 0;
+          return (
+            <tr
+              key={entry.run_id}
+              className={cn(isBest && "bg-positive/5")}
+            >
+              <td className="px-3 py-2 font-mono">
+                <Link
+                  to={`/runs/${entry.run_id}`}
+                  className="text-accent hover:underline"
+                >
+                  #{entry.run_id}
+                </Link>
+                {isBest && (
+                  <span
+                    className="ml-1 rounded bg-positive/15 px-1 text-[9px] uppercase tracking-wider text-positive"
+                    title="Highest logprob across pinned runs"
+                  >
+                    best
+                  </span>
+                )}
+              </td>
+              <td className="px-3 py-2">
+                <p className="whitespace-pre-line">
+                  {entry.description || (
+                    <span className="text-ink-dim">(empty)</span>
+                  )}
+                </p>
+              </td>
+              <td className="px-3 py-2">
+                <ConfidencePill
+                  value={entry.confidence ?? ""}
+                  score={entry.logprob_score ?? null}
+                />
+              </td>
+              <td className="px-3 py-2">
+                <LogprobBadge score={entry.logprob_score ?? null} />
+              </td>
+              <td className="px-3 py-2 text-ink-dim">
+                {entry.source ?? "—"}
+              </td>
+              <td className="px-3 py-2 text-ink-dim">{citeCount}</td>
+              <td className="px-3 py-2 text-right">
+                <button
+                  type="button"
+                  disabled
+                  title="Future: apply this version to the live DB."
+                  className="rounded border border-border px-2 py-0.5 text-[10px] text-ink-dim opacity-60"
+                >
+                  Use this
+                </button>
+              </td>
             </tr>
           );
         })}

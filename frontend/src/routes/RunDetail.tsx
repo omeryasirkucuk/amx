@@ -1,9 +1,15 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
+import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
 
 import { apiFetch, api } from "../lib/api";
+import {
+  isPinned as isCellPinned,
+  pinCell,
+  unpinCell,
+  type PinnedCell,
+} from "../lib/pinnedCells";
 import { useEventSource, type SseEvent } from "../lib/sse";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
@@ -2697,6 +2703,7 @@ function ResultsTab({
                   <ResultRowItem
                     key={r.id}
                     row={r}
+                    dbProfile={scope.db_profile}
                     pendingEntry={pendingEntry}
                     pickAlternative={(description) => {
                       if (!pendingEntry) return;
@@ -3003,6 +3010,7 @@ function BulkRerunOrchestrator({
 // mutation hooks change.
 function ResultRowItemImpl({
   row,
+  dbProfile,
   pendingEntry,
   pickAlternative,
   skipRow,
@@ -3017,6 +3025,9 @@ function ResultRowItemImpl({
   isKeynavFocused = false,
 }: {
   row: ResultRow;
+  /** Active DB profile — keys the pinned-cells localStorage bucket
+   *  so two profiles can't cross-pollute each other's pin set. */
+  dbProfile?: string | null;
   pendingEntry?: PendingEntry;
   pickAlternative: (description: string) => void;
   skipRow: () => void;
@@ -3173,6 +3184,36 @@ function ResultRowItemImpl({
   // generates explicitly and is usually the most useful single
   // sentence in the group.
   const isTableLevel = row.column_name == null;
+  // PR C — pin-to-comparison. Track the cell's pinned state locally
+  // so the icon swaps instantly without a localStorage round trip on
+  // every render. We seed from localStorage on mount.
+  const pinnedCellKey: PinnedCell = useMemo(
+    () => ({
+      run_id: row.run_id,
+      db: null,
+      schema: row.schema_name,
+      table: row.table_name,
+      column: row.column_name ?? null,
+    }),
+    [row.run_id, row.schema_name, row.table_name, row.column_name],
+  );
+  const [isCellPinnedState, setIsCellPinnedState] = useState<boolean>(() =>
+    isCellPinned(dbProfile, pinnedCellKey),
+  );
+  const togglePinned = useCallback(() => {
+    if (isCellPinnedState) {
+      unpinCell(dbProfile, pinnedCellKey);
+      setIsCellPinnedState(false);
+    } else {
+      pinCell(dbProfile, pinnedCellKey);
+      setIsCellPinnedState(true);
+    }
+    // Broadcast so the TopBar pin badge can refresh without polling.
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("amx:pinned-cells-changed"));
+    }
+  }, [dbProfile, isCellPinnedState, pinnedCellKey]);
+
   // PR B — scroll the focused row into view when keynav advances to it.
   // The container is the page-level scroller, so ``scrollIntoView`` with
   // ``nearest`` stays inside the visible viewport without yanking the
@@ -3246,6 +3287,18 @@ function ResultRowItemImpl({
               {row.source}
             </span>
           )}
+          <IconButton
+            icon={isCellPinnedState ? <PinOff size={12} /> : <Pin size={12} />}
+            label={
+              isCellPinnedState
+                ? "Unpin from compare drawer"
+                : "Pin this cell for cross-run comparison"
+            }
+            size="sm"
+            variant="ghost"
+            onClick={togglePinned}
+            className={cn(isCellPinnedState && "text-accent")}
+          />
           <IconButton
             icon={
               rerunBusy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />
