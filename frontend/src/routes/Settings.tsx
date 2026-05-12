@@ -22,6 +22,7 @@ import LlmProfilePriceLine from "../components/LlmProfilePriceLine";
 import Modal from "../components/Modal";
 import JobProgress from "../components/JobProgress";
 import { api, apiFetch } from "../lib/api";
+import { getStoredToken } from "../lib/auth";
 import { cn } from "../lib/cn";
 import { humanizeDelta } from "../lib/humanizeDelta";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
@@ -1199,9 +1200,17 @@ function DocUploadDropZone({
       for (let i = 0; i < files.length; i += 1) {
         fd.append("files", files[i]);
       }
+      // Studio's auth middleware demands a Bearer token on every /api/*
+      // call. We can't use apiFetch here because it forces an
+      // application/json Content-Type, which would clobber the
+      // multipart/form-data boundary the browser sets automatically.
+      const token = getStoredToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
       const resp = await fetch("/api/docs/upload", {
         method: "POST",
         body: fd,
+        headers,
         credentials: "include",
       });
       if (!resp.ok) {
@@ -1632,9 +1641,17 @@ function DocProfileWizard({
       fd.append("profile", name);
       fd.append("ingest", "true");
       for (const f of pendingFiles) fd.append("files", f);
+      // Studio's auth middleware demands a Bearer token on every /api/*
+      // call. We can't use apiFetch here because it forces an
+      // application/json Content-Type, which would clobber the
+      // multipart/form-data boundary the browser sets automatically.
+      const token = getStoredToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
       const resp = await fetch("/api/docs/upload", {
         method: "POST",
         body: fd,
+        headers,
         credentials: "include",
       });
       if (!resp.ok) {
