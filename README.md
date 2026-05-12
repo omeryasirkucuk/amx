@@ -1,5 +1,5 @@
 <p align="center">
-  <video src="https://www.youtube.com/watch?v=NmEVxqkfZdI" controls muted playsinline width="760"></video>
+  <video src="https://github.com/omeryasirkucuk/amx/raw/main/docs/assets/amx-demo.mp4" controls muted playsinline width="760"></video>
 </p>
 
 <p align="center">
