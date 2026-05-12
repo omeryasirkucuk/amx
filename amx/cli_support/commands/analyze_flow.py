@@ -1075,7 +1075,7 @@ def execute_analyze_run(
             if cfg.active_doc_profile == DISABLED_PROFILE:
                 info("RAG Agent disabled (document profile: none).")
             else:
-                doc_filters = cfg.effective_doc_paths()
+                doc_filters = cfg.effective_run_doc_paths()
                 store = RAGStore(source_filters=doc_filters)
                 visible_chunks = store.doc_count
                 if visible_chunks > 0:
@@ -1284,6 +1284,17 @@ def register_analyze_run_command(
             "omitted, the persisted scope (set by /use-db) is used."
         ),
     )
+    @click.option(
+        "--doc",
+        "doc_profile_override",
+        multiple=True,
+        help=(
+            "Override the doc profile scope for this run. Pass multiple "
+            "times to union retrieval context from multiple profiles, "
+            "e.g. --doc handbook --doc product-spec. When omitted, "
+            "``active_doc_profile`` (or persisted ``run_doc_profiles``) is used."
+        ),
+    )
     @click.pass_obj
     def analyze_run(
         cfg: AMXConfig,
@@ -1295,9 +1306,32 @@ def register_analyze_run_command(
         code_profile: str | None,
         mode: str | None,
         db_profile_override: tuple[str, ...],
+        doc_profile_override: tuple[str, ...],
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
+
+        # Apply --doc multi-profile override for this run only. We
+        # capture the previous value so we can restore it in the
+        # ``finally`` below; the override is scoped to this CLI
+        # invocation and never persists to YAML.
+        doc_override_saved: list[str] | None = None
+        if doc_profile_override:
+            unknown_docs = [n for n in doc_profile_override if n not in cfg.doc_profiles]
+            if unknown_docs:
+                error(
+                    f"Unknown doc profile(s): {', '.join(unknown_docs)}. "
+                    f"Available: {', '.join(sorted(cfg.doc_profiles)) or '(none)'}."
+                )
+                sys.exit(1)
+            doc_override_saved = list(cfg.run_doc_profiles)
+            ordered_docs: list[str] = []
+            seen_docs: set[str] = set()
+            for name in doc_profile_override:
+                if name not in seen_docs:
+                    seen_docs.add(name)
+                    ordered_docs.append(name)
+            cfg.run_doc_profiles = ordered_docs
 
         # 0.11.0: resolve the effective scope for this run.
         # Priority: --db-profile (CLI) > persisted active_db_profiles
@@ -1395,3 +1429,7 @@ def register_analyze_run_command(
             if original_active and original_active in cfg.db_profiles:
                 object.__setattr__(cfg, "active_db_profile", original_active)
                 cfg.db = cfg.db_profiles[original_active]
+            # Roll back the per-run doc profile override so the next
+            # CLI command still sees the user's persisted scope.
+            if doc_override_saved is not None:
+                object.__setattr__(cfg, "run_doc_profiles", doc_override_saved)

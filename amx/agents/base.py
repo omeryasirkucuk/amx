@@ -127,6 +127,13 @@ class AgentContext:
     db_profile: dict[str, Any] = field(default_factory=dict)
     rag_context: list[str] = field(default_factory=list)
     code_context: list[str] = field(default_factory=list)
+    # Actual RAG hits consumed by the original run, snapshotted at
+    # re-run time so the second pass uses the same retrieval set
+    # regardless of intervening re-ingests. Each element is the
+    # ``{text, metadata, score, distance}`` dict produced by
+    # :meth:`RAGStore.query`; an empty list means "no snapshot — fall
+    # back to a live RAGStore query" (the pre-PR-D contract).
+    rag_hits: list[dict[str, Any]] = field(default_factory=list)
     existing_metadata: dict[str, Any] = field(default_factory=dict)
     # Optional free-text addendum from the user, populated by the
     # Re-Run flow. Empty string on normal runs. Each agent's

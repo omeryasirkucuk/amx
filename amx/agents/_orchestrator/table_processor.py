@@ -195,6 +195,57 @@ class TableProcessor:
             # cache layer is misconfigured (e.g. SQLite locked).
             pass
 
+    def _cache_rag_hits_for_rerun(self, profile: TableProfile, rag_agent: Any) -> None:
+        """Refresh the run-context cache row with the agent's prompt hits.
+
+        Called after the agent fan-out so the cache reflects the exact
+        chunks that informed this table's suggestions. The cache is
+        keyed on ``(db_profile, database, schema, table)`` — same shape
+        as ``_cache_profile_for_rerun`` — and merges the ``rag_hits``
+        list into the existing payload without overwriting the
+        ``db_profile`` / ``existing_metadata`` already there.
+        """
+        from amx.agents.rerun_context import _serialize_rag_hit
+        from amx.storage.sqlite_store import history_store
+
+        hits_map = getattr(rag_agent, "last_prompt_hits", None) or {}
+        key = (profile.schema or "", profile.name or "")
+        prompt_hits = hits_map.get(key) or []
+        if not prompt_hits:
+            return
+        hs = history_store()
+        if hs is None or self.orch.run_id is None:
+            return
+        run = hs.get_run(int(self.orch.run_id)) or {}
+        db_profile_name = str(run.get("db_profile") or "")
+        if not db_profile_name:
+            return
+        database = str(run.get("database") or "") or (
+            getattr(self.orch.db.cfg, "database", "")
+            or getattr(self.orch.db.cfg, "project", "")
+            or getattr(self.orch.db.cfg, "catalog", "")
+            or ""
+        )
+        existing = (
+            hs.lookup_run_context_cache(
+                db_profile=db_profile_name,
+                database=database,
+                schema=profile.schema or "",
+                table=profile.name or "",
+            )
+            or {}
+        )
+        payload = dict(existing.get("payload") or {})
+        payload["rag_hits"] = [_serialize_rag_hit(h) for h in prompt_hits if h]
+        hs.save_run_context_cache(
+            db_profile=db_profile_name,
+            database=database,
+            schema=profile.schema or "",
+            table=profile.name or "",
+            payload=payload,
+            source_run_id=self.orch.run_id,
+        )
+
     # ── Phase 2: filter chain ──────────────────────────────────────────
 
     def _apply_filters(self, profile: TableProfile) -> bool:
@@ -371,6 +422,17 @@ class TableProcessor:
             rag_diagnostics = rag_agent.consume_diagnostics()
             for message in dict.fromkeys(rag_diagnostics):
                 info(message)
+
+        # Persist the actual RAG chunks the agent fed into the prompt
+        # so a later re-run replays the same retrieval set instead of
+        # hitting Chroma again (deterministic across re-ingests).
+        # Best-effort: cache write failure must never break analyze.
+        rag_agent = getattr(self.orch, "rag_agent", None)
+        if rag_agent is not None:
+            try:
+                self._cache_rag_hits_for_rerun(profile, rag_agent)
+            except Exception as exc:
+                log.debug("rag_hits cache write failed: %s", exc)
 
         merged = self.orch._merge_suggestions(all_suggestions, ctx)
         if not merged:

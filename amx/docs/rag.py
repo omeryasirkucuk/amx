@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,15 @@ from amx.docs.scanner import DocInfo  # noqa: E402
 from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
+
+
+class RAGQueryTimeout(TimeoutError):
+    """Raised by :meth:`RAGStore.query` when the per-call wall-clock cap fires.
+
+    The :class:`RAGAgent` catches this to record a diagnostic and fall
+    back to running the table without RAG context; other call sites can
+    treat it as a soft failure and return an empty hit list.
+    """
 
 
 class EmbeddingProviderMismatch(RuntimeError):
@@ -414,9 +424,50 @@ class RAGStore:
                 failed.append((doc.path, reason))
         return IngestSummary(succeeded=succeeded, failed=failed, chunk_count=total_chunks)
 
-    def query(self, question: str, n_results: int = 5) -> list[dict]:
+    def query(
+        self,
+        question: str,
+        n_results: int = 5,
+        *,
+        timeout: float | None = None,
+    ) -> list[dict]:
         raw_n = max(int(n_results), min(int(n_results) * 4, 40))
-        results = self.collection.query(query_texts=[question], n_results=raw_n)
+
+        def _do_query() -> Any:
+            return self.collection.query(query_texts=[question], n_results=raw_n)
+
+        # Honour the optional per-query wall-clock cap. We submit the
+        # Chroma call to a fresh single-thread executor scoped to a
+        # context manager so the worker thread is reaped even on
+        # timeout — a leaked daemon thread per query would pile up
+        # under a slow vector store. ``timeout=None`` or ``timeout<=0``
+        # skips the executor and runs synchronously (matches the pre-
+        # PR-D fast path with zero overhead for callers that opted
+        # out).
+        if timeout is not None and float(timeout) > 0:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(_do_query)
+                try:
+                    results = future.result(timeout=float(timeout))
+                except concurrent.futures.TimeoutError as exc:
+                    log.warning(
+                        "RAG retrieval exceeded %.2fs timeout, proceeding without context",
+                        float(timeout),
+                    )
+                    # Best-effort cancel; the underlying Chroma call
+                    # may still finish in the background thread but
+                    # the executor's context manager joins it before
+                    # we leave this block. Re-raise as a typed
+                    # exception so callers can branch on the timeout
+                    # case (and surface a user-facing diagnostic)
+                    # without inspecting an empty hit list.
+                    future.cancel()
+                    raise RAGQueryTimeout(
+                        f"RAG retrieval exceeded {float(timeout):.2f}s timeout"
+                    ) from exc
+        else:
+            results = _do_query()
+
         hits: list[dict] = []
         for i in range(len(results["documents"][0])):
             meta = results["metadatas"][0][i]
