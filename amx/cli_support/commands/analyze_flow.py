@@ -601,6 +601,21 @@ def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> b
     return use_batch
 
 
+def _record_rag_unavailable_reason(
+    extra_metrics: dict[str, str],
+    exc: BaseException,
+) -> None:
+    """Record a one-line reason why ``RAGStore`` couldn't be opened.
+
+    Stored on the run's ``metrics_json`` (a free-form dict) under
+    ``rag_unavailable_reason`` so post-run summaries / Studio can read
+    it and tell the user "No RAG context used (reason: ...)". The
+    counterpart in :mod:`amx.core.inference` uses the same formatting
+    so the two call sites can never drift.
+    """
+    extra_metrics["rag_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}"
+
+
 def _finalize_history_run(
     *,
     run_id: int | None,
@@ -615,6 +630,7 @@ def _finalize_history_run(
     apply: bool,
     all_results: list[object],
     final_error_text: str,
+    extra_metrics: dict[str, Any] | None = None,
 ) -> None:
     if run_id is None:
         return
@@ -622,22 +638,28 @@ def _finalize_history_run(
     if hs is None:
         return
     try:
+        metrics_payload: dict[str, Any] = {
+            "duration_sec": round(time.monotonic() - run_started, 3),
+            "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
+            "total_assets": total_assets,
+            "total_schemas": total_schemas,
+            "processed_assets_count": len(processed_assets),
+            "processed_assets": processed_assets,
+            "skipped_assets_count": len(skipped_assets),
+            "skipped_assets": skipped_assets,
+            "approved_count": len(approved),
+            "skipped_count": len(skipped),
+            "applied_flag": bool(apply),
+        }
+        if extra_metrics:
+            # Don't let an opt-in diagnostic key (rag_unavailable_reason,
+            # future PRs) silently shadow a base metric — base wins.
+            for key, value in extra_metrics.items():
+                metrics_payload.setdefault(key, value)
         hs.finish_run(
             run_id,
             status=final_status or "success",
-            metrics={
-                "duration_sec": round(time.monotonic() - run_started, 3),
-                "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
-                "total_assets": total_assets,
-                "total_schemas": total_schemas,
-                "processed_assets_count": len(processed_assets),
-                "processed_assets": processed_assets,
-                "skipped_assets_count": len(skipped_assets),
-                "skipped_assets": skipped_assets,
-                "approved_count": len(approved),
-                "skipped_count": len(skipped),
-                "applied_flag": bool(apply),
-            },
+            metrics=metrics_payload,
             tokens={
                 "total_tokens": token_tracker.total_tokens,
                 "total_cost_usd": round(token_tracker.total_cost_usd, 8),
@@ -744,6 +766,10 @@ def execute_analyze_run(
     # = total_assets - <filter skips> accurately.
     final_status: str | None = None
     final_error_text = ""
+    # Free-form dict merged into the run's ``metrics_json`` payload at
+    # finalize-time. Used today for ``rag_unavailable_reason`` (PR A);
+    # subsequent PRs are expected to land more diagnostic keys here.
+    extra_metrics: dict[str, str] = {}
     # Pre-init these so the KeyboardInterrupt / Exception handlers
     # below don't trip an UnboundLocalError when the user cancels at the
     # scope picker (which is BEFORE the runtime questions get a chance
@@ -1056,8 +1082,18 @@ def execute_analyze_run(
                         f"RAG store has 0 chunks for active doc profile "
                         f"'{cfg.active_doc_profile or 'default'}'"
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            # Used to be ``except: pass`` — the user never saw that the
+            # store failed and the run quietly proceeded with no doc
+            # context. Now we record a one-line reason on the run record
+            # so /history and Studio can render "No RAG context used
+            # (reason: ...)", and surface the same message inline.
+            _record_rag_unavailable_reason(extra_metrics, exc)
+            error(
+                f"RAG store unavailable: {exc.__class__.__name__}: {exc}. "
+                "Run will proceed without document context."
+            )
+            log.warning("RAGStore init failed during analyze: %s", exc, exc_info=True)
 
         with command_display(
             schema=schema or cfg.current_schema or "",
@@ -1172,6 +1208,7 @@ def execute_analyze_run(
             apply=apply,
             all_results=all_results,
             final_error_text=final_error_text,
+            extra_metrics=extra_metrics,
         )
         # Always put the saved profile back on cfg.llm. ``restore`` is
         # a no-op when the user declined the override gate or didn't
