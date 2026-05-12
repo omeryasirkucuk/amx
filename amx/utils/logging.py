@@ -281,6 +281,15 @@ def mute_root_logger_for_studio() -> None:
         lib_logger.setLevel(logging.CRITICAL)
         lib_logger.propagate = False
 
+    # sqlglot logs ``... contains unsupported syntax. Falling back to
+    # parsing as a 'Command'`` at WARNING level whenever it can't parse
+    # a vendor-specific statement (PostgreSQL ``SET search_path``, SAP
+    # HANA pragmas, etc.). Code analysis is best-effort — the fallback
+    # path already returns sensibly — so these warnings are pure noise
+    # for the user. Lift to ERROR so genuine parser bugs still surface.
+    sqlglot_logger = logging.getLogger("sqlglot")
+    sqlglot_logger.setLevel(logging.ERROR)
+
 
 def log_event(event_type: str, /, **fields: Any) -> None:
     """Write a structured event line to the rotating JSON log.
