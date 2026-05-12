@@ -877,6 +877,7 @@ def cmd_doc_files(cfg: AMXConfig, rest: list[str]) -> None:
     from pathlib import Path
 
     from amx.docs.extensions import SUPPORTED_EXTENSIONS
+    from amx.docs.uploads import read_display_names_for_root
 
     if not cfg.doc_profiles:
         info("No document profiles. Use /add-doc-profile <name>")
@@ -905,9 +906,10 @@ def cmd_doc_files(cfg: AMXConfig, rest: list[str]) -> None:
         base = Path(spec).expanduser().resolve()
         if base.is_file():
             st = base.stat()
+            display_map = read_display_names_for_root(base.parent)
             rows.append(
                 [
-                    base.name,
+                    display_map.get(base.name, base.name),
                     _humanize_bytes(int(st.st_size)),
                     _humanize_age(time.time() - st.st_mtime),
                     str(base.parent),
@@ -917,6 +919,10 @@ def cmd_doc_files(cfg: AMXConfig, rest: list[str]) -> None:
         if not base.is_dir():
             rows.append([raw, "(missing)", "—", "—"])
             continue
+        # Resolve the original filename for hash-named uploaded files so
+        # the user can recognise their own file — falls back to the
+        # on-disk name when there's no sidecar manifest entry.
+        display_map = read_display_names_for_root(base)
         found_any = False
         for f in sorted(base.rglob("*")):
             if not f.is_file():
@@ -929,7 +935,7 @@ def cmd_doc_files(cfg: AMXConfig, rest: list[str]) -> None:
                 continue
             rows.append(
                 [
-                    f.name,
+                    display_map.get(f.name, f.name),
                     _humanize_bytes(int(st.st_size)),
                     _humanize_age(time.time() - st.st_mtime),
                     str(base),

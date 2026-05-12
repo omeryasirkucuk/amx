@@ -18,13 +18,22 @@ so re-uploading more files later doesn't duplicate the path.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from amx.config import AMXConfig
 from amx.docs.extensions import SUPPORTED_EXTENSIONS
+
+#: Sidecar JSON written next to the hashed uploads so the file inventory
+#: can show the original filename instead of the SHA256. Keyed by the
+#: stored basename (``<hash>.<ext>``); each entry carries the user's
+#: original name plus the upload timestamp.
+MANIFEST_FILENAME = ".amx-manifest.json"
 
 #: Per-file ceiling, mirrored on the FastAPI side. A 25 MB upload is
 #: already the upper end of "design doc" — anything bigger is almost
@@ -108,6 +117,12 @@ def save_uploaded_file(
         tmp.write_bytes(payload)
         tmp.replace(target)
 
+    # Record the original filename in the upload-root manifest so the
+    # file inventory in Studio + CLI can show ``OYK Resume 2026 old.pdf``
+    # instead of ``704b9c354944…eadbe.pdf``. Best-effort: a corrupted
+    # manifest is replaced with a fresh one on the next upload.
+    _update_upload_manifest(root, target.name, name)
+
     # Ensure the upload root is part of the doc profile so the next
     # ``/scan`` or ``/ingest`` pulls the new file in. Idempotent — only
     # appends when the path isn't already there.
@@ -123,6 +138,61 @@ def save_uploaded_file(
         sha256=digest,
         duplicate=duplicate,
     )
+
+
+def _read_upload_manifest(root: Path) -> dict[str, dict[str, Any]]:
+    """Read the sidecar manifest from ``<root>/.amx-manifest.json``.
+
+    Returns an empty dict for a missing file, an unparseable file, or
+    an unexpected top-level shape — the caller treats absence as "no
+    display names recorded" and silently degrades to the hashed names.
+    """
+    manifest_path = root / MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return {}
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    files = payload.get("files")
+    if not isinstance(files, dict):
+        return {}
+    return {str(k): v for k, v in files.items() if isinstance(v, dict)}
+
+
+def _update_upload_manifest(root: Path, stored_name: str, original_name: str) -> None:
+    """Add or overwrite the ``stored_name`` entry in the upload manifest."""
+    existing = _read_upload_manifest(root)
+    existing[stored_name] = {
+        "original_name": original_name,
+        "uploaded_at": time.time(),
+    }
+    manifest_path = root / MANIFEST_FILENAME
+    payload = {"version": 1, "files": existing}
+    try:
+        tmp = manifest_path.with_suffix(manifest_path.suffix + ".part")
+        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        tmp.replace(manifest_path)
+    except OSError:
+        # Worst case: the file inventory falls back to the hashed name
+        # for this upload. Don't take down the upload over a manifest
+        # write failure.
+        return
+
+
+def read_display_names_for_root(root: Path) -> dict[str, str]:
+    """Public helper: returns ``{stored_name: original_name}`` for a
+    given upload root. Used by the file-inventory layer in Studio +
+    CLI to show user-friendly names instead of SHA256 hashes."""
+    manifest = _read_upload_manifest(root)
+    out: dict[str, str] = {}
+    for stored, entry in manifest.items():
+        original = entry.get("original_name")
+        if isinstance(original, str) and original.strip():
+            out[stored] = original
+    return out
 
 
 def save_uploaded_batch(
