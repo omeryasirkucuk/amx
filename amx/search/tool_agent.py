@@ -656,10 +656,11 @@ def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
                 for hit in hits:
                     if not isinstance(hit, dict):
                         continue
-                    meta = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+                    raw_meta = hit.get("metadata")
+                    meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
                     source = str(hit.get("source") or meta.get("source") or "")
                     chunk_idx = hit.get("chunk_idx")
-                    if chunk_idx is None and isinstance(meta, dict):
+                    if chunk_idx is None:
                         chunk_idx = meta.get("chunk_idx")
                     try:
                         chunk_idx_int = int(chunk_idx) if chunk_idx is not None else 0
