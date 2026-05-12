@@ -121,39 +121,55 @@ def _normalize_source_filter(source: str) -> str:
         return src
 
 
-def _iter_python_chunks(rel_path: str, content: str) -> list[tuple[str, str]]:
-    """Return (chunk_id_suffix, text) for RAG indexing."""
-    chunks: list[tuple[str, str]] = []
+def _iter_python_chunks(rel_path: str, content: str) -> list[tuple[str, str, int, int]]:
+    """Return ``(chunk_id_suffix, text, start_line, end_line)`` for RAG indexing.
+
+    Line bounds are 1-based, inclusive, and captured from the AST node
+    BEFORE :func:`ast.get_source_segment` discards them. Module-level
+    fallback chunks (no AST hits, or :exc:`SyntaxError`) span the whole
+    file so the citation always points somewhere real.
+    """
+    chunks: list[tuple[str, str, int, int]] = []
+    total_lines = max(1, content.count("\n") + 1)
     try:
         tree = ast.parse(content, filename=rel_path)
     except SyntaxError:
         seg = content[:14000]
-        return [("module", seg)] if seg.strip() else []
+        if not seg.strip():
+            return []
+        return [("module", seg, 1, total_lines)]
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            start_line = int(getattr(node, "lineno", 1) or 1)
+            end_line = int(getattr(node, "end_lineno", None) or start_line)
             try:
                 segment = ast.get_source_segment(content, node)
             except Exception:
                 segment = None
             if segment and len(segment.strip()) > 40:
-                nid = f"{node.name}_{getattr(node, 'lineno', 0)}"
-                chunks.append((nid, segment[:12000]))
+                nid = f"{node.name}_{start_line}"
+                chunks.append((nid, segment[:12000], start_line, end_line))
     if not chunks and content.strip():
-        chunks.append(("module", content[:14000]))
+        chunks.append(("module", content[:14000], 1, total_lines))
     return chunks
 
 
-def _iter_ipynb_chunks(rel_path: str, content: str) -> list[tuple[str, str, str]]:
+def _iter_ipynb_chunks(rel_path: str, content: str) -> list[tuple[str, str, str, int]]:
     """Cell-aware ``.ipynb`` chunker.
 
-    Returns a list of ``(chunk_id_suffix, text, kind)`` tuples where
-    ``kind`` is one of ``"ipynb_code"`` / ``"ipynb_md"``. Cell outputs
-    are deliberately dropped — they're noisy, often huge (base64
-    images), and rarely useful for code retrieval.
+    Returns a list of ``(chunk_id_suffix, text, kind, cell_idx_1based)``
+    tuples where ``kind`` is one of ``"ipynb_code"`` / ``"ipynb_md"``.
+    Cell outputs are deliberately dropped — they're noisy, often huge
+    (base64 images), and rarely useful for code retrieval.
+
+    ``cell_idx_1based`` is the 1-based cell number (skipping the
+    raw/output cell types that are filtered out) used downstream as the
+    citation's ``start_line`` / ``end_line`` so notebooks render as
+    ``demo.ipynb:3`` for the third cell.
 
     On malformed JSON the caller falls back to the generic splitter
-    (returning ``None`` signals that to the loop without raising).
+    (returning ``[]`` signals that to the loop without raising).
     """
     try:
         nb = json.loads(content)
@@ -161,7 +177,7 @@ def _iter_ipynb_chunks(rel_path: str, content: str) -> list[tuple[str, str, str]
         log.warning("Failed to parse .ipynb at %s, falling back to text split", rel_path)
         return []
 
-    out: list[tuple[str, str, str]] = []
+    out: list[tuple[str, str, str, int]] = []
     cells = nb.get("cells") or []
     for idx, cell in enumerate(cells):
         cell_type = str(cell.get("cell_type") or "").lower()
@@ -172,13 +188,53 @@ def _iter_ipynb_chunks(rel_path: str, content: str) -> list[tuple[str, str, str]
         if not text.strip():
             continue
         kind = "ipynb_code" if cell_type == "code" else "ipynb_md"
-        out.append((f"cell{idx}", text[:12000], kind))
+        # The 1-based cell index from the raw notebook stream (not the
+        # filtered index) so users can map back to the file directly.
+        out.append((f"cell{idx}", text[:12000], kind, idx + 1))
     return out
 
 
 def _split_fallback(text: str, max_chars: int = 4000) -> list[str]:
     sp = RecursiveCharacterTextSplitter(chunk_size=max_chars, chunk_overlap=200)
     return sp.split_text(text)
+
+
+def _iter_split_chunks(text: str, max_chars: int = 4000) -> list[tuple[str, str, int, int]]:
+    """Generic-splitter path that also records 1-based line ranges.
+
+    The :class:`RecursiveCharacterTextSplitter` does not return offsets,
+    so we walk the original text linearly: for each produced chunk,
+    find its first occurrence starting at our running cursor, then
+    advance the cursor past that chunk. Line numbers are then derived
+    by counting newlines up to those character offsets. The fallback
+    when a chunk cannot be located (e.g. splitter collapsed whitespace)
+    is to inherit the previous chunk's bounds — better than emitting
+    ``0`` and confusing the renderer.
+    """
+    parts = _split_fallback(text, max_chars=max_chars)
+    if not parts:
+        return []
+
+    out: list[tuple[str, str, int, int]] = []
+    cursor = 0
+    last_bounds = (1, 1)
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+        idx = text.find(part, cursor)
+        if idx == -1:
+            # Splitter normalised characters in a way that broke direct
+            # substring lookup. Fall back gracefully to the previous
+            # chunk's bounds rather than emitting line 0.
+            start_line, end_line = last_bounds
+        else:
+            start_line = text.count("\n", 0, idx) + 1
+            end_idx = idx + len(part)
+            end_line = text.count("\n", 0, max(end_idx - 1, 0)) + 1
+            cursor = end_idx
+            last_bounds = (start_line, end_line)
+        out.append((f"part{i}", part, start_line, end_line))
+    return out
 
 
 def _manifest_path(persist_dir: str, source_root: str) -> Path:
@@ -299,9 +355,14 @@ def index_codebase_tree(
         except Exception:
             continue
         suffix = fpath.suffix.lower()
-        pieces: list[tuple[str, str]] = []
+        # Each piece carries ``(chunk_id, text, start_line, end_line)``
+        # where the line bounds are 1-based and inclusive. PR γ added
+        # the line bounds so every citation produced by the agents can
+        # point at a real range inside the source file. Splitter and
+        # ipynb paths compute their own bounds (see below).
+        pieces: list[tuple[str, str, int, int]] = []
         # ``per_chunk_kind`` lets the ipynb path stamp distinct chunk
-        # kinds per cell type without forcing a third tuple position
+        # kinds per cell type without forcing a fifth tuple position
         # on the AST / generic splits.
         per_chunk_kind: dict[str, str] = {}
         if suffix == ".py":
@@ -309,18 +370,20 @@ def index_codebase_tree(
         elif suffix == ".ipynb":
             cell_chunks = _iter_ipynb_chunks(rel, text)
             if cell_chunks:
-                for cid, chunk, kind in cell_chunks:
-                    pieces.append((cid, chunk))
+                for cid, chunk, kind, cell_idx in cell_chunks:
+                    # 1-based cell index is more useful than a raw
+                    # source-line number for notebooks; the renderer
+                    # shows ``nb.ipynb:3`` for cell 3 regardless of how
+                    # many code lines lived inside the cell.
+                    pieces.append((cid, chunk, cell_idx, cell_idx))
                     per_chunk_kind[cid] = kind
             elif text.strip():
                 # Malformed notebook — fall back to the generic
                 # splitter so we still produce something rather than
                 # leaving the file unindexed.
-                for i, part in enumerate(_split_fallback(text)):
-                    pieces.append((f"part{i}", part))
+                pieces.extend(_iter_split_chunks(text))
         else:
-            for i, part in enumerate(_split_fallback(text)):
-                pieces.append((f"part{i}", part))
+            pieces.extend(_iter_split_chunks(text))
 
         # Pre-compute the chunk IDs the file will produce so we can
         # find orphans from a previous larger version of the same file
@@ -328,7 +391,7 @@ def index_codebase_tree(
         # function-rename / shrink / delete bug.
         new_ids: list[str] = []
         new_payload: list[tuple[str, str, dict[str, Any]]] = []
-        for cid, chunk in pieces:
+        for cid, chunk, start_line, end_line in pieces:
             if not chunk.strip():
                 continue
             h = hashlib.sha256(f"{root_s}:{rel}:{cid}".encode()).hexdigest()[:24]
@@ -345,6 +408,13 @@ def index_codebase_tree(
                 "rel_path": rel,
                 "chunk_id": cid,
                 "kind": kind,
+                # PR γ: 1-based, inclusive bounds. Python AST chunks
+                # use real source lines; ``.ipynb`` cells reuse the
+                # 1-based cell index for both bounds (so the renderer
+                # shows ``nb.ipynb:3``); generic-splitter chunks derive
+                # bounds from the chunk's offset inside the file.
+                "start_line": int(start_line),
+                "end_line": int(end_line),
             }
             new_ids.append(doc_id)
             new_payload.append((doc_id, chunk, meta))

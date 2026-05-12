@@ -144,10 +144,35 @@ def _format_sources_cell(review_result: Any) -> str:
             source = c.get("source")
         if not source:
             continue
+        # PR γ: line range wins over ``chunk_idx`` when present so a
+        # Python-AST citation renders as ``src/foo.py:120-145`` and a
+        # doc citation falls back to ``spec.pdf:5``. Citations with
+        # neither field (legacy regex refs, manual rows) just show the
+        # path so the cell never carries a misleading ``:0`` suffix.
+        line_range = getattr(c, "line_range", None)
+        if line_range is None and isinstance(c, dict):
+            line_range = c.get("line_range")
+        if line_range is not None:
+            try:
+                start = int(line_range[0])
+                end = int(line_range[1])
+            except (TypeError, ValueError, IndexError):
+                start = end = 0
+            if start > 0 and end > 0:
+                rendered_loc = f"{start}-{end}" if start != end else str(start)
+                parts.append(f"{source}:{rendered_loc}")
+                continue
         chunk_idx = getattr(c, "chunk_idx", None)
         if chunk_idx is None and isinstance(c, dict):
             chunk_idx = c.get("chunk_idx", 0)
-        parts.append(f"{source}:{int(chunk_idx or 0)}")
+        try:
+            chunk_idx_int = int(chunk_idx or 0)
+        except (TypeError, ValueError):
+            chunk_idx_int = 0
+        if chunk_idx_int > 0:
+            parts.append(f"{source}:{chunk_idx_int}")
+        else:
+            parts.append(str(source))
     if not parts:
         return ""
     rendered = ", ".join(parts)

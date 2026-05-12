@@ -799,12 +799,27 @@ def _ask_worker(
     # "Sources" disclosure under the final answer — same format as the
     # PR C citations block on the Run detail page.
     aggregated_citations: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, int]] = set()
+    # PR γ: include ``line_range`` in the dedup key so two code citations
+    # from the same file at different line spans both survive the
+    # aggregation. Doc citations carry ``line_range=None`` so the tuple
+    # collapses to the pre-PR-γ shape for them.
+    seen_keys: set[tuple[str, int, tuple[int, int] | None]] = set()
     for tc_summary in result.tool_calls or []:
         for cit in tc_summary.get("citations") or []:
             if not isinstance(cit, dict):
                 continue
-            key = (str(cit.get("source") or ""), int(cit.get("chunk_idx") or 0))
+            lr = cit.get("line_range")
+            lr_tuple: tuple[int, int] | None = None
+            if isinstance(lr, (list, tuple)) and len(lr) == 2:
+                try:
+                    lr_tuple = (int(lr[0]), int(lr[1]))
+                except (TypeError, ValueError):
+                    lr_tuple = None
+            key = (
+                str(cit.get("source") or ""),
+                int(cit.get("chunk_idx") or 0),
+                lr_tuple,
+            )
             if key in seen_keys:
                 continue
             seen_keys.add(key)

@@ -96,6 +96,14 @@ class Citation:
     #: First 200 chars of the chunk text, used by the UI to render a
     #: lightweight preview next to the citation.
     snippet: str
+    #: Optional 1-based ``(start_line, end_line)`` range of the chunk
+    #: inside ``source``. Populated by PR γ for code citations (AST
+    #: chunks have real source-line spans; ``.ipynb`` cells use the
+    #: cell index for both bounds). ``None`` for doc citations from
+    #: PR C and any other producer that has no line information --
+    #: keeps the dataclass backwards-compatible with existing JSON
+    #: snapshots and run records.
+    line_range: tuple[int, int] | None = None
 
 
 @dataclass

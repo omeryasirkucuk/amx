@@ -1391,7 +1391,12 @@ class Orchestrator:
             seen_citations: set = set()
             for s in col_suggestions:
                 for c in getattr(s, "citations", None) or []:
-                    key_ = (c.source, c.chunk_idx)
+                    # PR γ: include ``line_range`` in the dedup key so
+                    # two code citations from the same file at
+                    # different line spans both survive the merge.
+                    # Doc citations have ``line_range=None`` so the
+                    # tuple collapses to the pre-PR-γ shape for them.
+                    key_ = (c.source, c.chunk_idx, getattr(c, "line_range", None))
                     if key_ in seen_citations:
                         continue
                     seen_citations.add(key_)
@@ -1565,6 +1570,16 @@ class Orchestrator:
                         "chunk_idx": c.chunk_idx,
                         "score": c.score,
                         "snippet": c.snippet,
+                        # PR γ: ``line_range`` is serialised as a JSON
+                        # array (``[start, end]``) when present so the
+                        # frontend can render ``src/foo.py:120-145``.
+                        # ``None`` for legacy doc citations keeps the
+                        # field optional on the wire.
+                        "line_range": (
+                            list(c.line_range)
+                            if getattr(c, "line_range", None) is not None
+                            else None
+                        ),
                     }
                     for c in (getattr(s, "citations", None) or [])
                 ],

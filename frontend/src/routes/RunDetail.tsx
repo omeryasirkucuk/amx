@@ -71,6 +71,29 @@ interface Citation {
   chunk_idx: number;
   score: number;
   snippet: string;
+  /** PR γ: optional 1-based ``(start, end)`` line range for code
+   *  citations (Python AST chunks, ``.ipynb`` cells, generic-splitter
+   *  chunks). ``null`` for doc citations from PR C and any legacy
+   *  pre-PR-γ run so the renderer falls back to ``path:chunk_idx``. */
+  line_range?: [number, number] | null;
+}
+
+/** PR γ: pick the path suffix to render for a citation — line range
+ *  for code, ``chunk_idx`` for docs, bare path when neither is set. */
+function formatCitationLocation(c: Citation): string {
+  if (Array.isArray(c.line_range) && c.line_range.length === 2) {
+    const [start, end] = c.line_range;
+    if (Number.isFinite(start) && start > 0) {
+      if (Number.isFinite(end) && end > 0 && end !== start) {
+        return `${c.source}:${start}-${end}`;
+      }
+      return `${c.source}:${start}`;
+    }
+  }
+  if (typeof c.chunk_idx === "number" && c.chunk_idx > 0) {
+    return `${c.source}:${c.chunk_idx}`;
+  }
+  return c.source;
 }
 
 interface ResultRow {
@@ -690,19 +713,25 @@ function CitationsDisclosure({ citations }: { citations?: Citation[] }) {
   return (
     <div className="mt-2 space-y-1 rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-xs text-ink-muted">
       <div className="text-[10px] uppercase tracking-wider text-ink-dim">Sources</div>
-      {citations.map((c, i) => (
-        <div key={`${c.source}-${c.chunk_idx}-${i}`}>
-          <div className="font-mono">
-            <span className="text-ink">{c.source}</span>:{c.chunk_idx}
-            <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
-          </div>
-          {c.snippet && (
-            <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
-              &ldquo;{c.snippet}&hellip;&rdquo;
+      {citations.map((c, i) => {
+        // PR γ: ``line_range`` (code citations) wins over ``chunk_idx``
+        // (doc citations) so the row reads ``src/foo.py:120-145`` for
+        // code-RAG provenance and ``spec.pdf:5`` for docs-RAG.
+        const location = formatCitationLocation(c);
+        return (
+          <div key={`${c.source}-${c.chunk_idx}-${i}`}>
+            <div className="font-mono">
+              <span className="text-ink">{location}</span>
+              <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
             </div>
-          )}
-        </div>
-      ))}
+            {c.snippet && (
+              <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
+                &ldquo;{c.snippet}&hellip;&rdquo;
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

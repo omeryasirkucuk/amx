@@ -47,11 +47,14 @@ def test_ipynb_code_cells_become_chunks(tmp_path: Path) -> None:
     )
     chunks = _iter_ipynb_chunks("nb.ipynb", nb)
     assert len(chunks) == 1
-    cid, text, kind = chunks[0]
+    cid, text, kind, cell_idx = chunks[0]
     assert kind == "ipynb_code"
     assert "pandas" in text
     assert "ignored" not in text
     assert cid == "cell0"
+    # PR γ: cell index is 1-based so the renderer can show
+    # ``demo.ipynb:1`` for the first cell.
+    assert cell_idx == 1
 
 
 def test_ipynb_markdown_cells_become_chunks(tmp_path: Path) -> None:

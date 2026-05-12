@@ -38,6 +38,33 @@ export interface Citation {
   chunk_idx: number;
   score: number;
   snippet: string;
+  /** PR γ: optional 1-based ``(start, end)`` line range for code
+   *  citations. ``null`` for legacy doc citations (which only carry
+   *  ``chunk_idx``) so the renderer can fall back to ``path:chunk_idx``
+   *  without breaking existing tool-call payloads. */
+  line_range?: [number, number] | null;
+}
+
+/** PR γ: pick the user-visible location suffix for a citation.
+ *  Code citations prefer ``line_range`` (``src/foo.py:120-145`` or
+ *  ``nb.ipynb:3`` for cell-index spans); doc citations fall back to
+ *  ``chunk_idx`` (``spec.pdf:5``); a citation with neither shows the
+ *  bare path. Kept inline so AskChat and the tool-call hit table stay
+ *  in lockstep without an extra import. */
+export function formatCitationLocation(c: Citation): string {
+  if (Array.isArray(c.line_range) && c.line_range.length === 2) {
+    const [start, end] = c.line_range;
+    if (Number.isFinite(start) && start > 0) {
+      if (Number.isFinite(end) && end > 0 && end !== start) {
+        return `${c.source}:${start}-${end}`;
+      }
+      return `${c.source}:${start}`;
+    }
+  }
+  if (typeof c.chunk_idx === "number" && c.chunk_idx > 0) {
+    return `${c.source}:${c.chunk_idx}`;
+  }
+  return c.source;
 }
 
 export interface SubmittedTurn {
@@ -742,10 +769,12 @@ function ToolCallList({
           // PR E: search_docs renders a compact hit table inside the
           // expander instead of the truncated result_preview line so
           // the user can read sources / scores at a glance without
-          // chasing the answer's Sources block.
-          const isSearchDocs = c.name === "search_docs";
+          // chasing the answer's Sources block. PR γ extends this to
+          // ``search_code`` so code retrievals get the same per-hit
+          // breakdown rendered with line ranges instead of chunk_idx.
+          const isRetrievalCall = c.name === "search_docs" || c.name === "search_code";
           const hits = Array.isArray(c.citations) ? c.citations : [];
-          if (isSearchDocs && hits.length > 0) {
+          if (isRetrievalCall && hits.length > 0) {
             return (
               <li key={idx} className="rounded-md bg-surface px-2 py-1 text-[11px] text-ink-muted">
                 <div className="font-mono">
@@ -754,12 +783,19 @@ function ToolCallList({
                   {hits.length} hit{hits.length === 1 ? "" : "s"}
                 </div>
                 <ul className="mt-1 space-y-0.5 pl-3 font-mono text-[10.5px] text-ink-dim">
-                  {hits.map((h, hidx) => (
-                    <li key={`${h.source}-${h.chunk_idx}-${hidx}`}>
-                      • <span className="text-ink-muted">{h.source}</span>:{h.chunk_idx}{" "}
-                      <span className="opacity-70">— score {h.score.toFixed(2)}</span>
-                    </li>
-                  ))}
+                  {hits.map((h, hidx) => {
+                    // PR γ: ``formatCitationLocation`` picks
+                    // ``line_range`` over ``chunk_idx`` so code hits
+                    // show ``src/foo.py:120-145`` while docs continue
+                    // to render ``spec.pdf:5`` unchanged.
+                    const location = formatCitationLocation(h);
+                    return (
+                      <li key={`${h.source}-${h.chunk_idx}-${hidx}`}>
+                        • <span className="text-ink-muted">{location}</span>{" "}
+                        <span className="opacity-70">— score {h.score.toFixed(2)}</span>
+                      </li>
+                    );
+                  })}
                 </ul>
               </li>
             );
@@ -920,19 +956,26 @@ function CitationsList({ citations }: { citations: Citation[] }) {
   return (
     <div className="mt-2 space-y-1 rounded-md border border-border bg-surface-subtle/20 px-2.5 py-1.5 text-xs text-ink-muted">
       <div className="text-[10px] uppercase tracking-wider text-ink-dim">Sources</div>
-      {citations.map((c, i) => (
-        <div key={`${c.source}-${c.chunk_idx}-${i}`}>
-          <div className="font-mono">
-            <span className="text-ink">{c.source}</span>:{c.chunk_idx}
-            <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
-          </div>
-          {c.snippet && (
-            <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
-              &ldquo;{c.snippet}&hellip;&rdquo;
+      {citations.map((c, i) => {
+        // PR γ: ``formatCitationLocation`` returns the path either with
+        // a ``:start-end`` line range (code citations) or with a
+        // ``:chunk_idx`` suffix (doc citations) -- both formats render
+        // identically in this row.
+        const location = formatCitationLocation(c);
+        return (
+          <div key={`${c.source}-${c.chunk_idx}-${i}`}>
+            <div className="font-mono">
+              <span className="text-ink">{location}</span>
+              <span className="ml-2 text-ink-dim">score {c.score.toFixed(2)}</span>
             </div>
-          )}
-        </div>
-      ))}
+            {c.snippet && (
+              <div className="ml-3 mt-0.5 italic text-ink-dim line-clamp-2">
+                &ldquo;{c.snippet}&hellip;&rdquo;
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
