@@ -6,12 +6,13 @@ import remarkGfm from "remark-gfm";
 import { useQuery } from "@tanstack/react-query";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
-import { apiFetch, ApiError } from "../lib/api";
+import { api, apiFetch, ApiError } from "../lib/api";
 import { useUi } from "../lib/store";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
 import { InfoHint } from "./ui";
 import AskScopeDropdown from "./AskScopeDropdown";
+import ProfilePicker from "./topbar/ProfilePicker";
 
 interface AskContextResponse {
   scope_db_profiles: string[];
@@ -163,6 +164,19 @@ export default function AskChat({
   // user often wants different sources on consecutive questions.
   const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>(null);
   const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>(null);
+
+  // Read the active LLM profile / model from the shared ``["context"]``
+  // cache so the inline picker mirrors whatever the sidebar shows.
+  // ``ProfilePicker``'s activate mutation invalidates this key, so
+  // flipping the model in either trigger refreshes the other without
+  // an explicit hand-off.
+  const ctxForLlm = useQuery({
+    queryKey: ["context"],
+    queryFn: () => api.context(),
+    staleTime: 0,
+  });
+  const activeLlmProfile = ctxForLlm.data?.active_llm_profile ?? null;
+  const activeLlmModel = ctxForLlm.data?.llm_model ?? null;
 
   // Reseed history when the parent picks a different session.
   useEffect(() => {
@@ -549,7 +563,7 @@ export default function AskChat({
       </div>
 
       <Card className="p-3">
-        <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
           <AskDocCodePicker
             scope={scopeForSession}
             docOverride={docProfilesOverride}
@@ -558,11 +572,29 @@ export default function AskChat({
             onCodeChange={setCodeProfilesOverride}
             disabled={!!activeJob}
           />
-          <AskScopeDropdown
-            scope={scopeForSession}
-            onChange={handleScopeChange}
-            disabled={!!activeJob}
-          />
+          <div className="ml-auto flex items-center gap-2">
+            {/* The sidebar already exposes the LLM profile, but users
+                landing on /ask via a deep link or working full-width
+                often miss it. Mirroring the picker here keeps the
+                model switcher under the question input, exactly where
+                the user is about to type. ``ProfilePicker``'s activate
+                mutation invalidates ``["context"]`` and ``["profiles",
+                "llm"]``, which both this trigger and the sidebar read
+                from — so flipping it on one surface immediately
+                refreshes the other without any extra wiring. */}
+            <ProfilePicker
+              kind="llm"
+              label="LLM"
+              variant="pill"
+              activeName={activeLlmProfile}
+              tooltip={activeLlmModel ?? undefined}
+            />
+            <AskScopeDropdown
+              scope={scopeForSession}
+              onChange={handleScopeChange}
+              disabled={!!activeJob}
+            />
+          </div>
         </div>
         <form onSubmit={handleSubmit} className="flex items-end gap-2">
           <div className="relative flex-1">
