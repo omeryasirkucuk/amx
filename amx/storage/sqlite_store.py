@@ -177,6 +177,15 @@ class SQLiteHistoryStore:
                 "ALTER TABLE run_results ADD COLUMN parent_result_id INTEGER",
                 "ALTER TABLE run_results ADD COLUMN rerun_seq INTEGER NOT NULL DEFAULT 0",
                 "ALTER TABLE run_results ADD COLUMN user_instructions TEXT",
+                # PR C (citation chain): structured provenance for
+                # RAG-derived suggestions. JSON-encoded
+                # ``list[{source, chunk_idx, score, snippet}]`` so the
+                # CLI run summary and Studio Run detail page can
+                # render which document chunks informed each
+                # suggestion. NULL / empty list on legacy rows and
+                # non-RAG sources -- callers treat both as "no
+                # citations" with no UI fallout.
+                "ALTER TABLE run_results ADD COLUMN citations_json TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
@@ -853,8 +862,8 @@ class SQLiteHistoryStore:
                         run_id, saved_at, schema_name, table_name, column_name,
                         asset_kind, source, confidence, logprob_score, raw_logprob,
                         token_count, model_version, reasoning, alternatives_json,
-                        parent_result_id, rerun_seq, user_instructions
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        parent_result_id, rerun_seq, user_instructions, citations_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -874,6 +883,17 @@ class SQLiteHistoryStore:
                         s.get("parent_result_id"),
                         int(s.get("rerun_seq", 0) or 0),
                         s.get("user_instructions"),
+                        # ``citations`` is a list of plain dicts at
+                        # this layer; the orchestrator serializer
+                        # converted dataclasses upstream so SQLite
+                        # only sees JSON-safe values. ``None`` on
+                        # non-RAG suggestions keeps the column space
+                        # cheap for legacy rows.
+                        (
+                            json.dumps(s.get("citations") or [], ensure_ascii=True)
+                            if s.get("citations")
+                            else None
+                        ),
                     ),
                 )
                 ids.append(int(cur.lastrowid))
@@ -1103,6 +1123,10 @@ class SQLiteHistoryStore:
             if isinstance(raw, str) and raw:
                 with contextlib.suppress(Exception):
                     d["alternatives_json"] = json.loads(raw)
+            cite_raw = d.get("citations_json")
+            if isinstance(cite_raw, str) and cite_raw:
+                with contextlib.suppress(Exception):
+                    d["citations_json"] = json.loads(cite_raw)
             out.append(d)
         return out
 
@@ -1122,6 +1146,10 @@ class SQLiteHistoryStore:
         if isinstance(raw, str) and raw:
             with contextlib.suppress(Exception):
                 d["alternatives_json"] = json.loads(raw)
+        cite_raw = d.get("citations_json")
+        if isinstance(cite_raw, str) and cite_raw:
+            with contextlib.suppress(Exception):
+                d["citations_json"] = json.loads(cite_raw)
         return d
 
     def get_result_chain(self, result_id: int) -> list[dict[str, Any]]:
@@ -1172,6 +1200,10 @@ class SQLiteHistoryStore:
             if isinstance(raw, str) and raw:
                 with contextlib.suppress(Exception):
                     d["alternatives_json"] = json.loads(raw)
+            cite_raw = d.get("citations_json")
+            if isinstance(cite_raw, str) and cite_raw:
+                with contextlib.suppress(Exception):
+                    d["citations_json"] = json.loads(cite_raw)
             out.append(d)
         return out
 

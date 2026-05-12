@@ -1549,6 +1549,19 @@ class Orchestrator:
                 "model_version": self.llm.model_name,
                 "reasoning": s.reasoning,
                 "alternatives": s.suggestions,
+                # PR C: machine-readable provenance for RAG-derived
+                # suggestions. Dataclass -> plain-dict conversion
+                # happens here so the storage layer stays
+                # JSON-only.
+                "citations": [
+                    {
+                        "source": c.source,
+                        "chunk_idx": c.chunk_idx,
+                        "score": c.score,
+                        "snippet": c.snippet,
+                    }
+                    for c in (getattr(s, "citations", None) or [])
+                ],
             }
             for s in suggestions
         ]
