@@ -143,20 +143,27 @@ schema in `shared_schema.py`):
 
 ```sql
 CREATE TABLE style_profiles (
-    id              INTEGER PRIMARY KEY,
-    llm_profile_id  INTEGER NOT NULL REFERENCES llm_profiles(id)
-                                ON DELETE CASCADE,
-    source_ref      TEXT NOT NULL,      -- "db.schema.table"
-    source_db_kind  TEXT NOT NULL,      -- "snowflake", "databricks", ...
-    profile_json    TEXT NOT NULL,      -- StyleProfile serialized
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    llm_profile     TEXT    NOT NULL,   -- AppConfig.llm_profiles key
+    source_ref      TEXT    NOT NULL,   -- "db.schema.table"
+    source_db_kind  TEXT    NOT NULL,   -- "snowflake", "databricks", ...
+    profile_json    TEXT    NOT NULL,   -- StyleProfile serialized
+    enabled         INTEGER NOT NULL DEFAULT 1,
     sample_count    INTEGER NOT NULL,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    UNIQUE (llm_profile_id)
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL,
+    UNIQUE (llm_profile)
 );
 ```
 
-One style profile per LLM profile. Re-extracting overwrites the
+LLM profiles are not a SQL table — they live in `AppConfig.llm_profiles`
+(TOML). The join key is the profile **name**, matching the existing
+pattern in `chat_sessions.llm_profile` and `analysis_runs.llm_profile`.
+Cleanup of orphans (style row whose `llm_profile` name no longer
+exists in config) happens lazily on access — missing config means the
+row is silently ignored and may be pruned on the next `/style clear`.
+
+One style profile per LLM profile name. Re-extracting overwrites the
 existing row (preserving `created_at`, bumping `updated_at`).
 
 A migration is added under the existing migration mechanism in
