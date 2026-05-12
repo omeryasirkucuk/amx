@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from amx.config import AMXConfig
+from amx.docs.extensions import SUPPORTED_EXTENSIONS
 
 #: Per-file ceiling, mirrored on the FastAPI side. A 25 MB upload is
 #: already the upper end of "design doc" — anything bigger is almost
@@ -34,8 +35,6 @@ MAX_FILE_BYTES: int = 25 * 1024 * 1024
 #: user's home directory before the FastAPI worker has a chance to
 #: respond.
 MAX_BATCH_BYTES: int = 100 * 1024 * 1024
-
-from amx.docs.extensions import SUPPORTED_EXTENSIONS
 
 #: Extensions :mod:`amx.docs.scanner` knows how to load. Anything else
 #: lands in the upload folder unread by the RAG agent. Re-exported from

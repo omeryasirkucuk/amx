@@ -238,8 +238,7 @@ def register_docs_commands(
                         summary = store.ingest(documents, refresh=False)
                     _render_ingest_summary(summary, total_files=len(documents))
                     success(
-                        f"Ingested {summary.chunk_count} chunks from "
-                        f"{len(documents)} documents"
+                        f"Ingested {summary.chunk_count} chunks from {len(documents)} documents"
                     )
         finally:
             cleanup_scan_artifacts(documents)

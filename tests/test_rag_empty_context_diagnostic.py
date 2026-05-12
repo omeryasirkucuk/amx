@@ -41,9 +41,9 @@ def test_rag_agent_records_diagnostic_when_context_empty() -> None:
     assert out == []
 
     diagnostics = agent.consume_diagnostics()
-    assert any("no relevant documents" in d.lower() or "no rag" in d.lower() for d in diagnostics), (
-        f"expected a no-context diagnostic; got {diagnostics!r}"
-    )
+    assert any(
+        "no relevant documents" in d.lower() or "no rag" in d.lower() for d in diagnostics
+    ), f"expected a no-context diagnostic; got {diagnostics!r}"
 
 
 def test_rag_agent_consume_diagnostics_clears_buffer() -> None:
