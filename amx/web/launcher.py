@@ -60,14 +60,18 @@ PREFERRED_PORT = 47821
 #: launch the browser; the user just sees a load spinner.
 STARTUP_TIMEOUT_SEC = 5.0
 
-#: Grace period for uvicorn to drain on shutdown. After this we
-#: escalate to SIGTERM so Ctrl-C feels responsive even when a hung
-#: connection lingers.
-SHUTDOWN_TIMEOUT_SEC = 3.0
+#: Grace period for uvicorn to drain on shutdown after we send
+#: SIGINT. With the explicit signal handler in
+#: :mod:`amx.web._studio_subprocess`, the child flips
+#: ``server.should_exit`` synchronously and uvicorn drains within
+#: roughly 300 ms; 1.5 s is a comfortable upper bound for in-flight
+#: SSE connections to wrap up before we escalate.
+SHUTDOWN_TIMEOUT_SEC = 1.5
 
-#: SIGTERM-to-SIGKILL grace period — uvicorn ignored SIGINT/SIGTERM,
-#: we force-kill the group after this.
-TERMINATE_TIMEOUT_SEC = 2.0
+#: SIGTERM-to-SIGKILL grace period. The child's SIGTERM handler
+#: also flips ``force_exit`` so any in-flight request bypasses the
+#: drain wait — this should always succeed quickly.
+TERMINATE_TIMEOUT_SEC = 1.0
 KILL_TIMEOUT_SEC = 1.0
 
 
