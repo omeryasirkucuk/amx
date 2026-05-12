@@ -81,6 +81,37 @@ def _resolve_config_dir() -> str:
 BACKUP_ROTATION_KEEP = 5
 
 
+def _detect_silent_truncation(cfg) -> list[str]:
+    """Return integrity problems that should block a save.
+
+    The PR #351 autosave race produced configs where ``active_*_profile``
+    pointed at a name but the matching ``*_profiles`` dict was empty —
+    the on-disk evidence of in-memory state being silently truncated
+    before write. Any save in that shape would propagate the loss to
+    every rotated backup over time. We catch the pattern at the
+    serialization boundary and refuse to write.
+
+    The placeholder ``"default"`` is ignored because the loader injects
+    it on fresh installs where no real profile choice has ever been
+    recorded — flagging it would block the very first legitimate save.
+    """
+    problems: list[str] = []
+    pairs = (
+        ("active_db_profile", "db_profiles"),
+        ("active_llm_profile", "llm_profiles"),
+        ("active_doc_profile", "doc_profiles"),
+        ("active_code_profile", "code_profiles"),
+    )
+    for active_attr, dict_attr in pairs:
+        active = getattr(cfg, active_attr, "") or ""
+        bucket = getattr(cfg, dict_attr, {}) or {}
+        if active and active != "default" and active not in bucket:
+            problems.append(
+                f"{active_attr}={active!r} but {dict_attr} has no such entry"
+            )
+    return problems
+
+
 def _rotate_config_backups(target: Path, keep: int = BACKUP_ROTATION_KEEP) -> None:
     """Rotate ``<target>.bak.1..N`` immediately before overwriting target.
 
@@ -2112,6 +2143,28 @@ class AMXConfig:
                 self.db_profiles[self.active_db_profile] = self.db
             if self.active_llm_profile:
                 self.llm_profiles[self.active_llm_profile] = replace(self.llm)
+
+            # Shadow integrity check: ``db_profiles`` and ``llm_profiles``
+            # have just been auto-repaired above (the historical save
+            # contract). Anything still inconsistent at this point —
+            # ``active_doc_profile`` / ``active_code_profile`` pointing
+            # at an absent dict entry — matches the PR #351 autosave
+            # race signature with no built-in recovery. Refuse the
+            # write so the truncation doesn't propagate into the
+            # rotated backups.
+            problems = _detect_silent_truncation(self)
+            if problems:
+                import logging as _logging
+
+                _logging.getLogger("amx.config").error(
+                    "AMX config save refused — in-memory state is "
+                    "internally inconsistent:\n  - %s\nDisk file %s left "
+                    "untouched. Run /restore-config to recover from the "
+                    "most recent backup if needed.",
+                    "\n  - ".join(problems),
+                    p,
+                )
+                return p
 
             doc_paths_yaml = self._doc_paths_for_yaml()
             code_paths_yaml = self._code_paths_for_yaml()

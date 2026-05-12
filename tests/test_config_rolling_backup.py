@@ -29,7 +29,12 @@ def test_save_rotates_prior_file_into_bak1(tmp_path):
     from amx.config import AMXConfig
 
     cfg_path = tmp_path / "config.yml"
-    cfg_path.write_text("active_db_profile: pre-save\n")
+    cfg_path.write_text(
+        "active_db_profile: pre-save\n"
+        "db_profiles:\n"
+        "  pre-save:\n"
+        "    backend: postgresql\n"
+    )
 
     cfg = AMXConfig.load(str(cfg_path))
     cfg.save(str(cfg_path))
@@ -121,7 +126,7 @@ def test_rotation_is_best_effort_and_does_not_block_save(tmp_path, monkeypatch):
     from amx import config as cfg_mod
 
     cfg_path = tmp_path / "config.yml"
-    cfg_path.write_text("active_db_profile: prior\ndb_profiles: {}\n")
+    cfg_path.write_text("active_db_profile: ''\ndb_profiles: {}\n")
 
     cfg = cfg_mod.AMXConfig.load(str(cfg_path))
 
