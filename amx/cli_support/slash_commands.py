@@ -82,6 +82,19 @@ _ROOT_BUILTINS: tuple[SlashCommand, ...] = (
         ),
         cross_namespace=True,
     ),
+    SlashCommand(
+        "/restore-config",
+        "",
+        "Restore config.yml from a rotated backup",
+        long_desc=(
+            "Recovery tool when a recent save corrupted config.yml. Lists "
+            "available `config.yml.bak.1..N` backups with timestamps; pick "
+            "one and AMX rotates the current live file into a backup slot "
+            "before restoring. Always reversible: the pre-restore state "
+            "becomes the new .bak.1."
+        ),
+        cross_namespace=True,
+    ),
 )
 
 _ROOT_ENTRYPOINTS: tuple[SlashCommand, ...] = (

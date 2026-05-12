@@ -72,6 +72,115 @@ def _resolve_config_dir() -> str:
     return str(Path.home() / ".amx")
 
 
+#: How many rotated config.yml backups to keep next to the live file.
+#: Stored as ``config.yml.bak.1`` (newest) through ``config.yml.bak.N``
+#: (oldest). Five generations matches the convention of editors with
+#: built-in quick-undo and is enough headroom for a user to notice and
+#: recover within a session even if multiple bad saves stack up before
+#: they spot the regression.
+BACKUP_ROTATION_KEEP = 5
+
+
+def _rotate_config_backups(target: Path, keep: int = BACKUP_ROTATION_KEEP) -> None:
+    """Rotate ``<target>.bak.1..N`` immediately before overwriting target.
+
+    Sequence (called BEFORE the atomic write):
+      * Drop the oldest backup (``.bak.N``).
+      * Promote ``.bak.N-1`` → ``.bak.N``, ``.bak.N-2`` → ``.bak.N-1`` ...
+      * Copy the current ``target`` (the about-to-be-overwritten file)
+        to ``.bak.1``.
+
+    Best-effort throughout: a failure here must NOT block the save.
+    The live save is still atomic on its own, so the worst case from a
+    rotation failure is missing a single backup generation, not a
+    corrupted file.
+    """
+    if not target.exists():
+        return  # first-ever save: nothing to back up yet
+    try:
+        # Drop the oldest first to make room.
+        oldest = target.with_suffix(target.suffix + f".bak.{keep}")
+        if oldest.exists():
+            with suppress(OSError):
+                oldest.unlink()
+        # Promote each generation by one slot.
+        for i in range(keep - 1, 0, -1):
+            src = target.with_suffix(target.suffix + f".bak.{i}")
+            dst = target.with_suffix(target.suffix + f".bak.{i + 1}")
+            if src.exists():
+                with suppress(OSError):
+                    src.replace(dst)
+        # Copy live → .bak.1 (copy, not rename, so the atomic save
+        # below still has a target to overwrite).
+        import shutil as _shutil
+
+        dst = target.with_suffix(target.suffix + ".bak.1")
+        with suppress(OSError):
+            _shutil.copy2(target, dst)
+            # Backup inherits the same owner-only permissions as the
+            # source — credentials shouldn't be world-readable.
+            with suppress(OSError):
+                os.chmod(dst, 0o600)
+    except Exception:
+        # Rotation is purely opportunistic; never propagate a failure
+        # that would block the user's save.
+        return
+
+
+def list_config_backups(config_path: Path | None = None) -> list[Path]:
+    """Return the on-disk rotated backups, newest first.
+
+    Used by ``amx restore-config`` to show the user which generations
+    are available. Defaults to ``~/.amx/config.yml.bak.*`` (or the
+    ``AMX_CONFIG_DIR`` override).
+    """
+    if config_path is None:
+        config_path = Path(_resolve_config_dir()) / "config.yml"
+    parent = config_path.parent
+    if not parent.is_dir():
+        return []
+    out: list[tuple[int, Path]] = []
+    for child in parent.iterdir():
+        name = child.name
+        prefix = config_path.name + ".bak."
+        if not name.startswith(prefix):
+            continue
+        try:
+            idx = int(name[len(prefix) :])
+        except ValueError:
+            continue
+        out.append((idx, child))
+    out.sort(key=lambda pair: pair[0])
+    return [path for _, path in out]
+
+
+def restore_config_from_backup(
+    backup: Path,
+    config_path: Path | None = None,
+) -> Path:
+    """Atomically copy ``backup`` over the live config.
+
+    The current live file is rotated into ``.bak.1`` first (via the
+    standard rotation helper) so a restore is itself undoable. Returns
+    the path of the restored live file.
+    """
+    if config_path is None:
+        config_path = Path(_resolve_config_dir()) / "config.yml"
+    if not backup.is_file():
+        raise FileNotFoundError(f"backup not found: {backup}")
+    # Snapshot the backup's contents BEFORE rotation: rotating the live
+    # file would shift .bak.N → .bak.N+1 and could move the user's
+    # chosen backup out from under us (e.g. picking .bak.5 with the
+    # chain already full).
+    payload = backup.read_bytes()
+    _rotate_config_backups(config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_bytes(payload)
+    with suppress(OSError):
+        os.chmod(config_path, 0o600)
+    return config_path
+
+
 PROFILING_MODES = ("full", "sampled", "metadata")
 SUPPORTED_EMBEDDING_KINDS = ("minilm", "openai_compatible", "sentence_transformers")
 DEFAULT_EMBEDDING_KIND = "minilm"
@@ -2084,6 +2193,17 @@ class AMXConfig:
                 store=get_default_store(),
             )
             payload = yaml.dump(data, default_flow_style=False, sort_keys=False)
+            # Rotating backup BEFORE the atomic write: if the new
+            # YAML turns out to be corrupted or wipes profile dicts
+            # via some future bug, the user can restore from one of
+            # the previous N saves. Five generations is the same
+            # ballpark Vim, JetBrains, and macOS Finder use for
+            # quick undo. Best-effort: a backup failure must never
+            # block the save itself (the new write is still atomic
+            # and the user's in-memory state is the source of truth
+            # at this instant).
+            with suppress(Exception):
+                _rotate_config_backups(p, keep=BACKUP_ROTATION_KEEP)
             # Atomic write to reduce config corruption/state loss on interruptions.
             with tempfile.NamedTemporaryFile(
                 mode="w",
