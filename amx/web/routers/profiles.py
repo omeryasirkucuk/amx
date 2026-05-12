@@ -390,6 +390,55 @@ def list_docs(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     return {"profiles": items, "active": getattr(cfg, "active_doc_profile", "") or None}
 
 
+@router.get("/docs/{name}/health")
+def doc_profile_health(
+    name: str,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Per-doc-profile health card for Studio Settings.
+
+    Combines on-disk Chroma stats (chunk count, embedding metadata)
+    with config-side telemetry (last ingested timestamp, last error
+    one-liner) so the user can see at a glance whether the profile
+    is wired up and indexed without dropping to the CLI.
+
+    Returns 404 when the profile is unknown so the SPA can distinguish
+    "no telemetry yet" (200 with zeros) from a typo in the URL.
+    """
+    if name not in cfg.doc_profiles:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail=f"Doc profile '{name}' not found.")
+    paths = list(cfg.doc_profiles.get(name) or [])
+    chunk_count = 0
+    embedding_model: str | None = None
+    embedding_provider: str | None = None
+    try:
+        from amx.docs.rag import RAGStore
+
+        store = RAGStore(source_filters=cfg.effective_doc_paths(name) or None)
+        chunk_count = int(store.filtered_doc_count())
+        meta = dict(store.collection.metadata or {})
+        embedding_model = str(meta.get("embedding_model")) if meta.get("embedding_model") else None
+        embedding_provider = (
+            str(meta.get("embedding_provider")) if meta.get("embedding_provider") else None
+        )
+    except Exception as exc:
+        log.debug("doc_profile_health: RAGStore probe failed: %s", exc)
+    last_ingested = cfg.doc_profiles_last_ingested_at.get(name, 0.0) or 0.0
+    last_error = cfg.doc_profiles_last_error.get(name, "") or ""
+    return {
+        "name": name,
+        "chunk_count": chunk_count,
+        "last_ingested_at": float(last_ingested) if last_ingested else None,
+        "last_error": last_error or None,
+        "embedding_model": embedding_model,
+        "embedding_provider": embedding_provider,
+        "paths": paths,
+        "linked_db_profiles": list(cfg.doc_profile_linked_dbs.get(name, []) or []),
+    }
+
+
 @router.get("/code")
 def list_code(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     """Code profiles are ``dict[name -> repo_path_or_url]``."""
