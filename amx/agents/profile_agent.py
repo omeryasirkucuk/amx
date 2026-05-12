@@ -20,6 +20,7 @@ from amx.llm.prompts import (
 )
 from amx.llm.provider import FatalLLMError, LLMProvider
 from amx.llm.style.injector import render_style_section
+from amx.llm.style.loader import load_active_style_profile
 from amx.llm.style.profile import StyleProfile
 from amx.utils.console import step_spinner
 from amx.utils.logging import LAST_PROFILE_RESPONSE_FILE, get_logger
@@ -133,6 +134,7 @@ class ProfileAgent(BaseAgent):
     def __init__(self, llm: LLMProvider):
         self.llm = llm
         self._diagnostics: list[str] = []
+        self._style_profile = load_active_style_profile()
 
     def consume_diagnostics(self) -> list[str]:
         diagnostics = list(self._diagnostics)
@@ -375,7 +377,7 @@ class ProfileAgent(BaseAgent):
         system = _build_system_prompt(
             self._n_alternatives,
             description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
-            style_profile=None,
+            style_profile=self._style_profile,
         )
         return [
             {"role": "system", "content": system},

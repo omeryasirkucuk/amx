@@ -21,6 +21,7 @@ from amx.llm.prompts import (
 )
 from amx.llm.provider import LLMProvider
 from amx.llm.style.injector import render_style_section
+from amx.llm.style.loader import load_active_style_profile
 from amx.llm.style.profile import StyleProfile
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
@@ -105,6 +106,7 @@ class RAGAgent(BaseAgent):
     def __init__(self, llm: LLMProvider, rag_store: RAGStore):
         self.llm = llm
         self.rag = rag_store
+        self._style_profile = load_active_style_profile()
 
     @property
     def _n_alternatives(self) -> int:
@@ -177,7 +179,7 @@ class RAGAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Relevant documentation:\n{doc_text}" + _user_instructions_block(ctx)
         )
-        system = _build_system_prompt(self._n_alternatives, self._description_verbosity, style_profile=None)
+        system = _build_system_prompt(self._n_alternatives, self._description_verbosity, style_profile=self._style_profile)
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
