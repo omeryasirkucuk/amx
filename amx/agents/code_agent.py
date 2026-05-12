@@ -130,6 +130,36 @@ class CodeAgent(BaseAgent):
         # :class:`amx.agents.rag_agent.RAGAgent`.
         self.last_prompt_hits: dict[tuple[str, str], list[dict]] = {}
         self.last_prompt_refs: dict[tuple[str, str], list[Any]] = {}
+        # PR δ (I1): diagnostics buffer mirrored from RAGAgent. The
+        # orchestrator's ``table_processor`` drains it after each
+        # table to surface user-relevant signals that aren't fatal
+        # (empty context, query timeout, etc.) so the user sees
+        # why this table produced zero code suggestions instead of a
+        # silent skip.
+        self._diagnostics: list[str] = []
+
+    def consume_diagnostics(self) -> list[str]:
+        """Return + clear the diagnostics buffer (PR δ — mirrors RAGAgent)."""
+        diagnostics = list(self._diagnostics)
+        self._diagnostics.clear()
+        return diagnostics
+
+    def _record_diagnostic(self, message: str) -> None:
+        if message:
+            self._diagnostics.append(message)
+
+    def _code_query_timeout(self) -> float | None:
+        """Resolved per-query timeout for code retrieval (seconds), or ``None``.
+
+        Re-uses :attr:`LLMConfig.rag_query_timeout_sec` — one timeout
+        knob covers both code and docs since both go through Chroma.
+        """
+        raw = getattr(self.llm.cfg, "rag_query_timeout_sec", 5.0)
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
 
     @property
     def _n_alternatives(self) -> int:
@@ -156,14 +186,34 @@ class CodeAgent(BaseAgent):
 
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
         """Build the Code Agent prompt messages. Returns ``None`` when no code context exists."""
-        if not self.report:
+        from amx.codebase.code_rag import code_collection_count, query_code_snippets
+        from amx.docs.rag import RAGQueryTimeout
+
+        # PR δ (C8): re-run snapshot path — when the orchestrator
+        # hydrated the AgentContext from a stored payload that already
+        # carries the exact code chunks the original run consumed, skip
+        # the live Chroma queries entirely. Makes re-runs deterministic
+        # across re-indexes and avoids re-paying retrieval latency on
+        # every re-run.
+        snapshot_hits = list(getattr(ctx, "code_hits", None) or [])
+
+        if not self.report and not snapshot_hits:
             return None
 
-        from amx.codebase.code_rag import code_collection_count, query_code_snippets
+        has_refs = bool(self.report and (self.report.references or self.report.external_mentions))
+        source_filters = (
+            [p for p in self.report.path.split(";") if p]
+            if (self.report and self.report.path)
+            else None
+        )
 
-        has_refs = bool(self.report.references) or bool(self.report.external_mentions)
-        source_filters = [p for p in self.report.path.split(";") if p] if self.report.path else None
-        has_sem = code_collection_count(source_filters=source_filters) > 0
+        if snapshot_hits:
+            has_sem = True
+        else:
+            try:
+                has_sem = code_collection_count(source_filters=source_filters) > 0
+            except Exception:
+                has_sem = False
         if not has_refs and not has_sem:
             return None
 
@@ -174,7 +224,9 @@ class CodeAgent(BaseAgent):
         pd = self._prompt_detail
 
         table_refs = (
-            self.report.references.get(ctx.table.lower(), []) if self.report.references else []
+            self.report.references.get(ctx.table.lower(), [])
+            if (self.report and self.report.references)
+            else []
         )
 
         all_code_blocks: list[str] = []
@@ -187,45 +239,62 @@ class CodeAgent(BaseAgent):
             )
             consumed_refs.extend(table_refs[:8])
 
-        for col in columns:
-            col_name = col["name"].lower()
-            refs = self.report.references.get(col_name, []) if self.report.references else []
-            if refs:
-                all_code_blocks.append(
-                    f"## Column: {col['name']}\n"
-                    + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in refs[:5])
-                )
-                consumed_refs.extend(refs[:5])
+        if self.report and self.report.references:
+            for col in columns:
+                col_name = col["name"].lower()
+                refs = self.report.references.get(col_name, [])
+                if refs:
+                    all_code_blocks.append(
+                        f"## Column: {col['name']}\n"
+                        + "\n---\n".join(
+                            f"File: {r.file}:{r.line_no}\n{r.context}" for r in refs[:5]
+                        )
+                    )
+                    consumed_refs.extend(refs[:5])
 
         # PR γ: track every semantic hit fed into the prompt so we can
         # turn them into :class:`Citation` records after the LLM answers.
         sem_hits_all: list[dict] = []
-        if has_sem:
+        any_timed_out = False
+
+        if snapshot_hits:
+            sem_hits_all.extend(snapshot_hits)
+        elif has_sem:
+            timeout = self._code_query_timeout()
             # PR γ: drop the hardcoded "SQL Spark dataframe usage" bias
             # — it skewed retrieval toward Spark / PySpark snippets even
             # for repos that don't use Spark. A neutral
             # ``"<schema> <table>"`` query is the cheapest correct default.
             table_query = f"{ctx.schema} {ctx.table}".strip()
-            table_hits = query_code_snippets(
-                table_query,
-                n_results=5,
-                source_filters=source_filters,
-            )
-            sem_hits_all.extend(table_hits)
+            try:
+                table_hits = query_code_snippets(
+                    table_query,
+                    n_results=5,
+                    source_filters=source_filters,
+                    timeout=timeout,
+                )
+                sem_hits_all.extend(table_hits)
+            except RAGQueryTimeout:
+                any_timed_out = True
 
             # PR γ: optional per-column fan-out, parallel to the
             # ``rag_col_hits`` knob on docs-RAG. Default ``0`` keeps the
             # previous behaviour byte-for-byte; ``detailed`` / ``full``
             # raise it to ``1`` so column call-sites surface.
             col_hit_limit = int(getattr(pd, "code_col_hits", 0) or 0)
-            if col_hit_limit > 0:
+            if col_hit_limit > 0 and not any_timed_out:
                 seen_keys: set[str] = {h["text"][:120] for h in sem_hits_all}
                 for col in columns:
-                    col_hits = query_code_snippets(
-                        f"{ctx.table}.{col['name']} column",
-                        n_results=col_hit_limit,
-                        source_filters=source_filters,
-                    )
+                    try:
+                        col_hits = query_code_snippets(
+                            f"{ctx.table}.{col['name']} column",
+                            n_results=col_hit_limit,
+                            source_filters=source_filters,
+                            timeout=timeout,
+                        )
+                    except RAGQueryTimeout:
+                        any_timed_out = True
+                        break
                     for h in col_hits:
                         key = h["text"][:120]
                         if key in seen_keys:
@@ -233,15 +302,23 @@ class CodeAgent(BaseAgent):
                         seen_keys.add(key)
                         sem_hits_all.append(h)
 
-            if sem_hits_all:
-                all_code_blocks.append(
-                    "## Semantic code retrieval (nearest chunks)\n"
-                    + "\n---\n".join(h["text"][:900] for h in sem_hits_all)
-                )
+        if any_timed_out:
+            timeout_val = self._code_query_timeout() or 0.0
+            self._record_diagnostic(
+                f"Code: retrieval timed out after {timeout_val:.1f}s for "
+                f"{ctx.schema}.{ctx.table}; falling back to regex refs only"
+            )
+
+        if sem_hits_all:
+            all_code_blocks.append(
+                "## Semantic code retrieval (nearest chunks)\n"
+                + "\n---\n".join(h["text"][:900] for h in sem_hits_all)
+            )
 
         ext_flat: list[CodeReference] = []
-        for lst in (self.report.external_mentions or {}).values():
-            ext_flat.extend(lst[:2])
+        if self.report:
+            for lst in (self.report.external_mentions or {}).values():
+                ext_flat.extend(lst[:2])
         if ext_flat:
             all_code_blocks.append(
                 "## Other identifiers (not in connected DB catalog)\n"
@@ -285,6 +362,10 @@ class CodeAgent(BaseAgent):
 
         msgs = self._build_messages(ctx)
         if msgs is None:
+            self._record_diagnostic(
+                f"Code: no codebase context (regex refs or semantic hits) found "
+                f"for {ctx.schema}.{ctx.table}"
+            )
             return []
         n_columns = len(ctx.db_profile.get("columns", []) or [])
         return [
@@ -337,9 +418,14 @@ class CodeAgent(BaseAgent):
         return self._attach_code_citations(suggestions, ctx)
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+        self._diagnostics.clear()
         messages = self._build_messages(ctx)
         if messages is None:
             log.info("No code context for %s.%s, skipping", ctx.schema, ctx.table)
+            self._record_diagnostic(
+                f"Code: no codebase context (regex refs or semantic hits) found "
+                f"for {ctx.schema}.{ctx.table}"
+            )
             return []
 
         columns = ctx.db_profile.get("columns", [])

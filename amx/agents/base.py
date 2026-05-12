@@ -142,6 +142,12 @@ class AgentContext:
     # :meth:`RAGStore.query`; an empty list means "no snapshot — fall
     # back to a live RAGStore query" (the pre-PR-D contract).
     rag_hits: list[dict[str, Any]] = field(default_factory=list)
+    # PR δ (C8): snapshot of the code chunks the original run consumed.
+    # Populated by the re-run hydrator from the cached payload so a
+    # second pass uses the same semantic-retrieval set regardless of
+    # intervening re-indexes. Empty list → fall back to a live
+    # ``query_code_snippets`` call (pre-PR-δ behaviour).
+    code_hits: list[dict[str, Any]] = field(default_factory=list)
     existing_metadata: dict[str, Any] = field(default_factory=dict)
     # Optional free-text addendum from the user, populated by the
     # Re-Run flow. Empty string on normal runs. Each agent's
