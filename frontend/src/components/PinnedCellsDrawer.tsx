@@ -7,7 +7,12 @@
  * whole set, and routes through to ``/runs/compare?mode=cell&cells=…``
  * when the user clicks ``Compare pinned cells``.
  *
- * State source: localStorage (``readPinnedCells`` from ``lib/pinnedCells``).
+ * State source: every ``amx.compare.pinnedCells.*`` bucket in
+ * localStorage. The TopBar badge sums across all buckets — the
+ * drawer reads the same union so the two counts always agree. Each
+ * entry remembers the bucket it came from so per-entry unpin writes
+ * back to the right place.
+ *
  * The component listens to the ``amx:pinned-cells-changed`` window
  * event so it stays in sync when the user pins/unpins from elsewhere.
  */
@@ -16,29 +21,26 @@ import { useNavigate } from "react-router-dom";
 import { Trash2, X } from "lucide-react";
 
 import {
-  clearPinnedCells,
+  clearAllPinnedCells,
   pinnedCellToToken,
-  readPinnedCells,
-  unpinCell,
-  type PinnedCell,
+  readAllPinnedCells,
+  unpinCellAt,
+  type PinnedCellEntry,
 } from "../lib/pinnedCells";
 import { cn } from "../lib/cn";
 
 export interface PinnedCellsDrawerProps {
   open: boolean;
   onClose: () => void;
-  /** Active DB profile — selects which localStorage bucket to render. */
-  dbProfile?: string | null;
 }
 
 export default function PinnedCellsDrawer({
   open,
   onClose,
-  dbProfile,
 }: PinnedCellsDrawerProps) {
   const navigate = useNavigate();
-  const [cells, setCells] = useState<PinnedCell[]>(() =>
-    readPinnedCells(dbProfile),
+  const [cells, setCells] = useState<PinnedCellEntry[]>(() =>
+    readAllPinnedCells(),
   );
 
   // Refresh from localStorage on open + whenever the global "pinned
@@ -46,22 +48,22 @@ export default function PinnedCellsDrawer({
   // ResultRowItem). Avoids stale UI without a polling timer.
   useEffect(() => {
     if (!open) return;
-    setCells(readPinnedCells(dbProfile));
-    const handler = () => setCells(readPinnedCells(dbProfile));
+    setCells(readAllPinnedCells());
+    const handler = () => setCells(readAllPinnedCells());
     window.addEventListener("amx:pinned-cells-changed", handler);
     return () => window.removeEventListener("amx:pinned-cells-changed", handler);
-  }, [open, dbProfile]);
+  }, [open]);
 
   if (!open) return null;
 
-  function removeOne(cell: PinnedCell) {
-    const next = unpinCell(dbProfile, cell);
-    setCells(next);
+  function removeOne(entry: PinnedCellEntry) {
+    unpinCellAt(entry.bucket, entry);
+    setCells(readAllPinnedCells());
     window.dispatchEvent(new CustomEvent("amx:pinned-cells-changed"));
   }
 
   function clearAll() {
-    clearPinnedCells(dbProfile);
+    clearAllPinnedCells();
     setCells([]);
     window.dispatchEvent(new CustomEvent("amx:pinned-cells-changed"));
   }
@@ -120,7 +122,7 @@ export default function PinnedCellsDrawer({
                   .join(".");
                 return (
                   <li
-                    key={`${cell.run_id}-${path}-${idx}`}
+                    key={`${cell.bucket}-${cell.run_id}-${path}-${idx}`}
                     className="flex items-start gap-2 px-4 py-2.5"
                   >
                     <div className="min-w-0 flex-1">
@@ -130,6 +132,7 @@ export default function PinnedCellsDrawer({
                       <div className="mt-0.5 text-[10px] uppercase tracking-wider text-ink-dim">
                         from run #{cell.run_id}
                         {cell.column ? " · column" : " · table-level"}
+                        {cell.bucket !== "__global" ? ` · ${cell.bucket}` : ""}
                       </div>
                     </div>
                     <button
