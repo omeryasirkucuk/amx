@@ -1440,6 +1440,21 @@ class AMXConfig:
     doc_profiles_last_error: dict[str, str] = field(default_factory=dict)
     code_profiles: dict[str, str] = field(default_factory=dict)
     active_code_profile: str = ""
+    # Multi-profile override for ``/run`` (PR δ — mirrors
+    # ``run_doc_profiles``). When non-empty the orchestrator unions
+    # every named profile's ``effective_code_paths`` into a single
+    # ``source_filters`` list for ``query_code_snippets``. Empty list
+    # (the default) → fall back to the single active profile, matching
+    # the pre-PR-δ single-profile behaviour byte-for-byte.
+    run_code_profiles: list[str] = field(default_factory=list)
+    # Per-code-profile health telemetry stamped at the end of every
+    # ``index_codebase_tree`` call (PR δ — mirrors
+    # ``doc_profiles_last_ingested_at`` / ``doc_profiles_last_error``).
+    # Surfaced by ``GET /api/profiles/code/{name}/health`` and the
+    # Studio Settings → Code panel so users can tell at a glance which
+    # code profiles are wired up and indexed.
+    code_profile_last_indexed_at: dict[str, float] = field(default_factory=dict)
+    code_profile_last_error: dict[str, str] = field(default_factory=dict)
     # Map a doc/code profile to the DB profiles it documents. Empty list
     # (or absent key) = global, matches every DB scope. When `/ask` runs
     # against scope_profiles=[X], only doc/code profiles whose linked
@@ -1501,6 +1516,9 @@ class AMXConfig:
             "doc_profiles_last_error",
             "code_profiles",
             "active_code_profile",
+            "run_code_profiles",
+            "code_profile_last_indexed_at",
+            "code_profile_last_error",
             "doc_profile_linked_dbs",
             "code_profile_linked_dbs",
             "write_through_config",
@@ -1638,6 +1656,29 @@ class AMXConfig:
                         cfg.code_profiles[str(name)] = path
 
             cfg.active_code_profile = str(data.get("active_code_profile") or "")
+
+            # PR δ: multi-profile code scope + per-profile health
+            # telemetry. Missing keys preserve pre-PR-δ defaults so the
+            # YAML round-trip stays backwards-compatible.
+            run_code_raw = data.get("run_code_profiles") or []
+            if isinstance(run_code_raw, list):
+                cfg.run_code_profiles = [
+                    str(name).strip()
+                    for name in run_code_raw
+                    if isinstance(name, str) and str(name).strip()
+                ]
+
+            code_last_indexed_raw = data.get("code_profile_last_indexed_at") or {}
+            if isinstance(code_last_indexed_raw, dict):
+                for name, ts in code_last_indexed_raw.items():
+                    try:
+                        cfg.code_profile_last_indexed_at[str(name)] = float(ts)
+                    except (TypeError, ValueError):
+                        continue
+            code_last_error_raw = data.get("code_profile_last_error") or {}
+            if isinstance(code_last_error_raw, dict):
+                for name, err in code_last_error_raw.items():
+                    cfg.code_profile_last_error[str(name)] = str(err or "")
 
             doc_link_raw = data.get("doc_profile_linked_dbs") or {}
             if isinstance(doc_link_raw, dict):
@@ -1822,6 +1863,13 @@ class AMXConfig:
             data["code_paths"] = code_paths_yaml
             data["code_profiles"] = dict(self.code_profiles)
             data["active_code_profile"] = self.active_code_profile
+            data["run_code_profiles"] = list(self.run_code_profiles)
+            data["code_profile_last_indexed_at"] = {
+                k: float(v) for k, v in self.code_profile_last_indexed_at.items()
+            }
+            data["code_profile_last_error"] = {
+                k: str(v) for k, v in self.code_profile_last_error.items() if v
+            }
             data["doc_profile_linked_dbs"] = {
                 k: list(v) for k, v in self.doc_profile_linked_dbs.items() if v
             }
@@ -2311,18 +2359,77 @@ class AMXConfig:
             return list(self.doc_profiles[key])
         return list(self.doc_paths)
 
-    def effective_code_paths(self) -> list[str]:
-        if self.code_profiles:
-            name = self.active_code_profile
+    def effective_code_paths(self, name: str | None = None) -> list[str]:
+        """Code paths for a named profile (PR δ) or the active default.
+
+        ``name`` lets the orchestrator's multi-profile fan-out
+        (``effective_run_code_paths``) ask for a *specific* profile's
+        path without flipping the active pointer. The historical
+        no-argument behaviour is unchanged so legacy callers keep
+        working byte-for-byte.
+        """
+        if name is not None:
             if name == DISABLED_PROFILE:
                 return []
-            if name and name in self.code_profiles:
+            if name in self.code_profiles:
                 return [self.code_profiles[name]]
+            return []
+        if self.code_profiles:
+            active = self.active_code_profile
+            if active == DISABLED_PROFILE:
+                return []
+            if active and active in self.code_profiles:
+                return [self.code_profiles[active]]
             if "default" in self.code_profiles:
                 return [self.code_profiles["default"]]
             key = sorted(self.code_profiles.keys())[0]
             return [self.code_profiles[key]]
         return list(self.code_paths)
+
+    def effective_run_code_paths(self) -> list[str]:
+        """Code paths the orchestrator should pass to ``query_code_snippets``.
+
+        When ``run_code_profiles`` is non-empty (multi-profile override
+        set by ``/run --code foo --code bar`` or the Studio Run dialog
+        chip multi-select), return the **union** of every named
+        profile's paths so a single run can pull retrieval context from
+        multiple code collections. Empty list → fall back to the single
+        active profile, matching the pre-PR-δ single-profile behaviour
+        byte-for-byte.
+        """
+        names = [n for n in (self.run_code_profiles or []) if n]
+        if not names:
+            return self.effective_code_paths()
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in names:
+            if name == DISABLED_PROFILE:
+                continue
+            for p in self.effective_code_paths(name):
+                if p and p not in seen:
+                    seen.add(p)
+                    out.append(p)
+        return out
+
+    def record_code_profile_ingest(self, profile_name: str, *, error: str | None = None) -> None:
+        """Stamp the code profile's health telemetry after an index run.
+
+        Mirrors :meth:`record_doc_profile_ingest`. Always updates
+        ``last_indexed_at`` so even a failed index is reflected in the
+        Studio Settings "Last indexed" line — users need to see that
+        something happened, not that the profile is untouched.
+        ``last_error`` records a one-line reason on failure or clears
+        to ``""`` on success.
+        """
+        name = (profile_name or "").strip()
+        if not name:
+            return
+        import time as _time
+
+        self.code_profile_last_indexed_at[name] = _time.time()
+        self.code_profile_last_error[name] = str(error or "")
+        with suppress(Exception):
+            self._autosave_nested()
 
     def resolve_doc_paths(self, profile: str | None, cli_paths: list[str]) -> list[str]:
         """Paths for docs scan/ingest: explicit CLI paths, else named profile, else active effective paths."""
