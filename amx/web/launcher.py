@@ -11,6 +11,12 @@ The launcher:
    default browser at ``http://127.0.0.1:<port>/?t=<token>``.
 5. Blocks the calling thread until Ctrl-C, then signals uvicorn to
    exit and joins the worker thread.
+6. **Restores the parent terminal's tty mode** so the next
+   ``prompt_toolkit`` session re-enters raw mode cleanly. Without
+   this, arrow keys echo as literal ``^[[C`` after Ctrl-C — uvicorn's
+   asyncio loop in a daemon thread can leave stdin in a flushed but
+   non-canonical state on macOS, and the next prompt_toolkit input
+   doesn't recover on its own.
 
 Returns ``True`` when the server actually came up and ``False`` when
 launch failed early (port unavailable, FastAPI extras missing, …) so
@@ -20,10 +26,13 @@ the slash-command dispatcher can render an actionable error.
 from __future__ import annotations
 
 import logging
+import os
 import socket
+import sys
 import threading
 import time
 import webbrowser
+from contextlib import suppress
 from typing import Any
 
 from amx.config import AMXConfig
@@ -156,6 +165,13 @@ def launch_studio(
     if not block:
         return True
 
+    # Snapshot the controlling tty's termios state BEFORE blocking on
+    # uvicorn so we can restore it on exit. macOS in particular leaves
+    # stdin in a flushed-but-non-canonical state after uvicorn's
+    # asyncio loop in a daemon thread tears down — without restore,
+    # the next prompt_toolkit session can't enter raw mode and arrow
+    # keys echo as literal ``^[[C`` until the user restarts the CLI.
+    saved_tty = _snapshot_stdin_tty()
     try:
         while server_thread.is_alive():
             try:
@@ -174,7 +190,55 @@ def launch_studio(
             )
         else:
             print("AMX Studio stopped.")
+        _restore_stdin_tty(saved_tty)
     return True
+
+
+def _snapshot_stdin_tty() -> Any:
+    """Return the current termios attrs for stdin, or ``None`` when
+    stdin is not a tty / termios is unavailable (Windows, piped input)."""
+    if os.name == "nt":
+        return None
+    try:
+        import termios
+    except ImportError:
+        return None
+    fd = _stdin_fd()
+    if fd is None:
+        return None
+    try:
+        return termios.tcgetattr(fd)
+    except (termios.error, OSError):
+        return None
+
+
+def _restore_stdin_tty(saved: Any) -> None:
+    """Re-apply a previously-snapshotted termios state to stdin."""
+    if saved is None:
+        return
+    try:
+        import termios
+    except ImportError:
+        return
+    fd = _stdin_fd()
+    if fd is None:
+        return
+    with suppress(termios.error, OSError):
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def _stdin_fd() -> int | None:
+    """Return stdin's file descriptor when it points at a real tty."""
+    try:
+        fd = sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError):
+        return None
+    try:
+        if not os.isatty(fd):
+            return None
+    except OSError:
+        return None
+    return fd
 
 
 def _wait_for_startup(server: Any, timeout: float) -> bool:
