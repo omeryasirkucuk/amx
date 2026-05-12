@@ -19,6 +19,18 @@ interface DbProfilesResponse {
   profiles: DbProfileSummary[];
 }
 
+interface DocProfileSummary {
+  name: string;
+  paths: string[];
+  is_active: boolean;
+  linked_db_profiles?: string[];
+}
+
+interface DocProfilesResponse {
+  profiles: DocProfileSummary[];
+  active: string | null;
+}
+
 interface Props {
   /** Currently selected scope. ``null`` = "All profiles" (config default). */
   scope: string[] | null;
@@ -55,6 +67,18 @@ export default function AskScopeDropdown({
     queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
     staleTime: 30_000,
   });
+  // PR E: derive the doc profiles in scope from the current DB
+  // selection. Mirrors backend ``resolve_doc_profiles_for_scope`` —
+  // any doc profile whose ``linked_db_profiles`` intersects the
+  // selected DB list is included; doc profiles with no links are
+  // treated as global (always in scope). We compute the union on
+  // the frontend so the chip row updates without an extra round-trip
+  // every time the user toggles a DB profile.
+  const docProfiles = useQuery({
+    queryKey: ["doc-profiles", "list-for-scope"],
+    queryFn: () => apiFetch<DocProfilesResponse>("/api/profiles/docs"),
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -75,6 +99,20 @@ export default function AskScopeDropdown({
 
   const allProfiles = profiles.data?.profiles ?? [];
   const isAllSelected = scope === null;
+  const allDocProfiles = docProfiles.data?.profiles ?? [];
+  // The DB profile names that the docs union runs against. When the
+  // user is on "All profiles", every configured DB profile counts.
+  const dbScopeForDocs = isAllSelected
+    ? allProfiles.map((p) => p.name)
+    : scope;
+  const dbScopeSet = new Set(dbScopeForDocs);
+  const derivedDocProfiles = allDocProfiles
+    .filter((dp) => {
+      const links = dp.linked_db_profiles ?? [];
+      if (links.length === 0) return true; // global doc profile
+      return links.some((db) => dbScopeSet.has(db));
+    })
+    .map((dp) => dp.name);
   const triggerLabel = isAllSelected
     ? `All profiles${allProfiles.length ? ` (${allProfiles.length})` : ""}`
     : scope.length === 0
@@ -181,6 +219,17 @@ export default function AskScopeDropdown({
                 );
               })}
             </ul>
+          )}
+          {derivedDocProfiles.length > 0 && (
+            <div className="border-t border-border bg-surface-subtle/40 px-3 py-1.5 text-[10.5px] text-ink-dim">
+              <span>Docs in scope:</span>{" "}
+              {derivedDocProfiles.map((d, i) => (
+                <span key={d}>
+                  {i > 0 && <span className="opacity-50"> · </span>}
+                  <span className="font-mono text-ink-muted">{d}</span>
+                </span>
+              ))}
+            </div>
           )}
           {focus && (
             <div className="border-t border-border bg-surface-subtle/40 px-3 py-1.5 text-[10.5px] text-ink-dim">
