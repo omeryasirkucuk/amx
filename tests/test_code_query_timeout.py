@@ -54,6 +54,58 @@ def test_query_code_snippets_respects_timeout(monkeypatch, caplog):
     ), f"expected a structured timeout warning; got {[r.message for r in caplog.records]}"
 
 
+def test_query_code_snippets_hybrid_rerank_promotes_literal_match(monkeypatch):
+    """Regression: a user searched the Studio code-search box for
+    ``sap`` against a repo that contained the literal token in a SQL
+    fixture. MiniLM's embedding for a 3-letter query is noisy enough
+    that pure cosine-distance ordering put a non-matching ``.py`` file
+    above the matching ``.sql`` file (distances 1.073, 1.464, 1.682 in
+    the report). The new hybrid rerank scores chunks as
+    ``embedding_score + 2.5 * keyword_overlap`` so any chunk carrying
+    the query token climbs above pure-embedding-noise hits.
+
+    The test stubs Chroma's raw query to return three candidates:
+      - chunk A: distance 1.682, no literal match (noise)
+      - chunk B: distance 1.464, contains the literal token (match)
+      - chunk C: distance 1.073, no literal match (noise)
+
+    Pre-fix this returned [C, B, A] (by distance). Post-fix the
+    keyword-overlap on B is +2.5 and beats the small distance edge,
+    so it lands first."""
+    from amx.codebase import code_rag as cr
+
+    def _fake_query(**_kw):
+        return {
+            "documents": [
+                [
+                    "from typing import Any\n# nothing relevant here",  # A
+                    "-- AMX test fixture: non-trivial SQL around SAP billing header",  # B
+                    "import json\n# Databricks notebook source",  # C
+                ]
+            ],
+            "metadatas": [
+                [
+                    {"source": "/x/a.py", "source_root": "/x", "chunk_idx": 0},
+                    {"source": "/x/sap.sql", "source_root": "/x", "chunk_idx": 0},
+                    {"source": "/x/c.py", "source_root": "/x", "chunk_idx": 0},
+                ]
+            ],
+            "distances": [[1.682, 1.464, 1.073]],
+        }
+
+    fake_coll = SimpleNamespace(query=_fake_query)
+    monkeypatch.setattr(cr, "_open_collection", lambda *_a, **_kw: fake_coll)
+    monkeypatch.setattr(cr.chromadb, "PersistentClient", lambda **_kw: SimpleNamespace())
+
+    hits = cr.query_code_snippets("sap", n_results=3, timeout=None)
+    # The literal-match chunk must come first.
+    assert hits[0]["metadata"]["source"] == "/x/sap.sql"
+    # Hybrid score field is populated and higher than the non-match
+    # hits — the SPA renders this in place of the misleading distance.
+    assert hits[0]["score"] > hits[1]["score"]
+    assert hits[0]["score"] > hits[2]["score"]
+
+
 def test_query_code_snippets_no_timeout_runs_synchronously(monkeypatch):
     """``timeout=None`` (or <= 0) bypasses the executor entirely."""
     from amx.codebase import code_rag as cr

@@ -2161,6 +2161,11 @@ interface CodeSearchHit {
   rel_path: string;
   symbol: string;
   distance: number;
+  /** Hybrid (embedding + keyword-overlap) score from the backend
+   *  rerank. Higher = better. Shown in place of the raw cosine
+   *  distance because short keyword queries against MiniLM produce
+   *  misleading distance numbers even when the result is correct. */
+  score?: number;
   preview: string;
 }
 
@@ -2232,29 +2237,43 @@ function SearchCodeBox() {
               <p className="text-xs text-ink-dim">No matches.</p>
             ) : (
               <ul className="space-y-2">
-                {search.data.hits.map((hit, idx) => (
-                  <li
-                    key={`${hit.source}-${idx}`}
-                    className="rounded-md border border-surface-border bg-surface px-3 py-2"
-                  >
-                    <div className="flex items-center justify-between gap-2 text-[11px]">
-                      <span className="truncate font-mono text-ink-muted">
-                        {hit.source}
-                        {hit.symbol ? (
-                          <span className="ml-2 text-accent-ink">
-                            · {hit.symbol}
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="font-mono text-ink-dim">
-                        d={hit.distance.toFixed(3)}
-                      </span>
-                    </div>
-                    <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-ink-muted">
-                      {hit.preview}
-                    </p>
-                  </li>
-                ))}
+                {search.data.hits.map((hit, idx) => {
+                  // Prefer the hybrid score (embedding + keyword
+                  // overlap) over the raw cosine distance. MiniLM
+                  // distances for short keyword queries are misleading
+                  // — a chunk that literally contains the user's
+                  // keyword can still come back at d≈1.0. The hybrid
+                  // score reorders those correctly and gives the user
+                  // a single "match quality" number where higher is
+                  // unambiguously better.
+                  const hasScore = typeof hit.score === "number" && hit.score > 0;
+                  return (
+                    <li
+                      key={`${hit.source}-${idx}`}
+                      className="rounded-md border border-surface-border bg-surface px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="truncate font-mono text-ink-muted">
+                          {hit.source}
+                          {hit.symbol ? (
+                            <span className="ml-2 text-accent-ink">
+                              · {hit.symbol}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span
+                          className="font-mono text-ink-dim"
+                          title={`distance: ${hit.distance.toFixed(3)}`}
+                        >
+                          {hasScore ? `score ${hit.score!.toFixed(2)}` : `d=${hit.distance.toFixed(3)}`}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-xs text-ink-muted">
+                        {hit.preview}
+                      </p>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

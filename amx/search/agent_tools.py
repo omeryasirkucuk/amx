@@ -5309,12 +5309,13 @@ class ToolBox:
             return {"hits": [], "count": 0, "reason": "empty_query"}
         n = max(1, min(int(n_results or 5), 10))
 
-        if self._doc_profiles_override is not None:
+        doc_override = getattr(self, "_doc_profiles_override", None)
+        if doc_override is not None:
             # Explicit user pick from the Studio dropdown or the CLI
             # ``--doc-profile`` flag. Empty list = "skip doc retrieval
             # for this question" — honoured without falling back to
             # the auto-resolved set.
-            profiles = [p for p in self._doc_profiles_override if p in self.cfg.doc_profiles]
+            profiles = [p for p in doc_override if p in self.cfg.doc_profiles]
             override_in_effect = True
         else:
             profiles = resolve_doc_profiles_for_scope(self.cfg, self.db_profiles)
@@ -5397,8 +5398,9 @@ class ToolBox:
             return {"hits": [], "count": 0, "reason": "empty_query"}
         n = max(1, min(int(n_results or 5), 10))
 
-        if self._code_profiles_override is not None:
-            profiles = [p for p in self._code_profiles_override if p in self.cfg.code_profiles]
+        code_override = getattr(self, "_code_profiles_override", None)
+        if code_override is not None:
+            profiles = [p for p in code_override if p in self.cfg.code_profiles]
             code_override_in_effect = True
         else:
             profiles = resolve_code_profiles_for_scope(self.cfg, self.db_profiles)
