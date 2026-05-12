@@ -83,7 +83,7 @@ def render_summary_and_apply(
     if approved:
         render_table(
             "Approved metadata",
-            ["Asset", "Description", "Confidence", "Logprob", "Source"],
+            ["Asset", "Description", "Confidence", "Logprob", "Source", "Sources"],
             [
                 [
                     f"{r.schema}.{r.table}.{r.column}"
@@ -93,6 +93,7 @@ def render_summary_and_apply(
                     r.confidence.value,
                     f"{r.logprob_score:.4f}" if r.logprob_score is not None else "N/A",
                     r.source,
+                    _format_sources_cell(r),
                 ]
                 for r in approved
             ],
@@ -120,6 +121,50 @@ def render_summary_and_apply(
     )
 
     return approved, skipped
+
+
+def _format_sources_cell(review_result: Any) -> str:
+    """Render a compact ``path:chunk_idx, path:chunk_idx`` cell.
+
+    Reads :attr:`ReviewResult.citations` populated by the orchestrator
+    on every RAG-derived or merged-with-RAG suggestion. Returns the
+    empty string when no citations are attached -- the spec is
+    explicit that non-RAG rows should render as truly empty (no
+    placeholder dash) so a 200-row run summary stays scannable.
+    Truncates with an ellipsis past ~60 chars so a long citation list
+    cannot push other columns off-screen.
+    """
+    citations = getattr(review_result, "citations", None) or []
+    if not citations:
+        return ""
+    parts: list[str] = []
+    for c in citations:
+        source = getattr(c, "source", None)
+        if source is None and isinstance(c, dict):
+            source = c.get("source")
+        if not source:
+            continue
+        chunk_idx = getattr(c, "chunk_idx", None)
+        if chunk_idx is None and isinstance(c, dict):
+            chunk_idx = c.get("chunk_idx", 0)
+        parts.append(f"{source}:{int(chunk_idx or 0)}")
+    if not parts:
+        return ""
+    rendered = ", ".join(parts)
+    if len(rendered) > 60:
+        # Trim full entries from the right and replace the dropped
+        # tail with an ellipsis so the user can still tell which
+        # documents the suggestion drew from at a glance.
+        truncated_parts: list[str] = []
+        running = 0
+        for part in parts:
+            extra = len(part) + (2 if truncated_parts else 0)
+            if running + extra > 57:
+                break
+            truncated_parts.append(part)
+            running += extra
+        rendered = ", ".join(truncated_parts) + ("…" if truncated_parts else parts[0][:57] + "…")
+    return rendered
 
 
 def _emit_dedup_recap(dedup_outcome: Any) -> None:

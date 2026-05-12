@@ -280,6 +280,12 @@ class ReviewResult:
     result_id: int | None = None  # FK to run_results.id (for re-evaluation)
     alternatives: list[str] = field(default_factory=list)
     logprob_score: float | None = None
+    #: PR C: citation trail copied from the originating
+    #: :class:`MetadataSuggestion` so the CLI run summary can render
+    #: a "Sources" column without re-querying the run record. Empty
+    #: list on non-RAG / merge-only results to keep the rendering
+    #: branch a single ``if citations:`` check.
+    citations: list = field(default_factory=list)
 
 
 class RunCancelled(RuntimeError):
@@ -1376,6 +1382,21 @@ class Orchestrator:
             if len(all_descs) < cap:
                 underfilled[col_name] = all_descs
 
+            # Union citations from every input suggestion (RAG + DB +
+            # codebase) onto the merged output, deduped by
+            # ``(source, chunk_idx)``. Without this the merge step
+            # would silently drop the provenance trail RAGAgent
+            # attached to its per-agent suggestion.
+            merged_citations: list = []
+            seen_citations: set = set()
+            for s in col_suggestions:
+                for c in getattr(s, "citations", None) or []:
+                    key_ = (c.source, c.chunk_idx)
+                    if key_ in seen_citations:
+                        continue
+                    seen_citations.add(key_)
+                    merged_citations.append(c)
+
             merge_results.append(
                 MetadataSuggestion(
                     schema=ctx.schema,
@@ -1385,6 +1406,7 @@ class Orchestrator:
                     confidence=conf,
                     reasoning=reasoning,
                     source="combined",
+                    citations=merged_citations,
                 )
             )
 
@@ -1533,6 +1555,19 @@ class Orchestrator:
                 "model_version": self.llm.model_name,
                 "reasoning": s.reasoning,
                 "alternatives": s.suggestions,
+                # PR C: machine-readable provenance for RAG-derived
+                # suggestions. Dataclass -> plain-dict conversion
+                # happens here so the storage layer stays
+                # JSON-only.
+                "citations": [
+                    {
+                        "source": c.source,
+                        "chunk_idx": c.chunk_idx,
+                        "score": c.score,
+                        "snippet": c.snippet,
+                    }
+                    for c in (getattr(s, "citations", None) or [])
+                ],
             }
             for s in suggestions
         ]
@@ -1778,6 +1813,7 @@ class Orchestrator:
                         asset_kind=asset_kind,
                         result_id=rid,
                         logprob_score=s.logprob_score,
+                        citations=list(getattr(s, "citations", None) or []),
                     )
                     self._record_evaluation(
                         rid, chosen_description=s.suggestions[0], evaluation="accepted"
@@ -1799,6 +1835,7 @@ class Orchestrator:
                         asset_kind=asset_kind,
                         result_id=rid,
                         logprob_score=s.logprob_score,
+                        citations=list(getattr(s, "citations", None) or []),
                     )
                     self._record_evaluation(rid, chosen_description="", evaluation="skipped")
                     results.append(rr)
@@ -1953,6 +1990,7 @@ class Orchestrator:
                 asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
+                citations=list(getattr(s, "citations", None) or []),
             )
         elif choice == "Other (type your own)":
             custom = ask("Enter your description")
@@ -1968,6 +2006,7 @@ class Orchestrator:
                 asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
+                citations=list(getattr(s, "citations", None) or []),
             )
         else:
             self._record_evaluation(result_id, chosen_description=choice, evaluation="accepted")
@@ -1982,6 +2021,7 @@ class Orchestrator:
                 asset_kind=asset_kind,
                 result_id=result_id,
                 logprob_score=s.logprob_score,
+                citations=list(getattr(s, "citations", None) or []),
             )
 
     # ── Batch mode ────────────────────────────────────────────────────────────

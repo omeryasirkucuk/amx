@@ -460,6 +460,7 @@ class TableProcessor:
                     asset_kind=ak,
                     result_id=rid,
                     logprob_score=s.logprob_score,
+                    citations=list(getattr(s, "citations", None) or []),
                 )
             )
 
@@ -513,6 +514,7 @@ class TableProcessor:
                     asset_kind=ak,
                     result_id=result_id_map.get(s.column),
                     logprob_score=s.logprob_score,
+                    citations=list(getattr(s, "citations", None) or []),
                 )
             )
         self.orch.results.extend(results)
