@@ -202,10 +202,14 @@ def launch_studio(
         )
 
     print(  # user-facing — keep print, not log
-        f"AMX Studio running → {url}\n"
-        f"AMX Studio logs    → {log_path}\n"
-        "Press Ctrl-C in this terminal to stop AMX Studio."
+        f"AMX Studio running → {url}\nPress Ctrl-C in this terminal to stop AMX Studio."
     )
+    # Log path also goes to the rotating file logger so a user who
+    # needs to debug can find it via ``amx doctor`` or by tailing
+    # the logs directory directly. Not printed to the interactive
+    # terminal because it adds visual noise for the 99% of users
+    # who never need it.
+    log.debug("AMX Studio logs at %s", log_path)
     if open_browser:
         try:
             webbrowser.open_new_tab(url)
@@ -238,13 +242,21 @@ def _shutdown_child(proc: subprocess.Popen) -> None:
 
     Each escalation is wrapped against a second ``KeyboardInterrupt``
     so a user mashing Ctrl-C never leaves an orphan child process.
+
+    Escalation events go to ``log.debug``, not stdout — with the
+    child-side fast-shutdown handler in
+    :mod:`amx.web._studio_subprocess` they should never fire in
+    normal use. The (rare) cases where they do still write to the
+    AMX log file so a curious user can investigate via
+    ``~/.amx*/logs/`` without forcing visible noise on every
+    Ctrl-C.
     """
     _signal_child_group(proc, signal.SIGINT)
     try:
         proc.wait(timeout=SHUTDOWN_TIMEOUT_SEC)
         return
     except subprocess.TimeoutExpired:
-        log.warning(
+        log.debug(
             "AMX Studio child did not exit within %.1fs; sending SIGTERM.",
             SHUTDOWN_TIMEOUT_SEC,
         )
@@ -256,7 +268,7 @@ def _shutdown_child(proc: subprocess.Popen) -> None:
         proc.wait(timeout=TERMINATE_TIMEOUT_SEC)
         return
     except subprocess.TimeoutExpired:
-        log.warning("AMX Studio child still alive after SIGTERM; sending SIGKILL.")
+        log.debug("AMX Studio child still alive after SIGTERM; sending SIGKILL.")
     except KeyboardInterrupt:  # pragma: no cover
         pass
 
