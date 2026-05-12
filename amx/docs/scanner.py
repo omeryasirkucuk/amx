@@ -16,28 +16,10 @@ from typing import Any
 
 import requests
 
+from amx.docs.extensions import SUPPORTED_EXTENSIONS
 from amx.utils.logging import get_logger
 
 log = get_logger("docs.scanner")
-
-SUPPORTED_EXTENSIONS = {
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".txt",
-    ".md",
-    ".csv",
-    ".xlsx",
-    ".xls",
-    ".html",
-    ".htm",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".rst",
-    ".rtf",
-    ".pptx",
-}
 
 
 @dataclass

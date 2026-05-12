@@ -35,27 +35,13 @@ MAX_FILE_BYTES: int = 25 * 1024 * 1024
 #: respond.
 MAX_BATCH_BYTES: int = 100 * 1024 * 1024
 
+from amx.docs.extensions import SUPPORTED_EXTENSIONS
+
 #: Extensions :mod:`amx.docs.scanner` knows how to load. Anything else
-#: lands in the upload folder unread by the RAG agent.
-ACCEPTED_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        ".md",
-        ".markdown",
-        ".txt",
-        ".pdf",
-        ".docx",
-        ".doc",
-        ".csv",
-        ".tsv",
-        ".html",
-        ".htm",
-        ".rst",
-        ".rtf",
-        ".json",
-        ".yaml",
-        ".yml",
-    }
-)
+#: lands in the upload folder unread by the RAG agent. Re-exported from
+#: :mod:`amx.docs.extensions` so the upload validator and the scanner
+#: share one source of truth.
+ACCEPTED_EXTENSIONS: frozenset[str] = SUPPORTED_EXTENSIONS
 
 
 @dataclass

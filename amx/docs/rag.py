@@ -64,7 +64,17 @@ LOADER_MAP = {
     ".doc": Docx2txtLoader,
     ".txt": TextLoader,
     ".md": UnstructuredMarkdownLoader,
+    # ``.markdown`` is just the long-form extension of ``.md`` — same
+    # syntax, same loader. Listing it explicitly keeps the LOADER_MAP /
+    # SUPPORTED_EXTENSIONS contract honest (every supported extension
+    # has its own loader entry).
+    ".markdown": UnstructuredMarkdownLoader,
     ".csv": CSVLoader,
+    # TSV is tab-separated values; ``CSVLoader`` is delimiter-agnostic
+    # at the langchain level and treats the file as one logical record
+    # per row, which is all the RAG pipeline needs (the splitter then
+    # decides chunking).
+    ".tsv": CSVLoader,
     ".xlsx": UnstructuredExcelLoader,
     ".xls": UnstructuredExcelLoader,
     ".html": UnstructuredHTMLLoader,
@@ -74,7 +84,9 @@ LOADER_MAP = {
     ".yaml": TextLoader,
     ".yml": TextLoader,
     ".rst": TextLoader,
-    ".rtf": TextLoader,
+    # Python source files: index as plain text so the chunker can pull
+    # out docstrings / comments alongside code identifiers.
+    ".py": TextLoader,
 }
 
 
