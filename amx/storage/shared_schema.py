@@ -872,15 +872,15 @@ def build_metadata(schema: str | None = None) -> MetaData:
         ),
         Column(
             "created_at",
-            DateTime(timezone=True),
+            Text,
             nullable=False,
-            comment="UTC timestamp of the first upsert for this llm_profile.",
+            comment="Stored as TEXT representation of a Unix timestamp float, mirroring the local SQLite schema.",
         ),
         Column(
             "updated_at",
-            DateTime(timezone=True),
+            Text,
             nullable=False,
-            comment="UTC timestamp of the most recent upsert for this llm_profile.",
+            comment="Stored as TEXT representation of a Unix timestamp float, mirroring the local SQLite schema.",
         ),
         comment=(
             "One row per LLM profile containing the derived StyleProfile that "
