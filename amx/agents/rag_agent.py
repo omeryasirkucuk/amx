@@ -241,8 +241,18 @@ class RAGAgent(BaseAgent):
         from amx.docs.rag import RAGQueryTimeout
 
         timeout = self._rag_query_timeout()
+        # Carry the prompt-detail floor through to the store so a doc
+        # profile that's only weakly related to the table (e.g. the
+        # user uploaded a resume PDF instead of warehouse docs)
+        # doesn't bleed into the LLM prompt as if it were evidence.
+        min_similarity = float(getattr(self._prompt_detail, "rag_min_similarity", 0.0) or 0.0)
         try:
-            hits = self.rag.query(question, n_results=n_results, timeout=timeout)
+            hits = self.rag.query(
+                question,
+                n_results=n_results,
+                timeout=timeout,
+                min_similarity=min_similarity,
+            )
             return (hits, False)
         except RAGQueryTimeout:
             return ([], True)

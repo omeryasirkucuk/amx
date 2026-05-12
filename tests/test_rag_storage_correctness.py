@@ -168,6 +168,56 @@ def test_record_rag_unavailable_reason_tags_mismatch(monkeypatch) -> None:
     assert "openai_compatible" in sink["rag_unavailable_reason"]
 
 
+def test_query_drops_chunks_above_distance_ceiling(monkeypatch, tmp_path: Path) -> None:
+    """Regression: a doc profile whose chunks return high cosine
+    distances (cosine_sim < ``rag_min_similarity``) used to flow into
+    the LLM prompt as if they were authoritative. A real-world case
+    was a CV uploaded as the doc profile — every column-level query
+    returned the resume with distance 0.66–1.02 and the agent
+    synthesised absurd "address alias / exclusion" descriptions from
+    it. ``min_similarity`` filters those out before they ever reach
+    the rerank step or the prompt.
+
+    Test plan:
+      * Stub Chroma's raw ``collection.query`` so we control the
+        distances directly (no embedding model needed).
+      * Confirm a strong match (distance 0.30) survives.
+      * Confirm a weak match (distance 0.85) is dropped when
+        ``min_similarity=0.40`` is passed.
+      * Confirm ``min_similarity=0.0`` (legacy default) keeps the
+        weak chunk in the result so existing callers don't change
+        behaviour silently.
+    """
+    store = _make_store(tmp_path / "chroma")
+
+    def _fake_query(query_texts: list[str], n_results: int) -> dict:
+        return {
+            "documents": [["RELEVANT chunk about zip codes.", "RESUME irrelevant block."]],
+            "metadatas": [
+                [{"source": "/abs/zips.md", "source_root": "/abs"}],
+            ][:0]
+            + [
+                [
+                    {"source": "/abs/zips.md", "source_root": "/abs"},
+                    {"source": "/abs/resume.pdf", "source_root": "/abs"},
+                ]
+            ],
+            "distances": [[0.30, 0.85]],
+        }
+
+    monkeypatch.setattr(store.collection, "query", _fake_query)
+    # Legacy default keeps every hit.
+    hits_default = store.query("zip code column", n_results=5)
+    assert len(hits_default) == 2
+    sources_default = [h["metadata"].get("source") for h in hits_default]
+    assert "/abs/resume.pdf" in sources_default
+
+    # Threshold drops the noise chunk.
+    hits_filtered = store.query("zip code column", n_results=5, min_similarity=0.40)
+    assert len(hits_filtered) == 1
+    assert hits_filtered[0]["metadata"].get("source") == "/abs/zips.md"
+
+
 def test_format_rag_unavailable_reason_tags_mismatch() -> None:
     """The library-side helper used by ``infer_table_metadata`` mirrors
     the analyze-flow tagging so the two paths never drift."""

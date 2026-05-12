@@ -430,6 +430,7 @@ class RAGStore:
         n_results: int = 5,
         *,
         timeout: float | None = None,
+        min_similarity: float = 0.0,
     ) -> list[dict]:
         raw_n = max(int(n_results), min(int(n_results) * 4, 40))
 
@@ -468,16 +469,35 @@ class RAGStore:
         else:
             results = _do_query()
 
+        # Drop chunks below the caller's relevance floor before anything
+        # else looks at them. Chroma uses cosine *distance* (1 -
+        # cosine_similarity) on minilm-l6-v2 collections — so a higher
+        # distance is a worse match. The threshold compares against the
+        # equivalent ``1 - min_similarity`` ceiling. ``min_similarity=0``
+        # disables the filter (legacy behaviour). A real-world case the
+        # filter catches: a resume PDF chunked alongside a database
+        # generated distances 0.66–1.02 against a ``zip_code`` column
+        # (cosine_sim ≈ 0.34 down to -0.02 — basically orthogonal); the
+        # LLM consumed them and synthesised absurd descriptions.
+        threshold = float(min_similarity or 0.0)
+        max_distance = (1.0 - threshold) if threshold > 0.0 else None
         hits: list[dict] = []
         for i in range(len(results["documents"][0])):
             meta = results["metadatas"][0][i]
             if not self._source_allowed(meta):
                 continue
+            raw_distance = results["distances"][0][i] if results.get("distances") else None
+            if (
+                max_distance is not None
+                and raw_distance is not None
+                and float(raw_distance) > max_distance
+            ):
+                continue
             hits.append(
                 {
                     "text": results["documents"][0][i],
                     "metadata": meta,
-                    "distance": results["distances"][0][i] if results.get("distances") else None,
+                    "distance": raw_distance,
                 }
             )
         return self.rerank(question, hits)[:n_results]
