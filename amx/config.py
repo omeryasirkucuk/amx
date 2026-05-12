@@ -1736,11 +1736,43 @@ class AMXConfig:
         cfg.llm.api_key = cfg.llm.api_key or os.getenv("AMX_LLM_API_KEY", "")
 
         if not cfg.db_profiles:
-            # No saved DB profiles — leave empty and clear the active pointer
-            # so the CLI prompts setup instead of showing a phantom row built
-            # from hardcoded defaults or the active mirror.
-            cfg.active_db_profile = ""
-            cfg.active_db_profiles = []
+            # Three distinct cases collapse into the same observable
+            # state here:
+            #   1) Genuinely no saved DB profiles (first run / clean
+            #      install). YAML's ``active_db_profile`` is the
+            #      loader-injected placeholder ``"default"`` from the
+            #      ``or "default"`` fallback at the assignment above.
+            #   2) Truly empty YAML state — ``active_db_profile`` is
+            #      the empty string. Same as (1) for our purposes.
+            #   3) The YAML carried a USER-CHOSEN ``active_db_profile``
+            #      (anything other than the ``"default"`` placeholder)
+            #      but ``db_profiles`` parsed as empty — almost always
+            #      a sign of upstream data corruption (the dict body
+            #      was wiped while the scalar reference survived, as
+            #      seen during the PR #351 reload race investigation).
+            # Cases 1 + 2 we clear normally (the CLI prompts setup).
+            # Case 3 we preserve the active name so the user has a
+            # breadcrumb back to recovery — ``amx doctor`` /
+            # ``amx restore-config`` (PR β) can use the surviving
+            # name to pick the right backup to restore. Clobbering
+            # the name would erase that breadcrumb and turn a
+            # recoverable situation into a silent data loss.
+            is_real_user_choice = cfg.active_db_profile and cfg.active_db_profile != "default"
+            if is_real_user_choice:
+                import logging as _logging
+
+                _logging.getLogger("amx.config").warning(
+                    "db_profiles is empty but active_db_profile=%r is set; "
+                    "preserving the reference so recovery tooling can find "
+                    "the right backup. Run `amx doctor` for diagnosis.",
+                    cfg.active_db_profile,
+                )
+                # Keep ``active_db_profile`` as-is; clear the scope
+                # list only if it points at non-existent profiles.
+                cfg.active_db_profiles = []
+            else:
+                cfg.active_db_profile = ""
+                cfg.active_db_profiles = []
         else:
             # Drop scope entries that point at deleted profiles. Without this,
             # an outdated YAML carrying ``active_db_profiles: [foo]`` after
@@ -1863,72 +1895,102 @@ class AMXConfig:
             fresh = AMXConfig.load(path_str)
         except Exception:
             return False
-        # Mutate self in place: callers (history_store, embedding
-        # provider, slash-command handlers) hold references to this
-        # specific instance and must continue to see the same object
-        # with updated fields. Touch every mutable surface that
-        # ``load()`` populates from YAML. Anything missing here is a
-        # known bug — keep this list in sync when adding new YAML keys.
-        for attr in (
-            "doc_paths",
-            "code_paths",
-            "selected_schemas",
-            "selected_tables",
-            "active_db_profile",
-            "active_db_profiles",
-            "current_schema",
-            "current_table",
-            "active_llm_profile",
-            "rag_llm_profile",
-            "active_doc_profile",
-            "run_doc_profiles",
-            "active_code_profile",
-            "run_code_profiles",
-            "history_store_enabled",
-            "history_store_profile",
-            "history_store_database",
-            "history_store_schema",
-        ):
-            if hasattr(fresh, attr):
-                try:
-                    setattr(self, attr, getattr(fresh, attr))
-                except Exception:
+        # CRITICAL: suspend autosave for the entire reload window.
+        # Without this, the scalar ``setattr`` loop below would
+        # trigger ``_autosave_nested`` on every assignment — and the
+        # FIRST scalar set would persist a partially-merged state
+        # (fresh scalars + stale dicts that haven't been swapped
+        # yet) back to disk. Real-world symptom: user's
+        # ``db_profiles`` / ``llm_profiles`` got progressively
+        # truncated to empty maps while their ``active_*_profile``
+        # name scalars survived, producing the "History store isn't
+        # initialized yet — activate a DB profile" error and the
+        # appearance that profile data had been lost. The data was
+        # intact in memory at every individual moment; the intermediate
+        # save just kept writing the half-state to YAML.
+        object.__setattr__(self, "_autosave_suspended", self._autosave_suspended + 1)
+        try:
+            # Mutate self in place: callers (history_store, embedding
+            # provider, slash-command handlers) hold references to this
+            # specific instance and must continue to see the same object
+            # with updated fields. Touch every mutable surface that
+            # ``load()`` populates from YAML. Anything missing here is a
+            # known bug — keep this list in sync when adding new YAML
+            # keys (also keep it in sync with ``save()``).
+
+            # DICTS FIRST. Profile dicts and nested telemetry dicts —
+            # swap contents in-place so existing references keep
+            # pointing at the right collection object. Doing this
+            # BEFORE the scalar loop is defensive: even if the
+            # autosave suspension above were ever removed by mistake,
+            # the dicts would already be fresh by the time a save
+            # could fire from a scalar setattr.
+            for dict_attr in (
+                "db_profiles",
+                "llm_profiles",
+                "doc_profiles",
+                "code_profiles",
+                "doc_profiles_last_ingested_at",
+                "doc_profiles_last_error",
+                "code_profile_last_indexed_at",
+                "code_profile_last_error",
+                "doc_profile_linked_dbs",
+                "code_profile_linked_dbs",
+            ):
+                target = getattr(self, dict_attr, None)
+                source = getattr(fresh, dict_attr, None)
+                if isinstance(target, dict) and isinstance(source, dict):
+                    target.clear()
+                    target.update(source)
+
+            # Nested dataclasses (``cfg.db``, ``cfg.llm``,
+            # ``cfg.embedding``) before scalars too, same reason.
+            for nested_attr in ("db", "llm", "embedding"):
+                fresh_nested = getattr(fresh, nested_attr, None)
+                if fresh_nested is None:
                     continue
-        # Profile dicts and nested telemetry dicts: swap contents
-        # in-place so existing references keep pointing at the right
-        # collection object.
-        for dict_attr in (
-            "db_profiles",
-            "llm_profiles",
-            "doc_profiles",
-            "code_profiles",
-            "doc_profiles_last_ingested_at",
-            "doc_profiles_last_error",
-            "code_profile_last_indexed_at",
-            "code_profile_last_error",
-            "doc_profile_linked_dbs",
-            "code_profile_linked_dbs",
-        ):
-            target = getattr(self, dict_attr, None)
-            source = getattr(fresh, dict_attr, None)
-            if isinstance(target, dict) and isinstance(source, dict):
-                target.clear()
-                target.update(source)
-        # ``self.db`` / ``self.llm`` mirror the active profile; sync
-        # them from the freshly-loaded copy so dataclass field reads
-        # reflect any Studio-side edits to those profiles.
-        for nested_attr in ("db", "llm", "embedding"):
-            fresh_nested = getattr(fresh, nested_attr, None)
-            if fresh_nested is None:
-                continue
-            target_nested = getattr(self, nested_attr, None)
-            if target_nested is None:
-                continue
-            for fld in fresh_nested.__dataclass_fields__:
-                try:
-                    setattr(target_nested, fld, getattr(fresh_nested, fld))
-                except Exception:
+                target_nested = getattr(self, nested_attr, None)
+                if target_nested is None:
                     continue
+                for fld in fresh_nested.__dataclass_fields__:
+                    try:
+                        setattr(target_nested, fld, getattr(fresh_nested, fld))
+                    except Exception:
+                        continue
+
+            # Scalars LAST. Now safe even if autosave were to fire —
+            # all dicts are already aligned with disk.
+            for attr in (
+                "doc_paths",
+                "code_paths",
+                "selected_schemas",
+                "selected_tables",
+                "active_db_profile",
+                "active_db_profiles",
+                "current_schema",
+                "current_table",
+                "active_llm_profile",
+                "rag_llm_profile",
+                "active_doc_profile",
+                "run_doc_profiles",
+                "active_code_profile",
+                "run_code_profiles",
+                "history_store_enabled",
+                "history_store_profile",
+                "history_store_database",
+                "history_store_schema",
+            ):
+                if hasattr(fresh, attr):
+                    try:
+                        setattr(self, attr, getattr(fresh, attr))
+                    except Exception:
+                        continue
+        finally:
+            object.__setattr__(
+                self,
+                "_autosave_suspended",
+                max(0, self._autosave_suspended - 1),
+            )
         object.__setattr__(self, "_loaded_mtime", disk_mtime)
         return True
 
