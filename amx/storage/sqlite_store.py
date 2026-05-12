@@ -1963,10 +1963,20 @@ class SQLiteHistoryStore:
         return out
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10)
+        # ``timeout=30`` and the matching ``PRAGMA busy_timeout`` both
+        # bump the lock-wait budget so concurrent Studio + CLI writers
+        # don't surface ``database is locked`` warnings under realistic
+        # contention (Studio worker writing run rows while the chat
+        # session is mid-LLM call, plus catalog scans landing alongside).
+        # WAL keeps readers non-blocking; the timeout only matters for
+        # writer-vs-writer overlap. The PRAGMA is the authoritative
+        # knob — sqlite3's ``timeout=`` arg is occasionally ignored
+        # depending on the platform's libsqlite version.
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def log_event(
