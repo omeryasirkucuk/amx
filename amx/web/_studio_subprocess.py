@@ -70,29 +70,49 @@ def main() -> int:
     # Disable uvicorn's built-in signal install — under uvloop on
     # macOS its default handler routinely takes 3+ seconds to react
     # to SIGINT, which forces the parent launcher to escalate all
-    # the way to SIGKILL. We register a synchronous handler that
-    # flips ``server.should_exit`` immediately, so the next loop
-    # iteration drains in-flight requests and exits cleanly.
+    # the way to SIGKILL. We install our own loop-aware handler
+    # below so the shutdown flag flips inside the running loop,
+    # NOT from a Python signal handler that competes with uvloop.
     server.install_signal_handlers = lambda: None
 
-    def _handle_shutdown(signum: int, _frame: object) -> None:
-        # ``should_exit`` is uvicorn's documented graceful-shutdown
-        # flag; ``force_exit`` short-circuits in-flight request
-        # waiting so SIGTERM feels snappy when the user is impatient.
+    asyncio.run(_serve_with_fast_shutdown(server))
+    return 0
+
+
+async def _serve_with_fast_shutdown(server: uvicorn.Server) -> None:  # noqa: F821
+    """Run uvicorn with loop-aware signal handlers.
+
+    Python's synchronous :func:`signal.signal` handler can race with
+    uvloop's event loop — the flip to ``server.should_exit`` is
+    deferred until the loop next checks bytecode, which under
+    in-flight ASGI middleware can take several seconds. Asyncio's
+    ``loop.add_signal_handler`` instead schedules the callback
+    inside the loop itself, so the flag flips on the next event
+    tick. Same outcome, much faster (~100ms vs 3s+ in practice).
+
+    SIGTERM also flips ``force_exit`` so anyio cancel-scopes in the
+    middleware stack release immediately instead of waiting for
+    pending tasks to drain.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _trigger_shutdown(signum: int) -> None:
         server.should_exit = True
         if signum == signal.SIGTERM:
             server.force_exit = True
 
-    signal.signal(signal.SIGINT, _handle_shutdown)
-    signal.signal(signal.SIGTERM, _handle_shutdown)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _trigger_shutdown, sig)
+        except NotImplementedError:  # pragma: no cover - Windows
+            # asyncio on Windows doesn't support add_signal_handler;
+            # fall back to the synchronous variant for those platforms.
+            signal.signal(sig, lambda s, _f, _sig=sig: _trigger_shutdown(_sig))
 
     try:
-        asyncio.run(server.serve())
-    except KeyboardInterrupt:
-        # Last-ditch safety net; the signal handler above usually
-        # arrives first and lets ``serve()`` return normally.
+        await server.serve()
+    except KeyboardInterrupt:  # pragma: no cover - safety net
         pass
-    return 0
 
 
 if __name__ == "__main__":
