@@ -534,6 +534,22 @@ class SQLiteHistoryStore:
                 "ON chat_turns(session_id, turn_index)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_turns_run ON chat_turns(run_id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS style_profiles (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    llm_profile     TEXT    NOT NULL,
+                    source_ref      TEXT    NOT NULL,
+                    source_db_kind  TEXT    NOT NULL,
+                    profile_json    TEXT    NOT NULL,
+                    enabled         INTEGER NOT NULL DEFAULT 1,
+                    sample_count    INTEGER NOT NULL,
+                    created_at      TEXT    NOT NULL,
+                    updated_at      TEXT    NOT NULL,
+                    UNIQUE (llm_profile)
+                )
+                """
+            )
 
     def _ensure_run_columns(self, conn: Any) -> None:
         """Idempotently add the v0.5.2 reporting columns to analysis_runs.

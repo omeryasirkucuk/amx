@@ -25,6 +25,7 @@ import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import { invalidateAfterDbProfileMutation } from "../lib/profileMutations";
 import { InfoHint, Tabs, TabsList, Tab as TabTrigger, TabPanel } from "../components/ui";
+import { StyleReferenceCard } from "../components/StyleReferenceCard";
 
 type Tab = "db" | "llm" | "docs" | "code";
 
@@ -700,6 +701,7 @@ function LlmProfilesSection() {
           )}
         </CardBody>
       </Card>
+      <StyleReferenceCard llmProfile={profiles.data?.active ?? null} />
       {editing && (
         <LlmProfileWizard open editingName={editing.name} onClose={() => setEditing(null)} />
       )}
