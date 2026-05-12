@@ -1,7 +1,5 @@
 <p align="center">
-  <a href="https://www.youtube.com/watch?v=NmEVxqkfZdI">
-    <img src="docs/assets/amx-demo-thumb.jpg" alt="Watch AMX in action on YouTube" width="760">
-  </a>
+  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/amx-readme.gif" alt="AMX in action" width="760">
 </p>
 
 <p align="center">
