@@ -83,6 +83,35 @@ class ChatSessionPersistenceTests(unittest.TestCase):
             self.assertEqual(turns[1]["role"], "assistant")
             self.assertEqual(turns[1]["tables"], ["finance.invoices"])
 
+    def test_delete_session_drops_turns_and_returns_true(self) -> None:
+        """``delete_session`` must wipe both the chat_sessions row AND
+        the chat_turns it owns. ``end_session`` is a soft mark; this is
+        the hard-remove the Studio sidebar / CLI ``/session delete``
+        need so a user can prune throwaway chats from the picker."""
+        with tempfile.TemporaryDirectory() as td:
+            _, store = _fresh_store(td)
+            sid = store.start_session(db_profile="dev", llm_profile="default")
+            store.append_user_turn(sid, question="ephemeral")
+            store.append_assistant_turn(
+                sid,
+                run_id=None,
+                answer_summary="ack",
+                intent="x",
+                topic="x",
+                tables=[],
+                columns=[],
+            )
+            self.assertIsNotNone(store.get_session(sid))
+            self.assertEqual(len(store.recent_turns(sid)), 2)
+
+            deleted = store.delete_session(sid)
+            self.assertTrue(deleted)
+            self.assertIsNone(store.get_session(sid))
+            self.assertEqual(store.recent_turns(sid), [])
+
+            # Idempotent: a second delete is a no-op that reports False.
+            self.assertFalse(store.delete_session(sid))
+
     def test_list_sessions_filters_by_active_profile_pair(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             _, store = _fresh_store(td)

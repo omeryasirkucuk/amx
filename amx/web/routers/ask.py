@@ -68,6 +68,24 @@ class AskRequest(BaseModel):
             "{id} instead."
         ),
     )
+    doc_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit doc-profile selection for THIS question. ``None`` "
+            "(default) keeps the legacy behaviour: doc profiles are derived "
+            "from ``scope_profiles`` via the link map. An explicit list "
+            "lets the user opt into ``N`` doc profiles regardless of which "
+            "DBs are in scope, OR pass ``[]`` to skip doc retrieval "
+            "entirely while still asking DB-grounded questions."
+        ),
+    )
+    code_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "Explicit code-profile selection for THIS question. Same "
+            "semantics as ``doc_profiles``."
+        ),
+    )
 
 
 class UpdateSessionRequest(BaseModel):
@@ -195,7 +213,16 @@ def submit_ask(
     job = jobs.new_job("ask")
     thread = threading.Thread(
         target=_ask_worker,
-        args=(cfg, job, body.question, session_id, db_profile, scope_profiles),
+        args=(
+            cfg,
+            job,
+            body.question,
+            session_id,
+            db_profile,
+            scope_profiles,
+            body.doc_profiles,
+            body.code_profiles,
+        ),
         name=f"amx-studio-ask-{job.id}",
         daemon=True,
     )
@@ -364,6 +391,39 @@ def end_session(session_id: int, cfg: AMXConfig = Depends(get_cfg)) -> dict[str,
     store.end_session(session_id)
     # Clear the active chat session pointer if it was pointing here so
     # the CLI REPL also reflects the end.
+    if int(getattr(cfg, "active_chat_session_id", 0) or 0) == int(session_id):
+        cfg.active_chat_session_id = 0
+        try:
+            cfg.save()
+        except Exception:
+            pass
+    return {"ok": True, "session_id": int(session_id)}
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: int, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Hard-remove a chat session and every turn under it.
+
+    ``end_session`` only marks the row inactive — past chats keep
+    showing up in the sidebar list. Studio and the CLI both need a
+    real delete so a user can prune throwaway / experimental
+    conversations they don't want to see in the picker.
+    """
+    store = _session_store_or_none()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat history isn't available — initialise the history store first.",
+        )
+    if store.get_session(session_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No chat session {session_id}.",
+        )
+    store.delete_session(session_id)
+    # Clear the active-session pointer if it referenced the deleted
+    # row, otherwise the next /ask submission would resume a ghost
+    # session id and bail with "no such session".
     if int(getattr(cfg, "active_chat_session_id", 0) or 0) == int(session_id):
         cfg.active_chat_session_id = 0
         try:
@@ -550,6 +610,8 @@ def _ask_worker(
     session_id: int | None,
     db_profile: str,
     scope_profiles: list[str],
+    doc_profiles_override: list[str] | None = None,
+    code_profiles_override: list[str] | None = None,
 ) -> None:
     """Run the tool-calling agent + stream every reasoning chunk and
     tool result back to the SSE consumer. Persists the assistant
@@ -718,6 +780,8 @@ def _ask_worker(
             on_tool_call=_on_tool_call,
             cancel_token=job.cancel,
             db_profiles=list(scope_profiles) if scope_profiles else None,
+            doc_profiles=doc_profiles_override,
+            code_profiles=code_profiles_override,
         )
     except RunCancelled:
         job.status = "cancelled"

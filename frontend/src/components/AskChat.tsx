@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
+import { Check, ChevronDown, FileText, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -155,6 +155,14 @@ export default function AskChat({
   const clearAskActiveJob = useUi((s) => s.clearAskActiveJob);
   const scopeForSession =
     sessionKey in askScopeBySession ? askScopeBySession[sessionKey] : null;
+
+  // Doc / code profile override for the NEXT question. ``null`` =
+  // auto-derive from the DB scope via the link map (legacy default).
+  // ``[]`` = opt OUT of retrieval entirely. ``string[]`` = explicit
+  // pick that bypasses the link map. Per-question, not sticky — the
+  // user often wants different sources on consecutive questions.
+  const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>(null);
+  const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>(null);
 
   // Reseed history when the parent picks a different session.
   useEffect(() => {
@@ -357,6 +365,16 @@ export default function AskChat({
       if (scopeForSession !== null) {
         body.scope_profiles = scopeForSession;
       }
+      // Doc/code overrides are per-question. ``null`` = auto, the
+      // backend already handles missing keys as auto — only forward
+      // when the user picked something explicit (incl. an empty list
+      // meaning "skip retrieval").
+      if (docProfilesOverride !== null) {
+        body.doc_profiles = docProfilesOverride;
+      }
+      if (codeProfilesOverride !== null) {
+        body.code_profiles = codeProfilesOverride;
+      }
       const result = await apiFetch<SubmitResponse>("/api/ask", {
         method: "POST",
         body: JSON.stringify(body),
@@ -532,7 +550,14 @@ export default function AskChat({
 
       <Card className="p-3">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <AskScopeBadge scope={scopeForSession} />
+          <AskDocCodePicker
+            scope={scopeForSession}
+            docOverride={docProfilesOverride}
+            codeOverride={codeProfilesOverride}
+            onDocChange={setDocProfilesOverride}
+            onCodeChange={setCodeProfilesOverride}
+            disabled={!!activeJob}
+          />
           <AskScopeDropdown
             scope={scopeForSession}
             onChange={handleScopeChange}
@@ -980,13 +1005,87 @@ function CitationsList({ citations }: { citations: Citation[] }) {
   );
 }
 
-function AskScopeBadge({ scope }: { scope: string[] | null }) {
-  // The badge gives the user a quick read on what doc/code RAG /ask
-  // will actually pull in for the active scope. Hidden when nothing's
-  // configured to keep the chat header clean for fresh installs.
-  const queryKey = ["ask", "context", scope ?? "_session_default_"];
-  const ctx = useQuery({
-    queryKey,
+interface AskDocCodePickerProps {
+  scope: string[] | null;
+  docOverride: string[] | null;
+  codeOverride: string[] | null;
+  onDocChange: (next: string[] | null) => void;
+  onCodeChange: (next: string[] | null) => void;
+  disabled?: boolean;
+}
+
+interface ProfileListItem {
+  name: string;
+  /** Auto-derived count from the API context (chunks for docs, snippets for code). */
+  count: number;
+  linked: string[];
+}
+
+/**
+ * Lets the user override which doc/code profiles /ask uses for THIS
+ * question, decoupled from the DB scope. Three modes per surface:
+ *
+ *   - **Auto** (default, ``null``): backend derives from the link map.
+ *   - **None** (``[]``): skip retrieval entirely.
+ *   - **Explicit pick** (``string[]``): exactly these profiles.
+ *
+ * Picks reset per session change in the parent. The trigger pill shows
+ * the active mode at a glance; the popover splits docs and code into
+ * two sections so the user picks each side independently.
+ */
+function AskDocCodePicker({
+  scope,
+  docOverride,
+  codeOverride,
+  onDocChange,
+  onCodeChange,
+  disabled,
+}: AskDocCodePickerProps) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Fetch the full configured doc / code profile inventory — independent
+  // of the DB scope so the user can pick a profile that the link map
+  // wouldn't have auto-included.
+  const docProfiles = useQuery({
+    queryKey: ["doc-profiles", "list-for-ask-picker"],
+    queryFn: () =>
+      apiFetch<{ profiles: { name: string; linked_db_profiles?: string[] }[] }>(
+        "/api/profiles/docs",
+      ),
+    staleTime: 30_000,
+  });
+  const codeProfiles = useQuery({
+    queryKey: ["code-profiles", "list-for-ask-picker"],
+    queryFn: () =>
+      apiFetch<{ profiles: { name: string; linked_db_profiles?: string[] }[] }>(
+        "/api/profiles/code",
+      ),
+    staleTime: 30_000,
+  });
+
+  // Reuse /api/ask/context purely to fetch the auto-derived counts so
+  // the chip can still display "📄 2 docs (12 chunks)" when the user
+  // is in Auto mode. The endpoint already supports a scope filter.
+  const ctxQuery = useQuery({
+    queryKey: ["ask", "context", "for-picker", scope ?? "_session_default_"],
     queryFn: () => {
       const qs =
         scope && scope.length > 0
@@ -997,60 +1096,204 @@ function AskScopeBadge({ scope }: { scope: string[] | null }) {
     retry: false,
     staleTime: 10_000,
   });
-  if (!ctx.data) return <div />;
-  const docs = ctx.data.doc_profiles ?? [];
-  const code = ctx.data.code_profiles ?? [];
-  const docCount = docs.reduce((acc, p) => acc + (p.indexed_chunks || 0), 0);
-  const codeCount = code.reduce((acc, p) => acc + (p.indexed_snippets || 0), 0);
-  if (docs.length === 0 && code.length === 0) {
-    return (
-      <Link
-        to="/settings?tab=docs"
-        className="text-[10.5px] text-ink-dim hover:text-ink-muted"
-        title="No doc/code profiles in scope. /ask will only use DB metadata."
-      >
-        No doc/code RAG in scope · configure in Settings →
-      </Link>
-    );
+
+  const docInventory: ProfileListItem[] = (docProfiles.data?.profiles ?? []).map(
+    (p) => ({
+      name: p.name,
+      count:
+        ctxQuery.data?.doc_profiles?.find((d) => d.name === p.name)?.indexed_chunks ??
+        0,
+      linked: p.linked_db_profiles ?? [],
+    }),
+  );
+  const codeInventory: ProfileListItem[] = (codeProfiles.data?.profiles ?? []).map(
+    (p) => ({
+      name: p.name,
+      count:
+        ctxQuery.data?.code_profiles?.find((c) => c.name === p.name)?.indexed_snippets ??
+        0,
+      linked: p.linked_db_profiles ?? [],
+    }),
+  );
+
+  function describe(
+    mode: string[] | null,
+    autoCount: number,
+    label: string,
+  ): string {
+    if (mode === null) return `${label}: auto (${autoCount})`;
+    if (mode.length === 0) return `${label}: off`;
+    return `${label}: ${mode.length}`;
   }
-  const tooltipDocs = docs
-    .map(
-      (p) =>
-        `${p.name} (${p.indexed_chunks} chunks${
-          p.linked_db_profiles.length
-            ? ", linked: " + p.linked_db_profiles.join(", ")
-            : ", global"
-        })`,
-    )
-    .join("\n");
-  const tooltipCode = code
-    .map(
-      (p) =>
-        `${p.name} (${p.indexed_snippets} snippets${
-          p.linked_db_profiles.length
-            ? ", linked: " + p.linked_db_profiles.join(", ")
-            : ", global"
-        })`,
-    )
-    .join("\n");
+  const autoDocCount = ctxQuery.data?.doc_profiles?.length ?? 0;
+  const autoCodeCount = ctxQuery.data?.code_profiles?.length ?? 0;
+  const triggerLabel = `${describe(docOverride, autoDocCount, "Docs")} · ${describe(
+    codeOverride,
+    autoCodeCount,
+    "Code",
+  )}`;
+  const isCustom = docOverride !== null || codeOverride !== null;
+
+  function toggle(
+    current: string[] | null,
+    name: string,
+    setter: (next: string[] | null) => void,
+  ) {
+    // From Auto → first explicit toggle starts a fresh single-pick list.
+    if (current === null) {
+      setter([name]);
+      return;
+    }
+    if (current.includes(name)) {
+      const next = current.filter((p) => p !== name);
+      setter(next);
+      return;
+    }
+    setter([...current, name]);
+  }
+
   return (
-    <Link
-      to="/settings?tab=docs"
-      className="inline-flex items-center gap-3 rounded-md bg-surface-subtle px-2.5 py-1 text-[11px] text-ink-muted hover:bg-surface-border"
-      title={[tooltipDocs, tooltipCode].filter(Boolean).join("\n\n")}
-    >
-      {docs.length > 0 && (
-        <span>
-          📄 {docs.length} doc{docs.length === 1 ? "" : "s"}{" "}
-          <span className="text-ink-dim">({docCount})</span>
-        </span>
+    <div className="relative" ref={wrapperRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        title="Pick which doc / code profiles answer this question"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className={cn(
+          "flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium transition-colors duration-fast",
+          disabled
+            ? "cursor-default border-surface-border bg-transparent text-ink-dim"
+            : isCustom
+              ? "border-accent/30 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
+              : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-ink",
+        )}
+      >
+        <FileText size={12} className="opacity-70" />
+        <span className="max-w-[16rem] truncate">{triggerLabel}</span>
+        <ChevronDown size={12} className="opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 w-80 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md animate-fade-in">
+          <DocCodeSection
+            heading="Doc profiles"
+            emptyHint="No doc profiles configured."
+            inventory={docInventory}
+            mode={docOverride}
+            autoCount={autoDocCount}
+            onToggle={(name) => toggle(docOverride, name, onDocChange)}
+            onAuto={() => onDocChange(null)}
+            onNone={() => onDocChange([])}
+          />
+          <div className="border-t border-border" />
+          <DocCodeSection
+            heading="Code profiles"
+            emptyHint="No code profiles configured."
+            inventory={codeInventory}
+            mode={codeOverride}
+            autoCount={autoCodeCount}
+            onToggle={(name) => toggle(codeOverride, name, onCodeChange)}
+            onAuto={() => onCodeChange(null)}
+            onNone={() => onCodeChange([])}
+          />
+          <div className="border-t border-border bg-surface-subtle/40 px-3 py-1.5 text-[10.5px] text-ink-dim">
+            <Link to="/settings?tab=docs" className="hover:text-ink-muted">
+              Manage profiles in Settings →
+            </Link>
+          </div>
+        </div>
       )}
-      {code.length > 0 && (
-        <span>
-          💻 {code.length} code{" "}
-          <span className="text-ink-dim">({codeCount})</span>
+    </div>
+  );
+}
+
+function DocCodeSection({
+  heading,
+  emptyHint,
+  inventory,
+  mode,
+  autoCount,
+  onToggle,
+  onAuto,
+  onNone,
+}: {
+  heading: string;
+  emptyHint: string;
+  inventory: ProfileListItem[];
+  mode: string[] | null;
+  autoCount: number;
+  onToggle: (name: string) => void;
+  onAuto: () => void;
+  onNone: () => void;
+}) {
+  return (
+    <div className="px-3 py-2">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-[10.5px] font-medium uppercase tracking-wider text-ink-dim">
+          {heading}
         </span>
+        <div className="flex gap-1 text-[10.5px]">
+          <button
+            type="button"
+            onClick={onAuto}
+            className={cn(
+              "rounded px-1.5 py-0.5",
+              mode === null
+                ? "bg-accent-soft/60 text-accent-ink"
+                : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
+            )}
+          >
+            Auto ({autoCount})
+          </button>
+          <button
+            type="button"
+            onClick={onNone}
+            className={cn(
+              "rounded px-1.5 py-0.5",
+              mode !== null && mode.length === 0
+                ? "bg-warning-soft text-warning"
+                : "text-ink-dim hover:bg-surface-subtle hover:text-ink",
+            )}
+          >
+            None
+          </button>
+        </div>
+      </div>
+      {inventory.length === 0 ? (
+        <p className="text-[10.5px] text-ink-dim">{emptyHint}</p>
+      ) : (
+        <ul role="listbox" aria-multiselectable className="space-y-0.5">
+          {inventory.map((p) => {
+            const selected = mode !== null && mode.includes(p.name);
+            return (
+              <li key={p.name}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => onToggle(p.name)}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs hover:bg-surface-subtle",
+                    selected && "bg-accent-soft/40",
+                  )}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-ink">
+                      {p.name}
+                    </span>
+                    <span className="block truncate text-[10px] text-ink-dim">
+                      {p.linked.length ? `linked: ${p.linked.join(", ")}` : "global"}
+                      {p.count > 0 && ` · ${p.count}`}
+                    </span>
+                  </span>
+                  {selected && <Check size={12} className="text-accent" />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
-    </Link>
+    </div>
   );
 }
