@@ -53,6 +53,26 @@ def main() -> int:
 
     cfg = AMXConfig.load(args.config_path) if args.config_path else AMXConfig.load()
 
+    # Bootstrap the history-store singleton the same way the CLI entry
+    # point does. Without this, every /api/ask call lands on the
+    # ``Search catalog isn't initialised yet — run /search sync first.``
+    # branch even when the SQLite file is fully populated, because
+    # ``SearchCatalog.from_history_store()`` consults the global
+    # singleton that ``init_history_store`` is responsible for setting.
+    # The studio subprocess is its own Python process (PR-X spawns it
+    # via ``_studio_subprocess.main``), so the parent CLI's init does
+    # not carry over.
+    from amx.storage.factory import init_history_store
+
+    try:
+        init_history_store(cfg)
+    except Exception:
+        # Best-effort: a failure here still lets the SPA come up so the
+        # user can fix profile / DB issues from Settings. The /ask
+        # route surfaces a fresh diagnostic if the catalog is still
+        # unreachable when a question is asked.
+        pass
+
     from amx.web.server import create_app
 
     app = create_app(cfg, token=args.token)

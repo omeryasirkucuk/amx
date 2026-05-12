@@ -35,6 +35,43 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_child_bootstraps_history_store_singleton(monkeypatch):
+    """Regression: the child subprocess must call ``init_history_store``
+    on its own ``AMXConfig`` before handing the app to uvicorn. Earlier
+    versions relied on the parent CLI's init carrying over, but Studio
+    spawns the subprocess via ``_studio_subprocess.main`` in a fresh
+    Python process — so ``history_store()`` returned ``None`` for every
+    request and ``/api/ask`` rendered the spurious "Search catalog
+    isn't initialised yet — run /search sync first." error even when
+    the SQLite file was fully populated."""
+    import sys
+
+    monkeypatch.setattr(sys, "argv", _studio_argv())
+
+    init_calls: list[object] = []
+
+    def fake_init(cfg):
+        init_calls.append(cfg)
+        return MagicMock()
+
+    fake_cfg = MagicMock(name="cfg")
+
+    with (
+        patch("uvicorn.Server", return_value=MagicMock()),
+        patch("uvicorn.Config", return_value=MagicMock()),
+        patch("amx.web.server.create_app", return_value=MagicMock()),
+        patch("amx.config.AMXConfig.load", return_value=fake_cfg),
+        patch("amx.utils.logging.mute_root_logger_for_studio"),
+        patch("amx.storage.factory.init_history_store", side_effect=fake_init),
+        patch("asyncio.run"),
+    ):
+        from amx.web import _studio_subprocess
+
+        _studio_subprocess.main()
+
+    assert init_calls == [fake_cfg]
+
+
 def test_child_disables_uvicorn_default_signal_handlers(monkeypatch):
     """uvicorn's own SIGINT install is replaced with a no-op so the
     AMX handler is the only one reacting to the signal — no race."""
