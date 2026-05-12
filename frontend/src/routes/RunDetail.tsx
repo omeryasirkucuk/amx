@@ -866,6 +866,55 @@ function RunHeaderScope({ run }: { run: RunDetailPayload }) {
   );
 }
 
+/** PR E: read-only chip surfacing which doc profiles fed RAG for
+ *  this run plus the total chunk count and any ``rag_unavailable_reason``
+ *  recorded at finalize-time. Hidden when ``metrics_json`` carries
+ *  no RAG keys (legacy runs from before PR E persisted them).
+ */
+function RunHeaderRagBadge({ run }: { run: RunDetailPayload }) {
+  const metrics = (run.metrics_json ?? {}) as Record<string, unknown>;
+  const profiles = Array.isArray(metrics.doc_profiles_used)
+    ? (metrics.doc_profiles_used as string[]).filter((p) => p && p.length > 0)
+    : [];
+  const reason =
+    typeof metrics.rag_unavailable_reason === "string"
+      ? (metrics.rag_unavailable_reason as string)
+      : null;
+  const hitsTotal =
+    typeof metrics.rag_hits_total === "number"
+      ? (metrics.rag_hits_total as number)
+      : null;
+  if (profiles.length === 0 && !reason && hitsTotal == null) {
+    return null;
+  }
+  return (
+    <>
+      <span
+        className="inline-flex items-center gap-1 rounded-md border border-surface-border bg-surface-subtle/60 px-2 py-0.5 font-mono text-[11px] text-ink-muted"
+        title="Doc profiles fed into the RAG agent for this run."
+      >
+        <span className="text-ink-dim">docs</span>
+        <span className="text-ink">
+          {profiles.length === 0
+            ? "no docs used"
+            : profiles.join(", ")}
+          {hitsTotal != null && hitsTotal > 0
+            ? ` · ${hitsTotal.toLocaleString()} hits`
+            : ""}
+        </span>
+      </span>
+      {reason && (
+        <span
+          className="inline-flex items-center gap-1 rounded-md border border-critical/30 bg-critical/5 px-2 py-0.5 font-mono text-[11px] text-critical"
+          title="The RAG store could not be opened. The run proceeded without document context."
+        >
+          ⚠ Docs unavailable: {reason}
+        </span>
+      )}
+    </>
+  );
+}
+
 /** Render token counts with K/M compaction so the header chip stays
  *  one line on narrow viewports. Mirrors the Home overview cards'
  *  formatter so the two surfaces feel consistent. */
@@ -1284,6 +1333,7 @@ function PersistedRunView({ runId }: { runId: number }) {
               </span>
               <RunHeaderTokenCost run={run.data} />
               <RunHeaderScope run={run.data} />
+              <RunHeaderRagBadge run={run.data} />
             </span>
           ) : undefined
         }
