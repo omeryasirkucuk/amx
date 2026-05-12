@@ -121,6 +121,20 @@ class RAGAgent(BaseAgent):
         self.llm = llm
         self.rag = rag_store
         self._style_profile = load_active_style_profile()
+        # Diagnostics buffer (mirrors :class:`ProfileAgent`): the
+        # orchestrator drains it after each table to surface signals
+        # that aren't fatal but the user still needs to see — today,
+        # "RAG returned no relevant documents".
+        self._diagnostics: list[str] = []
+
+    def consume_diagnostics(self) -> list[str]:
+        diagnostics = list(self._diagnostics)
+        self._diagnostics.clear()
+        return diagnostics
+
+    def _record_diagnostic(self, message: str) -> None:
+        if message:
+            self._diagnostics.append(message)
 
     @property
     def _n_alternatives(self) -> int:
@@ -207,6 +221,9 @@ class RAGAgent(BaseAgent):
 
         msgs = self._build_messages(ctx)
         if msgs is None:
+            self._record_diagnostic(
+                f"RAG: no relevant documents found for {ctx.schema}.{ctx.table}"
+            )
             return []
         n_columns = len(ctx.db_profile.get("columns", []) or [])
         return [
@@ -225,9 +242,13 @@ class RAGAgent(BaseAgent):
         return _scrub_suggestions(suggestions, self._style_profile)
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
+        self._diagnostics.clear()
         messages = self._build_messages(ctx)
         if messages is None:
             log.info("No RAG context for %s.%s, skipping", ctx.schema, ctx.table)
+            self._record_diagnostic(
+                f"RAG: no relevant documents found for {ctx.schema}.{ctx.table}"
+            )
             return []
 
         columns = ctx.db_profile.get("columns", [])

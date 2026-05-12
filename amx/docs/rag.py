@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from amx.utils.optional_deps import ensure as _ensure
@@ -64,7 +65,17 @@ LOADER_MAP = {
     ".doc": Docx2txtLoader,
     ".txt": TextLoader,
     ".md": UnstructuredMarkdownLoader,
+    # ``.markdown`` is just the long-form extension of ``.md`` — same
+    # syntax, same loader. Listing it explicitly keeps the LOADER_MAP /
+    # SUPPORTED_EXTENSIONS contract honest (every supported extension
+    # has its own loader entry).
+    ".markdown": UnstructuredMarkdownLoader,
     ".csv": CSVLoader,
+    # TSV is tab-separated values; ``CSVLoader`` is delimiter-agnostic
+    # at the langchain level and treats the file as one logical record
+    # per row, which is all the RAG pipeline needs (the splitter then
+    # decides chunking).
+    ".tsv": CSVLoader,
     ".xlsx": UnstructuredExcelLoader,
     ".xls": UnstructuredExcelLoader,
     ".html": UnstructuredHTMLLoader,
@@ -74,8 +85,37 @@ LOADER_MAP = {
     ".yaml": TextLoader,
     ".yml": TextLoader,
     ".rst": TextLoader,
-    ".rtf": TextLoader,
+    # Python source files: index as plain text so the chunker can pull
+    # out docstrings / comments alongside code identifiers.
+    ".py": TextLoader,
 }
+
+
+@dataclass(frozen=True)
+class IngestSummary:
+    """Per-file outcome of a single :meth:`RAGStore.ingest` call.
+
+    Replaces the historic bare-``int`` return so CLI and Studio can
+    actually tell the user *which* files failed and why. The class
+    still answers ``int(...)`` with the total chunk count so existing
+    callers that wrote ``f"{chunks} chunks"`` keep working without a
+    lock-step rewrite.
+    """
+
+    #: Source paths that produced at least one chunk in the collection.
+    succeeded: list[str] = field(default_factory=list)
+    #: ``(source_path, short error message)`` for every file that the
+    #: loader, splitter, or upsert step failed on. Each tuple is
+    #: render-ready: the CLI emits one line per entry, Studio emits
+    #: ``{path, error}`` objects in the ``ingest.summary`` SSE event.
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    #: Total number of chunks upserted into the collection. Preserved
+    #: as a separate counter (instead of derived from ``succeeded``)
+    #: because one file produces many chunks.
+    chunk_count: int = 0
+
+    def __int__(self) -> int:
+        return int(self.chunk_count)
 
 
 class RAGStore:
@@ -129,20 +169,34 @@ class RAGStore:
         docs: list[DocInfo],
         *,
         refresh: bool = False,
-    ) -> int:
+    ) -> IngestSummary:
+        """Load each document, split it into chunks, upsert into Chroma.
+
+        Returns an :class:`IngestSummary` whose ``failed`` list carries
+        a one-line reason per file that the loader or splitter couldn't
+        process. Files with no extracted chunks (e.g. a truly empty
+        ``.md``) land in ``failed`` with an ``"empty document"`` reason
+        rather than being silently dropped — silent drops were the
+        whole reason this contract changed in PR A.
+        """
         if refresh and docs:
             self.delete_chunks_for_sources([x for d in docs for x in (d.path, d.source_root) if x])
+        succeeded: list[str] = []
+        failed: list[tuple[str, str]] = []
         total_chunks = 0
         for doc in docs:
             loader_cls = LOADER_MAP.get(doc.extension)
             if loader_cls is None:
+                reason = f"no loader for extension {doc.extension!r}"
                 log.warning("No loader for %s, skipping %s", doc.extension, doc.path)
+                failed.append((doc.path, reason))
                 continue
             try:
                 loader = loader_cls(doc.path)
                 pages = loader.load()
                 chunks = self.splitter.split_documents(pages)
                 if not chunks:
+                    failed.append((doc.path, "empty document (no chunks produced)"))
                     continue
 
                 ids = [f"{doc.path}::{i}" for i in range(len(chunks))]
@@ -158,10 +212,17 @@ class RAGStore:
                 ]
                 self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
                 total_chunks += len(chunks)
+                succeeded.append(doc.path)
                 log.info("Ingested %s -> %d chunks", doc.path, len(chunks))
             except Exception as exc:
+                # One-line reason — full traceback already in the log.
+                # Keep ``exc.__class__.__name__`` so the user sees the
+                # category at a glance (PdfReadError, UnicodeDecodeError,
+                # PermissionError, ...) without needing the log file.
+                reason = f"{exc.__class__.__name__}: {exc}"
                 log.error("Error ingesting %s: %s", doc.path, exc)
-        return total_chunks
+                failed.append((doc.path, reason))
+        return IngestSummary(succeeded=succeeded, failed=failed, chunk_count=total_chunks)
 
     def query(self, question: str, n_results: int = 5) -> list[dict]:
         raw_n = max(int(n_results), min(int(n_results) * 4, 40))

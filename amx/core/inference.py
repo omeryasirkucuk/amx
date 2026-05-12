@@ -16,8 +16,22 @@ from amx.agents.orchestrator import Orchestrator
 from amx.config import AMXConfig
 from amx.db.connector import DatabaseConnector
 from amx.llm.provider import LLMProvider
+from amx.utils.logging import get_logger
+
+log = get_logger("core.inference")
 
 __all__ = ["InferenceResult"]
+
+
+def _format_rag_unavailable_reason(exc: BaseException) -> str:
+    """One-line reason string used when ``RAGStore`` can't be opened.
+
+    Lives next to the call site so the analyze-flow CLI helper and the
+    library entrypoint produce identical wording (the two used to drift
+    because each formatted its own message inside an
+    ``except: pass``-style block).
+    """
+    return f"{exc.__class__.__name__}: {exc}"
 
 
 @dataclass(frozen=True)
@@ -80,8 +94,16 @@ def infer_table_metadata(
             store = RAGStore(source_filters=cfg.effective_doc_paths())
             if store.doc_count > 0:
                 rag_store = store
-        except Exception:
+        except Exception as exc:
+            # Used to be ``except: pass``. Library callers can't see
+            # ``rag_unavailable_reason`` on a metrics dict (there is no
+            # run record at this layer), but we still log the reason
+            # so the user can diagnose why no docs were used.
             rag_store = None
+            log.warning(
+                "RAGStore unavailable: %s. Inference will proceed without document context.",
+                _format_rag_unavailable_reason(exc),
+            )
 
     code_report: Any = None
     if include_codebase:

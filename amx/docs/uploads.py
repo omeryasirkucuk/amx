@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from amx.config import AMXConfig
+from amx.docs.extensions import SUPPORTED_EXTENSIONS
 
 #: Per-file ceiling, mirrored on the FastAPI side. A 25 MB upload is
 #: already the upper end of "design doc" — anything bigger is almost
@@ -36,26 +37,10 @@ MAX_FILE_BYTES: int = 25 * 1024 * 1024
 MAX_BATCH_BYTES: int = 100 * 1024 * 1024
 
 #: Extensions :mod:`amx.docs.scanner` knows how to load. Anything else
-#: lands in the upload folder unread by the RAG agent.
-ACCEPTED_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        ".md",
-        ".markdown",
-        ".txt",
-        ".pdf",
-        ".docx",
-        ".doc",
-        ".csv",
-        ".tsv",
-        ".html",
-        ".htm",
-        ".rst",
-        ".rtf",
-        ".json",
-        ".yaml",
-        ".yml",
-    }
-)
+#: lands in the upload folder unread by the RAG agent. Re-exported from
+#: :mod:`amx.docs.extensions` so the upload validator and the scanner
+#: share one source of truth.
+ACCEPTED_EXTENSIONS: frozenset[str] = SUPPORTED_EXTENSIONS
 
 
 @dataclass
