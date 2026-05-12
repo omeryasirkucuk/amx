@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from amx.agents.base import (
     AgentContext,
@@ -12,6 +13,7 @@ from amx.agents.base import (
     apply_logprob_confidence,
 )
 from amx.codebase.analyzer import CodebaseReport, CodeReference
+from amx.config import PromptDetail
 from amx.llm.prompts import (
     ALTERNATIVES_LENGTH_RULE_REMINDER,
     length_rule,
@@ -119,6 +121,15 @@ class CodeAgent(BaseAgent):
         self.llm = llm
         self.report = report
         self._style_profile = load_active_style_profile()
+        # PR γ: snapshot of the retrieval hits + regex refs that
+        # informed the most recent ``_build_messages`` call per
+        # ``(schema, table)``. The agent's ``run`` / ``parse_batch_result``
+        # consult this to build :class:`Citation` records on every
+        # produced :class:`MetadataSuggestion` -- matching the
+        # ``last_prompt_hits`` contract already shipping in
+        # :class:`amx.agents.rag_agent.RAGAgent`.
+        self.last_prompt_hits: dict[tuple[str, str], list[dict]] = {}
+        self.last_prompt_refs: dict[tuple[str, str], list[Any]] = {}
 
     @property
     def _n_alternatives(self) -> int:
@@ -130,6 +141,18 @@ class CodeAgent(BaseAgent):
 
     def _per_col_token_budget(self) -> int:
         return per_col_token_budget(self._description_verbosity)
+
+    @property
+    def _prompt_detail(self) -> PromptDetail:
+        # Defensive fallback for tests / call sites that pass a minimal
+        # LLM stub without ``prompt_detail_cfg``: return the default
+        # preset so ``_build_messages`` keeps the pre-PR-γ behaviour
+        # (``code_col_hits=0``, single table-level semantic query).
+        cfg = getattr(self.llm, "cfg", None)
+        pd = getattr(cfg, "prompt_detail_cfg", None)
+        if pd is not None:
+            return pd
+        return PromptDetail()
 
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
         """Build the Code Agent prompt messages. Returns ``None`` when no code context exists."""
@@ -148,17 +171,21 @@ class CodeAgent(BaseAgent):
         if not columns:
             return None
 
+        pd = self._prompt_detail
+
         table_refs = (
             self.report.references.get(ctx.table.lower(), []) if self.report.references else []
         )
 
         all_code_blocks: list[str] = []
+        consumed_refs: list[CodeReference] = []
 
         if table_refs:
             all_code_blocks.append(
                 "## Table-level references\n"
                 + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in table_refs[:8])
             )
+            consumed_refs.extend(table_refs[:8])
 
         for col in columns:
             col_name = col["name"].lower()
@@ -168,17 +195,48 @@ class CodeAgent(BaseAgent):
                     f"## Column: {col['name']}\n"
                     + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in refs[:5])
                 )
+                consumed_refs.extend(refs[:5])
 
+        # PR γ: track every semantic hit fed into the prompt so we can
+        # turn them into :class:`Citation` records after the LLM answers.
+        sem_hits_all: list[dict] = []
         if has_sem:
-            sem_hits = query_code_snippets(
-                f"{ctx.schema} {ctx.table} SQL Spark dataframe usage",
+            # PR γ: drop the hardcoded "SQL Spark dataframe usage" bias
+            # — it skewed retrieval toward Spark / PySpark snippets even
+            # for repos that don't use Spark. A neutral
+            # ``"<schema> <table>"`` query is the cheapest correct default.
+            table_query = f"{ctx.schema} {ctx.table}".strip()
+            table_hits = query_code_snippets(
+                table_query,
                 n_results=5,
                 source_filters=source_filters,
             )
-            if sem_hits:
+            sem_hits_all.extend(table_hits)
+
+            # PR γ: optional per-column fan-out, parallel to the
+            # ``rag_col_hits`` knob on docs-RAG. Default ``0`` keeps the
+            # previous behaviour byte-for-byte; ``detailed`` / ``full``
+            # raise it to ``1`` so column call-sites surface.
+            col_hit_limit = int(getattr(pd, "code_col_hits", 0) or 0)
+            if col_hit_limit > 0:
+                seen_keys: set[str] = {h["text"][:120] for h in sem_hits_all}
+                for col in columns:
+                    col_hits = query_code_snippets(
+                        f"{ctx.table}.{col['name']} column",
+                        n_results=col_hit_limit,
+                        source_filters=source_filters,
+                    )
+                    for h in col_hits:
+                        key = h["text"][:120]
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        sem_hits_all.append(h)
+
+            if sem_hits_all:
                 all_code_blocks.append(
                     "## Semantic code retrieval (nearest chunks)\n"
-                    + "\n---\n".join(h["text"][:900] for h in sem_hits)
+                    + "\n---\n".join(h["text"][:900] for h in sem_hits_all)
                 )
 
         ext_flat: list[CodeReference] = []
@@ -189,9 +247,17 @@ class CodeAgent(BaseAgent):
                 "## Other identifiers (not in connected DB catalog)\n"
                 + "\n---\n".join(f"File: {r.file}:{r.line_no}\n{r.context}" for r in ext_flat[:5])
             )
+            consumed_refs.extend(ext_flat[:5])
 
         if not all_code_blocks:
             return None
+
+        # Stash hits + regex refs so the agent's caller (``run`` /
+        # ``parse_batch_result``) can attach citations to every emitted
+        # suggestion. Keyed by ``(schema, table)`` because one CodeAgent
+        # instance handles many tables in a single run.
+        self.last_prompt_hits[(ctx.schema, ctx.table)] = list(sem_hits_all)
+        self.last_prompt_refs[(ctx.schema, ctx.table)] = list(consumed_refs)
 
         from amx.agents.base import _user_instructions_block
 
@@ -231,10 +297,44 @@ class CodeAgent(BaseAgent):
             )
         ]
 
+    def _attach_code_citations(
+        self,
+        suggestions: list[MetadataSuggestion],
+        ctx: AgentContext,
+    ) -> list[MetadataSuggestion]:
+        """Build :class:`Citation` records from the stashed hits + refs.
+
+        Mirrors :func:`amx.agents.rag_agent._attach_citations`. Both the
+        regex-references path and the semantic-retrieval path produce
+        citations; they're deduped together by ``(source, chunk_idx,
+        line_range)`` so a snippet surfaced through both channels
+        renders once.
+        """
+        from amx.agents._citations import (
+            attach_citations,
+            hits_to_citations,
+            regex_refs_to_citations,
+        )
+
+        if not suggestions:
+            return suggestions
+        key = (ctx.schema, ctx.table)
+        hits = self.last_prompt_hits.get(key) or []
+        refs = self.last_prompt_refs.get(key) or []
+
+        citations = hits_to_citations(hits)
+        # Re-pack ``[CodeReference]`` into the ``dict[asset -> refs]``
+        # shape :func:`regex_refs_to_citations` expects. The dedup
+        # inside that helper drops the duplicates per ``(file, line_no)``.
+        if refs:
+            citations = list(citations) + list(regex_refs_to_citations({"_": refs}))
+        return attach_citations(suggestions, citations)
+
     def parse_batch_result(self, content: str, ctx: AgentContext) -> list[MetadataSuggestion]:
         """Parse a raw LLM text response; used after Batch API completes."""
         suggestions = self._parse_response(content, ctx)
-        return _scrub_suggestions(suggestions, self._style_profile)
+        suggestions = _scrub_suggestions(suggestions, self._style_profile)
+        return self._attach_code_citations(suggestions, ctx)
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
         messages = self._build_messages(ctx)
@@ -251,13 +351,14 @@ class CodeAgent(BaseAgent):
 
         suggestions = self._parse_response(result.content, ctx)
         suggestions = _scrub_suggestions(suggestions, self._style_profile)
-        return apply_logprob_confidence(
+        suggestions = apply_logprob_confidence(
             suggestions,
             result.logprobs,
             high_threshold=self.llm.cfg.logprob_high,
             medium_threshold=self.llm.cfg.logprob_medium,
             response_text=result.content,
         )
+        return self._attach_code_citations(suggestions, ctx)
 
     def _parse_response(
         self, text: str, ctx: AgentContext, default_col: str = ""

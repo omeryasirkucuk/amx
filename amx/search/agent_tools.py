@@ -5412,6 +5412,30 @@ class ToolBox:
             text = str(h.get("text") or "")
             if len(text) > 1200:
                 text = text[:1200] + "…"
+            # PR γ: surface the chunk's line range + chunk_id from
+            # metadata so ``_summarise_tool_call`` can build citations
+            # that render as ``src/foo.py:120-145`` in /ask. Falls back
+            # to ``0`` / ``None`` for chunks indexed before PR γ — the
+            # renderer special-cases the missing-line case to show
+            # ``path`` only.
+            start_line_raw = meta.get("start_line")
+            end_line_raw = meta.get("end_line")
+            try:
+                start_line = int(start_line_raw) if start_line_raw is not None else 0
+            except (TypeError, ValueError):
+                start_line = 0
+            try:
+                end_line = int(end_line_raw) if end_line_raw is not None else 0
+            except (TypeError, ValueError):
+                end_line = 0
+            chunk_id_raw = meta.get("chunk_id") or 0
+            try:
+                # ``chunk_id`` is the string-ish key (e.g. ``"func_42"``)
+                # the indexer produced. Numeric coercion is best-effort —
+                # callers should rely on ``line_range`` for provenance.
+                chunk_idx = int(chunk_id_raw)
+            except (TypeError, ValueError):
+                chunk_idx = 0
             hits.append(
                 {
                     "source": meta.get("source") or meta.get("rel_path") or "",
@@ -5419,6 +5443,9 @@ class ToolBox:
                     "symbol": meta.get("symbol") or meta.get("kind") or "",
                     "snippet": text,
                     "distance": h.get("distance"),
+                    "chunk_idx": chunk_idx,
+                    "start_line": start_line,
+                    "end_line": end_line,
                 }
             )
         return {
