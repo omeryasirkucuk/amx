@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 _USAGE = (
     "Usage:\n"
+    "  /style set                        -- pick reference DB profile / catalog / schema / table interactively\n"
     "  /style set <db>.<schema>.<table>  -- extract style from a reference table\n"
     "  /style show                       -- show the current style reference\n"
     "  /style clear                      -- remove the current style reference\n"
@@ -111,32 +112,141 @@ def _resolve_active_llm(cfg: AMXConfig) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _pick_one(label: str, options: list[str]) -> str | None:
+    """Single-pick prompt shared by every /style set picker step.
+
+    ``review_picker.pick_rows`` already handles fzf + numbered fallback
+    + ESC/Ctrl-C, so reuse it and just collapse the selection back to
+    one entry. Returns ``None`` when the user cancels (empty pick) so
+    callers can bail out cleanly instead of carrying a placeholder.
+    """
+    from amx.cli_support.review_picker import pick_rows
+    from amx.utils.console import info
+
+    if not options:
+        return None
+    info(f"Pick a {label}:")
+    picked = pick_rows(options)
+    if not picked:
+        return None
+    return options[picked[0]]
+
+
+def _interactive_pick_reference(cfg: AMXConfig) -> tuple[str, str] | None:
+    """Walk DB profile → catalog/database → schema → table.
+
+    Returns ``(db_profile, "<catalog_or_db>.<schema>.<table>")`` on a
+    full selection, or ``None`` on cancel. The DB profile may differ
+    from ``cfg.active_db_profile`` — Studio surfaces the same picker
+    and lets the user pick any defined profile, the CLI mirrors that
+    so the two flows stay in lockstep.
+    """
+    from amx.utils.console import error, info
+
+    profiles = list(cfg.db_profiles.keys())
+    if not profiles:
+        error(
+            "No DB profiles defined. Add one with /add-db-profile before "
+            "attaching a style reference."
+        )
+        return None
+    db_profile = _pick_one("DB profile", profiles)
+    if db_profile is None:
+        info("Cancelled.")
+        return None
+
+    try:
+        conn = _open_connector(cfg, db_profile)
+    except Exception as exc:
+        error(f"Failed to open connector for {db_profile!r}: {exc}")
+        return None
+
+    try:
+        if conn.supports_catalogs():
+            level_label = "catalog"
+            options = conn.list_catalogs()
+        else:
+            level_label = "database"
+            options = conn.list_databases()
+    except Exception as exc:
+        error(f"Failed to list {level_label}s on {db_profile!r}: {exc}")
+        return None
+
+    if not options:
+        error(
+            f"No {level_label}s visible to profile {db_profile!r}. "
+            "Check the profile's credentials and try again."
+        )
+        return None
+    cat_or_db = _pick_one(level_label, options)
+    if cat_or_db is None:
+        info("Cancelled.")
+        return None
+
+    try:
+        conn.use(cat_or_db)
+        schemas = conn.list_schemas()
+    except Exception as exc:
+        error(f"Failed to list schemas under {cat_or_db!r}: {exc}")
+        return None
+    if not schemas:
+        error(f"No schemas visible under {cat_or_db!r}.")
+        return None
+    schema = _pick_one("schema", schemas)
+    if schema is None:
+        info("Cancelled.")
+        return None
+
+    try:
+        tables = conn.list_tables(schema)
+    except Exception as exc:
+        error(f"Failed to list tables in {schema!r}: {exc}")
+        return None
+    if not tables:
+        error(f"No tables visible in {schema!r}.")
+        return None
+    table = _pick_one("table", tables)
+    if table is None:
+        info("Cancelled.")
+        return None
+
+    return db_profile, f"{cat_or_db}.{schema}.{table}"
+
+
 def _cmd_set(cfg: AMXConfig, args: list[str]) -> None:
     from amx.llm.style.extractor import NoSamplesError, extract_style
     from amx.storage.style_store import StyleStore
     from amx.utils.console import error, info
 
-    if not args:
-        error("Usage: /style set <db>.<schema>.<table>")
-        return
-
-    ref = args[0].strip()
-    parts = ref.split(".")
-    if len(parts) != 3:
-        error(
-            f"Expected <db>.<schema>.<table>, got {ref!r}. "
-            "Example: /style set my_warehouse.sales.orders"
-        )
-        return
-    db_name, schema, table = parts
-
-    active_db = _resolve_active_db(cfg)
-    if active_db is None:
-        return
-
     active_llm = _resolve_active_llm(cfg)
     if active_llm is None:
         return
+
+    if not args:
+        # Interactive picker mode: DB profile → catalog/database →
+        # schema → table. Mirrors the Studio Settings → LLM → Writing
+        # style reference picker so the two surfaces stay in lockstep.
+        picked = _interactive_pick_reference(cfg)
+        if picked is None:
+            return
+        active_db, ref = picked
+        parts = ref.split(".")
+        db_name, schema, table = parts
+    else:
+        ref = args[0].strip()
+        parts = ref.split(".")
+        if len(parts) != 3:
+            error(
+                f"Expected <db>.<schema>.<table>, got {ref!r}. "
+                "Example: /style set my_warehouse.sales.orders. "
+                "Or run `/style set` with no args to pick interactively."
+            )
+            return
+        db_name, schema, table = parts
+
+        active_db = _resolve_active_db(cfg)
+        if active_db is None:
+            return
 
     # Step 1 — fetch column comments
     try:

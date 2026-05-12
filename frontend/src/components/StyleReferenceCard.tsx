@@ -1,8 +1,20 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { apiFetch } from "../lib/api";
+import { api, apiFetch } from "../lib/api";
 import { Card, CardBody, CardHeader } from "./Card";
+import { AlertDialog, Select } from "./ui";
+
+interface DbProfileSummary {
+  name: string;
+  backend: string;
+  catalog?: string;
+  database?: string;
+}
+
+interface DbProfilesResponse {
+  profiles: DbProfileSummary[];
+}
 
 type StoredStyleProfile = {
   llm_profile: string;
@@ -28,10 +40,101 @@ type StoredStyleProfile = {
 
 export function StyleReferenceCard({ llmProfile }: { llmProfile: string | null }) {
   const qc = useQueryClient();
-  const [sourceRef, setSourceRef] = useState("");
+  const [dbProfile, setDbProfile] = useState<string>("");
+  const [catalogOrDb, setCatalogOrDb] = useState<string>("");
+  const [schema, setSchema] = useState<string>("");
+  const [table, setTable] = useState<string>("");
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   const profileName = llmProfile ?? "";
   const enabled = Boolean(profileName);
+
+  const dbProfiles = useQuery({
+    queryKey: ["profiles", "db", "for-style"],
+    queryFn: () => apiFetch<DbProfilesResponse>("/api/profiles/db"),
+    retry: false,
+  });
+
+  // Default the DB profile selector to the first available one so the
+  // user lands on the picker with the first dropdown pre-populated.
+  useEffect(() => {
+    if (!dbProfile && dbProfiles.data?.profiles?.length) {
+      setDbProfile(dbProfiles.data.profiles[0].name);
+    }
+  }, [dbProfile, dbProfiles.data]);
+
+  const catalogs = useQuery({
+    queryKey: ["live-catalogs", dbProfile, "for-style"],
+    queryFn: () => api.liveCatalogs({ profile: dbProfile }),
+    enabled: Boolean(dbProfile),
+    retry: false,
+  });
+
+  const supportsCatalogs = catalogs.data?.supports_catalogs ?? false;
+
+  const databases = useQuery({
+    queryKey: ["live-databases", dbProfile, "for-style"],
+    queryFn: () => api.liveDatabases({ profile: dbProfile }),
+    enabled: Boolean(dbProfile) && catalogs.data ? !supportsCatalogs : false,
+    retry: false,
+  });
+
+  const catOrDbOptions = useMemo<string[]>(() => {
+    if (supportsCatalogs) return catalogs.data?.catalogs ?? [];
+    return databases.data?.databases ?? [];
+  }, [supportsCatalogs, catalogs.data, databases.data]);
+
+  // Reset downstream selections whenever an upstream pick changes —
+  // a stale schema/table from a previous catalog would otherwise leak
+  // into the new context and produce a 502 from the extract endpoint.
+  useEffect(() => {
+    setCatalogOrDb("");
+    setSchema("");
+    setTable("");
+  }, [dbProfile]);
+
+  useEffect(() => {
+    setSchema("");
+    setTable("");
+  }, [catalogOrDb]);
+
+  useEffect(() => {
+    setTable("");
+  }, [schema]);
+
+  const schemasQuery = useQuery({
+    queryKey: ["live-schemas", dbProfile, supportsCatalogs ? "cat" : "db", catalogOrDb, "for-style"],
+    queryFn: () =>
+      api.liveSchemas({
+        profile: dbProfile,
+        kind: supportsCatalogs ? "catalog" : "database",
+        catalog: supportsCatalogs ? catalogOrDb : undefined,
+        database: supportsCatalogs ? undefined : catalogOrDb,
+      }),
+    enabled: Boolean(dbProfile && catalogOrDb),
+    retry: false,
+  });
+
+  const tablesQuery = useQuery({
+    queryKey: ["live-assets", dbProfile, supportsCatalogs ? "cat" : "db", catalogOrDb, schema, "for-style"],
+    queryFn: () =>
+      api.liveAssets(
+        {
+          profile: dbProfile,
+          kind: supportsCatalogs ? "catalog" : "database",
+          catalog: supportsCatalogs ? catalogOrDb : undefined,
+          database: supportsCatalogs ? undefined : catalogOrDb,
+        },
+        schema,
+      ),
+    enabled: Boolean(dbProfile && catalogOrDb && schema),
+    retry: false,
+  });
+
+  const sourceRef =
+    dbProfile && catalogOrDb && schema && table
+      ? `${catalogOrDb}.${schema}.${table}`
+      : "";
 
   const styleQuery = useQuery<StoredStyleProfile | null>({
     queryKey: ["style", profileName],
@@ -51,7 +154,7 @@ export function StyleReferenceCard({ llmProfile }: { llmProfile: string | null }
   });
 
   const extract = useMutation({
-    mutationFn: (body: { source_ref: string }) =>
+    mutationFn: (body: { source_ref: string; db_profile: string }) =>
       apiFetch(`/api/llm-profiles/${encodeURIComponent(profileName)}/style/extract`, {
         method: "POST",
         body: JSON.stringify(body),
@@ -134,18 +237,30 @@ export function StyleReferenceCard({ llmProfile }: { llmProfile: string | null }
               />
               Use this style on runs
             </label>
+            <SourceRefPicker
+              dbProfiles={dbProfiles.data?.profiles ?? []}
+              dbProfile={dbProfile}
+              onDbProfileChange={setDbProfile}
+              supportsCatalogs={supportsCatalogs}
+              catOrDbOptions={catOrDbOptions}
+              catOrDbLoading={catalogs.isLoading || databases.isLoading}
+              catalogOrDb={catalogOrDb}
+              onCatOrDbChange={setCatalogOrDb}
+              schemaOptions={schemasQuery.data?.schemas ?? []}
+              schemaLoading={schemasQuery.isLoading}
+              schema={schema}
+              onSchemaChange={setSchema}
+              tableOptions={(tablesQuery.data?.assets ?? []).map((a) => a.name)}
+              tableLoading={tablesQuery.isLoading}
+              table={table}
+              onTableChange={setTable}
+              busy={isBusy}
+            />
             <div className="flex flex-wrap gap-2">
-              <input
-                type="text"
-                placeholder="db.schema.table"
-                value={sourceRef}
-                onChange={(e) => setSourceRef(e.target.value)}
-                className="flex-1 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
-              />
               <button
                 type="button"
                 disabled={!sourceRef || isBusy}
-                onClick={() => extract.mutate({ source_ref: sourceRef })}
+                onClick={() => extract.mutate({ source_ref: sourceRef, db_profile: dbProfile })}
                 className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-50"
               >
                 Re-extract
@@ -153,11 +268,7 @@ export function StyleReferenceCard({ llmProfile }: { llmProfile: string | null }
               <button
                 type="button"
                 disabled={isBusy}
-                onClick={() => {
-                  if (confirm(`Clear style reference for '${profileName}'?`)) {
-                    clear.mutate();
-                  }
-                }}
+                onClick={() => setConfirmClearOpen(true)}
                 className="rounded-md border border-surface-border px-3 py-1.5 text-sm text-ink-muted hover:bg-surface-subtle"
               >
                 Clear
@@ -173,18 +284,30 @@ export function StyleReferenceCard({ llmProfile }: { llmProfile: string | null }
               from the reference table are never leaked into other tables'
               descriptions.
             </p>
+            <SourceRefPicker
+              dbProfiles={dbProfiles.data?.profiles ?? []}
+              dbProfile={dbProfile}
+              onDbProfileChange={setDbProfile}
+              supportsCatalogs={supportsCatalogs}
+              catOrDbOptions={catOrDbOptions}
+              catOrDbLoading={catalogs.isLoading || databases.isLoading}
+              catalogOrDb={catalogOrDb}
+              onCatOrDbChange={setCatalogOrDb}
+              schemaOptions={schemasQuery.data?.schemas ?? []}
+              schemaLoading={schemasQuery.isLoading}
+              schema={schema}
+              onSchemaChange={setSchema}
+              tableOptions={(tablesQuery.data?.assets ?? []).map((a) => a.name)}
+              tableLoading={tablesQuery.isLoading}
+              table={table}
+              onTableChange={setTable}
+              busy={isBusy}
+            />
             <div className="flex flex-wrap gap-2">
-              <input
-                type="text"
-                placeholder="db.schema.table"
-                value={sourceRef}
-                onChange={(e) => setSourceRef(e.target.value)}
-                className="flex-1 rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
-              />
               <button
                 type="button"
                 disabled={!sourceRef || isBusy}
-                onClick={() => extract.mutate({ source_ref: sourceRef })}
+                onClick={() => extract.mutate({ source_ref: sourceRef, db_profile: dbProfile })}
                 className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-soft transition hover:opacity-90 disabled:opacity-50"
               >
                 Extract style
@@ -198,6 +321,167 @@ export function StyleReferenceCard({ llmProfile }: { llmProfile: string | null }
           </div>
         )}
       </CardBody>
+      <AlertDialog
+        open={confirmClearOpen}
+        onClose={() => {
+          if (!clear.isPending) setConfirmClearOpen(false);
+        }}
+        onConfirm={() =>
+          clear.mutate(undefined, {
+            onSettled: () => setConfirmClearOpen(false),
+          })
+        }
+        title={`Clear style reference for '${profileName}'?`}
+        description="The extracted style profile is removed from this LLM. Future runs fall back to the default tone until you attach a new reference."
+        confirmLabel="Clear"
+        loading={clear.isPending}
+      />
     </Card>
+  );
+}
+
+interface PickerProps {
+  dbProfiles: DbProfileSummary[];
+  dbProfile: string;
+  onDbProfileChange: (value: string) => void;
+  supportsCatalogs: boolean;
+  catOrDbOptions: string[];
+  catOrDbLoading: boolean;
+  catalogOrDb: string;
+  onCatOrDbChange: (value: string) => void;
+  schemaOptions: string[];
+  schemaLoading: boolean;
+  schema: string;
+  onSchemaChange: (value: string) => void;
+  tableOptions: string[];
+  tableLoading: boolean;
+  table: string;
+  onTableChange: (value: string) => void;
+  busy: boolean;
+}
+
+function PickerField({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-xs text-ink-dim">
+      <span className="flex items-center gap-2">
+        <span className="font-medium uppercase tracking-wide">{label}</span>
+        {hint ? <span className="text-ink-dim/80 normal-case">{hint}</span> : null}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function SourceRefPicker({
+  dbProfiles,
+  dbProfile,
+  onDbProfileChange,
+  supportsCatalogs,
+  catOrDbOptions,
+  catOrDbLoading,
+  catalogOrDb,
+  onCatOrDbChange,
+  schemaOptions,
+  schemaLoading,
+  schema,
+  onSchemaChange,
+  tableOptions,
+  tableLoading,
+  table,
+  onTableChange,
+  busy,
+}: PickerProps) {
+  if (dbProfiles.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-surface-border bg-surface-subtle px-3 py-2 text-sm text-ink-muted">
+        Add a DB profile from the Database tab to pick a reference table.
+      </div>
+    );
+  }
+  const catLabel = supportsCatalogs ? "Catalog" : "Database";
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <PickerField label="DB profile">
+        <Select
+          value={dbProfile}
+          disabled={busy}
+          onChange={(e) => onDbProfileChange(e.target.value)}
+        >
+          {dbProfiles.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.name} ({p.backend})
+            </option>
+          ))}
+        </Select>
+      </PickerField>
+      <PickerField
+        label={catLabel}
+        hint={dbProfile && catOrDbLoading ? "loading…" : undefined}
+      >
+        <Select
+          value={catalogOrDb}
+          disabled={busy || !dbProfile || catOrDbLoading || catOrDbOptions.length === 0}
+          onChange={(e) => onCatOrDbChange(e.target.value)}
+        >
+          <option value="">
+            {catOrDbOptions.length === 0 && !catOrDbLoading
+              ? `(no ${catLabel.toLowerCase()}s visible)`
+              : `Select a ${catLabel.toLowerCase()}…`}
+          </option>
+          {catOrDbOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </Select>
+      </PickerField>
+      <PickerField
+        label="Schema"
+        hint={catalogOrDb && schemaLoading ? "loading…" : undefined}
+      >
+        <Select
+          value={schema}
+          disabled={busy || !catalogOrDb || schemaLoading || schemaOptions.length === 0}
+          onChange={(e) => onSchemaChange(e.target.value)}
+        >
+          <option value="">
+            {schemaOptions.length === 0 && !schemaLoading && catalogOrDb
+              ? "(no schemas visible)"
+              : "Select a schema…"}
+          </option>
+          {schemaOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </Select>
+      </PickerField>
+      <PickerField label="Table" hint={schema && tableLoading ? "loading…" : undefined}>
+        <Select
+          value={table}
+          disabled={busy || !schema || tableLoading || tableOptions.length === 0}
+          onChange={(e) => onTableChange(e.target.value)}
+        >
+          <option value="">
+            {tableOptions.length === 0 && !tableLoading && schema
+              ? "(no tables visible)"
+              : "Select a table…"}
+          </option>
+          {tableOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </Select>
+      </PickerField>
+    </div>
   );
 }
