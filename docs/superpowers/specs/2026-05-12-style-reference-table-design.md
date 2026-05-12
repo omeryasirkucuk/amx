@@ -164,34 +164,48 @@ A migration is added under the existing migration mechanism in
 
 ## 4. CLI surface
 
-A new `amx style` command group lives under the LLM tab (it operates
-on an LLM profile, mirroring how `amx llm` already works).
+AMX is an interactive session: the user runs `amx` to enter, then
+types slash commands. There is **no** `amx style …` top-level
+subcommand; only slash commands inside the session.
+
+A single new slash command `/style` is registered with:
+
+- `namespace = "llm"` — visually grouped under the **LLM** tab next
+  to the existing `/llm-*` entries.
+- `cross_namespace = True` — invocable from any tab, mirroring
+  `/help`, `/doctor`, `/compare`.
+
+Forms accepted inside the session:
 
 ```
-amx style set    --llm <llm-profile>  --ref <db>.<schema>.<table>
-                 [--db-profile <db-profile>]
-amx style show   --llm <llm-profile>
-amx style clear  --llm <llm-profile>
+/style                                 # interactive wizard: picks LLM profile (active by default),
+                                       # opens catalog picker for the reference table, runs Stage 1.
+/style set <db>.<schema>.<table>       # explicit, uses active LLM profile and the DB profile
+                                       # pinned on it (else the only DB profile, else error).
+/style show                            # pretty-prints the stored profile for the active LLM.
+/style clear                           # deletes the stored profile for the active LLM.
+/style off                             # keeps the profile but disables injection on runs.
+/style on                              # re-enables injection.
 ```
 
-If `--db-profile` is omitted, the DB profile pinned on the active
-LLM profile is used; if none is pinned and only one DB profile
-exists, that one is used; otherwise `set` fails asking the user to
-pass `--db-profile` explicitly.
+Resolution rules for the DB profile on `set` / wizard mode (no
+explicit flag because slash commands stay flag-light to match the
+existing UX):
 
-- `set` runs Stage 1 against the named DB profile, with a progress
-  spinner. On success, prints a one-screen summary
-  (language / tone / avg length / N examples).
-- `show` pretty-prints the stored JSON.
-- `clear` deletes the row.
+1. The DB profile pinned on the active LLM profile, if any.
+2. The single DB profile in the workspace, if exactly one exists.
+3. Otherwise, the wizard prompts the user to pick one; `set` form
+   fails with a message telling the user to pin a DB profile first.
 
-`amx run` and `amx llm rerun` automatically pick up the style profile
-attached to the active LLM profile. A `--no-style` flag on these
-commands disables it for a single invocation; no positive flag is
-required (opt-in happens at `style set` time, not per-run).
+`/run` and `/rerun` automatically pick up the style profile attached
+to the active LLM profile when injection is enabled (default after
+`/style set`). Users disable per session via `/style off`; no
+per-run flag is added in v1 to keep the command surface small.
 
-Implementation lives in a new `amx/cli_style.py` registered from
-`amx/cli.py`.
+Registration lives in a new
+`amx/cli_support/commands/style.py`, imported from `amx/cli.py`
+alongside the other `register_*` helpers, and added to the slash
+command table in `amx/cli_support/slash_commands.py`.
 
 ## 5. Studio surface
 
@@ -223,7 +237,9 @@ New endpoints in `amx/web/routers/style.py`:
 
 ```
 amx/
-├── cli_style.py                    # new CLI group
+├── cli_support/
+│   └── commands/
+│       └── style.py                # /style slash command handlers
 ├── llm/
 │   └── style/
 │       ├── __init__.py
