@@ -2462,32 +2462,47 @@ class AMXConfig:
         """
         if name not in self.db_profiles:
             raise KeyError(f"Unknown DB profile: {name}")
-        del self.db_profiles[name]
-        # Drop the deleted DB from every doc/code link list so /ask scope
-        # resolution doesn't reference a phantom profile.
-        for prof, dbs in list(self.doc_profile_linked_dbs.items()):
-            self.doc_profile_linked_dbs[prof] = [d for d in dbs if d != name]
-        for prof, dbs in list(self.code_profile_linked_dbs.items()):
-            self.code_profile_linked_dbs[prof] = [d for d in dbs if d != name]
-        # 0.11.0: also evict from the multi-pick scope to prevent ghost
-        # selections after a profile is removed.
-        if name in self.active_db_profiles:
-            self.active_db_profiles = [n for n in self.active_db_profiles if n != name]
-        if self.active_db_profile == name:
-            # Promote the next available profile when there is one;
-            # otherwise clear the active pointer + reset cfg.db to an
-            # empty DBConfig so callers reading those fields don't see
-            # stale data from the just-deleted profile.
-            if self.db_profiles:
-                self.active_db_profile = next(iter(self.db_profiles.keys()))
-                self.db = self.db_profiles[self.active_db_profile]
-                if not self.active_db_profiles:
-                    self.active_db_profiles = [self.active_db_profile]
-            else:
-                self.active_db_profile = ""
-                self.db = DBConfig()
+        # Wrap the whole mutation set in a transaction. Two of the
+        # writes below (``active_db_profiles = ...`` and the late
+        # ``self.db = DBConfig()`` / ``self.active_db_profile = ...``
+        # assignments) each trip ``__setattr__`` -> autosave on their
+        # own. If autosave fires while ``active_db_profile`` still
+        # names the just-deleted entry, ``save()``'s "mirror active
+        # profile data into ``db_profiles[active]``" contract
+        # resurrects the row we just popped — the user sees
+        # ``/remove-db-profile dbr`` claim success but ``dbr`` is back
+        # on the next prompt. Defer every save to the outermost exit
+        # so the on-disk state never observes the mid-removal,
+        # inconsistent shape.
+        with self.transaction():
+            del self.db_profiles[name]
+            # Drop the deleted DB from every doc/code link list so /ask scope
+            # resolution doesn't reference a phantom profile.
+            for prof, dbs in list(self.doc_profile_linked_dbs.items()):
+                self.doc_profile_linked_dbs[prof] = [d for d in dbs if d != name]
+            for prof, dbs in list(self.code_profile_linked_dbs.items()):
+                self.code_profile_linked_dbs[prof] = [d for d in dbs if d != name]
+            # Clear the active pointer FIRST (when it names the
+            # removed profile) so the trailing scope/list assignments
+            # cannot trigger the resurrection path described above.
+            if self.active_db_profile == name:
+                if self.db_profiles:
+                    self.active_db_profile = next(iter(self.db_profiles.keys()))
+                    self.db = self.db_profiles[self.active_db_profile]
+                else:
+                    self.active_db_profile = ""
+                    self.db = DBConfig()
+            # 0.11.0: also evict from the multi-pick scope to prevent
+            # ghost selections after a profile is removed.
+            if name in self.active_db_profiles:
+                self.active_db_profiles = [n for n in self.active_db_profiles if n != name]
+            if (
+                self.active_db_profile
+                and not self.active_db_profiles
+            ):
+                self.active_db_profiles = [self.active_db_profile]
+            elif not self.active_db_profile:
                 self.active_db_profiles = []
-        self._autosave()
 
     def apply_active_llm_profile(self) -> None:
         name = self.active_llm_profile or "default"
@@ -2533,21 +2548,28 @@ class AMXConfig:
         """
         if name not in self.llm_profiles:
             raise KeyError(f"Unknown LLM profile: {name}")
-        del self.llm_profiles[name]
-        if self.active_llm_profile == name:
-            if self.llm_profiles:
-                self.active_llm_profile = next(iter(self.llm_profiles.keys()))
-                self.llm = replace(self.llm_profiles[self.active_llm_profile])
-            else:
-                # No remaining profiles → clear active pointer and reset
-                # cfg.llm to an empty LLMConfig. The /ask surfaces that
-                # state via the configure-llm 412 (Studio) and the
-                # `/search` discussion-requires-LLM message (CLI).
-                self.active_llm_profile = ""
-                self.llm = LLMConfig()
-        if self.rag_llm_profile == name:
-            self.rag_llm_profile = ""
-        self._autosave()
+        # Same transaction pattern as remove_db_profile. The active-pointer
+        # update and the cfg.llm refresh below must land together: if
+        # ``active_llm_profile = next_name`` is allowed to autosave on its
+        # own, ``save()``'s mirror clause copies the still-stale ``cfg.llm``
+        # onto ``llm_profiles[next_name]`` and overwrites the promoted
+        # profile's data (the same shape as the bug ``set_active_llm_profile``
+        # already calls out).
+        with self.transaction():
+            del self.llm_profiles[name]
+            if self.active_llm_profile == name:
+                if self.llm_profiles:
+                    self.active_llm_profile = next(iter(self.llm_profiles.keys()))
+                    self.llm = replace(self.llm_profiles[self.active_llm_profile])
+                else:
+                    # No remaining profiles → clear active pointer and reset
+                    # cfg.llm to an empty LLMConfig. The /ask surfaces that
+                    # state via the configure-llm 412 (Studio) and the
+                    # `/search` discussion-requires-LLM message (CLI).
+                    self.active_llm_profile = ""
+                    self.llm = LLMConfig()
+            if self.rag_llm_profile == name:
+                self.rag_llm_profile = ""
 
     def effective_rag_llm(self) -> LLMConfig:
         """Return the LLMConfig the RAG agent should use right now.
