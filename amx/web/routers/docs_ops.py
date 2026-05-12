@@ -98,15 +98,38 @@ def submit_ingest(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No paths to ingest. Pass paths=[...], profile=<name>, or activate a doc profile.",
         )
+    profile_name = (body.profile or "").strip() or (cfg.active_doc_profile or "").strip()
     job = jobs.new_job("docs_ingest")
     thread = threading.Thread(
         target=_ingest_worker,
-        args=(job, paths, bool(body.refresh)),
+        args=(job, paths, bool(body.refresh), cfg, profile_name),
         name=f"amx-docs-ingest-{job.id}",
         daemon=True,
     )
     thread.start()
     return {"job_id": job.id, "status": job.status, "paths": paths, "refresh": bool(body.refresh)}
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: str,
+    jobs: JobRegistry = Depends(get_jobs),
+) -> dict[str, Any]:
+    """Signal an in-flight docs ingest/scan worker to stop.
+
+    The worker polls ``job.cancel`` between documents (never mid-Chroma
+    write) so cancellation latency is one document at most. Returns 200
+    when the job exists and the flag is set, 404 when the job id is
+    unknown.
+    """
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+    job.cancel.set()
+    return {"job_id": job_id, "cancelled": True, "status": job.status}
 
 
 @router.post("/upload")
@@ -184,7 +207,7 @@ async def upload_docs(
         job = jobs.new_job("docs_ingest")
         thread = threading.Thread(
             target=_ingest_worker,
-            args=(job, [upload_root], False),
+            args=(job, [upload_root], False, cfg, profile_clean),
             name=f"amx-docs-upload-ingest-{job.id}",
             daemon=True,
         )
@@ -194,7 +217,11 @@ async def upload_docs(
 
 
 @router.get("/search")
-def search_docs(q: str, n: int = 5) -> dict[str, Any]:
+def search_docs(
+    q: str,
+    n: int = 5,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
     """Synchronous embedding-only search (Chroma similarity, no LLM).
     The result set is small (default 5) and the call is cheap, so we
     don't bother with a job/SSE round trip — the SPA renders this
@@ -212,7 +239,13 @@ def search_docs(q: str, n: int = 5) -> dict[str, Any]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"RAG dependencies not installed: {exc}",
         ) from exc
-    store = RAGStore()
+    # Apply the active doc profile's source filter so search results
+    # respect the same scope as ``/run``. Without this, search would
+    # leak chunks from other profiles' documents into the result list
+    # regardless of which profile is active — confusing on its own and
+    # arguably a small information leak in multi-profile setups.
+    source_filters = cfg.effective_doc_paths() or None
+    store = RAGStore(source_filters=source_filters)
     if store.doc_count == 0:
         return {"hits": [], "count": 0, "message": "RAG store is empty — run /ingest first."}
     hits = store.query(query, n_results=max(1, min(int(n), 25)))
@@ -288,12 +321,25 @@ def _scan_worker_body(job: Job, paths: list[str]) -> None:
         emit_terminal(job.queue, "job.failed", {"error": job.error})
 
 
-def _ingest_worker(job: Job, paths: list[str], refresh: bool) -> None:
+def _ingest_worker(
+    job: Job,
+    paths: list[str],
+    refresh: bool,
+    cfg: AMXConfig | None = None,
+    profile_name: str | None = None,
+) -> None:
     with quiet_console():
-        _ingest_worker_body(job, paths, refresh)
+        _ingest_worker_body(job, paths, refresh, cfg=cfg, profile_name=profile_name)
 
 
-def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
+def _ingest_worker_body(
+    job: Job,
+    paths: list[str],
+    refresh: bool,
+    *,
+    cfg: AMXConfig | None = None,
+    profile_name: str | None = None,
+) -> None:
     job.status = "running"
     emit(job.queue, "activity.added", {"idx": 0, "label": "Scanning"})
     emit(job.queue, "activity.begin", {"idx": 0})
@@ -319,16 +365,36 @@ def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
         emit(job.queue, "activity.begin", {"idx": 1})
 
         store = RAGStore()
-        # ``RAGStore.ingest`` returns ``IngestSummary`` (PR A); ``int(...)``
-        # still answers the chunk count for legacy callers and the
-        # frontend's existing ``summary.chunks`` reader.
-        summary = store.ingest(documents, refresh=bool(refresh))
-        chunks_added = int(summary)
-        failed_list = [
-            {"path": path, "error": reason}
-            for path, reason in (getattr(summary, "failed", None) or [])
-        ]
-        succeeded_count = len(getattr(summary, "succeeded", None) or [])
+        # Iterate documents one at a time so we can poll ``job.cancel``
+        # between docs and exit cleanly mid-batch. Mid-document
+        # cancellation is intentionally NOT supported — interrupting a
+        # Chroma upsert would leave the collection in a half-orphaned
+        # state. One document of latency is the worst case.
+        succeeded: list[str] = []
+        failed_list: list[dict[str, str]] = []
+        chunks_added = 0
+        cancelled = False
+        for idx, doc in enumerate(documents):
+            if job.cancel.is_set():
+                cancelled = True
+                break
+            single_summary = store.ingest([doc], refresh=bool(refresh))
+            succeeded.extend(getattr(single_summary, "succeeded", None) or [])
+            failed_list.extend(
+                {"path": p, "error": r} for p, r in (getattr(single_summary, "failed", None) or [])
+            )
+            chunks_added += int(single_summary)
+            if (idx + 1) % 5 == 0 or idx == len(documents) - 1:
+                emit(
+                    job.queue,
+                    "ingest.progress",
+                    {"done": idx + 1, "total": len(documents), "chunks": chunks_added},
+                )
+        succeeded_count = len(succeeded)
+        status_label = "cancelled" if cancelled else "done"
+        ingest_error: str | None = None
+        if failed_list and not succeeded:
+            ingest_error = "; ".join(f"{f['path']}: {f['error']}" for f in failed_list[:3])
         emit(
             job.queue,
             "ingest.summary",
@@ -339,27 +405,36 @@ def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
                 "succeeded": succeeded_count,
                 "failed": failed_list,
                 "scan_failures": scan_failures,
+                "cancelled": cancelled,
+                "status": status_label,
             },
         )
-        job.status = "done"
+        job.status = status_label  # type: ignore[assignment]
         job.summary = {
             "documents": len(documents),
             "chunks": chunks_added,
             "succeeded": succeeded_count,
             "failed": failed_list,
             "scan_failures": scan_failures,
+            "cancelled": cancelled,
         }
         job.ended_at = time.time()
-        emit(
-            job.queue,
-            "activity.complete",
-            {"idx": 1, "detail": f"{chunks_added} chunks ingested"},
+        if cfg is not None and profile_name:
+            cfg.record_doc_profile_ingest(profile_name, error=ingest_error)
+        detail = (
+            f"{chunks_added} chunks ingested ({succeeded_count}/{len(documents)} files) — cancelled"
+            if cancelled
+            else f"{chunks_added} chunks ingested"
         )
-        emit_terminal(job.queue, "job.done", {"summary": job.summary})
+        emit(job.queue, "activity.complete", {"idx": 1, "detail": detail})
+        terminal_event = "job.cancelled" if cancelled else "job.done"
+        emit_terminal(job.queue, terminal_event, {"summary": job.summary})
     except Exception as exc:
         log.exception("docs ingest worker crashed")
         job.status = "failed"
         job.error = f"{exc.__class__.__name__}: {exc}"
         job.ended_at = time.time()
+        if cfg is not None and profile_name:
+            cfg.record_doc_profile_ingest(profile_name, error=job.error)
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         emit_terminal(job.queue, "job.failed", {"error": job.error})
