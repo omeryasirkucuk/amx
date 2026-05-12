@@ -106,9 +106,7 @@ def _detect_silent_truncation(cfg) -> list[str]:
         active = getattr(cfg, active_attr, "") or ""
         bucket = getattr(cfg, dict_attr, {}) or {}
         if active and active != "default" and active not in bucket:
-            problems.append(
-                f"{active_attr}={active!r} but {dict_attr} has no such entry"
-            )
+            problems.append(f"{active_attr}={active!r} but {dict_attr} has no such entry")
     return problems
 
 

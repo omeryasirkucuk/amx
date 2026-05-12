@@ -30,10 +30,7 @@ def test_save_rotates_prior_file_into_bak1(tmp_path):
 
     cfg_path = tmp_path / "config.yml"
     cfg_path.write_text(
-        "active_db_profile: pre-save\n"
-        "db_profiles:\n"
-        "  pre-save:\n"
-        "    backend: postgresql\n"
+        "active_db_profile: pre-save\ndb_profiles:\n  pre-save:\n    backend: postgresql\n"
     )
 
     cfg = AMXConfig.load(str(cfg_path))

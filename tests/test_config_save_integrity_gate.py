@@ -32,8 +32,7 @@ def test_save_refused_when_active_doc_profile_missing_from_dict(tmp_path, caplog
 
     cfg_path = tmp_path / "config.yml"
     pristine = (
-        "active_doc_profile: ghost-docs\n"
-        "doc_profiles:\n  ghost-docs:\n    - /tmp/something\n"
+        "active_doc_profile: ghost-docs\ndoc_profiles:\n  ghost-docs:\n    - /tmp/something\n"
     )
     cfg_path.write_text(pristine)
 
@@ -45,8 +44,7 @@ def test_save_refused_when_active_doc_profile_missing_from_dict(tmp_path, caplog
         "live config was overwritten — gate didn't fire and broken state is now on disk"
     )
     assert any(
-        "refused" in r.message.lower() or "integrity" in r.message.lower()
-        for r in caplog.records
+        "refused" in r.message.lower() or "integrity" in r.message.lower() for r in caplog.records
     ), "expected a loud error log explaining the refusal"
 
 
