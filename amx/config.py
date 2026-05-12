@@ -1801,7 +1801,111 @@ class AMXConfig:
         object.__setattr__(cfg, "_autosave_suspended", 0)
         cfg._attach_children()
         object.__setattr__(cfg, "_autosave_ready", True)
+        try:
+            object.__setattr__(cfg, "_loaded_mtime", p.stat().st_mtime if p.exists() else 0.0)
+        except OSError:
+            object.__setattr__(cfg, "_loaded_mtime", 0.0)
         return cfg
+
+    def reload_if_stale(self) -> bool:
+        """Re-read the YAML and copy its values onto self when disk is newer.
+
+        Studio and the CLI share the same ``~/.amx/config.yml``. When the
+        user edits a doc/code/LLM profile in Studio while a CLI session
+        is open, the CLI's in-memory :class:`AMXConfig` would otherwise
+        keep showing the old values until restart. Called once per
+        prompt input by :func:`run_interactive_session` so the dispatch
+        cycle always sees fresh data without any background watcher.
+
+        Returns ``True`` when a reload happened, ``False`` otherwise.
+        Best-effort: a missing or unreadable file is treated as "no
+        change" so a transient disk hiccup doesn't blow up the prompt.
+        """
+        path_str = getattr(self, "_config_path", "") or ""
+        if not path_str:
+            return False
+        try:
+            disk_mtime = Path(path_str).stat().st_mtime
+        except OSError:
+            return False
+        last = float(getattr(self, "_loaded_mtime", 0.0) or 0.0)
+        # Use a small slop to avoid reloading on our own save() — the
+        # save() path bumps ``_loaded_mtime`` to the post-write value,
+        # but a same-second write from elsewhere should still trigger.
+        if disk_mtime <= last:
+            return False
+        try:
+            fresh = AMXConfig.load(path_str)
+        except Exception:
+            return False
+        # Mutate self in place: callers (history_store, embedding
+        # provider, slash-command handlers) hold references to this
+        # specific instance and must continue to see the same object
+        # with updated fields. Touch every mutable surface that
+        # ``load()`` populates from YAML. Anything missing here is a
+        # known bug — keep this list in sync when adding new YAML keys.
+        for attr in (
+            "doc_paths",
+            "code_paths",
+            "selected_schemas",
+            "selected_tables",
+            "active_db_profile",
+            "active_db_profiles",
+            "current_schema",
+            "current_table",
+            "active_llm_profile",
+            "rag_llm_profile",
+            "active_doc_profile",
+            "run_doc_profiles",
+            "active_code_profile",
+            "run_code_profiles",
+            "history_store_enabled",
+            "history_store_profile",
+            "history_store_database",
+            "history_store_schema",
+        ):
+            if hasattr(fresh, attr):
+                try:
+                    setattr(self, attr, getattr(fresh, attr))
+                except Exception:
+                    continue
+        # Profile dicts and nested telemetry dicts: swap contents
+        # in-place so existing references keep pointing at the right
+        # collection object.
+        for dict_attr in (
+            "db_profiles",
+            "llm_profiles",
+            "doc_profiles",
+            "code_profiles",
+            "doc_profiles_last_ingested_at",
+            "doc_profiles_last_error",
+            "code_profile_last_indexed_at",
+            "code_profile_last_error",
+            "doc_profile_linked_dbs",
+            "code_profile_linked_dbs",
+        ):
+            target = getattr(self, dict_attr, None)
+            source = getattr(fresh, dict_attr, None)
+            if isinstance(target, dict) and isinstance(source, dict):
+                target.clear()
+                target.update(source)
+        # ``self.db`` / ``self.llm`` mirror the active profile; sync
+        # them from the freshly-loaded copy so dataclass field reads
+        # reflect any Studio-side edits to those profiles.
+        for nested_attr in ("db", "llm", "embedding"):
+            fresh_nested = getattr(fresh, nested_attr, None)
+            if fresh_nested is None:
+                continue
+            target_nested = getattr(self, nested_attr, None)
+            if target_nested is None:
+                continue
+            for fld in fresh_nested.__dataclass_fields__:
+                try:
+                    setattr(target_nested, fld, getattr(fresh_nested, fld))
+                except Exception:
+                    continue
+        object.__setattr__(self, "_loaded_mtime", disk_mtime)
+        return True
 
     def save(self, path: str | None = None) -> Path:
         p = Path(path) if path else Path(self._config_path or Path(self.CONFIG_DIR) / "config.yml")
@@ -1912,6 +2016,13 @@ class AMXConfig:
             object.__setattr__(self, "_config_path", str(p))
             self._attach_children()
             object.__setattr__(self, "_autosave_ready", True)
+            # Track the post-write mtime so :meth:`reload_if_stale`
+            # doesn't mistake our own save for an external change and
+            # ping-pong the user's in-memory edits with a stale reload.
+            try:
+                object.__setattr__(self, "_loaded_mtime", p.stat().st_mtime)
+            except OSError:
+                pass
         finally:
             object.__setattr__(self, "_autosave_suspended", max(0, self._autosave_suspended - 1))
         return p
