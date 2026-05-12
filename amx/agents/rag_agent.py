@@ -7,6 +7,7 @@ import re
 from amx.agents.base import (
     AgentContext,
     BaseAgent,
+    Citation,
     Confidence,
     MetadataSuggestion,
     apply_logprob_confidence,
@@ -29,6 +30,67 @@ from amx.utils.logging import get_logger
 from amx.utils.token_tracker import estimate_tokens, tracker
 
 log = get_logger("agents.rag")
+
+
+def _hits_to_citations(prompt_hits: list[dict]) -> list[Citation]:
+    """Convert the retrieval hits that were fed into the prompt into citations.
+
+    The chunk metadata (source, chunk_idx) is the ground-truth
+    provenance recorded at ingest time; the rerank score is the same
+    one :meth:`RAGStore.rerank` ranked the hit list by. The snippet
+    is the first 200 chars of the chunk text so the UI can render a
+    preview without re-fetching the document. Filters out hits with
+    no chunk metadata (defensive — pre-PR-B collections may have
+    missing ``source`` on legacy rows).
+    """
+    citations: list[Citation] = []
+    seen: set[tuple[str, int]] = set()
+    for h in prompt_hits or []:
+        meta = h.get("metadata") or {}
+        source = str(meta.get("source") or "").strip()
+        if not source:
+            continue
+        try:
+            chunk_idx = int(meta.get("chunk_idx") or 0)
+        except (TypeError, ValueError):
+            chunk_idx = 0
+        key = (source, chunk_idx)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            score = float(h.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        text = h.get("text") or h.get("document") or ""
+        snippet = str(text)[:200].strip()
+        citations.append(
+            Citation(source=source, chunk_idx=chunk_idx, score=score, snippet=snippet)
+        )
+    return citations
+
+
+def _attach_citations(
+    suggestions: list[MetadataSuggestion], prompt_hits: list[dict]
+) -> list[MetadataSuggestion]:
+    """Attach citations derived from ``prompt_hits`` to every suggestion.
+
+    Per the PR C spec, we attach the full deduplicated citation list
+    to every suggestion produced from the same prompt. Column-level
+    filtering of which chunk informed which column would require
+    re-ranking per column query (the agent currently fans multiple
+    column queries into one prompt), and the goal is just to show
+    the user which documents were consulted -- the union answers
+    that question without false negatives.
+    """
+    if not suggestions or not prompt_hits:
+        return suggestions
+    citations = _hits_to_citations(prompt_hits)
+    if not citations:
+        return suggestions
+    for s in suggestions:
+        s.citations = list(citations)
+    return suggestions
 
 
 def _scrub_suggestions(
@@ -154,8 +216,19 @@ class RAGAgent(BaseAgent):
     def _prompt_detail(self) -> PromptDetail:
         return self.llm.cfg.prompt_detail_cfg
 
-    def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]] | None:
-        """Build the RAG prompt messages. Returns ``None`` when no context is available."""
+    def _build_messages(
+        self, ctx: AgentContext
+    ) -> tuple[list[dict[str, str]], list[dict]] | None:
+        """Build the RAG prompt messages and remember the retrieval hits.
+
+        Returns ``None`` when no context is available; otherwise a
+        ``(messages, prompt_hits)`` tuple. ``prompt_hits`` is the
+        truncated list of chunks actually fed into the prompt (capped
+        at ``pd.rag_max_chunks``), so the agent's ``run`` method can
+        attach :class:`Citation` records to every produced suggestion
+        from a known-good provenance source instead of trusting the
+        LLM's free-text reasoning.
+        """
         if self.rag.doc_count == 0:
             return None
 
@@ -185,9 +258,9 @@ class RAGAgent(BaseAgent):
         if not unique_hits:
             return None
 
+        prompt_hits = list(unique_hits[: pd.rag_max_chunks])
         doc_chunks = [
-            f"[{h['metadata'].get('source', 'unknown')}]\n{h['text']}"
-            for h in unique_hits[: pd.rag_max_chunks]
+            f"[{h['metadata'].get('source', 'unknown')}]\n{h['text']}" for h in prompt_hits
         ]
         validator = MaxTokenValidator(
             comfortable_input_tokens=max(
@@ -210,21 +283,32 @@ class RAGAgent(BaseAgent):
         system = _build_system_prompt(
             self._n_alternatives, self._description_verbosity, style_profile=self._style_profile
         )
-        return [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_msg},
-        ]
+        return (
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_msg},
+            ],
+            prompt_hits,
+        )
 
     def collect_messages(self, ctx: AgentContext) -> list:
         """Return a ``BatchRequest`` for this table (or empty list when no docs)."""
         from amx.llm.batch import BatchRequest
 
-        msgs = self._build_messages(ctx)
-        if msgs is None:
+        built = self._build_messages(ctx)
+        if built is None:
             self._record_diagnostic(
                 f"RAG: no relevant documents found for {ctx.schema}.{ctx.table}"
             )
             return []
+        msgs, prompt_hits = built
+        # Stash the hits so ``parse_batch_result`` can attach the
+        # matching citations after the Batch API returns. Keyed by
+        # ``(schema, table)`` because :class:`RAGAgent` is reused
+        # across tables within one run.
+        if not hasattr(self, "_pending_hits"):
+            self._pending_hits = {}
+        self._pending_hits[(ctx.schema, ctx.table)] = prompt_hits
         n_columns = len(ctx.db_profile.get("columns", []) or [])
         return [
             BatchRequest(
@@ -239,17 +323,21 @@ class RAGAgent(BaseAgent):
     def parse_batch_result(self, content: str, ctx: AgentContext) -> list[MetadataSuggestion]:
         """Parse a raw LLM text response; used after Batch API completes."""
         suggestions = self._parse_response(content, ctx)
-        return _scrub_suggestions(suggestions, self._style_profile)
+        suggestions = _scrub_suggestions(suggestions, self._style_profile)
+        prompt_hits = getattr(self, "_pending_hits", {}).pop((ctx.schema, ctx.table), [])
+        _attach_citations(suggestions, prompt_hits)
+        return suggestions
 
     def run(self, ctx: AgentContext) -> list[MetadataSuggestion]:
         self._diagnostics.clear()
-        messages = self._build_messages(ctx)
-        if messages is None:
+        built = self._build_messages(ctx)
+        if built is None:
             log.info("No RAG context for %s.%s, skipping", ctx.schema, ctx.table)
             self._record_diagnostic(
                 f"RAG: no relevant documents found for {ctx.schema}.{ctx.table}"
             )
             return []
+        messages, prompt_hits = built
 
         columns = ctx.db_profile.get("columns", [])
         est = estimate_tokens(messages)
@@ -260,6 +348,7 @@ class RAGAgent(BaseAgent):
 
         suggestions = self._parse_response(result.content, ctx)
         suggestions = _scrub_suggestions(suggestions, self._style_profile)
+        _attach_citations(suggestions, prompt_hits)
         return apply_logprob_confidence(
             suggestions,
             result.logprobs,
