@@ -192,6 +192,87 @@ def clear() -> dict[str, Any]:
     return {"ok": True}
 
 
+class BulkRequest(BaseModel):
+    """Body for ``POST /api/pending/bulk`` — PR B bulk-action endpoint.
+
+    The SPA's review-mode toolbar fires this when the user clicks
+    ``[Accept selected]`` / ``[Skip selected]`` / ``[Apply selected]`` (the
+    apply branch is handled by ``/api/pending/apply`` after we mark targets
+    in-queue). ``ids`` is the list of zero-indexed pending idx markers (NOT
+    result_id) to act on — matches the SPA's already-rendered ``idx`` field.
+
+    ``action`` is one of ``accept`` / ``skip``. ``accept`` is a no-op on rows
+    already in the queue (it's the queue's whole point). ``skip`` deletes
+    the rows. ``apply`` is a deliberate omission — callers should hit
+    ``/api/pending/apply`` directly so the existing scope/override semantics
+    are honoured.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    ids: list[int]
+    action: str
+
+
+@router.post("/bulk")
+def patch_pending_bulk(body: BulkRequest) -> dict[str, Any]:
+    """Iterate the requested ``idx`` list and apply ``action`` to each.
+
+    Returns ``{ok, action, processed: [{idx, status}], remaining}``. Per-row
+    status is ``"ok"`` on a successful op, ``"not_found"`` when the idx is
+    out of range, ``"already_applied"`` for accept on an applied row.
+    """
+    action = (body.action or "").strip().lower()
+    if action not in {"accept", "skip"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid action '{body.action}'. Use 'accept' or 'skip'.",
+        )
+
+    rows = list(load_pending())
+    processed: list[dict[str, Any]] = []
+    if action == "accept":
+        # ``accept`` is idempotent: rows are already in the pending queue.
+        # The endpoint stamps ``applied=True`` (so /api/pending/apply will
+        # write them) without removing anything.
+        for idx in body.ids:
+            if not 0 <= idx < len(rows):
+                processed.append({"idx": idx, "status": "not_found"})
+                continue
+            rows[idx].applied = True
+            processed.append({"idx": idx, "status": "ok"})
+        save_pending(rows)
+        return {
+            "ok": True,
+            "action": action,
+            "processed": processed,
+            "remaining": len(rows),
+        }
+
+    # action == "skip" — drop the targeted rows. Sort descending so the
+    # idx values remain stable as we pop.
+    seen: set[int] = set()
+    targets = []
+    for idx in body.ids:
+        if idx in seen:
+            continue
+        seen.add(idx)
+        if not 0 <= idx < len(rows):
+            processed.append({"idx": idx, "status": "not_found"})
+            continue
+        targets.append(idx)
+    for idx in sorted(targets, reverse=True):
+        rows.pop(idx)
+        processed.append({"idx": idx, "status": "ok"})
+    save_pending(rows)
+    return {
+        "ok": True,
+        "action": action,
+        "processed": processed,
+        "remaining": len(rows),
+    }
+
+
 class RestoreRequest(BaseModel):
     """Body for ``POST /api/pending/restore`` — re-add a previously
     skipped row to the pending queue. The SPA already has the full
