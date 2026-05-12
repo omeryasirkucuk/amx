@@ -401,15 +401,28 @@ def analyze_codebase(
                 break
         assets_list = ordered[:MAX_REGEX_ASSETS]
         assets: set[str] = set(assets_list)
-        if not assets_list:
-            pattern = re.compile(r"$^")
-        else:
-            pattern = re.compile(
+        if assets_list:
+            pattern: re.Pattern[str] | None = re.compile(
                 r"\b("
                 + "|".join(re.escape(a) for a in sorted(assets_list, key=len, reverse=True))
                 + r")\b",
                 re.IGNORECASE,
             )
+        else:
+            # No table / column names to look for — the caller fed an
+            # empty asset set (fresh install with no synced catalog yet,
+            # or a code profile pointing at a repo that doesn't reference
+            # the linked DB at all). Skip the per-line asset regex
+            # entirely; the Spark/SQL literal scanners below still
+            # operate. The previous fix used a placeholder ``r"$^"``
+            # pattern which actually matches once on every empty line
+            # under default mode (``$`` and ``^`` are both zero-width
+            # and overlap at position 0 in an empty string). Then
+            # ``match.group(1)`` raised ``IndexError: no such group``
+            # because the pattern carries no capture group — surfacing
+            # as the "Last index failed" banner on /code-scan for any
+            # repo with blank lines.
+            pattern = None
 
         # Walk the tree via the shared helper so both the regex/AST
         # analyzer and the semantic indexer agree on which files are
@@ -444,20 +457,21 @@ def analyze_codebase(
             rel = str(fpath.relative_to(root))
 
             for i, line in enumerate(lines):
-                for match in pattern.finditer(line):
-                    asset = match.group(1).lower()
-                    start = max(0, i - context_lines)
-                    end = min(len(lines), i + context_lines + 1)
-                    ctx = "\n".join(lines[start:end])
+                if pattern is not None:
+                    for match in pattern.finditer(line):
+                        asset = match.group(1).lower()
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        ctx = "\n".join(lines[start:end])
 
-                    ref = CodeReference(
-                        file=rel,
-                        line_no=i + 1,
-                        line_text=line.strip(),
-                        matched_asset=asset,
-                        context=ctx,
-                    )
-                    report.references.setdefault(asset, []).append(ref)
+                        ref = CodeReference(
+                            file=rel,
+                            line_no=i + 1,
+                            line_text=line.strip(),
+                            matched_asset=asset,
+                            context=ctx,
+                        )
+                        report.references.setdefault(asset, []).append(ref)
 
                 _scan_spark_sql_literals_in_line(
                     line,
