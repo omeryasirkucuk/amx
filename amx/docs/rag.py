@@ -5,8 +5,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from amx.utils.optional_deps import ensure as _ensure
+
+if TYPE_CHECKING:
+    from chromadb.api.types import EmbeddingFunction
 
 # Document-RAG is a heavy cluster (~150 MB across chromadb + the
 # langchain ecosystem + unstructured's parser fleet). It only loads
@@ -34,6 +38,91 @@ from amx.docs.scanner import DocInfo  # noqa: E402
 from amx.utils.logging import get_logger  # noqa: E402
 
 log = get_logger("docs.rag")
+
+
+class EmbeddingProviderMismatch(RuntimeError):
+    """Raised when the active embedding provider does not match the
+    one used to populate the existing Chroma collection.
+
+    The collection metadata records the provider/model used at first
+    create. If the user later switches embedding providers (via
+    ``/embeddings``) the existing vectors are in a different
+    semantic space, so retrieval would silently degrade. Raising
+    here forces an explicit reindex or revert decision.
+    """
+
+    def __init__(
+        self,
+        *,
+        recorded_provider: str,
+        recorded_model: str,
+        active_provider: str,
+        active_model: str,
+    ) -> None:
+        self.recorded_provider = recorded_provider
+        self.recorded_model = recorded_model
+        self.active_provider = active_provider
+        self.active_model = active_model
+        super().__init__(
+            f"Docs RAG collection was indexed with provider={recorded_provider} "
+            f"model={recorded_model}. Current config says provider={active_provider} "
+            f"model={active_model}. "
+            "Run `/docs reindex` to rebuild the collection with the active provider, "
+            "or update the embedding profile to match the indexed model."
+        )
+
+
+# Schema version for the docs RAG collection metadata. Bumped when the
+# metadata shape changes in a way old AMX cannot read.
+_AMX_RAG_SCHEMA_VERSION = 1
+
+
+def _resolve_active_embedding(cfg: Any | None = None) -> tuple[str, str, EmbeddingFunction | None]:
+    """Resolve ``(provider, model, embedding_function)`` from config.
+
+    Falls back to the bundled MiniLM (``embedding_function=None``) when
+    no config is available or the user has the default kind selected.
+    The provider/model strings are what get persisted as collection
+    metadata so a later reopen can detect mismatches.
+    """
+    from amx.search.embeddings import make_embedding_function
+
+    if cfg is None:
+        try:
+            from amx.config import AMXConfig
+
+            cfg = AMXConfig.load()
+        except Exception:
+            cfg = None
+
+    embedding = getattr(cfg, "embedding", None) if cfg is not None else None
+    if embedding is None:
+        return ("minilm", "minilm-l6-v2", None)
+
+    kind = (getattr(embedding, "kind", "") or "minilm").lower().strip()
+    model = getattr(embedding, "model", "") or ""
+    api_key = getattr(embedding, "api_key", "") or ""
+    base_url = getattr(embedding, "base_url", "") or ""
+
+    if kind in {"", "minilm", "default", "minilm-l6-v2"}:
+        return ("minilm", "minilm-l6-v2", None)
+
+    # For non-default kinds the model id IS the unique identifier; if
+    # the user hasn't picked one yet fall back to MiniLM rather than
+    # error here (the embeddings module emits a themed warning at
+    # startup for that case).
+    if not model:
+        return ("minilm", "minilm-l6-v2", None)
+
+    try:
+        ef = make_embedding_function(kind, model=model, api_key=api_key, base_url=base_url)
+    except Exception:
+        # Builder failure (missing optional dep, bad model id) — fall
+        # back to MiniLM so retrieval still works; the mismatch check
+        # later will catch the wrong-provider case explicitly.
+        return ("minilm", "minilm-l6-v2", None)
+    return (kind, model, ef)
+
 
 EXPLANATORY_TERMS = frozenset(
     {
@@ -123,14 +212,86 @@ class RAGStore:
         self,
         persist_dir: str | None = None,
         source_filters: list[str] | None = None,
+        *,
+        embedding_function: EmbeddingFunction | None = None,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
+        cfg: Any | None = None,
     ):
         self.persist_dir = persist_dir or str(Path.home() / ".amx" / "chroma_db")
         Path(self.persist_dir).mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=self.persist_dir)
-        self.collection = self.client.get_or_create_collection(
-            name="amx_docs",
-            metadata={"hnsw:space": "cosine"},
-        )
+
+        # Resolve the active embedding provider so we can (a) wire it
+        # into Chroma's ``embedding_function=`` slot — historically
+        # omitted, which silently forced bundled MiniLM regardless of
+        # the user's ``cfg.embedding`` choice — and (b) record it on
+        # the collection metadata for the cross-version mismatch
+        # check below.
+        if embedding_provider is None or embedding_model is None or embedding_function is None:
+            resolved_provider, resolved_model, resolved_ef = _resolve_active_embedding(cfg)
+            if embedding_provider is None:
+                embedding_provider = resolved_provider
+            if embedding_model is None:
+                embedding_model = resolved_model
+            if embedding_function is None:
+                embedding_function = resolved_ef
+
+        self.embedding_provider = embedding_provider
+        self.embedding_model = embedding_model
+        self.embedding_function = embedding_function
+
+        kwargs: dict[str, Any] = {
+            "name": "amx_docs",
+            "metadata": {
+                "hnsw:space": "cosine",
+                "embedding_provider": embedding_provider,
+                "embedding_model": embedding_model,
+                "amx_schema_version": _AMX_RAG_SCHEMA_VERSION,
+            },
+        }
+        if embedding_function is not None:
+            kwargs["embedding_function"] = embedding_function
+        self.collection = self.client.get_or_create_collection(**kwargs)
+
+        # ``get_or_create_collection`` only honours ``metadata=`` on
+        # FIRST create; for an existing collection Chroma drops the
+        # passed-in dict on the floor. So after open we explicitly
+        # reconcile:
+        #
+        # * If the existing collection has recorded provider/model
+        #   that DON'T match the active config → raise mismatch.
+        # * If it has no recorded provider/model (pre-PR-B
+        #   collection) → backfill the metadata now; do NOT force a
+        #   reindex (grandfather rule from the design spec).
+        existing_meta = dict(self.collection.metadata or {})
+        recorded_provider = existing_meta.get("embedding_provider")
+        recorded_model = existing_meta.get("embedding_model")
+        if recorded_provider and recorded_model:
+            if recorded_provider != embedding_provider or recorded_model != embedding_model:
+                raise EmbeddingProviderMismatch(
+                    recorded_provider=str(recorded_provider),
+                    recorded_model=str(recorded_model),
+                    active_provider=str(embedding_provider),
+                    active_model=str(embedding_model),
+                )
+        else:
+            # Pre-existing collection without metadata — write it now
+            # so future opens have something to compare against.
+            # Strip ``hnsw:*`` keys: Chroma treats those as construction-
+            # time parameters and rejects ``modify(metadata=)`` calls
+            # that try to "change" them (even to the same value).
+            merged = {k: v for k, v in existing_meta.items() if not str(k).startswith("hnsw:")}
+            merged["embedding_provider"] = embedding_provider
+            merged["embedding_model"] = embedding_model
+            merged["amx_schema_version"] = _AMX_RAG_SCHEMA_VERSION
+            try:
+                self.collection.modify(metadata=merged)
+            except Exception as exc:
+                # Non-fatal: the collection still works, we just lose
+                # the mismatch check on the next reopen.
+                log.warning("Could not backfill RAG collection metadata: %s", exc)
+
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
@@ -210,6 +371,35 @@ class RAGStore:
                     }
                     for i in range(len(chunks))
                 ]
+
+                # Idempotency on file shrink: if the previous ingest of
+                # this exact path produced N chunks and the new content
+                # only produces M<N, chunks ``::M`` … ``::N-1`` would
+                # otherwise live on in the collection forever. Look up
+                # the existing ID set for this source and delete any
+                # that the new upsert won't cover. Done BEFORE the
+                # upsert so a partial failure leaves the file in a
+                # half-deleted state at worst, never a half-orphaned
+                # one.
+                try:
+                    existing = self.collection.get(where={"source": doc.path}, include=[])
+                    existing_ids = set(existing.get("ids") or [])
+                except Exception as exc:
+                    log.warning("Could not enumerate existing chunks for %s: %s", doc.path, exc)
+                    existing_ids = set()
+                new_id_set = set(ids)
+                orphans = sorted(existing_ids - new_id_set)
+                if orphans:
+                    try:
+                        self.collection.delete(ids=orphans)
+                        log.info(
+                            "Deleted %d orphan chunk(s) for %s before re-ingest",
+                            len(orphans),
+                            doc.path,
+                        )
+                    except Exception as exc:
+                        log.warning("Could not delete orphan chunks for %s: %s", doc.path, exc)
+
                 self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
                 total_chunks += len(chunks)
                 succeeded.append(doc.path)

@@ -1,0 +1,184 @@
+"""Storage correctness for the docs RAG (PR B).
+
+Pins three behaviours that PR B added to ``amx.docs.rag.RAGStore``:
+
+1. The Chroma collection records ``embedding_provider`` and
+   ``embedding_model`` on first create so a later reopen can detect a
+   provider switch.
+2. Reopening with a different provider raises
+   :class:`EmbeddingProviderMismatch`; a pre-existing (PR A and older)
+   collection without those metadata keys is grandfathered in and gets
+   the metadata back-filled silently.
+3. ``RAGStore.ingest`` deletes orphan chunks for a source path before
+   upserting, so editing a 10-chunk file down to 2 no longer leaves
+   chunks 2..9 in the collection forever.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import chromadb
+import pytest
+
+from amx.docs.rag import EmbeddingProviderMismatch, RAGStore
+from amx.docs.scanner import DocInfo
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+
+def _make_store(
+    persist_dir: Path,
+    *,
+    provider: str = "minilm",
+    model: str = "minilm-l6-v2",
+) -> RAGStore:
+    """Build a ``RAGStore`` with an explicit provider/model and no real
+    embedding function (MiniLM bundled default). Keeps tests offline
+    and deterministic."""
+    return RAGStore(
+        persist_dir=str(persist_dir),
+        embedding_function=None,
+        embedding_provider=provider,
+        embedding_model=model,
+    )
+
+
+def _make_doc(tmp_path: Path, body: str, name: str = "fixture.txt") -> DocInfo:
+    p = tmp_path / name
+    p.write_text(body, encoding="utf-8")
+    return DocInfo(
+        path=str(p),
+        size_bytes=p.stat().st_size,
+        extension=".txt",
+        source_type="local",
+        source_root=str(tmp_path),
+    )
+
+
+# ── Fix 2: metadata recorded on first create ──────────────────────────
+
+
+def test_collection_records_embedding_metadata_on_create(tmp_path: Path) -> None:
+    store = _make_store(tmp_path / "chroma", provider="minilm", model="minilm-l6-v2")
+    meta = dict(store.collection.metadata or {})
+    assert meta.get("embedding_provider") == "minilm"
+    assert meta.get("embedding_model") == "minilm-l6-v2"
+    assert meta.get("amx_schema_version") == 1
+
+
+# ── Fix 3: mismatch raises ────────────────────────────────────────────
+
+
+def test_mismatch_raises_embedding_provider_mismatch(tmp_path: Path) -> None:
+    persist = tmp_path / "chroma"
+    # Seal the collection with provider A.
+    _make_store(persist, provider="openai_compatible", model="text-embedding-3-small")
+    # Reopen with provider B; expect the structured mismatch error.
+    with pytest.raises(EmbeddingProviderMismatch) as excinfo:
+        _make_store(persist, provider="minilm", model="minilm-l6-v2")
+    msg = str(excinfo.value)
+    assert "openai_compatible" in msg
+    assert "text-embedding-3-small" in msg
+    assert "minilm" in msg
+    assert "/docs reindex" in msg
+
+
+# ── Fix 3 (grandfather): pre-PR-B collection has no metadata ──────────
+
+
+def test_pre_existing_collection_without_metadata_is_grandfathered(
+    tmp_path: Path,
+) -> None:
+    persist = tmp_path / "chroma"
+    persist.mkdir(parents=True, exist_ok=True)
+    # Simulate a pre-PR-B collection: only ``hnsw:space`` in metadata.
+    client = chromadb.PersistentClient(path=str(persist))
+    client.get_or_create_collection(
+        name="amx_docs",
+        metadata={"hnsw:space": "cosine"},
+    )
+    # No assertion on the absence-of-keys here — different chromadb
+    # versions backfill ``hnsw:*`` defaults differently. The real
+    # contract under test is "reopen does not raise even when our
+    # embedding_* keys are missing".
+
+    store = _make_store(persist, provider="minilm", model="minilm-l6-v2")
+    backfilled = dict(store.collection.metadata or {})
+    assert backfilled.get("embedding_provider") == "minilm"
+    assert backfilled.get("embedding_model") == "minilm-l6-v2"
+
+
+# ── Fix 5: idempotency on shrink ──────────────────────────────────────
+
+
+def _ids_for_source(store: RAGStore, source: str) -> list[str]:
+    res = store.collection.get(where={"source": source}, include=[])
+    return list(res.get("ids") or [])
+
+
+def test_ingest_deletes_orphan_chunks_on_shrink(tmp_path: Path) -> None:
+    store = _make_store(tmp_path / "chroma")
+    # Long enough body (with paragraph breaks) to produce multiple
+    # chunks under the default RecursiveCharacterTextSplitter
+    # (chunk_size=1000, overlap=200).
+    long_body = "\n\n".join(["paragraph " + ("x" * 600)] * 8)
+    doc = _make_doc(tmp_path, long_body, name="big.txt")
+    store.ingest([doc])
+    big_count = len(_ids_for_source(store, doc.path))
+    assert big_count >= 2, "fixture should produce at least 2 chunks"
+
+    # Re-ingest the SAME path with a one-chunk body and verify the
+    # orphans got cleaned up rather than lingering forever.
+    Path(doc.path).write_text("tiny single chunk content", encoding="utf-8")
+    store.ingest([doc])
+    final = _ids_for_source(store, doc.path)
+    assert len(final) == 1
+    assert final[0] == f"{doc.path}::0"
+
+
+def test_ingest_idempotent_on_unchanged_file(tmp_path: Path) -> None:
+    store = _make_store(tmp_path / "chroma")
+    doc = _make_doc(tmp_path, "stable content body", name="stable.txt")
+    store.ingest([doc])
+    first = sorted(_ids_for_source(store, doc.path))
+    store.ingest([doc])
+    second = sorted(_ids_for_source(store, doc.path))
+    assert first == second
+
+
+# ── Fix 4: callers surface the mismatch as a run error ────────────────
+
+
+def test_record_rag_unavailable_reason_tags_mismatch(monkeypatch) -> None:
+    """The analyze-flow helper tags the mismatch case with a
+    ``embedding_mismatch:`` prefix so /history and Studio can
+    distinguish it from a generic init crash."""
+    from amx.cli_support.commands.analyze_flow import _record_rag_unavailable_reason
+
+    exc = EmbeddingProviderMismatch(
+        recorded_provider="openai_compatible",
+        recorded_model="text-embedding-3-small",
+        active_provider="minilm",
+        active_model="minilm-l6-v2",
+    )
+    sink: dict[str, str] = {}
+    _record_rag_unavailable_reason(sink, exc)
+    assert sink["rag_unavailable_reason"].startswith("embedding_mismatch:")
+    assert "openai_compatible" in sink["rag_unavailable_reason"]
+
+
+def test_format_rag_unavailable_reason_tags_mismatch() -> None:
+    """The library-side helper used by ``infer_table_metadata`` mirrors
+    the analyze-flow tagging so the two paths never drift."""
+    from amx.core.inference import _format_rag_unavailable_reason
+
+    exc = EmbeddingProviderMismatch(
+        recorded_provider="sentence_transformers",
+        recorded_model="BAAI/bge-large-en-v1.5",
+        active_provider="minilm",
+        active_model="minilm-l6-v2",
+    )
+    msg = _format_rag_unavailable_reason(exc)
+    assert msg.startswith("embedding_mismatch:")
+    assert "bge-large-en-v1.5" in msg

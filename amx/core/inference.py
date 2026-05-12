@@ -31,6 +31,16 @@ def _format_rag_unavailable_reason(exc: BaseException) -> str:
     because each formatted its own message inside an
     ``except: pass``-style block).
     """
+    # Tag the embedding-mismatch case structurally so downstream
+    # tooling (history readers, /doctor) can tell user-config-changed
+    # apart from a genuine init crash. See ``EmbeddingProviderMismatch``
+    # in :mod:`amx.docs.rag`.
+    try:
+        from amx.docs.rag import EmbeddingProviderMismatch
+    except Exception:
+        EmbeddingProviderMismatch = ()  # type: ignore[assignment, misc]
+    if isinstance(exc, EmbeddingProviderMismatch):
+        return f"embedding_mismatch: {exc}"
     return f"{exc.__class__.__name__}: {exc}"
 
 

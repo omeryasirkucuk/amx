@@ -613,7 +613,17 @@ def _record_rag_unavailable_reason(
     counterpart in :mod:`amx.core.inference` uses the same formatting
     so the two call sites can never drift.
     """
-    extra_metrics["rag_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}"
+    # When the user changed embedding providers between runs the
+    # collection is technically intact but unusable with the active
+    # config. Tag that case structurally so /history and Studio can
+    # render a remediation hint ("run /docs reindex") instead of
+    # treating it like a generic init crash.
+    from amx.docs.rag import EmbeddingProviderMismatch
+
+    if isinstance(exc, EmbeddingProviderMismatch):
+        extra_metrics["rag_unavailable_reason"] = f"embedding_mismatch: {exc}"
+    else:
+        extra_metrics["rag_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}"
 
 
 def _finalize_history_run(
@@ -1088,11 +1098,16 @@ def execute_analyze_run(
             # context. Now we record a one-line reason on the run record
             # so /history and Studio can render "No RAG context used
             # (reason: ...)", and surface the same message inline.
+            from amx.docs.rag import EmbeddingProviderMismatch
+
             _record_rag_unavailable_reason(extra_metrics, exc)
-            error(
-                f"RAG store unavailable: {exc.__class__.__name__}: {exc}. "
-                "Run will proceed without document context."
-            )
+            if isinstance(exc, EmbeddingProviderMismatch):
+                error(f"RAG store unavailable: {exc}. Run will proceed without document context.")
+            else:
+                error(
+                    f"RAG store unavailable: {exc.__class__.__name__}: {exc}. "
+                    "Run will proceed without document context."
+                )
             log.warning("RAGStore init failed during analyze: %s", exc, exc_info=True)
 
         with command_display(
