@@ -443,5 +443,12 @@ def resolve_codebase_for_run(
                     warn(f"Could not save codebase cache: {exc}")
             merged_report = merge_codebase_reports(merged_report, report)
         except Exception as exc:
+            # Embedding-provider mismatch must propagate so the run
+            # record's ``code_unavailable_reason`` gets tagged with
+            # ``embedding_mismatch:`` (rather than buried as a warn).
+            from amx.codebase.code_rag import CodeEmbeddingMismatch
+
+            if isinstance(exc, CodeEmbeddingMismatch):
+                raise
             warn(f"Codebase analysis failed for {code_path}: {exc}")
     return merged_report
