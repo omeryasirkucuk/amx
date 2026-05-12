@@ -1292,6 +1292,15 @@ def run_interactive_session(
                 console.print()
                 continue
 
+            # Pick up any changes Studio (or another CLI session) wrote
+            # to ~/.amx/config.yml since the last prompt. Without this
+            # the CLI's in-memory cfg stays stale until the user
+            # restarts the session — see issue surfaced after PR #350
+            # where a doc profile added in Studio was invisible in CLI.
+            # Single stat() per prompt; load happens only on mtime
+            # change so the steady-state cost is one syscall per turn.
+            cfg.reload_if_stale()
+
             if raw == "__amx_exit__":
                 console.print()
                 success("Session closed.")
