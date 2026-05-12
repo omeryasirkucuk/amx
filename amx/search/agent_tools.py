@@ -184,6 +184,75 @@ class ToolBox:
             self._db = self._db_factory()
         return self._db
 
+    def _databases_to_sweep(self) -> list[str | None]:
+        """Return the list of database names the live-DB tools should
+        walk for the current profile.
+
+        ``[None]`` (a single anonymous entry) means "use the active
+        connector as-is" — the legacy single-database path. For an
+        unpinned 2-level backend (PostgreSQL / MySQL / SQL Server with
+        ``cfg.db.database == ''``) we enumerate every database the
+        server exposes so a question like ``find_table_by_name vbrk``
+        catches tables in ANY database, not just whatever the JDBC
+        URL happened to default to.
+
+        Three-level backends (Databricks, BigQuery) are unaffected:
+        they use ``catalog`` and the catalog-level catalog tools
+        already fan out via the catalog SQL clause.
+        """
+        # If the profile pins a database, the legacy single-DB path is
+        # correct — nothing to fan out.
+        pinned = str(getattr(self.cfg.db, "database", "") or "").strip()
+        if pinned:
+            return [None]
+        # Catalog-style backends (3-level) keep the legacy path.
+        try:
+            if self._live_db().supports_catalogs():
+                return [None]
+        except Exception:
+            return [None]
+        # Unpinned 2-level backend: ask the connector for every visible
+        # database. Empty list → caller falls back to the single
+        # connection-time DB (preserves the old behaviour rather than
+        # hiding the connector when ``list_databases`` is unsupported).
+        try:
+            dbs = [d for d in self._live_db().list_databases() if d]
+        except Exception:
+            dbs = []
+        return dbs or [None]
+
+    def _connector_for_database(self, database: str | None) -> DatabaseConnector:
+        """Return a connector overlaying ``database`` onto the active
+        profile's DBConfig.
+
+        ``database=None`` returns the legacy single-DB connector. A
+        named database produces a fresh ``DBConfig`` via
+        :func:`dataclasses.replace` so the original profile record
+        stays untouched (no race against concurrent tool calls). The
+        connector is cached in ``self._connectors`` under
+        ``"<profile>::<database>"`` for the lifetime of the ToolBox so
+        a per-DB fanout doesn't pay N engine builds per question.
+        """
+        if not database:
+            return self._live_db()
+        from dataclasses import replace as _replace
+
+        key = f"{self.db_profile}::{database}"
+        cached = self._connectors.get(key)
+        if cached is not None:
+            return cached
+        base = self.cfg.db_profiles.get(self.db_profile)
+        if base is None:
+            return self._live_db()
+        try:
+            scoped_cfg = _replace(base, database=database)
+        except Exception:
+            return self._live_db()
+        connector = DatabaseConnector(scoped_cfg, profile_name=self.db_profile)
+        self._connectors[key] = connector
+        self._owned_connectors.add(key)
+        return connector
+
     def _connector_for_profile(self, profile: str) -> DatabaseConnector:
         """Return a (lazy) live-DB connector bound to *profile*'s DBConfig.
 
@@ -499,6 +568,17 @@ class ToolBox:
                                     "REQUIRED when scope is multi-profile and the table "
                                     "exists in more than one profile (resolve ambiguity by "
                                     "naming the profile). Optional otherwise."
+                                ),
+                            },
+                            "database": {
+                                "type": "string",
+                                "description": (
+                                    "Optional database name (PostgreSQL / MySQL / SQL "
+                                    "Server). When the active profile has no pinned "
+                                    "database, set this to the database the table lives "
+                                    "in (find_table_by_name reports it under "
+                                    "``resolved_database``). Omit on 3-level backends "
+                                    "(Databricks / BigQuery) — use ``catalog`` there."
                                 ),
                             },
                         },
@@ -2245,8 +2325,13 @@ class ToolBox:
         # exact-match check happens here, fuzzy fallback (Stage 2)
         # reuses the same list so we don't pay for two passes.
         all_live_tables: list[str] = []
+        # For each ``(database, path)`` we record where the table lives
+        # so callers can route ``describe_table`` straight at the right
+        # database without re-running the cross-DB sweep. Empty string
+        # means "active connection's default database" (legacy behaviour).
+        path_to_database: dict[str, str] = {}
         try:
-            db = self._live_db()
+            anchor = self._live_db()
             # Phase 4 fast path: a single ``information_schema.tables``
             # query covers every schema in the catalog. The original
             # per-schema loop walks 100 schemas × 1 ``SHOW TABLES`` each =
@@ -2254,7 +2339,7 @@ class ToolBox:
             # that to 1 query. Falls through to the loop when the
             # adapter doesn't implement the bulk variant or returns None.
             catalog_pin = str(getattr(self.cfg.db, "catalog", "") or "").strip()
-            list_assets_bulk = getattr(db, "list_assets_bulk", None)
+            list_assets_bulk = getattr(anchor, "list_assets_bulk", None)
             bulk_assets = (
                 list_assets_bulk(catalog_pin) if list_assets_bulk and catalog_pin else None
             )
@@ -2265,17 +2350,41 @@ class ToolBox:
                     if asset_name.lower() == target.lower():
                         live_paths.append(full_path)
             else:
-                for schema in db.list_schemas():
-                    # Prefer ``list_assets`` when available — single round trip per schema.
-                    if hasattr(db, "list_assets"):
-                        asset_iter = ((str(n), str(k)) for n, k in db.list_assets(schema))
-                    else:
-                        asset_iter = ((str(n), "table") for n in db.list_tables(schema))
-                    for asset_name, _kind in asset_iter:
-                        full_path = f"{schema}.{asset_name}"
-                        all_live_tables.append(full_path)
-                        if asset_name.lower() == target.lower():
-                            live_paths.append(full_path)
+                # Cross-database sweep: for an unpinned 2-level backend
+                # (PostgreSQL / MySQL / SQL Server with no
+                # ``cfg.db.database``) ``self._databases_to_sweep`` returns
+                # every database the server exposes. Pinned profiles and
+                # catalog-style (3-level) backends short-circuit to a
+                # single ``[None]`` entry so they keep the legacy
+                # single-database walk. This is the fix for the
+                # user-reported case where ``find_table_by_name("vbrk")``
+                # missed a table in the ``SAP`` database because the
+                # PostgreSQL connection happened to default to ``public``
+                # in another database.
+                for db_name in self._databases_to_sweep():
+                    db_conn = self._connector_for_database(db_name) if db_name else anchor
+                    try:
+                        schemas = db_conn.list_schemas()
+                    except Exception:
+                        continue
+                    for schema in schemas:
+                        try:
+                            if hasattr(db_conn, "list_assets"):
+                                asset_iter = (
+                                    (str(n), str(k)) for n, k in db_conn.list_assets(schema)
+                                )
+                            else:
+                                asset_iter = (
+                                    (str(n), "table") for n in db_conn.list_tables(schema)
+                                )
+                            for asset_name, _kind in asset_iter:
+                                full_path = f"{schema}.{asset_name}"
+                                all_live_tables.append(full_path)
+                                path_to_database[full_path] = db_name or ""
+                                if asset_name.lower() == target.lower():
+                                    live_paths.append(full_path)
+                        except Exception:
+                            continue
         except Exception:
             # Live discovery is best-effort. Fall back to whatever the catalog had.
             pass
@@ -2383,12 +2492,27 @@ class ToolBox:
         # Cap so the prompt stays tight on huge schemas.
         fuzzy_matches = fuzzy_matches[:25]
 
+        # Surface the resolved database per live-DB match so the LLM
+        # can route ``describe_table`` straight at the right database
+        # on follow-up calls (unpinned 2-level backends only — pinned
+        # / 3-level profiles populate an empty map).
+        match_databases: dict[str, str] = {}
+        for path in live_paths:
+            db_name = path_to_database.get(path, "")
+            if db_name:
+                match_databases[path] = db_name
         return {
             "name": target,
             "matches": merged,
             "match_count": len(merged),
             "from_catalog": catalog_paths,
             "from_live_db": live_paths,
+            # ``{path: database}`` for unpinned 2-level backends so the
+            # LLM passes ``database=…`` to follow-up describe_table /
+            # sample_column_values calls without paying for another
+            # cross-DB sweep. Empty for pinned profiles and 3-level
+            # backends where the catalog/database layer is fixed.
+            "resolved_databases": match_databases,
             # Substring + fuzzy fallback. ALWAYS populated (empty list
             # when nothing matches) so the LLM has one shape to reason
             # over. Each entry is ``{path, match_kind}`` where
@@ -2402,6 +2526,7 @@ class ToolBox:
         table: str,
         catalog: str = "",
         db_profile: str = "",
+        database: str = "",
     ) -> dict[str, Any]:
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
@@ -2421,24 +2546,44 @@ class ToolBox:
         # when the active profile didn't pin a catalog.
         explicit = (catalog or "").strip()
         cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
-        try:
-            with self._scoped_catalog(db, cat_arg):
-                profile = db.profile_table(schema_name, table_name, sample_size=0)
-        except ProfilingError as exc:
+
+        # Cross-database resolution for unpinned 2-level backends.
+        # When the user (or the LLM) passes ``database=…`` explicitly,
+        # honour it — otherwise fall through to the connection-time
+        # default. If that fails AND the profile is unpinned, sweep
+        # every database the server exposes and try each. Mirrors the
+        # behaviour ``find_table_by_name`` now applies for the same
+        # class of profile so the two tools stay in lockstep.
+        explicit_db = (database or "").strip()
+        candidate_dbs: list[str | None]
+        if explicit_db:
+            candidate_dbs = [explicit_db]
+        else:
+            candidate_dbs = self._databases_to_sweep()
+
+        last_error: str | None = None
+        for db_name in candidate_dbs:
+            scoped = self._connector_for_database(db_name) if db_name else db
+            try:
+                with self._scoped_catalog(scoped, cat_arg):
+                    profile = scoped.profile_table(schema_name, table_name, sample_size=0)
+                # Success — remember the database we resolved against so
+                # the LLM can route follow-up tool calls without another
+                # fanout.
+                resolved_database = db_name or str(getattr(scoped.cfg, "database", "") or "") or None
+                db = scoped
+                break
+            except (ProfilingError, Exception) as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+        else:
             return {
                 "schema": schema_name,
                 "table": table_name,
                 "catalog": cat_arg or None,
                 "found": False,
-                "error": str(exc),
-            }
-        except Exception as exc:
-            return {
-                "schema": schema_name,
-                "table": table_name,
-                "catalog": cat_arg or None,
-                "found": False,
-                "error": str(exc),
+                "error": last_error
+                or f"Could not resolve {schema_name}.{table_name} in any visible database.",
             }
         all_cols = [
             {
@@ -2542,6 +2687,19 @@ class ToolBox:
         # callers can render "this table on profile X has …" without
         # the LLM having to track which dispatch went to which profile.
         result["db_profile"] = targeted or self.db_profile
+        # Surface the database we actually resolved against so the LLM
+        # can pass it back on follow-up calls (sample_column_values,
+        # rerun describe_table, etc.) without re-running the cross-DB
+        # fanout. For pinned profiles this is just the pinned name; for
+        # unpinned PostgreSQL it's the database where the table was
+        # found during the sweep.
+        try:
+            result["resolved_database"] = (
+                str(getattr(db.cfg, "database", "") or "")
+                or None
+            )
+        except Exception:
+            result["resolved_database"] = None
         return result
 
     @staticmethod
