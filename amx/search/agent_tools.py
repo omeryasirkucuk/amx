@@ -53,6 +53,41 @@ __all__ = (
 )
 
 
+class _CacheBackedTableProfile:
+    """Minimal ``TableProfile`` stand-in for cache-served describe_table.
+
+    The catalog / 24h cache stores ``(column list, row_count,
+    table_comment)`` — enough to reconstruct the response shape
+    ``_tool_describe_table`` builds. We DON'T have analytics
+    metadata (partition keys, indexes, storage_bytes, …) because
+    those come from a live backend probe; the response surface
+    leaves the ``analytics`` block empty in that case, which the
+    LLM already knows means "this backend / cache doesn't carry
+    that signal".
+    """
+
+    __slots__ = ("columns", "row_count", "existing_comment", "analytics")
+
+    def __init__(self, *, columns: list[dict], row_count: int, table_comment: str) -> None:
+        # Recreate the lightweight ``ColumnProfile`` shape the live
+        # path produces: each entry exposes ``.name``, ``.dtype``,
+        # ``.nullable``, ``.existing_comment``.
+        from types import SimpleNamespace as _NS
+
+        self.columns = [
+            _NS(
+                name=str(c.get("name", "")),
+                dtype=str(c.get("type") or c.get("dtype") or ""),
+                nullable=bool(c.get("nullable", True)),
+                existing_comment=str(c.get("comment") or ""),
+            )
+            for c in (columns or [])
+        ]
+        self.row_count = int(row_count or 0)
+        self.existing_comment = table_comment or ""
+        self.analytics = None
+
+
 class ToolBox:
     """Concrete tool implementations the agent loop dispatches into."""
 
@@ -215,10 +250,18 @@ class ToolBox:
         # database. Empty list → caller falls back to the single
         # connection-time DB (preserves the old behaviour rather than
         # hiding the connector when ``list_databases`` is unsupported).
+        # Reuse the 24h-TTL cache so a second /ask question within the
+        # same day doesn't pay the live ``list_databases`` round-trip
+        # again. Cold path writes back.
+        cached = self._cached_databases_for_profile(self.db_profile)
+        if cached:
+            return list(cached)
         try:
             dbs = [d for d in self._live_db().list_databases() if d]
         except Exception:
             dbs = []
+        if dbs:
+            self._save_databases_for_profile(self.db_profile, dbs)
         return dbs or [None]
 
     def _connector_for_database(self, database: str | None) -> DatabaseConnector:
@@ -252,6 +295,236 @@ class ToolBox:
         self._connectors[key] = connector
         self._owned_connectors.add(key)
         return connector
+
+    # ── Cache-first metadata lookup ─────────────────────────────────────
+    # Three layers, cheapest first. Every read tool consults this helper
+    # before falling through to a live ``profile_table`` / ``list_*``
+    # call. The user reported that an unpinned PostgreSQL profile paid
+    # ~500 live round-trips per ``/ask`` question (cross-DB fanout);
+    # this helper closes that gap by reusing the catalog/cache work AMX
+    # already does for sidebar exploration and ``/search sync``.
+
+    _CACHED_DATABASE_LIST_TABLE = "__amx_database_list__"
+
+    def _now(self) -> float:
+        import time as _t
+
+        return _t.time()
+
+    def _history_store(self):
+        """Return the history-store singleton or ``None`` when the
+        process hasn't bootstrapped one. Both reads and writes degrade
+        to "no cache" rather than raising — the agent must keep
+        working on a fresh CLI session that never opened the store."""
+        try:
+            from amx.storage.factory import history_store as _hs
+
+            return _hs()
+        except Exception:
+            return None
+
+    def _resolve_table_metadata(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+        force_fresh: bool = False,
+    ) -> tuple[dict | None, str, float]:
+        """Cheap-to-expensive lookup for table+column metadata.
+
+        Returns ``(payload, source, age_seconds)``. ``payload`` matches
+        the shape the live ``profile_table`` path produces:
+
+            {
+                "table_comment": str,
+                "row_count": int,
+                "columns": [{name, dtype, nullable, comment}, ...],
+            }
+
+        Plus an extra ``last_synced_at`` (ISO timestamp) when the
+        catalog supplied it. ``source`` is one of:
+
+            * ``"catalog"`` — read from ``catalog_entities`` (filled by
+              ``/search sync``). No TTL; ``age_seconds`` is the time
+              since the last sync so the LLM can hedge.
+            * ``"live_cache"`` — read from ``run_context_cache`` (24h
+              TTL). Filled by an earlier ``/run-apply`` or by a prior
+              ``/ask`` write-back via :meth:`_writeback_table_metadata`.
+            * ``"live"`` — no payload here; the caller will issue a
+              live ``profile_table`` and call
+              :meth:`_writeback_table_metadata` on success.
+
+        ``force_fresh=True`` skips both caches and signals the caller
+        to go live. Used when the user explicitly asks for the
+        current state (post-apply, post-DDL, etc.).
+        """
+        if force_fresh:
+            return (None, "live", 0.0)
+        # ── Layer 1: catalog ──
+        try:
+            data = self.catalog.fetch_table_metadata(db_profile, schema, table)
+        except Exception:
+            data = None
+        # Strict shape check — tests stub ``self.catalog`` as a bare
+        # MagicMock which makes ``fetch_table_metadata`` return another
+        # MagicMock (truthy but not a dict). Same hardening protects
+        # against catalog rows with missing fields.
+        if isinstance(data, dict) and isinstance(data.get("columns"), list):
+            last_synced = float(data.get("last_synced_at") or 0.0)
+            age = max(0.0, self._now() - last_synced) if last_synced > 0.0 else 0.0
+            return (
+                {
+                    "table_comment": data.get("table_comment", ""),
+                    "row_count": data.get("row_count", 0),
+                    "columns": data.get("columns", []),
+                    "last_synced_at": last_synced or None,
+                },
+                "catalog",
+                age,
+            )
+        # ── Layer 2: 24h live cache ──
+        # When the caller passes ``database=""`` (unpinned profile, no
+        # cross-DB resolution yet), try BOTH the empty-db key AND the
+        # cached database list. The write-back path keys rows under the
+        # resolved database, so a follow-up unpinned lookup needs to
+        # iterate the cached database names to find a hit.
+        hs = self._history_store()
+        cached = None
+        if hs is not None:
+            lookup_dbs: list[str] = [database or ""]
+            if not (database or "").strip():
+                extra = self._cached_databases_for_profile(db_profile) or []
+                for d in extra:
+                    if d and d not in lookup_dbs:
+                        lookup_dbs.append(d)
+            for cand_db in lookup_dbs:
+                try:
+                    cached = hs.lookup_run_context_cache(
+                        db_profile=db_profile,
+                        database=cand_db,
+                        schema=schema,
+                        table=table,
+                    )
+                except Exception:
+                    cached = None
+                if cached:
+                    break
+            if cached and isinstance(cached.get("payload"), dict):
+                payload = cached["payload"]
+                # Only reuse rows that carry a NON-EMPTY column list.
+                # ``find_table_by_name`` writes ``{kind: "discovery",
+                # columns: []}`` purely to remember the database the
+                # table lives in — those rows should never satisfy a
+                # describe_table request. The 24h cache slot for the
+                # server-wide database list (``database_list_cache``)
+                # is keyed under a different table name sentinel so it
+                # never collides with real lookups.
+                kind = str(payload.get("kind") or "")
+                cols = payload.get("columns")
+                if (
+                    kind != "discovery"
+                    and isinstance(cols, list)
+                    and len(cols) > 0
+                ):
+                    created_at = float(cached.get("created_at") or 0.0)
+                    age = max(0.0, self._now() - created_at)
+                    return (payload, "live_cache", age)
+        return (None, "live", 0.0)
+
+    def _writeback_table_metadata(
+        self,
+        *,
+        db_profile: str,
+        database: str,
+        schema: str,
+        table: str,
+        payload: dict,
+    ) -> None:
+        """Persist a live ``profile_table`` result so the next /ask
+        call lands on the 24h cache instead of paying the live round-
+        trip again. /run-apply reads the same key shape, so the
+        write-back is double-duty: an /ask describe_table primes a
+        future re-run as well.
+
+        When the agent ran against an unpinned profile (no explicit
+        database from the LLM), we ALSO write a mirror row keyed under
+        ``database=""``. Reason: a follow-up /ask question doesn't know
+        which database the table lives in either, so its lookup uses
+        ``database=""``. /run-apply still writes under the explicit
+        database when it has one, so the legacy keying is preserved
+        for that surface.
+        """
+        hs = self._history_store()
+        if hs is None:
+            return
+        resolved_db = (database or "").strip()
+        keys_to_write = {resolved_db}
+        # Mirror under the empty-db key only when the profile is
+        # unpinned — otherwise the explicit-db key IS the canonical
+        # one and a duplicate would waste a row without helping any
+        # lookup pattern.
+        pinned_active_db = str(getattr(self.cfg.db, "database", "") or "").strip()
+        if not pinned_active_db:
+            keys_to_write.add("")
+        for key in keys_to_write:
+            try:
+                hs.save_run_context_cache(
+                    db_profile=db_profile,
+                    database=key,
+                    schema=schema,
+                    table=table,
+                    payload=payload,
+                    source_run_id=None,
+                    ttl_seconds=86400.0,
+                )
+            except Exception:
+                # Cache writes are best-effort — never break the tool path.
+                continue
+
+    def _cached_databases_for_profile(self, db_profile: str) -> list[str] | None:
+        """Return the cached server-wide database list for *db_profile*
+        when fresh, otherwise ``None``. Cache slot is keyed under
+        ``run_context_cache`` with the sentinel
+        ``database='', schema='', table=<__amx_database_list__>`` —
+        existing schema, no migration needed."""
+        hs = self._history_store()
+        if hs is None:
+            return None
+        try:
+            cached = hs.lookup_run_context_cache(
+                db_profile=db_profile,
+                database="",
+                schema="",
+                table=self._CACHED_DATABASE_LIST_TABLE,
+            )
+        except Exception:
+            return None
+        if not cached or not isinstance(cached.get("payload"), dict):
+            return None
+        databases = cached["payload"].get("databases")
+        if not isinstance(databases, list):
+            return None
+        out = [str(d) for d in databases if isinstance(d, str) and d]
+        return out or None
+
+    def _save_databases_for_profile(self, db_profile: str, databases: list[str]) -> None:
+        hs = self._history_store()
+        if hs is None or not databases:
+            return
+        try:
+            hs.save_run_context_cache(
+                db_profile=db_profile,
+                database="",
+                schema="",
+                table=self._CACHED_DATABASE_LIST_TABLE,
+                payload={"kind": "database_list", "databases": list(databases)},
+                source_run_id=None,
+                ttl_seconds=86400.0,
+            )
+        except Exception:
+            pass
 
     def _connector_for_profile(self, profile: str) -> DatabaseConnector:
         """Return a (lazy) live-DB connector bound to *profile*'s DBConfig.
@@ -426,6 +699,18 @@ class ToolBox:
                                     "and returns a per-profile breakdown)."
                                 ),
                             },
+                            "force_fresh": {
+                                "type": "boolean",
+                                "description": (
+                                    "Default ``false`` — the tool reads the schema list from "
+                                    "the catalog when /search sync has covered the profile. "
+                                    "Set ``true`` when the user explicitly asks for the "
+                                    "current live state (after creating a new schema, post-"
+                                    "ALTER, etc.). Response carries ``source`` "
+                                    "(``catalog``/``live``) and ``age_seconds`` so you can "
+                                    "judge staleness."
+                                ),
+                            },
                         },
                         "required": [],
                     },
@@ -467,6 +752,15 @@ class ToolBox:
                                     "and the result groups by profile."
                                 ),
                             },
+                            "force_fresh": {
+                                "type": "boolean",
+                                "description": (
+                                    "Default ``false`` — table list served from the catalog "
+                                    "when /search sync covered the schema. Set ``true`` for "
+                                    "the live current state (post-CREATE, post-DROP). "
+                                    "Response carries ``source`` and ``age_seconds``."
+                                ),
+                            },
                         },
                         "required": ["schema"],
                     },
@@ -497,6 +791,19 @@ class ToolBox:
                             "name": {
                                 "type": "string",
                                 "description": "Exact table name. Case-insensitive.",
+                            },
+                            "force_fresh": {
+                                "type": "boolean",
+                                "description": (
+                                    "Default ``false``. Catalog hits are always consulted "
+                                    "first; the cross-DB live sweep runs in addition to "
+                                    "the catalog and writes discovery rows back to the "
+                                    "24h cache so a follow-up describe_table doesn't "
+                                    "sweep again. Set ``true`` to also bypass the "
+                                    "schemas / databases caches — usually unnecessary, "
+                                    "only when you suspect the live server changed "
+                                    "very recently."
+                                ),
                             },
                         },
                         "required": ["name"],
@@ -579,6 +886,22 @@ class ToolBox:
                                     "in (find_table_by_name reports it under "
                                     "``resolved_database``). Omit on 3-level backends "
                                     "(Databricks / BigQuery) — use ``catalog`` there."
+                                ),
+                            },
+                            "force_fresh": {
+                                "type": "boolean",
+                                "description": (
+                                    "Bypass the catalog + 24h live cache and run a fresh "
+                                    "live profile_table. Default ``false`` — the tool "
+                                    "serves from cache when warm and writes back on a "
+                                    "live miss so the next call is free. Set ``true`` "
+                                    "ONLY when the user explicitly asks for the current "
+                                    "live state ('what does it look like right now', "
+                                    "'after my last apply', 'fresh from the warehouse') "
+                                    "or when the response's ``age_seconds`` is too old "
+                                    "to trust for the question being asked. The result "
+                                    "carries ``source`` (``catalog``/``live_cache``/"
+                                    "``live``) and ``age_seconds`` so you can decide."
                                 ),
                             },
                         },
@@ -1969,6 +2292,7 @@ class ToolBox:
         self,
         catalog: str = "",
         db_profile: str = "",
+        force_fresh: bool = False,
     ) -> dict[str, Any]:
         # Multi-profile fan-out path: when the scope spans 2+ profiles
         # AND the LLM didn't target a specific one via ``db_profile``,
@@ -1982,6 +2306,34 @@ class ToolBox:
             # Single-target dispatch: use the named profile's connector
             # + its DBConfig (which knows its own pinned catalog).
             return self._list_schemas_on_profile(targeted, catalog=catalog)
+        # ── Cache-first: catalog_entities ──
+        # When /search sync has covered this profile the catalog already
+        # knows every schema; the LLM doesn't need to pay for a live
+        # ``list_schemas`` round-trip. ``force_fresh`` bypasses this and
+        # goes straight to live.
+        if not force_fresh and not (catalog or "").strip():
+            try:
+                catalog_schemas = self.catalog.fetch_distinct_schemas(self.db_profile)
+            except Exception:
+                catalog_schemas = []
+            # Strict list check — tests stub ``self.catalog`` with a
+            # bare MagicMock, which makes the call return a truthy
+            # MagicMock that isn't iterable as expected.
+            if isinstance(catalog_schemas, list) and catalog_schemas:
+                fresh_ts = max(
+                    (s.get("last_synced_at") or 0.0) for s in catalog_schemas
+                )
+                age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
+                return {
+                    "database": self.cfg.db.database
+                    or self.cfg.db.catalog
+                    or self.cfg.db.project
+                    or "(active database)",
+                    "schemas": [s["name"] for s in catalog_schemas],
+                    "count": len(catalog_schemas),
+                    "source": "catalog",
+                    "age_seconds": age,
+                }
         db = self._live_db()
         explicit = (catalog or "").strip()
         pinned_catalog = str(getattr(self.cfg.db, "catalog", "") or "").strip()
@@ -2031,6 +2383,8 @@ class ToolBox:
             "database": database,
             "schemas": schemas,
             "count": len(schemas),
+            "source": "live",
+            "age_seconds": 0.0,
         }
         if cat_arg:
             payload["catalog"] = cat_arg
@@ -2047,6 +2401,7 @@ class ToolBox:
         schema: str,
         catalog: str = "",
         db_profile: str = "",
+        force_fresh: bool = False,
     ) -> dict[str, Any]:
         target = (schema or "").strip()
         if not target:
@@ -2056,6 +2411,28 @@ class ToolBox:
             return self._fanout_list_tables_in_schema(target, catalog=catalog)
         if targeted and targeted != self.db_profile:
             return self._list_tables_on_profile(targeted, target, catalog=catalog)
+        # ── Cache-first ──
+        if not force_fresh and not (catalog or "").strip():
+            try:
+                catalog_tables = self.catalog.fetch_distinct_tables_in_schema(
+                    self.db_profile, target
+                )
+            except Exception:
+                catalog_tables = []
+            if isinstance(catalog_tables, list) and catalog_tables:
+                fresh_ts = max((t.get("last_synced_at") or 0.0) for t in catalog_tables)
+                age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
+                return {
+                    "schema": target,
+                    "catalog": None,
+                    "found": True,
+                    "tables": [
+                        {"name": t["name"], "kind": "table"} for t in catalog_tables
+                    ],
+                    "count": len(catalog_tables),
+                    "source": "catalog",
+                    "age_seconds": age,
+                }
         db = self._live_db()
         # Resolve the catalog: explicit > pinned > single-user-catalog
         # auto-pick. Without this, a Databricks UC backend without a
@@ -2121,6 +2498,8 @@ class ToolBox:
             "found": True,
             "tables": items,
             "count": len(items),
+            "source": "live",
+            "age_seconds": 0.0,
         }
         if not explicit and not str(getattr(self.cfg.db, "catalog", "") or "").strip():
             # We auto-picked the catalog. Tell the LLM so it can mention
@@ -2295,7 +2674,9 @@ class ToolBox:
             payload["warnings"] = warnings
         return payload
 
-    def _tool_find_table_by_name(self, name: str) -> dict[str, Any]:
+    def _tool_find_table_by_name(
+        self, name: str, force_fresh: bool = False
+    ) -> dict[str, Any]:
         target = (name or "").strip()
         if not target:
             raise _ToolError("Argument 'name' is required.")
@@ -2501,6 +2882,36 @@ class ToolBox:
             db_name = path_to_database.get(path, "")
             if db_name:
                 match_databases[path] = db_name
+        # ── Write-back: discovery rows ──
+        # Each live-DB match writes a lightweight ``discovery`` row
+        # into run_context_cache so a sibling ``describe_table`` (or a
+        # later /ask question within 24h) can resolve the database
+        # without paying for the cross-DB sweep again. We do NOT store
+        # column lists here — describe_table will fill those in when
+        # the LLM follows up. The empty ``columns`` field also lets
+        # ``_resolve_table_metadata`` distinguish a discovery row from
+        # a real table profile (it requires ``columns`` to be a list
+        # with entries before serving from the live cache).
+        for path, db_name in match_databases.items():
+            schema_part, _, table_part = path.partition(".")
+            if not schema_part or not table_part:
+                continue
+            self._writeback_table_metadata(
+                db_profile=self.db_profile,
+                database=db_name,
+                schema=schema_part,
+                table=table_part,
+                payload={"kind": "discovery", "columns": []},
+            )
+        # Provenance for the overall response: ``catalog`` when every
+        # match came from the catalog (no live sweep needed), ``live``
+        # when the sweep ran. Per-match source is implicit:
+        # ``from_catalog`` vs ``from_live_db`` already split the list.
+        overall_source = (
+            "catalog" if catalog_paths and not live_paths else
+            "live" if live_paths else
+            "catalog"
+        )
         return {
             "name": target,
             "matches": merged,
@@ -2518,6 +2929,7 @@ class ToolBox:
             # over. Each entry is ``{path, match_kind}`` where
             # match_kind is one of: prefix / suffix / contains / fuzzy.
             "fuzzy_matches": fuzzy_matches,
+            "source": overall_source,
         }
 
     def _tool_describe_table(
@@ -2527,6 +2939,7 @@ class ToolBox:
         catalog: str = "",
         db_profile: str = "",
         database: str = "",
+        force_fresh: bool = False,
     ) -> dict[str, Any]:
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
@@ -2537,6 +2950,7 @@ class ToolBox:
         # the table only exists on one profile and we resolved the
         # ambiguity earlier via find_table_by_name).
         targeted = (db_profile or "").strip()
+        target_profile = targeted or self.db_profile
         if targeted and targeted != self.db_profile:
             db = self._connector_for_profile(targeted)
         else:
@@ -2547,53 +2961,115 @@ class ToolBox:
         explicit = (catalog or "").strip()
         cat_arg, _user_catalogs, _all_catalogs = self._resolve_catalog_or_autopick(db, explicit)
 
-        # Cross-database resolution for unpinned 2-level backends.
-        # When the user (or the LLM) passes ``database=…`` explicitly,
-        # honour it — otherwise fall through to the connection-time
-        # default. If that fails AND the profile is unpinned, sweep
-        # every database the server exposes and try each. Mirrors the
-        # behaviour ``find_table_by_name`` now applies for the same
-        # class of profile so the two tools stay in lockstep.
         explicit_db = (database or "").strip()
-        candidate_dbs: list[str | None]
-        if explicit_db:
-            candidate_dbs = [explicit_db]
-        else:
-            candidate_dbs = self._databases_to_sweep()
 
-        last_error: str | None = None
-        for db_name in candidate_dbs:
-            scoped = self._connector_for_database(db_name) if db_name else db
-            try:
-                with self._scoped_catalog(scoped, cat_arg):
-                    profile = scoped.profile_table(schema_name, table_name, sample_size=0)
-                # Success — remember the database we resolved against so
-                # the LLM can route follow-up tool calls without another
-                # fanout.
-                resolved_database = db_name or str(getattr(scoped.cfg, "database", "") or "") or None
-                db = scoped
-                break
-            except (ProfilingError, Exception) as exc:  # noqa: BLE001
-                last_error = str(exc)
-                continue
+        # ── Cache-first lookup ──
+        # Try the catalog (filled by /search sync) and the 24h live
+        # cache (filled by /run-apply or a prior /ask write-back) before
+        # paying for a live ``profile_table`` round-trip. The resolver
+        # returns (None, "live", 0.0) on miss; we then sweep databases
+        # and write the live result back so the NEXT call is free.
+        cache_payload, source, age_seconds = self._resolve_table_metadata(
+            db_profile=target_profile,
+            database=explicit_db,
+            schema=schema_name,
+            table=table_name,
+            force_fresh=force_fresh,
+        )
+
+        if cache_payload is not None and source != "live":
+            # Reconstruct the wire shape from the cache payload. The
+            # ``analytics`` block is best-effort — the catalog doesn't
+            # carry partition / index / governance metadata.
+            cached_cols = list(cache_payload.get("columns") or [])
+            all_cols = [
+                {
+                    "name": c.get("name", ""),
+                    "type": c.get("dtype") or c.get("type") or "",
+                    "nullable": bool(c.get("nullable", True)),
+                    "comment": str(c.get("comment") or ""),
+                }
+                for c in cached_cols
+                if c.get("name")
+            ]
+            row_count = int(cache_payload.get("row_count") or 0)
+            table_comment = str(cache_payload.get("table_comment") or "")
+            resolved_database = explicit_db or None
+            last_synced_at = cache_payload.get("last_synced_at")
+            # Skip live ``profile_table``; jump to response assembly
+            # below using the synthesised inputs.
+            profile = _CacheBackedTableProfile(
+                columns=all_cols,
+                row_count=row_count,
+                table_comment=table_comment,
+            )
         else:
-            return {
-                "schema": schema_name,
-                "table": table_name,
-                "catalog": cat_arg or None,
-                "found": False,
-                "error": last_error
-                or f"Could not resolve {schema_name}.{table_name} in any visible database.",
-            }
-        all_cols = [
-            {
-                "name": c.name,
-                "type": c.dtype,
-                "nullable": bool(c.nullable),
-                "comment": str(c.existing_comment or ""),
-            }
-            for c in profile.columns
-        ]
+            # Cross-database resolution for unpinned 2-level backends.
+            # When the user (or the LLM) passes ``database=…`` explicitly,
+            # honour it — otherwise fall through to the connection-time
+            # default. If that fails AND the profile is unpinned, sweep
+            # every database the server exposes and try each.
+            candidate_dbs: list[str | None]
+            if explicit_db:
+                candidate_dbs = [explicit_db]
+            else:
+                candidate_dbs = self._databases_to_sweep()
+
+            last_error: str | None = None
+            resolved_database = None
+            profile = None
+            for db_name in candidate_dbs:
+                scoped = self._connector_for_database(db_name) if db_name else db
+                try:
+                    with self._scoped_catalog(scoped, cat_arg):
+                        profile = scoped.profile_table(
+                            schema_name, table_name, sample_size=0
+                        )
+                    resolved_database = (
+                        db_name
+                        or str(getattr(scoped.cfg, "database", "") or "")
+                        or None
+                    )
+                    db = scoped
+                    break
+                except (ProfilingError, Exception) as exc:  # noqa: BLE001
+                    last_error = str(exc)
+                    continue
+            if profile is None:
+                return {
+                    "schema": schema_name,
+                    "table": table_name,
+                    "catalog": cat_arg or None,
+                    "found": False,
+                    "error": last_error
+                    or f"Could not resolve {schema_name}.{table_name} in any visible database.",
+                    "source": "live",
+                    "age_seconds": 0.0,
+                }
+            all_cols = [
+                {
+                    "name": c.name,
+                    "type": c.dtype,
+                    "nullable": bool(c.nullable),
+                    "comment": str(c.existing_comment or ""),
+                }
+                for c in profile.columns
+            ]
+            # Write-back so the next call hits the 24h cache instead of
+            # paying the cross-DB sweep again. /run-apply reads the same
+            # key, so this also primes a future re-run.
+            self._writeback_table_metadata(
+                db_profile=target_profile,
+                database=resolved_database or "",
+                schema=schema_name,
+                table=table_name,
+                payload={
+                    "columns": all_cols,
+                    "row_count": int(profile.row_count or 0),
+                    "table_comment": str(profile.existing_comment or ""),
+                },
+            )
+            last_synced_at = None
 
         # ── Per-dtype family summary + complete coverage map ──
         # The summary gives the LLM the complete dtype picture of the
@@ -2700,6 +3176,31 @@ class ToolBox:
             )
         except Exception:
             result["resolved_database"] = None
+        # If the cache branch ran, ``resolved_database`` was set from
+        # the explicit kwarg; keep that value rather than overwriting
+        # with the connector's database. Catalog hits typically have
+        # no explicit database (the catalog row is keyed only on
+        # profile + schema + table) so leaving it as None is correct.
+        if source != "live" and not result.get("resolved_database"):
+            result["resolved_database"] = resolved_database
+        # Cache-first provenance: every read tool surfaces source +
+        # age so the LLM can hedge ("data is 12 days old, may be
+        # stale — re-sync recommended") AND so cache/live behaviour
+        # is testable end-to-end.
+        result["source"] = source
+        result["age_seconds"] = float(age_seconds)
+        if last_synced_at:
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
+
+            try:
+                result["last_synced_at"] = (
+                    _dt.fromtimestamp(float(last_synced_at), tz=_tz.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except Exception:
+                pass
         return result
 
     @staticmethod
