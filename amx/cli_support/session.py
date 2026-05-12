@@ -1062,6 +1062,11 @@ def _handle_session_builtin(
         path = cfg.save()
         success(f"Saved configuration to {path}")
         return True
+    if head == "restore-config":
+        from amx.cli_support.commands.restore_config import cmd_restore_config
+
+        cmd_restore_config(cfg, parts[1:])
+        return True
     if head == "usage":
         # Top-level: /usage summarises LLM cost from local history without
         # requiring the user to enter any namespace first. No network call.
