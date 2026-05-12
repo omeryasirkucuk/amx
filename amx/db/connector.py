@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import NoSuchTableError
 
 from amx.config import DBConfig
 from amx.core.errors import actionable_error_message
@@ -704,13 +705,23 @@ class DatabaseConnector:
         schema = self._normalize_id(schema)
         table = self._normalize_id(table)
         insp = inspect(self.engine)
+        try:
+            raw_cols = insp.get_columns(table, schema=schema)
+        except NoSuchTableError:
+            # Code analysis routinely surfaces table names (e.g. SAP-style
+            # ``sap_s6p.vbrk``) that exist in the referenced codebase but
+            # not in the database AMX is connected to. Returning an empty
+            # column list lets the analyze worker degrade gracefully
+            # instead of crashing the whole code agent run.
+            log.debug("list_column_profiles: %s.%s not present in live DB", schema, table)
+            return []
         return [
             ColumnProfile(
                 name=str(c["name"]),
                 dtype=str(c["type"]),
                 nullable=bool(c.get("nullable", True)),
             )
-            for c in insp.get_columns(table, schema=schema)
+            for c in raw_cols
         ]
 
     def resolve_asset_kind(self, schema: str, name: str) -> AssetKind:
