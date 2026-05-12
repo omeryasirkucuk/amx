@@ -1382,6 +1382,8 @@ function formatFileSize(bytes: number): string {
  */
 function DocProfileHealthLine({ name }: { name: string }) {
   const [expanded, setExpanded] = useState(false);
+  const [pendingFileDelete, setPendingFileDelete] = useState<DocProfileFile | null>(null);
+  const qc = useQueryClient();
   const health = useQuery({
     queryKey: ["profiles", "docs", name, "health"],
     queryFn: () =>
@@ -1390,6 +1392,16 @@ function DocProfileHealthLine({ name }: { name: string }) {
       ),
     retry: false,
     staleTime: 10_000,
+  });
+  const deleteFile = useMutation({
+    mutationFn: (file: DocProfileFile) =>
+      apiFetch(
+        `/api/profiles/docs/${encodeURIComponent(name)}/files?path=${encodeURIComponent(file.path)}`,
+        { method: "DELETE" },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["profiles", "docs", name, "health"] });
+    },
   });
   if (health.isLoading) {
     return (
@@ -1439,7 +1451,7 @@ function DocProfileHealthLine({ name }: { name: string }) {
               return (
                 <li
                   key={`${file.path}-${idx}`}
-                  className="flex items-baseline gap-2 text-[10.5px]"
+                  className="flex items-center gap-2 text-[10.5px]"
                 >
                   <span
                     className={cn(
@@ -1453,6 +1465,16 @@ function DocProfileHealthLine({ name }: { name: string }) {
                   <span className="ml-auto shrink-0 font-mono text-ink-dim">
                     {formatFileSize(file.size_bytes)}
                   </span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingFileDelete(file)}
+                    disabled={deleteFile.isPending}
+                    className="shrink-0 rounded-md p-1 text-ink-dim hover:bg-critical/10 hover:text-critical disabled:opacity-40"
+                    title={`Delete ${label}`}
+                    aria-label={`Delete ${label}`}
+                  >
+                    <Trash2 size={11} />
+                  </button>
                 </li>
               );
             })}
@@ -1481,6 +1503,27 @@ function DocProfileHealthLine({ name }: { name: string }) {
           </span>
         </button>
       )}
+      <AlertDialog
+        open={pendingFileDelete !== null}
+        onClose={() => {
+          if (!deleteFile.isPending) setPendingFileDelete(null);
+        }}
+        onConfirm={() => {
+          if (pendingFileDelete) {
+            deleteFile.mutate(pendingFileDelete, {
+              onSettled: () => setPendingFileDelete(null),
+            });
+          }
+        }}
+        title={
+          pendingFileDelete
+            ? `Delete '${pendingFileDelete.display_name || pendingFileDelete.name}'?`
+            : "Delete file?"
+        }
+        description="Drops the file from disk and removes any chunks it produced from the search index. The other files in this profile stay intact."
+        confirmLabel="Delete"
+        loading={deleteFile.isPending}
+      />
     </div>
   );
 }

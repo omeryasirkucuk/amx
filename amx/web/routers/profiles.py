@@ -453,7 +453,7 @@ def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
     """
     from pathlib import Path
 
-    from amx.docs.extensions import SUPPORTED_EXTENSIONS
+    from amx.docs.extensions import INGEST_EXCLUDE_NAMES, SUPPORTED_EXTENSIONS
     from amx.docs.uploads import read_display_names_for_root
 
     remote_prefixes = ("http://", "https://", "s3://", "gs://")
@@ -502,6 +502,13 @@ def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
                 truncated = True
                 break
             if not f.is_file():
+                continue
+            if f.name in INGEST_EXCLUDE_NAMES:
+                # Sidecar manifest (``.amx-manifest.json``) bookkeeps the
+                # upload batch; never user content. Hiding it here keeps
+                # the Studio file inventory honest — ``3 files`` should
+                # mean three uploads, not "two uploads + an internal
+                # manifest the scanner shouldn't have indexed either".
                 continue
             if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
@@ -669,6 +676,125 @@ def delete_docs(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     # config is reloaded).
     cfg.remove_doc_profile(name)
     return {"ok": True, "remaining": len(cfg.doc_profiles)}
+
+
+@router.delete("/docs/{name}/files")
+def delete_doc_profile_file(
+    name: str,
+    path: str,
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Remove a single file from a doc profile.
+
+    Drops the file from disk, prunes its entry from the upload-root
+    manifest, and deletes any chunks it produced from the Chroma
+    collection so subsequent ``/search docs`` queries don't keep
+    returning a ghost source. Pre-fix the only way to "drop one file"
+    was to delete the whole profile and re-upload the remaining files,
+    which got old fast for 10+ file profiles.
+
+    The file MUST sit inside one of the profile's configured paths —
+    refused otherwise so a malicious or accidental ``?path=/etc/passwd``
+    can't escalate into an arbitrary-delete primitive. Path resolution
+    happens with ``Path.resolve()`` on both sides, so a symlink hop or
+    a ``..`` trick lands outside the allowed root and gets rejected.
+    """
+    from pathlib import Path as _Path
+
+    from amx.docs.uploads import MANIFEST_FILENAME
+
+    if name not in cfg.doc_profiles:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No doc profile named {name!r}.",
+        )
+    raw = (path or "").strip()
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="path query parameter is required.",
+        )
+    try:
+        target = _Path(raw).expanduser().resolve()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not resolve path {raw!r}: {exc}",
+        ) from exc
+
+    paths = list(cfg.doc_profiles.get(name) or [])
+    allowed_roots: list[_Path] = []
+    for spec in paths:
+        if not spec or spec.lower().startswith(("http://", "https://", "s3://", "gs://")):
+            continue
+        try:
+            allowed_roots.append(_Path(spec).expanduser().resolve())
+        except Exception:
+            continue
+
+    def _inside_any_root(child: _Path) -> bool:
+        for root in allowed_roots:
+            try:
+                if root == child or root in child.parents:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    if not _inside_any_root(target):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{raw!r} is not inside any path registered on doc profile {name!r}.",
+        )
+    if not target.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File not found: {target}",
+        )
+
+    target_path_str = str(target)
+    try:
+        target.unlink()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not delete {target}: {exc}",
+        ) from exc
+
+    # Strip the entry from the upload-root manifest so future file-list
+    # responses don't keep showing a phantom display_name for the gone
+    # file. Best-effort: a corrupted manifest is rebuilt on next upload.
+    manifest_path = target.parent / MANIFEST_FILENAME
+    if manifest_path.is_file():
+        try:
+            import json as _json
+
+            payload = _json.loads(manifest_path.read_text())
+            if isinstance(payload, dict):
+                files_map = payload.get("files")
+                if isinstance(files_map, dict) and target.name in files_map:
+                    files_map.pop(target.name, None)
+                    payload["files"] = files_map
+                    tmp = manifest_path.with_suffix(manifest_path.suffix + ".part")
+                    tmp.write_text(_json.dumps(payload, indent=2, sort_keys=True))
+                    tmp.replace(manifest_path)
+        except Exception as exc:
+            log.warning("Could not prune manifest entry for %s: %s", target, exc)
+
+    chunks_removed = 0
+    try:
+        from amx.docs.rag import RAGStore
+
+        store = RAGStore(source_filters=cfg.effective_doc_paths(name) or None)
+        chunks_removed = int(store.delete_chunks_for_sources([target_path_str]))
+    except Exception as exc:
+        log.warning("Could not delete chunks for %s: %s", target, exc)
+
+    return {
+        "ok": True,
+        "path": target_path_str,
+        "chunks_removed": chunks_removed,
+    }
 
 
 @router.post("/docs/{name}/activate")
