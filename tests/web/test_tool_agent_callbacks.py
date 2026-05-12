@@ -179,3 +179,94 @@ def test_on_tool_call_fires_for_each_returned_tool(monkeypatch) -> None:
     assert captured[0]["name"] == "list_schemas"
     assert captured[0]["arguments"] == "{}"
     assert "result-payload" in captured[0]["result_preview"]
+
+
+def test_empty_content_with_thinking_surfaces_reasoning_summary(monkeypatch) -> None:
+    """Regression: gpt-oss 20b on Ollama replied to the user's ``test``
+    prompt with empty ``content`` but populated ``thinking_content``
+    (the model's final channel never fired). The tool_agent used to
+    render this as a bare "(empty response)" bubble that left the user
+    with no idea what went wrong. The fix surfaces the reasoning
+    summary inline with a "(model returned only reasoning)" hint so
+    the user can react — switch model, rephrase, etc."""
+    import amx.search.tool_agent as ta
+
+    _patch_toolbox(monkeypatch)
+    fake_llm = MagicMock()
+    fake_llm.chat.return_value = SimpleNamespace(
+        content="",
+        tool_calls=[],
+        finish_reason="stop",
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        thinking_content="I was asked to test. I'll consider this a smoke check.",
+    )
+
+    result = ta.run_tool_agent(
+        cfg=_build_cfg(),
+        catalog=MagicMock(),
+        llm=fake_llm,
+        question="test",
+        answer_language="english",
+        session_memory=None,
+    )
+    # The bare "(empty response)" sentinel is gone.
+    assert result.answer != "(empty response)"
+    # The hint is present, the reasoning is included.
+    assert "reasoning" in result.answer.lower()
+    assert "I was asked to test" in result.answer
+
+
+def test_empty_content_finish_length_surfaces_budget_hint(monkeypatch) -> None:
+    """When the model exhausts its output budget before producing any
+    visible content (``finish_reason=length`` with empty content), the
+    user-facing answer must point at the max_tokens knob — not just
+    say "(empty response)" and leave them puzzled."""
+    import amx.search.tool_agent as ta
+
+    _patch_toolbox(monkeypatch)
+    fake_llm = MagicMock()
+    fake_llm.chat.return_value = SimpleNamespace(
+        content="",
+        tool_calls=[],
+        finish_reason="length",
+        usage={"prompt_tokens": 1, "completion_tokens": 4096, "total_tokens": 4097},
+        thinking_content="",
+    )
+
+    result = ta.run_tool_agent(
+        cfg=_build_cfg(),
+        catalog=MagicMock(),
+        llm=fake_llm,
+        question="test",
+        answer_language="english",
+        session_memory=None,
+    )
+    assert result.answer != "(empty response)"
+    assert "max_tokens" in result.answer.lower()
+
+
+def test_empty_content_no_thinking_uses_neutral_hint(monkeypatch) -> None:
+    """No thinking, no length signal — surface a neutral "try another
+    model" hint instead of the bare sentinel."""
+    import amx.search.tool_agent as ta
+
+    _patch_toolbox(monkeypatch)
+    fake_llm = MagicMock()
+    fake_llm.chat.return_value = SimpleNamespace(
+        content="",
+        tool_calls=[],
+        finish_reason="stop",
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        thinking_content="",
+    )
+
+    result = ta.run_tool_agent(
+        cfg=_build_cfg(),
+        catalog=MagicMock(),
+        llm=fake_llm,
+        question="test",
+        answer_language="english",
+        session_memory=None,
+    )
+    assert result.answer != "(empty response)"
+    assert "rephras" in result.answer.lower() or "different model" in result.answer.lower()
