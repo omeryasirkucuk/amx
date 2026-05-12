@@ -1290,6 +1290,11 @@ function DocUploadDropZone({
 interface DocProfileFile {
   path: string;
   name: string;
+  /** Original filename if the file was drag-drop-uploaded via Studio
+   *  (resolved from the upload-root manifest). Falls back to ``name``
+   *  when the file came from an external path or pre-dates the
+   *  manifest sidecar. */
+  display_name?: string;
   size_bytes: number;
   modified_at: number;
   source_root: string;
@@ -1386,19 +1391,33 @@ function DocProfileHealthLine({ name }: { name: string }) {
             Show / hide files
           </summary>
           <ul className="mt-1.5 max-h-64 space-y-0.5 overflow-y-auto pr-2">
-            {files.map((file, idx) => (
-              <li
-                key={`${file.path}-${idx}`}
-                className="flex items-baseline gap-2 font-mono text-[10.5px]"
-              >
-                <span className="truncate text-ink" title={file.path}>
-                  {file.name}
-                </span>
-                <span className="ml-auto shrink-0 text-ink-dim">
-                  {formatFileSize(file.size_bytes)}
-                </span>
-              </li>
-            ))}
+            {files.map((file, idx) => {
+              // Prefer the original upload name from the sidecar
+              // manifest; show the hashed on-disk name as a tooltip
+              // so the user can still confirm the dedup identity.
+              const label = file.display_name || file.name;
+              const showHashTooltip =
+                file.display_name && file.display_name !== file.name;
+              return (
+                <li
+                  key={`${file.path}-${idx}`}
+                  className="flex items-baseline gap-2 text-[10.5px]"
+                >
+                  <span
+                    className={cn(
+                      "truncate text-ink",
+                      showHashTooltip ? "" : "font-mono",
+                    )}
+                    title={showHashTooltip ? `${file.name} → ${file.path}` : file.path}
+                  >
+                    {label}
+                  </span>
+                  <span className="ml-auto shrink-0 font-mono text-ink-dim">
+                    {formatFileSize(file.size_bytes)}
+                  </span>
+                </li>
+              );
+            })}
             {truncated && (
               <li className="text-[10.5px] italic text-ink-dim">
                 … more files exist; run Scan to see the full inventory.
