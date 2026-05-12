@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity as ActivityIcon, Loader2, PauseCircle, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
 
@@ -23,14 +23,21 @@ import {
   Badge,
   Button,
   Checkbox,
+  Dialog,
   IconButton,
   InlineEditText,
+  Kbd,
   Tab as TabTrigger,
   TabPanel,
   Tabs,
   TabsList,
   useToast,
 } from "../components/ui";
+
+/** PR B — pagination page size for the RunDetail results list.
+ * Surfaced at module top so a future setting / URL override can swap
+ * the constant without hunting through ResultsTab. */
+const RESULTS_PAGE_SIZE = 50;
 
 interface RunDetailPayload {
   id: number;
@@ -1974,11 +1981,103 @@ function ResultsTab({
   // client-side in v1 (the spec defers server-side filtering to PR B);
   // a ``useMemo`` recomputes the filtered + sorted view on every state
   // change without re-rendering rows that haven't moved.
-  const [filterQuery, setFilterQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("natural");
-  const [groupBy, setGroupBy] = useState<GroupKey>("table");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [presetActive, setPresetActive] = useState<ReviewPreset>(null);
+  //
+  // PR B — initial state is hydrated from the URL on mount so a reload
+  // (or a deep-link from /history) restores the exact view. The
+  // search-param writeback uses ``replace: true`` so back/forward isn't
+  // polluted with one history entry per keystroke.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialUrlState = useMemo(
+    () => ({
+      q: searchParams.get("q") ?? "",
+      sort: (searchParams.get("sort") as SortKey | null) ?? "natural",
+      group: (searchParams.get("group") as GroupKey | null) ?? "table",
+      status: (searchParams.get("status") as StatusFilter | null) ?? "all",
+      preset: (searchParams.get("preset") as ReviewPreset) ?? null,
+      page: Math.max(1, parseInt(searchParams.get("page") ?? "1", 10) || 1),
+      reviewMode: searchParams.get("mode") === "review",
+    }),
+    // Read once on mount; further URL writes flow from user actions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [filterQuery, setFilterQuery] = useState(initialUrlState.q);
+  const [sortKey, setSortKey] = useState<SortKey>(initialUrlState.sort);
+  const [groupBy, setGroupBy] = useState<GroupKey>(initialUrlState.group);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
+    initialUrlState.status,
+  );
+  const [presetActive, setPresetActive] = useState<ReviewPreset>(
+    initialUrlState.preset,
+  );
+  // PR B — pagination + review-mode state.
+  const [currentPage, setCurrentPage] = useState<number>(initialUrlState.page);
+  const [reviewMode, setReviewMode] = useState<boolean>(initialUrlState.reviewMode);
+  // Review-mode selection is a SEPARATE set from PR-220's bulk-rerun
+  // ``selectedIds`` so toggling review mode never disturbs an in-progress
+  // re-run selection (and vice-versa). Both keys are ``result_id``.
+  const [reviewSelectedIds, setReviewSelectedIds] = useState<Set<number>>(
+    new Set(),
+  );
+  const [keynavFocusId, setKeynavFocusId] = useState<number | null>(null);
+  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
+  const lastGKeyAtRef = useRef<number>(0);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // ``Accept all visible`` / ``Skip all visible`` confirmation dialog state.
+  const [bulkVisibleAction, setBulkVisibleAction] = useState<
+    "accept" | "skip" | null
+  >(null);
+
+  // Write URL params whenever the user changes a filter/page/mode. ``replace``
+  // keeps the history clean — only the initial deep-link counts as a
+  // history entry. The effect runs on every relevant state change but is
+  // idempotent (setSearchParams with the same string is a no-op).
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const setOrDelete = (key: string, value: string) => {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    };
+    setOrDelete("q", filterQuery.trim());
+    setOrDelete("sort", sortKey === "natural" ? "" : String(sortKey));
+    setOrDelete("group", groupBy === "table" ? "" : String(groupBy));
+    setOrDelete("status", statusFilter === "all" ? "" : String(statusFilter));
+    setOrDelete("preset", presetActive ?? "");
+    setOrDelete("page", currentPage === 1 ? "" : String(currentPage));
+    setOrDelete("mode", reviewMode ? "review" : "");
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+    // ``searchParams`` is intentionally excluded — we don't want a
+    // pull from the URL to retrigger a write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    filterQuery,
+    sortKey,
+    groupBy,
+    statusFilter,
+    presetActive,
+    currentPage,
+    reviewMode,
+  ]);
+
+  // When filters change, jump back to page 1 — otherwise the user lands
+  // on an empty page-N because the filtered set shrank below N * 50.
+  useEffect(() => {
+    setCurrentPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterQuery, sortKey, groupBy, statusFilter, presetActive]);
+
+  // When review mode is turned off, clear the selection so re-entering
+  // mode starts from zero. (We do NOT clear bulk-rerun ``selectedIds``.)
+  const toggleReviewSelected = useCallback((id: number) => {
+    setReviewSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   // Apply the active preset on top of the user's filters. Toggle-off
   // restores the underlying filter combo. The preset never mutates
@@ -2039,14 +2138,138 @@ function ResultsTab({
     };
   }, [rows, filterQuery, pendingByResultId]);
 
+  // PR B — paginate the FLAT filtered list (page slicing happens before
+  // grouping so a 50-row page may surface partial groups; that's
+  // intentional, otherwise group-by-table on a wide schema would push
+  // the page count above what the pagination controls advertise).
+  const pageCount = Math.max(
+    1,
+    Math.ceil(filteredRows.length / RESULTS_PAGE_SIZE),
+  );
+  const effectivePage = Math.min(currentPage, pageCount);
+  const pagedRows = useMemo(() => {
+    const start = (effectivePage - 1) * RESULTS_PAGE_SIZE;
+    return filteredRows.slice(start, start + RESULTS_PAGE_SIZE);
+  }, [filteredRows, effectivePage]);
+
   const grouped = useMemo(() => {
     // When ``Group`` is ``Table`` we honour the historical sort-within-
     // group (table-level row first, then columns alphabetically); for
-    // ``Schema`` and ``None`` we render in the filteredRows order so a
+    // ``Schema`` and ``None`` we render in the pagedRows order so a
     // user-selected sort applies uniformly.
-    if (groupBy === "table") return groupByTable(filteredRows);
-    return groupRowsBy(filteredRows, groupBy);
-  }, [filteredRows, groupBy]);
+    if (groupBy === "table") return groupByTable(pagedRows);
+    return groupRowsBy(pagedRows, groupBy);
+  }, [pagedRows, groupBy]);
+
+  // ── PR B keyboard navigation ──────────────────────────────────────────
+  // Flat list of result_ids in the order the user sees them on the
+  // current page. Drives ``j/k`` focus movement and ``Enter`` / ``x``
+  // actions on the focused row.
+  const pagedIds = useMemo(
+    () => pagedRows.map((r) => r.id).filter((id): id is number => id != null),
+    [pagedRows],
+  );
+
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      // Don't hijack typing in inputs / textareas / contenteditable.
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          target.isContentEditable
+        ) {
+          // ``/`` is the one exception: pressing it inside an input means
+          // the user wants to type a slash, so we only intercept ``/``
+          // outside inputs.
+          if (event.key !== "Escape") return;
+        }
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const key = event.key;
+      if (key === "j") {
+        event.preventDefault();
+        if (!pagedIds.length) return;
+        const idx = keynavFocusId == null ? -1 : pagedIds.indexOf(keynavFocusId);
+        if (idx >= pagedIds.length - 1) {
+          // At the bottom — advance to the next page.
+          if (effectivePage < pageCount) {
+            setCurrentPage(effectivePage + 1);
+            setKeynavFocusId(null);
+          }
+        } else {
+          setKeynavFocusId(pagedIds[idx + 1]);
+        }
+      } else if (key === "k") {
+        event.preventDefault();
+        if (!pagedIds.length) return;
+        const idx = keynavFocusId == null ? 0 : pagedIds.indexOf(keynavFocusId);
+        if (idx <= 0) {
+          if (effectivePage > 1) {
+            setCurrentPage(effectivePage - 1);
+            setKeynavFocusId(null);
+          }
+        } else {
+          setKeynavFocusId(pagedIds[idx - 1]);
+        }
+      } else if (key === "Enter") {
+        // Accept the focused row.
+        if (keynavFocusId == null) return;
+        const entry = pendingByResultId.get(keynavFocusId);
+        if (!entry) return;
+        event.preventDefault();
+        // ``accept`` is the queue's natural state; for symmetry with the
+        // CLI we surface a toast confirming the implicit-accept.
+        toast.push({
+          title: "Row accepted",
+          description: "Stays in the queue; Apply will write it.",
+          tone: "success",
+          duration: 1500,
+        });
+      } else if (key === "x") {
+        if (keynavFocusId == null) return;
+        const entry = pendingByResultId.get(keynavFocusId);
+        if (!entry) return;
+        event.preventDefault();
+        skipPending.mutate(entry.idx);
+      } else if (key === "/") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      } else if (key === "g") {
+        const now = Date.now();
+        if (now - lastGKeyAtRef.current < 500) {
+          // ``g g`` — jump to first row on page.
+          event.preventDefault();
+          if (pagedIds.length) setKeynavFocusId(pagedIds[0]);
+          lastGKeyAtRef.current = 0;
+        } else {
+          lastGKeyAtRef.current = now;
+        }
+      } else if (key === "G") {
+        event.preventDefault();
+        if (pagedIds.length) setKeynavFocusId(pagedIds[pagedIds.length - 1]);
+      } else if (key === "?") {
+        event.preventDefault();
+        setCheatsheetOpen(true);
+      } else if (key === "Escape") {
+        setCheatsheetOpen(false);
+        setKeynavFocusId(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [
+    pagedIds,
+    keynavFocusId,
+    effectivePage,
+    pageCount,
+    pendingByResultId,
+    skipPending,
+    toast,
+  ]);
 
   if (loading) {
     return <Card><CardBody>Loading results…</CardBody></Card>;
@@ -2308,7 +2531,144 @@ function ResultsTab({
         totalCount={rows.length}
         visibleCount={filteredRows.length}
         statusCounts={statusCounts}
+        searchInputRef={searchInputRef}
       />
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant={reviewMode ? "primary" : "ghost"}
+          size="sm"
+          onClick={() => {
+            setReviewMode((m) => {
+              if (m) setReviewSelectedIds(new Set());
+              return !m;
+            });
+          }}
+        >
+          {reviewMode ? "Review mode: on" : "Review mode: off"}
+        </Button>
+        <button
+          type="button"
+          className="text-xs text-ink-dim underline decoration-dotted underline-offset-2 hover:text-ink"
+          onClick={() => setCheatsheetOpen(true)}
+        >
+          Keyboard shortcuts (?)
+        </button>
+        {reviewMode && (
+          <span className="text-xs text-ink-muted">
+            {reviewSelectedIds.size} selected · use checkboxes to multi-pick
+          </span>
+        )}
+      </div>
+      {reviewMode && (
+        <ReviewBulkToolbar
+          selectedCount={reviewSelectedIds.size}
+          onAcceptSelected={() => {
+            // Accept the user's explicit selection. The pending queue
+            // already holds these rows (every row with a result_id);
+            // we surface a toast for parity with the CLI bulk-accept.
+            toast.push({
+              title: `${reviewSelectedIds.size} row(s) accepted`,
+              description: "Stays in the queue. Apply will write them.",
+              tone: "success",
+              duration: 1800,
+            });
+            setReviewSelectedIds(new Set());
+          }}
+          onSkipSelected={() => {
+            const ids = Array.from(reviewSelectedIds);
+            for (const id of ids) {
+              const entry = pendingByResultId.get(id);
+              if (entry) skipPending.mutate(entry.idx);
+            }
+            setReviewSelectedIds(new Set());
+          }}
+          onClearSelection={() => setReviewSelectedIds(new Set())}
+          onAcceptAllVisible={() => setBulkVisibleAction("accept")}
+          onSkipAllVisible={() => setBulkVisibleAction("skip")}
+          visibleCount={filteredRows.length}
+        />
+      )}
+      <AlertDialog
+        open={bulkVisibleAction != null}
+        onClose={() => setBulkVisibleAction(null)}
+        onConfirm={() => {
+          if (bulkVisibleAction === "skip") {
+            for (const r of filteredRows) {
+              if (r.id == null) continue;
+              const entry = pendingByResultId.get(r.id);
+              if (entry) skipPending.mutate(entry.idx);
+            }
+            toast.push({
+              title: `${filteredRows.length} row(s) skipped`,
+              tone: "info",
+              duration: 1800,
+            });
+          } else if (bulkVisibleAction === "accept") {
+            toast.push({
+              title: `${filteredRows.length} row(s) accepted`,
+              description: "Stays in the queue. Apply will write them.",
+              tone: "success",
+              duration: 1800,
+            });
+          }
+          setBulkVisibleAction(null);
+        }}
+        title={
+          bulkVisibleAction === "skip"
+            ? `Skip ${filteredRows.length} visible row(s)?`
+            : `Accept ${filteredRows.length} visible row(s)?`
+        }
+        description={
+          bulkVisibleAction === "skip"
+            ? `This removes ${filteredRows.length} row(s) from the pending queue. You can restore any of them from the run-detail row menu.`
+            : `This keeps ${filteredRows.length} row(s) in the pending queue for the next Apply.`
+        }
+        confirmLabel={
+          bulkVisibleAction === "skip"
+            ? `Skip ${filteredRows.length}`
+            : `Accept ${filteredRows.length}`
+        }
+      />
+      <Dialog
+        open={cheatsheetOpen}
+        onClose={() => setCheatsheetOpen(false)}
+        title="Keyboard shortcuts"
+      >
+        <ul className="space-y-2 text-sm">
+          <li className="flex items-center gap-2">
+            <Kbd>j</Kbd> / <Kbd>k</Kbd>{" "}
+            <span className="text-ink-muted">— move row focus down / up</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>Enter</Kbd>{" "}
+            <span className="text-ink-muted">— accept the focused row</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>x</Kbd>{" "}
+            <span className="text-ink-muted">— skip the focused row</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>/</Kbd>{" "}
+            <span className="text-ink-muted">— focus the search input</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>g</Kbd> <Kbd>g</Kbd>{" "}
+            <span className="text-ink-muted">— jump to the first row on page</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>G</Kbd>{" "}
+            <span className="text-ink-muted">— jump to the last row on page</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>?</Kbd>{" "}
+            <span className="text-ink-muted">— open this cheatsheet</span>
+          </li>
+          <li className="flex items-center gap-2">
+            <Kbd>Esc</Kbd>{" "}
+            <span className="text-ink-muted">— close + clear row focus</span>
+          </li>
+        </ul>
+      </Dialog>
       {filteredRows.length === 0 && (
         <Card>
           <CardBody className="text-sm text-ink-dim">
@@ -2369,6 +2729,12 @@ function ResultsTab({
                     multiSelectMode={multiSelectMode}
                     isSelected={selectedIds.has(r.id)}
                     onToggleSelected={toggleSelected}
+                    reviewMode={reviewMode}
+                    isReviewSelected={
+                      r.id != null && reviewSelectedIds.has(r.id)
+                    }
+                    onToggleReviewSelected={toggleReviewSelected}
+                    isKeynavFocused={r.id != null && keynavFocusId === r.id}
                   />
                 );
               })}
@@ -2376,6 +2742,163 @@ function ResultsTab({
           </CardBody>
         </Card>
       ))}
+      {pageCount > 1 && (
+        <Pagination
+          currentPage={effectivePage}
+          pageCount={pageCount}
+          onChange={(page) => setCurrentPage(page)}
+          totalRows={filteredRows.length}
+          pageSize={RESULTS_PAGE_SIZE}
+        />
+      )}
+    </div>
+  );
+}
+
+/** PR B — paginated controls under the results list. Renders a
+ * 7-slot Prev/page-tokens/Next bar with elided middle when the
+ * total page count exceeds the slots available. */
+function Pagination({
+  currentPage,
+  pageCount,
+  onChange,
+  totalRows,
+  pageSize,
+}: {
+  currentPage: number;
+  pageCount: number;
+  onChange: (page: number) => void;
+  totalRows: number;
+  pageSize: number;
+}) {
+  const pages: (number | "ellipsis")[] = useMemo(() => {
+    if (pageCount <= 7) {
+      return Array.from({ length: pageCount }, (_, i) => i + 1);
+    }
+    // Always include first / last / current ± 1; elide the rest.
+    const tokens: (number | "ellipsis")[] = [1];
+    if (currentPage > 3) tokens.push("ellipsis");
+    const middleStart = Math.max(2, currentPage - 1);
+    const middleEnd = Math.min(pageCount - 1, currentPage + 1);
+    for (let i = middleStart; i <= middleEnd; i++) tokens.push(i);
+    if (currentPage < pageCount - 2) tokens.push("ellipsis");
+    tokens.push(pageCount);
+    return tokens;
+  }, [currentPage, pageCount]);
+
+  const start = (currentPage - 1) * pageSize + 1;
+  const end = Math.min(totalRows, currentPage * pageSize);
+
+  return (
+    <nav
+      className="flex flex-wrap items-center justify-between gap-2"
+      aria-label="Results pagination"
+    >
+      <span className="text-xs text-ink-muted">
+        Showing {start}–{end} of {totalRows}
+      </span>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onChange(Math.max(1, currentPage - 1))}
+          disabled={currentPage <= 1}
+        >
+          &lt; Prev
+        </Button>
+        {pages.map((token, i) =>
+          token === "ellipsis" ? (
+            <span key={`ellipsis-${i}`} className="px-1 text-ink-dim">
+              …
+            </span>
+          ) : (
+            <Button
+              key={token}
+              variant={token === currentPage ? "primary" : "ghost"}
+              size="sm"
+              onClick={() => onChange(token)}
+            >
+              {token}
+            </Button>
+          ),
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onChange(Math.min(pageCount, currentPage + 1))}
+          disabled={currentPage >= pageCount}
+        >
+          Next &gt;
+        </Button>
+      </div>
+    </nav>
+  );
+}
+
+/** PR B — floating bulk-actions toolbar for review mode.
+ * Shows ``Accept/Skip selected`` (acts on the explicit checkbox set)
+ * plus ``Accept/Skip all visible`` (acts on the entire filtered set
+ * with a confirmation dialog handled by the parent). */
+function ReviewBulkToolbar({
+  selectedCount,
+  onAcceptSelected,
+  onSkipSelected,
+  onClearSelection,
+  onAcceptAllVisible,
+  onSkipAllVisible,
+  visibleCount,
+}: {
+  selectedCount: number;
+  onAcceptSelected: () => void;
+  onSkipSelected: () => void;
+  onClearSelection: () => void;
+  onAcceptAllVisible: () => void;
+  onSkipAllVisible: () => void;
+  visibleCount: number;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-surface-border bg-surface px-3 py-2">
+      <Button
+        variant="primary"
+        size="sm"
+        onClick={onAcceptSelected}
+        disabled={selectedCount === 0}
+      >
+        Accept selected ({selectedCount})
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onSkipSelected}
+        disabled={selectedCount === 0}
+      >
+        Skip selected ({selectedCount})
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onClearSelection}
+        disabled={selectedCount === 0}
+      >
+        Clear selection
+      </Button>
+      <span className="mx-1 h-4 w-px bg-surface-border" aria-hidden />
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onAcceptAllVisible}
+        disabled={visibleCount === 0}
+      >
+        Accept all visible ({visibleCount})
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onSkipAllVisible}
+        disabled={visibleCount === 0}
+      >
+        Skip all visible ({visibleCount})
+      </Button>
     </div>
   );
 }
@@ -2488,6 +3011,10 @@ function ResultRowItemImpl({
   multiSelectMode = false,
   isSelected = false,
   onToggleSelected,
+  reviewMode = false,
+  isReviewSelected = false,
+  onToggleReviewSelected,
+  isKeynavFocused = false,
 }: {
   row: ResultRow;
   pendingEntry?: PendingEntry;
@@ -2501,6 +3028,15 @@ function ResultRowItemImpl({
   isSelected?: boolean;
   /** Toggle this row's membership in the parent's selectedIds Set. */
   onToggleSelected?: (id: number) => void;
+  /** PR B — when true, render a trailing review-mode checkbox. The
+   * review-mode selection is independent of the bulk-rerun selection. */
+  reviewMode?: boolean;
+  /** PR B — current review-mode checkbox state. */
+  isReviewSelected?: boolean;
+  /** PR B — toggle this row's review-mode selection. */
+  onToggleReviewSelected?: (id: number) => void;
+  /** PR B — when true the row gets an outline ring; driven by ``j/k`` nav. */
+  isKeynavFocused?: boolean;
 }) {
   // When the row was fetched with ``include_history=true`` and a
   // re-run produced a v2/v3+ version, surface the latest entry's
@@ -2637,12 +3173,25 @@ function ResultRowItemImpl({
   // generates explicitly and is usually the most useful single
   // sentence in the group.
   const isTableLevel = row.column_name == null;
+  // PR B — scroll the focused row into view when keynav advances to it.
+  // The container is the page-level scroller, so ``scrollIntoView`` with
+  // ``nearest`` stays inside the visible viewport without yanking the
+  // page back to the top on every move.
+  const liRef = useRef<HTMLLIElement | null>(null);
+  useEffect(() => {
+    if (isKeynavFocused && liRef.current) {
+      liRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [isKeynavFocused]);
+
   return (
     <li
+      ref={liRef}
       className={cn(
         "px-5 py-3",
         isTableLevel &&
           "border-l-2 border-l-accent/70 bg-accent-soft/10",
+        isKeynavFocused && "outline outline-2 outline-accent",
       )}
     >
       <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -2651,6 +3200,16 @@ function ResultRowItemImpl({
             checked={isSelected}
             onChange={() => onToggleSelected?.(row.id)}
             aria-label={`Select ${rerunLabel} for bulk re-run`}
+            className="mr-1"
+          />
+        )}
+        {reviewMode && (
+          <Checkbox
+            checked={isReviewSelected}
+            onChange={() => {
+              if (row.id != null) onToggleReviewSelected?.(row.id);
+            }}
+            aria-label={`Select ${rerunLabel} for bulk review action`}
             className="mr-1"
           />
         )}
