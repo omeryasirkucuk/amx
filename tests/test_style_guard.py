@@ -4,9 +4,15 @@ from amx.llm.style.profile import StyleProfile
 
 def _p(examples):
     return StyleProfile(
-        language="en-US", tone="x", avg_length_words=1, length_range=(1, 1),
-        person="x", capitalization="x", ends_with_period=True,
-        structural_patterns=[], vocabulary_register="x",
+        language="en-US",
+        tone="x",
+        avg_length_words=1,
+        length_range=(1, 1),
+        person="x",
+        capitalization="x",
+        ends_with_period=True,
+        structural_patterns=[],
+        vocabulary_register="x",
         redacted_examples=examples,
     )
 

@@ -18,8 +18,9 @@ on / off
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from amx.config import AMXConfig
@@ -38,7 +39,8 @@ _USAGE = (
 # Private seams — patched in tests to avoid real DB / LLM I/O
 # ---------------------------------------------------------------------------
 
-def _open_connector(cfg: "AMXConfig", profile_name: str):
+
+def _open_connector(cfg: AMXConfig, profile_name: str):
     """Return a DatabaseConnector for the given profile."""
     from amx.db.connector import DatabaseConnector
 
@@ -46,7 +48,7 @@ def _open_connector(cfg: "AMXConfig", profile_name: str):
     return DatabaseConnector(db_cfg, profile_name=profile_name)
 
 
-def _make_llm_caller(cfg: "AMXConfig", profile_name: str) -> Callable[[str, str], str]:
+def _make_llm_caller(cfg: AMXConfig, profile_name: str) -> Callable[[str, str], str]:
     """Return a callable that sends a system+user message to the active LLM."""
     from amx.llm.provider import LLMProvider
 
@@ -70,12 +72,13 @@ def _make_llm_caller(cfg: "AMXConfig", profile_name: str) -> Callable[[str, str]
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _db_path(cfg: "AMXConfig") -> Path:
+
+def _db_path(cfg: AMXConfig) -> Path:
     config_dir = Path(getattr(cfg, "CONFIG_DIR", str(Path.home() / ".amx")))
     return config_dir / "history.db"
 
 
-def _resolve_active_db(cfg: "AMXConfig") -> str | None:
+def _resolve_active_db(cfg: AMXConfig) -> str | None:
     """Return the active DB profile name, or None if not configured."""
     from amx.utils.console import error
 
@@ -89,7 +92,7 @@ def _resolve_active_db(cfg: "AMXConfig") -> str | None:
     return active
 
 
-def _resolve_active_llm(cfg: "AMXConfig") -> str | None:
+def _resolve_active_llm(cfg: AMXConfig) -> str | None:
     """Return the active LLM profile name, or None if not configured."""
     from amx.utils.console import error
 
@@ -107,7 +110,8 @@ def _resolve_active_llm(cfg: "AMXConfig") -> str | None:
 # Subcommand implementations
 # ---------------------------------------------------------------------------
 
-def _cmd_set(cfg: "AMXConfig", args: list[str]) -> None:
+
+def _cmd_set(cfg: AMXConfig, args: list[str]) -> None:
     from amx.llm.style.extractor import NoSamplesError, extract_style
     from amx.storage.style_store import StyleStore
     from amx.utils.console import error, info
@@ -175,7 +179,7 @@ def _cmd_set(cfg: "AMXConfig", args: list[str]) -> None:
     )
 
 
-def _cmd_show(cfg: "AMXConfig") -> None:
+def _cmd_show(cfg: AMXConfig) -> None:
     from amx.storage.style_store import StyleStore
     from amx.utils.console import info
 
@@ -211,7 +215,7 @@ def _cmd_show(cfg: "AMXConfig") -> None:
     info(json.dumps(json.loads(p.to_json()), indent=2))
 
 
-def _cmd_clear(cfg: "AMXConfig") -> None:
+def _cmd_clear(cfg: AMXConfig) -> None:
     from amx.storage.style_store import StyleStore
     from amx.utils.console import info
 
@@ -223,7 +227,7 @@ def _cmd_clear(cfg: "AMXConfig") -> None:
     info(f"Cleared style reference for LLM profile '{active_llm}'.")
 
 
-def _cmd_toggle(cfg: "AMXConfig", enabled: bool) -> None:
+def _cmd_toggle(cfg: AMXConfig, enabled: bool) -> None:
     from amx.storage.style_store import StyleStore
     from amx.utils.console import info
 
@@ -240,7 +244,8 @@ def _cmd_toggle(cfg: "AMXConfig", enabled: bool) -> None:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def cmd_style(cfg: "AMXConfig", rest: list[str]) -> None:
+
+def cmd_style(cfg: AMXConfig, rest: list[str]) -> None:
     """Dispatch /style subcommands."""
     from amx.utils.console import info
 

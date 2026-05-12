@@ -42,6 +42,7 @@ def _scrub_suggestions(
         s.suggestions = [scrub_placeholders(text) for text in s.suggestions]
     return suggestions
 
+
 _BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert using documentation to understand database assets.
 
@@ -90,7 +91,7 @@ REASONING: The retrieved excerpts describe monetary amounts and refer to a compa
 def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
-    style_profile: "StyleProfile | None" = None,
+    style_profile: StyleProfile | None = None,
 ) -> str:
     n = max(1, min(5, n_alternatives))
     if n > 1:
@@ -192,7 +193,9 @@ class RAGAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Relevant documentation:\n{doc_text}" + _user_instructions_block(ctx)
         )
-        system = _build_system_prompt(self._n_alternatives, self._description_verbosity, style_profile=self._style_profile)
+        system = _build_system_prompt(
+            self._n_alternatives, self._description_verbosity, style_profile=self._style_profile
+        )
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

@@ -1,19 +1,13 @@
 """Tests for /style slash-command handlers."""
 
 import json
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 
 def _make_cfg(tmp_path, monkeypatch):
     """Build a minimal AMXConfig instance pointing CONFIG_DIR at tmp_path."""
     from amx.config import AMXConfig, DBConfig, LLMConfig
 
-    monkeypatch.setattr(
-        AMXConfig, "CONFIG_DIR", str(tmp_path), raising=False
-    )
+    monkeypatch.setattr(AMXConfig, "CONFIG_DIR", str(tmp_path), raising=False)
     cfg = AMXConfig()
     # CONFIG_DIR is init=False with default_factory; set the instance attribute
     # directly so _db_path() resolves to tmp_path/history.db in tests.
@@ -138,9 +132,7 @@ def test_set_persists_via_mocked_connector_and_llm(tmp_path, monkeypatch):
             return fake_comments
 
     monkeypatch.setattr(style_mod, "_open_connector", lambda c, p: FakeConn())
-    monkeypatch.setattr(
-        style_mod, "_make_llm_caller", lambda c, p: (lambda s, u: fake_llm_resp)
-    )
+    monkeypatch.setattr(style_mod, "_make_llm_caller", lambda c, p: lambda s, u: fake_llm_resp)
 
     cmd_style(cfg, ["set", "warehouse.sales.orders"])
     row = StyleStore(tmp_path / "history.db").get("default")

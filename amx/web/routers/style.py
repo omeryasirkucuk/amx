@@ -67,14 +67,14 @@ def extract(name: str, body: ExtractRequest, cfg: AMXConfig = Depends(get_cfg)):
         conn.use(db)
         comments = conn.get_column_comments(schema, table)
     except Exception as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"reference table read failed: {e}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"reference table read failed: {e}") from e
 
     try:
         profile, n_samples = extract_style(comments, llm_call=_make_llm_caller(cfg, name))
     except NoSamplesError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     except ValueError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"distillation failed: {e}")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"distillation failed: {e}") from e
 
     StyleStore(_history_db_path(cfg)).upsert(
         llm_profile=name,

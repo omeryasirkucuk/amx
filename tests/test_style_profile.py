@@ -1,4 +1,4 @@
-from amx.llm.style.profile import StyleProfile, PLACEHOLDERS
+from amx.llm.style.profile import PLACEHOLDERS, StyleProfile
 
 
 def test_round_trip_serialization():

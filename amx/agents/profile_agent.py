@@ -97,7 +97,7 @@ REASONING: The column participates in key relationships, has identifier-like sam
 def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
-    style_profile: "StyleProfile | None" = None,
+    style_profile: StyleProfile | None = None,
 ) -> str:
     """Build the system prompt dynamically for the requested number of alternatives.
 

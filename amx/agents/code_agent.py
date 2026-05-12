@@ -18,9 +18,9 @@ from amx.llm.prompts import (
     per_col_token_budget,
 )
 from amx.llm.provider import LLMProvider
+from amx.llm.style.guard import scrub_placeholders
 from amx.llm.style.injector import render_style_section
 from amx.llm.style.loader import load_active_style_profile
-from amx.llm.style.guard import scrub_placeholders
 from amx.llm.style.profile import StyleProfile
 from amx.utils.console import step_spinner
 from amx.utils.logging import get_logger
@@ -39,6 +39,7 @@ def _scrub_suggestions(
     for s in suggestions:
         s.suggestions = [scrub_placeholders(text) for text in s.suggestions]
     return suggestions
+
 
 _BASE_SYSTEM_PROMPT = """\
 You are a data-catalog expert analyzing how database tables and columns are used
@@ -88,7 +89,7 @@ REASONING: The code joins, filters, and groups records by this field across rela
 def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
-    style_profile: "StyleProfile | None" = None,
+    style_profile: StyleProfile | None = None,
 ) -> str:
     n = max(1, min(5, n_alternatives))
     if n > 1:
@@ -201,7 +202,9 @@ class CodeAgent(BaseAgent):
             f"Columns:\n{col_lines}\n\n"
             f"Code references:\n\n" + "\n\n".join(all_code_blocks) + _user_instructions_block(ctx)
         )
-        system = _build_system_prompt(self._n_alternatives, self._description_verbosity, style_profile=self._style_profile)
+        system = _build_system_prompt(
+            self._n_alternatives, self._description_verbosity, style_profile=self._style_profile
+        )
         return [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},

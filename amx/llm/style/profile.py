@@ -34,13 +34,11 @@ class StyleProfile:
         return json.dumps(d, ensure_ascii=False, sort_keys=True)
 
     @classmethod
-    def from_json(cls, payload: str) -> "StyleProfile":
+    def from_json(cls, payload: str) -> StyleProfile:
         d = json.loads(payload)
         for ex in d.get("redacted_examples", []):
             for tag in _PLACEHOLDER_RE.findall(ex):
                 if tag not in PLACEHOLDERS:
-                    raise ValueError(
-                        f"redacted example uses unknown placeholder {tag}"
-                    )
+                    raise ValueError(f"redacted example uses unknown placeholder {tag}")
         d["length_range"] = tuple(d["length_range"])
         return cls(**d)

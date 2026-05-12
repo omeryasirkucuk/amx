@@ -118,7 +118,7 @@ def _settings(cfg: AMXConfig) -> tuple[int, str, float, PromptDetail]:
 def _build_system_prompt(
     n: int,
     verbosity: str,
-    style_profile: "StyleProfile | None" = None,
+    style_profile: StyleProfile | None = None,
 ) -> str:
     rule = length_rule(verbosity)
     base = f"{_SYSTEM_BASE} {rule}"
@@ -129,8 +129,7 @@ def _build_system_prompt(
         f"{base}\n"
         f"Provide exactly {n} alternative descriptions ranked by likelihood. "
         "Use this format, one alternative per line, no preamble:\n"
-        f"{label_lines}"
-        + render_style_section(style_profile)
+        f"{label_lines}" + render_style_section(style_profile)
     )
 
 

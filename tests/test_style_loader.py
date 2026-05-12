@@ -1,7 +1,4 @@
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 
 def _write_style_row(tmp_path, profile_name="default", enabled=True):
@@ -12,11 +9,18 @@ def _write_style_row(tmp_path, profile_name="default", enabled=True):
     SQLiteHistoryStore(tmp_path / "history.db").init()
     store = StyleStore(tmp_path / "history.db")
     store.upsert(
-        profile_name, "a.b.c", "duckdb",
+        profile_name,
+        "a.b.c",
+        "duckdb",
         StyleProfile(
-            language="en-US", tone="x", avg_length_words=1,
-            length_range=(1, 1), person="x", capitalization="x",
-            ends_with_period=True, structural_patterns=[],
+            language="en-US",
+            tone="x",
+            avg_length_words=1,
+            length_range=(1, 1),
+            person="x",
+            capitalization="x",
+            ends_with_period=True,
+            structural_patterns=[],
             vocabulary_register="x",
             redacted_examples=["Unique id of the <ENTITY>."],
         ),
@@ -71,7 +75,6 @@ def test_loader_returns_none_when_active_profile_empty(tmp_path):
 
 def test_profile_agent_attaches_style_on_init(tmp_path):
     from amx.config import AMXConfig
-    from amx.llm.style import loader
 
     _write_style_row(tmp_path)
 
@@ -87,6 +90,7 @@ def test_profile_agent_attaches_style_on_init(tmp_path):
 
     with patch.object(AMXConfig, "load", return_value=_FakeCfg(tmp_path)):
         from amx.agents.profile_agent import ProfileAgent
+
         agent = ProfileAgent(_StubLLM())
         assert agent._style_profile is not None
         assert agent._style_profile.language == "en-US"

@@ -107,6 +107,4 @@ def extract_style(
         except (json.JSONDecodeError, ValueError) as e:
             last_err = e
             continue
-    raise ValueError(
-        f"distillation LLM returned invalid JSON twice: {last_err}"
-    )
+    raise ValueError(f"distillation LLM returned invalid JSON twice: {last_err}")

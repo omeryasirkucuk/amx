@@ -29,18 +29,20 @@ def test_extract_round_trips_through_llm_stub():
         "created_at": "Creation timestamp of the order record.",
         "amount": "Sum of charged amount per transaction.",
     }
-    stub_response = json.dumps({
-        "language": "en-US",
-        "tone": "formal",
-        "avg_length_words": 6,
-        "length_range": [4, 9],
-        "person": "impersonal",
-        "capitalization": "sentence-case",
-        "ends_with_period": True,
-        "structural_patterns": ["noun + role"],
-        "vocabulary_register": "business",
-        "redacted_examples": ["Unique id of the <ENTITY>."],
-    })
+    stub_response = json.dumps(
+        {
+            "language": "en-US",
+            "tone": "formal",
+            "avg_length_words": 6,
+            "length_range": [4, 9],
+            "person": "impersonal",
+            "capitalization": "sentence-case",
+            "ends_with_period": True,
+            "structural_patterns": ["noun + role"],
+            "vocabulary_register": "business",
+            "redacted_examples": ["Unique id of the <ENTITY>."],
+        }
+    )
 
     def fake_llm(system: str, user: str) -> str:
         # The extractor must NOT include cell data, only column metadata.

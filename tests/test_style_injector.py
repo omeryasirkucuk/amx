@@ -39,9 +39,15 @@ def test_profile_agent_appends_style_section():
     from amx.llm.style.profile import StyleProfile
 
     sp = StyleProfile(
-        language="en-US", tone="x", avg_length_words=1, length_range=(1, 1),
-        person="x", capitalization="x", ends_with_period=True,
-        structural_patterns=[], vocabulary_register="x",
+        language="en-US",
+        tone="x",
+        avg_length_words=1,
+        length_range=(1, 1),
+        person="x",
+        capitalization="x",
+        ends_with_period=True,
+        structural_patterns=[],
+        vocabulary_register="x",
         redacted_examples=["Unique id of the <ENTITY>."],
     )
     out_with = profile_agent._build_system_prompt(
@@ -62,13 +68,21 @@ def test_rag_agent_appends_style_section():
     from amx.llm.style.profile import StyleProfile
 
     sp = StyleProfile(
-        language="en-US", tone="x", avg_length_words=1, length_range=(1, 1),
-        person="x", capitalization="x", ends_with_period=True,
-        structural_patterns=[], vocabulary_register="x",
+        language="en-US",
+        tone="x",
+        avg_length_words=1,
+        length_range=(1, 1),
+        person="x",
+        capitalization="x",
+        ends_with_period=True,
+        structural_patterns=[],
+        vocabulary_register="x",
         redacted_examples=["Unique id of the <ENTITY>."],
     )
     out = rag_agent._build_system_prompt(
-        n_alternatives=1, description_verbosity="brief", style_profile=sp,
+        n_alternatives=1,
+        description_verbosity="brief",
+        style_profile=sp,
     )
     assert "## Writing style" in out
 
@@ -78,25 +92,39 @@ def test_code_agent_appends_style_section():
     from amx.llm.style.profile import StyleProfile
 
     sp = StyleProfile(
-        language="en-US", tone="x", avg_length_words=1, length_range=(1, 1),
-        person="x", capitalization="x", ends_with_period=True,
-        structural_patterns=[], vocabulary_register="x",
+        language="en-US",
+        tone="x",
+        avg_length_words=1,
+        length_range=(1, 1),
+        person="x",
+        capitalization="x",
+        ends_with_period=True,
+        structural_patterns=[],
+        vocabulary_register="x",
         redacted_examples=["Unique id of the <ENTITY>."],
     )
     out = code_agent._build_system_prompt(
-        n_alternatives=1, description_verbosity="brief", style_profile=sp,
+        n_alternatives=1,
+        description_verbosity="brief",
+        style_profile=sp,
     )
     assert "## Writing style" in out
 
 
 def test_generate_router_build_system_prompt_appends_style_section():
-    from amx.web.routers import generate
     from amx.llm.style.profile import StyleProfile
+    from amx.web.routers import generate
 
     sp = StyleProfile(
-        language="en-US", tone="x", avg_length_words=1, length_range=(1, 1),
-        person="x", capitalization="x", ends_with_period=True,
-        structural_patterns=[], vocabulary_register="x",
+        language="en-US",
+        tone="x",
+        avg_length_words=1,
+        length_range=(1, 1),
+        person="x",
+        capitalization="x",
+        ends_with_period=True,
+        structural_patterns=[],
+        vocabulary_register="x",
         redacted_examples=["Unique id of the <ENTITY>."],
     )
     out = generate._build_system_prompt(n=1, verbosity="brief", style_profile=sp)

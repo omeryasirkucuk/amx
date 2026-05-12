@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -24,11 +23,18 @@ def _seed_row(history_dir, name="default", enabled=True):
 
     store = StyleStore(history_dir / "history.db")
     store.upsert(
-        name, "a.b.c", "duckdb",
+        name,
+        "a.b.c",
+        "duckdb",
         StyleProfile(
-            language="en-US", tone="x", avg_length_words=1,
-            length_range=(1, 1), person="x", capitalization="x",
-            ends_with_period=True, structural_patterns=[],
+            language="en-US",
+            tone="x",
+            avg_length_words=1,
+            length_range=(1, 1),
+            person="x",
+            capitalization="x",
+            ends_with_period=True,
+            structural_patterns=[],
             vocabulary_register="x",
             redacted_examples=["Unique id of the <ENTITY>."],
         ),
@@ -82,18 +88,23 @@ def test_unauthenticated_request_returns_401(client, history_dir):
 
 def test_extract_with_mocked_helpers(client, auth_headers, history_dir, monkeypatch):
     """Patch the connector + LLM seams so the test stays I/O-free."""
-    from amx.cli_support.commands import style as style_cmd
     from amx.storage.style_store import StyleStore
 
     fake_comments = {f"col_{i}": f"Unique id of order {i}." for i in range(5)}
-    fake_llm_resp = json.dumps({
-        "language": "en-US", "tone": "formal", "avg_length_words": 5,
-        "length_range": [3, 7], "person": "impersonal",
-        "capitalization": "sentence-case", "ends_with_period": True,
-        "structural_patterns": ["noun + role"],
-        "vocabulary_register": "business",
-        "redacted_examples": ["Unique id of the <ENTITY>."],
-    })
+    fake_llm_resp = json.dumps(
+        {
+            "language": "en-US",
+            "tone": "formal",
+            "avg_length_words": 5,
+            "length_range": [3, 7],
+            "person": "impersonal",
+            "capitalization": "sentence-case",
+            "ends_with_period": True,
+            "structural_patterns": ["noun + role"],
+            "vocabulary_register": "business",
+            "redacted_examples": ["Unique id of the <ENTITY>."],
+        }
+    )
 
     class FakeConn:
         backend = "snowflake"
@@ -107,9 +118,7 @@ def test_extract_with_mocked_helpers(client, auth_headers, history_dir, monkeypa
     from amx.web.routers import style as style_router
 
     monkeypatch.setattr(style_router, "_open_connector", lambda c, p: FakeConn())
-    monkeypatch.setattr(
-        style_router, "_make_llm_caller", lambda c, p: (lambda s, u: fake_llm_resp)
-    )
+    monkeypatch.setattr(style_router, "_make_llm_caller", lambda c, p: lambda s, u: fake_llm_resp)
 
     from amx.config import DBConfig
 

@@ -10,9 +10,7 @@ import re
 
 from amx.llm.style.profile import PLACEHOLDERS, StyleProfile
 
-_PLACEHOLDER_PATTERN = re.compile(
-    r"\s*<(?:ENTITY|METRIC|DATE_FIELD|STATUS|IDENTIFIER)>\s*"
-)
+_PLACEHOLDER_PATTERN = re.compile(r"\s*<(?:ENTITY|METRIC|DATE_FIELD|STATUS|IDENTIFIER)>\s*")
 
 
 def scrub_placeholders(text: str) -> str:
@@ -34,7 +32,4 @@ def contains_leakage(text: str, profile: StyleProfile) -> bool:
         if tag in text:
             return True
     normalized = text.strip()
-    for ex in profile.redacted_examples:
-        if normalized == ex.strip():
-            return True
-    return False
+    return any(normalized == ex.strip() for ex in profile.redacted_examples)

@@ -33,7 +33,7 @@ def _now() -> float:
 
 
 class StyleStore:
-    def __init__(self, db_path: "str | os.PathLike[str]") -> None:
+    def __init__(self, db_path: str | os.PathLike[str]) -> None:
         self._db_path = str(db_path)
 
     def _conn(self) -> sqlite3.Connection:
@@ -102,8 +102,7 @@ class StyleStore:
     def set_enabled(self, llm_profile: str, enabled: bool) -> None:
         with self._conn() as c:
             c.execute(
-                "UPDATE style_profiles SET enabled = ?, updated_at = ? "
-                "WHERE llm_profile = ?",
+                "UPDATE style_profiles SET enabled = ?, updated_at = ? WHERE llm_profile = ?",
                 (1 if enabled else 0, str(_now()), llm_profile),
             )
 

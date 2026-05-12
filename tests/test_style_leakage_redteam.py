@@ -4,9 +4,13 @@ from amx.llm.style.profile import StyleProfile
 
 def _profile(examples):
     return StyleProfile(
-        language="en-US", tone="formal", avg_length_words=8,
-        length_range=(4, 12), person="impersonal",
-        capitalization="sentence-case", ends_with_period=True,
+        language="en-US",
+        tone="formal",
+        avg_length_words=8,
+        length_range=(4, 12),
+        person="impersonal",
+        capitalization="sentence-case",
+        ends_with_period=True,
         structural_patterns=["noun + role"],
         vocabulary_register="business",
         redacted_examples=examples,
@@ -48,7 +52,8 @@ def test_sentinel_does_not_propagate_after_scrub():
 
 def test_profile_agent_scrubs_suggestions_when_style_active(tmp_path, monkeypatch):
     from unittest.mock import patch
-    from amx.agents.base import AgentContext, Confidence, MetadataSuggestion
+
+    from amx.agents.base import Confidence, MetadataSuggestion
     from amx.agents.profile_agent import ProfileAgent, _scrub_suggestions
     from amx.config import AMXConfig
     from amx.llm.style.profile import StyleProfile
@@ -57,11 +62,18 @@ def test_profile_agent_scrubs_suggestions_when_style_active(tmp_path, monkeypatc
 
     SQLiteHistoryStore(tmp_path / "history.db").init()
     StyleStore(tmp_path / "history.db").upsert(
-        "default", "a.b.c", "duckdb",
+        "default",
+        "a.b.c",
+        "duckdb",
         StyleProfile(
-            language="en-US", tone="x", avg_length_words=1,
-            length_range=(1, 1), person="x", capitalization="x",
-            ends_with_period=True, structural_patterns=[],
+            language="en-US",
+            tone="x",
+            avg_length_words=1,
+            length_range=(1, 1),
+            person="x",
+            capitalization="x",
+            ends_with_period=True,
+            structural_patterns=[],
             vocabulary_register="x",
             redacted_examples=["Unique id of the <ENTITY>."],
         ),
@@ -89,9 +101,13 @@ def test_profile_agent_scrubs_suggestions_when_style_active(tmp_path, monkeypatc
 
     dirty = [
         MetadataSuggestion(
-            schema="s", table="t", column="c",
+            schema="s",
+            table="t",
+            column="c",
             suggestions=["Captures the <ENTITY> name."],
-            confidence=Confidence.LOW, reasoning="", source="profile",
+            confidence=Confidence.LOW,
+            reasoning="",
+            source="profile",
         )
     ]
     cleaned = _scrub_suggestions(dirty, agent._style_profile)
