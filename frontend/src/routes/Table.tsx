@@ -246,7 +246,7 @@ export default function Table() {
 
       <Card className="mt-6">
         <CardHeader title="Columns" />
-        <CardBody className="p-0">
+        <CardBody className="p-0 overflow-x-auto">
           {columns.isLoading ? (
             <div className="px-5 py-4 space-y-2">
               {Array.from({ length: 6 }).map((_, i) => (

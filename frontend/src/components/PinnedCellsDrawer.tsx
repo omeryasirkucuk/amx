@@ -86,7 +86,7 @@ export default function PinnedCellsDrawer({
         role="dialog"
         aria-label="Pinned for comparison"
         className={cn(
-          "fixed right-0 top-0 z-50 flex h-full w-[24rem] flex-col border-l border-border bg-surface shadow-xl",
+          "fixed right-0 top-0 z-50 flex h-full w-full max-w-[24rem] flex-col border-l border-border bg-surface shadow-xl",
         )}
       >
         <header className="flex items-center justify-between border-b border-border px-4 py-3">

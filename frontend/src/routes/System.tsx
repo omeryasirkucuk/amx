@@ -269,7 +269,7 @@ function UsageCard() {
           </div>
         }
       />
-      <CardBody className="p-0">
+      <CardBody className="p-0 overflow-x-auto">
         {usage.isLoading ? (
           <div className="px-5 py-6 text-sm text-ink-dim">Loading…</div>
         ) : usage.error ? (

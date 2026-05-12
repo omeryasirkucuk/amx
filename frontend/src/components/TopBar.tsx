@@ -13,12 +13,14 @@ import {
 } from "lucide-react";
 
 import { useUi } from "../lib/store";
+import { useIsMobile } from "../lib/useIsMobile";
 import { cn } from "../lib/cn";
 import { readPinnedCells } from "../lib/pinnedCells";
 import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
 import PinnedCellsDrawer from "./PinnedCellsDrawer";
 import PricingBadge from "./PricingBadge";
+import MobileNavMenu from "./topbar/MobileNavMenu";
 
 // 0.13: ``/`` is the calm Landing page (entry surface). The
 // dashboard view that used to live there moved to ``/overview``;
@@ -45,8 +47,15 @@ const navItems = [
  */
 export default function TopBar() {
   const toggleSidebar = useUi((s) => s.toggleSidebar);
+  const setMobileSidebarOpen = useUi((s) => s.setMobileSidebarOpen);
+  const isMobile = useIsMobile();
   const location = useLocation();
   const params = useParams();
+
+  function onToggle() {
+    if (isMobile) setMobileSidebarOpen(true);
+    else toggleSidebar();
+  }
 
   // PR C — pinned-cells drawer. ``dbProfile`` is null at the TopBar
   // level (we don't have a per-page profile in scope here), so the
@@ -96,7 +105,7 @@ export default function TopBar() {
           icon={<PanelLeft size={16} />}
           label="Toggle sidebar"
           size="sm"
-          onClick={toggleSidebar}
+          onClick={onToggle}
         />
         <Link
           to="/"
@@ -157,7 +166,7 @@ export default function TopBar() {
             )}
           </button>
           <PricingBadge />
-          <nav className="flex items-center gap-0.5">
+          <nav className="hidden sm:flex items-center gap-0.5">
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -176,6 +185,7 @@ export default function TopBar() {
             </NavLink>
           ))}
           </nav>
+          <MobileNavMenu items={navItems} />
         </div>
       </div>
       <PinnedCellsDrawer

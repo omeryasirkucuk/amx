@@ -24,6 +24,11 @@ interface UiSlice {
    *  mount (e.g. the Landing page wants the sidebar tucked away by
    *  default; the user can still re-open it from the topbar). */
   setSidebarCollapsed: (next: boolean) => void;
+  /** Distinct from sidebarCollapsed: on phone viewports the sidebar is
+   *  a drawer (overlay + scrim) rather than an inline collapsed rail,
+   *  so it needs its own open/closed flag. */
+  mobileSidebarOpen: boolean;
+  setMobileSidebarOpen: (next: boolean) => void;
   lastOpenedSchema: string | null;
   lastOpenedTable: string | null;
   /** Full scope of the most recently viewed table (null until the
@@ -56,6 +61,8 @@ export const useUi = create<UiSlice>()(
       toggleSidebar: () =>
         set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
       setSidebarCollapsed: (next: boolean) => set({ sidebarCollapsed: next }),
+      mobileSidebarOpen: false,
+      setMobileSidebarOpen: (next: boolean) => set({ mobileSidebarOpen: next }),
       lastOpenedSchema: null,
       lastOpenedTable: null,
       lastOpened: null,
