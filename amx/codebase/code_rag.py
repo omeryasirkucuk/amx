@@ -6,6 +6,7 @@ import ast
 import concurrent.futures
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -474,6 +475,59 @@ def index_codebase_tree(
     return total
 
 
+# Tokens used by ``_hybrid_score`` to extract query keywords. Code
+# identifiers routinely carry underscores (``sap_s6p``), so we keep
+# them as boundary characters AND emit the surrounding subtokens
+# (``sap``, ``s6p``) for substring matching.
+_CODE_TOKEN_RX = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
+
+def _code_query_tokens(query: str) -> list[str]:
+    """Lower-case tokens with length >= 2. Short queries like ``sap``
+    survive the length floor; single-letter noise is dropped."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in _CODE_TOKEN_RX.findall(query or ""):
+        low = tok.lower()
+        if len(low) < 2 or low in seen:
+            continue
+        seen.add(low)
+        out.append(low)
+    return out
+
+
+def _hybrid_score(query_tokens: list[str], hit: dict) -> float:
+    """Combine embedding distance with literal keyword overlap.
+
+    Pure cosine similarity from a 384-d MiniLM embedding is noisy for
+    short keyword queries — a 3-letter token like ``sap`` against the
+    embedding produces a distance near 1.0 even when the chunk
+    contains ``SAP`` literally. We boost any chunk whose text carries
+    the query's keywords so literal matches always outrank pure-
+    embedding-noise hits. The two signals are additive on different
+    scales:
+
+      embedding_score = max(0, 2 - distance)   ->  [0, 2]
+      keyword_overlap = matched / total        ->  [0, 1]
+      hybrid          = embedding_score + 2.5 * keyword_overlap
+
+    The 2.5× factor makes a single literal token sufficient to
+    overcome the worst-case embedding noise (~0.5 below the second-
+    place chunk). The exact weight isn't load-bearing — it just has
+    to be large enough to flip a wrong-but-close pair like
+    ``[1.073 SAP-match, 1.682 unrelated]`` so the matching chunk
+    lands on top.
+    """
+    text = str(hit.get("text") or "").lower()
+    distance = hit.get("distance")
+    distance_score = max(0.0, 2.0 - float(distance)) if distance is not None else 0.0
+    if not query_tokens:
+        return distance_score
+    matched = sum(1 for token in query_tokens if token in text)
+    keyword_overlap = matched / max(1, len(query_tokens))
+    return distance_score + 2.5 * keyword_overlap
+
+
 def query_code_snippets(
     question: str,
     n_results: int = 5,
@@ -514,7 +568,14 @@ def query_code_snippets(
     except Exception:
         return []
     filters = [_normalize_source_filter(s) for s in (source_filters or []) if s]
-    query_n = n_results if not filters else max(n_results * 4, n_results)
+    # Over-fetch so the hybrid reranker has enough candidates to
+    # actually pull literal-match chunks above embedding-noise ones.
+    # The previous behaviour over-fetched only when source filters
+    # were set; we always over-fetch now (capped) so a short keyword
+    # query like ``sap`` has room to find its 3rd-place real match in
+    # a 50-chunk haystack rather than being limited to the top 5 by
+    # raw distance.
+    query_n = min(40, max(n_results * 4, n_results))
 
     def _do_query() -> Any:
         return coll.query(query_texts=[question], n_results=query_n)
@@ -553,9 +614,20 @@ def query_code_snippets(
                 "distance": res["distances"][0][i] if res.get("distances") else None,
             }
         )
-        if len(hits) >= n_results:
-            break
-    return hits
+
+    # Hybrid rerank: combine embedding distance with literal keyword
+    # overlap so chunks carrying the user's query terms always outrank
+    # pure-embedding-noise hits. Stable sort preserves the original
+    # Chroma order when scores tie. The ``score`` field is exposed on
+    # each hit so the UI can show a meaningful "match quality" number
+    # instead of (or alongside) the raw cosine distance — short
+    # keyword queries against MiniLM-l6-v2 produce noisy distance
+    # numbers that mislead even when the result is correct.
+    query_tokens = _code_query_tokens(question)
+    for hit in hits:
+        hit["score"] = float(_hybrid_score(query_tokens, hit))
+    hits.sort(key=lambda h: h["score"], reverse=True)
+    return hits[:n_results]
 
 
 def code_collection_count(

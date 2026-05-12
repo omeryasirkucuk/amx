@@ -202,6 +202,13 @@ def search_code(
                 "rel_path": str(meta.get("rel_path") or ""),
                 "symbol": str(meta.get("symbol") or meta.get("kind") or ""),
                 "distance": float(hit.get("distance") or 0.0),
+                # Hybrid (embedding + keyword-overlap) score. Higher =
+                # better match. The SPA renders this in place of the raw
+                # distance because short keyword queries against MiniLM
+                # produce misleading distance numbers — a chunk that
+                # contains the literal ``SAP`` token can still report
+                # cosine distance ~1.0 and look like noise.
+                "score": float(hit.get("score") or 0.0),
                 "preview": str(hit.get("text") or "")[:400],
             }
         )
