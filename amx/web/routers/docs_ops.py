@@ -299,18 +299,34 @@ def _ingest_worker_body(job: Job, paths: list[str], refresh: bool) -> None:
         emit(job.queue, "activity.begin", {"idx": 1})
 
         store = RAGStore()
-        chunks_added = store.ingest(documents, refresh=bool(refresh))
+        # ``RAGStore.ingest`` returns ``IngestSummary`` (PR A); ``int(...)``
+        # still answers the chunk count for legacy callers and the
+        # frontend's existing ``summary.chunks`` reader.
+        summary = store.ingest(documents, refresh=bool(refresh))
+        chunks_added = int(summary)
+        failed_list = [
+            {"path": path, "error": reason}
+            for path, reason in (getattr(summary, "failed", None) or [])
+        ]
+        succeeded_count = len(getattr(summary, "succeeded", None) or [])
         emit(
             job.queue,
             "ingest.summary",
             {
                 "documents": len(documents),
-                "chunks": int(chunks_added),
+                "chunks": chunks_added,
                 "refresh": bool(refresh),
+                "succeeded": succeeded_count,
+                "failed": failed_list,
             },
         )
         job.status = "done"
-        job.summary = {"documents": len(documents), "chunks": int(chunks_added)}
+        job.summary = {
+            "documents": len(documents),
+            "chunks": chunks_added,
+            "succeeded": succeeded_count,
+            "failed": failed_list,
+        }
         job.ended_at = time.time()
         emit(
             job.queue,

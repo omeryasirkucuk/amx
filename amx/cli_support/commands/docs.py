@@ -28,6 +28,26 @@ FinalizeScope = Callable[[AMXConfig, object, str | None, list[str]], dict[str, l
 WarnNoPaths = Callable[..., None]
 
 
+def _render_ingest_summary(summary: object, *, total_files: int) -> None:
+    """Print the per-file ingest outcome line + any failure detail.
+
+    ``summary`` is duck-typed against :class:`amx.docs.rag.IngestSummary`
+    (the import lives inside the command bodies to keep this module
+    cheap to import). When ``failed`` is non-empty, list each failed
+    file path + the short error reason so the user can act on the
+    specific files instead of grepping ``~/.amx/logs/amx.log``.
+    """
+    succeeded = list(getattr(summary, "succeeded", []) or [])
+    failed = list(getattr(summary, "failed", []) or [])
+    chunk_count = int(getattr(summary, "chunk_count", 0) or 0)
+    info(
+        f"Ingested {chunk_count} chunks from {len(succeeded)} of {total_files} files "
+        f"({len(failed)} failed)"
+    )
+    for path, reason in failed:
+        error(f"  failed: {path} — {reason}")
+
+
 def _run_docs_semantic_search(question: str, results: int) -> None:
     """Chroma embedding similarity only; no generative LLM."""
     from amx.docs.rag import RAGStore
@@ -142,8 +162,12 @@ def register_docs_commands(
                 info(f"Found {len(documents)} document(s) ({size:.1f} MB)")
                 store = RAGStore()
                 with step_spinner("Ingesting into RAG store"):
-                    chunks = store.ingest(documents, refresh=False)
-                success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
+                    summary = store.ingest(documents, refresh=False)
+                _render_ingest_summary(summary, total_files=len(documents))
+                success(
+                    f"Ingested {summary.chunk_count} chunks into RAG store "
+                    f"({store.doc_count} total chunks)"
+                )
         finally:
             cleanup_scan_artifacts(documents)
 
@@ -198,8 +222,12 @@ def register_docs_commands(
 
                     store = RAGStore()
                     with step_spinner("Ingesting scanned documents"):
-                        chunks = store.ingest(documents, refresh=False)
-                    success(f"Ingested {chunks} chunks from {len(documents)} documents")
+                        summary = store.ingest(documents, refresh=False)
+                    _render_ingest_summary(summary, total_files=len(documents))
+                    success(
+                        f"Ingested {summary.chunk_count} chunks from "
+                        f"{len(documents)} documents"
+                    )
         finally:
             cleanup_scan_artifacts(documents)
 
@@ -254,10 +282,14 @@ def register_docs_commands(
 
                 store = RAGStore()
                 with step_spinner("Ingesting documents into RAG store"):
-                    chunks = store.ingest(documents, refresh=refresh)
+                    summary = store.ingest(documents, refresh=refresh)
+                _render_ingest_summary(summary, total_files=len(documents))
                 if refresh:
                     info("Refreshed: removed prior chunks for the same source paths before ingest.")
-                success(f"Ingested {chunks} chunks into RAG store ({store.doc_count} total chunks)")
+                success(
+                    f"Ingested {summary.chunk_count} chunks into RAG store "
+                    f"({store.doc_count} total chunks)"
+                )
         finally:
             cleanup_scan_artifacts(documents)
 
