@@ -1,5 +1,7 @@
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/fdcb7498-928a-4250-b257-7d5aef5521bb" controls muted playsinline width="760"></video>
+  <a href="https://www.youtube.com/watch?v=NmEVxqkfZdI">
+    <img src="https://img.youtube.com/vi/NmEVxqkfZdI/maxresdefault.jpg" alt="Watch AMX in action on YouTube" width="760">
+  </a>
 </p>
 
 <p align="center">
