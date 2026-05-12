@@ -43,3 +43,31 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".pptx",
     }
 )
+
+#: Filenames that look ingestable by extension but represent internal
+#: bookkeeping AMX writes alongside user uploads (the
+#: ``~/.amx/uploads/<profile>/.amx-manifest.json`` sidecar maps hashed
+#: filenames back to their original names). They must never be fed to
+#: the embedding pipeline or counted as user content — the "Search
+#: docs" surface showed the manifest as the top hit for every query
+#: in fresh installs because it was the only chunk being ingested.
+INGEST_EXCLUDE_NAMES: frozenset[str] = frozenset({".amx-manifest.json"})
+
+#: Extensions whose loader expects a *binary* on-disk format. The
+#: scanner's NUL-byte heuristic (:func:`amx.docs.scanner._looks_binary`)
+#: would otherwise filter every PDF / Office file out — these formats
+#: legitimately contain NUL bytes throughout the stream. Skip the
+#: heuristic for them; text-loader extensions (``.txt``, ``.md``,
+#: ``.csv``, ``.py``, ``.html``, ...) still go through the check so a
+#: mislabelled binary masquerading as ``.txt`` doesn't reach the
+#: embedding model.
+BINARY_LOADER_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".xlsx",
+        ".xls",
+        ".pptx",
+    }
+)

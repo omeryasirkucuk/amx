@@ -16,7 +16,11 @@ from typing import Any
 
 import requests
 
-from amx.docs.extensions import SUPPORTED_EXTENSIONS
+from amx.docs.extensions import (
+    BINARY_LOADER_EXTENSIONS,
+    INGEST_EXCLUDE_NAMES,
+    SUPPORTED_EXTENSIONS,
+)
 from amx.utils.logging import get_logger
 
 log = get_logger("docs.scanner")
@@ -73,11 +77,24 @@ def _load_gitignore_matcher(root: Path):
         return None
 
 
+def _should_skip_binary_check(suffix: str) -> bool:
+    """Extensions whose loader expects a binary stream legitimately
+    contain NUL bytes (every PDF / Office file). Skip the heuristic
+    rather than silently drop them — that's the bug the user saw as
+    "PDFs uploaded but nothing indexed except .amx-manifest.json"."""
+    return suffix in BINARY_LOADER_EXTENSIONS
+
+
 def _resolve_local(path: str) -> Iterator[DocInfo]:
     p = Path(path).expanduser().resolve()
     if p.is_file():
-        if p.suffix.lower() in SUPPORTED_EXTENSIONS and not _looks_binary(p):
-            yield DocInfo(str(p), p.stat().st_size, p.suffix.lower(), "local")
+        suffix = p.suffix.lower()
+        if (
+            p.name not in INGEST_EXCLUDE_NAMES
+            and suffix in SUPPORTED_EXTENSIONS
+            and (_should_skip_binary_check(suffix) or not _looks_binary(p))
+        ):
+            yield DocInfo(str(p), p.stat().st_size, suffix, "local")
         return
     if not p.is_dir():
         return
@@ -86,7 +103,10 @@ def _resolve_local(path: str) -> Iterator[DocInfo]:
     for f in sorted(p.rglob("*")):
         if not f.is_file():
             continue
-        if f.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        if f.name in INGEST_EXCLUDE_NAMES:
+            continue
+        suffix = f.suffix.lower()
+        if suffix not in SUPPORTED_EXTENSIONS:
             continue
         # ``.gitignore`` matchers want repo-relative posix paths.
         if matcher is not None:
@@ -96,9 +116,9 @@ def _resolve_local(path: str) -> Iterator[DocInfo]:
                 rel = ""
             if rel and matcher.match_file(rel):
                 continue
-        if _looks_binary(f):
+        if not _should_skip_binary_check(suffix) and _looks_binary(f):
             continue
-        yield DocInfo(str(f), f.stat().st_size, f.suffix.lower(), "local")
+        yield DocInfo(str(f), f.stat().st_size, suffix, "local")
 
 
 def normalize_github_url(url: str) -> str:
