@@ -601,6 +601,27 @@ def _resolve_completion_mode(cfg: AMXConfig, llm: object, mode: str | None) -> b
     return use_batch
 
 
+def _record_code_unavailable_reason(
+    extra_metrics: dict[str, str],
+    exc: BaseException,
+) -> None:
+    """Record a one-line reason why the code RAG path could not be used.
+
+    Mirrors :func:`_record_rag_unavailable_reason` but writes
+    ``code_unavailable_reason`` on the run record so /history and
+    Studio can distinguish the two failure paths. ``CodeEmbeddingMismatch``
+    is tagged with an ``embedding_mismatch:`` prefix so downstream
+    tooling can render a remediation hint ("run /code-refresh")
+    instead of treating the run as a generic crash.
+    """
+    from amx.codebase.code_rag import CodeEmbeddingMismatch
+
+    if isinstance(exc, CodeEmbeddingMismatch):
+        extra_metrics["code_unavailable_reason"] = f"embedding_mismatch: {exc}"
+    else:
+        extra_metrics["code_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}"
+
+
 def _record_rag_unavailable_reason(
     extra_metrics: dict[str, str],
     exc: BaseException,
@@ -1117,7 +1138,21 @@ def execute_analyze_run(
             provider=cfg.llm.provider,
             model=cfg.llm.model,
         ):
-            code_report = resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
+            try:
+                code_report = resolve_codebase_for_run(cfg, db, scope, code_profile, code_refresh)
+            except Exception as exc:  # noqa: BLE001 - downgrade to run diagnostic
+                from amx.codebase.code_rag import CodeEmbeddingMismatch
+
+                _record_code_unavailable_reason(extra_metrics, exc)
+                if isinstance(exc, CodeEmbeddingMismatch):
+                    error(f"Code RAG unavailable: {exc}. Run will proceed without code context.")
+                else:
+                    error(
+                        f"Code RAG unavailable: {exc.__class__.__name__}: {exc}. "
+                        "Run will proceed without code context."
+                    )
+                log.warning("Codebase resolve failed during analyze: %s", exc, exc_info=True)
+                code_report = None
         token_tracker.reset()
 
         # Per-schema orchestration loop (extracted in v0.9.4). Returns
