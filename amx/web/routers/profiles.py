@@ -454,6 +454,7 @@ def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
     from pathlib import Path
 
     from amx.docs.extensions import SUPPORTED_EXTENSIONS
+    from amx.docs.uploads import read_display_names_for_root
 
     remote_prefixes = ("http://", "https://", "s3://", "gs://")
     cap = 200
@@ -476,10 +477,14 @@ def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
                 st = base.stat()
             except Exception:
                 continue
+            # Look one level up for a manifest in case the path points
+            # at an individual uploaded file (rare but possible).
+            display_map = read_display_names_for_root(base.parent)
             out.append(
                 {
                     "path": str(base),
                     "name": base.name,
+                    "display_name": display_map.get(base.name, base.name),
                     "size_bytes": int(st.st_size),
                     "modified_at": float(st.st_mtime),
                     "source_root": str(base.parent),
@@ -488,6 +493,9 @@ def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
             continue
         if not base.is_dir():
             continue
+        # Read the upload manifest once per directory — cheap dict
+        # lookup per file vs re-reading JSON for each entry.
+        display_map = read_display_names_for_root(base)
         truncated = False
         for f in sorted(base.rglob("*")):
             if len(out) >= cap:
@@ -505,6 +513,7 @@ def _list_local_files_for_paths(paths: list[str]) -> list[dict[str, Any]]:
                 {
                     "path": str(f),
                     "name": f.name,
+                    "display_name": display_map.get(f.name, f.name),
                     "size_bytes": int(st.st_size),
                     "modified_at": float(st.st_mtime),
                     "source_root": str(base),
