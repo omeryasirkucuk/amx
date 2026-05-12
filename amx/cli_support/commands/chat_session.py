@@ -237,6 +237,28 @@ def register_chat_session_commands(
         cfg.active_chat_session_id = None
         success(f"Closed chat session #{sid}.")
 
+    @session.command("delete")
+    @click.argument("session_id", type=int)
+    @pass_config
+    def session_delete(cfg: AMXConfig, session_id: int) -> None:
+        """Drop a chat session and every turn it owns. Mirrors the
+        Studio sidebar trash icon — use it to prune throwaway chats
+        that clutter the picker. ``/session end`` only marks the
+        session inactive; this hard-removes it.
+        """
+        store = _store()
+        if store is None:
+            error("History store is not initialized.")
+            return
+        meta = store.get_session(int(session_id))
+        if not meta:
+            error(f"No session #{session_id} found.")
+            return
+        store.delete_session(int(session_id))
+        if int(cfg.active_chat_session_id or 0) == int(session_id):
+            cfg.active_chat_session_id = None
+        success(f"Deleted chat session #{session_id}.")
+
     @session.command("show")
     @click.option(
         "--id",

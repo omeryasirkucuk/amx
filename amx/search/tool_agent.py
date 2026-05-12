@@ -743,6 +743,8 @@ def run_tool_agent(
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
     cancel_token: threading.Event | None = None,
     db_profiles: list[str] | None = None,
+    doc_profiles: list[str] | None = None,
+    code_profiles: list[str] | None = None,
 ) -> ToolAgentResult:
     """Run the tool-calling loop and return the final synthesised answer.
 
@@ -785,7 +787,13 @@ def run_tool_agent(
     # pool) is disposed at the end of every question. Without this, each
     # ``/ask`` turn leaks a few file descriptors; after enough turns the
     # process hits ``OSError: Too many open files`` (the user-reported case).
-    with ToolBox(cfg, catalog, db_profiles=db_profiles) as toolbox:
+    with ToolBox(
+        cfg,
+        catalog,
+        db_profiles=db_profiles,
+        doc_profiles=doc_profiles,
+        code_profiles=code_profiles,
+    ) as toolbox:
         return _run_tool_loop(
             toolbox=toolbox,
             cfg=cfg,

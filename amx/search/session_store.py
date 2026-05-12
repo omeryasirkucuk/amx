@@ -118,6 +118,21 @@ class ChatSessionStore:
                 (time.time(), time.time(), int(session_id)),
             )
 
+    def delete_session(self, session_id: int) -> bool:
+        """Drop a chat session and every turn it owns.
+
+        Returns ``True`` when a row was deleted, ``False`` when the id
+        was unknown. ``end_session`` marks a session inactive but
+        preserves history; delete is the hard-remove the Studio left
+        rail and the CLI need so a user can clean up stale chats they
+        no longer want to see in the picker.
+        """
+        sid = int(session_id)
+        with self._history._lock, self._history._connect() as conn:
+            cur = conn.execute("DELETE FROM chat_turns WHERE session_id = ?", (sid,))
+            cur = conn.execute("DELETE FROM chat_sessions WHERE id = ?", (sid,))
+            return bool(cur.rowcount)
+
     def get_session(self, session_id: int) -> dict[str, Any] | None:
         with self._history._connect() as conn:
             row = conn.execute(

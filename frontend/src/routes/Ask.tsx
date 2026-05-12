@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleStop, Plus, Settings as SettingsIcon, Sparkles } from "lucide-react";
+import { CircleStop, Plus, Settings as SettingsIcon, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
@@ -8,7 +8,7 @@ import AskChat, { type SubmittedTurn } from "../components/AskChat";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import { api, apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
-import { Skeleton, Tooltip, useToast } from "../components/ui";
+import { AlertDialog, Skeleton, Tooltip, useToast } from "../components/ui";
 
 interface SessionRow {
   id: number;
@@ -65,6 +65,7 @@ export default function Ask() {
   const [seedSubmit, setSeedSubmit] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<number | null>(null);
+  const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState<number | null>(null);
 
   // Cross-page hand-off: when /runs/compare's "Ask AMX" button (or any
   // other deep link) navigates to /ask with state.seedPrompt, fire the
@@ -137,6 +138,32 @@ export default function Ask() {
   }
 
   const toast = useToast();
+  const deleteSession = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/api/ask/sessions/${id}`, { method: "DELETE" }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+      // If the deleted session was the one open in the chat panel, drop
+      // back to a blank "+ New" state — otherwise the panel keeps
+      // showing turns from a session that no longer exists.
+      if (selectedSessionId === id) {
+        setSelectedSessionId(null);
+        setSeedTurns([]);
+        setSeedToken((n) => n + 1);
+      }
+      toast.push({ title: "Session deleted", tone: "info", duration: 2200 });
+    },
+    onError: (e: Error) =>
+      toast.push({
+        title: "Could not delete session",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+  const pendingDeleteSession =
+    pendingDeleteSessionId == null
+      ? null
+      : sessions.data?.sessions.find((s) => s.id === pendingDeleteSessionId) ?? null;
   const endSession = useMutation({
     mutationFn: (id: number) =>
       apiFetch(`/api/ask/sessions/${id}/end`, { method: "POST" }),
@@ -256,6 +283,20 @@ export default function Ask() {
                           </button>
                         </Tooltip>
                       )}
+                      <Tooltip content="Delete session permanently">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPendingDeleteSessionId(session.id);
+                          }}
+                          disabled={deleteSession.isPending}
+                          aria-label="Delete session"
+                          className="px-2 text-ink-dim opacity-0 transition-colors duration-fast hover:bg-critical/10 hover:text-critical group-hover:opacity-100 disabled:opacity-50"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </Tooltip>
                     </li>
                   );
                 })}
@@ -316,6 +357,29 @@ export default function Ask() {
           />
         )}
       </div>
+      <AlertDialog
+        open={pendingDeleteSessionId !== null}
+        onClose={() => {
+          if (!deleteSession.isPending) setPendingDeleteSessionId(null);
+        }}
+        onConfirm={() => {
+          if (pendingDeleteSessionId != null) {
+            const id = pendingDeleteSessionId;
+            deleteSession.mutate(id, {
+              onSettled: () =>
+                setPendingDeleteSessionId((current) => (current === id ? null : current)),
+            });
+          }
+        }}
+        title={
+          pendingDeleteSession
+            ? `Delete '${pendingDeleteSession.title || `Session #${pendingDeleteSession.id}`}'?`
+            : "Delete session?"
+        }
+        description="Drops every turn under this session from the local history database. Run logs and apply rows the session produced stay intact — only the chat record is removed."
+        confirmLabel="Delete"
+        loading={deleteSession.isPending}
+      />
     </>
   );
 }
