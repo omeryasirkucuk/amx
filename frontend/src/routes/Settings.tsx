@@ -496,7 +496,7 @@ function DbProfileWizard({
             personal connection, not as the team's history store.
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {basicSpecs.map((s) => (
             <DbFieldInput
               key={s.name}
@@ -512,7 +512,7 @@ function DbProfileWizard({
             <summary className="cursor-pointer font-medium text-ink-muted">
               Advanced (TLS / SSL / driver options)
             </summary>
-            <div className="mt-3 grid grid-cols-2 gap-3">
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
               {advancedSpecs.map((s) => (
                 <DbFieldInput
                   key={s.name}
@@ -873,7 +873,7 @@ function LlmProfileWizard({
       }
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Profile name">
             <input
               type="text"
@@ -907,7 +907,7 @@ function LlmProfileWizard({
             className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 font-mono text-sm"
           />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {showApiKey && (
             <Field label="API key">
               <input
@@ -934,7 +934,7 @@ function LlmProfileWizard({
         <h3 className="border-t border-surface-border pt-4 text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
           Generation knobs
         </h3>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field
             label={`Temperature (${temperature.toFixed(2)})`}
             hint="Creativity: low = consistent, high = varied (0.1–0.3 recommended)."
@@ -1063,7 +1063,7 @@ function LlmProfileWizard({
         <h3 className="border-t border-surface-border pt-4 text-[11px] font-semibold uppercase tracking-wider text-ink-dim">
           Confidence thresholds
         </h3>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field
             label={`High (≥ ${logprobHigh.toFixed(2)})`}
             hint="Predictions above this score are flagged 'high confidence'."

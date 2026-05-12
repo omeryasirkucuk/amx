@@ -1444,7 +1444,7 @@ function CellCompareSection({
           isColumnLevel ? "Column-level cell" : "Table-level cell"
         }
       />
-      <CardBody className="p-0">
+      <CardBody className="p-0 overflow-x-auto">
         {query.isLoading ? (
           <div className="px-5 py-4 text-xs text-ink-dim">Loading…</div>
         ) : query.isError ? (
