@@ -609,17 +609,32 @@ def _record_code_unavailable_reason(
 
     Mirrors :func:`_record_rag_unavailable_reason` but writes
     ``code_unavailable_reason`` on the run record so /history and
-    Studio can distinguish the two failure paths. ``CodeEmbeddingMismatch``
-    is tagged with an ``embedding_mismatch:`` prefix so downstream
-    tooling can render a remediation hint ("run /code-refresh")
-    instead of treating the run as a generic crash.
+    Studio can distinguish the two failure paths.
+
+    PR δ (I13) — categorises the failure mode so downstream tooling
+    can render a remediation hint instead of treating every error as
+    a generic crash:
+
+    * ``CodeEmbeddingMismatch`` → ``embedding_mismatch: ...``
+    * :class:`amx.docs.rag.RAGQueryTimeout` → ``query_timeout: ...``
+    * any other exception → ``index_error: <ClassName>: ...``
     """
     from amx.codebase.code_rag import CodeEmbeddingMismatch
 
+    rag_query_timeout_cls: type[BaseException] | None
+    try:
+        from amx.docs.rag import RAGQueryTimeout as _RAGQueryTimeout
+
+        rag_query_timeout_cls = _RAGQueryTimeout
+    except Exception:  # pragma: no cover - docs RAG optional dep
+        rag_query_timeout_cls = None
+
     if isinstance(exc, CodeEmbeddingMismatch):
         extra_metrics["code_unavailable_reason"] = f"embedding_mismatch: {exc}"
+    elif rag_query_timeout_cls is not None and isinstance(exc, rag_query_timeout_cls):
+        extra_metrics["code_unavailable_reason"] = f"query_timeout: {exc}"
     else:
-        extra_metrics["code_unavailable_reason"] = f"{exc.__class__.__name__}: {exc}"
+        extra_metrics["code_unavailable_reason"] = f"index_error: {exc.__class__.__name__}: {exc}"
 
 
 def _record_rag_unavailable_reason(
@@ -1330,6 +1345,18 @@ def register_analyze_run_command(
             "``active_doc_profile`` (or persisted ``run_doc_profiles``) is used."
         ),
     )
+    @click.option(
+        "--code",
+        "code_profile_override",
+        multiple=True,
+        help=(
+            "Override the code profile scope for this run. Pass multiple "
+            "times to union retrieval context from multiple code profiles, "
+            "e.g. --code backend --code etl. When omitted, "
+            "``active_code_profile`` (or persisted ``run_code_profiles``) "
+            "is used. Mirrors --doc."
+        ),
+    )
     @click.pass_obj
     def analyze_run(
         cfg: AMXConfig,
@@ -1342,6 +1369,7 @@ def register_analyze_run_command(
         mode: str | None,
         db_profile_override: tuple[str, ...],
         doc_profile_override: tuple[str, ...],
+        code_profile_override: tuple[str, ...],
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
@@ -1367,6 +1395,25 @@ def register_analyze_run_command(
                     seen_docs.add(name)
                     ordered_docs.append(name)
             cfg.run_doc_profiles = ordered_docs
+
+        # PR δ: identical pattern for --code (multi-profile code scope).
+        code_override_saved: list[str] | None = None
+        if code_profile_override:
+            unknown_code = [n for n in code_profile_override if n not in cfg.code_profiles]
+            if unknown_code:
+                error(
+                    f"Unknown code profile(s): {', '.join(unknown_code)}. "
+                    f"Available: {', '.join(sorted(cfg.code_profiles)) or '(none)'}."
+                )
+                sys.exit(1)
+            code_override_saved = list(cfg.run_code_profiles)
+            ordered_codes: list[str] = []
+            seen_codes: set[str] = set()
+            for name in code_profile_override:
+                if name not in seen_codes:
+                    seen_codes.add(name)
+                    ordered_codes.append(name)
+            cfg.run_code_profiles = ordered_codes
 
         # 0.11.0: resolve the effective scope for this run.
         # Priority: --db-profile (CLI) > persisted active_db_profiles
@@ -1468,3 +1515,6 @@ def register_analyze_run_command(
             # CLI command still sees the user's persisted scope.
             if doc_override_saved is not None:
                 object.__setattr__(cfg, "run_doc_profiles", doc_override_saved)
+            # PR δ: same rollback contract for the code-profile override.
+            if code_override_saved is not None:
+                object.__setattr__(cfg, "run_code_profiles", code_override_saved)

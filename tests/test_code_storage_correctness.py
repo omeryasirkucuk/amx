@@ -249,5 +249,8 @@ def test_record_code_unavailable_reason_tags_generic_failure() -> None:
 
     sink: dict[str, str] = {}
     _record_code_unavailable_reason(sink, RuntimeError("boom"))
-    assert sink["code_unavailable_reason"].startswith("RuntimeError:")
+    # PR δ (I13): generic failures are tagged with the
+    # ``index_error:`` prefix so downstream consumers can distinguish
+    # them from the ``embedding_mismatch`` and ``query_timeout`` cases.
+    assert sink["code_unavailable_reason"].startswith("index_error: RuntimeError")
     assert "boom" in sink["code_unavailable_reason"]

@@ -443,6 +443,139 @@ def _check_rag_store(cfg: AMXConfig) -> CheckResult:
     )
 
 
+def _check_code_rag(cfg: AMXConfig) -> CheckResult:
+    """Open the ``amx_code`` Chroma collection and report its health.
+
+    PR δ (I2) — parallels :func:`_check_rag_store`. Failure modes the
+    user cares about:
+
+    1. Chroma deps missing → soft-OK, the user simply hasn't installed
+       the code RAG bundle yet.
+    2. Persist directory unreadable / collection open error → fail.
+    3. Embedding metadata mismatch (active embedding provider has
+       changed since the collection was indexed) → fail with a
+       remediation hint pointing at ``/code-refresh``.
+    4. Empty collection → pass with a "0 chunks" detail and a hint
+       suggesting ``/code scan`` to populate it.
+    """
+    try:
+        import chromadb
+
+        from amx.codebase.code_rag import (
+            CodeEmbeddingMismatch,
+            query_code_snippets,
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="Code RAG store",
+            ok=True,
+            detail="Code RAG dependencies not installed (optional)",
+            hint=f"pip install 'amx-cli[docs]' ({exc.__class__.__name__})",
+        )
+
+    persist = str(Path.home() / ".amx" / "chroma_db")
+    try:
+        client = chromadb.PersistentClient(path=persist)
+    except Exception as exc:
+        return CheckResult(
+            name="Code RAG store",
+            ok=False,
+            detail=f"{exc.__class__.__name__}: {exc}",
+            hint="Check ~/.amx/chroma_db permissions.",
+        )
+
+    try:
+        # ``get_or_create`` so the doctor check works on a fresh
+        # install before any code has been indexed — exactly mirrors
+        # the docs equivalent's behaviour on first run.
+        coll = client.get_or_create_collection(name="amx_code")
+    except Exception as exc:
+        return CheckResult(
+            name="Code RAG store",
+            ok=False,
+            detail=f"get_or_create_collection failed — {exc.__class__.__name__}: {exc}",
+            hint="The persist directory may be unreadable. Delete ~/.amx/chroma_db and re-run /code scan.",
+        )
+
+    # Embedding mismatch detection. Re-uses the same metadata contract
+    # the indexer writes on first create; a mismatch is non-fatal for
+    # the collection but means retrieval is silently degraded.
+    meta = dict(coll.metadata or {})
+    recorded_provider = str(meta.get("embedding_provider") or "")
+    recorded_model = str(meta.get("embedding_model") or "")
+    if recorded_provider and recorded_model:
+        try:
+            from amx.codebase.code_rag import _resolve_active_embedding
+
+            active_provider, active_model, _ = _resolve_active_embedding(cfg)
+            if active_provider != recorded_provider or active_model != recorded_model:
+                return CheckResult(
+                    name="Code RAG store",
+                    ok=False,
+                    detail=(
+                        f"Code RAG collection was indexed with "
+                        f"provider={recorded_provider} model={recorded_model}. "
+                        f"Current config says provider={active_provider} "
+                        f"model={active_model}."
+                    ),
+                    hint=(
+                        "Run `/code-refresh` to rebuild the collection with the "
+                        "active provider, or update the embedding profile to match."
+                    ),
+                )
+        except CodeEmbeddingMismatch as exc:
+            return CheckResult(
+                name="Code RAG store",
+                ok=False,
+                detail=str(exc),
+                hint="Run `/code-refresh` to rebuild the collection.",
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    # Smoke query — confirms the embedding function is wired up
+    # without depending on any specific content being present.
+    try:
+        query_code_snippets("sentinel", n_results=1)
+    except CodeEmbeddingMismatch as exc:
+        return CheckResult(
+            name="Code RAG store",
+            ok=False,
+            detail=str(exc),
+            hint="Run `/code-refresh` to rebuild the collection.",
+        )
+    except Exception as exc:
+        return CheckResult(
+            name="Code RAG store",
+            ok=False,
+            detail=f"sample query failed — {exc.__class__.__name__}: {exc}",
+            hint="The embedding provider may be misconfigured.",
+        )
+
+    chunk_count = 0
+    try:
+        chunk_count = int(coll.count())
+    except Exception:
+        chunk_count = 0
+    embedding_label = (
+        f"{recorded_provider}/{recorded_model}"
+        if recorded_provider and recorded_model
+        else "minilm/minilm-l6-v2"
+    )
+    if chunk_count == 0:
+        return CheckResult(
+            name="Code RAG store",
+            ok=True,
+            detail=f"opens with {embedding_label}, 0 chunks indexed",
+            hint="Empty collection — run `/code scan` to populate it.",
+        )
+    return CheckResult(
+        name="Code RAG store",
+        ok=True,
+        detail=f"opens with {embedding_label}, {chunk_count} chunks indexed",
+    )
+
+
 # ── Rendering ───────────────────────────────────────────────────────────────
 
 
@@ -507,6 +640,7 @@ def collect_doctor_checks(
     results.append(_check_active_db_profile(cfg, skip_network=skip_network))
     results.append(_check_active_llm_profile(cfg, skip_network=skip_network))
     results.append(_check_rag_store(cfg))
+    results.append(_check_code_rag(cfg))
     return results
 
 

@@ -34,6 +34,8 @@ export default function Schema() {
   // PR E: per-run doc profile override forwarded to api.submitRun
   // when the user submits the bulk Generate action below.
   const [runDocProfiles, setRunDocProfiles] = useState<string[] | null>(null);
+  // PR δ: parallel code-profile override forwarded to api.submitRun.
+  const [runCodeProfiles, setRunCodeProfiles] = useState<string[] | null>(null);
 
   const qc = useQueryClient();
   const assets = useQuery({
@@ -135,6 +137,7 @@ export default function Schema() {
         database: scope?.database,
         catalog: scope?.catalog,
         doc_profiles: runDocProfiles ?? undefined,
+        code_profiles: runCodeProfiles ?? undefined,
       }),
     onSuccess: (result) => {
       setConfirmGenerate(false);
@@ -297,6 +300,8 @@ export default function Schema() {
         onClose={() => setConfirmGenerate(false)}
         docProfiles={runDocProfiles}
         onDocProfilesChange={setRunDocProfiles}
+        codeProfiles={runCodeProfiles}
+        onCodeProfilesChange={setRunCodeProfiles}
         title={`Generate description for ${schema}`}
         description="Pick the scope. Single-shot writes only the schema's own COMMENT (one fast LLM call). Bulk run spawns the full analyze worker for every table and column under the schema."
         singleOption={{

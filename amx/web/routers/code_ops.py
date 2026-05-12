@@ -707,12 +707,24 @@ def _scan_worker_body(
         job.status = "done"
         job.summary = scan_summary
         job.ended_at = time.time()
+        # PR δ: stamp the code profile's health telemetry so Studio
+        # Settings → Code can render "indexed N seconds ago".
+        if profile_name:
+            try:
+                cfg.record_code_profile_ingest(profile_name, error=None)
+            except Exception as _exc:  # pragma: no cover - best effort
+                log.debug("record_code_profile_ingest failed: %s", _exc)
         emit_terminal(job.queue, "job.done", {"summary": scan_summary})
     except Exception as exc:
         log.exception("code scan worker crashed")
         job.status = "failed"
         job.error = f"{exc.__class__.__name__}: {exc}"
         job.ended_at = time.time()
+        if profile_name:
+            try:
+                cfg.record_code_profile_ingest(profile_name, error=job.error)
+            except Exception as _exc:  # pragma: no cover - best effort
+                log.debug("record_code_profile_ingest failed: %s", _exc)
         emit(job.queue, "activity.fail", {"idx": 0, "detail": job.error})
         emit_terminal(job.queue, "job.failed", {"error": job.error})
 

@@ -163,6 +163,18 @@ class RunRequest(BaseModel):
             "regardless of how the run terminates."
         ),
     )
+    code_profiles: list[str] | None = Field(
+        default=None,
+        description=(
+            "PR δ: one-shot multi-code-profile override for this run. "
+            "Mirrors ``doc_profiles`` — the worker temporarily flips "
+            "``cfg.run_code_profiles`` to this list and the CodeAgent's "
+            "semantic retrieval is scoped to the union of every named "
+            "profile's paths. ``None`` (or omitted) falls back to "
+            "``cfg.active_code_profile`` / ``cfg.run_code_profiles`` on "
+            "disk. The saved config is never mutated."
+        ),
+    )
 
 
 def _apply_llm_overrides(
@@ -475,6 +487,22 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
             "run.doc_profiles",
             {"doc_profiles": cleaned_doc_profiles},
         )
+
+    # PR δ: identical override contract for the code-profile multi-select.
+    _code_profiles_saved: list[str] = list(cfg.run_code_profiles or [])
+    _code_profiles_overridden = False
+    if body.code_profiles is not None:
+        cleaned_code_profiles = [str(p).strip() for p in body.code_profiles if str(p or "").strip()]
+        try:
+            object.__setattr__(cfg, "run_code_profiles", cleaned_code_profiles)
+        except Exception:  # pragma: no cover - defensive
+            cfg.run_code_profiles = cleaned_code_profiles
+        _code_profiles_overridden = True
+        emit(
+            job.queue,
+            "run.code_profiles",
+            {"code_profiles": cleaned_code_profiles},
+        )
         try:
             log_event(
                 "run.llm_overrides",
@@ -627,6 +655,20 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     else:
         rag_extra_metrics["doc_profiles_used"] = []
     rag_extra_metrics["effective_run_doc_paths"] = list(effective_run_doc_paths)
+
+    # PR δ: same persisted shape for code profiles. ``code_profiles_used``
+    # surfaces in metrics_json so RunDetail can render
+    # "Code: profile-a, profile-b · N chunks used".
+    if cfg.run_code_profiles:
+        rag_extra_metrics["code_profiles_used"] = list(cfg.run_code_profiles)
+    elif cfg.active_code_profile:
+        rag_extra_metrics["code_profiles_used"] = [cfg.active_code_profile]
+    else:
+        rag_extra_metrics["code_profiles_used"] = []
+    try:
+        rag_extra_metrics["effective_run_code_paths"] = list(cfg.effective_run_code_paths())
+    except Exception:  # pragma: no cover - defensive
+        rag_extra_metrics["effective_run_code_paths"] = []
 
     orchestrator = Orchestrator(
         db=db,
@@ -804,6 +846,12 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                 object.__setattr__(cfg, "run_doc_profiles", _doc_profiles_saved)
             except Exception:  # pragma: no cover - defensive
                 cfg.run_doc_profiles = _doc_profiles_saved
+        # PR δ: parallel revert for the code-profile override.
+        if _code_profiles_overridden:
+            try:
+                object.__setattr__(cfg, "run_code_profiles", _code_profiles_saved)
+            except Exception:  # pragma: no cover - defensive
+                cfg.run_code_profiles = _code_profiles_saved
 
     # Persist deferred review results into the pending queue regardless
     # of cancellation — the user may want to review what *did* finish.
@@ -914,6 +962,19 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     rag_extra_metrics.setdefault(
                         "rag_hits_total", int(getattr(rag_store_for_run, "doc_count", 0) or 0)
                     )
+            except Exception:  # pragma: no cover - defensive
+                pass
+            # PR δ: parallel "how many code chunks were visible to this
+            # run" counter. Surfaces on RunDetail as
+            # "Code: profile-a · N chunks used" alongside the docs badge.
+            try:
+                from amx.codebase.code_rag import code_collection_count
+
+                code_paths = list(cfg.effective_run_code_paths())
+                rag_extra_metrics.setdefault(
+                    "code_hits_total",
+                    int(code_collection_count(source_filters=code_paths or None) or 0),
+                )
             except Exception:  # pragma: no cover - defensive
                 pass
             for k, v in rag_extra_metrics.items():

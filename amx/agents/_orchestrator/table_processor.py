@@ -195,6 +195,54 @@ class TableProcessor:
             # cache layer is misconfigured (e.g. SQLite locked).
             pass
 
+    def _cache_code_hits_for_rerun(self, profile: TableProfile, code_agent: Any) -> None:
+        """Mirror :meth:`_cache_rag_hits_for_rerun` for the Code agent (PR δ).
+
+        Writes ``payload["code_hits"]`` so a subsequent re-run can
+        replay the same retrieval set instead of re-querying Chroma.
+        Best-effort: a cache write failure must never break analyze.
+        """
+        from amx.agents.rerun_context import _serialize_code_hit
+        from amx.storage.sqlite_store import history_store
+
+        hits_map = getattr(code_agent, "last_prompt_hits", None) or {}
+        key = (profile.schema or "", profile.name or "")
+        prompt_hits = hits_map.get(key) or []
+        if not prompt_hits:
+            return
+        hs = history_store()
+        if hs is None or self.orch.run_id is None:
+            return
+        run = hs.get_run(int(self.orch.run_id)) or {}
+        db_profile_name = str(run.get("db_profile") or "")
+        if not db_profile_name:
+            return
+        database = str(run.get("database") or "") or (
+            getattr(self.orch.db.cfg, "database", "")
+            or getattr(self.orch.db.cfg, "project", "")
+            or getattr(self.orch.db.cfg, "catalog", "")
+            or ""
+        )
+        existing = (
+            hs.lookup_run_context_cache(
+                db_profile=db_profile_name,
+                database=database,
+                schema=profile.schema or "",
+                table=profile.name or "",
+            )
+            or {}
+        )
+        payload = dict(existing.get("payload") or {})
+        payload["code_hits"] = [_serialize_code_hit(h) for h in prompt_hits if h]
+        hs.save_run_context_cache(
+            db_profile=db_profile_name,
+            database=database,
+            schema=profile.schema or "",
+            table=profile.name or "",
+            payload=payload,
+            source_run_id=self.orch.run_id,
+        )
+
     def _cache_rag_hits_for_rerun(self, profile: TableProfile, rag_agent: Any) -> None:
         """Refresh the run-context cache row with the agent's prompt hits.
 
@@ -423,6 +471,15 @@ class TableProcessor:
             for message in dict.fromkeys(rag_diagnostics):
                 info(message)
 
+        # PR δ (I1): drain CodeAgent's diagnostics the same way as
+        # RAGAgent and ProfileAgent so timeout / empty-context messages
+        # surface to the user instead of disappearing into ``log.info``.
+        code_agent = getattr(self.orch, "code_agent", None)
+        if code_agent is not None and hasattr(code_agent, "consume_diagnostics"):
+            code_diagnostics = code_agent.consume_diagnostics()
+            for message in dict.fromkeys(code_diagnostics):
+                info(message)
+
         # Persist the actual RAG chunks the agent fed into the prompt
         # so a later re-run replays the same retrieval set instead of
         # hitting Chroma again (deterministic across re-ingests).
@@ -433,6 +490,15 @@ class TableProcessor:
                 self._cache_rag_hits_for_rerun(profile, rag_agent)
             except Exception as exc:
                 log.debug("rag_hits cache write failed: %s", exc)
+
+        # PR δ (C8): same caching contract for the Code agent. Pre-PR-δ
+        # snapshots without ``code_hits`` keys fall through to the live
+        # query path in ``CodeAgent._build_messages``.
+        if code_agent is not None:
+            try:
+                self._cache_code_hits_for_rerun(profile, code_agent)
+            except Exception as exc:
+                log.debug("code_hits cache write failed: %s", exc)
 
         merged = self.orch._merge_suggestions(all_suggestions, ctx)
         if not merged:

@@ -52,6 +52,42 @@ class RerunContextError(RuntimeError):
     """
 
 
+def _serialize_code_hit(hit: dict[str, Any]) -> dict[str, Any]:
+    """Lean JSON projection of one ``query_code_snippets`` hit.
+
+    PR δ (C8): code hits carry richer metadata than docs hits — the
+    chunker stamps ``source``, ``source_root``, ``rel_path``,
+    ``chunk_id``, ``kind``, and 1-based ``start_line`` / ``end_line``
+    so citations can render ``file.py:42-58`` precisely. We preserve
+    every one of those keys so the re-run replay reproduces the same
+    prompt and the citations layer still attributes alternatives to
+    the same chunks. Distance / score round-trip as floats; missing
+    bounds collapse to ``0`` so the renderer can show "unknown line".
+    """
+    meta = hit.get("metadata") or {}
+
+    def _coerce_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "text": str(hit.get("text") or ""),
+        "metadata": {
+            "source": str(meta.get("source") or ""),
+            "source_root": str(meta.get("source_root") or ""),
+            "rel_path": str(meta.get("rel_path") or ""),
+            "chunk_id": str(meta.get("chunk_id") or ""),
+            "kind": str(meta.get("kind") or ""),
+            "start_line": _coerce_int(meta.get("start_line")),
+            "end_line": _coerce_int(meta.get("end_line")),
+        },
+        "distance": float(hit.get("distance") or 0.0) if hit.get("distance") is not None else None,
+        "score": float(hit.get("score") or 0.0),
+    }
+
+
 def _serialize_rag_hit(hit: dict[str, Any]) -> dict[str, Any]:
     """Lean JSON projection of one ``RAGStore.query`` hit for the snapshot.
 
@@ -277,6 +313,7 @@ def build_context_snapshot(
         "db_profile": {},
         "rag_context": [],
         "rag_hits": [],
+        "code_hits": [],
         "code_context": [],
         "existing_metadata": {},
         "user_instructions": (user_instructions or "").strip(),
@@ -336,6 +373,7 @@ def build_context_snapshot(
     db_profile_dict: dict[str, Any] | None = None
     existing_metadata: dict[str, Any] | None = None
     cached_rag_hits: list[dict[str, Any]] = []
+    cached_code_hits: list[dict[str, Any]] = []
     if cached and isinstance(cached.get("payload"), dict):
         cached_payload = cached["payload"]
         cached_db_profile = cached_payload.get("db_profile")
@@ -343,6 +381,9 @@ def build_context_snapshot(
         cached_rag = cached_payload.get("rag_hits")
         if isinstance(cached_rag, list):
             cached_rag_hits = [h for h in cached_rag if isinstance(h, dict)]
+        cached_code = cached_payload.get("code_hits")
+        if isinstance(cached_code, list):
+            cached_code_hits = [h for h in cached_code if isinstance(h, dict)]
         if isinstance(cached_db_profile, dict) and isinstance(cached_existing, dict):
             db_profile_dict = _slice_cached_profile(
                 cached_db_profile, only_column=column if column else None
@@ -374,6 +415,8 @@ def build_context_snapshot(
     payload["existing_metadata"] = existing_metadata
     if cached_rag_hits:
         payload["rag_hits"] = cached_rag_hits
+    if cached_code_hits:
+        payload["code_hits"] = cached_code_hits
 
     snapshot_id = uuid.uuid4().hex
     hs.save_rerun_snapshot(
@@ -399,6 +442,7 @@ def hydrate_context(payload: dict[str, Any]) -> AgentContext:
         db_profile=dict(payload.get("db_profile") or {}),
         rag_context=list(payload.get("rag_context") or []),
         rag_hits=[h for h in (payload.get("rag_hits") or []) if isinstance(h, dict)],
+        code_hits=[h for h in (payload.get("code_hits") or []) if isinstance(h, dict)],
         code_context=list(payload.get("code_context") or []),
         existing_metadata=dict(payload.get("existing_metadata") or {}),
         user_instructions=str(payload.get("user_instructions") or ""),
@@ -422,6 +466,7 @@ def cache_table_profile(
     database: str,
     run_id: int | None = None,
     rag_hits: list[dict[str, Any]] | None = None,
+    code_hits: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Persist the freshly-built table profile for re-use on re-run.
 
@@ -448,6 +493,8 @@ def cache_table_profile(
             # Dropping the raw distance/score keeps the JSON column
             # small without losing provenance.
             payload["rag_hits"] = [_serialize_rag_hit(h) for h in rag_hits if h]
+        if code_hits:
+            payload["code_hits"] = [_serialize_code_hit(h) for h in code_hits if h]
         hs.save_run_context_cache(
             db_profile=str(db_profile_name or ""),
             database=str(database or ""),
@@ -473,4 +520,6 @@ __all__ = [
     "cache_table_profile",
     "hydrate_context",
     "serialize_context",
+    "_serialize_code_hit",
+    "_serialize_rag_hit",
 ]
