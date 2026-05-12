@@ -3,37 +3,42 @@
 The launcher:
 
 1. Picks a port (preferred 47821, otherwise an ephemeral one).
-2. Generates a one-shot URL-safe token.
-3. Starts uvicorn in a daemon thread — uvicorn's signal handlers are
-   intentionally suppressed so Ctrl-C in the parent CLI shows up here
-   instead of being swallowed by the server.
-4. Waits for the server to report ``started``, then opens the user's
-   default browser at ``http://127.0.0.1:<port>/?t=<token>``.
-5. Blocks the calling thread until Ctrl-C, then signals uvicorn to
-   exit and joins the worker thread.
-6. **Restores the parent terminal's tty mode** so the next
-   ``prompt_toolkit`` session re-enters raw mode cleanly. Without
-   this, arrow keys echo as literal ``^[[C`` after Ctrl-C — uvicorn's
-   asyncio loop in a daemon thread can leave stdin in a flushed but
-   non-canonical state on macOS, and the next prompt_toolkit input
-   doesn't recover on its own.
+2. Generates a one-shot URL-safe Bearer token.
+3. Spawns a **subprocess** running :mod:`amx.web._studio_subprocess`
+   which boots uvicorn in a conventional foreground configuration.
+4. Polls ``127.0.0.1:<port>`` until the child binds (or the startup
+   timeout elapses), then opens the user's default browser.
+5. Blocks the parent on ``proc.wait()``; Ctrl-C in the terminal
+   reaches the child via the shared process group and uvicorn's own
+   SIGINT handler shuts it down cleanly. The parent then escalates
+   to SIGTERM / SIGKILL only if the child overstays its grace
+   period.
 
-Returns ``True`` when the server actually came up and ``False`` when
-launch failed early (port unavailable, FastAPI extras missing, …) so
-the slash-command dispatcher can render an actionable error.
+The subprocess model replaces an earlier in-process daemon-thread
+implementation that left stdin in a flushed-but-non-canonical state
+on macOS — arrow keys echoed as literal ``^[[C`` after Ctrl-C and
+the user had to restart the CLI. termios-level restoration (PRs
+#353/#354) did not fully recover. Process isolation does, because
+uvicorn's asyncio loop, signal handlers, and file-descriptor edits
+all live in a separate Python interpreter.
+
+Returns ``True`` once the launch attempt completes (server may or
+may not have responded — the URL is still printed) and ``False``
+only when the spawn itself fails — the slash-command dispatcher
+renders an actionable error in that case.
 """
 
 from __future__ import annotations
 
 import logging
-import os
+import signal
 import socket
+import subprocess
 import sys
-import threading
 import time
 import webbrowser
 from contextlib import suppress
-from typing import Any
+from pathlib import Path as _Path
 
 from amx.config import AMXConfig
 
@@ -81,75 +86,69 @@ def launch_studio(
 ) -> bool:
     """Start AMX Studio for one ``/studio`` invocation.
 
+    Studio runs as a CHILD PROCESS — see
+    :mod:`amx.web._studio_subprocess`. The parent CLI then has zero
+    risk of inheriting uvicorn's asyncio loop, signal handler edits,
+    or stdin file-descriptor state; Ctrl-C reaches the child via the
+    shared process group and the child exits cleanly via its own
+    SIGINT handler. After the child exits, the parent's terminal is
+    in exactly the state it was in before ``/studio`` and the next
+    ``prompt_toolkit`` session resumes normally.
+
+    Earlier in-process daemon-thread implementation left stdin in a
+    flushed-but-non-canonical state on macOS — arrow keys echoed as
+    literal ``^[[C`` after Ctrl-C and the user had to restart the
+    CLI. termios restoration (PRs #353/#354) didn't fully recover.
+    Process isolation does.
+
     Parameters
     ----------
     cfg
-        Active AMXConfig. The same in-memory instance the parent CLI
-        is using — config edits made through the UI take effect for
-        the rest of the REPL session.
+        Active AMXConfig. The child loads its own copy from the same
+        YAML on disk; edits Studio makes are saved back to YAML and
+        picked up by the parent via PR-351 ``reload_if_stale``.
     port
-        Override for the listen port. Tests pass an explicit port to
-        avoid colliding with a real running studio.
+        Override for the listen port. Tests pass an explicit port.
     open_browser
-        Disable when running in a headless test or a remote SSH
-        session where ``webbrowser.open_new_tab`` would error or
-        silently launch a phantom process.
+        Disable in headless test or remote SSH where
+        ``webbrowser.open_new_tab`` would error or silently launch a
+        phantom process.
     block
-        When ``True`` (the default), the function blocks until the
-        user hits Ctrl-C and joins uvicorn cleanly. Pass ``False`` in
-        tests so the function returns once the server is reachable
-        and the caller controls shutdown.
+        When ``True`` (the default), block until the child exits.
+        Pass ``False`` in tests so the function returns once the
+        child has been spawned (the caller controls shutdown).
     """
-    # FastAPI / uvicorn / sse-starlette / python-multipart are now
-    # core dependencies, so a fresh ``pip install amx-cli`` already
-    # has every Studio import. No ensure() needed here.
-    import uvicorn
-
-    # Silence the parent CLI terminal for the duration of the Studio
-    # session. Third-party imports (transformers, litellm, bert-score,
-    # uvicorn[standard]) install root logger handlers at INFO/DEBUG;
-    # without this, amx.* records propagate to those handlers and the
-    # REPL gets flooded with progress noise the file log already
-    # captures. See amx.utils.logging.mute_root_logger_for_studio.
-    from amx.utils.logging import mute_root_logger_for_studio
-
-    mute_root_logger_for_studio()
-
-    # DB drivers are intentionally NOT pre-installed for every saved
-    # profile here. A user with profiles for half a dozen warehouses
-    # would otherwise pay a long install at /studio open even when
-    # they only mean to inspect one of them. Drivers are fetched on
-    # the first request that actually touches a profile, routed
-    # through the same ``ensure()`` helper as the rest of AMX so the
-    # install banner shows in the launching terminal rather than
-    # appearing as a stalled HTTP request in the browser.
-
-    from amx.web.server import create_app
-
     chosen_port = port if port is not None else _pick_port(PREFERRED_PORT)
-    app = create_app(cfg)
-    token = app.state.token
+
+    # Generate the bearer token in the PARENT so we can immediately
+    # surface the URL to the user without round-tripping through the
+    # child's app.state.token. The child accepts the token via CLI
+    # arg and seeds it onto the FastAPI app at startup.
+    from amx.web.auth import generate_token
+
+    token = generate_token()
     url = f"http://127.0.0.1:{chosen_port}/?t={token}"
 
-    config = uvicorn.Config(
-        app,
-        host="127.0.0.1",
-        port=chosen_port,
-        log_level="warning",
-        access_log=False,
-    )
-    server = uvicorn.Server(config)
-    # Parent CLI keeps the SIGINT/SIGTERM handlers; uvicorn would
-    # otherwise install its own and swallow Ctrl-C from the prompt.
-    server.install_signal_handlers = lambda: None
+    config_path = getattr(cfg, "_config_path", "") or str(_Path(cfg.CONFIG_DIR) / "config.yml")
 
-    server_thread = threading.Thread(target=server.run, name="amx-studio-uvicorn", daemon=True)
-    server_thread.start()
+    cmd = [
+        sys.executable,
+        "-m",
+        "amx.web._studio_subprocess",
+        "--port",
+        str(chosen_port),
+        "--token",
+        token,
+        "--config-path",
+        config_path,
+    ]
+    proc = subprocess.Popen(cmd)
 
-    started = _wait_for_startup(server, STARTUP_TIMEOUT_SEC)
+    started = _wait_for_http(chosen_port, STARTUP_TIMEOUT_SEC)
     if not started:
         log.warning(
-            "AMX Studio did not report startup within %.1fs; opening the browser anyway.",
+            "AMX Studio did not respond on :%d within %.1fs; opening the browser anyway.",
+            chosen_port,
             STARTUP_TIMEOUT_SEC,
         )
 
@@ -165,119 +164,50 @@ def launch_studio(
     if not block:
         return True
 
-    # Snapshot the controlling tty's termios state BEFORE blocking on
-    # uvicorn so we can restore it on exit. macOS in particular leaves
-    # stdin in a flushed-but-non-canonical state after uvicorn's
-    # asyncio loop in a daemon thread tears down — without restore,
-    # the next prompt_toolkit session can't enter raw mode and arrow
-    # keys echo as literal ``^[[C`` until the user restarts the CLI.
-    saved_tty = _snapshot_stdin_tty()
     try:
-        while server_thread.is_alive():
-            try:
-                server_thread.join(timeout=0.5)
-            except KeyboardInterrupt:
-                break
+        proc.wait()
     except KeyboardInterrupt:
-        pass
-    finally:
-        server.should_exit = True
-        server_thread.join(timeout=SHUTDOWN_TIMEOUT_SEC)
-        if server_thread.is_alive():  # pragma: no cover - graceful shutdown is best-effort
+        # The terminal Ctrl-C reaches the whole foreground process
+        # group, so the child has typically already received SIGINT
+        # and is shutting down. Send another SIGINT for good measure
+        # and then wait briefly for graceful exit before escalating
+        # to SIGTERM / SIGKILL.
+        with suppress(ProcessLookupError, OSError):
+            proc.send_signal(signal.SIGINT)
+        try:
+            proc.wait(timeout=SHUTDOWN_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:  # pragma: no cover - graceful path
             log.warning(
-                "AMX Studio uvicorn thread did not exit within %.1fs; leaving it as daemon.",
+                "AMX Studio child did not exit within %.1fs; sending SIGTERM.",
                 SHUTDOWN_TIMEOUT_SEC,
             )
-        else:
-            print("AMX Studio stopped.")
-        _restore_stdin_tty(saved_tty)
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                log.warning("AMX Studio child still alive; sending SIGKILL.")
+                proc.kill()
+                with suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=1.0)
+    print("AMX Studio stopped.")
     return True
 
 
-def _snapshot_stdin_tty() -> Any:
-    """Return a snapshot of stdin's terminal state, or ``None`` when
-    stdin is not a tty / termios is unavailable (Windows, piped input).
+def _wait_for_http(port: int, timeout: float) -> bool:
+    """Poll a TCP connect on ``127.0.0.1:port`` until it succeeds or
+    the deadline elapses.
 
-    Captures both the termios attrs AND the blocking flag; uvicorn's
-    asyncio loop in a daemon thread can flip stdin to non-blocking
-    on macOS, which termios alone does not cover. The returned tuple
-    is opaque — pass it back to :func:`_restore_stdin_tty`.
+    Used to confirm the Studio child has bound its listening socket
+    before the parent prints the URL and opens the browser. Replaces
+    the old daemon-thread ``server.started`` probe — with the child
+    in a separate process the parent no longer has direct access to
+    uvicorn's internal state, so we fall back to the network signal.
     """
-    if os.name == "nt":
-        return None
-    try:
-        import termios
-    except ImportError:
-        return None
-    fd = _stdin_fd()
-    if fd is None:
-        return None
-    attrs = None
-    try:
-        attrs = termios.tcgetattr(fd)
-    except (termios.error, OSError):
-        return None
-    blocking = True
-    try:
-        blocking = os.get_blocking(fd)
-    except (AttributeError, OSError):
-        blocking = True
-    return (attrs, blocking)
-
-
-def _restore_stdin_tty(saved: Any) -> None:
-    """Re-apply a previously-snapshotted stdin state.
-
-    Three layers of restoration so the next ``prompt_toolkit`` session
-    finds the terminal in the same shape it was in before ``/studio``:
-    drain pending output, reapply termios attrs (cooked/raw, echo,
-    control chars), and re-set the blocking flag. On macOS all three
-    can drift after uvicorn's asyncio teardown; restoring just one
-    leaves arrow keys broken.
-    """
-    if saved is None:
-        return
-    try:
-        import termios
-    except ImportError:
-        return
-    fd = _stdin_fd()
-    if fd is None:
-        return
-    attrs, blocking = saved
-    with suppress(termios.error, OSError):
-        termios.tcdrain(fd)
-    with suppress(termios.error, OSError):
-        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-    with suppress(AttributeError, OSError):
-        os.set_blocking(fd, bool(blocking))
-    # Flush any half-written prompt_toolkit escape codes pending on
-    # stdout/stderr so the next prompt redraws cleanly.
-    with suppress(Exception):
-        sys.stdout.flush()
-    with suppress(Exception):
-        sys.stderr.flush()
-
-
-def _stdin_fd() -> int | None:
-    """Return stdin's file descriptor when it points at a real tty."""
-    try:
-        fd = sys.stdin.fileno()
-    except (AttributeError, ValueError, OSError):
-        return None
-    try:
-        if not os.isatty(fd):
-            return None
-    except OSError:
-        return None
-    return fd
-
-
-def _wait_for_startup(server: Any, timeout: float) -> bool:
-    """Spin until ``server.started`` flips True or the timeout elapses."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if getattr(server, "started", False):
-            return True
-        time.sleep(0.05)
-    return getattr(server, "started", False)
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
