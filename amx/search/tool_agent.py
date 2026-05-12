@@ -905,6 +905,7 @@ def _run_tool_loop(
     loop_start = _time.monotonic()
     final_answer = ""
     finish_reason: str | None = None
+    last_thinking_content: str = ""
     iterations = 0
     tools_schema = ToolBox.schemas()
 
@@ -961,6 +962,15 @@ def _run_tool_loop(
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             aggregated_usage[key] += int((result.usage or {}).get(key, 0) or 0)
         finish_reason = result.finish_reason or finish_reason
+
+        # Some thinking-channel models (gpt-oss family on Ollama, etc.)
+        # emit their visible answer into ``reasoning_content`` and leave
+        # ``content`` empty when the prompt is short or the harmony
+        # ``final`` channel never fires. Capture the last seen reasoning
+        # so the empty-content branch below can surface it instead of a
+        # bare "(empty response)".
+        if getattr(result, "thinking_content", "") or "":
+            last_thinking_content = str(result.thinking_content)
 
         if not result.tool_calls:
             final_answer = (result.content or "").strip()
@@ -1032,10 +1042,49 @@ def _run_tool_loop(
             aggregated_usage[key] += int((result.usage or {}).get(key, 0) or 0)
         final_answer = (result.content or "").strip()
         finish_reason = result.finish_reason or finish_reason
+        if getattr(result, "thinking_content", "") or "":
+            last_thinking_content = str(result.thinking_content)
 
     total_latency_ms = int((_time.monotonic() - loop_start) * 1000)
+    # When the model produced no visible content, surface *why* instead
+    # of a bare "(empty response)". Three observed shapes:
+    #   1. Reasoning-channel models (gpt-oss on Ollama, Kimi K2.x
+    #      thinking, …) emit their entire answer into the thinking
+    #      channel — show the last thinking block (truncated) so the
+    #      user has something to react to and points at the model as
+    #      the root cause.
+    #   2. finish_reason == "length" means the budget was exhausted
+    #      mid-generation — say so explicitly with the configured
+    #      max_tokens in the message.
+    #   3. Otherwise: just "(empty response)" with a hint to try a
+    #      different model.
+    if not final_answer:
+        if last_thinking_content.strip():
+            thinking_preview = last_thinking_content.strip()
+            if len(thinking_preview) > 1200:
+                thinking_preview = thinking_preview[:1200].rstrip() + "…"
+            final_answer = (
+                "_The model returned reasoning text but no visible answer "
+                "— likely a thinking-channel model whose final channel "
+                "never fired. Showing the reasoning summary below; try a "
+                "different model for a clean answer._\n\n"
+                f"{thinking_preview}"
+            )
+        elif finish_reason == "length":
+            final_answer = (
+                "_The model hit its output-token budget before producing "
+                "a visible answer. Raise ``max_tokens`` under Settings → "
+                "LLM (or set ``AMX_LLM_MIN_MAX_TOKENS``) and retry._"
+            )
+        else:
+            final_answer = (
+                "_Empty response from the model. The provider returned no "
+                "tool calls and no content — try rephrasing the question "
+                "or switching to a different model._"
+            )
+
     return ToolAgentResult(
-        answer=final_answer or "(empty response)",
+        answer=final_answer,
         tool_calls=tool_call_log,
         iterations=iterations,
         usage=aggregated_usage,
