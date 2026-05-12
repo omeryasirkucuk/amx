@@ -190,13 +190,14 @@ function useRunScope(): Scope | null {
   if (active.database) {
     return { profile: active.name, database: active.database, kind: "database" };
   }
-  // Active profile has no pinned scope — still emit a profile-only
-  // scope so the page can prompt the user for a catalog / database
-  // pick instead of staring at a dead loading state. ``kind`` defaults
-  // to ``database`` (2-level shape) which the schemas endpoint
-  // handles by falling back to the active database / catalog on the
-  // backend side.
-  return { profile: active.name, kind: "database" };
+  // Active profile has no pinned catalog or database. Returning a
+  // half-formed scope here (the old behaviour) sent ``catalog=None``
+  // to ``/api/live/schemas/.../assets`` and produced a Databricks
+  // ``[NO_SUCH_CATALOG_EXCEPTION] Catalog 'none' was not found`` on
+  // every asset expand. Returning ``null`` instead surfaces the
+  // inline ``ScopePicker`` below so the user explicitly picks a
+  // profile + catalog / database before any live-DB call fires.
+  return null;
 }
 
 export default function RunNew() {
