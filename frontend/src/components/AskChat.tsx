@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronDown, FileText, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
+import { Check, ChevronDown, CircleStop, FileText, Send, Settings as SettingsIcon, Sparkles, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -138,6 +138,15 @@ export default function AskChat({
   const [turns, setTurns] = useState<SubmittedTurn[]>([]);
   const [question, setQuestion] = useState("");
   const [activeJob, setActiveJob] = useState<string | null>(null);
+  // ``cancelling`` flips to true the instant the user clicks Cancel,
+  // ahead of the SSE ``job.cancelled`` event. The backend can't abort
+  // an in-flight LLM HTTP call (LiteLLM is synchronous), so cancellation
+  // takes effect only when the current LLM step returns — typically a
+  // few seconds, sometimes more for reasoning models. Showing
+  // "Cancelling…" immediately stops the UI from looking frozen on
+  // "Reasoning…" the whole time. The flag is cleared in the same
+  // ``closed`` effect that finalises the turn.
+  const [cancelling, setCancelling] = useState(false);
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitErrorHint, setSubmitErrorHint] = useState<string | null>(null);
@@ -246,7 +255,7 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure } = useMemo(() => {
+  const { thinking, streamingAnswer, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
@@ -255,6 +264,14 @@ export default function AskChat({
       latency_ms?: number;
       citations?: Citation[];
     }> = [];
+    // ``answerChunks`` accumulates ``answer.delta`` events into the
+    // streaming assistant bubble. Cleared whenever a ``tool.call``
+    // event arrives — any content emitted before a tool call is
+    // interim narration ("Let me search the catalog…") that the agent
+    // produces while deciding to invoke a tool; only the deltas after
+    // the LAST tool call (or all of them, if there are no tool calls)
+    // belong to the user-facing answer.
+    let answerChunks: string[] = [];
     let finalText: string | null = null;
     let meta: {
       scopeProfiles?: string[];
@@ -266,7 +283,13 @@ export default function AskChat({
     for (const event of events) {
       if (event.type === "thinking.delta" && typeof event.text === "string") {
         thinkingChunks.push(event.text);
+      } else if (event.type === "answer.delta" && typeof event.text === "string") {
+        answerChunks.push(event.text);
       } else if (event.type === "tool.call") {
+        // Interim narration before a tool call is not the final answer;
+        // reset the streaming-answer accumulator so the bubble starts
+        // fresh for the next iteration's content.
+        answerChunks = [];
         tools.push({
           name: String(event.name || ""),
           arguments: String(event.arguments || ""),
@@ -304,6 +327,7 @@ export default function AskChat({
     }
     return {
       thinking: thinkingChunks.join(""),
+      streamingAnswer: answerChunks.join(""),
       finalAnswer: finalText,
       toolCalls: tools,
       finalMeta: meta,
@@ -338,6 +362,7 @@ export default function AskChat({
         ];
       });
       setActiveJob(null);
+      setCancelling(false);
       clearAskActiveJob(sessionKey);
       return;
     }
@@ -348,19 +373,25 @@ export default function AskChat({
       // submitError block below replaces it with the clean error
       // surface so we don't leave an orphaned user-only bubble.
       setActiveJob(null);
+      setCancelling(false);
       clearAskActiveJob(sessionKey);
       return;
     }
     // Stream closed without final answer AND without job.failed (rare
-    // — proxy reset, network glitch). Surface a generic message so
-    // the chat doesn't hang on "Reasoning…".
-    setSubmitError(
-      "The ask stream ended without a final answer. Try again, or check Settings → LLM if this keeps happening.",
-    );
-    setSubmitErrorHint("configure-llm");
+    // — proxy reset, network glitch, or a clean job.cancelled after
+    // the user clicked Cancel). When the user cancelled, no error
+    // banner — drop the activeJob silently so the cancelled turn
+    // simply disappears.
+    if (!cancelling) {
+      setSubmitError(
+        "The ask stream ended without a final answer. Try again, or check Settings → LLM if this keeps happening.",
+      );
+      setSubmitErrorHint("configure-llm");
+    }
     setActiveJob(null);
+    setCancelling(false);
     clearAskActiveJob(sessionKey);
-  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob]);
+  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling]);
 
   async function submitText(rawText: string) {
     const text = (rawText || "").trim();
@@ -480,6 +511,13 @@ export default function AskChat({
 
   async function handleCancel() {
     if (!activeJob) return;
+    // Flip the UI to "Cancelling…" right away — the backend cancel
+    // token only takes effect when the current LLM step returns, and
+    // reasoning models can sit on a single step for tens of seconds.
+    // Without this, the user clicks Cancel and the bubble keeps
+    // pulsing "Reasoning…" until the SSE finally closes, which looks
+    // broken.
+    setCancelling(true);
     try {
       await apiFetch(`/api/ask/${activeJob}/cancel`, { method: "POST" });
     } catch {
@@ -494,13 +532,13 @@ export default function AskChat({
     const node = messagesRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [turns, thinking, toolCalls.length, activeJob]);
+  }, [turns, thinking, streamingAnswer, toolCalls.length, activeJob, cancelling]);
 
   return (
-    <div className="flex h-[calc(100vh-12rem)] min-h-[28rem] flex-col gap-4">
+    <div className="flex h-[calc(100vh-12rem)] min-h-[28rem] min-w-0 flex-col gap-4">
       <div
         ref={messagesRef}
-        className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-surface-border bg-surface-raised p-4"
+        className="flex-1 min-w-0 space-y-4 overflow-y-auto overflow-x-hidden rounded-xl border border-surface-border bg-surface-raised p-4"
       >
         {turns.length === 0 && !activeJob && (
           <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center text-ink-dim">
@@ -538,11 +576,19 @@ export default function AskChat({
           </Bubble>
         ))}
         {activeJob && (
-          <Bubble role="assistant" pulsing>
-            {thinking ? (
-              <ThinkingBlock text={thinking} />
+          <Bubble role="assistant" pulsing={!cancelling}>
+            {cancelling && (
+              <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-warning-soft/40 px-2 py-0.5 text-[11px] font-medium text-warning">
+                <CircleStop size={11} /> Cancelling…
+              </div>
+            )}
+            {thinking && !cancelling ? <ThinkingBlock text={thinking} /> : null}
+            {streamingAnswer ? (
+              <MarkdownBody text={streamingAnswer} />
             ) : (
-              <span className="text-sm text-ink-dim">Reasoning…</span>
+              !thinking && !cancelling && (
+                <span className="text-sm text-ink-dim">Reasoning…</span>
+              )
             )}
             {toolCalls.length > 0 && <ToolCallList calls={toolCalls} live />}
             {finalCitations.length > 0 && (

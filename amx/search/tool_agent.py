@@ -435,6 +435,17 @@ def _agent_system_prompt(
         "  the wrong tool route (SCD detection) wastes a turn.\n"
         "* User asks about a concept ('pricing tables', 'address columns', 'customer info') →\n"
         "  call search_tables_by_concept or search_columns_by_concept.\n"
+        "* User asks about a TABLE BY NAME, even inside a sentence ('do you have the\n"
+        "  vbak table?', 'show me orders', 'is there a customers table?', 'what is\n"
+        "  the addr_master table about?'): the named token is a TABLE LOOKUP, not a\n"
+        "  concept query. ALWAYS call find_table_by_name(name=<the_table_token>) FIRST\n"
+        "  before any concept search. Concept search uses embeddings and misses exact\n"
+        "  name hits in vocabularies where the table name is short, abbreviated, or\n"
+        "  domain-specific (SAP names like ``vbak`` / ``mara`` / ``bseg``, custom\n"
+        "  prefixes like ``t_``, ``stg_``, snake_case names). Only fall through to\n"
+        "  search_tables_by_concept when find_table_by_name returns no exact AND\n"
+        "  no fuzzy matches. This is the #1 cause of 'said it didn't exist but it\n"
+        "  does' regressions; do not skip it.\n"
         "* User asks about BUSINESS MEANING / DEFINITIONS / PROCESS / DESIGN INTENT\n"
         "  ('what does the contracts table represent', 'how is churn defined',\n"
         "  'write me the description', 'what is the business definition',\n"
@@ -750,6 +761,7 @@ def run_tool_agent(
     display: LiveDisplay | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_content_delta: Callable[[str], None] | None = None,
     cancel_token: threading.Event | None = None,
     db_profiles: list[str] | None = None,
     doc_profiles: list[str] | None = None,
@@ -813,6 +825,7 @@ def run_tool_agent(
             display=display,
             on_thinking_delta=on_thinking_delta,
             on_tool_call=on_tool_call,
+            on_content_delta=on_content_delta,
             cancel_token=cancel_token,
         )
 
@@ -863,6 +876,7 @@ def _run_tool_loop(
     display: LiveDisplay | None = None,
     on_thinking_delta: Callable[[str], None] | None = None,
     on_tool_call: Callable[[dict[str, Any]], None] | None = None,
+    on_content_delta: Callable[[str], None] | None = None,
     cancel_token: threading.Event | None = None,
 ) -> ToolAgentResult:
     # Pre-fetch the schema list once; if it succeeds we put it into the
@@ -948,6 +962,23 @@ def _run_tool_loop(
         # input cost. Falls back to 0 silently when tiktoken can't
         # tokenise the message shape (some structured tool messages).
         est = estimate_tokens(chat_messages)
+        # Visible-content streaming. The web layer's on_content_delta
+        # forwards per-token deltas as ``answer.delta`` SSE events live.
+        # Interim narration ("Let me search the catalog…") that precedes
+        # a tool call is also streamed — the SPA resets its answer buffer
+        # whenever a ``tool.call`` event arrives, so by the time the
+        # final iteration streams its real answer the user sees only
+        # that. This keeps the streaming feel without buffering inside
+        # the agent loop.
+        def _forward_content(chunk: str) -> None:
+            if on_content_delta is None:
+                return
+            try:
+                on_content_delta(chunk)
+            except Exception:
+                # Never let a UI hook crash the agent loop.
+                pass
+
         result = llm.chat(
             chat_messages,
             temperature=0.0,
@@ -956,6 +987,7 @@ def _run_tool_loop(
             tools=tools_schema,
             tool_choice="auto",
             on_thinking=on_thinking,
+            on_content=_forward_content if on_content_delta is not None else None,
         )
         # Per-step record so the Run detail Metrics card can render
         # an honest tool_agent.iter row -- the previous wiring summed

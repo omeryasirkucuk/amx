@@ -88,7 +88,7 @@ export default function System() {
   return (
     <>
       <PageHeader title="System" breadcrumbs={[{ label: "System" }]} />
-      <div className="grid gap-6 md:grid-cols-[10rem_1fr]">
+      <div className="grid gap-6 md:grid-cols-[10rem_minmax(0,1fr)] [&>*]:min-w-0">
         <nav
           aria-label="System sections"
           className="hidden md:block"
