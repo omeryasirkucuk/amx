@@ -214,6 +214,23 @@ def create_app(
     # default behaviour.
     _NO_CACHE_HEADER = "no-cache, no-store, must-revalidate"
 
+    @app.get("/__alive", include_in_schema=False)
+    def _alive() -> Response:
+        """Light-weight liveness probe.
+
+        Lives outside ``/api/*`` so the bearer-token middleware leaves
+        it alone, and returns a static 11-byte body without touching
+        the filesystem (the SPA fallback below reads ``index.html``
+        on every hit, which can spend a couple of seconds -- too slow
+        for upstream proxies that timeout aggressively on a per-
+        request liveness check).
+        """
+        return Response(
+            content=b'{"ok":true}',
+            media_type="application/json",
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/", include_in_schema=False)
     @app.get("/{full_path:path}", include_in_schema=False)
     def _serve_index_for_unknown_path(full_path: str = "") -> Response:
