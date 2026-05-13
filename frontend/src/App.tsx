@@ -29,6 +29,7 @@ const Pending = lazy(() => import("./routes/Pending"));
 const Settings = lazy(() => import("./routes/Settings"));
 const System = lazy(() => import("./routes/System"));
 const Audit = lazy(() => import("./routes/Audit"));
+const Schedules = lazy(() => import("./routes/Schedules"));
 const Pricing = lazy(() => import("./routes/Pricing"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
@@ -80,6 +81,7 @@ export default function App() {
               <Route path="settings" element={<Settings />} />
               <Route path="system" element={<System />} />
               <Route path="pricing" element={<Pricing />} />
+              <Route path="schedules" element={<Schedules />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

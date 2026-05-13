@@ -775,7 +775,90 @@ export const api = {
    */
   listModelPrices: () =>
     apiFetch<ModelCatalog>("/api/pricing/models"),
+
+  // ── Scheduled runs (Phase 5a routes) ───────────────────────────────
+  listSchedules: (params: { status?: string; db_profile?: string } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set("status_filter", params.status);
+    if (params.db_profile) qs.set("db_profile", params.db_profile);
+    return apiFetch<SchedulesListResponse>(
+      `/api/schedules${qs.toString() ? `?${qs.toString()}` : ""}`,
+    );
+  },
+  createSchedule: (body: ScheduleCreatePayload) =>
+    apiFetch<ScheduleRow>(`/api/schedules`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getSchedule: (id: number) => apiFetch<ScheduleRow>(`/api/schedules/${id}`),
+  patchSchedule: (id: number, body: Partial<ScheduleCreatePayload>) =>
+    apiFetch<ScheduleRow>(`/api/schedules/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  pauseSchedule: (id: number) =>
+    apiFetch<ScheduleRow>(`/api/schedules/${id}/pause`, { method: "POST" }),
+  resumeSchedule: (id: number) =>
+    apiFetch<ScheduleRow>(`/api/schedules/${id}/resume`, { method: "POST" }),
+  runScheduleNow: (id: number) =>
+    apiFetch<{ fired: number[] }>(`/api/schedules/${id}/run-now`, {
+      method: "POST",
+    }),
+  deleteSchedule: (id: number) =>
+    apiFetch<void>(`/api/schedules/${id}`, { method: "DELETE" }),
+  schedulerStatus: () =>
+    apiFetch<SchedulerStatusResponse>(`/api/scheduler/status`),
+  schedulerBootstrapReport: () =>
+    apiFetch<BootstrapReport>(`/api/scheduler/bootstrap-report`),
 };
+
+export interface ScheduleRow {
+  id: number;
+  name: string;
+  fire_at_utc: number;
+  fire_at_tz: string;
+  fire_at_local: string;
+  status: string;
+  db_profile: string;
+  scope_json: string;
+  llm_profile: string;
+  review_strategy: string;
+  triggered_run_id: number | null;
+  last_error: string | null;
+}
+
+export interface SchedulesListResponse {
+  schedules: ScheduleRow[];
+}
+
+export interface ScheduleCreatePayload {
+  name: string;
+  fire_at_local: string;
+  fire_at_tz: string;
+  db_profile: string;
+  scope: Record<string, unknown>;
+  llm_profile: string;
+  review_strategy?: "auto" | "manual";
+}
+
+export interface SchedulerStatusResponse {
+  pending_count: number;
+  missed_count: number;
+  paused_count: number;
+  next_fire: ScheduleRow | null;
+  daemon: {
+    installed: boolean;
+    path: string | null;
+    last_tick_log: string | null;
+  };
+}
+
+export interface BootstrapReport {
+  fired: number[];
+  failed_resolution: [number, string][];
+  missed_for_review: number[];
+  stale_recovered: number[];
+}
 
 /** Shape returned by ``lookupPrice`` — mirrors the backend
  *  :class:`ModelPrice` dataclass. ``source`` is one of

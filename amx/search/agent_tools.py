@@ -423,11 +423,7 @@ class ToolBox:
                 # never collides with real lookups.
                 kind = str(payload.get("kind") or "")
                 cols = payload.get("columns")
-                if (
-                    kind != "discovery"
-                    and isinstance(cols, list)
-                    and len(cols) > 0
-                ):
+                if kind != "discovery" and isinstance(cols, list) and len(cols) > 0:
                     created_at = float(cached.get("created_at") or 0.0)
                     age = max(0.0, self._now() - created_at)
                     return (payload, "live_cache", age)
@@ -1798,6 +1794,68 @@ class ToolBox:
                     },
                 },
             },
+            # ── scheduled runs (read-only) ────────────────────────────
+            #
+            # Two tools the Ask agent can use to answer questions about
+            # the user's scheduled metadata runs. Read-only: the agent
+            # cannot create, edit, pause, or delete schedules from these
+            # tools -- direct the user to the Schedules page or `amx
+            # schedule` CLI for those actions.
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_schedules",
+                    "description": (
+                        "Return upcoming, past, or paused scheduled metadata runs. "
+                        "Use this when the user asks about plans, upcoming runs, "
+                        "missed schedules, or the outcome of past scheduled runs. "
+                        "Each row includes id, name, fire_at_utc, fire_at_tz, "
+                        "status, db_profile, scope_json, llm_profile, "
+                        "review_strategy, triggered_run_id, and last_error."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filter": {
+                                "type": "string",
+                                "enum": ["active", "past", "all"],
+                                "description": (
+                                    "'active' = pending/paused/missed/running "
+                                    "(default); 'past' = completed/failed/"
+                                    "cancelled; 'all' = everything."
+                                ),
+                            },
+                            "db_profile": {
+                                "type": "string",
+                                "description": "Optional DB profile filter.",
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_schedule",
+                    "description": (
+                        "Return the full record of a specific scheduled run "
+                        "by id, including any linked analysis_runs.id and "
+                        "last_error. Use when the user asks about a "
+                        "specific schedule the agent saw via list_schedules."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schedule_id": {
+                                "type": "integer",
+                                "description": "scheduled_runs.id",
+                            },
+                        },
+                        "required": ["schedule_id"],
+                    },
+                },
+            },
         ]
 
     # ------------------------------------------------------------------ invoke
@@ -2320,9 +2378,7 @@ class ToolBox:
             # bare MagicMock, which makes the call return a truthy
             # MagicMock that isn't iterable as expected.
             if isinstance(catalog_schemas, list) and catalog_schemas:
-                fresh_ts = max(
-                    (s.get("last_synced_at") or 0.0) for s in catalog_schemas
-                )
+                fresh_ts = max((s.get("last_synced_at") or 0.0) for s in catalog_schemas)
                 age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
                 return {
                     "database": self.cfg.db.database
@@ -2426,9 +2482,7 @@ class ToolBox:
                     "schema": target,
                     "catalog": None,
                     "found": True,
-                    "tables": [
-                        {"name": t["name"], "kind": "table"} for t in catalog_tables
-                    ],
+                    "tables": [{"name": t["name"], "kind": "table"} for t in catalog_tables],
                     "count": len(catalog_tables),
                     "source": "catalog",
                     "age_seconds": age,
@@ -2674,9 +2728,7 @@ class ToolBox:
             payload["warnings"] = warnings
         return payload
 
-    def _tool_find_table_by_name(
-        self, name: str, force_fresh: bool = False
-    ) -> dict[str, Any]:
+    def _tool_find_table_by_name(self, name: str, force_fresh: bool = False) -> dict[str, Any]:
         target = (name or "").strip()
         if not target:
             raise _ToolError("Argument 'name' is required.")
@@ -2908,9 +2960,7 @@ class ToolBox:
         # when the sweep ran. Per-match source is implicit:
         # ``from_catalog`` vs ``from_live_db`` already split the list.
         overall_source = (
-            "catalog" if catalog_paths and not live_paths else
-            "live" if live_paths else
-            "catalog"
+            "catalog" if catalog_paths and not live_paths else "live" if live_paths else "catalog"
         )
         return {
             "name": target,
@@ -3022,13 +3072,9 @@ class ToolBox:
                 scoped = self._connector_for_database(db_name) if db_name else db
                 try:
                     with self._scoped_catalog(scoped, cat_arg):
-                        profile = scoped.profile_table(
-                            schema_name, table_name, sample_size=0
-                        )
+                        profile = scoped.profile_table(schema_name, table_name, sample_size=0)
                     resolved_database = (
-                        db_name
-                        or str(getattr(scoped.cfg, "database", "") or "")
-                        or None
+                        db_name or str(getattr(scoped.cfg, "database", "") or "") or None
                     )
                     db = scoped
                     break
@@ -3170,10 +3216,7 @@ class ToolBox:
         # unpinned PostgreSQL it's the database where the table was
         # found during the sweep.
         try:
-            result["resolved_database"] = (
-                str(getattr(db.cfg, "database", "") or "")
-                or None
-            )
+            result["resolved_database"] = str(getattr(db.cfg, "database", "") or "") or None
         except Exception:
             result["resolved_database"] = None
         # If the cache branch ran, ``resolved_database`` was set from
@@ -6154,3 +6197,58 @@ class ToolBox:
                 "summarising every snippet here."
             ),
         }
+
+    # ── scheduled runs (read-only) ─────────────────────────────────────
+    #
+    # These two handlers back the ``list_schedules`` / ``get_schedule``
+    # tools registered in :meth:`schemas`. They are read-only by design:
+    # the agent answers questions about the user's plans but does not
+    # mutate them. Write actions (create / edit / pause / delete) stay
+    # on the Schedules page and the ``amx schedule`` CLI.
+
+    def _tool_list_schedules(
+        self,
+        filter: str = "active",  # noqa: A002 - matches the LLM tool schema
+        db_profile: str | None = None,
+    ) -> dict[str, Any]:
+        store = self._history_store()
+        if store is None:
+            return {"error": "history store not initialized", "schedules": []}
+        if filter == "past":
+            statuses = ["completed", "failed", "cancelled"]
+        elif filter == "all":
+            statuses = None
+        else:
+            # active is the default; everything that isn't terminal.
+            statuses = ["pending", "paused", "missed", "running"]
+        rows = store.list_scheduled_runs(statuses=statuses, db_profile=db_profile, limit=500)
+        return {
+            "filter": filter,
+            "db_profile": db_profile,
+            "count": len(rows),
+            "schedules": [
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "fire_at_utc": r["fire_at_utc"],
+                    "fire_at_tz": r["fire_at_tz"],
+                    "status": r["status"],
+                    "db_profile": r["db_profile"],
+                    "scope_json": r["scope_json"],
+                    "llm_profile": r["llm_profile"],
+                    "review_strategy": r["review_strategy"],
+                    "triggered_run_id": r.get("triggered_run_id"),
+                    "last_error": r.get("last_error"),
+                }
+                for r in rows
+            ],
+        }
+
+    def _tool_get_schedule(self, schedule_id: int) -> dict[str, Any]:
+        store = self._history_store()
+        if store is None:
+            return {"error": "history store not initialized"}
+        row = store.get_scheduled_run(int(schedule_id))
+        if row is None:
+            return {"error": f"no scheduled_runs row with id={schedule_id}"}
+        return {"schedule": row}

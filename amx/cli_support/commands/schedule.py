@@ -1,0 +1,369 @@
+"""``amx schedule`` command group — manage one-shot scheduled metadata runs.
+
+Implements the user-facing CRUD + lifecycle commands:
+
+* ``amx schedule add``      — non-interactive create (interactive
+                              wizard lands as a follow-up)
+* ``amx schedule list``     — table listing with status filters
+* ``amx schedule show``     — full detail for one entry
+* ``amx schedule pause``    — pause a pending schedule
+* ``amx schedule resume``   — re-enable a paused schedule
+* ``amx schedule rm``       — hard delete + audit event
+* ``amx schedule run-now``  — fire a schedule immediately (any status)
+
+The companion ``amx scheduler`` group (tick / status / install-daemon)
+lives in ``cli_support/commands/scheduler.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from collections.abc import Callable
+from datetime import datetime, timezone
+from typing import Any
+
+import click
+
+from amx.runtime.worker import spawn_scheduled_worker
+from amx.scheduler.tick import tick
+from amx.storage.sqlite_store import history_store
+
+LogEvent = Callable[..., None]
+
+
+# ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _zoneinfo(tz_name: str):
+    """Resolve an IANA tz name to a tzinfo. Raises click.BadParameter
+    on typos so the CLI surface is consistent."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(tz_name)
+    except Exception as exc:  # noqa: BLE001 - rewrap as Click error
+        raise click.BadParameter(
+            f"unknown timezone: {tz_name!r} (use an IANA name like 'Europe/Istanbul')"
+        ) from exc
+
+
+def _parse_at(at: str, tz_name: str) -> tuple[float, str]:
+    """Parse a wall-clock ``YYYY-MM-DD HH:MM`` (or ISO 8601) in the
+    chosen tz and return ``(fire_at_utc, fire_at_tz)``."""
+    tzinfo = _zoneinfo(tz_name)
+    for fmt in (
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            naive = datetime.strptime(at, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        raise click.BadParameter(f"could not parse --at {at!r} (try 'YYYY-MM-DD HH:MM')")
+    aware = naive.replace(tzinfo=tzinfo)
+    return aware.astimezone(timezone.utc).timestamp(), tz_name
+
+
+def _parse_scope(spec: str) -> str:
+    """Compact ``schema:a,b`` / ``table:s.t1,s.t2`` / ``all`` -> scope_json."""
+    spec = spec.strip()
+    if spec == "all":
+        return json.dumps({"mode": "all"})
+    if spec.startswith("schema:"):
+        names = [s.strip() for s in spec[len("schema:") :].split(",") if s.strip()]
+        if not names:
+            raise click.BadParameter("scope schema:... needs at least one name")
+        return json.dumps({"mode": "schemas", "schemas": names})
+    if spec.startswith("table:"):
+        items: list[dict[str, str]] = []
+        for piece in spec[len("table:") :].split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            if "." not in piece:
+                raise click.BadParameter(f"table entry {piece!r} must be schema.table")
+            schema, _, table = piece.partition(".")
+            items.append({"schema": schema, "table": table})
+        return json.dumps({"mode": "tables", "tables": items})
+    raise click.BadParameter("scope must be 'schema:NAME,...' / 'table:S.T,...' / 'all'")
+
+
+def _render_at_local(row: dict[str, Any]) -> str:
+    tzinfo = _zoneinfo(row["fire_at_tz"])
+    dt = datetime.fromtimestamp(row["fire_at_utc"], tz=timezone.utc).astimezone(tzinfo)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _print_table(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        click.echo("No schedules.")
+        return
+    header = ("#", "Name", "When (local)", "Tz", "Status", "DB", "LLM")
+    keys = ("id", "name", "_local", "fire_at_tz", "status", "db_profile", "llm_profile")
+    widths = [
+        max(len(str(h)), max((len(_cell(r, k)) for r in rows), default=0))
+        for h, k in zip(header, keys, strict=True)
+    ]
+
+    def line(values):
+        return "  ".join(str(v).ljust(w) for v, w in zip(values, widths, strict=True))
+
+    click.echo(line(header))
+    click.echo(line(["-" * w for w in widths]))
+    for r in rows:
+        click.echo(
+            line(
+                [
+                    r["id"],
+                    r["name"],
+                    _render_at_local(r),
+                    r["fire_at_tz"],
+                    r["status"],
+                    r["db_profile"],
+                    r["llm_profile"],
+                ]
+            )
+        )
+
+
+def _cell(row: dict[str, Any], key: str) -> str:
+    if key == "_local":
+        return _render_at_local(row)
+    return str(row.get(key, ""))
+
+
+def _require_store():
+    hs = history_store()
+    if hs is None:
+        raise click.ClickException(
+            "history store not initialised (run any other amx command first)"
+        )
+    return hs
+
+
+# ── Registration ────────────────────────────────────────────────────
+
+
+def register_schedule_commands(
+    main: click.Group,
+    *,
+    log_event: LogEvent | None = None,
+) -> None:
+    """Attach the ``amx schedule`` group to *main*."""
+
+    @main.group("schedule")
+    def schedule() -> None:
+        """Manage one-shot scheduled metadata runs."""
+
+    @schedule.command("add")
+    @click.option("--name", required=True, help="Human-readable label.")
+    @click.option(
+        "--at",
+        "at",
+        required=True,
+        help="Local wall-clock fire time (e.g. '2026-12-31 09:00').",
+    )
+    @click.option(
+        "--tz",
+        "tz_name",
+        default="UTC",
+        show_default=True,
+        help="IANA tz id for --at (e.g. 'Europe/Istanbul').",
+    )
+    @click.option("--db", "db_profile", required=True, help="DB profile name.")
+    @click.option(
+        "--scope",
+        required=True,
+        help="Scope: 'schema:a,b' / 'table:s.t,...' / 'all'.",
+    )
+    @click.option("--llm", "llm_profile", required=True, help="LLM profile name.")
+    @click.option(
+        "--strategy",
+        "review_strategy",
+        default="auto",
+        show_default=True,
+        type=click.Choice(["auto", "manual"]),
+    )
+    def schedule_add(
+        name: str,
+        at: str,
+        tz_name: str,
+        db_profile: str,
+        scope: str,
+        llm_profile: str,
+        review_strategy: str,
+    ) -> None:
+        """Create a new scheduled run."""
+        hs = _require_store()
+        fire_at_utc, fire_at_tz = _parse_at(at, tz_name)
+        scope_json = _parse_scope(scope)
+        sid = hs.create_scheduled_run(
+            name=name,
+            fire_at_utc=fire_at_utc,
+            fire_at_tz=fire_at_tz,
+            db_profile=db_profile,
+            scope_json=scope_json,
+            llm_profile=llm_profile,
+            review_strategy=review_strategy,
+        )
+        row = hs.get_scheduled_run(sid)
+        local = _render_at_local(row)
+        utc_str = datetime.fromtimestamp(fire_at_utc, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+        click.echo(f"Schedule #{sid} created: '{name}' fires {local} {fire_at_tz} ({utc_str}).")
+        click.echo("")
+        click.echo("Heads-up: AMX is invocation-based — it isn't always running.")
+        click.echo("For this schedule to fire on time, EITHER keep AMX/Studio")
+        click.echo("open at that moment, OR enable the background daemon now:")
+        click.echo("")
+        click.echo("    amx scheduler install-daemon")
+        click.echo("")
+        click.echo("Without the daemon, if AMX is closed at fire time, this")
+        click.echo("schedule will be surfaced as 'missed' the next time you")
+        click.echo("open AMX, and you can run it then.")
+        if log_event:
+            log_event(
+                event_type="schedule.created",
+                status="ok",
+                command="schedule.add",
+                details={"id": sid, "name": name},
+            )
+
+    @schedule.command("list")
+    @click.option(
+        "--all",
+        "show_all",
+        is_flag=True,
+        default=False,
+        help="Include past (completed/failed/cancelled) entries.",
+    )
+    @click.option(
+        "--past",
+        "past_only",
+        is_flag=True,
+        default=False,
+        help="Show only past (completed/failed/cancelled) entries.",
+    )
+    @click.option("--db", "db_profile", default=None, help="Filter by DB profile.")
+    @click.option(
+        "--json", "as_json", is_flag=True, default=False, help="Emit machine-readable JSON."
+    )
+    def schedule_list(
+        show_all: bool, past_only: bool, db_profile: str | None, as_json: bool
+    ) -> None:
+        """List scheduled runs."""
+        hs = _require_store()
+        if past_only:
+            statuses = ["completed", "failed", "cancelled"]
+        elif show_all:
+            statuses = None  # all
+        else:
+            statuses = ["pending", "paused", "missed", "running"]
+        rows = hs.list_scheduled_runs(statuses=statuses, db_profile=db_profile)
+        if as_json:
+            click.echo(json.dumps(rows, default=str, indent=2))
+            return
+        _print_table(rows)
+
+    @schedule.command("show")
+    @click.argument("schedule_id", type=int)
+    def schedule_show(schedule_id: int) -> None:
+        """Show full detail for a schedule."""
+        hs = _require_store()
+        row = hs.get_scheduled_run(schedule_id)
+        if row is None:
+            raise click.ClickException(f"No schedule with id={schedule_id}")
+        click.echo(json.dumps(row, default=str, indent=2))
+
+    @schedule.command("pause")
+    @click.argument("schedule_id", type=int)
+    def schedule_pause(schedule_id: int) -> None:
+        """Pause a pending schedule (it won't fire until resumed)."""
+        hs = _require_store()
+        try:
+            hs.set_scheduled_run_status(schedule_id, "paused")
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Schedule #{schedule_id} paused.")
+        if log_event:
+            log_event(
+                event_type="schedule.paused",
+                status="ok",
+                command="schedule.pause",
+                details={"id": schedule_id},
+            )
+
+    @schedule.command("resume")
+    @click.argument("schedule_id", type=int)
+    def schedule_resume(schedule_id: int) -> None:
+        """Resume a paused schedule."""
+        hs = _require_store()
+        try:
+            hs.set_scheduled_run_status(schedule_id, "pending")
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Schedule #{schedule_id} resumed (pending).")
+        if log_event:
+            log_event(
+                event_type="schedule.resumed",
+                status="ok",
+                command="schedule.resume",
+                details={"id": schedule_id},
+            )
+
+    @schedule.command("rm")
+    @click.argument("schedule_id", type=int)
+    @click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation.")
+    def schedule_rm(schedule_id: int, yes: bool) -> None:
+        """Hard-delete a schedule."""
+        hs = _require_store()
+        row = hs.get_scheduled_run(schedule_id)
+        if row is None:
+            raise click.ClickException(f"No schedule with id={schedule_id}")
+        if not yes:
+            click.confirm(
+                f"Delete schedule #{schedule_id} '{row['name']}'?",
+                abort=True,
+            )
+        hs.delete_scheduled_run(schedule_id)
+        click.echo(f"Schedule #{schedule_id} deleted.")
+
+    @schedule.command("run-now")
+    @click.argument("schedule_id", type=int)
+    @click.option(
+        "--background/--foreground",
+        default=False,
+        show_default=True,
+        help="Run the spawned worker in the background and return immediately.",
+    )
+    def schedule_run_now(schedule_id: int, background: bool) -> None:
+        """Fire a schedule immediately (regardless of fire_at_utc)."""
+        hs = _require_store()
+        row = hs.get_scheduled_run(schedule_id)
+        if row is None:
+            raise click.ClickException(f"No schedule with id={schedule_id}")
+
+        def spawn(payload: dict[str, Any]) -> int:
+            return spawn_scheduled_worker(payload, store=hs, background=background)
+
+        report = tick(
+            store=hs,
+            source="manual",
+            target_id=schedule_id,
+            spawn_worker=spawn,
+            now_utc=time.time(),
+        )
+        if report.fired:
+            click.echo(f"Schedule #{schedule_id} fired (run linked).")
+        else:
+            for sid, err in report.failed_resolution:
+                click.echo(f"Failed to fire #{sid}: {err}", err=True)
+
+
+__all__ = ["register_schedule_commands"]

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
+  CalendarClock,
   ChevronRight,
   PanelLeft,
   Pin,
@@ -30,6 +31,7 @@ import MobileNavMenu from "./topbar/MobileNavMenu";
 const navItems = [
   { to: "/overview", label: "Overview", icon: BarChart3, match: ["/overview"] },
   { to: "/runs", label: "Runs", icon: HistoryIcon, match: ["/runs"] },
+  { to: "/schedules", label: "Schedules", icon: CalendarClock, match: ["/schedules"] },
   { to: "/ask", label: "Ask", icon: Sparkles, match: ["/ask"] },
   { to: "/audit", label: "Audit", icon: ScrollText, match: ["/audit"] },
   { to: "/settings", label: "Settings", icon: SettingsIcon, match: ["/settings"] },
