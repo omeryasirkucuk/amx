@@ -10,9 +10,21 @@ import time
 from pathlib import Path
 from typing import Any
 
+from amx.storage.schema_descriptions import (
+    LOCAL_DATABASE_DESCRIPTION,
+    SCHEMA_DESCRIPTIONS,
+)
 from amx.utils.logging import get_logger
 
 log = get_logger("storage.sqlite")
+
+# Sidecar table that holds the description of every table and column in the
+# local history DB. SQLite has no native ``COMMENT ON``; this table is the
+# queryable equivalent of ``pg_description``. Populated idempotently at the
+# end of :meth:`SQLiteHistoryStore.init` from
+# :data:`amx.storage.schema_descriptions.SCHEMA_DESCRIPTIONS` so descriptions
+# stay in lock-step with the schema across upgrades.
+_SCHEMA_DESCRIPTIONS_TABLE = "_amx_schema_descriptions"
 
 
 def parse_alternatives_json(raw):
@@ -786,6 +798,98 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_scheduled_runs_db_profile "
                 "ON scheduled_runs(db_profile)"
             )
+            # Last step: populate the metadata sidecar so every table created
+            # above carries a queryable description. Must run after all
+            # CREATE TABLE / ALTER TABLE statements so PRAGMA table_info
+            # returns the final column set.
+            self._populate_schema_descriptions(conn)
+
+    def _populate_schema_descriptions(self, conn: Any) -> None:
+        """Create and idempotently populate the metadata sidecar table.
+
+        Creates ``_amx_schema_descriptions`` (if missing) and writes one row
+        per (object_kind, schema, table, column) using ``INSERT OR REPLACE``.
+        Descriptions are sourced from
+        :data:`amx.storage.schema_descriptions.SCHEMA_DESCRIPTIONS`, which is
+        also the single source of truth read by
+        :mod:`amx.storage.shared_schema`.
+
+        Runs on every :meth:`init` call so new strings authored in the SoT
+        propagate to existing installs on next boot. The PK on
+        (object_kind, schema_name, table_name, column_name) guarantees the
+        operation is O(rows) and free of duplicates.
+
+        Tables that are missing on this install (older schemas, partial
+        migrations) are silently skipped — the next ``init`` after the
+        ``CREATE TABLE`` lands will pick them up.
+        """
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_SCHEMA_DESCRIPTIONS_TABLE} (
+                object_kind TEXT NOT NULL,
+                schema_name TEXT NOT NULL DEFAULT '',
+                table_name  TEXT NOT NULL DEFAULT '',
+                column_name TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL,
+                updated_at  REAL NOT NULL,
+                PRIMARY KEY (object_kind, schema_name, table_name, column_name)
+            )
+            """
+        )
+        now = time.time()
+        # Database-level row.
+        conn.execute(
+            f"INSERT OR REPLACE INTO {_SCHEMA_DESCRIPTIONS_TABLE} "
+            f"(object_kind, schema_name, table_name, column_name, description, updated_at) "
+            f"VALUES (?, ?, ?, ?, ?, ?)",
+            ("database", "", "", "", LOCAL_DATABASE_DESCRIPTION, now),
+        )
+        # Set of tables that actually exist in this DB. Includes virtual
+        # tables (FTS5) but excludes SQLite shadow tables and tables not
+        # yet created on this install.
+        existing_names: set[str] = set()
+        try:
+            existing_names = {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+        except Exception as exc:
+            log.warning("Could not enumerate sqlite_master for description sync: %s", exc)
+        for table_name, fields in SCHEMA_DESCRIPTIONS.items():
+            if table_name not in existing_names:
+                continue
+            table_desc = fields.get("__table__")
+            if table_desc:
+                conn.execute(
+                    f"INSERT OR REPLACE INTO {_SCHEMA_DESCRIPTIONS_TABLE} "
+                    f"(object_kind, schema_name, table_name, column_name, description, updated_at) "
+                    f"VALUES (?, ?, ?, ?, ?, ?)",
+                    ("table", "main", table_name, "", table_desc, now),
+                )
+            try:
+                live_cols = [
+                    str(r[1]) for r in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                ]
+            except Exception as exc:
+                log.warning("Could not PRAGMA table_info(%s): %s", table_name, exc)
+                live_cols = []
+            for col_name in live_cols:
+                col_desc = fields.get(col_name)
+                if not col_desc:
+                    # Missing description for a real column is a contract
+                    # violation enforced by tests/test_local_schema_comments.py.
+                    # Skip silently here so the boot path stays resilient; CI
+                    # will fail the offending PR before it lands.
+                    continue
+                conn.execute(
+                    f"INSERT OR REPLACE INTO {_SCHEMA_DESCRIPTIONS_TABLE} "
+                    f"(object_kind, schema_name, table_name, column_name, description, updated_at) "
+                    f"VALUES (?, ?, ?, ?, ?, ?)",
+                    ("column", "main", table_name, col_name, col_desc, now),
+                )
 
     def _ensure_run_columns(self, conn: Any) -> None:
         """Idempotently add the v0.5.2 reporting columns to analysis_runs.

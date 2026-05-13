@@ -45,6 +45,42 @@ We use [Conventional Commits](https://www.conventionalcommits.org/) so that rele
 
 A `BREAKING CHANGE:` footer (or `feat!:` / `fix!:`) triggers a major bump.
 
+## Database schema conventions
+
+AMX is a metadata-generation tool. Its own internal databases (the
+local SQLite history store at `~/.amx/history.db` and the shared
+warehouse-hosted history schema bootstrapped by `/history-store enable`)
+must meet the same "every table and column has a meaningful description"
+bar that AMX enforces on user data.
+
+A single source of truth lives at `amx/storage/schema_descriptions.py`.
+Both stores read their descriptions from there:
+
+- `amx/storage/sqlite_store.py` writes one row per (table, column) into
+  the `_amx_schema_descriptions` sidecar table at every `init()` so the
+  local store ships descriptions even though SQLite has no native
+  `COMMENT ON`.
+- `amx/storage/shared_schema.py` passes the same strings to
+  `Column(comment=...)` so warehouse backends emit `COMMENT ON COLUMN`
+  natively.
+
+**When you add a new table or column to either store, the matching
+entry in `amx/storage/schema_descriptions.py` is mandatory in the same
+commit.** Empty strings, `TODO`, or placeholder text do not count. CI
+enforces this through two test files:
+
+- `tests/test_local_schema_comments.py` — every PRAGMA-reported column
+  in the local SQLite store has a non-empty description and the sidecar
+  table is populated correctly.
+- `tests/test_shared_schema_comments.py` — every `Column(comment=)` in
+  the shared SQLAlchemy schema is non-empty and the DDL emits
+  `COMMENT ON` statements on every supported backend.
+
+If either test starts failing, write the description — do not skip the
+test or weaken the assertion. A missing description is a release
+blocker because the first thing reviewers do when evaluating AMX is
+inspect the metadata of AMX's own DB.
+
 ## Tests
 
 ```bash

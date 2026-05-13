@@ -51,6 +51,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from amx.storage.schema_descriptions import (
+    SCHEMA_DESCRIPTIONS,
+    SHARED_SCHEMA_COMMENT,
+)
+
 
 class _JSONAsText(TypeDecorator):
     """JSON stored as TEXT for backends without a native JSON column type.
@@ -112,18 +117,12 @@ def _portable_json() -> TypeEngine:
 # matches the user-facing nomenclature in docs/CLI prompts.
 DEFAULT_HISTORY_SCHEMA = "AMX"
 
-# Comment text written to the schema (namespace) itself via
+# Schema comment text written to the namespace itself via
 # ``COMMENT ON SCHEMA``. ``MetaData`` does not carry schema-level
 # annotations natively, so :meth:`DatabaseAdapter.create_history_schema`
-# emits this explicitly after ``CREATE SCHEMA``.
-DEFAULT_HISTORY_SCHEMA_COMMENT = (
-    "AMX shared run-history schema. Created by AMX (Agentic Metadata "
-    "Extractor) via /history-store enable. Holds cross-machine analysis "
-    "history, per-asset LLM alternatives, app events, agent session "
-    "state, and a schema version stamp so multiple AMX clients can "
-    "share run history under one warehouse. See "
-    "https://github.com/omeryasirkucuk/amx for details."
-)
+# emits this explicitly after ``CREATE SCHEMA``. Lives in the shared
+# source-of-truth module so the local SQLite sidecar can stay aligned.
+DEFAULT_HISTORY_SCHEMA_COMMENT = SHARED_SCHEMA_COMMENT
 
 # All client versions writing into a shared store record this as their
 # ``schema_version`` so an older client refuses to write into a schema
@@ -131,29 +130,18 @@ DEFAULT_HISTORY_SCHEMA_COMMENT = (
 SHARED_SCHEMA_VERSION = 1
 
 
-# ── Per-column comment text ───────────────────────────────────────────────
-# Pulled out as constants so the same string isn't duplicated across
-# attribution columns on every table.
+def _desc(table: str, column: str | None = None) -> str:
+    """Look up the canonical description for a table or column.
 
-_ATTRIBUTION_CREATED_BY = (
-    "OS username (or AMX_USER override) of the principal that wrote this row. "
-    "Populated on every shared-mode write so '/history-store list-team' can answer "
-    "'who ran what?'."
-)
-_ATTRIBUTION_HOSTNAME = (
-    "Machine that wrote this row. Part of the (hostname, local_id) provenance pair "
-    "that lets the dual-write coordinator re-find the shared row when a later UPDATE "
-    "(e.g. finish_run) fires from the same machine."
-)
-_ATTRIBUTION_CLIENT_VERSION = (
-    "AMX version string (e.g. '0.12.1') of the client that wrote this row. Used by "
-    "/doctor and post-mortems to correlate row shape changes with client upgrades."
-)
-_ATTRIBUTION_LOCAL_ID = (
-    "Corresponding INT id in the writer machine's local SQLite history.db. Scoped "
-    "by hostname so two machines can both have local_id=5 without collision; lets "
-    "the dual-write coordinator locate the shared row for in-flight UPDATEs."
-)
+    Single accessor for ``SCHEMA_DESCRIPTIONS`` so every ``comment=``
+    site in this module reads from the same source the local SQLite
+    store reads. Raises ``KeyError`` on a missing entry — that failure
+    surfaces in CI via :mod:`tests.test_shared_schema_comments` rather
+    than silently shipping an empty comment.
+    """
+    if column is None:
+        return SCHEMA_DESCRIPTIONS[table]["__table__"]
+    return SCHEMA_DESCRIPTIONS[table][column]
 
 
 def build_metadata(schema: str | None = None) -> MetaData:
@@ -163,6 +151,10 @@ def build_metadata(schema: str | None = None) -> MetaData:
     different deployments may pick different schema names, and SQLAlchemy
     bakes the schema into each ``Table`` at construction time. Tests and
     the bootstrap path each get their own ``MetaData`` for isolation.
+
+    All ``comment=`` strings here are looked up from
+    :mod:`amx.storage.schema_descriptions` so the shared schema cannot
+    drift from the local SQLite sidecar — see ``CONTRIBUTING.md``.
     """
     md = MetaData(schema=schema or DEFAULT_HISTORY_SCHEMA)
 
@@ -170,540 +162,207 @@ def build_metadata(schema: str | None = None) -> MetaData:
     Table(
         "analysis_runs",
         md,
-        Column(
-            "id",
-            String(36),
-            primary_key=True,
-            comment=(
-                "UUID v4 primary key. Surfaced as a short prefix in CLI output "
-                "(/list, /show, /results, /review, /compare). UUID rather than "
-                "INT autoincrement because shared mode admits concurrent writers "
-                "from multiple machines."
-            ),
-        ),
+        Column("id", String(36), primary_key=True, comment=_desc("analysis_runs", "id")),
         Column(
             "started_at",
             DateTime(timezone=True),
             nullable=False,
             index=True,
-            comment=(
-                "UTC timestamp when the agent run began. Indexed for "
-                "last-N-days filters in /list and /stats."
-            ),
+            comment=_desc("analysis_runs", "started_at"),
         ),
-        Column(
-            "ended_at",
-            DateTime(timezone=True),
-            comment=(
-                "UTC timestamp when the run finished. NULL while a run is in "
-                "flight; also NULL for runs killed mid-flight by Ctrl-C."
-            ),
-        ),
-        Column(
-            "duration_sec",
-            Float,
-            comment=(
-                "Wall-clock seconds between started_at and ended_at. Convenience "
-                "column so /stats does not have to recompute it on every read."
-            ),
-        ),
-        Column(
-            "status",
-            String(40),
-            nullable=False,
-            comment=(
-                "Lifecycle state of the run: running | completed | failed | "
-                "cancelled. Drives /list filters and the colored status badge."
-            ),
-        ),
-        Column(
-            "command",
-            String(80),
-            nullable=False,
-            comment=(
-                "Top-level CLI command that triggered the run: run | run-apply | "
-                "ask | doc-analyze | code-analyze. Distinguishes batch metadata "
-                "generation from one-off Q&A in /stats breakdowns."
-            ),
-        ),
-        Column(
-            "mode",
-            String(40),
-            comment=(
-                "Sub-mode chosen at the run picker: human-review | auto-apply | "
-                "confidence-threshold | dry-run."
-            ),
-        ),
-        Column(
-            "db_backend",
-            String(40),
-            comment=(
-                "Backend of the analyzed DB profile: postgresql | snowflake | "
-                "bigquery | databricks | mssql | mysql | oracle | redshift. "
-                "Enables /compare --by db_backend cross-backend audits."
-            ),
-        ),
-        Column(
-            "db_profile",
-            String(120),
-            comment=(
-                "Named DB profile used for this run (see /db-profiles). Multi-"
-                "profile runs (0.11+) record the first profile here and the "
-                "full list in scope_json.profiles."
-            ),
-        ),
-        Column(
-            "llm_provider",
-            String(40),
-            comment=(
-                "LLM vendor: openai | anthropic | gemini | openrouter | "
-                "deepseek | ollama | …. Distinct from llm_model which records "
-                "the specific model id."
-            ),
-        ),
-        Column(
-            "llm_model",
-            String(120),
-            comment=(
-                "Specific model id served by llm_provider — e.g. 'gpt-4o', "
-                "'claude-sonnet-4-20250514', 'openai/gpt-4o-mini' on OpenRouter."
-            ),
-        ),
-        Column(
-            "scope_json",
-            _portable_json(),
-            comment=(
-                "JSON describing the analyzed scope: {schemas, tables, columns, "
-                "asset_kinds, profiles}. /compare reads this to find prior runs "
-                "of the same assets for side-by-side pivots."
-            ),
-        ),
-        Column(
-            "metrics_json",
-            _portable_json(),
-            comment=(
-                "JSON of run metrics — counts, per-stage timings, retries, "
-                "skipped assets. Free-form so newer agents can add fields "
-                "without a schema bump."
-            ),
-        ),
-        Column(
-            "tokens_json",
-            _portable_json(),
-            comment=(
-                "JSON of token usage broken down by phase: "
-                "{prompt, completion, cached, reasoning, total}. Drives /stats "
-                "cost reporting and /compare --by tokens."
-            ),
-        ),
-        Column(
-            "results_json",
-            _portable_json(),
-            comment=(
-                "JSON summary of run outputs (counts, top-level rollups). "
-                "Per-asset detail lives in run_results joined on run_id."
-            ),
-        ),
-        Column(
-            "error_text",
-            Text,
-            comment=("Stack trace or error message when status='failed'. NULL on successful runs."),
-        ),
+        Column("ended_at", DateTime(timezone=True), comment=_desc("analysis_runs", "ended_at")),
+        Column("duration_sec", Float, comment=_desc("analysis_runs", "duration_sec")),
+        Column("status", String(40), nullable=False, comment=_desc("analysis_runs", "status")),
+        Column("command", String(80), nullable=False, comment=_desc("analysis_runs", "command")),
+        Column("mode", String(40), comment=_desc("analysis_runs", "mode")),
+        Column("db_backend", String(40), comment=_desc("analysis_runs", "db_backend")),
+        Column("db_profile", String(120), comment=_desc("analysis_runs", "db_profile")),
+        Column("llm_provider", String(40), comment=_desc("analysis_runs", "llm_provider")),
+        Column("llm_model", String(120), comment=_desc("analysis_runs", "llm_model")),
+        Column("scope_json", _portable_json(), comment=_desc("analysis_runs", "scope_json")),
+        Column("metrics_json", _portable_json(), comment=_desc("analysis_runs", "metrics_json")),
+        Column("tokens_json", _portable_json(), comment=_desc("analysis_runs", "tokens_json")),
+        Column("results_json", _portable_json(), comment=_desc("analysis_runs", "results_json")),
+        Column("error_text", Text, comment=_desc("analysis_runs", "error_text")),
         Column(
             "selected_count",
             Integer,
             nullable=False,
             default=0,
-            comment=(
-                "Assets the user selected at the run picker. First step of the "
-                "selected → planned → processed → applied funnel."
-            ),
+            comment=_desc("analysis_runs", "selected_count"),
         ),
         Column(
             "planned_count",
             Integer,
             nullable=False,
             default=0,
-            comment=(
-                "Assets that survived post-selection filtering (already-good "
-                "comments skipped, unsupported asset kinds dropped, etc.)."
-            ),
+            comment=_desc("analysis_runs", "planned_count"),
         ),
         Column(
             "processed_count",
             Integer,
             nullable=False,
             default=0,
-            comment=(
-                "Assets the LLM successfully produced descriptions for. "
-                "planned_count - processed_count = LLM/network failures."
-            ),
+            comment=_desc("analysis_runs", "processed_count"),
         ),
         Column(
             "applied_count",
             Integer,
             nullable=False,
             default=0,
-            comment=(
-                "Assets whose chosen description was written to the live DB "
-                "via COMMENT ON. processed_count - applied_count = approved-"
-                "but-not-yet-applied (when running without --apply)."
-            ),
+            comment=_desc("analysis_runs", "applied_count"),
         ),
-        Column(
-            "review_strategy",
-            String(40),
-            comment=(
-                "How alternatives were chosen: human | auto-best | "
-                "confidence-threshold. Affects how to read evaluated_at on "
-                "joined run_results rows."
-            ),
-        ),
-        Column(
-            "llm_profile",
-            String(120),
-            comment=(
-                "Named LLM profile used for this run (see /llm-profiles). "
-                "Captures the user-facing handle; concrete provider/model "
-                "values are mirrored in llm_provider/llm_model."
-            ),
-        ),
-        Column(
-            "doc_profile",
-            String(120),
-            comment=(
-                "Named document profile that supplied RAG evidence (see "
-                "/doc-profiles). NULL when /docs was not used in this run."
-            ),
-        ),
-        Column(
-            "code_profile",
-            String(120),
-            comment=(
-                "Named code profile that supplied code-evidence (see "
-                "/code-profiles). NULL when /code was not used in this run."
-            ),
-        ),
-        Column(
-            "settings_json",
-            _portable_json(),
-            comment=(
-                "Snapshot of LLM settings at run time — temperature, "
-                "prompt_detail, n_alternatives, llm_batch_size, "
-                "description_verbosity, logprob_thresholds. Drives "
-                "/compare --by settings pivots so changes can be A/B-attributed."
-            ),
-        ),
-        Column("created_by", String(120), comment=_ATTRIBUTION_CREATED_BY),
-        Column("hostname", String(255), comment=_ATTRIBUTION_HOSTNAME),
-        Column("client_version", String(40), comment=_ATTRIBUTION_CLIENT_VERSION),
-        Column("local_id", BigInteger, comment=_ATTRIBUTION_LOCAL_ID),
+        Column("review_strategy", String(40), comment=_desc("analysis_runs", "review_strategy")),
+        Column("llm_profile", String(120), comment=_desc("analysis_runs", "llm_profile")),
+        Column("doc_profile", String(120), comment=_desc("analysis_runs", "doc_profile")),
+        Column("code_profile", String(120), comment=_desc("analysis_runs", "code_profile")),
+        Column("settings_json", _portable_json(), comment=_desc("analysis_runs", "settings_json")),
+        Column("created_by", String(120), comment=_desc("analysis_runs", "created_by")),
+        Column("hostname", String(255), comment=_desc("analysis_runs", "hostname")),
+        Column("client_version", String(40), comment=_desc("analysis_runs", "client_version")),
+        Column("local_id", BigInteger, comment=_desc("analysis_runs", "local_id")),
         Index("ix_analysis_runs_started_at", "started_at"),
         Index("ix_analysis_runs_local_lookup", "hostname", "local_id"),
-        comment=(
-            "One row per AMX analysis run (/run, /run-apply, /ask, "
-            "doc-analyze, code-analyze). Captures the inputs (scope, "
-            "profiles, settings) and outputs (results, metrics, errors) of "
-            "an LLM-driven metadata generation. Joined to run_results for "
-            "per-asset alternatives. Read by /list, /show, /stats, /compare."
-        ),
+        comment=_desc("analysis_runs"),
     )
 
     # ── run_results: per-asset LLM alternatives + review state ─────────────
     Table(
         "run_results",
         md,
-        Column(
-            "id",
-            String(36),
-            primary_key=True,
-            comment="UUID v4 primary key for this (asset, alternative) row.",
-        ),
+        Column("id", String(36), primary_key=True, comment=_desc("run_results", "id")),
         Column(
             "run_id",
             String(36),
             nullable=False,
             index=True,
-            comment=(
-                "Foreign-key-by-convention to analysis_runs.id. Not a hard FK "
-                "because shared mode admits replication lag — a result row can "
-                "land before its parent run row when two writers race."
-            ),
+            comment=_desc("run_results", "run_id"),
         ),
         Column(
             "saved_at",
             DateTime(timezone=True),
             nullable=False,
-            comment=(
-                "UTC timestamp when this alternative was persisted. Distinct "
-                "from analysis_runs.started_at when the LLM streams alternatives "
-                "across the run window."
-            ),
+            comment=_desc("run_results", "saved_at"),
         ),
         Column(
             "schema_name",
             String(255),
             nullable=False,
-            comment="Schema (or dataset/database) of the asset described.",
+            comment=_desc("run_results", "schema_name"),
         ),
         Column(
             "table_name",
             String(255),
             nullable=False,
-            comment="Table or view name of the asset described.",
+            comment=_desc("run_results", "table_name"),
         ),
-        Column(
-            "column_name",
-            String(255),
-            comment=(
-                "Column name when asset_kind='column'. NULL when asset_kind='table' "
-                "(the alternative describes the table itself)."
-            ),
-        ),
+        Column("column_name", String(255), comment=_desc("run_results", "column_name")),
         Column(
             "asset_kind",
             String(40),
             nullable=False,
             default="table",
-            comment=(
-                "What this row describes: table | view | materialized_view | "
-                "column. Drives which COMMENT ON variant is emitted on apply."
-            ),
+            comment=_desc("run_results", "asset_kind"),
         ),
-        Column(
-            "source",
-            String(40),
-            nullable=False,
-            comment=(
-                "Which agent produced this alternative: profile | doc | code | "
-                "combined | manual. Lets /compare and /review filter by source "
-                "of evidence."
-            ),
-        ),
+        Column("source", String(40), nullable=False, comment=_desc("run_results", "source")),
         Column(
             "confidence",
             String(20),
             nullable=False,
-            comment=(
-                "Bucketed quality label derived from logprob_score against the "
-                "/logprob-thresholds settings: high | medium | low. Used by "
-                "/review filters and the human-review UI."
-            ),
+            comment=_desc("run_results", "confidence"),
         ),
-        Column(
-            "logprob_score",
-            Float,
-            comment=(
-                "Normalized average log-probability of the description tokens "
-                "(-1..0). Higher = the LLM was more confident in the wording."
-            ),
-        ),
-        Column(
-            "raw_logprob",
-            Float,
-            comment="Sum of log-probabilities (unnormalized) backing logprob_score.",
-        ),
-        Column(
-            "token_count",
-            Integer,
-            comment="Token length of the alternative description.",
-        ),
+        Column("logprob_score", Float, comment=_desc("run_results", "logprob_score")),
+        Column("raw_logprob", Float, comment=_desc("run_results", "raw_logprob")),
+        Column("token_count", Integer, comment=_desc("run_results", "token_count")),
         Column(
             "model_version",
             String(120),
             nullable=False,
             default="",
-            comment=(
-                "Specific model id that produced this alternative (e.g. "
-                "'gpt-4o-2024-11-20'). May differ from analysis_runs.llm_model "
-                "when the user switches mid-run."
-            ),
+            comment=_desc("run_results", "model_version"),
         ),
-        Column(
-            "reasoning",
-            Text,
-            comment=(
-                "Optional reasoning trace from a reasoning model (o-series, "
-                "claude with thinking, deepseek-reasoner). NULL for normal "
-                "chat models."
-            ),
-        ),
+        Column("reasoning", Text, comment=_desc("run_results", "reasoning")),
         Column(
             "alternatives_json",
             _portable_json(),
             nullable=False,
-            comment=(
-                "Ordered JSON list of alternative description strings the LLM "
-                "produced for this asset. The /review picker presents these; "
-                "chosen_description records which one was selected."
-            ),
+            comment=_desc("run_results", "alternatives_json"),
         ),
         Column(
-            "evaluated_at",
-            DateTime(timezone=True),
-            comment=(
-                "UTC timestamp when a human (or auto-best) picked one of the "
-                "alternatives. NULL = pending review."
-            ),
+            "evaluated_at", DateTime(timezone=True), comment=_desc("run_results", "evaluated_at")
         ),
-        Column(
-            "applied_at",
-            DateTime(timezone=True),
-            comment=(
-                "UTC timestamp when chosen_description was written to the live "
-                "DB via COMMENT ON. NULL = approved but not yet applied (or "
-                "never approved)."
-            ),
-        ),
-        Column(
-            "chosen_description",
-            Text,
-            comment=(
-                "The specific alternative selected at evaluation time. Empty "
-                "string when evaluation='rejected'."
-            ),
-        ),
-        Column(
-            "evaluation",
-            String(40),
-            comment=(
-                "Outcome of human/auto review: approved | rejected | edited. "
-                "'edited' means the user accepted an alternative but modified "
-                "the wording before apply."
-            ),
-        ),
+        Column("applied_at", DateTime(timezone=True), comment=_desc("run_results", "applied_at")),
+        Column("chosen_description", Text, comment=_desc("run_results", "chosen_description")),
+        Column("evaluation", String(40), comment=_desc("run_results", "evaluation")),
         Column(
             "catalog_status",
             String(40),
             nullable=False,
             default="",
-            comment=(
-                "Sync state with the /search catalog: pending | indexed | stale "
-                "| skipped. Drives /search rebuild incremental updates."
-            ),
+            comment=_desc("run_results", "catalog_status"),
         ),
         Column(
             "catalog_indexed_at",
             DateTime(timezone=True),
-            comment="UTC timestamp of the last /search-catalog index for this row.",
+            comment=_desc("run_results", "catalog_indexed_at"),
         ),
         Column(
             "db_applied_status",
             String(40),
             nullable=False,
             default="",
-            comment=(
-                "Result of the COMMENT ON write to the live DB: success | "
-                "skipped | failed. Empty string until apply is attempted."
-            ),
+            comment=_desc("run_results", "db_applied_status"),
         ),
         Column(
             "effective_source_kind",
             String(40),
             nullable=False,
             default="",
-            comment=(
-                "What actually became the column's description after evaluation: "
-                "same labels as `source` plus 'manual-edit'. Distinct from "
-                "`source` because a user may approve a doc-sourced alternative "
-                "after a manual edit."
-            ),
+            comment=_desc("run_results", "effective_source_kind"),
         ),
         Column(
             "superseded_at",
             DateTime(timezone=True),
-            comment=(
-                "Set when a newer run produces a better description for the same "
-                "asset. Lets /history filters hide stale rows without deleting "
-                "them — full audit trail preserved."
-            ),
+            comment=_desc("run_results", "superseded_at"),
         ),
         Column(
             "rejection_reason",
             Text,
             nullable=False,
             default="",
-            comment=(
-                "Free-text reason captured at evaluation time when "
-                "evaluation='rejected'. Surfaced by /review for retrospectives."
-            ),
+            comment=_desc("run_results", "rejection_reason"),
         ),
-        Column("hostname", String(255), comment=_ATTRIBUTION_HOSTNAME),
-        Column("local_id", BigInteger, comment=_ATTRIBUTION_LOCAL_ID),
+        Column("hostname", String(255), comment=_desc("run_results", "hostname")),
+        Column("local_id", BigInteger, comment=_desc("run_results", "local_id")),
         Index("ix_run_results_asset", "schema_name", "table_name", "column_name"),
         Index("ix_run_results_local_lookup", "hostname", "local_id"),
-        comment=(
-            "Per-asset LLM alternatives generated during an analysis_runs "
-            "invocation. One row per (asset, alternative) — a column with "
-            "3 alternatives produces 3 rows. Captures the alternative payload, "
-            "confidence, evaluation/apply state, and a back-pointer to the run."
-        ),
+        comment=_desc("run_results"),
     )
 
     # ── app_events: append-only event log ─────────────────────────────────
     Table(
         "app_events",
         md,
-        Column(
-            "id",
-            String(36),
-            primary_key=True,
-            comment="UUID v4 primary key for the event.",
-        ),
+        Column("id", String(36), primary_key=True, comment=_desc("app_events", "id")),
         Column(
             "created_at",
             DateTime(timezone=True),
             nullable=False,
             index=True,
-            comment="UTC timestamp the event fired. Indexed for /events recent-first ordering.",
+            comment=_desc("app_events", "created_at"),
         ),
-        Column(
-            "event_type",
-            String(80),
-            nullable=False,
-            comment=(
-                "Coarse event family: cli | db | llm | doc | code | error | "
-                "history-store. Lets /events filter by subsystem."
-            ),
-        ),
-        Column(
-            "status",
-            String(40),
-            nullable=False,
-            comment="Severity of the event: info | warn | error.",
-        ),
-        Column(
-            "command",
-            String(120),
-            nullable=False,
-            comment="CLI command (or sub-action) that was running when the event fired.",
-        ),
-        Column(
-            "details_json",
-            _portable_json(),
-            comment=(
-                "Free-form JSON payload — varies per event_type. Examples: "
-                "{profile, backend} for db connect, {model, latency_ms} for "
-                "llm calls, {error_class, traceback} for errors."
-            ),
-        ),
-        Column("created_by", String(120), comment=_ATTRIBUTION_CREATED_BY),
-        Column("hostname", String(255), comment=_ATTRIBUTION_HOSTNAME),
-        Column("client_version", String(40), comment=_ATTRIBUTION_CLIENT_VERSION),
+        Column("event_type", String(80), nullable=False, comment=_desc("app_events", "event_type")),
+        Column("status", String(40), nullable=False, comment=_desc("app_events", "status")),
+        Column("command", String(120), nullable=False, comment=_desc("app_events", "command")),
+        Column("details_json", _portable_json(), comment=_desc("app_events", "details_json")),
+        Column("created_by", String(120), comment=_desc("app_events", "created_by")),
+        Column("hostname", String(255), comment=_desc("app_events", "hostname")),
+        Column("client_version", String(40), comment=_desc("app_events", "client_version")),
         Index("ix_app_events_created_at", "created_at"),
-        comment=(
-            "Append-only structured event log surfaced by /events. Records CLI "
-            "lifecycle events (connection tests, syncs, doctor checks, errors) "
-            "for audit and debugging. Distinct from analysis_runs which logs "
-            "LLM agent invocations."
-        ),
+        comment=_desc("app_events"),
     )
 
     # ── session_state: namespaced key/value storage ───────────────────────
-    # Used by ``StateManager`` for inter-turn agent memory. In shared
-    # mode it lets the team (or the same user across machines) share
-    # session checkpoints. ``hostname`` is part of the PK so two
-    # machines can hold independent state under the same namespace/key.
     Table(
         "session_state",
         md,
@@ -711,98 +370,63 @@ def build_metadata(schema: str | None = None) -> MetaData:
             "namespace",
             String(120),
             primary_key=True,
-            comment=(
-                "Logical grouping for related keys (e.g. 'ask_session_42' or "
-                "'review_state'). Lets multiple StateManager instances share a "
-                "table without colliding."
-            ),
+            comment=_desc("session_state", "namespace"),
         ),
         Column(
             "key_name",
             String(255),
             primary_key=True,
-            comment="Key within the namespace.",
+            comment=_desc("session_state", "key_name"),
         ),
         Column(
             "hostname",
             String(255),
             primary_key=True,
             default="",
-            comment=(
-                "Writer machine. Part of the composite PK so a teammate's state "
-                "under the same (namespace, key_name) does not clobber yours in "
-                "shared mode. Empty string when running in single-user mode."
-            ),
+            comment=_desc("session_state", "hostname"),
         ),
         Column(
             "value_json",
             _portable_json(),
             nullable=False,
-            comment="JSON-serialized value associated with (namespace, key_name, hostname).",
+            comment=_desc("session_state", "value_json"),
         ),
         Column(
             "updated_at",
             DateTime(timezone=True),
             nullable=False,
-            comment="UTC timestamp of the last write to this row.",
+            comment=_desc("session_state", "updated_at"),
         ),
-        Column("created_by", String(120), comment=_ATTRIBUTION_CREATED_BY),
-        comment=(
-            "Namespaced key/value storage used by StateManager for inter-turn "
-            "agent memory within /ask conversational sessions. Composite primary "
-            "key (namespace, key_name, hostname) so a teammate's state under "
-            "the same namespace does not clobber yours in shared mode."
-        ),
+        Column("created_by", String(120), comment=_desc("session_state", "created_by")),
+        comment=_desc("session_state"),
     )
 
-    # ── schema_meta: version stamp so older clients refuse to write ──────
-    # Single-row table. The /history-store enable bootstrap inserts
-    # version=SHARED_SCHEMA_VERSION; a newer client bumps it on its
-    # first write; an older client refuses to write when it sees a
-    # higher version than it knows about (mirrors the AMXConfig
-    # schema_version guard).
+    # ── schema_meta: single-row version stamp ────────────────────────────
     Table(
         "schema_meta",
         md,
-        Column(
-            "id",
-            Integer,
-            primary_key=True,
-            comment=(
-                "Singleton sentinel — always 1. The PK exists only because every "
-                "table needs one; this table holds at most one row."
-            ),
-        ),
+        Column("id", Integer, primary_key=True, comment=_desc("schema_meta", "id")),
         Column(
             "schema_version",
             Integer,
             nullable=False,
-            comment=(
-                "Current version of the AMX shared-store schema. Older clients "
-                "refuse to write when this is higher than what they were built "
-                "against, mirroring the AMXConfig schema_version compatibility "
-                "guard."
-            ),
+            comment=_desc("schema_meta", "schema_version"),
         ),
         Column(
             "created_at",
             DateTime(timezone=True),
             nullable=False,
-            comment="UTC timestamp when /history-store enable first bootstrapped this schema.",
+            comment=_desc("schema_meta", "created_at"),
         ),
         Column(
             "created_by_client_version",
             String(40),
-            comment="AMX version string of the client that ran the bootstrap.",
+            comment=_desc("schema_meta", "created_by_client_version"),
         ),
-        comment=(
-            "Single-row version stamp written at /history-store enable bootstrap. "
-            "Newer AMX clients bump schema_version on first write; older clients "
-            "refuse to write into a schema bumped beyond what they know about, "
-            "mirroring the AMXConfig schema_version guard."
-        ),
+        comment=_desc("schema_meta"),
     )
 
+    # ── style_profiles: derived description-style profiles ────────────────
     Table(
         "style_profiles",
         md,
@@ -811,83 +435,59 @@ def build_metadata(schema: str | None = None) -> MetaData:
             Integer,
             primary_key=True,
             autoincrement=True,
-            comment="Surrogate primary key.",
+            comment=_desc("style_profiles", "id"),
         ),
         Column(
             "llm_profile",
             String(256),
             nullable=False,
             unique=True,
-            comment=(
-                "Name of the LLM profile this style record belongs to. "
-                "Matches the llm_profile key used in AMXConfig."
-            ),
+            comment=_desc("style_profiles", "llm_profile"),
         ),
         Column(
             "source_ref",
             String(1024),
             nullable=False,
-            comment=(
-                "Fully-qualified reference to the table or column set whose "
-                "comments were used to derive this profile (e.g. "
-                "'warehouse.sales.orders')."
-            ),
+            comment=_desc("style_profiles", "source_ref"),
         ),
         Column(
             "source_db_kind",
             String(64),
             nullable=False,
-            comment=(
-                "Database kind identifier of the source (e.g. 'snowflake', "
-                "'duckdb', 'bigquery'). Stored for diagnostic and audit purposes."
-            ),
+            comment=_desc("style_profiles", "source_db_kind"),
         ),
         Column(
             "profile_json",
             Text,
             nullable=False,
-            comment=(
-                "JSON-serialised StyleProfile dataclass. Deserialised by "
-                "StyleProfile.from_json() on read."
-            ),
+            comment=_desc("style_profiles", "profile_json"),
         ),
         Column(
             "enabled",
             Integer,
             nullable=False,
             default=1,
-            comment=(
-                "Whether this style profile is active (1) or disabled (0). "
-                "Disabled profiles are stored but not injected into prompts."
-            ),
+            comment=_desc("style_profiles", "enabled"),
         ),
         Column(
             "sample_count",
             Integer,
             nullable=False,
-            comment=(
-                "Number of source description samples that were analysed to "
-                "produce the profile. Used as a confidence indicator."
-            ),
+            comment=_desc("style_profiles", "sample_count"),
         ),
         Column(
             "created_at",
             Text,
             nullable=False,
-            comment="Stored as TEXT representation of a Unix timestamp float, mirroring the local SQLite schema.",
+            comment=_desc("style_profiles", "created_at"),
         ),
         Column(
             "updated_at",
             Text,
             nullable=False,
-            comment="Stored as TEXT representation of a Unix timestamp float, mirroring the local SQLite schema.",
+            comment=_desc("style_profiles", "updated_at"),
         ),
-        comment=(
-            "One row per LLM profile containing the derived StyleProfile that "
-            "summarises the user's description writing conventions. The profile "
-            "is injected into run-time prompts to keep generated descriptions "
-            "consistent with the existing corpus style."
-        ),
+        comment=_desc("style_profiles"),
     )
 
     return md
