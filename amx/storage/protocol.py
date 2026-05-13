@@ -135,6 +135,8 @@ class IHistoryStore(Protocol):
         scope_json: str,
         llm_profile: str,
         review_strategy: str,
+        database: str | None = None,
+        catalog: str | None = None,
         extra_args_json: str | None = None,
     ) -> int: ...
 
