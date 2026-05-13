@@ -298,3 +298,31 @@ def manual_tick_endpoint() -> dict[str, Any]:
         "missed_for_review": report.missed_for_review,
         "stale_recovered": report.stale_recovered,
     }
+
+
+@scheduler_router.post("/install-daemon")
+def scheduler_install_daemon_endpoint() -> dict[str, Any]:
+    """Install the OS-level scheduler daemon on the host machine.
+
+    This is the same one-shot operation the CLI exposes as
+    ``/analyze schedule install-daemon``. Mounted on the Studio API
+    so users connecting from a remote browser (Cloudflare-tunneled
+    setup, mobile, etc.) can flip the daemon on without dropping
+    into a terminal on the host.
+    """
+    from amx.scheduler.daemon_install import install_daemon
+
+    result = install_daemon()
+    return {
+        "message": result.get("message", ""),
+        "path": result.get("path"),
+    }
+
+
+@scheduler_router.post("/uninstall-daemon")
+def scheduler_uninstall_daemon_endpoint() -> dict[str, Any]:
+    """Remove the OS-level scheduler daemon from the host machine."""
+    from amx.scheduler.daemon_install import uninstall_daemon
+
+    result = uninstall_daemon()
+    return {"message": result.get("message", "")}
