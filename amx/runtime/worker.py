@@ -164,6 +164,14 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
         search_profile=db_profile_name,
     )
 
+    # When the schedule was created with column-level picks, plumb the
+    # explicit column list through orchestrator.column_overrides so
+    # process_table restricts its per-table loop to exactly those
+    # columns (mirrors the CLI "Column scope" picker's behaviour).
+    column_overrides = _scope_column_overrides(payload.get("scope_json"))
+    if column_overrides:
+        orchestrator.column_overrides = column_overrides
+
     scope = _resolve_live_scope(payload.get("scope_json"), db)
     if not scope:
         log.warning(
@@ -193,6 +201,36 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
                     table,
                     schedule_id,
                 )
+
+
+def _scope_column_overrides(
+    scope_json: str | None,
+) -> dict[tuple[str, str], set[str]]:
+    """Pull (schema, table) -> {columns} out of a column-scope payload.
+
+    Returns an empty dict for every other scope mode -- the
+    orchestrator's column_overrides map is only meaningful when the
+    schedule was created with explicit per-column picks.
+    """
+    if not scope_json:
+        return {}
+    try:
+        obj = json.loads(scope_json)
+    except (TypeError, ValueError):
+        return {}
+    if obj.get("mode") != "columns":
+        return {}
+    out: dict[tuple[str, str], set[str]] = {}
+    for item in obj.get("columns", []) or []:
+        if not isinstance(item, dict):
+            continue
+        schema = str(item.get("schema") or "")
+        table = str(item.get("table") or "")
+        column = str(item.get("column") or "")
+        if not schema or not table or not column:
+            continue
+        out.setdefault((schema, table), set()).add(column)
+    return out
 
 
 def _resolve_live_scope(

@@ -14,7 +14,11 @@ from unittest.mock import patch
 
 import pytest
 
-from amx.runtime.worker import _resolve_live_scope, production_run_executor
+from amx.runtime.worker import (
+    _resolve_live_scope,
+    _scope_column_overrides,
+    production_run_executor,
+)
 
 
 def test_executor_rejects_missing_db_profile_in_payload() -> None:
@@ -151,6 +155,66 @@ def test_resolve_live_scope_mode_columns_collapses_to_tables() -> None:
         db,
     )
     assert out == {"public": ["users"]}
+
+
+def test_scope_column_overrides_empty_for_non_column_modes() -> None:
+    assert _scope_column_overrides(None) == {}
+    assert _scope_column_overrides("") == {}
+    assert _scope_column_overrides(json.dumps({"mode": "all"})) == {}
+    assert (
+        _scope_column_overrides(
+            json.dumps({"mode": "schemas", "schemas": ["public"]})
+        )
+        == {}
+    )
+    assert (
+        _scope_column_overrides(
+            json.dumps(
+                {
+                    "mode": "tables",
+                    "tables": [{"schema": "public", "table": "users"}],
+                }
+            )
+        )
+        == {}
+    )
+
+
+def test_scope_column_overrides_groups_by_table() -> None:
+    out = _scope_column_overrides(
+        json.dumps(
+            {
+                "mode": "columns",
+                "columns": [
+                    {"schema": "public", "table": "users", "column": "id"},
+                    {"schema": "public", "table": "users", "column": "email"},
+                    {"schema": "public", "table": "orders", "column": "id"},
+                    {"schema": "staging", "table": "events", "column": "ts"},
+                ],
+            }
+        )
+    )
+    assert out[("public", "users")] == {"id", "email"}
+    assert out[("public", "orders")] == {"id"}
+    assert out[("staging", "events")] == {"ts"}
+
+
+def test_scope_column_overrides_drops_malformed() -> None:
+    out = _scope_column_overrides(
+        json.dumps(
+            {
+                "mode": "columns",
+                "columns": [
+                    {"schema": "public", "table": "users", "column": "id"},
+                    "not-a-dict",
+                    {"schema": "", "table": "x", "column": "y"},
+                    {"schema": "p", "table": "t", "column": ""},
+                    None,
+                ],
+            }
+        )
+    )
+    assert out == {("public", "users"): {"id"}}
 
 
 def test_resolve_live_scope_filters_column_assets() -> None:
