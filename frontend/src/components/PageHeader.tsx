@@ -77,7 +77,7 @@ export default function PageHeader({
           </ol>
         </nav>
       )}
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
         <div className="min-w-0">
           <h1 className="text-[22px] font-semibold tracking-tight text-ink">
             {title}
@@ -89,7 +89,9 @@ export default function PageHeader({
           )}
         </div>
         {actions && (
-          <div className="flex shrink-0 items-center gap-2">{actions}</div>
+          <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+            {actions}
+          </div>
         )}
       </div>
     </header>
