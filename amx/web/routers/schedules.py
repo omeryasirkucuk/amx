@@ -53,6 +53,18 @@ class ScheduleCreateRequest(BaseModel):
     fire_at_local: str = Field(description="Wall-clock fire time, e.g. '2026-12-31T09:00'.")
     fire_at_tz: str = Field(default="UTC", description="IANA tz id.")
     db_profile: str
+    database: str | None = Field(
+        default=None,
+        description=(
+            "Per-schedule DB overlay -- mirrors the ScopeTree picker's "
+            "``database`` axis. Required for backends whose schema "
+            "list depends on database (Postgres/MySQL/SQL Server)."
+        ),
+    )
+    catalog: str | None = Field(
+        default=None,
+        description="Per-schedule catalog overlay (Unity Catalog etc.).",
+    )
     scope: dict[str, Any] = Field(description="{'mode':'all|schemas|tables', ...}.")
     llm_profile: str
     review_strategy: Literal["auto", "manual"] = "auto"
@@ -63,6 +75,8 @@ class SchedulePatchRequest(BaseModel):
     fire_at_local: str | None = None
     fire_at_tz: str | None = None
     db_profile: str | None = None
+    database: str | None = None
+    catalog: str | None = None
     scope: dict[str, Any] | None = None
     llm_profile: str | None = None
     review_strategy: Literal["auto", "manual"] | None = None
@@ -129,6 +143,8 @@ def create_schedule(body: ScheduleCreateRequest) -> dict[str, Any]:
         fire_at_utc=fire_at_utc,
         fire_at_tz=body.fire_at_tz,
         db_profile=body.db_profile,
+        database=body.database,
+        catalog=body.catalog,
         scope_json=json.dumps(body.scope),
         llm_profile=body.llm_profile,
         review_strategy=body.review_strategy,
@@ -166,6 +182,13 @@ def patch_schedule(schedule_id: int, body: SchedulePatchRequest) -> dict[str, An
         patch["fire_at_utc"] = _parse_fire_at(body.fire_at_local, tz_name)
     if body.db_profile is not None:
         patch["db_profile"] = body.db_profile
+    if body.database is not None:
+        # Empty string means "clear the overlay" (revert to profile
+        # default); persist as SQL NULL so the row matches a fresh
+        # create with no database picked.
+        patch["database"] = body.database or None
+    if body.catalog is not None:
+        patch["catalog"] = body.catalog or None
     if body.scope is not None:
         patch["scope_json"] = json.dumps(body.scope)
     if body.llm_profile is not None:

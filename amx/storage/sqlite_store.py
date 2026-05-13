@@ -584,6 +584,8 @@ class SQLiteHistoryStore:
                     fire_at_tz TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     db_profile TEXT NOT NULL,
+                    database TEXT,
+                    catalog TEXT,
                     scope_json TEXT NOT NULL,
                     llm_profile TEXT NOT NULL,
                     review_strategy TEXT NOT NULL,
@@ -596,6 +598,7 @@ class SQLiteHistoryStore:
                 )
                 """
             )
+            self._ensure_scheduled_columns(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_scheduled_runs_status_fireat "
                 "ON scheduled_runs(status, fire_at_utc)"
@@ -685,6 +688,45 @@ class SQLiteHistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_analysis_runs_shared_uuid "
                 "ON analysis_runs(shared_uuid)"
             )
+
+    def _ensure_scheduled_columns(self, conn: Any) -> None:
+        """Idempotently add ``database`` / ``catalog`` to scheduled_runs.
+
+        Schedules created before this column landed are missing the
+        per-schedule DB / catalog overlay; the picker fetched live
+        schemas via ``/api/live/schemas?profile=…&database=…`` but the
+        ``database`` half was dropped on the way to the store, so at
+        fire time ``production_run_executor`` connected to the profile
+        default and ``airline.<table>`` resolutions raised
+        ``NoSuchTableError``. The two nullable columns let existing
+        rows survive untouched; on next Edit the user picks a
+        database and the next fire connects to the right DB.
+        """
+        try:
+            rows = conn.execute("PRAGMA table_info(scheduled_runs)").fetchall()
+            existing_cols = {str(r[1]) for r in rows}
+        except Exception as exc:
+            log.warning("Could not introspect scheduled_runs schema: %s", exc)
+            existing_cols = set()
+        for col_name, col_type in (
+            ("database", "TEXT"),
+            ("catalog", "TEXT"),
+        ):
+            if col_name in existing_cols:
+                continue
+            try:
+                conn.execute(
+                    f"ALTER TABLE scheduled_runs ADD COLUMN {col_name} {col_type}"
+                )
+                log.info(
+                    "Migrated scheduled_runs: added column %s %s",
+                    col_name,
+                    col_type,
+                )
+            except Exception as exc:
+                log.warning(
+                    "Could not add scheduled_runs.%s: %s", col_name, exc
+                )
         # ── apply_events: audit trail of every COMMENT actually written ──
         #
         # ``run_results.applied_at`` already says "this row was applied"
@@ -2380,6 +2422,8 @@ class SQLiteHistoryStore:
             "fire_at_utc",
             "fire_at_tz",
             "db_profile",
+            "database",
+            "catalog",
             "scope_json",
             "llm_profile",
             "review_strategy",
@@ -2397,24 +2441,37 @@ class SQLiteHistoryStore:
         scope_json: str,
         llm_profile: str,
         review_strategy: str,
+        database: str | None = None,
+        catalog: str | None = None,
         extra_args_json: str | None = None,
     ) -> int:
-        """Insert a new scheduled_runs row in status='pending'."""
+        """Insert a new scheduled_runs row in status='pending'.
+
+        ``database`` and ``catalog`` carry the picker's overlay so the
+        scheduler can rebuild the same connection at fire time (mirrors
+        the ``/api/live/schemas`` picker that ScopeTree drives). Both
+        are nullable: legacy rows + backends that don't expose a
+        database/catalog axis (e.g. SQLite single-file profiles) keep
+        the profile default.
+        """
         now = time.time()
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO scheduled_runs (
                     name, fire_at_utc, fire_at_tz, status,
-                    db_profile, scope_json, llm_profile, review_strategy,
+                    db_profile, database, catalog,
+                    scope_json, llm_profile, review_strategy,
                     extra_args_json, created_at, updated_at
-                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
                     fire_at_utc,
                     fire_at_tz,
                     db_profile,
+                    database,
+                    catalog,
                     scope_json,
                     llm_profile,
                     review_strategy,

@@ -825,6 +825,12 @@ export interface ScheduleRow {
   fire_at_local: string;
   status: string;
   db_profile: string;
+  // Per-schedule DB / catalog overlay. Null for legacy rows created
+  // before the picker started persisting this field — those rows
+  // connect to the profile default at fire time and need a re-save
+  // via the Edit dialog to start firing against the right DB.
+  database: string | null;
+  catalog: string | null;
   scope_json: string;
   llm_profile: string;
   review_strategy: string;
@@ -841,6 +847,8 @@ export interface ScheduleCreatePayload {
   fire_at_local: string;
   fire_at_tz: string;
   db_profile: string;
+  database?: string | null;
+  catalog?: string | null;
   scope: Record<string, unknown>;
   llm_profile: string;
   review_strategy?: "auto" | "manual";

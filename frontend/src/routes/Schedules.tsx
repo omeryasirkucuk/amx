@@ -118,7 +118,13 @@ function NewScheduleDialog({
   );
   const [fireAtTz, setFireAtTz] = useState(editing?.fire_at_tz ?? browserTz());
   const [dbProfile, setDbProfile] = useState(editing?.db_profile ?? "");
-  const [database, setDatabase] = useState("");
+  // Hydrate ``database`` from the loaded row when editing -- mirrors
+  // the picker's ``database`` axis. Falling back to ``catalog`` keeps
+  // catalog-backend schedules (Unity Catalog etc.) round-trippable
+  // through the same dropdown.
+  const [database, setDatabase] = useState(
+    editing?.database ?? editing?.catalog ?? "",
+  );
   const [scopePicks, setScopePicks] = useState<SchemaPick[]>([]);
   const [llmProfile, setLlmProfile] = useState(editing?.llm_profile ?? "");
   const [reviewStrategy, setReviewStrategy] = useState<"auto" | "manual">(
@@ -229,6 +235,12 @@ function NewScheduleDialog({
         fire_at_local: fireAtLocal,
         fire_at_tz: fireAtTz,
         db_profile: dbProfile,
+        // Persist the picker's ``database`` axis so the scheduler
+        // rebuilds the same connection at fire time. Catalog-backend
+        // profiles funnel the same dropdown value into ``catalog`` so
+        // a Unity Catalog schedule round-trips correctly too.
+        database: isCatalogBackend ? null : database || null,
+        catalog: isCatalogBackend ? database || null : null,
         scope: buildScope(),
         llm_profile: llmProfile,
         review_strategy: reviewStrategy,
@@ -575,10 +587,36 @@ export default function Schedules() {
       {
         id: "db",
         header: "DB",
-        sortValue: (row) => row.db_profile,
-        cell: (row) => (
-          <span className="text-ink-dim">{row.db_profile}</span>
-        ),
+        sortValue: (row) => `${row.db_profile}/${row.database ?? row.catalog ?? ""}`,
+        cell: (row) => {
+          // Surface the (profile, database) pair so the user can see
+          // which DB a schedule targets at a glance. A schedule with
+          // ``database=null`` is a legacy row created before the
+          // overlay was persisted; flag it so the user knows the
+          // next fire will use the profile default (and almost
+          // certainly miss the picker's tables).
+          const overlay = row.database ?? row.catalog;
+          if (overlay) {
+            return (
+              <span className="text-ink-dim">
+                {row.db_profile}
+                <span className="text-ink-muted"> · </span>
+                <span className="font-mono text-xs text-ink">{overlay}</span>
+              </span>
+            );
+          }
+          return (
+            <span className="text-ink-dim">
+              {row.db_profile}
+              <span
+                className="ml-2 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                title="No database picked. Edit the schedule and pick one — otherwise the next fire connects to the profile default and may not find the scheduled tables."
+              >
+                no db
+              </span>
+            </span>
+          );
+        },
         hideOnMobile: true,
       },
       {
