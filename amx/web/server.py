@@ -35,11 +35,17 @@ from amx.web.routers import (
     profiles,
     rerun,
     runs,
+    schedules,
     style,
     system,
     system_ops,
 )
 from amx.web.security_headers import SecurityHeadersMiddleware
+
+# Module-level holder for the bootstrap TickReport (Phase 5a).
+# Populated by create_app() at lifespan start; consumed by the
+# /api/scheduler/bootstrap-report route to drive the catch-up banner.
+_bootstrap_report: object | None = None
 
 
 def _static_root() -> Path:
@@ -124,6 +130,8 @@ def create_app(
     app.include_router(rerun.router)
     app.include_router(installs.router)
     app.include_router(style.router)
+    app.include_router(schedules.router)
+    app.include_router(schedules.scheduler_router)
 
     # Re-Run snapshots are short-lived (worker deletes them in finally).
     # On startup, sweep anything older than 1h that a previous crashed
@@ -149,6 +157,23 @@ def create_app(
     except Exception:
         # Startup must never crash on a GC hiccup; the executor's own
         # cleanup keeps the table tidy regardless.
+        pass
+
+    # Scheduler bootstrap pass: surface stale runs + missed schedules
+    # for the catch-up banner. Pinned on the module object so the
+    # ``/api/scheduler/bootstrap-report`` route can read it without
+    # threading state through DI. Failures are swallowed so a broken
+    # scheduler never blocks Studio startup.
+    global _bootstrap_report
+    _bootstrap_report = None
+    try:
+        from amx.scheduler.tick import tick as _bootstrap_tick
+        from amx.storage.sqlite_store import history_store as _hs2
+
+        _hs_obj = _hs2()
+        if _hs_obj is not None:
+            _bootstrap_report = _bootstrap_tick(store=_hs_obj, source="bootstrap")
+    except Exception:
         pass
 
     root = static_root if static_root is not None else _static_root()
