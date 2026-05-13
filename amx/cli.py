@@ -24,6 +24,7 @@ from amx.cli_support.commands.db import (
 )
 from amx.cli_support.commands.docs import register_docs_commands
 from amx.cli_support.commands.doctor import register_doctor_command
+from amx.cli_support.commands.eval_confidence import register_eval_confidence_command
 from amx.cli_support.commands.history import register_history_commands
 from amx.cli_support.commands.history_store import register_history_store_commands
 from amx.cli_support.commands.manual import register_manual_commands
@@ -406,6 +407,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
 
 history_group = register_history_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_compare_command(history_group, pass_config=pass_config, log_event=_log_app_event)
+register_eval_confidence_command(history_group, pass_config=pass_config, log_event=_log_app_event)
 register_search_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_doctor_command(main, pass_config=pass_config, log_event=_log_app_event)
 register_chat_session_commands(main, pass_config=pass_config, log_event=_log_app_event)

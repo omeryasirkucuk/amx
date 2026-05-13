@@ -509,6 +509,7 @@ class ProfileAgent(BaseAgent):
                 logprobs_content=_logprobs,
                 response_text=response,
                 cfg=self.llm.cfg.confidence,
+                llm=self.llm,
             )
         except Exception as exc:
             log.warning("Confidence signal scoring failed: %s", exc)
