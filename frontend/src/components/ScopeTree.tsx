@@ -52,19 +52,28 @@ export interface ScopeTreeProps {
   onChange: (next: SchemaPick[]) => void;
 }
 
-interface SchemaItem {
-  name: string;
+interface SchemasResponse {
+  /** Flat list of schema names. */
+  schemas: string[];
 }
 
 interface AssetRow {
-  schema: string;
   name: string;
-  kind?: string;
+  kind: string;
+}
+
+interface AssetsResponse {
+  schema: string;
+  assets: AssetRow[];
 }
 
 interface ColumnRow {
   name: string;
-  data_type?: string;
+  dtype: string;
+}
+
+interface ColumnsResponse {
+  columns: ColumnRow[];
 }
 
 function findSchema(picks: SchemaPick[], schema: string): SchemaPick | undefined {
@@ -91,7 +100,7 @@ export default function ScopeTree({
     queryKey: ["scope-tree-schemas", dbProfile, database, isCatalogBackend],
     queryFn: () => {
       const param = isCatalogBackend ? "catalog" : "database";
-      return apiFetch<{ schemas: SchemaItem[] }>(
+      return apiFetch<SchemasResponse>(
         `/api/live/schemas?profile=${encodeURIComponent(dbProfile)}&${param}=${encodeURIComponent(database)}`,
       );
     },
@@ -219,25 +228,25 @@ export default function ScopeTree({
         )}
       </div>
       <div className="max-h-72 overflow-auto border-t border-border px-2 py-2">
-        {schemas.map((s) => {
-          const schemaPick = findSchema(picks, s.name);
-          const isOpen = expanded.has(`schema:${s.name}`);
+        {schemas.map((name) => {
+          const schemaPick = findSchema(picks, name);
+          const isOpen = expanded.has(`schema:${name}`);
           return (
             <SchemaRow
-              key={s.name}
+              key={name}
               dbProfile={dbProfile}
               database={database}
               isCatalogBackend={isCatalogBackend}
-              schemaName={s.name}
+              schemaName={name}
               checked={Boolean(schemaPick)}
               open={Boolean(schemaPick) && isOpen}
               schemaPick={schemaPick}
-              onToggleCheck={() => toggleSchema(s.name)}
-              onToggleOpen={() => toggleSchemaExpanded(s.name)}
-              onToggleTable={(t) => toggleTable(s.name, t)}
-              onToggleTableExpanded={(t) => toggleTableExpanded(s.name, t)}
-              tableExpanded={(t) => expanded.has(`table:${s.name}.${t}`)}
-              onToggleColumn={(t, c) => toggleColumn(s.name, t, c)}
+              onToggleCheck={() => toggleSchema(name)}
+              onToggleOpen={() => toggleSchemaExpanded(name)}
+              onToggleTable={(t) => toggleTable(name, t)}
+              onToggleTableExpanded={(t) => toggleTableExpanded(name, t)}
+              tableExpanded={(t) => expanded.has(`table:${name}.${t}`)}
+              onToggleColumn={(t, c) => toggleColumn(name, t, c)}
             />
           );
         })}
@@ -330,7 +339,7 @@ function SchemaTables(props: {
     ],
     queryFn: () => {
       const param = props.isCatalogBackend ? "catalog" : "database";
-      return apiFetch<{ assets: AssetRow[] }>(
+      return apiFetch<AssetsResponse>(
         `/api/live/schemas/${encodeURIComponent(props.schemaName)}/assets?profile=${encodeURIComponent(props.dbProfile)}&${param}=${encodeURIComponent(props.database)}`,
       );
     },
@@ -437,7 +446,7 @@ function TableColumns(props: {
     ],
     queryFn: () => {
       const param = props.isCatalogBackend ? "catalog" : "database";
-      return apiFetch<{ columns: ColumnRow[] }>(
+      return apiFetch<ColumnsResponse>(
         `/api/live/schemas/${encodeURIComponent(props.schemaName)}/tables/${encodeURIComponent(props.tableName)}/columns?profile=${encodeURIComponent(props.dbProfile)}&${param}=${encodeURIComponent(props.database)}`,
       );
     },
