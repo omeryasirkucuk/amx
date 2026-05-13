@@ -25,6 +25,7 @@ from amx.web.routers import (
     catalog,
     code_ops,
     comments,
+    db_cache,
     docs_ops,
     generate,
     history,
@@ -116,6 +117,7 @@ def create_app(
     app.include_router(system.router)
     app.include_router(live_db.router)
     app.include_router(catalog.router)
+    app.include_router(db_cache.router)
     app.include_router(history.router)
     app.include_router(runs.router)
     app.include_router(comments.router)

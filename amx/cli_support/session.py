@@ -19,6 +19,15 @@ from amx.cli_support.commands.db import (
     cmd_add_profile as _cmd_add_profile,
 )
 from amx.cli_support.commands.db import (
+    cmd_cache_clear as _cmd_cache_clear,
+)
+from amx.cli_support.commands.db import (
+    cmd_cache_show as _cmd_cache_show,
+)
+from amx.cli_support.commands.db import (
+    cmd_cache_stats as _cmd_cache_stats,
+)
+from amx.cli_support.commands.db import (
     cmd_cleanup_placeholders as _cmd_cleanup_placeholders,
 )
 from amx.cli_support.commands.db import (
@@ -1057,6 +1066,21 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "db", "cleanup-placeholders"):
             return True
         _cmd_cleanup_placeholders(cfg, parts[1:])
+        return True
+    if head == "cache-show":
+        if not _require_namespace(head, namespace, "db", "cache-show"):
+            return True
+        _cmd_cache_show(cfg, parts[1:])
+        return True
+    if head == "cache-stats":
+        if not _require_namespace(head, namespace, "db", "cache-stats"):
+            return True
+        _cmd_cache_stats(cfg, parts[1:])
+        return True
+    if head == "cache-clear":
+        if not _require_namespace(head, namespace, "db", "cache-clear"):
+            return True
+        _cmd_cache_clear(cfg, parts[1:])
         return True
     if head == "save":
         path = cfg.save()
