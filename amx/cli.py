@@ -39,6 +39,8 @@ from amx.cli_support.commands.run import (
     _resolve_codebase_for_run,
     register_analyze_commands,
 )
+from amx.cli_support.commands.schedule import register_schedule_commands
+from amx.cli_support.commands.scheduler import register_scheduler_commands
 from amx.cli_support.commands.search import register_search_commands
 from amx.cli_support.root_commands import register_root_commands
 from amx.config import AMXConfig, ConfigSchemaTooNewError
@@ -235,6 +237,49 @@ def run_cli() -> None:
         sys.exit(1)
 
 
+def _bootstrap_scheduler_tick() -> None:
+    """Run one scheduler.tick(source='bootstrap') at every CLI invocation.
+
+    Surfaces missed schedules and recovers stale runs without firing
+    anything (the user-warning contract: when AMX was closed, the
+    next session sees the list and decides). Honours
+    ``AMX_SKIP_BOOTSTRAP_TICK=1`` for CI / scripted invocations and
+    for the daemon's own ``amx scheduler tick`` re-entry. Failures are
+    swallowed -- a broken tick must never block the CLI.
+    """
+    if os.getenv("AMX_SKIP_BOOTSTRAP_TICK", "").lower() in {"1", "true", "yes"}:
+        return
+    try:
+        from amx.scheduler.tick import tick as _tick
+        from amx.storage.sqlite_store import history_store as _hs_singleton
+
+        hs = _hs_singleton()
+        if hs is None:
+            return
+        report = _tick(store=hs, source="bootstrap")
+        # Print a concise banner only when there's something to surface.
+        n_missed = len(report.missed_for_review)
+        n_stale = len(report.stale_recovered)
+        if n_missed or n_stale:
+            import click as _click
+
+            parts = []
+            if n_stale:
+                parts.append(
+                    f"{n_stale} interrupted run{'s' if n_stale != 1 else ''} recovered (marked failed)"
+                )
+            if n_missed:
+                parts.append(
+                    f"{n_missed} schedule{'s' if n_missed != 1 else ''} missed while AMX was closed"
+                )
+            _click.echo(
+                "⚠️  " + "; ".join(parts) + ". Run `amx schedule list` to review.",
+                err=True,
+            )
+    except Exception:  # noqa: BLE001 - bootstrap tick must never crash the CLI
+        log.warning("bootstrap scheduler tick failed", exc_info=True)
+
+
 def _log_app_event(
     *,
     event_type: str,
@@ -328,6 +373,7 @@ def main(ctx: click.Context, cfg_path: str | None, debug: bool) -> None:
         )
         sys.exit(2)
     init_history_store(ctx.obj)
+    _bootstrap_scheduler_tick()
     _install_embedding_provider(ctx.obj)
     is_session_child = os.getenv("AMX_SESSION_CHILD") == "1"
     if not is_session_child:
@@ -374,6 +420,8 @@ register_analyze_run_command(
 )
 register_analyze_review_command(analyze, log_event=_log_app_event)
 register_rerun_command(main, pass_config=pass_config, log_event=_log_app_event)
+register_schedule_commands(main, log_event=_log_app_event)
+register_scheduler_commands(main, log_event=_log_app_event)
 register_docs_commands(
     main,
     finalize_scope=_finalize_scope,
