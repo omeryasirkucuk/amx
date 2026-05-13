@@ -771,6 +771,30 @@ def _finalize_history_run(
         warn(f"Could not persist run history finalization: {exc}")
 
 
+def _parse_columns_opt(
+    columns_opt: tuple[str, ...] | None,
+) -> dict[tuple[str, str], set[str]]:
+    """Parse ``--columns "schema.table.col[,…]"`` flags into the
+    ``{(schema, table): {col1, col2, ...}}`` map ``ScopeResult.column_overrides``
+    expects. Accepts both repeated flag use and comma-batched values."""
+    if not columns_opt:
+        return {}
+    out: dict[tuple[str, str], set[str]] = {}
+    for raw in columns_opt:
+        for piece in str(raw).split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            parts = piece.split(".")
+            if len(parts) != 3 or not all(parts):
+                raise click.BadParameter(
+                    f"--columns entry {piece!r} must be schema.table.column"
+                )
+            schema_n, table_n, column_n = parts
+            out.setdefault((schema_n, table_n), set()).add(column_n)
+    return out
+
+
 def execute_analyze_run(
     cfg: AMXConfig,
     *,
@@ -788,6 +812,7 @@ def execute_analyze_run(
     summary_filter: str | None = None,
     summary_sort: str | None = None,
     summary_group: str = "none",
+    columns_overrides: dict[tuple[str, str], set[str]] | None = None,
 ) -> None:
     from amx.cli_support.commands._analyze import (
         handle_keyboard_interrupt,
@@ -949,6 +974,32 @@ def execute_analyze_run(
             scope = finalize_scope(cfg, db, schema, tables_arg)
             if scope is None:
                 return
+
+            # When --columns was supplied, wrap the dict scope in a
+            # ScopeResult that carries column_overrides so the
+            # downstream Orchestrator restricts each named table to
+            # exactly those columns. Mirrors the interactive Column
+            # scope picker's behaviour (see services/analyze_scope.py).
+            if columns_overrides:
+                from amx.services.analyze_scope import ScopeResult
+
+                # Trim the scope to the schemas / tables actually
+                # named by --columns so users don't accidentally widen
+                # the run by also passing --schema / --table.
+                restricted: dict[str, list[str]] = {}
+                for (schema_name, table_name), _cols in columns_overrides.items():
+                    if schema_name in scope:
+                        if table_name in scope[schema_name]:
+                            restricted.setdefault(schema_name, []).append(table_name)
+                    else:
+                        # User provided --columns but the surrounding
+                        # finalize_scope didn't include those tables;
+                        # fall back to adding them so the run isn't a
+                        # no-op.
+                        restricted.setdefault(schema_name, []).append(table_name)
+                scope = ScopeResult(
+                    restricted, column_overrides=columns_overrides
+                )
 
             total_assets = sum(len(v) for v in scope.values())
 
@@ -1319,6 +1370,19 @@ def register_analyze_run_command(
         "--table", "-t", multiple=True, help="Specific asset(s). Omit for interactive selection."
     )
     @click.option(
+        "--columns",
+        "columns_opt",
+        multiple=True,
+        help=(
+            "Restrict the run to specific columns. Pass either dotted "
+            "triples (``--columns public.users.email``) or comma-"
+            "separated batches (``--columns 'public.users.id,"
+            "public.users.email'``). Multi-pass equivalent of the "
+            "interactive Column scope picker; --schema and --table are "
+            "still honoured and define the surrounding scope."
+        ),
+    )
+    @click.option(
         "--apply/--no-apply", default=False, help="Apply approved metadata to the database."
     )
     @click.option(
@@ -1409,6 +1473,7 @@ def register_analyze_run_command(
         tables_pos: tuple[str, ...],
         schema: str | None,
         table: tuple[str, ...],
+        columns_opt: tuple[str, ...],
         apply: bool,
         code_refresh: bool,
         code_profile: str | None,
@@ -1422,6 +1487,10 @@ def register_analyze_run_command(
     ) -> None:
         """Run all agents to infer metadata for selected assets (tables, views, etc.)."""
         from amx.db.connector import DatabaseConnector
+
+        # Parse --columns into a {(schema, table): {cols}} map up front
+        # so a malformed entry surfaces before any DB / LLM work.
+        columns_overrides = _parse_columns_opt(columns_opt)
 
         # Apply --doc multi-profile override for this run only. We
         # capture the previous value so we can restore it in the
@@ -1551,6 +1620,7 @@ def register_analyze_run_command(
                     summary_filter=summary_filter,
                     summary_sort=summary_sort,
                     summary_group=summary_group,
+                    columns_overrides=columns_overrides,
                 )
         except KeyboardInterrupt:
             warn("User interrupted process.")
