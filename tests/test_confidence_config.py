@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 
-def test_default_confidence_config_enabled_with_both_phase1_signals():
+def test_default_confidence_config_enables_phase1_and_phase2_signals():
     from amx.config import LLMConfig
 
     cfg = LLMConfig(provider="openai", model="gpt-4o-mini")
     assert cfg.confidence.enabled is True
+    # Default-on: A (logprob), C (self-consistency), B (self-declaration).
+    # D (judge) stays opt-in because its second-pass LLM call roughly
+    # doubles per-run token spend.
     assert cfg.confidence.use_logprob is True
     assert cfg.confidence.use_self_consistency is True
-    assert cfg.confidence.use_self_decl is False
+    assert cfg.confidence.use_self_decl is True
     assert cfg.confidence.use_judge is False
     assert cfg.confidence.high == 0.75
     assert cfg.confidence.med == 0.50

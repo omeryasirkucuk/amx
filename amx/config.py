@@ -1340,16 +1340,18 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
 class ConfidenceConfig:
     """Per-alternative confidence scoring knobs.
 
-    Phase 1 enables Signal A (logprob span) and Signal C
-    (self-consistency). Phase 2 / 3 flags exist but default off so the
-    feature can be incrementally enabled without further migration.
+    Phases 1 + 2 enable Signal A (logprob span), Signal C
+    (self-consistency), and Signal B (LLM self-declaration). Signal D
+    (Phase 3 LLM-as-judge) stays off by default because its second-pass
+    LLM call roughly doubles per-run token spend; users opt in
+    explicitly via ``use_judge: true`` on the LLM profile.
     """
 
     enabled: bool = True
     use_logprob: bool = True
     use_self_consistency: bool = True
-    use_self_decl: bool = False  # Phase 2
-    use_judge: bool = False  # Phase 3
+    use_self_decl: bool = True
+    use_judge: bool = False  # Phase 3 — opt-in
     high: float = 0.75
     med: float = 0.50
 
