@@ -3,14 +3,14 @@ import { Check, ChevronDown, CircleStop, FileText, Send, Settings as SettingsIco
 import { Link } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { useEventSource, type SseEvent } from "../lib/sse";
 import { api, apiFetch, ApiError } from "../lib/api";
 import { useUi } from "../lib/store";
 import { Card } from "./Card";
 import { cn } from "../lib/cn";
-import { InfoHint } from "./ui";
+import { InfoHint, useToast } from "./ui";
 import AskScopeDropdown from "./AskScopeDropdown";
 import ProfilePicker from "./topbar/ProfilePicker";
 
@@ -113,6 +113,12 @@ interface AskChatProps {
   // submit has fired so a re-render doesn't refire it.
   seedSubmit?: string | null;
   onSeedSubmitConsumed?: () => void;
+  // True while the parent is loading the picked session's history
+  // detail. Lets the empty-state placeholder swap to a "Loading
+  // session…" line so the user sees an immediate visual reset rather
+  // than the "Ask anything about your metadata" welcome that fires
+  // for genuine new sessions.
+  loadingSession?: boolean;
   // Lets the chat panel notify parent when a brand-new session id is
   // assigned by the backend, so the sidebar can refresh / highlight.
   onSessionAssigned?: (sessionId: number | null) => void;
@@ -131,6 +137,7 @@ export default function AskChat({
   seedTurns,
   seedToken,
   seedSubmit,
+  loadingSession = false,
   onSeedSubmitConsumed,
   onSessionAssigned,
   onResumeStale,
@@ -494,18 +501,29 @@ export default function AskChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedSubmit, seedToken]);
 
-  function handleScopeChange(next: string[] | null) {
-    setAskScope(sessionKey, next);
-    // Persist to the backend session record so cross-tab reloads pick
-    // it up. Skip when there's no session yet — the migration on
-    // first /ask covers it.
-    if (sessionId != null) {
-      apiFetch(`/api/ask/sessions/${sessionId}`, {
+  const scopeToast = useToast();
+  const scopePatch = useMutation({
+    mutationFn: ({ id, scope }: { id: number; scope: string[] | null }) =>
+      apiFetch(`/api/ask/sessions/${id}`, {
         method: "PATCH",
-        body: JSON.stringify({ scope_profiles: next }),
-      }).catch(() => {
-        /* best-effort — local state is still authoritative */
-      });
+        body: JSON.stringify({ scope_profiles: scope }),
+      }),
+    onError: (e: Error) =>
+      scopeToast.push({
+        title: "Couldn't save scope",
+        description: e.message,
+        tone: "error",
+      }),
+  });
+
+  function handleScopeChange(next: string[] | null) {
+    // Local state is authoritative for the in-progress chat — flip it
+    // synchronously so the dropdown closes instantly. The PATCH below
+    // persists it for cross-tab reloads and surfaces a toast if the
+    // server rejects the write (instead of the previous silent .catch).
+    setAskScope(sessionKey, next);
+    if (sessionId != null) {
+      scopePatch.mutate({ id: sessionId, scope: next });
     }
   }
 
@@ -541,14 +559,33 @@ export default function AskChat({
         className="flex-1 min-w-0 space-y-4 overflow-y-auto overflow-x-hidden rounded-xl border border-surface-border bg-surface-raised p-4"
       >
         {turns.length === 0 && !activeJob && (
-          <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center text-ink-dim">
-            <Sparkles size={28} className="mb-3 opacity-60" />
-            <p className="font-medium text-ink-muted">Ask anything about your metadata.</p>
-            <p className="mt-1 max-w-md text-xs">
-              Try “which tables don't have comments?”, “what columns store
-              email addresses?”, or “show me the latest run on sales.orders”.
-            </p>
-          </div>
+          loadingSession ? (
+            <div className="space-y-3 px-1 pt-2">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    "flex",
+                    i % 2 === 0 ? "justify-end" : "justify-start",
+                  )}
+                >
+                  <div className="h-10 w-2/3 animate-pulse rounded-2xl bg-surface-subtle/60" />
+                </div>
+              ))}
+              <p className="pt-1 text-center text-[11px] uppercase tracking-wider text-ink-dim">
+                Loading session…
+              </p>
+            </div>
+          ) : (
+            <div className="flex h-full min-h-[40vh] flex-col items-center justify-center text-center text-ink-dim">
+              <Sparkles size={28} className="mb-3 opacity-60" />
+              <p className="font-medium text-ink-muted">Ask anything about your metadata.</p>
+              <p className="mt-1 max-w-md text-xs">
+                Try “which tables don't have comments?”, “what columns store
+                email addresses?”, or “show me the latest run on sales.orders”.
+              </p>
+            </div>
+          )
         )}
         {turns.map((turn, idx) => (
           <Bubble key={idx} role={turn.role}>
@@ -635,11 +672,19 @@ export default function AskChat({
               activeName={activeLlmProfile}
               tooltip={activeLlmModel ?? undefined}
             />
-            <AskScopeDropdown
-              scope={scopeForSession}
-              onChange={handleScopeChange}
-              disabled={!!activeJob}
-            />
+            <div className="relative">
+              <AskScopeDropdown
+                scope={scopeForSession}
+                onChange={handleScopeChange}
+                disabled={!!activeJob}
+              />
+              {scopePatch.isPending && (
+                <span
+                  aria-label="Saving scope"
+                  className="pointer-events-none absolute -right-1 -top-1 inline-block h-2 w-2 animate-pulse rounded-full bg-accent"
+                />
+              )}
+            </div>
           </div>
         </div>
         <form onSubmit={handleSubmit} className="flex items-end gap-2">

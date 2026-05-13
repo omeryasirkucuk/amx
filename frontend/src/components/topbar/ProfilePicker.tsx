@@ -68,7 +68,60 @@ export default function ProfilePicker({
       apiFetch(`/api/profiles/${kind}/${encodeURIComponent(name)}/activate`, {
         method: "POST",
       }),
-    onSuccess: () => {
+    // Optimistic context update — flips the pill label and the
+    // ``["profiles", kind, "list"]`` is_active flags the instant the
+    // user picks, so the trigger stops showing the old profile while
+    // the activate POST and the follow-on context refetch run. Rolled
+    // back on error.
+    onMutate: async (name) => {
+      await queryClient.cancelQueries({ queryKey: ["context"] });
+      await queryClient.cancelQueries({ queryKey: ["profiles", kind, "list"] });
+      const ctxSnapshot = queryClient.getQueryData<Record<string, unknown>>([
+        "context",
+      ]);
+      const listSnapshot = queryClient.getQueryData<ProfilesResponse>([
+        "profiles",
+        kind,
+        "list",
+      ]);
+      if (ctxSnapshot) {
+        const next: Record<string, unknown> = { ...ctxSnapshot };
+        if (kind === "llm") {
+          next.active_llm_profile = name;
+          // Surface the picked profile's model on the pill right away
+          // so the secondary line under the chat input matches.
+          const picked = listSnapshot?.profiles.find((p) => p.name === name);
+          if (picked?.provider) next.llm_provider = picked.provider;
+          if (picked?.model) next.llm_model = picked.model;
+        } else {
+          next.active_db_profile = name;
+        }
+        queryClient.setQueryData(["context"], next);
+      }
+      if (listSnapshot) {
+        queryClient.setQueryData<ProfilesResponse>(
+          ["profiles", kind, "list"],
+          {
+            ...listSnapshot,
+            profiles: listSnapshot.profiles.map((p) => ({
+              ...p,
+              is_active: p.name === name,
+            })),
+          },
+        );
+      }
+      setOpen(false);
+      return { ctxSnapshot, listSnapshot };
+    },
+    onError: (_err, _name, ctx) => {
+      if (ctx?.ctxSnapshot) {
+        queryClient.setQueryData(["context"], ctx.ctxSnapshot);
+      }
+      if (ctx?.listSnapshot) {
+        queryClient.setQueryData(["profiles", kind, "list"], ctx.listSnapshot);
+      }
+    },
+    onSettled: () => {
       // After switching, every downstream query needs to re-fetch:
       // catalogs/databases/schemas all key off the active profile.
       queryClient.invalidateQueries({ queryKey: ["context"] });
@@ -78,7 +131,6 @@ export default function ProfilePicker({
       queryClient.invalidateQueries({ queryKey: ["live-schemas"] });
       queryClient.invalidateQueries({ queryKey: ["live-assets"] });
       queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
-      setOpen(false);
     },
   });
 
@@ -138,6 +190,7 @@ export default function ProfilePicker({
             activeName
               ? "border-accent/20 bg-accent-soft text-accent-ink hover:bg-accent-soft/80"
               : "border-warning/40 bg-warning-soft text-warning hover:bg-warning-soft/80",
+            activate.isPending && "opacity-80",
           )}
         >
           <span className="text-[10px] uppercase tracking-wider opacity-70">
@@ -146,7 +199,14 @@ export default function ProfilePicker({
           <span className="max-w-[8rem] truncate font-mono text-[11px]">
             {display}
           </span>
-          <ChevronDown size={12} className="opacity-70" />
+          {activate.isPending ? (
+            <span
+              aria-label="Activating"
+              className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current"
+            />
+          ) : (
+            <ChevronDown size={12} className="opacity-70" />
+          )}
         </button>
       )}
       {open && (
