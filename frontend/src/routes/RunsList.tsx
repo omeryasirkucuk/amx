@@ -117,7 +117,11 @@ export default function RunsList() {
       const stillRunning = (data ?? []).some(
         (r) => r.status === "running" || r.status === "queued",
       );
-      return stillRunning ? 4000 : false;
+      // Tight 4s tick while a worker is in flight (so a cancel /
+      // completion flips on screen quickly); 15s baseline otherwise
+      // so a scheduled run that fires while the user is parked on
+      // /runs shows up without a manual refresh.
+      return stillRunning ? 4000 : 15000;
     },
   });
 
