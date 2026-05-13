@@ -747,6 +747,11 @@ def _ask_worker(
         if chunk:
             emit(job.queue, "thinking.delta", {"text": chunk})
 
+    def _on_content_delta(chunk: str) -> None:
+        if not chunk:
+            return
+        emit(job.queue, "answer.delta", {"text": chunk})
+
     def _on_tool_call(summary: dict[str, Any]) -> None:
         payload: dict[str, Any] = {
             "name": summary.get("name", ""),
@@ -778,6 +783,7 @@ def _ask_worker(
             display=None,
             on_thinking_delta=_on_thinking,
             on_tool_call=_on_tool_call,
+            on_content_delta=_on_content_delta,
             cancel_token=job.cancel,
             db_profiles=list(scope_profiles) if scope_profiles else None,
             doc_profiles=doc_profiles_override,

@@ -490,6 +490,9 @@ class DualWriteHistoryStore:
     ) -> list[dict[str, Any]]:
         return self.local.get_run_results(run_id, unevaluated_only=unevaluated_only)
 
+    def get_run_result(self, result_id: int) -> dict[str, Any] | None:
+        return self.local.get_run_result(result_id)
+
     def list_recent_runs(
         self, limit: int = 20, *, command_filter: str | None = "analyze.run"
     ) -> list[dict[str, Any]]:

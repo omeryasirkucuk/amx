@@ -63,6 +63,7 @@ export default function Landing() {
   // default; the topbar Toggle Sidebar control still exposes the
   // tree for users who want to jump straight into a profile.
   const setSidebarCollapsed = useUi((s) => s.setSidebarCollapsed);
+  const setMobileSidebarOpen = useUi((s) => s.setMobileSidebarOpen);
   useEffect(() => {
     setSidebarCollapsed(true);
   }, [setSidebarCollapsed]);
@@ -169,7 +170,15 @@ export default function Landing() {
           tile is unreachable until the user fixes the precondition. */}
       <section className="grid gap-3 md:grid-cols-2">
         <ActionCard
-          to={profileCount > 0 ? "/" : "/settings"}
+          to={profileCount > 0 ? null : "/settings"}
+          onClick={
+            profileCount > 0
+              ? () => {
+                  setSidebarCollapsed(false);
+                  setMobileSidebarOpen(true);
+                }
+              : undefined
+          }
           icon={Database}
           title={profileCount > 0 ? "Browse" : "Add your first DB profile"}
           description={
@@ -256,6 +265,10 @@ export default function Landing() {
 
 interface ActionCardProps {
   to: string | null;
+  /** Optional click handler used when the card is an in-page action
+   *  (e.g. expand the sidebar) rather than a route navigation. Ignored
+   *  when ``to`` is set. */
+  onClick?: () => void;
   icon: typeof Database;
   title: string;
   description: string;
@@ -272,6 +285,7 @@ interface ActionCardProps {
 
 function ActionCard({
   to,
+  onClick,
   icon: Icon,
   title,
   description,
@@ -279,7 +293,7 @@ function ActionCard({
   tone = "default",
   disabledReason,
 }: ActionCardProps) {
-  const isDisabled = !to || !!disabledReason;
+  const isDisabled = (!to && !onClick) || !!disabledReason;
   const body = (
     <>
       <div className="flex items-center gap-2">
@@ -325,10 +339,17 @@ function ActionCard({
       </div>
     );
   }
+  if (to) {
+    return (
+      <Link to={to} className={className}>
+        {body}
+      </Link>
+    );
+  }
   return (
-    <Link to={to as string} className={className}>
+    <button type="button" onClick={onClick} className={cn(className, "text-left w-full")}>
       {body}
-    </Link>
+    </button>
   );
 }
 
