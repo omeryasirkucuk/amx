@@ -68,6 +68,13 @@ class _ScheduleStore(Protocol):
         triggered_run_id: int | None = ...,
     ) -> None: ...
 
+    def recover_stale_runs(
+        self,
+        *,
+        threshold_sec: float = ...,
+        now_utc: float | None = ...,
+    ) -> list[int]: ...
+
 
 SpawnWorker = Callable[[dict[str, Any]], int]
 """Callable that spawns a run worker from a schedule's payload.
@@ -110,6 +117,8 @@ def tick(
     spawn_worker: SpawnWorker | None = None,
     now_utc: float | None = None,
     max_per_tick: int = 50,
+    stale_threshold_sec: float = 300.0,
+    recover_stale: bool = True,
 ) -> TickReport:
     """Perform one scheduling pass against *store*.
 
@@ -117,12 +126,26 @@ def tick(
     error on one schedule is recorded in ``failed_resolution`` and
     the loop continues. Only programmer errors (wrong source value,
     manual without ``target_id``) surface as exceptions.
+
+    Every tick begins with a stale-run sweep: ``analysis_runs`` rows
+    whose ``last_heartbeat_at`` is older than ``stale_threshold_sec``
+    (or NULL) and whose status is still ``running`` are marked
+    ``failed``. Set ``recover_stale=False`` in tests that want to
+    isolate scheduling behaviour from interruption recovery.
     """
     if source not in ("bootstrap", "daemon", "manual"):
         raise ValueError(f"unknown tick source: {source!r}")
 
     now = now_utc if now_utc is not None else time.time()
     report = TickReport()
+
+    if recover_stale and hasattr(store, "recover_stale_runs"):
+        try:
+            report.stale_recovered = store.recover_stale_runs(
+                threshold_sec=stale_threshold_sec, now_utc=now
+            )
+        except Exception:  # noqa: BLE001 - never let stale sweep crash the tick
+            report.stale_recovered = []
 
     if source == "bootstrap":
         # Surface missed schedules. Do NOT fire — bootstrap respects
