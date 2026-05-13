@@ -1337,6 +1337,24 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
 
 
 @dataclass
+class ConfidenceConfig:
+    """Per-alternative confidence scoring knobs.
+
+    Phase 1 enables Signal A (logprob span) and Signal C
+    (self-consistency). Phase 2 / 3 flags exist but default off so the
+    feature can be incrementally enabled without further migration.
+    """
+
+    enabled: bool = True
+    use_logprob: bool = True
+    use_self_consistency: bool = True
+    use_self_decl: bool = False  # Phase 2
+    use_judge: bool = False  # Phase 3
+    high: float = 0.75
+    med: float = 0.50
+
+
+@dataclass
 class LLMConfig(_ObservableConfig):
     provider: str = ""  # openai | openrouter | anthropic | gemini | local | deepseek | …
     model: str = ""
@@ -1375,6 +1393,7 @@ class LLMConfig(_ObservableConfig):
     logprob_high: float = 0.85
     logprob_medium: float = 0.50
     force_logprobs: bool = True
+    confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
     # Token budget for the model's internal reasoning (Anthropic extended
     # thinking). Only consumed when the model supports reasoning AND a caller
     # passes ``on_thinking`` to ``LLMProvider.chat``; otherwise ignored.
@@ -1413,6 +1432,17 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     # but the field stays on LLMConfig for back-compat. Existing
     # configs with ``language: turkish`` round-trip without crashing
     # — the value is read in but never used to branch any prompt.
+    conf_map = m.get("confidence") or {}
+    bands_map = conf_map.get("bands") or {}
+    confidence_cfg = ConfidenceConfig(
+        enabled=bool(conf_map.get("enabled", True)),
+        use_logprob=bool(conf_map.get("use_logprob", True)),
+        use_self_consistency=bool(conf_map.get("use_self_consistency", True)),
+        use_self_decl=bool(conf_map.get("use_self_decl", False)),
+        use_judge=bool(conf_map.get("use_judge", False)),
+        high=float(bands_map.get("high", 0.75)),
+        med=float(bands_map.get("med", 0.50)),
+    )
     return LLMConfig(
         provider=provider,
         model=model,
@@ -1434,6 +1464,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         custom_input_cost_per_mtok=_optional_nonneg_float(m.get("custom_input_cost_per_mtok")),
         custom_output_cost_per_mtok=_optional_nonneg_float(m.get("custom_output_cost_per_mtok")),
         rag_query_timeout_sec=float(m.get("rag_query_timeout_sec", 5.0) or 5.0),
+        confidence=confidence_cfg,
     )
 
 
@@ -1481,6 +1512,17 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "custom_input_cost_per_mtok": llm.custom_input_cost_per_mtok,
         "custom_output_cost_per_mtok": llm.custom_output_cost_per_mtok,
         "rag_query_timeout_sec": llm.rag_query_timeout_sec,
+        "confidence": {
+            "enabled": llm.confidence.enabled,
+            "use_logprob": llm.confidence.use_logprob,
+            "use_self_consistency": llm.confidence.use_self_consistency,
+            "use_self_decl": llm.confidence.use_self_decl,
+            "use_judge": llm.confidence.use_judge,
+            "bands": {
+                "high": llm.confidence.high,
+                "med": llm.confidence.med,
+            },
+        },
     }
 
 

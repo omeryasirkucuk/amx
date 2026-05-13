@@ -173,6 +173,33 @@ def _column_key(row: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+#: Rich-markup glyphs for the Phase 1 confidence bands. Keyed by the
+#: enum-style strings emitted into ``alternatives_json``. Falls back to
+#: empty string for legacy rows (band ``None``) or unrecognised values.
+_BAND_GLYPH = {
+    "HIGH": "[green][H][/green]",
+    "MED": "[yellow][M][/yellow]",
+    "LOW": "[red][L][/red]",
+}
+
+
+def _band_prefix(alt_entry: Any) -> str:
+    """Return a Rich-markup band glyph for one alternative entry.
+
+    ``alt_entry`` is the parsed dict produced by
+    :func:`amx.storage.sqlite_store.parse_alternatives_json`. Returns
+    empty string when no band is available (legacy rows / confidence
+    disabled / unknown band).
+    """
+    if not isinstance(alt_entry, dict):
+        return ""
+    band = alt_entry.get("band")
+    if not band:
+        return ""
+    glyph = _BAND_GLYPH.get(band)
+    return f"{glyph} " if glyph else ""
+
+
 def _truncate(text: str, max_len: int = 60) -> str:
     s = (text or "").strip()
     if len(s) <= max_len:
@@ -186,21 +213,24 @@ def _top_alternative(row: dict[str, Any]) -> str:
     Prefer ``chosen_description`` (post-review winner). Fall back to
     the first entry of ``alternatives_json``. Empty string if neither
     is present.
+
+    Accepts both the legacy flat list[str] payload and the Phase 1
+    structured list[dict] payload (where each entry has a ``text`` key).
     """
     chosen = (row.get("chosen_description") or "").strip()
     if chosen:
         return chosen
     alts = row.get("alternatives_json")
-    if isinstance(alts, list) and alts:
-        first = alts[0]
-        return str(first).strip() if first else ""
     if isinstance(alts, str) and alts:
         try:
-            parsed = json.loads(alts)
+            alts = json.loads(alts)
         except Exception:
-            parsed = []
-        if isinstance(parsed, list) and parsed:
-            return str(parsed[0]).strip() if parsed[0] else ""
+            alts = []
+    if isinstance(alts, list) and alts:
+        first = alts[0]
+        if isinstance(first, dict):
+            return str(first.get("text") or "").strip()
+        return str(first).strip() if first else ""
     return ""
 
 
@@ -524,6 +554,31 @@ def _build_asset_map(
     return asset_map
 
 
+def _top_alternative_entry(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the parsed first-alternative dict for ``row`` or ``None``.
+
+    Mirrors ``_top_alternative`` but keeps the structured shape (text +
+    scores + ensemble + band) so callers can extract Phase 1 confidence
+    metadata without re-parsing.
+    """
+    alts_raw = row.get("alternatives_json")
+    if isinstance(alts_raw, str):
+        from amx.storage.sqlite_store import parse_alternatives_json
+
+        parsed = parse_alternatives_json(alts_raw)
+    elif isinstance(alts_raw, list):
+        # Already-parsed list. Run through the normaliser so legacy
+        # ``list[str]`` rows still come back as dicts with ``band=None``.
+        import json as _json
+
+        from amx.storage.sqlite_store import parse_alternatives_json
+
+        parsed = parse_alternatives_json(_json.dumps(alts_raw))
+    else:
+        parsed = []
+    return parsed[0] if parsed else None
+
+
 def _render_per_column_pivot(
     runs: list[dict[str, Any]],
     results_by_run: dict[int, list[dict[str, Any]]],
@@ -594,6 +649,11 @@ def _render_per_column_pivot(
                 continue
             full_desc = _top_alternative(row)
             desc_truncated = _truncate(full_desc, max_len=58)
+            # Phase 1 confidence: prepend a coloured band glyph derived
+            # from the first alternative's per-alternative band when
+            # available. Legacy rows return an empty prefix.
+            first_alt_entry = _top_alternative_entry(row)
+            band_prefix_markup = _band_prefix(first_alt_entry or {})
             band = str(row.get("confidence") or "").lower() or "—"
             logprob = (
                 _fmt_float(row.get("logprob_score"), places=2)
@@ -602,6 +662,8 @@ def _render_per_column_pivot(
             )
             tokens = _fmt_int(row.get("token_count"))
             cell = Text()
+            if band_prefix_markup:
+                cell.append_text(Text.from_markup(band_prefix_markup))
             if diff and col_idx > 0 and full_desc:
                 # Diff truncated current vs truncated baseline so on-screen
                 # lengths stay bounded — full text still goes to exports.

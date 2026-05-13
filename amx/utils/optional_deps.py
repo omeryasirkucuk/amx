@@ -112,6 +112,14 @@ BUNDLES: dict[str, list[PackageSpec]] = {
         ("docx", "python-docx"),
         "openpyxl",
     ],
+    # Local sentence-transformers — pulled when the per-alternative
+    # confidence Signal C (self-consistency clustering) first runs.
+    # Same package family also feeds the ``bertscore`` and search-quality
+    # tier-1 paths, so the install pays once and the others reuse the
+    # cache.
+    "local_embeddings": [
+        ("sentence_transformers", "sentence-transformers>=3.0"),
+    ],
 }
 
 #: Human-readable labels surfaced in the install banner when a bundle

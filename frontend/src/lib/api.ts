@@ -952,6 +952,24 @@ export interface ModelCatalog {
   is_stale: boolean;
 }
 
+/**
+ * Phase 1 confidence scoring: structured alternative entry persisted
+ * inside ``run_results.alternatives_json``. Legacy runs may still
+ * surface plain strings — the consumer must call ``normalizeAlternatives``
+ * (RunDetail.tsx) which already accepts both shapes.
+ */
+export interface StructuredAlternative {
+  text: string;
+  scores?: {
+    logprob: number | null;
+    self_consistency: number | null;
+    self_decl: number | null;
+    judge: number | null;
+  };
+  ensemble?: number | null;
+  band?: "HIGH" | "MED" | "LOW" | null;
+}
+
 /** Shape of one row in the re-run chain returned by ``resultHistory``.
  *
  * Mirrors the backend ``run_results`` schema; alternatives are already
