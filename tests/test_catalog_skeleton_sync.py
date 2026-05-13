@@ -207,6 +207,42 @@ def test_empty_schemas_databricks_message(
     assert "catalog" in summary["error"].lower()
 
 
+def test_backend_read_from_target_profile_not_active(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the user clicks Sync All from an active 2-level profile,
+    the empty-schemas error for a *different* 3-level profile in the
+    batch must use the 3-level wording. Regression for the prod bug
+    where dbr-oyk failed with the postgres-shaped 'check ``USAGE`` on
+    one schema' message because the sync read backend from
+    ``cfg.db`` (the active profile) instead of
+    ``cfg.db_profiles[profile]`` (the target)."""
+    connector = _StubConnector(schemas=[], assets={})
+    _stub_build_connector(monkeypatch, connector)
+
+    class _ActivePostgresDB:
+        backend = "postgresql"
+        database = "appdb"
+        catalog = ""
+        project = ""
+
+    class _DatabricksDB:
+        backend = "databricks"
+        database = ""
+        catalog = ""
+        project = ""
+
+    class _MixedCfg:
+        db = _ActivePostgresDB()
+        db_profiles = {"prof-dbr": _DatabricksDB()}
+
+    summary = sync_profile_skeleton(_MixedCfg(), "prof-dbr", fresh_catalog)
+    assert summary["state"] == "failed"
+    assert "catalog" in summary["error"].lower()
+    # And the postgres-only 2-level wording must NOT appear.
+    assert "USAGE" not in summary["error"]
+
+
 def test_completeness_gate_window(
     fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:

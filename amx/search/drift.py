@@ -316,20 +316,36 @@ def sync_profile_skeleton(
         "error": "",
         "containers": [],
     }
-    db_backend = str(getattr(cfg.db, "backend", "") or "") if cfg is not None else ""
+    # Read backend + default container from the *target* profile, NOT
+    # ``cfg.db`` (the active profile). When the user clicks Sync All
+    # from an active local-postgre session, every other profile gets
+    # sync'd in turn — using ``cfg.db.backend`` here would stamp the
+    # postgres backend onto a Databricks failure message and produce
+    # the wrong actionable hint.
+    target_db = None
+    if cfg is not None:
+        profile_map = getattr(cfg, "db_profiles", {}) or {}
+        target_db = profile_map.get((profile or "").strip())
+    # Fallback to ``cfg.db`` only when the profile lookup fails (test
+    # stubs with no ``db_profiles`` map).
+    if target_db is None and cfg is not None:
+        target_db = getattr(cfg, "db", None)
+    db_backend = str(getattr(target_db, "backend", "") or "") if target_db is not None else ""
     is_three_level = db_backend in _THREE_LEVEL_BACKENDS
     default_container = ""
-    if cfg is not None:
+    if target_db is not None:
         default_container = str(
-            getattr(cfg.db, "catalog", "") if is_three_level else getattr(cfg.db, "database", "")
+            getattr(target_db, "catalog", "")
+            if is_three_level
+            else getattr(target_db, "database", "")
         )
         if not default_container:
             # ``project`` is BigQuery's catalog-equivalent on some
             # profile shapes; preserve the prior fallback chain.
             default_container = str(
-                getattr(cfg.db, "database", "")
-                or getattr(cfg.db, "catalog", "")
-                or getattr(cfg.db, "project", "")
+                getattr(target_db, "database", "")
+                or getattr(target_db, "catalog", "")
+                or getattr(target_db, "project", "")
                 or ""
             )
 
