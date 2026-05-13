@@ -87,6 +87,13 @@ export interface SubmittedTurn {
    *  the turn, deduped by ``(source, chunk_idx)``. Rendered as a
    *  Sources block under the answer. */
   citations?: Citation[];
+  /** When set, this assistant turn is a marker for a question the
+   *  user cancelled before the LLM produced an answer. Rendered as a
+   *  thin "cancelled" pill instead of a chat bubble — the user
+   *  question above it stays so the user can copy / re-ask without
+   *  re-typing, but no orphaned "Reasoning…" or empty bubble sits
+   *  next to it. */
+  cancelled?: boolean;
 }
 
 interface SubmitResponse {
@@ -405,7 +412,17 @@ export default function AskChat({
     //     cancel).
     //   * A real proxy reset / network glitch — both flags are false,
     //     surface the actionable banner.
-    if (!wasCancelled && !cancelling) {
+    if (wasCancelled || cancelling) {
+      // Drop a tombstone assistant turn next to the user's question
+      // so the chat doesn't leave the user bubble orphaned on the
+      // canvas. Rendered as a thin pill, not a real bubble, by the
+      // turns map below.
+      setTurns((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant" && last.cancelled) return prev;
+        return [...prev, { role: "assistant", content: "", cancelled: true }];
+      });
+    } else {
       setSubmitError(
         "The ask stream ended without a final answer. Try again, or check Settings → LLM if this keeps happening.",
       );
@@ -603,31 +620,42 @@ export default function AskChat({
             </div>
           )
         )}
-        {turns.map((turn, idx) => (
-          <Bubble key={idx} role={turn.role}>
-            {turn.role === "assistant" ? (
-              <MarkdownBody text={turn.content} />
-            ) : (
-              turn.content
-            )}
-            {turn.toolCalls && turn.toolCalls.length > 0 && (
-              <ToolCallList calls={turn.toolCalls} />
-            )}
-            {turn.role === "assistant" &&
-              turn.citations &&
-              turn.citations.length > 0 && (
-                <CitationsList citations={turn.citations} />
+        {turns.map((turn, idx) => {
+          if (turn.role === "assistant" && turn.cancelled) {
+            return (
+              <div key={idx} className="flex justify-start">
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning-soft/30 px-2.5 py-0.5 text-[11px] font-medium text-warning">
+                  <CircleStop size={11} /> Cancelled
+                </div>
+              </div>
+            );
+          }
+          return (
+            <Bubble key={idx} role={turn.role}>
+              {turn.role === "assistant" ? (
+                <MarkdownBody text={turn.content} />
+              ) : (
+                turn.content
               )}
-            {turn.role === "assistant" &&
-              (turn.scopeProfiles?.length || turn.totalLatencyMs != null) && (
-                <AnswerMeta
-                  scopeProfiles={turn.scopeProfiles}
-                  focusProfile={turn.focusProfile ?? null}
-                  totalLatencyMs={turn.totalLatencyMs}
-                />
+              {turn.toolCalls && turn.toolCalls.length > 0 && (
+                <ToolCallList calls={turn.toolCalls} />
               )}
-          </Bubble>
-        ))}
+              {turn.role === "assistant" &&
+                turn.citations &&
+                turn.citations.length > 0 && (
+                  <CitationsList citations={turn.citations} />
+                )}
+              {turn.role === "assistant" &&
+                (turn.scopeProfiles?.length || turn.totalLatencyMs != null) && (
+                  <AnswerMeta
+                    scopeProfiles={turn.scopeProfiles}
+                    focusProfile={turn.focusProfile ?? null}
+                    totalLatencyMs={turn.totalLatencyMs}
+                  />
+                )}
+            </Bubble>
+          );
+        })}
         {activeJob && (
           <Bubble role="assistant" pulsing={!cancelling}>
             {cancelling && (
