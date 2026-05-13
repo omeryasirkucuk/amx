@@ -142,15 +142,40 @@ export function summarizeProcessedAssets(
     }
   }
 
-  // Many tables, one schema.
+  // Many tables, one schema — name the first 1-2 tables so users
+  // can see what was processed at a glance, then collapse the rest
+  // into "+N more" so the cell stays a single line.
   if (schemas === 1) {
     const first = sample[0];
     const schema = first ? first.schema : "";
-    return `${schema} · ${tables} table${tables === 1 ? "" : "s"}`;
+    // Distinct table names from the sample (the sample dedupes by
+    // schema.table.column, so the same table can appear multiple
+    // times when columns were processed).
+    const distinctTables: string[] = [];
+    for (const a of sample) {
+      if (!distinctTables.includes(a.table)) distinctTables.push(a.table);
+      if (distinctTables.length >= 2) break;
+    }
+    const head = distinctTables.map((t) => `${schema}.${t}`).join(", ");
+    const more = tables - distinctTables.length;
+    if (more > 0) {
+      return `${head}, +${more} more (${tables} tables in ${schema})`;
+    }
+    return `${head} (${tables} tables)`;
   }
 
-  // Cross-schema run.
-  return `${schemas} schemas · ${tables} table${tables === 1 ? "" : "s"}`;
+  // Cross-schema run — show the first 2 schemas + "+N more schemas".
+  const distinctSchemas: string[] = [];
+  for (const a of sample) {
+    if (!distinctSchemas.includes(a.schema)) distinctSchemas.push(a.schema);
+    if (distinctSchemas.length >= 2) break;
+  }
+  const moreSchemas = schemas - distinctSchemas.length;
+  const head = distinctSchemas.join(", ");
+  if (moreSchemas > 0) {
+    return `${head}, +${moreSchemas} more (${schemas} schemas · ${tables} tables)`;
+  }
+  return `${head} · ${tables} tables`;
 }
 
 /** Build a multi-line tooltip enumerating every distinct asset the
