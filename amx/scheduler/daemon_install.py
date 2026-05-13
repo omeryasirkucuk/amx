@@ -151,6 +151,23 @@ def detect_daemon_state() -> dict[str, Any]:
         if service.exists() and timer.exists():
             return {"installed": True, "path": str(timer), "last_tick_log": log_str}
         return {"installed": False, "path": None, "last_tick_log": log_str}
+    if system == "Windows":
+        # ``schtasks /query`` returns 0 when the task exists.
+        try:
+            result = subprocess.run(
+                ["schtasks", "/query", "/tn", label],
+                check=False,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                return {
+                    "installed": True,
+                    "path": label,
+                    "last_tick_log": log_str,
+                }
+        except FileNotFoundError:
+            pass
+        return {"installed": False, "path": None, "last_tick_log": log_str}
     return {"installed": False, "path": None, "last_tick_log": log_str}
 
 
@@ -207,10 +224,20 @@ def install_daemon() -> dict[str, Any]:
             )
         )
         tmr_path.write_text(_SYSTEMD_TIMER.format(label=label, suffix=suffix))
+        # ``loginctl enable-linger`` keeps user-level systemd units
+        # running on headless / sshd-only servers where the user
+        # doesn't have an interactive session pinned. Best-effort:
+        # the call may fail without sudo on some distros, which is
+        # fine -- the timer still works for users who stay logged
+        # in interactively.
+        username = os.environ.get("USER", "")
         for cmd in (
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "--now", tmr_path.name],
+            ["loginctl", "enable-linger", username] if username else None,
         ):
+            if cmd is None:
+                continue
             try:
                 subprocess.run(cmd, check=False, capture_output=True)
             except FileNotFoundError:
@@ -220,12 +247,69 @@ def install_daemon() -> dict[str, Any]:
             "path": str(tmr_path),
         }
 
+    if system == "Windows":
+        # Windows Task Scheduler equivalent: ``schtasks /create`` with
+        # a minute-recurring trigger. ``/sc minute /mo 1`` runs every
+        # 1 minute. The task runs as the current user (``/ru``)
+        # because the LLM-credential lookup pulls from that user's
+        # config dir; ``/rl LIMITED`` keeps it from auto-elevating.
+        # /f forces overwrite of any older task with the same name.
+        task_name = label  # e.g. "com.amx.scheduler"
+        # Wrap the python invocation so the task captures stdout to
+        # the same scheduler.log location as the other OSes.
+        log_path_w = log_path
+        username = os.environ.get("USERNAME", "")
+        # cmd.exe redirection: pipe stdout+stderr to the log file,
+        # append mode so consecutive ticks accumulate.
+        task_action = (
+            f'cmd.exe /c "set AMX_CONFIG_DIR={cfg} && '
+            f'set AMX_SKIP_BOOTSTRAP_TICK=1 && '
+            f'set PYTHONUNBUFFERED=1 && '
+            f'"{python_path}" -m amx.scheduler >> "{log_path_w}" 2>&1"'
+        )
+        cmd = [
+            "schtasks",
+            "/create",
+            "/sc",
+            "minute",
+            "/mo",
+            "1",
+            "/tn",
+            task_name,
+            "/tr",
+            task_action,
+            "/rl",
+            "LIMITED",
+            "/f",
+        ]
+        if username:
+            cmd.extend(["/ru", username])
+        try:
+            result = subprocess.run(cmd, check=False, capture_output=True)
+            ok = result.returncode == 0
+        except FileNotFoundError:
+            return {
+                "message": (
+                    "schtasks.exe not found. Daemon install requires "
+                    "Windows Task Scheduler (built into Windows 10/11)."
+                ),
+                "path": None,
+            }
+        return {
+            "message": (
+                f"Installed Windows scheduled task '{task_name}'."
+                if ok
+                else f"schtasks /create failed: {result.stderr.decode(errors='replace').strip()}"
+            ),
+            "path": task_name if ok else None,
+        }
+
     return {
         "message": (
-            "Daemon mode is not supported on this platform. "
-            "Schedules will still fire whenever AMX or Studio is "
-            "running (catch-up). For always-on scheduling, use AMX "
-            "on macOS or Linux."
+            f"Daemon mode is not supported on {system}. Schedules will "
+            "still fire whenever AMX or Studio is running (catch-up). "
+            "Studio's in-process scheduler also fires due schedules "
+            "on a 60s cadence whenever the Studio process is alive."
         ),
         "path": None,
     }
@@ -267,5 +351,23 @@ def uninstall_daemon() -> dict[str, Any]:
             if p.exists():
                 p.unlink()
         return {"message": f"Uninstalled systemd timer/service {tmr.name}."}
+
+    if system == "Windows":
+        try:
+            result = subprocess.run(
+                ["schtasks", "/delete", "/tn", label, "/f"],
+                check=False,
+                capture_output=True,
+            )
+            ok = result.returncode == 0
+        except FileNotFoundError:
+            return {"message": "schtasks.exe not found."}
+        return {
+            "message": (
+                f"Uninstalled Windows scheduled task '{label}'."
+                if ok
+                else f"No Windows scheduled task '{label}' was installed."
+            )
+        }
 
     return {"message": "Daemon mode is not supported on this platform."}
