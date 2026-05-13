@@ -15,6 +15,94 @@ from amx.utils.logging import get_logger
 log = get_logger("storage.sqlite")
 
 
+def parse_alternatives_json(raw):
+    """Parse ``run_results.alternatives_json`` into a normalised list of dicts.
+
+    Accepts:
+      * ``None`` / empty string → ``[]``
+      * Legacy JSON array of strings → ``[{"text": str, "scores": {...None…}, "ensemble": None, "band": None}]``
+      * New structured JSON array of dicts → returned with text / scores / ensemble / band fields normalised.
+      * Anything malformed → ``[]`` and a warning log.
+    """
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        log.warning("alternatives_json parse failed; treating as empty")
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[dict] = []
+    for entry in data:
+        if isinstance(entry, str):
+            out.append(
+                {
+                    "text": entry,
+                    "scores": {
+                        "logprob": None,
+                        "self_consistency": None,
+                        "self_decl": None,
+                        "judge": None,
+                    },
+                    "ensemble": None,
+                    "band": None,
+                }
+            )
+        elif isinstance(entry, dict) and "text" in entry:
+            scores = entry.get("scores") or {}
+            out.append(
+                {
+                    "text": str(entry["text"]),
+                    "scores": {
+                        "logprob": scores.get("logprob"),
+                        "self_consistency": scores.get("self_consistency"),
+                        "self_decl": scores.get("self_decl"),
+                        "judge": scores.get("judge"),
+                    },
+                    "ensemble": entry.get("ensemble"),
+                    "band": entry.get("band"),
+                }
+            )
+    return out
+
+
+def build_alternatives_json(suggestion) -> str:
+    """Serialise a suggestion (or suggestion-like duck) into JSON for storage.
+
+    When the suggestion carries ``suggestion_scores`` (Phase 1 confidence
+    feature), the structured shape ``[{text, scores, ensemble, band}, ...]``
+    is emitted. Otherwise the legacy ``list[str]`` shape is preserved so
+    existing readers continue to function on rows produced before the
+    feature shipped.
+
+    ``suggestion`` is duck-typed and accepts:
+      * A dataclass / ``SimpleNamespace`` with ``.suggestions`` and
+        ``.suggestion_scores`` attributes.
+      * A dict with ``alternatives`` (legacy text list) and optional
+        ``alternative_scores`` (list of dicts or ``AlternativeScore``
+        instances) — used at the orchestrator → storage boundary.
+    """
+    if isinstance(suggestion, dict):
+        alternatives = list(suggestion.get("alternatives") or [])
+        scores = suggestion.get("alternative_scores")
+    else:
+        alternatives = list(getattr(suggestion, "suggestions", []) or [])
+        scores = getattr(suggestion, "suggestion_scores", None)
+
+    if not scores:
+        return json.dumps(alternatives, ensure_ascii=True)
+    out = []
+    for score in scores:
+        if hasattr(score, "to_json"):
+            out.append(score.to_json())
+        elif isinstance(score, dict):
+            out.append(score)
+        else:
+            out.append({"text": str(score)})
+    return json.dumps(out, ensure_ascii=True)
+
+
 class SQLiteHistoryStore:
     """Persist run history and metadata in a local SQLite database."""
 
@@ -1061,7 +1149,7 @@ class SQLiteHistoryStore:
                         s.get("token_count"),
                         s.get("model_version", ""),
                         s.get("reasoning", ""),
-                        json.dumps(s.get("alternatives", []), ensure_ascii=True),
+                        build_alternatives_json(s),
                         s.get("parent_result_id"),
                         int(s.get("rerun_seq", 0) or 0),
                         s.get("user_instructions"),

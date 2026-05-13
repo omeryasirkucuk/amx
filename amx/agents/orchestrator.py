@@ -1560,6 +1560,16 @@ class Orchestrator:
                 "model_version": self.llm.model_name,
                 "reasoning": s.reasoning,
                 "alternatives": s.suggestions,
+                # Phase 1 confidence: per-alternative score breakdown
+                # serialised into the same alternatives_json column.
+                # ``None`` when scoring was disabled / unavailable so
+                # the storage layer falls back to the legacy list-of-
+                # strings shape.
+                "alternative_scores": (
+                    [score.to_json() for score in s.suggestion_scores]
+                    if getattr(s, "suggestion_scores", None)
+                    else None
+                ),
                 # PR C: machine-readable provenance for RAG-derived
                 # suggestions. Dataclass -> plain-dict conversion
                 # happens here so the storage layer stays

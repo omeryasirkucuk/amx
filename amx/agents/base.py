@@ -72,6 +72,43 @@ def apply_logprob_confidence(
     return suggestions
 
 
+def apply_confidence_signals(
+    suggestions: list[MetadataSuggestion],
+    logprobs_content: list | None,
+    response_text: str | None,
+    cfg,
+) -> list[MetadataSuggestion]:
+    """Populate ``suggestion_scores`` with per-alternative confidence rows.
+
+    Best-effort: any failure (missing optional dep, signal raised, etc.)
+    is swallowed — the suggestions list is returned unchanged on error
+    so an analysis run is never aborted by a scoring regression.
+
+    Note: the legacy aggregate fields (``confidence`` and
+    ``logprob_score``) keep being maintained by
+    ``apply_logprob_confidence`` so older CLI flows and history
+    columns continue working. This function is additive.
+    """
+    if not suggestions:
+        return suggestions
+    try:
+        from amx.llm.confidence.scorer import score_alternatives
+    except Exception:
+        return suggestions
+
+    for s in suggestions:
+        try:
+            s.suggestion_scores = score_alternatives(
+                alternatives=list(s.suggestions),
+                logprobs_content=logprobs_content,
+                response_text=response_text,
+                cfg=cfg,
+            )
+        except Exception:
+            s.suggestion_scores = None
+    return suggestions
+
+
 @dataclass(frozen=True)
 class Citation:
     """Machine-readable provenance for a RAG-derived suggestion.
@@ -122,6 +159,14 @@ class MetadataSuggestion:
     #: inputs had no citations, so legacy callers see no behaviour
     #: change.
     citations: list[Citation] = field(default_factory=list)
+    #: Per-alternative confidence rows; ``None`` for legacy/disabled
+    #: paths so existing serialisation logic stays untouched on rows
+    #: that do not have a structured score block. Populated by
+    #: ``apply_confidence_signals`` when confidence is enabled.
+    #: Annotated ``list[Any]`` (not ``list[AlternativeScore]``) to avoid
+    #: a circular import with ``amx.llm.confidence``; the runtime type
+    #: is always ``AlternativeScore``.
+    suggestion_scores: list[Any] | None = None
 
 
 @dataclass
