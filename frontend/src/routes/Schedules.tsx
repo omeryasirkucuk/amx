@@ -2,44 +2,68 @@
  * Schedules — list + create + lifecycle controls for one-shot scheduled
  * metadata runs.
  *
- * This is the Phase 5b first cut: read-only list with status chips plus
- * inline pause / resume / run-now / delete actions, and a slim "New
- * schedule" form that mirrors the CLI ``amx schedule add`` surface.
- *
- * The wizard / datetime-picker / scope-builder polish lands in a
- * follow-up; here we keep the page small and rely on raw datetime-local
- * + IANA tz strings so the surface is shippable and exercises every
- * Phase 5a endpoint.
+ * Uses AMX Studio's design system (PageHeader, DataTable, Field, Input,
+ * Select, Button, Badge) so the visual rhythm matches Runs / Settings.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import {
+  CalendarPlus,
+  PauseCircle,
+  PlayCircle,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 
-import { api, type ScheduleCreatePayload, type ScheduleRow } from "../lib/api";
+import PageHeader from "../components/PageHeader";
+import {
+  Badge,
+  type BadgeTone,
+  Button,
+  DataTable,
+  type DataTableColumn,
+  Dialog,
+  Field,
+  IconButton,
+  Input,
+  Select,
+  useToast,
+} from "../components/ui";
+import { api, apiFetch, type ScheduleCreatePayload, type ScheduleRow } from "../lib/api";
 
-const STATUS_TONE: Record<string, string> = {
-  pending: "bg-slate-100 text-slate-700",
-  paused: "bg-amber-100 text-amber-800",
-  running: "bg-blue-100 text-blue-800",
-  completed: "bg-emerald-100 text-emerald-800",
-  failed: "bg-red-100 text-red-800",
-  missed: "bg-orange-100 text-orange-800",
-  cancelled: "bg-slate-200 text-slate-600",
+interface DbProfileSummary {
+  name: string;
+  backend: string;
+  database: string;
+}
+
+interface LlmProfileSummary {
+  name: string;
+  provider: string;
+  model: string;
+}
+
+interface SchemaItem {
+  name: string;
+}
+
+const STATUS_TONE: Record<string, BadgeTone> = {
+  pending: "neutral",
+  paused: "warning",
+  running: "info",
+  completed: "positive",
+  failed: "critical",
+  missed: "warning",
+  cancelled: "neutral",
 };
 
 function StatusChip({ status }: { status: string }) {
-  const tone = STATUS_TONE[status] ?? "bg-slate-100 text-slate-700";
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}
-    >
-      {status}
-    </span>
-  );
+  return <Badge tone={STATUS_TONE[status] ?? "neutral"}>{status}</Badge>;
 }
 
 function defaultLocalDatetime() {
@@ -56,56 +80,94 @@ function browserTz() {
   }
 }
 
-function NewScheduleForm({ onCreated }: { onCreated: () => void }) {
+interface NewScheduleDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}
+
+function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps) {
+  const toast = useToast();
   const [name, setName] = useState("");
   const [fireAtLocal, setFireAtLocal] = useState(defaultLocalDatetime());
   const [fireAtTz, setFireAtTz] = useState(browserTz());
   const [dbProfile, setDbProfile] = useState("");
-  const [scopeText, setScopeText] = useState("schema:public");
+  const [scopeMode, setScopeMode] = useState<"all" | "schemas" | "tables">(
+    "all",
+  );
+  const [selectedSchemas, setSelectedSchemas] = useState<string[]>([]);
+  const [tablesText, setTablesText] = useState("");
   const [llmProfile, setLlmProfile] = useState("");
   const [reviewStrategy, setReviewStrategy] = useState<"auto" | "manual">(
     "auto",
   );
   const [error, setError] = useState<string | null>(null);
 
+  const dbProfilesQ = useQuery({
+    queryKey: ["profiles", "db"],
+    queryFn: () =>
+      apiFetch<{ profiles: DbProfileSummary[] }>("/api/profiles/db"),
+    enabled: open,
+  });
+  const llmProfilesQ = useQuery({
+    queryKey: ["profiles", "llm"],
+    queryFn: () =>
+      apiFetch<{ profiles: LlmProfileSummary[] }>("/api/profiles/llm"),
+    enabled: open,
+  });
+  const schemasQ = useQuery({
+    queryKey: ["live-schemas", dbProfile],
+    queryFn: () =>
+      apiFetch<{ schemas: SchemaItem[] }>(
+        `/api/live/schemas?profile=${encodeURIComponent(dbProfile)}`,
+      ),
+    enabled: open && Boolean(dbProfile) && scopeMode !== "all",
+  });
+
+  // Auto-pick the first DB / LLM when the dialog opens (no profile chosen
+  // yet) so the user almost never has to touch these fields.
+  if (open && !dbProfile && dbProfilesQ.data?.profiles?.length) {
+    setDbProfile(dbProfilesQ.data.profiles[0].name);
+  }
+  if (open && !llmProfile && llmProfilesQ.data?.profiles?.length) {
+    setLlmProfile(llmProfilesQ.data.profiles[0].name);
+  }
+
   const mutation = useMutation({
     mutationFn: (body: ScheduleCreatePayload) => api.createSchedule(body),
     onSuccess: () => {
+      toast.push({ tone: "success", title: "Schedule created" });
       setName("");
+      setScopeMode("all");
+      setSelectedSchemas([]);
+      setTablesText("");
       setError(null);
       onCreated();
+      onClose();
     },
-    onError: (err) => {
-      setError(err instanceof Error ? err.message : String(err));
-    },
+    onError: (err) =>
+      setError(err instanceof Error ? err.message : String(err)),
   });
 
-  function parseScope(raw: string): Record<string, unknown> {
-    const trimmed = raw.trim();
-    if (trimmed === "all") return { mode: "all" };
-    if (trimmed.startsWith("schema:")) {
-      return {
-        mode: "schemas",
-        schemas: trimmed
-          .slice("schema:".length)
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      };
+  function buildScope(): Record<string, unknown> {
+    if (scopeMode === "all") return { mode: "all" };
+    if (scopeMode === "schemas") {
+      if (!selectedSchemas.length)
+        throw new Error("Pick at least one schema");
+      return { mode: "schemas", schemas: selectedSchemas };
     }
-    if (trimmed.startsWith("table:")) {
-      const tables = trimmed
-        .slice("table:".length)
-        .split(",")
-        .map((piece) => piece.trim())
-        .filter(Boolean)
-        .map((piece) => {
-          const [schema, table] = piece.split(".");
-          return { schema, table };
-        });
-      return { mode: "tables", tables };
-    }
-    throw new Error("scope must be 'schema:NAME,...' / 'table:S.T,...' / 'all'");
+    const tables = tablesText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((piece) => {
+        const [schema, table] = piece.split(".");
+        if (!schema || !table)
+          throw new Error(`Table entry "${piece}" must be schema.table`);
+        return { schema, table };
+      });
+    if (!tables.length) throw new Error("List ≥1 schema.table pair");
+    return { mode: "tables", tables };
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -116,9 +178,9 @@ function NewScheduleForm({ onCreated }: { onCreated: () => void }) {
         name: name.trim(),
         fire_at_local: fireAtLocal,
         fire_at_tz: fireAtTz,
-        db_profile: dbProfile.trim(),
-        scope: parseScope(scopeText),
-        llm_profile: llmProfile.trim(),
+        db_profile: dbProfile,
+        scope: buildScope(),
+        llm_profile: llmProfile,
         review_strategy: reviewStrategy,
       });
     } catch (err) {
@@ -127,183 +189,204 @@ function NewScheduleForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <form
-      onSubmit={onSubmit}
-      className="mb-6 grid grid-cols-1 gap-3 rounded-md border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-2"
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title="New scheduled run"
+      size="lg"
     >
-      <h2 className="md:col-span-2 text-sm font-semibold text-slate-800">
-        New schedule
-      </h2>
-      <label className="flex flex-col gap-1 text-sm">
-        Name
-        <input
-          required
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        DB profile
-        <input
-          required
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={dbProfile}
-          onChange={(e) => setDbProfile(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        Fire at (local)
-        <input
-          required
-          type="datetime-local"
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={fireAtLocal}
-          onChange={(e) => setFireAtLocal(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        Timezone (IANA)
-        <input
-          required
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={fireAtTz}
-          onChange={(e) => setFireAtTz(e.target.value)}
-          placeholder="Europe/Istanbul"
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        Scope
-        <input
-          required
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={scopeText}
-          onChange={(e) => setScopeText(e.target.value)}
-          placeholder="schema:public,staging | table:s.t1,s.t2 | all"
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        LLM profile
-        <input
-          required
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={llmProfile}
-          onChange={(e) => setLlmProfile(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-sm">
-        Review strategy
-        <select
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={reviewStrategy}
-          onChange={(e) =>
-            setReviewStrategy(e.target.value as "auto" | "manual")
-          }
-        >
-          <option value="auto">auto</option>
-          <option value="manual">manual</option>
-        </select>
-      </label>
-      {error && (
-        <p className="md:col-span-2 text-sm text-red-700">{error}</p>
-      )}
-      <div className="md:col-span-2 flex items-center justify-end gap-2">
-        <button
-          type="submit"
-          disabled={mutation.isPending}
-          className="rounded bg-slate-900 px-3 py-1 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-        >
-          {mutation.isPending ? "Creating…" : "Create schedule"}
-        </button>
-      </div>
-      <p className="md:col-span-2 text-xs text-slate-600">
-        Heads-up: AMX is invocation-based — it isn't always running. For
-        scheduled runs to fire on time, keep AMX/Studio open OR enable the
-        background daemon:{" "}
-        <code className="font-mono text-slate-800">
-          amx scheduler install-daemon
-        </code>
-        .
-      </p>
-    </form>
-  );
-}
-
-function ScheduleRowActions({
-  row,
-  onChange,
-}: {
-  row: ScheduleRow;
-  onChange: () => void;
-}) {
-  const qc = useQueryClient();
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["schedules"] });
-    onChange();
-  };
-
-  const pause = useMutation({
-    mutationFn: () => api.pauseSchedule(row.id),
-    onSuccess: invalidate,
-  });
-  const resume = useMutation({
-    mutationFn: () => api.resumeSchedule(row.id),
-    onSuccess: invalidate,
-  });
-  const runNow = useMutation({
-    mutationFn: () => api.runScheduleNow(row.id),
-    onSuccess: invalidate,
-  });
-  const del = useMutation({
-    mutationFn: () => api.deleteSchedule(row.id),
-    onSuccess: invalidate,
-  });
-
-  return (
-    <div className="flex gap-2 text-xs">
-      {row.status === "pending" && (
-        <button
-          className="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100"
-          onClick={() => pause.mutate()}
-        >
-          Pause
-        </button>
-      )}
-      {row.status === "paused" && (
-        <button
-          className="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100"
-          onClick={() => resume.mutate()}
-        >
-          Resume
-        </button>
-      )}
-      {(row.status === "pending" ||
-        row.status === "paused" ||
-        row.status === "missed") && (
-        <button
-          className="rounded border border-emerald-600 px-2 py-0.5 text-emerald-700 hover:bg-emerald-50"
-          onClick={() => runNow.mutate()}
-        >
-          Run now
-        </button>
-      )}
-      <button
-        className="rounded border border-red-600 px-2 py-0.5 text-red-700 hover:bg-red-50"
-        onClick={() => {
-          if (window.confirm(`Delete schedule "${row.name}"?`)) {
-            del.mutate();
-          }
-        }}
-      >
-        Delete
-      </button>
-    </div>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Field label="Name" required>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Quarterly meta refresh"
+              required
+            />
+          </Field>
+          <Field label="DB profile" required>
+            <Select
+              value={dbProfile}
+              onChange={(e) => {
+                setDbProfile(e.target.value);
+                setSelectedSchemas([]);
+              }}
+              required
+              disabled={dbProfilesQ.isLoading}
+            >
+              {dbProfilesQ.isLoading && <option value="">Loading…</option>}
+              {!dbProfilesQ.isLoading &&
+                !dbProfilesQ.data?.profiles?.length && (
+                  <option value="">(no profiles configured)</option>
+                )}
+              {dbProfilesQ.data?.profiles?.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} · {p.backend}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Fire at (local)" required>
+            <Input
+              type="datetime-local"
+              value={fireAtLocal}
+              onChange={(e) => setFireAtLocal(e.target.value)}
+              required
+            />
+          </Field>
+          <Field label="Timezone" hint="IANA, e.g. Europe/Istanbul">
+            <Input
+              value={fireAtTz}
+              onChange={(e) => setFireAtTz(e.target.value)}
+              placeholder="Europe/Istanbul"
+              required
+            />
+          </Field>
+          <Field label="LLM profile" required>
+            <Select
+              value={llmProfile}
+              onChange={(e) => setLlmProfile(e.target.value)}
+              required
+              disabled={llmProfilesQ.isLoading}
+            >
+              {llmProfilesQ.isLoading && <option value="">Loading…</option>}
+              {!llmProfilesQ.isLoading &&
+                !llmProfilesQ.data?.profiles?.length && (
+                  <option value="">(no profiles configured)</option>
+                )}
+              {llmProfilesQ.data?.profiles?.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name} · {p.provider}/{p.model}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Review strategy">
+            <Select
+              value={reviewStrategy}
+              onChange={(e) =>
+                setReviewStrategy(e.target.value as "auto" | "manual")
+              }
+            >
+              <option value="auto">auto</option>
+              <option value="manual">manual</option>
+            </Select>
+          </Field>
+          <Field
+            label="Scope mode"
+            className="md:col-span-2"
+          >
+            <Select
+              value={scopeMode}
+              onChange={(e) =>
+                setScopeMode(e.target.value as "all" | "schemas" | "tables")
+              }
+            >
+              <option value="all">All schemas in this DB</option>
+              <option value="schemas">Specific schemas</option>
+              <option value="tables">Specific tables</option>
+            </Select>
+          </Field>
+          {scopeMode === "schemas" && (
+            <Field
+              label="Schemas"
+              hint="Tick the schemas to include"
+              className="md:col-span-2"
+            >
+              <div className="max-h-44 overflow-auto rounded-md border border-border bg-surface-raised p-2 text-sm">
+                {schemasQ.isLoading && (
+                  <p className="text-ink-dim">Loading schemas…</p>
+                )}
+                {schemasQ.isError && (
+                  <p className="text-critical">
+                    Could not load schemas for "{dbProfile}".
+                  </p>
+                )}
+                {schemasQ.data?.schemas?.length === 0 && (
+                  <p className="text-ink-dim">
+                    No schemas visible on "{dbProfile}".
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-1">
+                  {schemasQ.data?.schemas?.map((s) => {
+                    const checked = selectedSchemas.includes(s.name);
+                    return (
+                      <label
+                        key={s.name}
+                        className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-surface-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked)
+                              setSelectedSchemas([
+                                ...selectedSchemas,
+                                s.name,
+                              ]);
+                            else
+                              setSelectedSchemas(
+                                selectedSchemas.filter((n) => n !== s.name),
+                              );
+                          }}
+                        />
+                        <span className="font-mono text-xs">{s.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </Field>
+          )}
+          {scopeMode === "tables" && (
+            <Field
+              label="Tables"
+              hint="Comma-separated schema.table pairs (e.g. public.users, sales.orders)"
+              className="md:col-span-2"
+            >
+              <Input
+                value={tablesText}
+                onChange={(e) => setTablesText(e.target.value)}
+                placeholder="public.users, public.orders"
+                required
+              />
+            </Field>
+          )}
+        </div>
+        {error && (
+          <p className="rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-sm text-critical">
+            {error}
+          </p>
+        )}
+        <p className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-ink-dim">
+          Heads-up — AMX is invocation-based. For this schedule to fire on
+          time, keep AMX/Studio open at fire time OR enable the background
+          daemon: <code className="font-mono text-ink">amx scheduler install-daemon</code>.
+        </p>
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button variant="secondary" size="md" onClick={onClose} type="button">
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            size="md"
+            disabled={mutation.isPending}
+          >
+            {mutation.isPending ? "Creating…" : "Create schedule"}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 
 export default function Schedules() {
-  const [statusFilter, setStatusFilter] = useState<string>("active");
   const qc = useQueryClient();
+  const toast = useToast();
+  const [statusFilter, setStatusFilter] = useState<string>("active");
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   const apiStatus =
     statusFilter === "active"
@@ -320,135 +403,271 @@ export default function Schedules() {
   const statusQ = useQuery({
     queryKey: ["scheduler-status"],
     queryFn: () => api.schedulerStatus(),
+    refetchInterval: 15_000,
   });
   const bootstrap = useQuery({
     queryKey: ["scheduler-bootstrap"],
     queryFn: () => api.schedulerBootstrapReport(),
   });
 
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["schedules"] });
+    qc.invalidateQueries({ queryKey: ["scheduler-status"] });
+  };
+
+  const pauseMut = useMutation({
+    mutationFn: (id: number) => api.pauseSchedule(id),
+    onSuccess: invalidate,
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Pause failed",
+      }),
+  });
+  const resumeMut = useMutation({
+    mutationFn: (id: number) => api.resumeSchedule(id),
+    onSuccess: invalidate,
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Resume failed",
+      }),
+  });
+  const runNowMut = useMutation({
+    mutationFn: (id: number) => api.runScheduleNow(id),
+    onSuccess: () => {
+      toast.push({ tone: "info", title: "Schedule fired" });
+      invalidate();
+    },
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Fire failed",
+      }),
+  });
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => api.deleteSchedule(id),
+    onSuccess: () => {
+      toast.push({ tone: "success", title: "Schedule deleted" });
+      invalidate();
+    },
+  });
+
   const rows = data?.schedules ?? [];
 
-  return (
-    <div className="px-6 py-4">
-      <header className="mb-4 flex items-end justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900">Schedules</h1>
-          <p className="text-sm text-slate-600">
-            One-shot scheduled metadata runs. Catch-up surfaces on next open
-            when AMX was closed at fire time.
-          </p>
-        </div>
-        <div className="text-xs text-slate-600">
-          {statusQ.data && (
-            <>
-              Daemon:{" "}
-              <span
-                className={
-                  statusQ.data.daemon.installed
-                    ? "text-emerald-700"
-                    : "text-amber-700"
+  const columns = useMemo<DataTableColumn<ScheduleRow>[]>(
+    () => [
+      {
+        id: "id",
+        header: "#",
+        sortValue: (row) => row.id,
+        cell: (row) => (
+          <span className="font-mono text-xs text-ink-dim">{row.id}</span>
+        ),
+        width: "w-12",
+      },
+      {
+        id: "name",
+        header: "Name",
+        sortValue: (row) => row.name,
+        cell: (row) => (
+          <span className="font-medium text-ink">{row.name}</span>
+        ),
+      },
+      {
+        id: "when",
+        header: "When (local)",
+        sortValue: (row) => row.fire_at_local,
+        cell: (row) => (
+          <span className="text-ink">{row.fire_at_local}</span>
+        ),
+      },
+      {
+        id: "tz",
+        header: "Tz",
+        sortValue: (row) => row.fire_at_tz,
+        cell: (row) => (
+          <span className="font-mono text-xs text-ink-dim">
+            {row.fire_at_tz}
+          </span>
+        ),
+      },
+      {
+        id: "status",
+        header: "Status",
+        sortValue: (row) => row.status,
+        cell: (row) => <StatusChip status={row.status} />,
+      },
+      {
+        id: "db",
+        header: "DB",
+        sortValue: (row) => row.db_profile,
+        cell: (row) => (
+          <span className="text-ink-dim">{row.db_profile}</span>
+        ),
+      },
+      {
+        id: "llm",
+        header: "LLM",
+        sortValue: (row) => row.llm_profile,
+        cell: (row) => (
+          <span className="text-ink-dim">{row.llm_profile}</span>
+        ),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: (row) => (
+          <div className="flex items-center justify-end gap-1">
+            {row.status === "pending" && (
+              <IconButton
+                size="sm"
+                icon={<PauseCircle size={16} />}
+                label="Pause"
+                title="Pause"
+                onClick={() => pauseMut.mutate(row.id)}
+              />
+            )}
+            {row.status === "paused" && (
+              <IconButton
+                size="sm"
+                icon={<PlayCircle size={16} />}
+                label="Resume"
+                title="Resume"
+                onClick={() => resumeMut.mutate(row.id)}
+              />
+            )}
+            {(row.status === "pending" ||
+              row.status === "paused" ||
+              row.status === "missed") && (
+              <IconButton
+                size="sm"
+                icon={<PlayCircle size={16} />}
+                label="Run now"
+                title="Run now"
+                onClick={() => runNowMut.mutate(row.id)}
+              />
+            )}
+            <IconButton
+              size="sm"
+              icon={<Trash2 size={16} />}
+              label="Delete"
+              title="Delete"
+              onClick={() => {
+                if (
+                  window.confirm(`Delete schedule "${row.name}"?`)
+                ) {
+                  deleteMut.mutate(row.id);
                 }
-              >
-                {statusQ.data.daemon.installed ? "installed" : "not installed"}
-              </span>
-              {" · "}Pending: {statusQ.data.pending_count}
-              {" · "}Missed: {statusQ.data.missed_count}
-            </>
-          )}
-        </div>
-      </header>
-
-      {bootstrap.data &&
-        (bootstrap.data.missed_for_review.length > 0 ||
-          bootstrap.data.stale_recovered.length > 0) && (
-          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-            ⚠️{" "}
-            {bootstrap.data.stale_recovered.length > 0 && (
-              <span>
-                {bootstrap.data.stale_recovered.length} interrupted run(s)
-                recovered.{" "}
-              </span>
-            )}
-            {bootstrap.data.missed_for_review.length > 0 && (
-              <span>
-                {bootstrap.data.missed_for_review.length} schedule(s) missed
-                while AMX was closed.
-              </span>
-            )}
+              }}
+            />
           </div>
+        ),
+        width: "w-36",
+        align: "right",
+      },
+    ],
+    [pauseMut, resumeMut, runNowMut, deleteMut],
+  );
+
+  const banner =
+    bootstrap.data &&
+    (bootstrap.data.missed_for_review.length > 0 ||
+      bootstrap.data.stale_recovered.length > 0) ? (
+      <div className="mb-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
+        {bootstrap.data.stale_recovered.length > 0 && (
+          <span>
+            {bootstrap.data.stale_recovered.length} interrupted run
+            {bootstrap.data.stale_recovered.length === 1 ? "" : "s"} recovered.{" "}
+          </span>
+        )}
+        {bootstrap.data.missed_for_review.length > 0 && (
+          <span>
+            {bootstrap.data.missed_for_review.length} schedule
+            {bootstrap.data.missed_for_review.length === 1 ? "" : "s"} missed
+            while AMX was closed.
+          </span>
+        )}
+      </div>
+    ) : null;
+
+  const daemonChip = statusQ.data ? (
+    <Badge tone={statusQ.data.daemon.installed ? "positive" : "warning"}>
+      Daemon {statusQ.data.daemon.installed ? "installed" : "not installed"}
+    </Badge>
+  ) : null;
+
+  return (
+    <>
+      <PageHeader
+        title="Schedules"
+        breadcrumbs={[{ label: "Schedules" }]}
+        description="One-shot scheduled metadata runs. Catch-up surfaces on next open when AMX was closed at fire time."
+        actions={
+          <div className="flex items-center gap-2">
+            {daemonChip}
+            <Button
+              variant="secondary"
+              size="md"
+              leadingIcon={<RefreshCw size={14} />}
+              onClick={() => refetch()}
+            >
+              Refresh
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<CalendarPlus size={14} />}
+              onClick={() => setDialogOpen(true)}
+            >
+              New schedule
+            </Button>
+          </div>
+        }
+      />
+
+      <div className="px-6 py-4">
+        {banner}
+
+        <div className="mb-3 flex items-center gap-2">
+          <span className="text-sm text-ink-dim">Show:</span>
+          <Select
+            className="max-w-[160px]"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="active">Active</option>
+            <option value="past">Past</option>
+            <option value="all">All</option>
+          </Select>
+        </div>
+
+        {error && (
+          <p className="rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-sm text-critical">
+            {error instanceof Error ? error.message : String(error)}
+          </p>
         )}
 
-      <NewScheduleForm onCreated={() => qc.invalidateQueries({ queryKey: ["schedules"] })} />
-
-      <div className="mb-3 flex items-center gap-3 text-sm">
-        <span className="text-slate-700">Filter:</span>
-        <select
-          className="rounded border border-slate-300 px-2 py-1 text-sm"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-        >
-          <option value="active">Active</option>
-          <option value="past">Past</option>
-          <option value="all">All</option>
-        </select>
-        <button
-          className="ml-auto rounded border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
-          onClick={() => refetch()}
-        >
-          Refresh
-        </button>
+        <DataTable<ScheduleRow>
+          columns={columns}
+          rows={rows}
+          rowKey={(row) => String(row.id)}
+          isLoading={isLoading}
+          emptyState={
+            <div className="py-6 text-center text-sm text-ink-dim">
+              No schedules. Create one with the button up top, or with{" "}
+              <code className="font-mono">amx schedule add</code> in the
+              terminal.
+            </div>
+          }
+        />
       </div>
 
-      {isLoading && <p className="text-sm text-slate-600">Loading…</p>}
-      {error && (
-        <p className="text-sm text-red-700">
-          {error instanceof Error ? error.message : String(error)}
-        </p>
-      )}
-      {!isLoading && rows.length === 0 && (
-        <p className="text-sm text-slate-600">No schedules.</p>
-      )}
-
-      {rows.length > 0 && (
-        <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
-              <tr>
-                <th className="px-3 py-2">#</th>
-                <th className="px-3 py-2">Name</th>
-                <th className="px-3 py-2">When (local)</th>
-                <th className="px-3 py-2">Tz</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2">DB</th>
-                <th className="px-3 py-2">LLM</th>
-                <th className="px-3 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {rows.map((row) => (
-                <tr key={row.id} className="hover:bg-slate-50">
-                  <td className="px-3 py-2 text-slate-500">{row.id}</td>
-                  <td className="px-3 py-2 font-medium text-slate-900">
-                    {row.name}
-                  </td>
-                  <td className="px-3 py-2 text-slate-700">
-                    {row.fire_at_local}
-                  </td>
-                  <td className="px-3 py-2 text-slate-700">{row.fire_at_tz}</td>
-                  <td className="px-3 py-2">
-                    <StatusChip status={row.status} />
-                  </td>
-                  <td className="px-3 py-2 text-slate-700">{row.db_profile}</td>
-                  <td className="px-3 py-2 text-slate-700">{row.llm_profile}</td>
-                  <td className="px-3 py-2 text-right">
-                    <ScheduleRowActions row={row} onChange={() => refetch()} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+      <NewScheduleDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        onCreated={invalidate}
+      />
+    </>
   );
 }

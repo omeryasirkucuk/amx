@@ -420,7 +420,7 @@ register_analyze_run_command(
 )
 register_analyze_review_command(analyze, log_event=_log_app_event)
 register_rerun_command(main, pass_config=pass_config, log_event=_log_app_event)
-register_schedule_commands(main, log_event=_log_app_event)
+register_schedule_commands(main, pass_config=pass_config, log_event=_log_app_event)
 register_scheduler_commands(main, log_event=_log_app_event)
 register_docs_commands(
     main,
