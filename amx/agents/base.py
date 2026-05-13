@@ -77,12 +77,16 @@ def apply_confidence_signals(
     logprobs_content: list | None,
     response_text: str | None,
     cfg,
+    llm: object | None = None,
 ) -> list[MetadataSuggestion]:
     """Populate ``suggestion_scores`` with per-alternative confidence rows.
 
     Best-effort: any failure (missing optional dep, signal raised, etc.)
     is swallowed — the suggestions list is returned unchanged on error
     so an analysis run is never aborted by a scoring regression.
+
+    ``llm`` is required only when Signal D (LLM-as-judge) is on; for
+    Phase 1 / 2 callers can omit it and the judge silently skips.
 
     Note: the legacy aggregate fields (``confidence`` and
     ``logprob_score``) keep being maintained by
@@ -103,6 +107,7 @@ def apply_confidence_signals(
                 logprobs_content=logprobs_content,
                 response_text=response_text,
                 cfg=cfg,
+                llm=llm,
             )
         except Exception:
             s.suggestion_scores = None

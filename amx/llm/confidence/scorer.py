@@ -19,15 +19,21 @@ def score_alternatives(
     logprobs_content: list | None,
     response_text: str | None,
     cfg: ConfidenceConfig,
+    llm: object | None = None,
 ) -> list[AlternativeScore]:
-    """Compute Phase 1 confidence signals for one suggestion block.
+    """Compute per-alternative confidence signals for one suggestion block.
 
-    Both signals are best-effort: a failure inside one signal yields
-    a column of ``None`` values for that signal, never an exception
+    Every signal is best-effort: a failure inside one signal yields a
+    column of ``None`` values for that signal, never an exception
     propagated to the caller. The orchestrator is wrapped in
-    ``apply_confidence_signals`` (Task 7) which itself swallows
-    unexpected exceptions so a regression in this module cannot
-    abort an analysis run.
+    ``apply_confidence_signals`` which itself swallows unexpected
+    exceptions so a regression in this module cannot abort an
+    analysis run.
+
+    ``llm`` is required only when ``cfg.use_judge`` is on (Signal D
+    issues a second LLM call). When ``llm`` is ``None`` and the judge
+    is enabled, the judge signal is skipped silently and the ensemble
+    falls back to the other active signals.
     """
     if not cfg.enabled or not alternatives:
         return build_alternative_scores(
@@ -61,7 +67,10 @@ def score_alternatives(
 
         signals["self_decl"] = self_decl_score(response_text, n=len(alternatives))
 
-    # Phase 3 (judge) deliberately not wired here yet.
+    if cfg.use_judge and llm is not None:
+        from amx.llm.confidence.judge import score_per_alternative as judge_score
+
+        signals["judge"] = judge_score(alternatives, llm=llm)
 
     return build_alternative_scores(
         alternatives=alternatives,
