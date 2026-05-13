@@ -491,6 +491,17 @@ def _agent_system_prompt(
         "  empty answer with fabricated examples is worse than admitting the\n"
         "  miss.\n\n"
         "When you have enough information, STOP calling tools and return a short, direct answer.\n\n"
+        "Partial-catalog signal — ALWAYS read it:\n"
+        '  Tool results may include ``"partial": true`` along with a\n'
+        "  ``partial_reason`` field. That means AMX's catalog skeleton sync\n"
+        "  for the profile is still running, so the rows you see were fetched\n"
+        "  live and are NOT guaranteed to cover every schema / table the user\n"
+        "  owns. NEVER answer with phrasing that implies the listed rows are\n"
+        '  the complete set ("4 schemas with 9 tables total"). Instead say\n'
+        '  things like "I can see N schemas right now; AMX is still indexing\n'
+        '  this profile in the background, so the full set may be larger."\n'
+        "  The user is aware of the syncing pill in the top bar; your job is\n"
+        "  to stay honest about what the tool actually showed you.\n\n"
         "Result validation — CRITICAL:\n"
         "  Tools (especially search_*_by_concept) return rows ranked by lexical/semantic\n"
         "  similarity. Many returned rows are FALSE POSITIVES. Before composing your\n"
@@ -650,6 +661,19 @@ def _convert_message_for_litellm(message: dict[str, Any]) -> dict[str, Any]:
     """LiteLLM expects the OpenAI message shape verbatim — nothing extra."""
     msg = {k: v for k, v in message.items() if v is not None}
     return msg
+
+
+def _looks_partial(tool_result: str) -> bool:
+    """Cheap textual check for the ``"partial": true`` marker on a
+    tool result. The result is the JSON string the catalog tools
+    return; parsing every result would be wasteful when only a
+    minority carry the flag. ``"partial": true`` (with single or
+    double quotes) is unambiguous enough."""
+    if not tool_result:
+        return False
+    if '"partial": true' in tool_result or '"partial":true' in tool_result:
+        return True
+    return "'partial': True" in tool_result or "'partial':True" in tool_result
 
 
 def _summarise_tool_call(tool_call: Any, result: str) -> dict[str, Any]:
@@ -1058,6 +1082,33 @@ def _run_tool_loop(
                     "content": tool_result,
                 }
             )
+            # Partial-catalog honesty injection. When a tool returns
+            # ``"partial": true`` the catalog skeleton hasn't finished
+            # syncing this profile yet, the result came from a live
+            # DB query and may not enumerate every table the user
+            # actually owns. Prepend a system-flavoured user note so
+            # the LLM can't confidently report "9 tables total" when
+            # the real count is unknown. The note is injected as a
+            # ``user`` role (system-style messages aren't accepted
+            # mid-conversation on every provider) and is dropped from
+            # the session memory by the recap logic that already
+            # filters synthetic messages.
+            if _looks_partial(tool_result):
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "(system note) AMX's catalog skeleton sync for the "
+                            "active DB profile is still running, so the tool "
+                            "result above came from a live database query. "
+                            "Treat the listed rows as a snapshot — not the "
+                            "complete picture. Mention this explicitly in "
+                            'your answer ("the catalog is still syncing, so '
+                            'this list may be incomplete") instead of '
+                            "implying the rows are the full set."
+                        ),
+                    }
+                )
     else:
         # Hit the iteration cap without a final answer — force a closing call
         # without ``tools`` so the LLM returns plain text from whatever it

@@ -31,6 +31,7 @@ import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from amx.utils.logging import get_logger
 
@@ -55,6 +56,25 @@ class DriftResult:
     live_count: int | None
     drifted: bool
     error: str | None = None
+
+
+def _build_connector(cfg: Any, profile: str) -> Any:
+    """Open a ``DatabaseConnector`` for *profile* using whatever AMX
+    config we have. PR #414 referenced a non-existent
+    ``amx.db.factory.build_connector`` — every drift sync silently
+    failed at import. The real path is ``DatabaseConnector`` directly,
+    mirroring ``amx/web/routers/live_db.py:_connector_for_scope``.
+    """
+    if cfg is None:
+        raise RuntimeError("cfg required to open connector")
+    profile_name = (profile or "").strip()
+    profile_map = getattr(cfg, "db_profiles", {}) or {}
+    base = profile_map.get(profile_name)
+    if base is None:
+        raise RuntimeError(f"No DB profile named {profile_name!r}")
+    from amx.db.connector import DatabaseConnector
+
+    return DatabaseConnector(base, profile_name=profile_name)
 
 
 def _cooldown_blocks(profile: str, now: float) -> bool:
@@ -98,9 +118,7 @@ def _live_table_count(cfg, profile: str) -> int | None:
     caller treats it as "no drift signal" rather than mis-firing a
     sync against an unreachable database."""
     try:
-        from amx.db.factory import build_connector
-
-        connector = build_connector(cfg, profile_name=profile)
+        connector = _build_connector(cfg, profile)
     except Exception as exc:
         log.debug("build_connector(%s) failed: %s", profile, exc)
         return None
@@ -132,9 +150,18 @@ def _probe_one(cfg, profile: str, catalog_db_path: str) -> DriftResult:
 
 
 def _enqueue_sync(cfg, profile: str) -> None:
-    """Hand off the sync to whichever path already exists. Imported
-    lazily because the catalog module pulls SQLAlchemy + Chroma; the
-    drift probe must stay cheap when no drift is detected."""
+    """Run a **skeleton** sync for *profile*: enumerate schemas + table
+    names + asset kinds, INSERT-IGNORE the rows into
+    ``catalog_entities`` so the sidebar / schedule / run pickers /
+    Ask tools can stand on the catalog. The deep per-table profile
+    (row counts, column stats, descriptions) is left to ``/run`` and
+    ``/search sync`` — they're heavy enough that running them inside
+    the drift probe was the source of the silent-partial-catalog bug.
+
+    Always finishes with ``catalog_profile_state`` flipped to
+    ``done`` or ``failed`` so the cache-first read gate and the
+    freshness pill have a trustworthy signal.
+    """
     try:
         from amx.search.catalog import SearchCatalog
     except Exception as exc:
@@ -148,35 +175,136 @@ def _enqueue_sync(cfg, profile: str) -> None:
     if catalog is None:
         return
     try:
-        from amx.db.factory import build_connector
+        sync_profile_skeleton(cfg, profile, catalog)
+    except Exception as exc:
+        log.warning("Drift skeleton sync failed for %s: %s", profile, exc)
 
-        connector = build_connector(cfg, profile_name=profile)
+
+def sync_profile_skeleton(cfg, profile: str, catalog) -> dict:
+    """Synchronous skeleton sync. Returns a summary dict so the caller
+    (drift probe, ``POST /api/catalog/sync``, or a test) can inspect
+    the outcome. Never raises — every error path lands on
+    ``finish_skeleton_sync(ok=False, error=...)`` so the state
+    machine always terminates.
+    """
+    summary: dict[str, Any] = {
+        "profile": profile,
+        "state": "none",
+        "total": 0,
+        "processed": 0,
+        "error": "",
+    }
+    db_backend = str(getattr(cfg.db, "backend", "") or "") if cfg is not None else ""
+    database_name = ""
+    if cfg is not None:
+        database_name = str(
+            getattr(cfg.db, "database", "")
+            or getattr(cfg.db, "catalog", "")
+            or getattr(cfg.db, "project", "")
+            or ""
+        )
+
+    # Step 1: open the connector + enumerate schemas. Failure here
+    # means we can't even count tables; mark the profile failed and
+    # bail before touching catalog_profile_state's progress fields.
+    try:
+        connector = _build_connector(cfg, profile)
         schemas = connector.list_schemas() or []
     except Exception as exc:
-        log.debug("Could not build connector for drift sync (%s): %s", profile, exc)
-        return
-    log.info("Drift detected on %s; running async catalog sync", profile)
+        log.warning("Skeleton sync connect failed for %s: %s", profile, exc)
+        catalog.start_skeleton_sync(profile, total_tables=0)
+        catalog.finish_skeleton_sync(profile, ok=False, error=str(exc))
+        summary["state"] = "failed"
+        summary["error"] = str(exc)
+        return summary
+
+    # Step 2: pass 1 — count tables across all schemas. Lets the UI
+    # show ``Syncing 0 / N…`` from the first tick rather than
+    # ``Syncing… N unknown``.
+    schema_assets: list[tuple[str, list]] = []
+    total = 0
     for schema in schemas:
         try:
             assets = connector.list_assets(schema) or []
-        except Exception:
-            continue
-        for asset in assets:
-            try:
-                profile_obj = connector.profile_table(schema, asset)
-                catalog.sync_table_profile(
-                    db_profile=profile,
-                    db_backend=str(getattr(cfg.db, "backend", "") or ""),
-                    database_name=str(
-                        getattr(cfg.db, "database", "")
-                        or getattr(cfg.db, "catalog", "")
-                        or getattr(cfg.db, "project", "")
-                        or ""
-                    ),
-                    profile=profile_obj,
-                )
-            except Exception as exc:
-                log.debug("Drift sync failed for %s/%s.%s: %s", profile, schema, asset, exc)
+        except Exception as exc:
+            log.warning("Skeleton sync list_assets failed for %s/%s: %s", profile, schema, exc)
+            assets = []
+        schema_assets.append((schema, assets))
+        total += len(assets)
+
+    catalog.start_skeleton_sync(profile, total_tables=total)
+    summary["state"] = "syncing"
+    summary["total"] = total
+
+    # Step 3: pass 2 — INSERT each table row. We use the
+    # entity-crud's ``_upsert_entity`` so the unique index keeps a
+    # re-run idempotent, and we skip ``profile_table`` entirely —
+    # that's the heavy per-table SQL that made the old drift loop
+    # take minutes.
+    processed = 0
+    try:
+        with catalog._connect() as conn:  # noqa: SLF001 — owns the catalog conn
+            for schema, assets in schema_assets:
+                for asset in assets:
+                    name, kind = _asset_name_and_kind(asset)
+                    if not name:
+                        continue
+                    try:
+                        catalog._upsert_entity(  # noqa: SLF001
+                            conn,
+                            db_profile=profile,
+                            db_backend=db_backend,
+                            database_name=database_name,
+                            schema_name=schema,
+                            table_name=name,
+                            column_name=None,
+                            entity_kind="table",
+                            asset_kind=str(kind or "table"),
+                        )
+                        processed += 1
+                    except Exception as exc:
+                        # A single bad row mustn't kill the whole
+                        # skeleton — log and continue so the rest of
+                        # the catalog still benefits.
+                        log.debug(
+                            "Skeleton upsert failed for %s/%s.%s: %s",
+                            profile,
+                            schema,
+                            name,
+                            exc,
+                        )
+                # Per-schema progress write keeps SQLite WAL writes
+                # bounded; updating once per row would thrash on a
+                # 10k-table catalog. Sharing the open connection
+                # keeps the progress write inside the same
+                # transaction as the upserts so SQLite doesn't deadlock
+                # on a second writer.
+                catalog.record_skeleton_progress(profile, processed, conn=conn)
+    except Exception as exc:
+        log.warning("Skeleton sync upsert pass failed for %s: %s", profile, exc)
+        catalog.finish_skeleton_sync(profile, ok=False, error=str(exc))
+        summary["state"] = "failed"
+        summary["processed"] = processed
+        summary["error"] = str(exc)
+        return summary
+
+    catalog.finish_skeleton_sync(profile, ok=True)
+    summary["state"] = "done"
+    summary["processed"] = processed
+    return summary
+
+
+def _asset_name_and_kind(asset: Any) -> tuple[str, str]:
+    """Connectors return ``list_assets`` rows in two shapes — a tuple
+    ``(name, kind)`` or a single string ``name``. Normalize so the
+    skeleton sync handles both."""
+    if isinstance(asset, tuple) and len(asset) >= 2:
+        name = str(asset[0] or "")
+        kind = getattr(asset[1], "value", None) or asset[1]
+        return name, str(kind or "table")
+    if isinstance(asset, str):
+        return asset, "table"
+    return str(getattr(asset, "name", "") or ""), str(getattr(asset, "kind", "") or "table")
 
 
 def fire_drift_probe(cfg, profiles: Iterable[str], *, force: bool = False) -> None:

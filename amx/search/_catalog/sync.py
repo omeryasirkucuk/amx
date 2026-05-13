@@ -89,6 +89,131 @@ class SyncMixin:
                 ),
             )
 
+    # ── Profile-level skeleton sync ──────────────────────────────────────
+    #
+    # The skeleton sync exists to give the cache-first read path a
+    # trustworthy "this profile is fully synced" signal without paying
+    # the per-table profile_table cost of the full /search sync. Three
+    # state-machine helpers gate every skeleton sync; the
+    # ``catalog_profile_state`` table is the single source of truth.
+
+    def start_skeleton_sync(self, db_profile: str, total_tables: int) -> None:
+        """Flip ``catalog_profile_state`` to ``state='syncing'`` and
+        clear the previous progress / error. Idempotent — a profile
+        that was already in ``syncing`` from a stale process gets its
+        counters reset so the new run starts from zero.
+        """
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO catalog_profile_state (
+                    db_profile, state, total_tables, processed_tables,
+                    started_at, finished_at, last_full_sync_at, last_error
+                ) VALUES (?, 'syncing', ?, 0, ?, NULL, NULL, '')
+                ON CONFLICT(db_profile) DO UPDATE SET
+                    state='syncing',
+                    total_tables=excluded.total_tables,
+                    processed_tables=0,
+                    started_at=excluded.started_at,
+                    finished_at=NULL,
+                    last_error=''
+                """,
+                (db_profile, int(total_tables), now),
+            )
+
+    def record_skeleton_progress(
+        self,
+        db_profile: str,
+        processed_tables: int,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        """Update the ``processed_tables`` counter mid-sync. Called
+        once per schema (not per table) so the daemon thread doesn't
+        thrash the SQLite WAL.
+
+        ``conn`` lets the caller share the open connection from the
+        skeleton-sync upsert loop. Without sharing, the progress
+        update would race the upsert transaction on SQLite WAL and
+        surface as ``database is locked``.
+        """
+        if conn is not None:
+            conn.execute(
+                "UPDATE catalog_profile_state SET processed_tables = ? WHERE db_profile = ?",
+                (int(processed_tables), db_profile),
+            )
+            return
+        with self._connect() as own_conn:
+            own_conn.execute(
+                "UPDATE catalog_profile_state SET processed_tables = ? WHERE db_profile = ?",
+                (int(processed_tables), db_profile),
+            )
+
+    def finish_skeleton_sync(self, db_profile: str, *, ok: bool, error: str = "") -> None:
+        """Terminal state for a skeleton sync. ``ok=True`` flips
+        ``state='done'`` and stamps ``last_full_sync_at`` so the
+        cache-first gate trusts the catalog. ``ok=False`` flips to
+        ``state='failed'`` and records ``last_error`` for the
+        freshness pill's Retry surface — the catalog stays usable as
+        a fallback but readers know to treat it as partial."""
+        now = time.time()
+        if ok:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE catalog_profile_state
+                    SET state='done', finished_at=?, last_full_sync_at=?, last_error=''
+                    WHERE db_profile = ?
+                    """,
+                    (now, now, db_profile),
+                )
+        else:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE catalog_profile_state
+                    SET state='failed', finished_at=?, last_error=?
+                    WHERE db_profile = ?
+                    """,
+                    (now, str(error)[:4000], db_profile),
+                )
+
+    def get_profile_state(self, db_profile: str) -> dict[str, Any]:
+        """Read the current state row. Returns the default ``none``
+        shape when the profile has never been synced."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT state, total_tables, processed_tables,
+                       started_at, finished_at, last_full_sync_at, last_error
+                FROM catalog_profile_state
+                WHERE db_profile = ?
+                """,
+                (db_profile,),
+            ).fetchone()
+        if not row:
+            return {
+                "state": "none",
+                "total_tables": 0,
+                "processed_tables": 0,
+                "started_at": None,
+                "finished_at": None,
+                "last_full_sync_at": None,
+                "last_error": "",
+            }
+        return {
+            "state": str(row["state"] or "none"),
+            "total_tables": int(row["total_tables"] or 0),
+            "processed_tables": int(row["processed_tables"] or 0),
+            "started_at": float(row["started_at"]) if row["started_at"] else None,
+            "finished_at": float(row["finished_at"]) if row["finished_at"] else None,
+            "last_full_sync_at": (
+                float(row["last_full_sync_at"]) if row["last_full_sync_at"] else None
+            ),
+            "last_error": str(row["last_error"] or ""),
+        }
+
     def sync_table_profile(
         self,
         *,

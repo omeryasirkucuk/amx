@@ -2370,26 +2370,38 @@ class ToolBox:
         # ``list_schemas`` round-trip. ``force_fresh`` bypasses this and
         # goes straight to live.
         if not force_fresh and not (catalog or "").strip():
+            # Completeness gate: only trust the catalog when a
+            # skeleton sync has confirmed every schema + table is
+            # represented. A partial catalog would lie to the LLM
+            # ("9 tables total" when there are 10 000) — fall through
+            # to the live DB and tag the result so the agent's
+            # post-tool wrapper can warn the user.
+            fully_synced = False
             try:
-                catalog_schemas = self.catalog.fetch_distinct_schemas(self.db_profile)
+                fully_synced = bool(self.catalog.is_profile_fully_synced(self.db_profile))
             except Exception:
-                catalog_schemas = []
-            # Strict list check — tests stub ``self.catalog`` with a
-            # bare MagicMock, which makes the call return a truthy
-            # MagicMock that isn't iterable as expected.
-            if isinstance(catalog_schemas, list) and catalog_schemas:
-                fresh_ts = max((s.get("last_synced_at") or 0.0) for s in catalog_schemas)
-                age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
-                return {
-                    "database": self.cfg.db.database
-                    or self.cfg.db.catalog
-                    or self.cfg.db.project
-                    or "(active database)",
-                    "schemas": [s["name"] for s in catalog_schemas],
-                    "count": len(catalog_schemas),
-                    "source": "catalog",
-                    "age_seconds": age,
-                }
+                fully_synced = False
+            if fully_synced:
+                try:
+                    catalog_schemas = self.catalog.fetch_distinct_schemas(self.db_profile)
+                except Exception:
+                    catalog_schemas = []
+                # Strict list check — tests stub ``self.catalog`` with a
+                # bare MagicMock, which makes the call return a truthy
+                # MagicMock that isn't iterable as expected.
+                if isinstance(catalog_schemas, list) and catalog_schemas:
+                    fresh_ts = max((s.get("last_synced_at") or 0.0) for s in catalog_schemas)
+                    age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
+                    return {
+                        "database": self.cfg.db.database
+                        or self.cfg.db.catalog
+                        or self.cfg.db.project
+                        or "(active database)",
+                        "schemas": [s["name"] for s in catalog_schemas],
+                        "count": len(catalog_schemas),
+                        "source": "catalog",
+                        "age_seconds": age,
+                    }
         db = self._live_db()
         explicit = (catalog or "").strip()
         pinned_catalog = str(getattr(self.cfg.db, "catalog", "") or "").strip()
@@ -2442,6 +2454,23 @@ class ToolBox:
             "source": "live",
             "age_seconds": 0.0,
         }
+        # Flag a partial-catalog state so the agent's post-tool wrapper
+        # warns the LLM not to claim this is the complete picture as
+        # being authoritatively cached. ``partial`` only fires when
+        # we'd have served the catalog if it were complete — i.e. the
+        # branch above bailed because ``is_profile_fully_synced`` was
+        # False. ``force_fresh`` and explicit catalog args bypass the
+        # gate entirely so they leave ``partial`` off.
+        if not force_fresh and not (catalog or "").strip():
+            try:
+                fully_synced = bool(self.catalog.is_profile_fully_synced(self.db_profile))
+            except Exception:
+                fully_synced = True  # uncertain → silent
+            if not fully_synced:
+                payload["partial"] = True
+                payload["partial_reason"] = (
+                    f"catalog for profile {self.db_profile} is not fully synced yet"
+                )
         if cat_arg:
             payload["catalog"] = cat_arg
             if not pinned_catalog and not explicit:
@@ -2467,26 +2496,37 @@ class ToolBox:
             return self._fanout_list_tables_in_schema(target, catalog=catalog)
         if targeted and targeted != self.db_profile:
             return self._list_tables_on_profile(targeted, target, catalog=catalog)
-        # ── Cache-first ──
+        # ── Cache-first ── gated on full skeleton sync; partial
+        # catalog falls through to live DB and the live payload is
+        # tagged ``partial: true`` so the agent warns the user.
+        partial_fallback = False
         if not force_fresh and not (catalog or "").strip():
+            fully_synced = False
             try:
-                catalog_tables = self.catalog.fetch_distinct_tables_in_schema(
-                    self.db_profile, target
-                )
+                fully_synced = bool(self.catalog.is_profile_fully_synced(self.db_profile))
             except Exception:
-                catalog_tables = []
-            if isinstance(catalog_tables, list) and catalog_tables:
-                fresh_ts = max((t.get("last_synced_at") or 0.0) for t in catalog_tables)
-                age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
-                return {
-                    "schema": target,
-                    "catalog": None,
-                    "found": True,
-                    "tables": [{"name": t["name"], "kind": "table"} for t in catalog_tables],
-                    "count": len(catalog_tables),
-                    "source": "catalog",
-                    "age_seconds": age,
-                }
+                fully_synced = False
+            if fully_synced:
+                try:
+                    catalog_tables = self.catalog.fetch_distinct_tables_in_schema(
+                        self.db_profile, target
+                    )
+                except Exception:
+                    catalog_tables = []
+                if isinstance(catalog_tables, list) and catalog_tables:
+                    fresh_ts = max((t.get("last_synced_at") or 0.0) for t in catalog_tables)
+                    age = max(0.0, self._now() - fresh_ts) if fresh_ts > 0 else 0.0
+                    return {
+                        "schema": target,
+                        "catalog": None,
+                        "found": True,
+                        "tables": [{"name": t["name"], "kind": "table"} for t in catalog_tables],
+                        "count": len(catalog_tables),
+                        "source": "catalog",
+                        "age_seconds": age,
+                    }
+            else:
+                partial_fallback = True
         db = self._live_db()
         # Resolve the catalog: explicit > pinned > single-user-catalog
         # auto-pick. Without this, a Databricks UC backend without a
@@ -2555,6 +2595,11 @@ class ToolBox:
             "source": "live",
             "age_seconds": 0.0,
         }
+        if partial_fallback:
+            payload["partial"] = True
+            payload["partial_reason"] = (
+                f"catalog for profile {self.db_profile} is not fully synced yet"
+            )
         if not explicit and not str(getattr(self.cfg.db, "catalog", "") or "").strip():
             # We auto-picked the catalog. Tell the LLM so it can mention
             # which catalog the tables live in instead of pretending the
