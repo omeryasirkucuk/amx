@@ -1,7 +1,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { GitCompare, History, PauseCircle, PlayCircle } from "lucide-react";
+import {
+  CalendarClock,
+  GitCompare,
+  History,
+  PauseCircle,
+  PlayCircle,
+} from "lucide-react";
 
 import { api } from "../lib/api";
 import PageHeader from "../components/PageHeader";
@@ -329,7 +335,16 @@ export default function RunsList() {
         title="Runs"
         breadcrumbs={[{ label: "Runs" }]}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Link to="/runs/schedules">
+              <Button
+                variant="secondary"
+                size="md"
+                leadingIcon={<CalendarClock size={14} />}
+              >
+                Schedules
+              </Button>
+            </Link>
             <Link to="/runs/compare">
               <Button variant="secondary" size="md" leadingIcon={<GitCompare size={14} />}>
                 Compare

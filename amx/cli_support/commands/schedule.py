@@ -1,18 +1,22 @@
-"""``amx schedule`` command group — manage one-shot scheduled metadata runs.
+"""``/analyze schedule`` subgroup — manage one-shot scheduled metadata runs.
 
-Implements the user-facing CRUD + lifecycle commands:
+Lives under the ``analyze`` namespace (alongside ``/analyze run``,
+``/analyze apply``, ``/analyze review``). Inside the ``amx`` REPL the
+commands are typed as:
 
-* ``amx schedule add``      — non-interactive create (interactive
-                              wizard lands as a follow-up)
-* ``amx schedule list``     — table listing with status filters
-* ``amx schedule show``     — full detail for one entry
-* ``amx schedule pause``    — pause a pending schedule
-* ``amx schedule resume``   — re-enable a paused schedule
-* ``amx schedule rm``       — hard delete + audit event
-* ``amx schedule run-now``  — fire a schedule immediately (any status)
+* ``/analyze schedule add``       — guided wizard (all fields optional)
+* ``/analyze schedule list``      — table listing with status filters
+* ``/analyze schedule show <id>``
+* ``/analyze schedule pause <id>`` / ``/analyze schedule resume <id>``
+* ``/analyze schedule rm <id>``
+* ``/analyze schedule run-now <id>``
+* ``/analyze schedule tick``      — engine: one stateless pass
+* ``/analyze schedule status``    — engine: daemon presence + counters
+* ``/analyze schedule install-daemon`` / ``uninstall-daemon``
 
-The companion ``amx scheduler`` group (tick / status / install-daemon)
-lives in ``cli_support/commands/scheduler.py``.
+Engine commands (tick / install-daemon / uninstall-daemon / status)
+are siblings of the entity commands in this single subgroup; no
+top-level ``amx <cmd>`` invocation is supported by design.
 """
 
 from __future__ import annotations
@@ -241,18 +245,22 @@ def _require_store():
 
 
 def register_schedule_commands(
-    main: click.Group,
+    parent: click.Group,
     *,
     pass_config: Callable[[Callable[..., Any]], Callable[..., Any]] | None = None,
     log_event: LogEvent | None = None,
 ) -> None:
-    """Attach the ``amx schedule`` group to *main*."""
+    """Attach the ``schedule`` subgroup under *parent* (the ``/analyze`` tab).
+
+    Both entity-lifecycle and engine commands hang off the same
+    subgroup so the REPL only ever surfaces ``/analyze schedule ...``.
+    """
 
     pc = pass_config or click.make_pass_decorator(AMXConfig, ensure=True)
 
-    @main.group("schedule")
+    @parent.group("schedule")
     def schedule() -> None:
-        """Manage one-shot scheduled metadata runs."""
+        """One-shot scheduled metadata runs (CRUD + engine + daemon)."""
 
     @schedule.command("add")
     @click.option("--name", default=None, help="Human-readable label.")
@@ -382,7 +390,7 @@ def register_schedule_commands(
         click.echo("For this schedule to fire on time, EITHER keep AMX/Studio")
         click.echo("open at that moment, OR enable the background daemon now:")
         click.echo("")
-        click.echo("    amx scheduler install-daemon")
+        click.echo("    /analyze schedule install-daemon")
         click.echo("")
         click.echo("Without the daemon, if AMX is closed at fire time, this")
         click.echo("schedule will be surfaced as 'missed' the next time you")
@@ -524,6 +532,97 @@ def register_schedule_commands(
         else:
             for sid, err in report.failed_resolution:
                 click.echo(f"Failed to fire #{sid}: {err}", err=True)
+
+    # ── Engine + daemon commands (siblings of the entity ones) ──────
+    #
+    # These used to live under a separate `scheduler` top-level group
+    # (`amx scheduler tick`). The user UX rule is "every method lives
+    # under a tab" and the REPL only shows tabs — so engine and
+    # entity commands share the same `schedule` subgroup, accessed
+    # uniformly as ``/analyze schedule <verb>``.
+
+    @schedule.command("tick")
+    @click.option(
+        "--silent",
+        is_flag=True,
+        default=False,
+        help="Suppress per-fire stdout; used by the daemon cron entry.",
+    )
+    def schedule_tick(silent: bool) -> None:
+        """Run one stateless scheduling pass (fires due schedules)."""
+        hs = _require_store()
+
+        def spawn(payload: dict[str, Any]) -> int:
+            return spawn_scheduled_worker(payload, store=hs, background=True)
+
+        report = tick(
+            store=hs,
+            source="daemon",
+            spawn_worker=spawn,
+            now_utc=time.time(),
+        )
+        if not silent:
+            click.echo(
+                json.dumps(
+                    {
+                        "fired": report.fired,
+                        "failed_resolution": report.failed_resolution,
+                        "missed_for_review": report.missed_for_review,
+                        "stale_recovered": report.stale_recovered,
+                    },
+                    indent=2,
+                )
+            )
+
+    @schedule.command("status")
+    def schedule_status() -> None:
+        """Show scheduler + daemon status."""
+        import platform as _platform
+
+        from amx.scheduler.daemon_install import detect_daemon_state
+
+        hs = _require_store()
+        pending = hs.list_scheduled_runs(statuses=["pending"], limit=1000)
+        paused = hs.list_scheduled_runs(statuses=["paused"], limit=1000)
+        missed = hs.list_scheduled_runs(statuses=["missed"], limit=1000)
+        daemon = detect_daemon_state()
+
+        click.echo("Schedule status")
+        click.echo(f"  Pending: {len(pending)}")
+        click.echo(f"  Paused:  {len(paused)}")
+        click.echo(f"  Missed:  {len(missed)}")
+        if pending:
+            n = pending[0]
+            click.echo(
+                f"  Next:    #{n['id']} '{n['name']}' "
+                f"at fire_at_utc={n['fire_at_utc']:.0f}"
+            )
+        click.echo("")
+        click.echo("Daemon")
+        click.echo(f"  Platform:  {_platform.system()}")
+        click.echo(f"  Installed: {daemon['installed']}")
+        if daemon.get("path"):
+            click.echo(f"  Unit file: {daemon['path']}")
+        if daemon.get("last_tick_log"):
+            click.echo(f"  Log:       {daemon['last_tick_log']}")
+
+    @schedule.command("install-daemon")
+    def schedule_install_daemon() -> None:
+        """Install the OS-level scheduler daemon (launchd or systemd)."""
+        from amx.scheduler.daemon_install import install_daemon
+
+        result = install_daemon()
+        click.echo(result["message"])
+        if result.get("path"):
+            click.echo(f"  Unit file: {result['path']}")
+
+    @schedule.command("uninstall-daemon")
+    def schedule_uninstall_daemon() -> None:
+        """Remove the OS-level scheduler daemon."""
+        from amx.scheduler.daemon_install import uninstall_daemon
+
+        result = uninstall_daemon()
+        click.echo(result["message"])
 
 
 __all__ = ["register_schedule_commands"]

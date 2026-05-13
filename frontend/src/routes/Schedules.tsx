@@ -52,6 +52,12 @@ interface SchemaItem {
   name: string;
 }
 
+interface AssetRow {
+  schema: string;
+  name: string;
+  kind?: string;
+}
+
 const STATUS_TONE: Record<string, BadgeTone> = {
   pending: "neutral",
   paused: "warning",
@@ -96,7 +102,10 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
     "all",
   );
   const [selectedSchemas, setSelectedSchemas] = useState<string[]>([]);
-  const [tablesText, setTablesText] = useState("");
+  const [tableSchemaPick, setTableSchemaPick] = useState<string>("");
+  const [selectedTables, setSelectedTables] = useState<
+    { schema: string; table: string }[]
+  >([]);
   const [llmProfile, setLlmProfile] = useState("");
   const [reviewStrategy, setReviewStrategy] = useState<"auto" | "manual">(
     "auto",
@@ -124,6 +133,22 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
     enabled: open && Boolean(dbProfile) && scopeMode !== "all",
   });
 
+  // Live assets (tables) for the schema picked in the "tables" mode.
+  // We only fetch when a schema has been chosen; until then the right-
+  // hand pane shows a "pick a schema first" hint.
+  const assetsQ = useQuery({
+    queryKey: ["live-assets", dbProfile, tableSchemaPick],
+    queryFn: () =>
+      apiFetch<{ assets: AssetRow[] }>(
+        `/api/live/schemas/${encodeURIComponent(tableSchemaPick)}/assets?profile=${encodeURIComponent(dbProfile)}`,
+      ),
+    enabled:
+      open &&
+      Boolean(dbProfile) &&
+      scopeMode === "tables" &&
+      Boolean(tableSchemaPick),
+  });
+
   // Auto-pick the first DB / LLM when the dialog opens (no profile chosen
   // yet) so the user almost never has to touch these fields.
   if (open && !dbProfile && dbProfilesQ.data?.profiles?.length) {
@@ -140,7 +165,8 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
       setName("");
       setScopeMode("all");
       setSelectedSchemas([]);
-      setTablesText("");
+      setSelectedTables([]);
+      setTableSchemaPick("");
       setError(null);
       onCreated();
       onClose();
@@ -156,18 +182,9 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
         throw new Error("Pick at least one schema");
       return { mode: "schemas", schemas: selectedSchemas };
     }
-    const tables = tablesText
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((piece) => {
-        const [schema, table] = piece.split(".");
-        if (!schema || !table)
-          throw new Error(`Table entry "${piece}" must be schema.table`);
-        return { schema, table };
-      });
-    if (!tables.length) throw new Error("List ≥1 schema.table pair");
-    return { mode: "tables", tables };
+    if (!selectedTables.length)
+      throw new Error("Pick at least one table");
+    return { mode: "tables", tables: selectedTables };
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -342,15 +359,122 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
           {scopeMode === "tables" && (
             <Field
               label="Tables"
-              hint="Comma-separated schema.table pairs (e.g. public.users, sales.orders)"
+              hint="Pick a schema, then tick the tables to include. Repeat for each schema."
               className="md:col-span-2"
             >
-              <Input
-                value={tablesText}
-                onChange={(e) => setTablesText(e.target.value)}
-                placeholder="public.users, public.orders"
-                required
-              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,200px)_1fr]">
+                {/* Left: schemas list */}
+                <div className="max-h-44 overflow-auto rounded-md border border-border bg-surface-raised p-2 text-sm">
+                  {schemasQ.isLoading && (
+                    <p className="text-ink-dim">Loading schemas…</p>
+                  )}
+                  {schemasQ.isError && (
+                    <p className="text-critical">
+                      Could not load schemas.
+                    </p>
+                  )}
+                  {schemasQ.data?.schemas?.length === 0 && (
+                    <p className="text-ink-dim">
+                      No schemas visible on "{dbProfile}".
+                    </p>
+                  )}
+                  <div className="flex flex-col gap-0.5">
+                    {schemasQ.data?.schemas?.map((s) => (
+                      <button
+                        type="button"
+                        key={s.name}
+                        onClick={() => setTableSchemaPick(s.name)}
+                        className={
+                          "rounded px-2 py-1 text-left font-mono text-xs hover:bg-surface-muted " +
+                          (s.name === tableSchemaPick
+                            ? "bg-accent/15 text-accent"
+                            : "text-ink")
+                        }
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Right: tables in the picked schema */}
+                <div className="max-h-44 overflow-auto rounded-md border border-border bg-surface-raised p-2 text-sm">
+                  {!tableSchemaPick && (
+                    <p className="text-ink-dim">
+                      Pick a schema on the left first.
+                    </p>
+                  )}
+                  {tableSchemaPick && assetsQ.isLoading && (
+                    <p className="text-ink-dim">Loading tables…</p>
+                  )}
+                  {tableSchemaPick && assetsQ.isError && (
+                    <p className="text-critical">
+                      Could not load tables for "{tableSchemaPick}".
+                    </p>
+                  )}
+                  {tableSchemaPick &&
+                    assetsQ.data?.assets?.length === 0 && (
+                      <p className="text-ink-dim">
+                        No tables in "{tableSchemaPick}".
+                      </p>
+                    )}
+                  <div className="grid grid-cols-1 gap-0.5 sm:grid-cols-2">
+                    {assetsQ.data?.assets
+                      ?.filter((a) => a.kind !== "column")
+                      .map((asset) => {
+                        const key = `${asset.schema}.${asset.name}`;
+                        const checked = selectedTables.some(
+                          (t) =>
+                            t.schema === asset.schema && t.table === asset.name,
+                        );
+                        return (
+                          <label
+                            key={key}
+                            className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-surface-muted"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedTables([
+                                    ...selectedTables,
+                                    {
+                                      schema: asset.schema,
+                                      table: asset.name,
+                                    },
+                                  ]);
+                                } else {
+                                  setSelectedTables(
+                                    selectedTables.filter(
+                                      (t) =>
+                                        !(
+                                          t.schema === asset.schema &&
+                                          t.table === asset.name
+                                        ),
+                                    ),
+                                  );
+                                }
+                              }}
+                            />
+                            <span className="font-mono text-xs">
+                              {asset.name}
+                            </span>
+                          </label>
+                        );
+                      })}
+                  </div>
+                </div>
+              </div>
+              {selectedTables.length > 0 && (
+                <p className="mt-2 text-xs text-ink-dim">
+                  Selected ({selectedTables.length}):{" "}
+                  <span className="font-mono">
+                    {selectedTables
+                      .map((t) => `${t.schema}.${t.table}`)
+                      .join(", ")}
+                  </span>
+                </p>
+              )}
             </Field>
           )}
         </div>
@@ -362,7 +486,9 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
         <p className="rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-ink-dim">
           Heads-up — AMX is invocation-based. For this schedule to fire on
           time, keep AMX/Studio open at fire time OR enable the background
-          daemon: <code className="font-mono text-ink">amx scheduler install-daemon</code>.
+          daemon. At the AMX REPL prompt, run:{" "}
+          <code className="font-mono text-ink">/analyze schedule install-daemon</code>
+          .
         </p>
         <div className="flex items-center justify-end gap-2 pt-1">
           <Button variant="secondary" size="md" onClick={onClose} type="button">
@@ -491,6 +617,7 @@ export default function Schedules() {
             {row.fire_at_tz}
           </span>
         ),
+        hideOnMobile: true,
       },
       {
         id: "status",
@@ -505,6 +632,7 @@ export default function Schedules() {
         cell: (row) => (
           <span className="text-ink-dim">{row.db_profile}</span>
         ),
+        hideOnMobile: true,
       },
       {
         id: "llm",
@@ -513,6 +641,7 @@ export default function Schedules() {
         cell: (row) => (
           <span className="text-ink-dim">{row.llm_profile}</span>
         ),
+        hideOnMobile: true,
       },
       {
         id: "actions",
@@ -601,10 +730,10 @@ export default function Schedules() {
     <>
       <PageHeader
         title="Schedules"
-        breadcrumbs={[{ label: "Schedules" }]}
+        breadcrumbs={[{ label: "Runs", to: "/runs" }, { label: "Schedules" }]}
         description="One-shot scheduled metadata runs. Catch-up surfaces on next open when AMX was closed at fire time."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {daemonChip}
             <Button
               variant="secondary"
@@ -626,7 +755,7 @@ export default function Schedules() {
         }
       />
 
-      <div className="px-6 py-4">
+      <div className="px-4 py-4 sm:px-6">
         {banner}
 
         <div className="mb-3 flex items-center gap-2">
