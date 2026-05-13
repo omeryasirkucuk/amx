@@ -10,9 +10,17 @@
 // browse pages read scope from the URL via `useScope()`; the sidebar
 // builds scopes when the user expands a tree node.
 
-import { getStoredToken } from "./auth";
+import { clearStoredToken, getStoredToken, rememberDeeplink } from "./auth";
 import type { Scope } from "./scope";
 import { scopeQuery } from "./scope";
+
+// Set once per page load so the 401 self-recovery only ever bounces
+// the user back to ``/`` a single time per session — without it a
+// token source that keeps handing out a stale token would put the SPA
+// into a reload loop. After the first bounce we surface the 401 as a
+// normal ``ApiError`` so the existing UI banners can render and the
+// user can decide what to do.
+let _tokenRotateAttempted = false;
 
 export class ApiError extends Error {
   status: number;
@@ -42,6 +50,38 @@ export async function apiFetch<T>(
   const res = await fetch(path, { ...init, headers });
   if (!res.ok) {
     const text = await res.text();
+    // Self-recover from a stale Studio token. The launcher rotates the
+    // ``~/.amx/studio.token`` on every restart (the ``deploy`` script
+    // does this on the remote box). The SPA still has the previous
+    // token in localStorage; the first ``/api/*`` call after the rotate
+    // 401s with "Invalid AMX Studio token" or "Missing AMX Studio
+    // token". Without this branch the user would see a wall of red
+    // toasts on every page until they manually refreshed the home
+    // page. Instead we drop the stale token, stash the current
+    // pathname so the next boot can land back here, and bounce
+    // through ``/`` — the token source / launcher injects ``?t=<fresh>``
+    // and the SPA captures the new token before redirecting to the
+    // remembered deep link. Guarded by a single-shot flag so a
+    // genuinely broken token source can't push the SPA into a reload
+    // loop.
+    if (
+      res.status === 401 &&
+      !_tokenRotateAttempted &&
+      typeof window !== "undefined" &&
+      /AMX Studio token/i.test(text)
+    ) {
+      _tokenRotateAttempted = true;
+      try {
+        clearStoredToken();
+        rememberDeeplink();
+        window.location.replace("/");
+        // Return a never-resolving promise so callers don't render a
+        // half-error state during the navigation tick.
+        return await new Promise<T>(() => {});
+      } catch {
+        /* fall through to the normal error path */
+      }
+    }
     let detail = text;
     let hint: string | undefined;
     try {

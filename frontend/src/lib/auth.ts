@@ -12,6 +12,12 @@
 // "rotate token" button that re-runs this flow.
 
 const STORAGE_KEY = "amx.studio.token";
+//: Where we stash the user's intended deep link before bouncing them
+//: to ``/`` so the launcher can inject a fresh token via
+//: ``?t=<...>``. Lives in sessionStorage so it survives the reload but
+//: doesn't leak across tabs. Consumed exactly once on the next boot
+//: (see :func:`consumeDeeplink`).
+const DEEPLINK_KEY = "amx.studio.deeplink";
 
 export function captureTokenFromUrl(): string | null {
   try {
@@ -57,4 +63,47 @@ export function clearStoredToken(): void {
 export function tokenQuerySuffix(): string {
   const token = getStoredToken();
   return token ? `t=${encodeURIComponent(token)}` : "";
+}
+
+/**
+ * Persist the user's intended deep link (path + search + hash) before
+ * a forced reload, so the next boot can land back on the page they
+ * were trying to read. Falls back silently when ``sessionStorage`` is
+ * unavailable (private mode) — the worst case is the user lands on
+ * the home page after a token rotate.
+ */
+export function rememberDeeplink(target?: string): void {
+  try {
+    const fallback =
+      window.location.pathname + window.location.search + window.location.hash;
+    const value = (target ?? fallback).trim();
+    // Don't persist "/" — landing on home is the default and stashing
+    // it would cause an infinite redirect on the next boot.
+    if (!value || value === "/") {
+      window.sessionStorage.removeItem(DEEPLINK_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(DEEPLINK_KEY, value);
+  } catch {
+    /* sessionStorage unavailable — fall through */
+  }
+}
+
+/**
+ * Read and clear the stashed deep link. Returns ``null`` when none was
+ * stored, or when the value isn't a same-origin path. The same-origin
+ * check is paranoid — sessionStorage is per-origin already, but
+ * surfacing the rule here keeps an accidental ``http://evil.example/``
+ * value from ever becoming a navigation target.
+ */
+export function consumeDeeplink(): string | null {
+  try {
+    const raw = window.sessionStorage.getItem(DEEPLINK_KEY);
+    window.sessionStorage.removeItem(DEEPLINK_KEY);
+    if (!raw) return null;
+    if (!raw.startsWith("/") || raw.startsWith("//")) return null;
+    return raw;
+  } catch {
+    return null;
+  }
 }
