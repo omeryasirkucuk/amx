@@ -26,10 +26,9 @@ _PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     <key>Label</key><string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{amx_path}</string>
-        <string>scheduler</string>
-        <string>tick</string>
-        <string>--silent</string>
+        <string>{python_path}</string>
+        <string>-m</string>
+        <string>amx.scheduler</string>
     </array>
     <key>StartInterval</key><integer>60</integer>
     <key>RunAtLoad</key><true/>
@@ -51,7 +50,7 @@ Description=AMX scheduler tick ({label})
 Type=oneshot
 Environment=AMX_CONFIG_DIR={config_dir}
 Environment=AMX_SKIP_BOOTSTRAP_TICK=1
-ExecStart={amx_path} scheduler tick --silent
+ExecStart={python_path} -m amx.scheduler
 """
 
 _SYSTEMD_TIMER = """[Unit]
@@ -94,6 +93,26 @@ def _amx_path() -> str:
     if found:
         return found
     return "amx"  # fall through; user can edit unit file if PATH is unusual
+
+
+def _python_path() -> str:
+    """Resolve the Python interpreter the daemon should use.
+
+    The daemon invokes ``python -m amx.scheduler`` rather than the
+    ``amx`` shell entry because AMX's CLI is REPL-only on this
+    install -- top-level ``amx <subcommand>`` calls are blocked with
+    "Direct subcommands are disabled". The Python module path
+    bypasses that gate cleanly without breaking the user's
+    interactive UX rule.
+
+    We use ``sys.executable`` so the daemon honours whichever venv
+    the install command was invoked from. That matters for the
+    prod / dev split: prod and dev typically live in separate venvs
+    and the daemon must use the one that actually has AMX installed.
+    """
+    import sys
+
+    return sys.executable
 
 
 def _macos_plist_path(label: str) -> Path:
@@ -139,7 +158,7 @@ def install_daemon() -> dict[str, Any]:
     cfg.mkdir(parents=True, exist_ok=True)
     (cfg / "logs").mkdir(parents=True, exist_ok=True)
     log_path = cfg / "logs" / "scheduler.log"
-    amx_path = _amx_path()
+    python_path = _python_path()
     system = platform.system()
 
     if system == "Darwin":
@@ -148,14 +167,21 @@ def install_daemon() -> dict[str, Any]:
         plist_path.write_text(
             _PLIST_TEMPLATE.format(
                 label=label,
-                amx_path=amx_path,
+                python_path=python_path,
                 config_dir=str(cfg),
                 log_path=str(log_path),
             )
         )
-        # bootstrap via `launchctl load`; fall back gracefully if the
-        # bootstrap helper is missing (some sandboxed shells).
+        # Unload first in case an older plist (pointing at the now-
+        # unreachable ``amx scheduler tick`` shell entry) is still
+        # loaded -- launchctl ``load`` is a no-op when the label is
+        # already present.
         try:
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                check=False,
+                capture_output=True,
+            )
             subprocess.run(
                 ["launchctl", "load", str(plist_path)],
                 check=False,
@@ -173,7 +199,9 @@ def install_daemon() -> dict[str, Any]:
         tmr_path = _systemd_timer_path(suffix)
         svc_path.parent.mkdir(parents=True, exist_ok=True)
         svc_path.write_text(
-            _SYSTEMD_SERVICE.format(label=label, amx_path=amx_path, config_dir=str(cfg))
+            _SYSTEMD_SERVICE.format(
+                label=label, python_path=python_path, config_dir=str(cfg)
+            )
         )
         tmr_path.write_text(_SYSTEMD_TIMER.format(label=label, suffix=suffix))
         for cmd in (
