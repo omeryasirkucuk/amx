@@ -54,7 +54,14 @@ def score_alternatives(
 
         signals["self_consistency"] = self_consistency_score(alternatives)
 
-    # Phase 2/3 signals deliberately not wired here yet.
+    if cfg.use_self_decl:
+        from amx.llm.confidence.self_declaration import (
+            score_per_alternative as self_decl_score,
+        )
+
+        signals["self_decl"] = self_decl_score(response_text, n=len(alternatives))
+
+    # Phase 3 (judge) deliberately not wired here yet.
 
     return build_alternative_scores(
         alternatives=alternatives,
