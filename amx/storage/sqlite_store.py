@@ -559,6 +559,51 @@ class SQLiteHistoryStore:
                 )
                 """
             )
+            # ── scheduled_runs: one-shot scheduled metadata runs ──
+            #
+            # Created and managed via the `amx schedule` command group
+            # (Phase 3) and the Studio Schedules page (Phase 5). The
+            # tick engine (Phase 2) reads pending rows whose
+            # ``fire_at_utc`` has elapsed and transitions them through
+            # the state machine documented in
+            # docs/superpowers/specs/2026-05-13-scheduled-runs-design.md.
+            #
+            # ``fire_at_utc`` is always canonical UTC; ``fire_at_tz``
+            # is the IANA tz id the user picked for display and DST
+            # handling. ``scope_json`` stores a high-level reference
+            # (schema/table names) and is resolved against the live DB
+            # at fire time -- new tables under a scheduled schema are
+            # picked up automatically; missing entities surface as a
+            # clean failure with last_error populated.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduled_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    fire_at_utc REAL NOT NULL,
+                    fire_at_tz TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    db_profile TEXT NOT NULL,
+                    scope_json TEXT NOT NULL,
+                    llm_profile TEXT NOT NULL,
+                    review_strategy TEXT NOT NULL,
+                    extra_args_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    fired_at REAL,
+                    triggered_run_id INTEGER,
+                    last_error TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_runs_status_fireat "
+                "ON scheduled_runs(status, fire_at_utc)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scheduled_runs_db_profile "
+                "ON scheduled_runs(db_profile)"
+            )
 
     def _ensure_run_columns(self, conn: Any) -> None:
         """Idempotently add the v0.5.2 reporting columns to analysis_runs.
@@ -607,6 +652,14 @@ class SQLiteHistoryStore:
             ("hostname", "TEXT"),
             ("client_version", "TEXT"),
             ("shared_uuid", "TEXT"),
+            # Scheduled-runs feature (Phase 1a). ``triggered_by_schedule_id``
+            # links a run back to the scheduled_runs row that fired it;
+            # ``last_heartbeat_at`` is bumped by the orchestrator while a
+            # run is in flight and consumed by the stale-run recovery
+            # path (Phase 2). Both are NULL for runs not driven by the
+            # scheduler and for runs created before this migration.
+            ("triggered_by_schedule_id", "INTEGER"),
+            ("last_heartbeat_at", "REAL"),
         ):
             if col_name in existing_cols:
                 continue
@@ -2302,6 +2355,301 @@ class SQLiteHistoryStore:
                     d["details_json"] = json.loads(raw)
             out.append(d)
         return out
+
+    # ── scheduled_runs CRUD ─────────────────────────────────────────────
+    #
+    # The state machine governs which transitions are legal. See the
+    # design spec for the full diagram; the dict below is its
+    # source-of-truth implementation. Terminal states (failed,
+    # completed, cancelled) intentionally have empty sets -- once a
+    # schedule is terminal it stays terminal; the user "re-arms" by
+    # cloning into a fresh schedule.
+    _SCHEDULE_TRANSITIONS: dict[str, set[str]] = {
+        "pending": {"paused", "running", "missed", "cancelled"},
+        "paused": {"pending", "cancelled"},
+        "running": {"completed", "failed"},
+        "missed": {"running", "cancelled", "pending"},
+        "failed": set(),
+        "completed": set(),
+        "cancelled": set(),
+    }
+
+    _SCHEDULE_UPDATABLE_FIELDS: frozenset[str] = frozenset(
+        {
+            "name",
+            "fire_at_utc",
+            "fire_at_tz",
+            "db_profile",
+            "scope_json",
+            "llm_profile",
+            "review_strategy",
+            "extra_args_json",
+        }
+    )
+
+    def create_scheduled_run(
+        self,
+        *,
+        name: str,
+        fire_at_utc: float,
+        fire_at_tz: str,
+        db_profile: str,
+        scope_json: str,
+        llm_profile: str,
+        review_strategy: str,
+        extra_args_json: str | None = None,
+    ) -> int:
+        """Insert a new scheduled_runs row in status='pending'."""
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO scheduled_runs (
+                    name, fire_at_utc, fire_at_tz, status,
+                    db_profile, scope_json, llm_profile, review_strategy,
+                    extra_args_json, created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    fire_at_utc,
+                    fire_at_tz,
+                    db_profile,
+                    scope_json,
+                    llm_profile,
+                    review_strategy,
+                    extra_args_json,
+                    now,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def get_scheduled_run(self, schedule_id: int) -> dict[str, Any] | None:
+        """Return the full row as a dict, or None if missing."""
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM scheduled_runs WHERE id=?", (schedule_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_scheduled_runs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        db_profile: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """List rows sorted by fire_at_utc ASC with optional filters."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if db_profile is not None:
+            clauses.append("db_profile = ?")
+            params.append(db_profile)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+        sql = "SELECT * FROM scheduled_runs" + where + " ORDER BY fire_at_utc ASC LIMIT ?"
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_due_pending_schedules(
+        self,
+        *,
+        now_utc: float,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return rows that are pending and whose fire time has elapsed.
+
+        Read-only: does not transition status. Used by the bootstrap
+        tick path to surface "missed while AMX was closed" entries.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE status = 'pending'
+                  AND fire_at_utc <= ?
+                ORDER BY fire_at_utc ASC
+                LIMIT ?
+                """,
+                (now_utc, int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_scheduled_run(
+        self,
+        schedule_id: int,
+        *,
+        patch: dict[str, Any],
+    ) -> None:
+        """Apply a whitelisted patch to a scheduled_runs row.
+
+        Only the fields in ``_SCHEDULE_UPDATABLE_FIELDS`` can be
+        modified through this path -- status changes go through
+        :meth:`set_scheduled_run_status`, and id/created_at/fired_at/
+        triggered_run_id/last_error are owned by the engine.
+        """
+        if not patch:
+            return
+        unknown = (
+            set(patch)
+            - self._SCHEDULE_UPDATABLE_FIELDS
+            - {
+                "status",
+                "id",
+                "created_at",
+                "updated_at",
+                "fired_at",
+                "triggered_run_id",
+                "last_error",
+            }
+        )
+        if unknown:
+            raise ValueError(f"unknown patch field(s): {sorted(unknown)}")
+        forbidden = set(patch) - self._SCHEDULE_UPDATABLE_FIELDS
+        if forbidden:
+            raise ValueError(
+                f"forbidden patch field(s) for update_scheduled_run: "
+                f"{sorted(forbidden)} -- use a dedicated method"
+            )
+        cols = sorted(patch)
+        set_clause = ", ".join(f"{c} = ?" for c in cols)
+        params: list[Any] = [patch[c] for c in cols]
+        params.append(time.time())
+        params.append(schedule_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"UPDATE scheduled_runs SET {set_clause}, updated_at = ? WHERE id = ?",
+                params,
+            )
+
+    def set_scheduled_run_status(
+        self,
+        schedule_id: int,
+        status: str,
+        *,
+        last_error: str | None = None,
+        fired_at: float | None = None,
+        triggered_run_id: int | None = None,
+    ) -> None:
+        """Transition a schedule to *status*, enforcing the state machine."""
+        if status not in self._SCHEDULE_TRANSITIONS:
+            raise ValueError(f"unknown status: {status!r}")
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM scheduled_runs WHERE id = ?",
+                (schedule_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"no scheduled_runs row with id={schedule_id}")
+            current = str(row[0])
+            allowed = self._SCHEDULE_TRANSITIONS.get(current, set())
+            if status not in allowed and status != current:
+                raise ValueError(f"illegal transition: {current!r} -> {status!r}")
+            sets = ["status = ?", "updated_at = ?"]
+            params: list[Any] = [status, now]
+            if last_error is not None:
+                sets.append("last_error = ?")
+                params.append(last_error)
+            if fired_at is not None:
+                sets.append("fired_at = ?")
+                params.append(fired_at)
+            if triggered_run_id is not None:
+                sets.append("triggered_run_id = ?")
+                params.append(triggered_run_id)
+            params.append(schedule_id)
+            conn.execute(
+                f"UPDATE scheduled_runs SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+
+    def delete_scheduled_run(self, schedule_id: int) -> None:
+        """Hard-delete a scheduled_runs row; write an audit event.
+
+        Idempotent: deleting a non-existent id is a no-op (no error,
+        no audit row).
+        """
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM scheduled_runs WHERE id = ?",
+                (schedule_id,),
+            ).fetchone()
+            if row is None:
+                return
+            name = str(row[0])
+            conn.execute("DELETE FROM scheduled_runs WHERE id = ?", (schedule_id,))
+            conn.execute(
+                """
+                INSERT INTO app_events (
+                    created_at, event_type, status, command, details_json
+                ) VALUES (?, 'schedule.deleted', 'ok', 'schedule.rm', ?)
+                """,
+                (
+                    time.time(),
+                    json.dumps({"schedule_id": schedule_id, "name": name}),
+                ),
+            )
+
+    def claim_due_schedule(self, *, now_utc: float) -> int | None:
+        """Atomically transition the oldest due pending schedule to running.
+
+        Returns the claimed schedule id, or None if none are due. Safe
+        under concurrent calls from multiple threads -- the
+        ``WHERE status='pending'`` predicate on the UPDATE turns a lost
+        race into a return of None for the loser.
+        """
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM scheduled_runs
+                WHERE status = 'pending' AND fire_at_utc <= ?
+                ORDER BY fire_at_utc ASC
+                LIMIT 1
+                """,
+                (now_utc,),
+            ).fetchone()
+            if row is None:
+                return None
+            sid = int(row[0])
+            cur = conn.execute(
+                """
+                UPDATE scheduled_runs
+                SET status = 'running', fired_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (now, now, sid),
+            )
+            if cur.rowcount == 1:
+                return sid
+            return None
+
+    def update_run_heartbeat(
+        self,
+        run_id: int,
+        *,
+        now_utc: float | None = None,
+    ) -> None:
+        """Bump ``last_heartbeat_at`` for an in-flight analysis_runs row.
+
+        Used by the orchestrator while a run is in flight; consumed by
+        the stale-run recovery path (Phase 2) to detect interrupted
+        runs after an unclean shutdown. No-ops for unknown run_ids so
+        the caller can be defensive without checking first.
+        """
+        ts = now_utc if now_utc is not None else time.time()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET last_heartbeat_at = ? WHERE id = ?",
+                (ts, run_id),
+            )
 
 
 # The singleton is typed as ``Any`` so v0.12.0+ shared-history mode
