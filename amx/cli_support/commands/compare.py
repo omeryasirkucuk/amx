@@ -186,21 +186,24 @@ def _top_alternative(row: dict[str, Any]) -> str:
     Prefer ``chosen_description`` (post-review winner). Fall back to
     the first entry of ``alternatives_json``. Empty string if neither
     is present.
+
+    Accepts both the legacy flat list[str] payload and the Phase 1
+    structured list[dict] payload (where each entry has a ``text`` key).
     """
     chosen = (row.get("chosen_description") or "").strip()
     if chosen:
         return chosen
     alts = row.get("alternatives_json")
-    if isinstance(alts, list) and alts:
-        first = alts[0]
-        return str(first).strip() if first else ""
     if isinstance(alts, str) and alts:
         try:
-            parsed = json.loads(alts)
+            alts = json.loads(alts)
         except Exception:
-            parsed = []
-        if isinstance(parsed, list) and parsed:
-            return str(parsed[0]).strip() if parsed[0] else ""
+            alts = []
+    if isinstance(alts, list) and alts:
+        first = alts[0]
+        if isinstance(first, dict):
+            return str(first.get("text") or "").strip()
+        return str(first).strip() if first else ""
     return ""
 
 
