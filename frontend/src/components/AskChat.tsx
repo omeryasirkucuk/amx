@@ -181,12 +181,18 @@ export default function AskChat({
     sessionKey in askScopeBySession ? askScopeBySession[sessionKey] : null;
 
   // Doc / code profile override for the NEXT question. ``null`` =
-  // auto-derive from the DB scope via the link map (legacy default).
-  // ``[]`` = opt OUT of retrieval entirely. ``string[]`` = explicit
-  // pick that bypasses the link map. Per-question, not sticky — the
-  // user often wants different sources on consecutive questions.
-  const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>(null);
-  const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>(null);
+  // auto-derive from the DB scope via the link map. ``[]`` = opt OUT
+  // of retrieval entirely. ``string[]`` = explicit pick that bypasses
+  // the link map. Per-question, not sticky — the user often wants
+  // different sources on consecutive questions.
+  //
+  // Default is ``[]`` (None) on both knobs: most catalog questions
+  // don't need docs or codebase retrieval and surfacing auto-picked
+  // results when the user didn't ask for them was the #1 source of
+  // unexpected slow turns. The dropdown still exposes Auto + every
+  // saved profile, so opting in is one click away.
+  const [docProfilesOverride, setDocProfilesOverride] = useState<string[] | null>([]);
+  const [codeProfilesOverride, setCodeProfilesOverride] = useState<string[] | null>([]);
 
   // Read the active LLM profile / model from the shared ``["context"]``
   // cache so the inline picker mirrors whatever the sidebar shows.
