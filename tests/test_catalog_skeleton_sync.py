@@ -161,6 +161,52 @@ def test_failure_path_marks_state_failed(
     assert fresh_catalog.is_profile_fully_synced("prof-a") is False
 
 
+def test_empty_schemas_marks_state_failed(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``list_schemas`` returning ``[]`` without raising is treated as
+    a failure, not a silent done. The user-reported scenario: a
+    Databricks profile without a catalog pinned succeeds at connect
+    but enumerates zero schemas. The previous behaviour flipped the
+    pill to ``never · stale`` with no Retry signal; this branch is
+    why we now mark the state as failed with a backend-specific
+    actionable message."""
+    connector = _StubConnector(schemas=[], assets={})
+    _stub_build_connector(monkeypatch, connector)
+
+    summary = sync_profile_skeleton(_StubCfg(), "prof-a", fresh_catalog)
+    assert summary["state"] == "failed"
+    assert "no schemas" in summary["error"].lower()
+
+    state = fresh_catalog.get_profile_state("prof-a")
+    assert state["state"] == "failed"
+    assert "no schemas" in state["last_error"].lower()
+    assert fresh_catalog.is_profile_fully_synced("prof-a") is False
+
+
+def test_empty_schemas_databricks_message(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Databricks-backed profiles get a tailored error mentioning the
+    catalog pin — the #1 reason ``list_schemas`` returns ``[]`` on UC
+    setups."""
+    connector = _StubConnector(schemas=[], assets={})
+    _stub_build_connector(monkeypatch, connector)
+
+    class _DatabricksCfg:
+        class _DB:
+            backend = "databricks"
+            database = ""
+            catalog = ""
+            project = ""
+
+        db = _DB()
+
+    summary = sync_profile_skeleton(_DatabricksCfg(), "prof-dbr", fresh_catalog)
+    assert summary["state"] == "failed"
+    assert "catalog" in summary["error"].lower()
+
+
 def test_completeness_gate_window(
     fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -262,6 +262,8 @@ def test_catalog_freshness_endpoint_shape(tmp_path: Path) -> None:
     store = SQLiteHistoryStore(db_path)
     ss._store = store  # noqa: SLF001 — module-level singleton
     try:
+        # cfg=None disables the ghost-profile filter so the legacy
+        # behaviour (every profile surfaces) is still covered.
         payload = catalog_router.catalog_freshness(cfg=None)
     finally:
         ss._store = None  # noqa: SLF001
@@ -280,3 +282,51 @@ def test_catalog_freshness_endpoint_shape(tmp_path: Path) -> None:
         "stale",
     }
     assert expected_keys.issubset(profiles["fresh-p"].keys())
+
+
+def test_catalog_freshness_filters_ghost_profiles(tmp_path: Path) -> None:
+    """Profiles with catalog rows but not in ``cfg.db_profiles`` (the
+    user-reported ``default`` tombstone) are dropped from the pill.
+    They remain in ``catalog_entities`` on disk in case the user
+    re-adds a profile with the same name, but they don't clutter the
+    dropdown."""
+    db_path = tmp_path / "history.db"
+    SQLiteHistoryStore(db_path).init()
+    now = time.time()
+    with sqlite3.connect(db_path) as conn:
+        # One ghost row (legacy ``default`` profile that's no longer
+        # in the user's config) + one real row.
+        for db_profile in ("default", "local-postgre"):
+            conn.execute(
+                """
+                INSERT INTO catalog_entities (
+                    db_profile, schema_name, table_name, entity_kind, last_synced_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (db_profile, "public", "t", "table", now - 60),
+            )
+
+    import amx.web.routers.catalog as catalog_router
+    from amx.storage import sqlite_store as ss
+
+    store = SQLiteHistoryStore(db_path)
+    ss._store = store  # noqa: SLF001
+
+    class _Cfg:
+        # Only ``local-postgre`` is in the active config.
+        db_profiles = {"local-postgre": object()}
+
+    try:
+        payload = catalog_router.catalog_freshness(cfg=_Cfg())
+    finally:
+        ss._store = None  # noqa: SLF001
+
+    names = {p["profile"] for p in payload["profiles"]}
+    assert names == {"local-postgre"}
+    # Ghost stays on disk — re-adding ``default`` later should pick
+    # those rows back up.
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM catalog_entities WHERE db_profile = 'default'"
+        ).fetchone()
+    assert int(row[0]) == 1
