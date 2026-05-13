@@ -218,6 +218,35 @@ def sync_profile_skeleton(cfg, profile: str, catalog) -> dict:
         summary["error"] = str(exc)
         return summary
 
+    # ``list_schemas`` succeeded but returned zero rows. Treat this as a
+    # failure (not a silent success) so the freshness pill renders a
+    # Retry CTA + actionable error instead of "never · stale" with no
+    # explanation. The most common cause on Databricks is a profile
+    # without a catalog pinned; on 2-level backends it's a permission
+    # gap. Tailor the message so the user knows exactly what to check.
+    if not schemas:
+        if db_backend == "databricks":
+            error_msg = (
+                "Connected but no schemas were visible. Pin a catalog on the "
+                "profile (Settings → DB profile) or check that your warehouse "
+                "permissions expose at least one schema."
+            )
+        else:
+            error_msg = (
+                "Connected but no schemas were visible. Check that the active "
+                "database is correct and the connection user has at least "
+                "``USAGE`` on one schema."
+            )
+        log.warning(
+            "Skeleton sync for %s returned empty schemas - marking failed",
+            profile,
+        )
+        catalog.start_skeleton_sync(profile, total_tables=0)
+        catalog.finish_skeleton_sync(profile, ok=False, error=error_msg)
+        summary["state"] = "failed"
+        summary["error"] = error_msg
+        return summary
+
     # Step 2: pass 1 — count tables across all schemas. Lets the UI
     # show ``Syncing 0 / N…`` from the first tick rather than
     # ``Syncing… N unknown``.
