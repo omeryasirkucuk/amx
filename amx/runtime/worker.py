@@ -188,19 +188,64 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
         sum(len(ts) for ts in scope.values()),
         len(scope),
     )
-    for schema, tables in scope.items():
-        for table in tables:
-            try:
-                orchestrator.process_table(
-                    schema, table, interactive_review=False
-                )
-            except Exception:  # noqa: BLE001 - keep going on per-table errors
-                log.exception(
-                    "production_run_executor: %s.%s failed under schedule #%s",
-                    schema,
-                    table,
-                    schedule_id,
-                )
+
+    # Heartbeat ticker: the per-table ``process_table`` call can spend
+    # minutes inside a single LLM batch, well past the stale-recovery
+    # threshold (default 300s). Without this, ``recover_stale_runs``
+    # marks the still-running row as ``failed`` mid-flight, even
+    # though work continues to land in ``run_results``. The ticker
+    # is a daemon thread so it terminates cleanly when the executor
+    # returns; the ``stop`` event lets the main loop signal "done"
+    # so we don't keep beating a finished row.
+    from amx.storage.sqlite_store import history_store
+
+    hs = history_store()
+    stop_beat = threading.Event()
+
+    def _heartbeat_tick() -> None:
+        while not stop_beat.is_set():
+            if hs is not None:
+                try:
+                    hs.update_run_heartbeat(run_id)
+                except Exception:  # noqa: BLE001 - never crash the ticker
+                    log.exception(
+                        "heartbeat ticker failed for run_id=%s", run_id
+                    )
+            # Beat every ~60s -- well under the 300s stale threshold
+            # so a single slow table doesn't slip past one missed beat.
+            stop_beat.wait(60.0)
+
+    beat_thread = threading.Thread(
+        target=_heartbeat_tick,
+        name=f"amx-heartbeat-{run_id}",
+        daemon=True,
+    )
+    beat_thread.start()
+
+    try:
+        for schema, tables in scope.items():
+            for table in tables:
+                # Per-table heartbeat too, so any 60s+ table flips
+                # ``last_heartbeat_at`` even when the ticker is
+                # waiting on its sleep.
+                if hs is not None:
+                    try:
+                        hs.update_run_heartbeat(run_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    orchestrator.process_table(
+                        schema, table, interactive_review=False
+                    )
+                except Exception:  # noqa: BLE001 - keep going on per-table errors
+                    log.exception(
+                        "production_run_executor: %s.%s failed under schedule #%s",
+                        schema,
+                        table,
+                        schedule_id,
+                    )
+    finally:
+        stop_beat.set()
 
 
 def _scope_column_overrides(
