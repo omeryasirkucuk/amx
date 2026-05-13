@@ -28,6 +28,10 @@ interface SessionTurn {
   role: string;
   question: string;
   answer_summary: string;
+  /** "cancelled" on tombstone assistant rows the backend writes when
+   *  the user cancels mid-stream. Other values are the agent's regular
+   *  intent classification (chitchat / metadata-lookup / etc.). */
+  intent?: string;
   turn_index: number;
   created_at: number | null;
 }
@@ -44,8 +48,19 @@ function turnsToBubbles(turns: SessionTurn[]): SubmittedTurn[] {
   for (const t of turns) {
     if (t.role === "user" && t.question) {
       bubbles.push({ role: "user", content: t.question });
-    } else if (t.role === "assistant" && t.answer_summary) {
-      bubbles.push({ role: "assistant", content: t.answer_summary });
+    } else if (t.role === "assistant") {
+      // Cancelled tombstone — empty ``answer_summary`` with
+      // ``intent === "cancelled"``. Surface as a Cancelled pill in the
+      // bubble list (AskChat's ``cancelled`` branch); do NOT skip it,
+      // or the user bubble above sits orphaned just like on a fresh
+      // cancel.
+      if (t.intent === "cancelled") {
+        bubbles.push({ role: "assistant", content: "", cancelled: true });
+        continue;
+      }
+      if (t.answer_summary) {
+        bubbles.push({ role: "assistant", content: t.answer_summary });
+      }
     }
   }
   return bubbles;
