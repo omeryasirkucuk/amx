@@ -243,12 +243,29 @@ def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     now = _time.time()
     stale_after_sec = 24 * 60 * 60
     state_by_profile = {str(r["db_profile"] or ""): r for r in state_rows}
+    # Filter to profiles the user actually has configured. ``catalog_entities``
+    # row keys are profile names that may include tombstones — names like
+    # the historical ``"default"`` fallback or a profile the user has since
+    # deleted from their config. The freshness pill should match the user's
+    # mental model of *current* profiles; orphan rows stay on disk in case
+    # the user re-adds a profile with the same name later, but they no
+    # longer show up in the dropdown.
+    valid_profiles: set[str] | None = None
+    if cfg is not None:
+        profile_map = getattr(cfg, "db_profiles", None)
+        if hasattr(profile_map, "keys"):
+            valid_profiles = {str(k) for k in profile_map}
     profiles: list[dict[str, Any]] = []
     stale_count = 0
     syncing_count = 0
     seen: set[str] = set()
     for row in rows:
         name = str(row["db_profile"] or "")
+        if valid_profiles is not None and name not in valid_profiles:
+            # Tombstone — skip. The state-row loop below applies the same
+            # filter so a leftover ``catalog_profile_state`` entry for a
+            # deleted profile doesn't sneak back in via the second pass.
+            continue
         seen.add(name)
         last = float(row["last_synced_at"] or 0.0)
         age = now - last if last else None
@@ -288,6 +305,10 @@ def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
     # until the very first row landed.
     for name, state_row in state_by_profile.items():
         if name in seen:
+            continue
+        if valid_profiles is not None and name not in valid_profiles:
+            # Same tombstone filter as above — a stale state row for a
+            # deleted profile must not surface in the pill.
             continue
         state_value = str(state_row["state"])
         if state_value == "syncing":
