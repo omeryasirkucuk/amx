@@ -521,5 +521,77 @@ class DualWriteHistoryStore:
     def stats(self, command_filter: str | None = "analyze.run") -> dict[str, Any]:
         return self.local.stats(command_filter=command_filter)
 
+    # ── Scheduled runs (Phase 1b — local-only for now) ─────────────────
+    #
+    # All scheduled_runs operations delegate to the local store; the
+    # shared SQLAlchemy mirror does not yet have the scheduled_runs
+    # table. Once the shared schema lands (follow-up PR), each method
+    # gains a ``_try_remote(...)`` call and a new ``OP_*`` constant
+    # plus a ``_replay_op`` branch so outbox replay covers the
+    # scheduled_runs surface end-to-end. Until then, shared-mode
+    # users get full local-side schedule functionality with no team
+    # visibility on schedules -- the local DB on each machine is the
+    # source of truth, exactly as the DualWrite contract guarantees.
+
+    def create_scheduled_run(self, **kwargs: Any) -> int:
+        return self.local.create_scheduled_run(**kwargs)
+
+    def get_scheduled_run(self, schedule_id: int) -> dict[str, Any] | None:
+        return self.local.get_scheduled_run(schedule_id)
+
+    def list_scheduled_runs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        db_profile: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        return self.local.list_scheduled_runs(statuses=statuses, db_profile=db_profile, limit=limit)
+
+    def list_due_pending_schedules(
+        self, *, now_utc: float, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        return self.local.list_due_pending_schedules(now_utc=now_utc, limit=limit)
+
+    def update_scheduled_run(self, schedule_id: int, *, patch: dict[str, Any]) -> None:
+        self.local.update_scheduled_run(schedule_id, patch=patch)
+
+    def set_scheduled_run_status(
+        self,
+        schedule_id: int,
+        status: str,
+        *,
+        last_error: str | None = None,
+        fired_at: float | None = None,
+        triggered_run_id: int | None = None,
+    ) -> None:
+        self.local.set_scheduled_run_status(
+            schedule_id,
+            status,
+            last_error=last_error,
+            fired_at=fired_at,
+            triggered_run_id=triggered_run_id,
+        )
+
+    def delete_scheduled_run(self, schedule_id: int) -> None:
+        self.local.delete_scheduled_run(schedule_id)
+
+    def claim_due_schedule(self, *, now_utc: float) -> int | None:
+        return self.local.claim_due_schedule(now_utc=now_utc)
+
+    def set_run_schedule_link(self, run_id: int, schedule_id: int) -> None:
+        self.local.set_run_schedule_link(run_id, schedule_id)
+
+    def update_run_heartbeat(self, run_id: int, *, now_utc: float | None = None) -> None:
+        self.local.update_run_heartbeat(run_id, now_utc=now_utc)
+
+    def recover_stale_runs(
+        self,
+        *,
+        threshold_sec: float = 300.0,
+        now_utc: float | None = None,
+    ) -> list[int]:
+        return self.local.recover_stale_runs(threshold_sec=threshold_sec, now_utc=now_utc)
+
 
 __all__ = ["DualWriteHistoryStore"]

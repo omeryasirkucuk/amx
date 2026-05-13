@@ -117,3 +117,64 @@ class IHistoryStore(Protocol):
     def set_session_state(self, namespace: str, key: str, value: Any) -> None: ...
 
     def get_session_state(self, namespace: str, key: str, default: Any = None) -> Any: ...
+
+    # ── Scheduled runs (Phase 1) ──────────────────────────────────────────
+    #
+    # Local SQLite is the source of truth; the shared SQLAlchemy mirror
+    # is a follow-up. DualWriteHistoryStore delegates these to the
+    # local store and skips the remote write until the shared schema
+    # ships.
+
+    def create_scheduled_run(
+        self,
+        *,
+        name: str,
+        fire_at_utc: float,
+        fire_at_tz: str,
+        db_profile: str,
+        scope_json: str,
+        llm_profile: str,
+        review_strategy: str,
+        extra_args_json: str | None = None,
+    ) -> int: ...
+
+    def get_scheduled_run(self, schedule_id: int) -> dict[str, Any] | None: ...
+
+    def list_scheduled_runs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        db_profile: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]: ...
+
+    def list_due_pending_schedules(
+        self, *, now_utc: float, limit: int = 200
+    ) -> list[dict[str, Any]]: ...
+
+    def update_scheduled_run(self, schedule_id: int, *, patch: dict[str, Any]) -> None: ...
+
+    def set_scheduled_run_status(
+        self,
+        schedule_id: int,
+        status: str,
+        *,
+        last_error: str | None = None,
+        fired_at: float | None = None,
+        triggered_run_id: int | None = None,
+    ) -> None: ...
+
+    def delete_scheduled_run(self, schedule_id: int) -> None: ...
+
+    def claim_due_schedule(self, *, now_utc: float) -> int | None: ...
+
+    def set_run_schedule_link(self, run_id: int, schedule_id: int) -> None: ...
+
+    def update_run_heartbeat(self, run_id: int, *, now_utc: float | None = None) -> None: ...
+
+    def recover_stale_runs(
+        self,
+        *,
+        threshold_sec: float = 300.0,
+        now_utc: float | None = None,
+    ) -> list[int]: ...
