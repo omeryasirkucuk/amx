@@ -49,8 +49,7 @@ def _pick_from_list(
     """Numbered picker; users can type either the index or the literal name."""
     if not items:
         raise click.ClickException(
-            f"No {label} configured. Run the matching `amx` setup command "
-            "to add one first."
+            f"No {label} configured. Run the matching `amx` setup command to add one first."
         )
     if len(items) == 1:
         return items[0]
@@ -71,9 +70,7 @@ def _pick_from_list(
             return items[idx]
         raise click.BadParameter(f"index out of range: {raw}")
     if raw not in items:
-        raise click.BadParameter(
-            f"unknown {label}: {raw!r}. Available: {', '.join(items)}"
-        )
+        raise click.BadParameter(f"unknown {label}: {raw!r}. Available: {', '.join(items)}")
     return raw
 
 
@@ -96,8 +93,7 @@ def _pick_scope_spec(cfg: AMXConfig, db_profile: str) -> str:
         schemas = sorted(connector.list_schemas() or [])
     except Exception as exc:  # noqa: BLE001
         click.echo(
-            f"  (could not introspect schemas: {exc}) "
-            "Falling back to free-text.",
+            f"  (could not introspect schemas: {exc}) Falling back to free-text.",
             err=True,
         )
 
@@ -337,9 +333,7 @@ def register_schedule_commands(
                 tz_name = _dt.now().astimezone().tzinfo.tzname(None) or "UTC"
             except Exception:  # noqa: BLE001
                 tz_name = "UTC"
-            tz_name = click.prompt(
-                "Timezone (IANA)", default=tz_name, type=str
-            ).strip()
+            tz_name = click.prompt("Timezone (IANA)", default=tz_name, type=str).strip()
 
         if not db_profile:
             db_names = sorted((cfg.db_profiles or {}).keys())
@@ -603,10 +597,7 @@ def register_schedule_commands(
         click.echo(f"  Missed:  {len(missed)}")
         if pending:
             n = pending[0]
-            click.echo(
-                f"  Next:    #{n['id']} '{n['name']}' "
-                f"at fire_at_utc={n['fire_at_utc']:.0f}"
-            )
+            click.echo(f"  Next:    #{n['id']} '{n['name']}' at fire_at_utc={n['fire_at_utc']:.0f}")
         click.echo("")
         click.echo("Daemon")
         click.echo(f"  Platform:  {_platform.system()}")

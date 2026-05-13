@@ -621,9 +621,7 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     # answer "did I run on just these columns?"
                     # without a second roundtrip.
                     "column_overrides": (
-                        dict(body.column_overrides)
-                        if body.column_overrides
-                        else None
+                        dict(body.column_overrides) if body.column_overrides else None
                     ),
                 },
             )

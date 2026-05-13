@@ -82,8 +82,7 @@ class AskRequest(BaseModel):
     code_profiles: list[str] | None = Field(
         default=None,
         description=(
-            "Explicit code-profile selection for THIS question. Same "
-            "semantics as ``doc_profiles``."
+            "Explicit code-profile selection for THIS question. Same semantics as ``doc_profiles``."
         ),
     )
 

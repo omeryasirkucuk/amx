@@ -139,9 +139,7 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
     db_profile_name = str(payload.get("db_profile") or "")
     llm_profile_name = str(payload.get("llm_profile") or "")
     if not db_profile_name or not llm_profile_name:
-        raise ValueError(
-            f"schedule #{schedule_id} missing db_profile or llm_profile"
-        )
+        raise ValueError(f"schedule #{schedule_id} missing db_profile or llm_profile")
 
     cfg = AMXConfig.load()
     db_cfg = cfg.db_profiles.get(db_profile_name)
@@ -193,15 +191,13 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
     scope = _resolve_live_scope(payload.get("scope_json"), db)
     if not scope:
         log.warning(
-            "production_run_executor: schedule #%s produced empty live "
-            "scope. Nothing to do.",
+            "production_run_executor: schedule #%s produced empty live scope. Nothing to do.",
             schedule_id,
         )
         return
 
     log.info(
-        "production_run_executor: schedule #%s firing across %s table(s) "
-        "in %s schema(s).",
+        "production_run_executor: schedule #%s firing across %s table(s) in %s schema(s).",
         schedule_id,
         sum(len(ts) for ts in scope.values()),
         len(scope),
@@ -226,9 +222,7 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
                 try:
                     hs.update_run_heartbeat(run_id)
                 except Exception:  # noqa: BLE001 - never crash the ticker
-                    log.exception(
-                        "heartbeat ticker failed for run_id=%s", run_id
-                    )
+                    log.exception("heartbeat ticker failed for run_id=%s", run_id)
             # Beat every ~60s -- well under the 300s stale threshold
             # so a single slow table doesn't slip past one missed beat.
             stop_beat.wait(60.0)
@@ -252,9 +246,7 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
                     except Exception:  # noqa: BLE001
                         pass
                 try:
-                    orchestrator.process_table(
-                        schema, table, interactive_review=False
-                    )
+                    orchestrator.process_table(schema, table, interactive_review=False)
                 except Exception as exc:  # noqa: BLE001 - keep going on per-table errors
                     log.exception(
                         "production_run_executor: %s.%s failed under schedule #%s",
@@ -262,9 +254,7 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
                         table,
                         schedule_id,
                     )
-                    per_table_errors.append(
-                        f"{schema}.{table}: {type(exc).__name__}: {exc}"
-                    )
+                    per_table_errors.append(f"{schema}.{table}: {type(exc).__name__}: {exc}")
     finally:
         stop_beat.set()
 
@@ -276,9 +266,7 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
         summary = "; ".join(per_table_errors[:5])
         if len(per_table_errors) > 5:
             summary += f"; (+{len(per_table_errors) - 5} more)"
-        raise RuntimeError(
-            f"All {processed} table(s) in scope failed. {summary}"
-        )
+        raise RuntimeError(f"All {processed} table(s) in scope failed. {summary}")
 
 
 def _scope_column_overrides(
@@ -311,9 +299,7 @@ def _scope_column_overrides(
     return out
 
 
-def _resolve_live_scope(
-    scope_json: str | None, db: Any
-) -> dict[str, list[str]]:
+def _resolve_live_scope(scope_json: str | None, db: Any) -> dict[str, list[str]]:
     """Expand a schedule's saved scope_json against the live database.
 
     Mirrors the four scope modes ``_parse_scope`` already understands
@@ -333,9 +319,7 @@ def _resolve_live_scope(
     if mode == "all":
         for schema in db.list_schemas():
             tables = [
-                name
-                for name, kind in db.list_assets(schema)
-                if kind.name.upper() not in {"COLUMN"}
+                name for name, kind in db.list_assets(schema) if kind.name.upper() not in {"COLUMN"}
             ]
             if tables:
                 out[schema] = tables

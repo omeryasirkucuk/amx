@@ -176,9 +176,7 @@ def _enqueue_sync(cfg, profile: str) -> None:
                     profile=profile_obj,
                 )
             except Exception as exc:
-                log.debug(
-                    "Drift sync failed for %s/%s.%s: %s", profile, schema, asset, exc
-                )
+                log.debug("Drift sync failed for %s/%s.%s: %s", profile, schema, asset, exc)
 
 
 def fire_drift_probe(cfg, profiles: Iterable[str]) -> None:

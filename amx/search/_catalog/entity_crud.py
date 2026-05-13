@@ -435,9 +435,7 @@ class EntityCrudMixin:
             if r["schema_name"]
         ]
 
-    def fetch_distinct_tables_in_schema(
-        self, db_profile: str, schema_name: str
-    ) -> list[dict]:
+    def fetch_distinct_tables_in_schema(self, db_profile: str, schema_name: str) -> list[dict]:
         """Return distinct ``table_name`` rows under (profile, schema)
         with each table's freshest ``last_synced_at``."""
         with self._connect() as conn:

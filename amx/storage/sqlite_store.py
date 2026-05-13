@@ -769,18 +769,14 @@ class SQLiteHistoryStore:
             if col_name in existing_cols:
                 continue
             try:
-                conn.execute(
-                    f"ALTER TABLE scheduled_runs ADD COLUMN {col_name} {col_type}"
-                )
+                conn.execute(f"ALTER TABLE scheduled_runs ADD COLUMN {col_name} {col_type}")
                 log.info(
                     "Migrated scheduled_runs: added column %s %s",
                     col_name,
                     col_type,
                 )
             except Exception as exc:
-                log.warning(
-                    "Could not add scheduled_runs.%s: %s", col_name, exc
-                )
+                log.warning("Could not add scheduled_runs.%s: %s", col_name, exc)
         # ── apply_events: audit trail of every COMMENT actually written ──
         #
         # ``run_results.applied_at`` already says "this row was applied"

@@ -41,9 +41,7 @@ def _entity_ids(catalog: SearchCatalog) -> list[int]:
 
 def _fts_count(catalog: SearchCatalog) -> int:
     with catalog._connect() as conn:  # noqa: SLF001
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM catalog_entities_fts"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(*) AS n FROM catalog_entities_fts").fetchone()
         return int(row["n"] or 0)
 
 
@@ -119,16 +117,20 @@ def test_fts_backfill_on_existing_catalog(tmp_path: Path) -> None:
                 search_text
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("legacy", "public", "vehicles", "plate", "column",
-             "path=legacy.public.vehicles.plate\nlicense plate identifier"),
+            (
+                "legacy",
+                "public",
+                "vehicles",
+                "plate",
+                "column",
+                "path=legacy.public.vehicles.plate\nlicense plate identifier",
+            ),
         )
     # Re-init — the new FTS bootstrap runs and backfills.
     SQLiteHistoryStore(db_path).init()
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM catalog_entities_fts"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(*) AS n FROM catalog_entities_fts").fetchone()
     assert int(row["n"]) >= 1
 
 

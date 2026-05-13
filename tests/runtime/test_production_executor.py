@@ -106,9 +106,7 @@ def test_resolve_live_scope_mode_schemas_filters() -> None:
             "staging": [("events", _StubKind("TABLE"))],
         },
     )
-    out = _resolve_live_scope(
-        json.dumps({"mode": "schemas", "schemas": ["public"]}), db
-    )
+    out = _resolve_live_scope(json.dumps({"mode": "schemas", "schemas": ["public"]}), db)
     assert out == {"public": ["users"]}
 
 
@@ -117,9 +115,7 @@ def test_resolve_live_scope_mode_schemas_skips_missing() -> None:
         schemas=["public"],
         assets={"public": [("users", _StubKind("TABLE"))]},
     )
-    out = _resolve_live_scope(
-        json.dumps({"mode": "schemas", "schemas": ["public", "nope"]}), db
-    )
+    out = _resolve_live_scope(json.dumps({"mode": "schemas", "schemas": ["public", "nope"]}), db)
     assert out == {"public": ["users"]}
 
 
@@ -161,12 +157,7 @@ def test_scope_column_overrides_empty_for_non_column_modes() -> None:
     assert _scope_column_overrides(None) == {}
     assert _scope_column_overrides("") == {}
     assert _scope_column_overrides(json.dumps({"mode": "all"})) == {}
-    assert (
-        _scope_column_overrides(
-            json.dumps({"mode": "schemas", "schemas": ["public"]})
-        )
-        == {}
-    )
+    assert _scope_column_overrides(json.dumps({"mode": "schemas", "schemas": ["public"]})) == {}
     assert (
         _scope_column_overrides(
             json.dumps(
