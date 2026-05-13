@@ -62,6 +62,15 @@ class _HistoryStore(Protocol):
         triggered_run_id: int | None = ...,
     ) -> None: ...
 
+    def get_run(self, run_id: int) -> dict[str, Any] | None: ...
+
+    def get_run_results(
+        self,
+        run_id: int,
+        *,
+        unevaluated_only: bool = ...,
+    ) -> list[dict[str, Any]]: ...
+
 
 # Pluggable per-run executor. Default is the small no-op stub below;
 # callers can swap in a real Orchestrator runner in a follow-up PR.
@@ -498,12 +507,33 @@ def _parse_scope(scope_json: str | None) -> dict[str, list[str]]:
 
 
 def _mark_completed(store: _HistoryStore, *, run_id: int, schedule_id: int) -> None:
-    """Finalise analysis_runs + schedule rows on success."""
+    """Finalise analysis_runs + schedule rows on success.
+
+    The run row's status reflects the run *outcome* (``success`` vs
+    ``ready_for_review``) using the same demotion rule the manual
+    ``analyze.run`` path applies in ``amx/web/routers/runs.py``: a clean
+    run with results still waiting in the pending review queue is not a
+    success, it's ``ready_for_review``. The schedule row keeps the
+    lifecycle status ``completed`` — that column describes the schedule's
+    fire lifecycle, not the run's outcome.
+    """
     now = time.time()
+
+    final_status = "success"
+    try:
+        run_row = store.get_run(run_id)
+        if run_row is not None:
+            applied = int(run_row.get("applied_count") or 0)
+            pending_count = len(store.get_run_results(run_id, unevaluated_only=True))
+            if pending_count > 0 and applied == 0:
+                final_status = "ready_for_review"
+    except Exception:  # noqa: BLE001 - fall back to "success" on lookup failure
+        log.exception("post-run status demotion lookup failed for run_id=%s", run_id)
+
     try:
         store.finish_run(
             run_id,
-            status="completed",
+            status=final_status,
             metrics={},
             tokens={},
             results={},
