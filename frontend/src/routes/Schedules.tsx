@@ -14,6 +14,8 @@ import {
 } from "@tanstack/react-query";
 import {
   CalendarPlus,
+  Download,
+  Pencil,
   PauseCircle,
   PlayCircle,
   RefreshCw,
@@ -87,19 +89,31 @@ interface NewScheduleDialogProps {
   open: boolean;
   onClose: () => void;
   onCreated: () => void;
+  /** When supplied, the dialog operates in **edit** mode: title and
+   * verbs read "Edit schedule" / "Save changes" and the form submits
+   * a PATCH instead of a POST. ``null`` = create mode. */
+  editing?: ScheduleRow | null;
 }
 
-function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps) {
+function NewScheduleDialog({
+  open,
+  onClose,
+  onCreated,
+  editing,
+}: NewScheduleDialogProps) {
+  const isEdit = Boolean(editing);
   const toast = useToast();
-  const [name, setName] = useState("");
-  const [fireAtLocal, setFireAtLocal] = useState(defaultLocalDatetime());
-  const [fireAtTz, setFireAtTz] = useState(browserTz());
-  const [dbProfile, setDbProfile] = useState("");
+  const [name, setName] = useState(editing?.name ?? "");
+  const [fireAtLocal, setFireAtLocal] = useState(
+    editing?.fire_at_local ?? defaultLocalDatetime(),
+  );
+  const [fireAtTz, setFireAtTz] = useState(editing?.fire_at_tz ?? browserTz());
+  const [dbProfile, setDbProfile] = useState(editing?.db_profile ?? "");
   const [database, setDatabase] = useState("");
   const [scopePicks, setScopePicks] = useState<SchemaPick[]>([]);
-  const [llmProfile, setLlmProfile] = useState("");
+  const [llmProfile, setLlmProfile] = useState(editing?.llm_profile ?? "");
   const [reviewStrategy, setReviewStrategy] = useState<"auto" | "manual">(
-    "auto",
+    (editing?.review_strategy as "auto" | "manual" | undefined) ?? "auto",
   );
   const [error, setError] = useState<string | null>(null);
 
@@ -156,9 +170,15 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
   }
 
   const mutation = useMutation({
-    mutationFn: (body: ScheduleCreatePayload) => api.createSchedule(body),
+    mutationFn: (body: ScheduleCreatePayload) =>
+      isEdit
+        ? api.patchSchedule(editing!.id, body)
+        : api.createSchedule(body),
     onSuccess: () => {
-      toast.push({ tone: "success", title: "Schedule created" });
+      toast.push({
+        tone: "success",
+        title: isEdit ? "Schedule updated" : "Schedule created",
+      });
       setName("");
       setScopePicks([]);
       setDatabase("");
@@ -196,7 +216,7 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
     <Dialog
       open={open}
       onClose={onClose}
-      title="New scheduled run"
+      title={isEdit ? `Edit schedule #${editing!.id}` : "New scheduled run"}
       size="lg"
     >
       <form onSubmit={onSubmit} className="space-y-4">
@@ -343,7 +363,13 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
             size="md"
             disabled={mutation.isPending}
           >
-            {mutation.isPending ? "Creating…" : "Create schedule"}
+            {mutation.isPending
+              ? isEdit
+                ? "Saving…"
+                : "Creating…"
+              : isEdit
+                ? "Save changes"
+                : "Create schedule"}
           </Button>
         </div>
       </form>
@@ -356,6 +382,9 @@ export default function Schedules() {
   const toast = useToast();
   const [statusFilter, setStatusFilter] = useState<string>("active");
   const [dialogOpen, setDialogOpen] = useState(false);
+  // When non-null the dialog opens in edit mode pre-filled with this
+  // schedule's current fields. Set by the row-level Edit IconButton.
+  const [editing, setEditing] = useState<ScheduleRow | null>(null);
 
   const apiStatus =
     statusFilter === "active"
@@ -420,6 +449,38 @@ export default function Schedules() {
       toast.push({ tone: "success", title: "Schedule deleted" });
       invalidate();
     },
+  });
+  const installDaemonMut = useMutation({
+    mutationFn: () => api.installDaemon(),
+    onSuccess: (result) => {
+      toast.push({
+        tone: "success",
+        title: "Daemon installed",
+        description: result.message,
+      });
+      qc.invalidateQueries({ queryKey: ["scheduler-status"] });
+    },
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Install failed",
+      }),
+  });
+  const uninstallDaemonMut = useMutation({
+    mutationFn: () => api.uninstallDaemon(),
+    onSuccess: (result) => {
+      toast.push({
+        tone: "success",
+        title: "Daemon removed",
+        description: result.message,
+      });
+      qc.invalidateQueries({ queryKey: ["scheduler-status"] });
+    },
+    onError: (e) =>
+      toast.push({
+        tone: "error",
+        title: e instanceof Error ? e.message : "Uninstall failed",
+      }),
   });
 
   const rows = data?.schedules ?? [];
@@ -491,6 +552,18 @@ export default function Schedules() {
         header: "",
         cell: (row) => (
           <div className="flex items-center justify-end gap-1">
+            {(row.status === "pending" || row.status === "paused") && (
+              <IconButton
+                size="sm"
+                icon={<Pencil size={16} />}
+                label="Edit"
+                title="Edit"
+                onClick={() => {
+                  setEditing(row);
+                  setDialogOpen(true);
+                }}
+              />
+            )}
             {row.status === "pending" && (
               <IconButton
                 size="sm"
@@ -563,14 +636,44 @@ export default function Schedules() {
       </div>
     ) : null;
 
-  // Informational; hide on extra-narrow viewports so the Refresh /
-  // New schedule buttons keep room.
-  const daemonChip = statusQ.data ? (
-    <span className="hidden sm:inline-flex">
+  // Daemon control: chip + actionable button. The button is the
+  // remote-friendly path -- users accessing Studio via a tunnel
+  // (e.g. on mobile, away from the host terminal) can flip the
+  // daemon on/off without dropping into a shell on the host.
+  const daemonControls = statusQ.data ? (
+    <div className="hidden items-center gap-1 sm:inline-flex">
       <Badge tone={statusQ.data.daemon.installed ? "positive" : "warning"}>
         Daemon {statusQ.data.daemon.installed ? "installed" : "not installed"}
       </Badge>
-    </span>
+      {statusQ.data.daemon.installed ? (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => {
+            if (
+              window.confirm(
+                "Uninstall the scheduler daemon? Schedules will only fire while AMX or Studio is open.",
+              )
+            ) {
+              uninstallDaemonMut.mutate();
+            }
+          }}
+          disabled={uninstallDaemonMut.isPending}
+        >
+          Uninstall
+        </Button>
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          leadingIcon={<Download size={14} />}
+          onClick={() => installDaemonMut.mutate()}
+          disabled={installDaemonMut.isPending}
+        >
+          {installDaemonMut.isPending ? "Installing…" : "Install"}
+        </Button>
+      )}
+    </div>
   ) : null;
 
   return (
@@ -581,7 +684,7 @@ export default function Schedules() {
         description="One-shot scheduled metadata runs. Catch-up surfaces on next open when AMX was closed at fire time."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {daemonChip}
+            {daemonControls}
             <Button
               variant="secondary"
               size="md"
@@ -640,8 +743,17 @@ export default function Schedules() {
       </div>
 
       <NewScheduleDialog
+        // Remount the dialog whenever the user switches between
+        // create and edit so the form state seeds correctly from
+        // the row being edited (state is initialised once at mount,
+        // not on each re-render).
+        key={editing?.id ?? "new"}
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        editing={editing}
+        onClose={() => {
+          setDialogOpen(false);
+          setEditing(null);
+        }}
         onCreated={invalidate}
       />
     </>

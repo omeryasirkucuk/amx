@@ -806,6 +806,15 @@ export const api = {
     apiFetch<SchedulerStatusResponse>(`/api/scheduler/status`),
   schedulerBootstrapReport: () =>
     apiFetch<BootstrapReport>(`/api/scheduler/bootstrap-report`),
+  installDaemon: () =>
+    apiFetch<{ message: string; path: string | null }>(
+      `/api/scheduler/install-daemon`,
+      { method: "POST" },
+    ),
+  uninstallDaemon: () =>
+    apiFetch<{ message: string }>(`/api/scheduler/uninstall-daemon`, {
+      method: "POST",
+    }),
 };
 
 export interface ScheduleRow {
