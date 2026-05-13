@@ -962,6 +962,7 @@ def _run_tool_loop(
         # input cost. Falls back to 0 silently when tiktoken can't
         # tokenise the message shape (some structured tool messages).
         est = estimate_tokens(chat_messages)
+
         # Visible-content streaming. The web layer's on_content_delta
         # forwards per-token deltas as ``answer.delta`` SSE events live.
         # Interim narration ("Let me search the catalog…") that precedes

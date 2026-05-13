@@ -149,6 +149,80 @@ class UsageMixin:
                 db_applied_status="applied",
             )
 
+    def record_applied_description(
+        self,
+        *,
+        db_profile: str,
+        db_backend: str,
+        database_name: str,
+        schema_name: str,
+        table_name: str,
+        column_name: str | None,
+        entity_kind: str,
+        asset_kind: str,
+        description: str,
+        run_id: int | None = None,
+        result_id: int | None = None,
+    ) -> None:
+        """Persist the post-``/apply`` state into the search catalog.
+
+        Two scenarios this covers that ``mark_applied(result_id)`` alone
+        does not:
+
+        * ``result_id`` is ``None`` (Studio's per-row Generate flow, or
+          a manual SQL edit that round-trips through the pending queue
+          without a run). ``mark_applied`` short-circuits and the
+          catalog never learns the live DB now has a comment.
+        * ``result_id`` exists but the chosen text differs from every
+          row already in ``catalog_descriptions`` (the user edited
+          inline at apply time). ``mark_applied`` flips
+          ``applied_to_db=1`` on a row whose text is stale; the next
+          ``/ask`` then surfaces the old draft instead of the truly
+          applied prose.
+
+        This helper upserts the entity, inserts a fresh ``reviewed``
+        row carrying the exact text written to the live DB, marks it
+        as ``applied_to_db=1``, and resolves the effective description
+        so concept search returns the just-applied text immediately.
+        """
+        text = (description or "").strip()
+        if not text:
+            return
+        now = time.time()
+        with self._connect() as conn:
+            entity_id = self._upsert_entity(
+                conn,
+                db_profile=db_profile,
+                db_backend=db_backend,
+                database_name=database_name,
+                schema_name=schema_name,
+                table_name=table_name,
+                column_name=column_name,
+                entity_kind=entity_kind,
+                asset_kind=asset_kind,
+            )
+            desc_id = self._insert_description(
+                conn,
+                entity_id=entity_id,
+                description_text=text,
+                source_kind="reviewed",
+                source_agent="apply",
+                confidence="high",
+                run_id=run_id,
+                result_id=result_id,
+                chosen=True,
+            )
+            conn.execute(
+                """
+                UPDATE catalog_descriptions
+                SET applied_to_db = 1, applied_at = ?
+                WHERE id = ?
+                """,
+                (now, int(desc_id)),
+            )
+            self._resolve_effective_description(conn, entity_id)
+            self._index_entity(conn, entity_id)
+
     def record_manual_description(
         self,
         *,

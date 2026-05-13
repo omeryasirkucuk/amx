@@ -232,14 +232,47 @@ class EntityCrudMixin:
             parts.append(
                 f"usage={row['evidence_type']} count={row['count_value']} snippets={' | '.join(snippets[:2])}"
             )
+        search_text_value = "\n".join(parts)
         conn.execute(
             """
             UPDATE catalog_entities
             SET search_text = ?, last_synced_at = ?
             WHERE id = ?
             """,
-            ("\n".join(parts), time.time(), entity_id),
+            (search_text_value, time.time(), entity_id),
         )
+        # Mirror into the FTS5 index. ``catalog_entities_fts`` is a
+        # contentless virtual table keyed by ``rowid = catalog_entities.id``,
+        # so DELETE + INSERT keeps the FTS row matching the live entity
+        # row exactly. The concept-search path (``_exact_candidates``)
+        # uses MATCH instead of the legacy O(n) scan; without this
+        # mirror the FTS would stay empty and concept search would
+        # return zero rows on any catalog written under v0.15+.
+        try:
+            conn.execute(
+                "DELETE FROM catalog_entities_fts WHERE rowid = ?",
+                (entity_id,),
+            )
+            conn.execute(
+                """
+                INSERT INTO catalog_entities_fts (
+                    rowid, db_profile, column_name, table_name, schema_name, search_text
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entity_id,
+                    str(entity["db_profile"] or ""),
+                    str(entity["column_name"] or ""),
+                    str(entity["table_name"] or ""),
+                    str(entity["schema_name"] or ""),
+                    search_text_value,
+                ),
+            )
+        except sqlite3.OperationalError:
+            # FTS5 may be unavailable on a very old SQLite shipping
+            # with the host python. Leave the legacy scan path as the
+            # fallback rather than failing every catalog write.
+            pass
 
     def _resolve_effective_description(
         self, conn: sqlite3.Connection, entity_id: int
@@ -402,9 +435,7 @@ class EntityCrudMixin:
             if r["schema_name"]
         ]
 
-    def fetch_distinct_tables_in_schema(
-        self, db_profile: str, schema_name: str
-    ) -> list[dict]:
+    def fetch_distinct_tables_in_schema(self, db_profile: str, schema_name: str) -> list[dict]:
         """Return distinct ``table_name`` rows under (profile, schema)
         with each table's freshest ``last_synced_at``."""
         with self._connect() as conn:

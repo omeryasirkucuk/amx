@@ -761,6 +761,88 @@ class SQLAlchemyHistoryStore:
             log.debug("find_result_uuid_by_local_id failed: %s", exc)
             return None
 
+    # ── Scheduled runs (Protocol stubs) ─────────────────────────────────
+    #
+    # Phase 1 of the scheduler keeps the scheduled_runs surface local-
+    # only — DualWriteHistoryStore delegates these to the local SQLite
+    # store and the shared SQLAlchemy mirror is a follow-up. These
+    # stubs exist so ``isinstance(store, IHistoryStore)`` passes the
+    # runtime-checkable Protocol check; any caller that reaches a
+    # shared store with one of these methods is mis-routed and we'd
+    # rather hear about it than silently no-op.
+
+    _SCHED_NOT_LOCAL = (
+        "Scheduled runs live in the local SQLite store; "
+        "SQLAlchemyHistoryStore is local-only for this surface."
+    )
+
+    def create_scheduled_run(
+        self,
+        *,
+        name: str,
+        fire_at_utc: float,
+        fire_at_tz: str,
+        db_profile: str,
+        scope_json: str,
+        llm_profile: str,
+        review_strategy: str,
+        database: str | None = None,
+        catalog: str | None = None,
+        extra_args_json: str | None = None,
+    ) -> int:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def get_scheduled_run(self, schedule_id: int) -> dict[str, Any] | None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def list_scheduled_runs(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        db_profile: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def list_due_pending_schedules(
+        self, *, now_utc: float, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def update_scheduled_run(self, schedule_id: int, *, patch: dict[str, Any]) -> None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def set_scheduled_run_status(
+        self,
+        schedule_id: int,
+        status: str,
+        *,
+        last_error: str | None = None,
+        fired_at: float | None = None,
+        triggered_run_id: int | None = None,
+    ) -> None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def delete_scheduled_run(self, schedule_id: int) -> None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def claim_due_schedule(self, *, now_utc: float) -> int | None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def set_run_schedule_link(self, run_id: int, schedule_id: int) -> None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def update_run_heartbeat(self, run_id: int, *, now_utc: float | None = None) -> None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
+    def recover_stale_runs(
+        self,
+        *,
+        threshold_sec: float = 300.0,
+        now_utc: float | None = None,
+    ) -> list[int]:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
 
 __all__ = [
     "SQLAlchemyHistoryStore",

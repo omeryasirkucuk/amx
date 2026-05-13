@@ -1,0 +1,203 @@
+"""Regression coverage for the catalog-cache hardening pass.
+
+Three orthogonal pieces ship in this PR; each gets a focused test
+here so the next refactor catches a break early:
+
+* FTS5 mirror — every ``_upsert_entity`` + description write must
+  push a row into ``catalog_entities_fts`` so concept search MATCH
+  queries return the row on the next call.
+* ``record_applied_description`` — Studio's apply worker calls this
+  so the catalog reflects the just-applied COMMENT ON live text the
+  moment the worker emits ``job.done``.
+* ``catalog_freshness`` endpoint shape — the Studio top-bar pill
+  reads the returned shape; tests pin the keys so a payload reshuffle
+  surfaces as a red test, not a silent UI regression.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+import pytest
+
+from amx.search.catalog import SearchCatalog
+from amx.storage.sqlite_store import SQLiteHistoryStore
+
+
+@pytest.fixture()
+def fresh_catalog(tmp_path: Path) -> SearchCatalog:
+    db = tmp_path / "history.db"
+    store = SQLiteHistoryStore(db)
+    store.init()
+    return SearchCatalog(db)
+
+
+def _entity_ids(catalog: SearchCatalog) -> list[int]:
+    with catalog._connect() as conn:  # noqa: SLF001
+        return [int(r["id"]) for r in conn.execute("SELECT id FROM catalog_entities")]
+
+
+def _fts_count(catalog: SearchCatalog) -> int:
+    with catalog._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT COUNT(*) AS n FROM catalog_entities_fts").fetchone()
+        return int(row["n"] or 0)
+
+
+def test_record_applied_description_writes_reviewed_row(
+    fresh_catalog: SearchCatalog,
+) -> None:
+    fresh_catalog.record_applied_description(
+        db_profile="prod-pg",
+        db_backend="postgresql",
+        database_name="analytics",
+        schema_name="sales",
+        table_name="orders",
+        column_name="vehicle_plate",
+        entity_kind="column",
+        asset_kind="table",
+        description="License plate of the vehicle that fulfilled the order.",
+    )
+    ids = _entity_ids(fresh_catalog)
+    assert ids, "entity was not upserted"
+    with fresh_catalog._connect() as conn:  # noqa: SLF001
+        row = conn.execute(
+            """
+            SELECT ce.effective_status, ce.effective_source_kind,
+                   cd.description_text, cd.source_kind, cd.applied_to_db
+            FROM catalog_entities ce
+            LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+            WHERE ce.id = ?
+            """,
+            (ids[0],),
+        ).fetchone()
+    assert row["source_kind"] == "reviewed"
+    assert row["applied_to_db"] == 1
+    assert "License plate" in row["description_text"]
+    assert row["effective_source_kind"] == "reviewed"
+
+
+def test_fts_mirror_is_populated_after_sync(fresh_catalog: SearchCatalog) -> None:
+    fresh_catalog.record_applied_description(
+        db_profile="prod-pg",
+        db_backend="postgresql",
+        database_name="analytics",
+        schema_name="sales",
+        table_name="vehicles",
+        column_name="plate_number",
+        entity_kind="column",
+        asset_kind="table",
+        description="License plate identifier for the vehicle row.",
+    )
+    assert _fts_count(fresh_catalog) >= 1
+    # MATCH retrieves the row by the description blob.
+    with fresh_catalog._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            "SELECT rowid FROM catalog_entities_fts WHERE catalog_entities_fts MATCH ?",
+            ("plate",),
+        ).fetchall()
+    assert len(rows) >= 1
+
+
+def test_fts_backfill_on_existing_catalog(tmp_path: Path) -> None:
+    """A catalog written by an older AMX version (no FTS rows) must
+    backfill the FTS table on the next ``init()`` so concept search
+    works on the first ``/ask`` after upgrade."""
+    db_path = tmp_path / "legacy.db"
+    legacy = SQLiteHistoryStore(db_path)
+    legacy.init()
+    # Drop the FTS table to simulate a pre-FTS install.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE catalog_entities_fts")
+        conn.execute(
+            """
+            INSERT INTO catalog_entities (
+                db_profile, schema_name, table_name, column_name, entity_kind,
+                search_text
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy",
+                "public",
+                "vehicles",
+                "plate",
+                "column",
+                "path=legacy.public.vehicles.plate\nlicense plate identifier",
+            ),
+        )
+    # Re-init — the new FTS bootstrap runs and backfills.
+    SQLiteHistoryStore(db_path).init()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT COUNT(*) AS n FROM catalog_entities_fts").fetchone()
+    assert int(row["n"]) >= 1
+
+
+def test_drift_probe_skipped_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AMX_SKIP_DRIFT_PROBE", "1")
+    from amx.search.drift import fire_drift_probe
+
+    # No connector, no exception, no thread spawn — the env var
+    # short-circuits the function before any DB call.
+    fire_drift_probe(None, ["any-profile"])
+
+
+def test_drift_probe_cooldown_blocks_back_to_back_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AMX_SKIP_DRIFT_PROBE", raising=False)
+    from amx.search import drift
+
+    drift._LAST_PROBE.clear()
+    now = 1_000_000.0
+    assert drift._cooldown_blocks("prof-a", now) is False
+    # Same profile, +1s later — still cooling down.
+    assert drift._cooldown_blocks("prof-a", now + 1) is True
+    # Different profile is unaffected.
+    assert drift._cooldown_blocks("prof-b", now + 1) is False
+
+
+def test_catalog_freshness_endpoint_shape(tmp_path: Path) -> None:
+    """The Studio top-bar pill reads this exact key set."""
+    db_path = tmp_path / "history.db"
+    SQLiteHistoryStore(db_path).init()
+    now = time.time()
+    fresh_row_at = now - 60
+    stale_row_at = now - (48 * 60 * 60)
+    with sqlite3.connect(db_path) as conn:
+        for db_profile, last in (("fresh-p", fresh_row_at), ("stale-p", stale_row_at)):
+            conn.execute(
+                """
+                INSERT INTO catalog_entities (
+                    db_profile, schema_name, table_name, entity_kind, last_synced_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (db_profile, "public", "t", "table", last),
+            )
+
+    # Stub history_store() to return our fresh handle.
+    import amx.web.routers.catalog as catalog_router
+    from amx.storage import sqlite_store as ss
+
+    store = SQLiteHistoryStore(db_path)
+    ss._store = store  # noqa: SLF001 — module-level singleton
+    try:
+        payload = catalog_router.catalog_freshness(cfg=None)
+    finally:
+        ss._store = None  # noqa: SLF001
+
+    assert payload["stale_profile_count"] == 1
+    profiles = {p["profile"]: p for p in payload["profiles"]}
+    assert profiles["fresh-p"]["stale"] is False
+    assert profiles["stale-p"]["stale"] is True
+    # Top-bar pill depends on these exact keys; pin them so a payload
+    # reshuffle surfaces as a red test, not a silent UI regression.
+    expected_keys = {
+        "profile",
+        "entity_count",
+        "last_synced_at",
+        "age_seconds",
+        "stale",
+    }
+    assert expected_keys.issubset(profiles["fresh-p"].keys())

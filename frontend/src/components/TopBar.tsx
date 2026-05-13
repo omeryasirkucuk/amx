@@ -19,6 +19,7 @@ import { readPinnedCells } from "../lib/pinnedCells";
 import IconButton from "./ui/IconButton";
 import Logo from "./brand/Logo";
 import PinnedCellsDrawer from "./PinnedCellsDrawer";
+import CatalogFreshnessBadge from "./CatalogFreshnessBadge";
 import PricingBadge from "./PricingBadge";
 import MobileNavMenu from "./topbar/MobileNavMenu";
 
@@ -170,6 +171,7 @@ export default function TopBar() {
               </span>
             )}
           </button>
+          <CatalogFreshnessBadge />
           <PricingBadge />
           <nav className="hidden sm:flex items-center gap-0.5">
           {navItems.map((item) => (

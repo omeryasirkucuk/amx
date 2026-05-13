@@ -1221,9 +1221,7 @@ class LLMProvider:
         # supports thinking; ``on_content`` callers on non-reasoning models
         # get vanilla token streaming with no provider-side reasoning knobs.
         supports_thinking = _supports_thinking(self.cfg.provider, model)
-        use_streaming = on_content is not None or (
-            on_thinking is not None and supports_thinking
-        )
+        use_streaming = on_content is not None or (on_thinking is not None and supports_thinking)
         if use_streaming and supports_thinking:
             budget = max(1024, int(getattr(self.cfg, "thinking_budget", 1024)))
             if self.cfg.provider == "anthropic":

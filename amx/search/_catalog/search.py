@@ -100,17 +100,60 @@ class SearchMixin:
         self, db_profile: DBProfileFilter, question: str, limit: int = 20
     ) -> list[dict[str, Any]]:
         tokens = self._tokens(question)
+        if not tokens:
+            return []
+        # FTS5 fast path: build a MATCH query that OR-joins the
+        # extracted tokens. FTS5 ranks results with BM25 so column /
+        # table name matches usually float to the top organically.
+        # The legacy per-row token-scoring runs afterwards on the FTS
+        # candidate set only (worst case: ``limit * 5`` rows), so the
+        # final ranking matches what callers expect — but with O(log n)
+        # candidate retrieval instead of an O(n) scan over millions of
+        # catalog rows.
         clause, binds = build_db_profile_clause(db_profile, column="ce.db_profile")
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT ce.*, cd.description_text AS effective_description
-                FROM catalog_entities ce
-                LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
-                WHERE {clause} AND ce.search_text != ''
-                """,
-                binds,
-            ).fetchall()
+        # Quote each token so FTS5 treats it as a literal phrase (avoids
+        # the column-name parser interpreting reserved words like AND /
+        # OR). Strip embedded double quotes first since FTS5 doesn't
+        # support escaping inside the phrase syntax.
+        safe_tokens = [token.replace('"', "") for token in tokens if token]
+        fts_query = " OR ".join(f'"{t}"' for t in safe_tokens if t)
+        rows: list[dict[str, Any]] = []
+        if fts_query:
+            try:
+                with self._connect() as conn:
+                    fts_rows = conn.execute(
+                        f"""
+                        SELECT ce.*, cd.description_text AS effective_description
+                        FROM catalog_entities_fts fts
+                        JOIN catalog_entities ce ON ce.id = fts.rowid
+                        LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                        WHERE catalog_entities_fts MATCH ?
+                          AND {clause}
+                          AND ce.search_text != ''
+                        ORDER BY rank
+                        LIMIT ?
+                        """,
+                        (fts_query, *binds, max(limit * 5, 50)),
+                    ).fetchall()
+                rows = list(fts_rows)
+            except sqlite3.OperationalError:
+                rows = []
+        if not rows:
+            # Legacy fallback. Triggers on:
+            #   * Older SQLite missing FTS5 support;
+            #   * Empty FTS table (catalog written before the v0.15
+            #     migration ran);
+            #   * Pathological queries the MATCH parser rejects.
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT ce.*, cd.description_text AS effective_description
+                    FROM catalog_entities ce
+                    LEFT JOIN catalog_descriptions cd ON cd.id = ce.effective_description_id
+                    WHERE {clause} AND ce.search_text != ''
+                    """,
+                    binds,
+                ).fetchall()
         hits: list[dict[str, Any]] = []
         for row in rows:
             search_text = str(row["search_text"] or "").lower()

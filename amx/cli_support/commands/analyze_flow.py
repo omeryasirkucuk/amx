@@ -787,9 +787,7 @@ def _parse_columns_opt(
                 continue
             parts = piece.split(".")
             if len(parts) != 3 or not all(parts):
-                raise click.BadParameter(
-                    f"--columns entry {piece!r} must be schema.table.column"
-                )
+                raise click.BadParameter(f"--columns entry {piece!r} must be schema.table.column")
             schema_n, table_n, column_n = parts
             out.setdefault((schema_n, table_n), set()).add(column_n)
     return out
@@ -997,9 +995,7 @@ def execute_analyze_run(
                         # fall back to adding them so the run isn't a
                         # no-op.
                         restricted.setdefault(schema_name, []).append(table_name)
-                scope = ScopeResult(
-                    restricted, column_overrides=columns_overrides
-                )
+                scope = ScopeResult(restricted, column_overrides=columns_overrides)
 
             total_assets = sum(len(v) for v in scope.values())
 

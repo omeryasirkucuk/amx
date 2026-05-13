@@ -40,7 +40,9 @@ def test_health_combines_telemetry_and_chroma_metadata(client, auth_headers, cfg
     assert body["paths"] == ["/abs/handbook"]
 
 
-def test_delete_doc_profile_file_removes_disk_and_chunks(client, auth_headers, cfg, tmp_path, monkeypatch):
+def test_delete_doc_profile_file_removes_disk_and_chunks(
+    client, auth_headers, cfg, tmp_path, monkeypatch
+):
     """One file in a 10-file profile should be deletable on its own —
     historic UX forced the user to drop the whole profile and re-upload
     the survivors. The endpoint removes the file from disk, deletes any

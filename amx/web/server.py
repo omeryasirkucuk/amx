@@ -220,6 +220,7 @@ def create_app(
                     if store is None:
                         slog.warning("history store unavailable, retrying")
                     else:
+
                         def _spawn(payload: dict, _store=store) -> int:
                             return spawn_scheduled_worker(
                                 payload,

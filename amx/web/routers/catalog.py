@@ -183,3 +183,97 @@ def get_settings(
         "profile": name,
         "settings": _catalog(cfg).get_settings(name),
     }
+
+
+@router.get("/freshness")
+def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
+    """Per-profile catalog freshness for the Studio top-bar pill.
+
+    Returns ``last_synced_at`` (the most recent ``catalog_entities``
+    write for the profile) and ``stale`` (true when the freshest row is
+    older than 24 h). The Studio top bar renders this as a green /
+    warning pill next to the LLM pricing-cache badge so the user can
+    spot a stale catalog at a glance and click through to sync.
+    """
+    import sqlite3
+    import time as _time
+
+    from amx.storage.sqlite_store import history_store
+
+    hs = history_store()
+    if hs is None:
+        return {"profiles": [], "stale_profile_count": 0}
+    db_path = str(getattr(hs, "db_path", "") or "")
+    if not db_path:
+        return {"profiles": [], "stale_profile_count": 0}
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT db_profile,
+                   COUNT(*) AS entity_count,
+                   MAX(last_synced_at) AS last_synced_at
+            FROM catalog_entities
+            GROUP BY db_profile
+            ORDER BY db_profile
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"profiles": [], "stale_profile_count": 0}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    now = _time.time()
+    stale_after_sec = 24 * 60 * 60
+    profiles: list[dict[str, Any]] = []
+    stale_count = 0
+    for row in rows:
+        last = float(row["last_synced_at"] or 0.0)
+        age = now - last if last else None
+        is_stale = last == 0.0 or (age is not None and age > stale_after_sec)
+        if is_stale:
+            stale_count += 1
+        profiles.append(
+            {
+                "profile": str(row["db_profile"] or ""),
+                "entity_count": int(row["entity_count"] or 0),
+                "last_synced_at": last or None,
+                "age_seconds": age,
+                "stale": bool(is_stale),
+            }
+        )
+    return {
+        "profiles": profiles,
+        "stale_profile_count": stale_count,
+        "stale_after_seconds": stale_after_sec,
+    }
+
+
+@router.post("/sync")
+def trigger_catalog_sync(
+    profile: str | None = Query(default=None),
+    cfg: AMXConfig = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Kick off an async catalog sync for the requested profile (or
+    every saved profile when omitted). Returns immediately; the actual
+    sync runs in a daemon thread so the pill can show "syncing…" and
+    poll the freshness endpoint instead of blocking on a long request.
+    """
+    from amx.search.drift import fire_drift_probe
+
+    if profile:
+        targets = [profile.strip()]
+    else:
+        profile_map = getattr(cfg, "db_profiles", None)
+        targets = list(profile_map.keys()) if hasattr(profile_map, "keys") else []
+    targets = [p for p in targets if p]
+    if not targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No DB profile to sync. Pass ?profile=<name> or save a profile first.",
+        )
+    fire_drift_probe(cfg, targets)
+    return {"profiles": targets, "status": "queued"}
