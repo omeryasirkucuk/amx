@@ -128,6 +128,8 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
     # Local imports keep ``amx.runtime.worker`` lazily loaded -- agent
     # / DB / LLM stacks are heavy and tests that don't need them
     # shouldn't pay the import cost on every collection scan.
+    from dataclasses import replace
+
     from amx.agents.orchestrator import Orchestrator
     from amx.config import AMXConfig
     from amx.db.connector import DatabaseConnector
@@ -155,7 +157,23 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
             "no longer exists. Edit the schedule or recreate the profile."
         )
 
-    db = DatabaseConnector(db_cfg)
+    # Overlay the schedule's saved (database, catalog) picks on top of
+    # the profile so we connect to the exact DB the user picked in the
+    # ScopeTree -- the live-schemas picker uses the same overlay
+    # pattern in ``amx/web/routers/live_db.py::_connector_for_scope``.
+    # Without this, a Postgres profile with three DBs would always
+    # fire against whichever DB happens to be the profile default, so
+    # ``airline.<table>`` resolution raised NoSuchTableError.
+    overlay: dict[str, Any] = {}
+    overlay_database = payload.get("database")
+    overlay_catalog = payload.get("catalog")
+    if overlay_database:
+        overlay["database"] = str(overlay_database)
+    if overlay_catalog:
+        overlay["catalog"] = str(overlay_catalog)
+    scoped_cfg = replace(db_cfg, **overlay) if overlay else db_cfg
+
+    db = DatabaseConnector(scoped_cfg, profile_name=db_profile_name)
     llm = LLMProvider(llm_cfg)
     orchestrator = Orchestrator(
         db,
@@ -222,12 +240,12 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
     )
     beat_thread.start()
 
+    per_table_errors: list[str] = []
+    processed = 0
     try:
         for schema, tables in scope.items():
             for table in tables:
-                # Per-table heartbeat too, so any 60s+ table flips
-                # ``last_heartbeat_at`` even when the ticker is
-                # waiting on its sleep.
+                processed += 1
                 if hs is not None:
                     try:
                         hs.update_run_heartbeat(run_id)
@@ -237,15 +255,30 @@ def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
                     orchestrator.process_table(
                         schema, table, interactive_review=False
                     )
-                except Exception:  # noqa: BLE001 - keep going on per-table errors
+                except Exception as exc:  # noqa: BLE001 - keep going on per-table errors
                     log.exception(
                         "production_run_executor: %s.%s failed under schedule #%s",
                         schema,
                         table,
                         schedule_id,
                     )
+                    per_table_errors.append(
+                        f"{schema}.{table}: {type(exc).__name__}: {exc}"
+                    )
     finally:
         stop_beat.set()
+
+    # If every table errored, surface a real failure so the user sees
+    # the cause in Studio instead of a misleading "completed / 0
+    # results" row. Partial failures are logged but do not flip the
+    # run -- per-table run_results that did land are still useful.
+    if per_table_errors and len(per_table_errors) == processed:
+        summary = "; ".join(per_table_errors[:5])
+        if len(per_table_errors) > 5:
+            summary += f"; (+{len(per_table_errors) - 5} more)"
+        raise RuntimeError(
+            f"All {processed} table(s) in scope failed. {summary}"
+        )
 
 
 def _scope_column_overrides(
