@@ -130,6 +130,17 @@ class RunRequest(BaseModel):
         default_factory=dict,
         description="Schema → tables map. Empty {} means 'every reachable schema/table'.",
     )
+    column_overrides: dict[str, list[str]] | None = Field(
+        default=None,
+        description=(
+            "Optional per-table column restriction. Keys are 'schema.table' "
+            "strings; values are the list of column names to process. When "
+            "set, the orchestrator skips every other column on that table — "
+            "table comment and unlisted columns are NOT re-inferred. Pass "
+            "``None`` (default) to process every column, preserving the "
+            "pre-existing behaviour."
+        ),
+    )
     apply: bool = Field(default=False, description="Auto-apply after the run completes.")
     missing_only: bool = Field(default=False)
     batch_mode: bool = Field(default=False)
@@ -677,6 +688,23 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         run_id=run_id,
         missing_only=bool(body.missing_only),
     )
+    # Plumb the optional per-table column-scope through to the
+    # orchestrator's pre-existing ``column_overrides`` map. The CLI
+    # ``Column scope`` picker has used this mechanism for a while;
+    # the Studio surface just hadn't exposed it. Keys arrive as
+    # ``"schema.table"`` strings (JSON-friendly); the orchestrator
+    # wants ``(schema, table) -> set[column]`` so we translate here.
+    if body.column_overrides:
+        translated: dict[tuple[str, str], set[str]] = {}
+        for key, cols in body.column_overrides.items():
+            if "." not in key:
+                continue
+            schema, _, table = key.partition(".")
+            if not schema or not table or not cols:
+                continue
+            translated[(schema, table)] = set(cols)
+        if translated:
+            orchestrator.column_overrides = translated
 
     processed_assets: list[str] = []
     skipped_assets: list[str] = []
