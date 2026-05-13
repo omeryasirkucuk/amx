@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Database, Loader2, RefreshCw } from "lucide-react";
+import { Database, RefreshCw } from "lucide-react";
 
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
@@ -160,7 +160,7 @@ export default function CatalogFreshnessBadge() {
         )}
       >
         {tone === "syncing" ? (
-          <Loader2 size={12} className="animate-spin" />
+          <RefreshCw size={12} className="animate-spin" />
         ) : (
           <Database size={12} />
         )}
@@ -257,10 +257,12 @@ export default function CatalogFreshnessBadge() {
                     )}
                     {p.state === "failed" && (
                       <div className="mt-1 flex items-start gap-1.5">
-                        <AlertCircle
-                          size={11}
+                        <span
+                          aria-hidden="true"
                           className="mt-0.5 shrink-0 text-critical"
-                        />
+                        >
+                          ⚠
+                        </span>
                         <div className="min-w-0 flex-1 space-y-1">
                           <p className="break-words text-[10.5px] text-critical">
                             {p.last_error || "Unknown error"}
