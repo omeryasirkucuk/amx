@@ -29,9 +29,18 @@ def seeded_history_store(tmp_path: Path):
     ss._store = None  # noqa: SLF001
 
 
-def _seed_catalog(db_path: Path, profile: str, schemas: list[str]) -> None:
+def _seed_catalog(
+    db_path: Path,
+    profile: str,
+    schemas: list[str],
+    *,
+    fully_synced: bool = True,
+) -> None:
     """Insert a minimal catalog_entities row per schema so the cache-
-    first helper returns the schema list."""
+    first helper returns the schema list. ``fully_synced`` controls
+    whether ``catalog_profile_state`` is set to ``done`` (so the
+    completeness gate passes) or left at ``none`` (so the helper
+    falls through to the live DB)."""
     now = time.time()
     with sqlite3.connect(db_path) as conn:
         for schema in schemas:
@@ -55,6 +64,16 @@ def _seed_catalog(db_path: Path, profile: str, schemas: list[str]) -> None:
                     now,
                     now,
                 ),
+            )
+        if fully_synced:
+            conn.execute(
+                """
+                INSERT INTO catalog_profile_state (
+                    db_profile, state, total_tables, processed_tables,
+                    started_at, finished_at, last_full_sync_at, last_error
+                ) VALUES (?, 'done', ?, ?, ?, ?, ?, '')
+                """,
+                (profile, len(schemas), len(schemas), now, now, now),
             )
 
 
@@ -87,3 +106,19 @@ def test_cached_assets_helper_returns_none_on_miss(seeded_history_store: Path) -
     _seed_catalog(seeded_history_store, "prof-a", ["public"])
     out = live_db._cached_assets_for_profile_schema("prof-a", "missing")  # noqa: SLF001
     assert out is None
+
+
+def test_cache_helpers_fall_through_when_sync_incomplete(
+    seeded_history_store: Path,
+) -> None:
+    """A profile that has rows in ``catalog_entities`` but no
+    ``state='done'`` row in ``catalog_profile_state`` must fall
+    through to the live DB. Without this gate the sidebar would
+    serve partial data as if it were the complete picture — the
+    user-reported bug behind this PR."""
+    _seed_catalog(seeded_history_store, "prof-a", ["public"], fully_synced=False)
+    assert live_db._cached_schemas_for_profile("prof-a") is None  # noqa: SLF001
+    assert (
+        live_db._cached_assets_for_profile_schema("prof-a", "public")  # noqa: SLF001
+        is None
+    )

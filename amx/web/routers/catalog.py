@@ -219,8 +219,22 @@ def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             ORDER BY db_profile
             """
         ).fetchall()
+        # State rows live in a separate table — catalog_entities only
+        # counts what's been written. A profile that's currently
+        # ``state='syncing'`` may have zero entities yet, so we merge
+        # the state table in by profile name.
+        try:
+            state_rows = conn.execute(
+                """
+                SELECT db_profile, state, total_tables, processed_tables,
+                       started_at, finished_at, last_full_sync_at, last_error
+                FROM catalog_profile_state
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            state_rows = []
     except sqlite3.OperationalError:
-        return {"profiles": [], "stale_profile_count": 0}
+        return {"profiles": [], "stale_profile_count": 0, "syncing_profile_count": 0}
     finally:
         try:
             conn.close()
@@ -228,26 +242,81 @@ def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
             pass
     now = _time.time()
     stale_after_sec = 24 * 60 * 60
+    state_by_profile = {str(r["db_profile"] or ""): r for r in state_rows}
     profiles: list[dict[str, Any]] = []
     stale_count = 0
+    syncing_count = 0
+    seen: set[str] = set()
     for row in rows:
+        name = str(row["db_profile"] or "")
+        seen.add(name)
         last = float(row["last_synced_at"] or 0.0)
         age = now - last if last else None
         is_stale = last == 0.0 or (age is not None and age > stale_after_sec)
+        state_row = state_by_profile.get(name)
+        state_value = str(state_row["state"]) if state_row else "none"
+        if state_value == "syncing":
+            syncing_count += 1
         if is_stale:
             stale_count += 1
         profiles.append(
             {
-                "profile": str(row["db_profile"] or ""),
+                "profile": name,
                 "entity_count": int(row["entity_count"] or 0),
                 "last_synced_at": last or None,
                 "age_seconds": age,
                 "stale": bool(is_stale),
+                # New: state machine + progress + error so the pill can
+                # render Syncing 47 / 1000 and a Retry CTA on failure.
+                "state": state_value,
+                "total_tables": int(state_row["total_tables"] or 0) if state_row else 0,
+                "processed_tables": int(state_row["processed_tables"] or 0) if state_row else 0,
+                "started_at": float(state_row["started_at"])
+                if state_row and state_row["started_at"]
+                else None,
+                "finished_at": float(state_row["finished_at"])
+                if state_row and state_row["finished_at"]
+                else None,
+                "last_full_sync_at": float(state_row["last_full_sync_at"])
+                if state_row and state_row["last_full_sync_at"]
+                else None,
+                "last_error": str(state_row["last_error"] or "") if state_row else "",
             }
         )
+    # Surface profiles that have a state row but no catalog_entities yet
+    # (in-progress first sync). Without this the pill would hide them
+    # until the very first row landed.
+    for name, state_row in state_by_profile.items():
+        if name in seen:
+            continue
+        state_value = str(state_row["state"])
+        if state_value == "syncing":
+            syncing_count += 1
+        profiles.append(
+            {
+                "profile": name,
+                "entity_count": 0,
+                "last_synced_at": None,
+                "age_seconds": None,
+                "stale": True,
+                "state": state_value,
+                "total_tables": int(state_row["total_tables"] or 0),
+                "processed_tables": int(state_row["processed_tables"] or 0),
+                "started_at": float(state_row["started_at"]) if state_row["started_at"] else None,
+                "finished_at": float(state_row["finished_at"])
+                if state_row["finished_at"]
+                else None,
+                "last_full_sync_at": float(state_row["last_full_sync_at"])
+                if state_row["last_full_sync_at"]
+                else None,
+                "last_error": str(state_row["last_error"] or ""),
+            }
+        )
+        stale_count += 1
     return {
         "profiles": profiles,
         "stale_profile_count": stale_count,
+        "syncing_profile_count": syncing_count,
         "stale_after_seconds": stale_after_sec,
     }
 
@@ -257,12 +326,19 @@ def trigger_catalog_sync(
     profile: str | None = Query(default=None),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
-    """Kick off an async catalog sync for the requested profile (or
-    every saved profile when omitted). Returns immediately; the actual
-    sync runs in a daemon thread so the pill can show "syncing…" and
-    poll the freshness endpoint instead of blocking on a long request.
+    """Kick off a skeleton sync for the requested profile (or every
+    saved profile when omitted). Each profile gets its own daemon
+    thread that walks ``list_schemas`` → ``list_assets`` and writes
+    skeleton rows into ``catalog_entities`` while updating
+    ``catalog_profile_state`` so the freshness pill can render
+    progress. Returns immediately with the state-machine entry
+    already flipped to ``syncing`` so the SPA polls progress
+    instead of guessing.
     """
-    from amx.search.drift import fire_drift_probe
+    import threading
+
+    from amx.search.catalog import SearchCatalog
+    from amx.search.drift import sync_profile_skeleton
 
     if profile:
         targets = [profile.strip()]
@@ -275,10 +351,43 @@ def trigger_catalog_sync(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No DB profile to sync. Pass ?profile=<name> or save a profile first.",
         )
-    # ``force=True``: this is a user-initiated click, not the auto-probe
-    # on every /ask. Skip the per-profile 60s cooldown AND always run
-    # the sync so ``last_synced_at`` advances even when the live and
-    # catalog counts already match. Without force the click would
-    # silently no-op for the user who pressed it.
-    fire_drift_probe(cfg, targets, force=True)
+    catalog = SearchCatalog.from_history_store()
+    if catalog is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="History store not initialised — cannot sync catalog yet.",
+        )
+    # Synchronous state flip BEFORE the thread spawns so the next
+    # ``/freshness`` GET already sees ``state='syncing'`` and the
+    # pill switches to its progress shape without a poll race.
+    for target in targets:
+        try:
+            catalog.start_skeleton_sync(target, total_tables=0)
+        except Exception:
+            # Surface the failure to the SPA via the per-profile state
+            # row rather than the API response — the pill renders the
+            # error inline.
+            try:
+                catalog.finish_skeleton_sync(target, ok=False, error="bootstrap failed")
+            except Exception:
+                pass
+
+    def _spawn(target_profile: str) -> None:
+        def _runner() -> None:
+            try:
+                sync_profile_skeleton(cfg, target_profile, catalog)
+            except Exception as exc:  # pragma: no cover - best-effort
+                try:
+                    catalog.finish_skeleton_sync(target_profile, ok=False, error=str(exc))
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_runner,
+            name=f"amx-catalog-skeleton-sync-{target_profile}",
+            daemon=True,
+        ).start()
+
+    for target in targets:
+        _spawn(target)
     return {"profiles": targets, "status": "queued"}

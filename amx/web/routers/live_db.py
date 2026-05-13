@@ -381,8 +381,10 @@ def list_schemas(
 
 def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
     """Persistent-catalog read for the sidebar's schema list. Returns
-    ``None`` when the catalog is missing / empty so the caller falls
-    through to the live DB."""
+    ``None`` when the catalog is missing / empty OR when the profile
+    isn't fully synced — partial catalog must never be presented as
+    the complete picture, so we fall through to the live DB in those
+    cases."""
     try:
         from amx.search.catalog import SearchCatalog
 
@@ -390,6 +392,15 @@ def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
     except Exception:
         return None
     if cat is None:
+        return None
+    try:
+        # Completeness gate: if the profile isn't fully synced, we
+        # treat the catalog as untrusted and fall through. This is
+        # the single change that makes the sidebar honest about a
+        # half-finished sync.
+        if not cat.is_profile_fully_synced(profile):
+            return None
+    except Exception:
         return None
     try:
         rows = cat.fetch_distinct_schemas(profile)
@@ -406,8 +417,9 @@ def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
 
 def _cached_assets_for_profile_schema(profile: str, schema: str) -> list[dict[str, Any]] | None:
     """Persistent-catalog read for the sidebar's asset list under a
-    schema. Returns ``None`` on miss so the caller falls through to
-    the live DB."""
+    schema. Returns ``None`` when the catalog is missing / empty OR
+    when the profile isn't fully synced — partial catalog stays
+    behind the live DB so the user never sees an incomplete tree."""
     try:
         from amx.search.catalog import SearchCatalog
 
@@ -415,6 +427,11 @@ def _cached_assets_for_profile_schema(profile: str, schema: str) -> list[dict[st
     except Exception:
         return None
     if cat is None:
+        return None
+    try:
+        if not cat.is_profile_fully_synced(profile):
+            return None
+    except Exception:
         return None
     try:
         rows = cat.fetch_distinct_tables_in_schema(profile, schema)
