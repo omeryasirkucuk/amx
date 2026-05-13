@@ -49,4 +49,11 @@ def test_missing_confidence_block_falls_back_to_defaults():
 
     cfg = _llm_from_mapping({"provider": "openai", "model": "gpt-4o-mini"})
     assert cfg.confidence.enabled is True
+    # Phase 2 defaults must apply even when the YAML has no
+    # ``confidence`` block — existing configs from before the feature
+    # shipped should still benefit from self-declaration.
+    assert cfg.confidence.use_logprob is True
+    assert cfg.confidence.use_self_consistency is True
+    assert cfg.confidence.use_self_decl is True
+    assert cfg.confidence.use_judge is False
     assert cfg.confidence.high == 0.75
