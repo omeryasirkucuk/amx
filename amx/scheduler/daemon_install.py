@@ -36,6 +36,8 @@ _PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
     <dict>
         <key>AMX_CONFIG_DIR</key><string>{config_dir}</string>
         <key>AMX_SKIP_BOOTSTRAP_TICK</key><string>1</string>
+        <key>PYTHONUNBUFFERED</key><string>1</string>
+        <key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
     <key>StandardOutPath</key><string>{log_path}</string>
     <key>StandardErrorPath</key><string>{log_path}</string>
@@ -50,6 +52,7 @@ Description=AMX scheduler tick ({label})
 Type=oneshot
 Environment=AMX_CONFIG_DIR={config_dir}
 Environment=AMX_SKIP_BOOTSTRAP_TICK=1
+Environment=PYTHONUNBUFFERED=1
 ExecStart={python_path} -m amx.scheduler
 """
 
