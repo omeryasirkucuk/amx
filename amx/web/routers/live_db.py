@@ -318,9 +318,22 @@ def list_schemas(
     profile: str = Query(...),
     database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """List schemas under the requested scope.
+
+    Cache-first: when the persistent catalog already lists schemas for
+    this profile, return that list immediately and skip the live-DB
+    round-trip. The Studio sidebar opens to "Loading schemas…" on
+    every tree expand otherwise — even when ``/search sync`` covered
+    the profile a minute ago. Comments are still fetched from the
+    live DB when the catalog miss path runs, so the only path that
+    changes is the cache-hit case.
+
+    ``?force_live=true`` opts back into the live query — used by the
+    sidebar's manual refresh affordance so a power user can verify
+    against the source of truth.
 
     Each schema is enriched with its current ``comment`` so the
     Database page can show at a glance which schemas already have a
@@ -329,6 +342,18 @@ def list_schemas(
     ``""`` so a single broken row never breaks the whole list.
     """
     name = _require_profile(profile)
+    scope = _active_scope_for_profile(cfg, name)
+    if not force_live:
+        cached_items = _cached_schemas_for_profile(name)
+        if cached_items:
+            return {
+                "catalog": catalog or None,
+                "schemas": [it["name"] for it in cached_items],
+                "items": cached_items,
+                "active_schema": scope["active_schema"],
+                "active_dataset": scope["active_dataset"],
+                "source": "catalog",
+            }
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     schemas = _coerce_or_500("Listing schemas", db.list_schemas)
     items: list[dict[str, Any]] = []
@@ -338,7 +363,6 @@ def list_schemas(
         except Exception:
             comment = ""
         items.append({"name": schema_name, "comment": comment})
-    scope = _active_scope_for_profile(cfg, name)
     return {
         "catalog": catalog or None,
         "schemas": [it["name"] for it in items],
@@ -351,7 +375,65 @@ def list_schemas(
         # navigates outside the pin can still see what's available.
         "active_schema": scope["active_schema"],
         "active_dataset": scope["active_dataset"],
+        "source": "live",
     }
+
+
+def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
+    """Persistent-catalog read for the sidebar's schema list. Returns
+    ``None`` when the catalog is missing / empty so the caller falls
+    through to the live DB."""
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return None
+    if cat is None:
+        return None
+    try:
+        rows = cat.fetch_distinct_schemas(profile)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    # The catalog schema-row doesn't carry a comment (schema comments
+    # live on the live DB, not in catalog_entities). Empty string is
+    # safe — the Database page hydrates the comment when the user
+    # opens a schema.
+    return [{"name": str(r.get("name") or ""), "comment": ""} for r in rows if r.get("name")]
+
+
+def _cached_assets_for_profile_schema(profile: str, schema: str) -> list[dict[str, Any]] | None:
+    """Persistent-catalog read for the sidebar's asset list under a
+    schema. Returns ``None`` on miss so the caller falls through to
+    the live DB."""
+    try:
+        from amx.search.catalog import SearchCatalog
+
+        cat = SearchCatalog.from_history_store()
+    except Exception:
+        return None
+    if cat is None:
+        return None
+    try:
+        rows = cat.fetch_distinct_tables_in_schema(profile, schema)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    # Asset kind isn't on the simple fetch helper; default to "table"
+    # for the sidebar (the wide majority of rows are tables). Views /
+    # materialized views surface their kind on the Table-detail page
+    # which still hits the live DB. The sidebar uses the kind for
+    # icon selection only.
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        n = str(r.get("name") or "")
+        if not n:
+            continue
+        items.append({"name": n, "kind": "table", "comment": ""})
+    return items
 
 
 @router.get("/schemas/{schema}/assets")
@@ -360,13 +442,26 @@ def list_assets(
     profile: str = Query(...),
     database: str | None = Query(default=None),
     catalog: str | None = Query(default=None),
+    force_live: bool = Query(default=False),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Return tables, views, and materialized views in *schema* in one
     payload — what the SPA expands when the user clicks a schema in
     the left tree.
+
+    Cache-first: persistent-catalog rows are returned without a live
+    connector. ``?force_live=true`` bypasses the cache.
     """
     name = _require_profile(profile)
+    if not force_live:
+        cached = _cached_assets_for_profile_schema(name, schema)
+        if cached:
+            return {
+                "schema": schema,
+                "assets": cached,
+                "count": len(cached),
+                "source": "catalog",
+            }
     db = _connector_for_scope(cfg, name, database=database, catalog=catalog)
     raw = _coerce_or_500(f"Listing assets in {schema}", lambda: db.list_assets(schema))
     items: list[dict[str, Any]] = []
@@ -376,7 +471,7 @@ def list_assets(
         except Exception:
             comment = ""
         items.append({"name": asset_name, "kind": kind.value, "comment": comment})
-    return {"schema": schema, "assets": items, "count": len(items)}
+    return {"schema": schema, "assets": items, "count": len(items), "source": "live"}
 
 
 @router.post("/schemas/{schema}/refresh")

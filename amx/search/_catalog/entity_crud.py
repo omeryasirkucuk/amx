@@ -77,11 +77,17 @@ class EntityCrudMixin:
             (db_profile, schema_name, table_name, column_name, entity_kind),
         ).fetchone()
         if row:
+            # Bump ``last_synced_at`` on every re-upsert. The
+            # ``catalog_freshness`` pill (and the user) treats this
+            # timestamp as the canonical "last time AMX touched this
+            # row"; without the bump a Sync-all over an unchanged
+            # catalog leaves the pill stuck on the prior timestamp
+            # even though the sync actually ran.
             conn.execute(
                 """
                 UPDATE catalog_entities
                 SET db_backend = ?, database_name = ?, asset_kind = ?, dtype = ?, nullable = ?,
-                    pk_flag = ?, fk_flag = ?, row_count = ?, updated_at = ?
+                    pk_flag = ?, fk_flag = ?, row_count = ?, updated_at = ?, last_synced_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -93,6 +99,7 @@ class EntityCrudMixin:
                     pk_flag,
                     fk_flag,
                     row_count,
+                    now,
                     now,
                     int(row["id"]),
                 ),

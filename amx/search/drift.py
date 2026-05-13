@@ -179,11 +179,19 @@ def _enqueue_sync(cfg, profile: str) -> None:
                 log.debug("Drift sync failed for %s/%s.%s: %s", profile, schema, asset, exc)
 
 
-def fire_drift_probe(cfg, profiles: Iterable[str]) -> None:
+def fire_drift_probe(cfg, profiles: Iterable[str], *, force: bool = False) -> None:
     """Spawn a daemon thread that runs the drift probe for each
     profile in scope. No-op when ``AMX_SKIP_DRIFT_PROBE=1`` is set or
     the catalog file isn't available yet (fresh install with no
-    history store)."""
+    history store).
+
+    ``force=True`` is used by the manual ``/api/catalog/sync`` route:
+    the per-profile cooldown is bypassed AND the sync runs even when
+    the live / catalog counts match. Without force, an auto-probe
+    that already ran in the last 60s would silently absorb a manual
+    click and the freshness pill would never reflect the user's
+    intent.
+    """
     if os.environ.get("AMX_SKIP_DRIFT_PROBE", "").strip() in ("1", "true", "yes"):
         return
     profile_list = [p for p in (profiles or []) if p]
@@ -201,14 +209,23 @@ def fire_drift_probe(cfg, profiles: Iterable[str]) -> None:
     if not catalog_db_path:
         return
     now = time.time()
-    fresh = [p for p in profile_list if not _cooldown_blocks(p, now)]
+    if force:
+        # Manual click — skip the cooldown gate entirely and refresh
+        # the timestamp so the next auto-probe still respects pacing
+        # relative to this manual trigger.
+        with _LAST_PROBE_LOCK:
+            for profile in profile_list:
+                _LAST_PROBE[profile] = now
+        fresh = list(profile_list)
+    else:
+        fresh = [p for p in profile_list if not _cooldown_blocks(p, now)]
     if not fresh:
         return
 
     def _worker() -> None:
         for profile in fresh:
             result = _probe_one(cfg, profile, catalog_db_path)
-            if result.drifted:
+            if force or result.drifted:
                 _enqueue_sync(cfg, profile)
 
     thread = threading.Thread(

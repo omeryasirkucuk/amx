@@ -275,5 +275,10 @@ def trigger_catalog_sync(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No DB profile to sync. Pass ?profile=<name> or save a profile first.",
         )
-    fire_drift_probe(cfg, targets)
+    # ``force=True``: this is a user-initiated click, not the auto-probe
+    # on every /ask. Skip the per-profile 60s cooldown AND always run
+    # the sync so ``last_synced_at`` advances even when the live and
+    # catalog counts already match. Without force the click would
+    # silently no-op for the user who pressed it.
+    fire_drift_probe(cfg, targets, force=True)
     return {"profiles": targets, "status": "queued"}
