@@ -56,6 +56,7 @@ def main() -> int:
     )
     log = logging.getLogger("amx.scheduler.daemon")
 
+    log.info("daemon tick start (pid=%s)", __import__("os").getpid())
     cfg = AMXConfig.load()
     global hs  # set on the module so _spawn closure can read it
     hs = init_history_store(cfg)
