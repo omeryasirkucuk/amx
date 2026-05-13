@@ -835,15 +835,23 @@ class _StreamedResponse:
 
 
 def _consume_thinking_stream(
-    iterator: Any, on_thinking: Callable[[str], None]
+    iterator: Any,
+    on_thinking: Callable[[str], None] | None = None,
+    on_content: Callable[[str], None] | None = None,
 ) -> _StreamedResponse:
-    """Drain a LiteLLM stream, fire ``on_thinking`` deltas, and rebuild a response.
+    """Drain a LiteLLM stream, fire ``on_thinking`` / ``on_content`` deltas, and rebuild a response.
 
     Reasoning text arrives as ``delta.reasoning_content`` chunks (LiteLLM
     normalizes this across Anthropic ``thinking_blocks`` and DeepSeek/OpenAI
-    ``reasoning_content``). Tool calls arrive split by ``index`` and we
-    reassemble each by id/name/arguments-suffix. Usage typically arrives in a
-    trailing chunk with no choices.
+    ``reasoning_content``). Visible answer text arrives as ``delta.content``
+    chunks; ``on_content`` (when provided) is fired per-delta so the caller can
+    forward token-level streaming to its UI. Tool calls arrive split by
+    ``index`` and we reassemble each by id/name/arguments-suffix. Usage
+    typically arrives in a trailing chunk with no choices.
+
+    ``on_thinking`` is fired with the CUMULATIVE thinking text so far (matches
+    the historical contract); ``on_content`` is fired with the PER-CHUNK delta
+    so a UI can append directly.
     """
     content_parts: list[str] = []
     thinking_parts: list[str] = []
@@ -873,14 +881,20 @@ def _consume_thinking_stream(
             rc = getattr(delta, "reasoning_content", None) or ""
             if rc:
                 thinking_parts.append(rc)
-                try:
-                    on_thinking("".join(thinking_parts))
-                except Exception as cb_exc:
-                    log.debug("on_thinking callback raised: %s", cb_exc)
+                if on_thinking is not None:
+                    try:
+                        on_thinking("".join(thinking_parts))
+                    except Exception as cb_exc:
+                        log.debug("on_thinking callback raised: %s", cb_exc)
 
             cc = getattr(delta, "content", None) or ""
             if cc:
                 content_parts.append(cc)
+                if on_content is not None:
+                    try:
+                        on_content(cc)
+                    except Exception as cb_exc:
+                        log.debug("on_content callback raised: %s", cb_exc)
 
             raw_tcs = getattr(delta, "tool_calls", None) or []
             for tc in raw_tcs:
@@ -1178,6 +1192,7 @@ class LLMProvider:
         max_tokens: int | None = None,
         use_logprobs: bool = True,
         on_thinking: Callable[[str], None] | None = None,
+        on_content: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         # ``_amx_rerun_attempt`` is consumed by the auto-retry path below
@@ -1187,11 +1202,16 @@ class LLMProvider:
         model = self.model_name
         mt = max_tokens or self.cfg.max_tokens
         extra: dict[str, Any] = dict(kwargs)
-        # Engage streaming + reasoning when the caller wants live thinking
-        # AND the model actually emits reasoning. Other models silently fall
-        # through to the existing non-streaming path with no behavior change.
-        use_streaming = on_thinking is not None and _supports_thinking(self.cfg.provider, model)
-        if use_streaming:
+        # Engage streaming when the caller wants live visible-content deltas
+        # (any model) OR live thinking on a model that emits reasoning. The
+        # thinking-specific extras below only fire when the route actually
+        # supports thinking; ``on_content`` callers on non-reasoning models
+        # get vanilla token streaming with no provider-side reasoning knobs.
+        supports_thinking = _supports_thinking(self.cfg.provider, model)
+        use_streaming = on_content is not None or (
+            on_thinking is not None and supports_thinking
+        )
+        if use_streaming and supports_thinking:
             budget = max(1024, int(getattr(self.cfg, "thinking_budget", 1024)))
             if self.cfg.provider == "anthropic":
                 extra["thinking"] = {"type": "enabled", "budget_tokens": budget}
@@ -1253,8 +1273,11 @@ class LLMProvider:
                 use_logprobs = False
                 for k in ("logprobs", "top_logprobs"):
                     extra.pop(k, None)
+        if use_streaming:
             # Ask the provider to emit a final usage chunk so we can capture
-            # reasoning_tokens for telemetry.
+            # reasoning_tokens (when applicable) for telemetry. Applies to
+            # plain content-streaming routes too so usage accounting stays
+            # consistent with the non-streaming path.
             extra.setdefault("stream_options", {"include_usage": True})
 
         # Honor a runtime-discovered disable flag — set lower in the
@@ -1353,8 +1376,11 @@ class LLMProvider:
                 # error surfaces as the same exception class as a non-streamed
                 # failure, so the existing transient-retry / fatal-error
                 # classification keeps working.
-                assert on_thinking is not None  # guarded by ``use_streaming``
-                return _consume_thinking_stream(raw, on_thinking)
+                return _consume_thinking_stream(
+                    raw,
+                    on_thinking=on_thinking,
+                    on_content=on_content,
+                )
             return raw
 
         t0 = time.perf_counter()

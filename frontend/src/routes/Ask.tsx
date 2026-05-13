@@ -191,7 +191,7 @@ export default function Ask() {
     <>
       <PageHeader title="Ask" breadcrumbs={[{ label: "Ask" }]} />
 
-      <div className="grid gap-4 md:grid-cols-[18rem_1fr]">
+      <div className="grid gap-4 md:grid-cols-[18rem_minmax(0,1fr)] [&>*]:min-w-0">
         <Card>
           <CardHeader
             title="Sessions"
