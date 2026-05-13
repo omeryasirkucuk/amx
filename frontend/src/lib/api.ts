@@ -660,32 +660,28 @@ export const api = {
   },
   submitRun: (body: {
     scope: Record<string, string[]>;
+    /** Per-table column restriction. Keys are ``"schema.table"`` strings;
+     *  values are the explicit column names to process. ``undefined`` (or
+     *  an empty dict) means "process every column" — the pre-existing
+     *  behaviour. The orchestrator's pre-existing ``column_overrides``
+     *  map consumes this. */
+    column_overrides?: Record<string, string[]>;
     apply?: boolean;
     missing_only?: boolean;
     batch_mode?: boolean;
     db_profile?: string;
     database?: string;
     catalog?: string;
-    /** Per-run override of the active LLM profile's tuning knobs.
-     *  Pass only the fields the user actually changed; pass `undefined`
-     *  (or omit the key) when no override is needed for that field.
-     *  The backend never writes these back to the saved profile. */
+    /** Per-run override of the active LLM profile's tuning knobs. */
     llm_overrides?: LLMOverrides;
-    /** PR E: per-run multi-doc-profile override. ``undefined`` falls
-     *  back to ``cfg.active_doc_profile``; an explicit empty array
-     *  means "no docs for this run". The saved config is never
-     *  mutated — the worker reverts the override on exit. */
     doc_profiles?: string[];
-    /** PR δ: parallel multi-code-profile override. Identical semantics
-     *  to ``doc_profiles`` — ``undefined`` defaults to
-     *  ``cfg.active_code_profile``; an empty array scopes the run to
-     *  no code profiles at all. */
     code_profiles?: string[];
   }) =>
     apiFetch<{ job_id: string; status: string }>("/api/runs", {
       method: "POST",
       body: JSON.stringify({
         scope: body.scope,
+        column_overrides: body.column_overrides,
         apply: !!body.apply,
         missing_only: !!body.missing_only,
         batch_mode: !!body.batch_mode,
