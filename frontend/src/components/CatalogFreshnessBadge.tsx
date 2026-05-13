@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Database, RefreshCw } from "lucide-react";
 
@@ -38,7 +38,29 @@ function relativeAge(ageSec: number | null): string {
  */
 export default function CatalogFreshnessBadge() {
   const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const qc = useQueryClient();
+
+  // Close the dropdown on outside click + Escape, mirroring the
+  // pattern used by ProfilePicker so every top-bar dropdown behaves
+  // the same. Without this the dropdown only closes by clicking the
+  // trigger again — surprising next to the LLM / DB pickers.
+  useEffect(() => {
+    if (!open) return;
+    function onMouseDown(e: MouseEvent) {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
   const query = useQuery({
     queryKey: ["catalog-freshness"],
     queryFn: () => apiFetch<FreshnessResponse>("/api/catalog/freshness"),
@@ -49,7 +71,16 @@ export default function CatalogFreshnessBadge() {
     mutationFn: () =>
       apiFetch("/api/catalog/sync", { method: "POST" }),
     onSettled: () => {
+      // First invalidate fires straight after the POST returns
+      // (``status: queued``) — useful when the daemon thread has
+      // already raced ahead. The 3 s follow-up catches the common
+      // case of a small catalog finishing inside that window so the
+      // timestamps refresh without the user having to wait for the
+      // 30 s background poll.
       qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
+      window.setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
+      }, 3000);
     },
   });
 
@@ -64,7 +95,7 @@ export default function CatalogFreshnessBadge() {
       : "positive";
 
   return (
-    <div className="relative">
+    <div className="relative" ref={wrapperRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

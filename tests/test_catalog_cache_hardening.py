@@ -134,6 +134,85 @@ def test_fts_backfill_on_existing_catalog(tmp_path: Path) -> None:
     assert int(row["n"]) >= 1
 
 
+def test_upsert_entity_bumps_last_synced_at_on_update(tmp_path: Path) -> None:
+    """``Sync all`` over an unchanged catalog must still move the
+    ``last_synced_at`` timestamp forward — that's what the freshness
+    pill reads. The legacy UPDATE clause only touched ``updated_at``
+    and the pill stayed stuck on the prior value."""
+    db_path = tmp_path / "history.db"
+    SQLiteHistoryStore(db_path).init()
+    catalog = SearchCatalog(db_path)
+
+    with catalog._connect() as conn:  # noqa: SLF001
+        catalog._upsert_entity(  # noqa: SLF001
+            conn,
+            db_profile="prof",
+            db_backend="postgresql",
+            database_name="db",
+            schema_name="public",
+            table_name="t",
+            column_name=None,
+            entity_kind="table",
+            asset_kind="table",
+        )
+        first = conn.execute("SELECT last_synced_at FROM catalog_entities LIMIT 1").fetchone()
+    first_ts = float(first["last_synced_at"])
+    assert first_ts > 0
+
+    # Sleep a hair so the time.time() return value moves forward
+    # measurably even on fast machines, then re-upsert the same row.
+    time.sleep(0.01)
+    with catalog._connect() as conn:  # noqa: SLF001
+        catalog._upsert_entity(  # noqa: SLF001
+            conn,
+            db_profile="prof",
+            db_backend="postgresql",
+            database_name="db",
+            schema_name="public",
+            table_name="t",
+            column_name=None,
+            entity_kind="table",
+            asset_kind="table",
+        )
+        second = conn.execute("SELECT last_synced_at FROM catalog_entities LIMIT 1").fetchone()
+    assert float(second["last_synced_at"]) > first_ts
+
+
+def test_drift_probe_force_bypasses_cooldown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """force=True must spawn the worker even when the per-profile
+    cooldown is warm. Without this, a user who fires Sync all within
+    60s of the auto-probe gets a silent no-op."""
+    monkeypatch.delenv("AMX_SKIP_DRIFT_PROBE", raising=False)
+    from amx.search import drift
+
+    db_path = tmp_path / "history.db"
+    SQLiteHistoryStore(db_path).init()
+    # Stub history_store so fire_drift_probe gets past its gate.
+    import amx.storage.sqlite_store as ss
+
+    ss._store = SQLiteHistoryStore(db_path)  # noqa: SLF001
+
+    drift._LAST_PROBE.clear()
+    drift._LAST_PROBE["prof-a"] = time.time()  # cooldown is warm
+
+    spawned: list[str] = []
+    real_thread = drift.threading.Thread
+
+    def _capture_thread(*args, **kwargs):
+        spawned.append(kwargs.get("name") or "")
+        return real_thread(target=lambda: None, name="capture", daemon=True)
+
+    monkeypatch.setattr(drift.threading, "Thread", _capture_thread)
+    try:
+        drift.fire_drift_probe(None, ["prof-a"], force=True)
+    finally:
+        ss._store = None  # noqa: SLF001
+
+    assert "amx-drift-probe" in spawned, "force=True did not spawn the worker"
+
+
 def test_drift_probe_skipped_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AMX_SKIP_DRIFT_PROBE", "1")
     from amx.search.drift import fire_drift_probe
