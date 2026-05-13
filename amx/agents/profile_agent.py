@@ -78,7 +78,7 @@ Respond in this exact format for each column (one block per column):
 
 COLUMN: <column_name>
 DESCRIPTION_1: <most likely description>
-{desc_lines}
+{self_decl_line_1}{desc_lines}
 CONFIDENCE: <HIGH|MEDIUM|LOW>
 REASONING: <why you think so>
 
@@ -99,6 +99,7 @@ def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
     style_profile: StyleProfile | None = None,
+    emit_self_decl: bool = False,
 ) -> str:
     """Build the system prompt dynamically for the requested number of alternatives.
 
@@ -108,6 +109,12 @@ def _build_system_prompt(
     * ``comprehensive``: 1-2 short paragraphs / ~5-8 sentences (≈4-6× brief).
     * ``exhaustive``: multi-paragraph reference-style entry (≈8-12× brief);
       best for documentation, not interactive runs.
+
+    ``emit_self_decl`` (Phase 2 confidence scoring) makes the model emit
+    a ``CONFIDENCE_i: HIGH|MED|LOW`` line immediately after each
+    ``DESCRIPTION_i`` block, so AMX can extract a per-alternative
+    self-declared confidence. The legacy aggregate ``CONFIDENCE:`` line
+    at the end of the block stays in place for backwards compatibility.
     """
     n = max(1, min(5, n_alternatives))
     if n == 1:
@@ -116,13 +123,23 @@ def _build_system_prompt(
         desc_lines = ""
         table_desc_lines = ""
         alternatives_length_reminder = ""
+        self_decl_line_1 = "CONFIDENCE_1: <HIGH|MED|LOW>\n" if emit_self_decl else ""
     else:
         alt_instruction = f"Up to {n} alternative descriptions ranked by likelihood."
         extra_items = ""
-        desc_lines = "\n".join(
-            f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
-            for i in range(2, n + 1)
-        )
+        if emit_self_decl:
+            desc_lines = "\n".join(
+                f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>\n"
+                f"CONFIDENCE_{i}: <HIGH|MED|LOW>"
+                for i in range(2, n + 1)
+            )
+            self_decl_line_1 = "CONFIDENCE_1: <HIGH|MED|LOW>\n"
+        else:
+            desc_lines = "\n".join(
+                f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
+                for i in range(2, n + 1)
+            )
+            self_decl_line_1 = ""
         table_desc_lines = "\n".join(
             f"TABLE_DESCRIPTION_{i}: <alternative table description — apply the SAME length rule as TABLE_DESCRIPTION_1>"
             for i in range(2, n + 1)
@@ -136,6 +153,7 @@ def _build_system_prompt(
             alternatives_length_reminder=alternatives_length_reminder,
             extra_items=extra_items,
             desc_lines=desc_lines,
+            self_decl_line_1=self_decl_line_1,
             table_desc_lines=table_desc_lines,
         ).strip()
         + "\n"
@@ -390,10 +408,17 @@ class ProfileAgent(BaseAgent):
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
         """Build the messages list for a single profile batch — shared by run() and collect_messages()."""
         user_msg = self._build_prompt(ctx)
+        conf_cfg = getattr(self.llm.cfg, "confidence", None)
+        emit_self_decl = bool(
+            conf_cfg
+            and getattr(conf_cfg, "enabled", True)
+            and getattr(conf_cfg, "use_self_decl", False)
+        )
         system = _build_system_prompt(
             self._n_alternatives,
             description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
             style_profile=self._style_profile,
+            emit_self_decl=emit_self_decl,
         )
         return [
             {"role": "system", "content": system},
