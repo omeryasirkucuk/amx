@@ -427,6 +427,18 @@ export default function Schedules() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["schedules", statusFilter],
     queryFn: () => api.listSchedules({ status: apiStatus }),
+    // Poll the list so the page reflects daemon-driven fires
+    // without forcing the user to refresh: 5s while at least one
+    // schedule is mid-fire (status='running'), 15s baseline so
+    // newly-created or just-fired entries surface quickly even
+    // when nothing is currently in flight.
+    refetchInterval: (query) => {
+      const rows =
+        (query.state.data as { schedules?: { status: string }[] } | undefined)
+          ?.schedules ?? [];
+      const anyRunning = rows.some((r) => r.status === "running");
+      return anyRunning ? 5000 : 15000;
+    },
   });
 
   const statusQ = useQuery({
