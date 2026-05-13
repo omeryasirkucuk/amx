@@ -71,10 +71,19 @@ function StatusChip({ status }: { status: string }) {
   return <Badge tone={STATUS_TONE[status] ?? "neutral"}>{status}</Badge>;
 }
 
-function defaultLocalDatetime() {
-  const t = new Date(Date.now() + 60 * 60 * 1000);
+function formatLocalDatetime(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function defaultLocalDatetime() {
+  // Default to one hour from now, so the picker isn't already-invalid
+  // by the time the user lands on the dialog.
+  return formatLocalDatetime(new Date(Date.now() + 60 * 60 * 1000));
+}
+
+function nowLocalDatetime() {
+  return formatLocalDatetime(new Date());
 }
 
 function browserTz() {
@@ -198,6 +207,23 @@ function NewScheduleDialog({
     e.preventDefault();
     setError(null);
     try {
+      // Past-time guard. The ``min=`` on the datetime-local input
+      // covers the common case but is trivially bypassed (DevTools,
+      // pasting an ISO string). Re-check on submit so a user can't
+      // create a schedule that is already overdue. We allow edit
+      // mode to keep the existing fire time even if it has slipped
+      // into the past while the user was reading the dialog;
+      // they'll explicitly pick a new time if they want to re-arm.
+      if (!isEdit) {
+        const picked = new Date(fireAtLocal).getTime();
+        if (Number.isFinite(picked) && picked <= Date.now()) {
+          setError(
+            "Fire time must be in the future. Pick a date / time that " +
+              "hasn't passed yet.",
+          );
+          return;
+        }
+      }
       mutation.mutate({
         name: name.trim(),
         fire_at_local: fireAtLocal,
@@ -281,11 +307,16 @@ function NewScheduleDialog({
               ))}
             </Select>
           </Field>
-          <Field label="Fire at (local)" required>
+          <Field
+            label="Fire at (local)"
+            required
+            hint={isEdit ? undefined : "Must be in the future"}
+          >
             <Input
               type="datetime-local"
               value={fireAtLocal}
               onChange={(e) => setFireAtLocal(e.target.value)}
+              min={isEdit ? undefined : nowLocalDatetime()}
               required
             />
           </Field>
@@ -615,22 +646,31 @@ export default function Schedules() {
     [pauseMut, resumeMut, runNowMut, deleteMut],
   );
 
+  // Live count of currently-missed schedules, decoupled from the
+  // page's active filter (the banner is global; it must reflect
+  // reality regardless of which Show: option the user picked).
+  const missedQ = useQuery({
+    queryKey: ["schedules", "missed-banner"],
+    queryFn: () => api.listSchedules({ status: "missed" }),
+    refetchInterval: 30_000,
+  });
+  const liveMissedCount = missedQ.data?.schedules?.length ?? 0;
+  const bootstrapStale = bootstrap.data?.stale_recovered ?? [];
+
   const banner =
-    bootstrap.data &&
-    (bootstrap.data.missed_for_review.length > 0 ||
-      bootstrap.data.stale_recovered.length > 0) ? (
+    liveMissedCount > 0 || bootstrapStale.length > 0 ? (
       <div className="mb-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
-        {bootstrap.data.stale_recovered.length > 0 && (
+        {bootstrapStale.length > 0 && (
           <span>
-            {bootstrap.data.stale_recovered.length} interrupted run
-            {bootstrap.data.stale_recovered.length === 1 ? "" : "s"} recovered.{" "}
+            {bootstrapStale.length} interrupted run
+            {bootstrapStale.length === 1 ? "" : "s"} recovered.{" "}
           </span>
         )}
-        {bootstrap.data.missed_for_review.length > 0 && (
+        {liveMissedCount > 0 && (
           <span>
-            {bootstrap.data.missed_for_review.length} schedule
-            {bootstrap.data.missed_for_review.length === 1 ? "" : "s"} missed
-            while AMX was closed.
+            {liveMissedCount} schedule
+            {liveMissedCount === 1 ? "" : "s"} missed while AMX was
+            closed.
           </span>
         )}
       </div>
