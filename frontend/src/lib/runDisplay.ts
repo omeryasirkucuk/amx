@@ -306,15 +306,25 @@ export function shortModel(model: string | null | undefined): string {
  *  Runs list filter chips and the Compare picker chip group. */
 export function commandKind(
   command: string | null | undefined,
-): "analyze" | "rerun" | "generate" | "ask" | "other" {
+): "analyze" | "rerun" | "generate" | "ask" | "schedule" | "other" {
   const cmd = (command ?? "").toLowerCase();
   if (cmd === "analyze.run" || cmd === "analyze.apply") return "analyze";
   if (cmd === "rerun") return "rerun";
   if (cmd.startsWith("generate.")) return "generate";
   if (cmd === "search.ask" || cmd === "ask.run") return "ask";
+  // ``production_run_executor`` writes ``command="schedule"`` for
+  // every scheduled-run row so the Runs page can group them
+  // separately from manually-fired analyze runs.
+  if (cmd === "schedule") return "schedule";
   return "other";
 }
 
 /** Filter values surfaced as chips in both the Runs list and the
  *  Compare picker. ``all`` returns every row regardless of kind. */
-export type CommandKindFilter = "all" | "analyze" | "rerun" | "generate" | "ask";
+export type CommandKindFilter =
+  | "all"
+  | "analyze"
+  | "rerun"
+  | "generate"
+  | "ask"
+  | "schedule";

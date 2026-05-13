@@ -86,6 +86,7 @@ const KIND_FILTER_OPTIONS: ReadonlyArray<{
   { value: "rerun", label: "Re-run" },
   { value: "generate", label: "Generate" },
   { value: "ask", label: "Ask" },
+  { value: "schedule", label: "Schedule" },
   { value: "all", label: "All activity" },
 ];
 
