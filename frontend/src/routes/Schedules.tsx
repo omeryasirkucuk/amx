@@ -35,11 +35,16 @@ import {
   useToast,
 } from "../components/ui";
 import { api, apiFetch, type ScheduleCreatePayload, type ScheduleRow } from "../lib/api";
+import ScopeTree, {
+  picksToScopeJson,
+  type SchemaPick,
+} from "../components/ScopeTree";
 
 interface DbProfileSummary {
   name: string;
   backend: string;
   database: string;
+  catalog?: string;
 }
 
 interface LlmProfileSummary {
@@ -48,15 +53,7 @@ interface LlmProfileSummary {
   model: string;
 }
 
-interface SchemaItem {
-  name: string;
-}
-
-interface AssetRow {
-  schema: string;
-  name: string;
-  kind?: string;
-}
+const CATALOG_BACKENDS = new Set(["databricks", "bigquery"]);
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   pending: "neutral",
@@ -98,14 +95,8 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
   const [fireAtLocal, setFireAtLocal] = useState(defaultLocalDatetime());
   const [fireAtTz, setFireAtTz] = useState(browserTz());
   const [dbProfile, setDbProfile] = useState("");
-  const [scopeMode, setScopeMode] = useState<"all" | "schemas" | "tables">(
-    "all",
-  );
-  const [selectedSchemas, setSelectedSchemas] = useState<string[]>([]);
-  const [tableSchemaPick, setTableSchemaPick] = useState<string>("");
-  const [selectedTables, setSelectedTables] = useState<
-    { schema: string; table: string }[]
-  >([]);
+  const [database, setDatabase] = useState("");
+  const [scopePicks, setScopePicks] = useState<SchemaPick[]>([]);
   const [llmProfile, setLlmProfile] = useState("");
   const [reviewStrategy, setReviewStrategy] = useState<"auto" | "manual">(
     "auto",
@@ -124,30 +115,36 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
       apiFetch<{ profiles: LlmProfileSummary[] }>("/api/profiles/llm"),
     enabled: open,
   });
-  const schemasQ = useQuery({
-    queryKey: ["live-schemas", dbProfile],
-    queryFn: () =>
-      apiFetch<{ schemas: SchemaItem[] }>(
-        `/api/live/schemas?profile=${encodeURIComponent(dbProfile)}`,
-      ),
-    enabled: open && Boolean(dbProfile) && scopeMode !== "all",
-  });
 
-  // Live assets (tables) for the schema picked in the "tables" mode.
-  // We only fetch when a schema has been chosen; until then the right-
-  // hand pane shows a "pick a schema first" hint.
-  const assetsQ = useQuery({
-    queryKey: ["live-assets", dbProfile, tableSchemaPick],
-    queryFn: () =>
-      apiFetch<{ assets: AssetRow[] }>(
-        `/api/live/schemas/${encodeURIComponent(tableSchemaPick)}/assets?profile=${encodeURIComponent(dbProfile)}`,
-      ),
-    enabled:
-      open &&
-      Boolean(dbProfile) &&
-      scopeMode === "tables" &&
-      Boolean(tableSchemaPick),
+  const selectedProfile = dbProfilesQ.data?.profiles.find(
+    (p) => p.name === dbProfile,
+  );
+  const isCatalogBackend = Boolean(
+    selectedProfile && CATALOG_BACKENDS.has(selectedProfile.backend),
+  );
+
+  // Profile's own database / catalog list — drives the database dropdown.
+  const databasesQ = useQuery({
+    queryKey: ["scope-tree-dbs", dbProfile, isCatalogBackend],
+    queryFn: () => {
+      const path = isCatalogBackend
+        ? `/api/live/catalogs?profile=${encodeURIComponent(dbProfile)}`
+        : `/api/live/databases?profile=${encodeURIComponent(dbProfile)}`;
+      return apiFetch<{
+        databases?: string[];
+        catalogs?: string[];
+      }>(path);
+    },
+    enabled: open && Boolean(dbProfile),
   });
+  const databaseOptions = isCatalogBackend
+    ? databasesQ.data?.catalogs ?? []
+    : databasesQ.data?.databases ?? [];
+
+  // Auto-pick the first available database/catalog when the profile changes.
+  if (open && dbProfile && !database && databaseOptions.length) {
+    setDatabase(databaseOptions[0]);
+  }
 
   // Auto-pick the first DB / LLM when the dialog opens (no profile chosen
   // yet) so the user almost never has to touch these fields.
@@ -163,10 +160,8 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
     onSuccess: () => {
       toast.push({ tone: "success", title: "Schedule created" });
       setName("");
-      setScopeMode("all");
-      setSelectedSchemas([]);
-      setSelectedTables([]);
-      setTableSchemaPick("");
+      setScopePicks([]);
+      setDatabase("");
       setError(null);
       onCreated();
       onClose();
@@ -176,15 +171,7 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
   });
 
   function buildScope(): Record<string, unknown> {
-    if (scopeMode === "all") return { mode: "all" };
-    if (scopeMode === "schemas") {
-      if (!selectedSchemas.length)
-        throw new Error("Pick at least one schema");
-      return { mode: "schemas", schemas: selectedSchemas };
-    }
-    if (!selectedTables.length)
-      throw new Error("Pick at least one table");
-    return { mode: "tables", tables: selectedTables };
+    return picksToScopeJson(scopePicks);
   }
 
   function onSubmit(e: React.FormEvent) {
@@ -227,7 +214,8 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
               value={dbProfile}
               onChange={(e) => {
                 setDbProfile(e.target.value);
-                setSelectedSchemas([]);
+                setDatabase("");
+                setScopePicks([]);
               }}
               required
               disabled={dbProfilesQ.isLoading}
@@ -240,6 +228,35 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
               {dbProfilesQ.data?.profiles?.map((p) => (
                 <option key={p.name} value={p.name}>
                   {p.name} · {p.backend}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field
+            label={isCatalogBackend ? "Catalog" : "Database"}
+            required
+          >
+            <Select
+              value={database}
+              onChange={(e) => {
+                setDatabase(e.target.value);
+                setScopePicks([]);
+              }}
+              required
+              disabled={!dbProfile || databasesQ.isLoading}
+            >
+              {!dbProfile && <option value="">Pick a DB profile first</option>}
+              {dbProfile && databasesQ.isLoading && (
+                <option value="">Loading…</option>
+              )}
+              {dbProfile &&
+                !databasesQ.isLoading &&
+                !databaseOptions.length && (
+                  <option value="">(none visible)</option>
+                )}
+              {databaseOptions.map((d) => (
+                <option key={d} value={d}>
+                  {d}
                 </option>
               ))}
             </Select>
@@ -291,192 +308,18 @@ function NewScheduleDialog({ open, onClose, onCreated }: NewScheduleDialogProps)
             </Select>
           </Field>
           <Field
-            label="Scope mode"
+            label="Scope"
+            hint="Untick everything for the whole database. Tick schemas to limit, expand to drill into tables and columns."
             className="md:col-span-2"
           >
-            <Select
-              value={scopeMode}
-              onChange={(e) =>
-                setScopeMode(e.target.value as "all" | "schemas" | "tables")
-              }
-            >
-              <option value="all">All schemas in this DB</option>
-              <option value="schemas">Specific schemas</option>
-              <option value="tables">Specific tables</option>
-            </Select>
+            <ScopeTree
+              dbProfile={dbProfile}
+              database={database}
+              isCatalogBackend={isCatalogBackend}
+              picks={scopePicks}
+              onChange={setScopePicks}
+            />
           </Field>
-          {scopeMode === "schemas" && (
-            <Field
-              label="Schemas"
-              hint="Tick the schemas to include"
-              className="md:col-span-2"
-            >
-              <div className="max-h-44 overflow-auto rounded-md border border-border bg-surface-raised p-2 text-sm">
-                {schemasQ.isLoading && (
-                  <p className="text-ink-dim">Loading schemas…</p>
-                )}
-                {schemasQ.isError && (
-                  <p className="text-critical">
-                    Could not load schemas for "{dbProfile}".
-                  </p>
-                )}
-                {schemasQ.data?.schemas?.length === 0 && (
-                  <p className="text-ink-dim">
-                    No schemas visible on "{dbProfile}".
-                  </p>
-                )}
-                <div className="grid grid-cols-2 gap-1">
-                  {schemasQ.data?.schemas?.map((s) => {
-                    const checked = selectedSchemas.includes(s.name);
-                    return (
-                      <label
-                        key={s.name}
-                        className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-surface-muted"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked)
-                              setSelectedSchemas([
-                                ...selectedSchemas,
-                                s.name,
-                              ]);
-                            else
-                              setSelectedSchemas(
-                                selectedSchemas.filter((n) => n !== s.name),
-                              );
-                          }}
-                        />
-                        <span className="font-mono text-xs">{s.name}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            </Field>
-          )}
-          {scopeMode === "tables" && (
-            <Field
-              label="Tables"
-              hint="Pick a schema, then tick the tables to include. Repeat for each schema."
-              className="md:col-span-2"
-            >
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,200px)_1fr]">
-                {/* Left: schemas list */}
-                <div className="max-h-44 overflow-auto rounded-md border border-border bg-surface-raised p-2 text-sm">
-                  {schemasQ.isLoading && (
-                    <p className="text-ink-dim">Loading schemas…</p>
-                  )}
-                  {schemasQ.isError && (
-                    <p className="text-critical">
-                      Could not load schemas.
-                    </p>
-                  )}
-                  {schemasQ.data?.schemas?.length === 0 && (
-                    <p className="text-ink-dim">
-                      No schemas visible on "{dbProfile}".
-                    </p>
-                  )}
-                  <div className="flex flex-col gap-0.5">
-                    {schemasQ.data?.schemas?.map((s) => (
-                      <button
-                        type="button"
-                        key={s.name}
-                        onClick={() => setTableSchemaPick(s.name)}
-                        className={
-                          "rounded px-2 py-1 text-left font-mono text-xs hover:bg-surface-muted " +
-                          (s.name === tableSchemaPick
-                            ? "bg-accent/15 text-accent"
-                            : "text-ink")
-                        }
-                      >
-                        {s.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {/* Right: tables in the picked schema */}
-                <div className="max-h-44 overflow-auto rounded-md border border-border bg-surface-raised p-2 text-sm">
-                  {!tableSchemaPick && (
-                    <p className="text-ink-dim">
-                      Pick a schema on the left first.
-                    </p>
-                  )}
-                  {tableSchemaPick && assetsQ.isLoading && (
-                    <p className="text-ink-dim">Loading tables…</p>
-                  )}
-                  {tableSchemaPick && assetsQ.isError && (
-                    <p className="text-critical">
-                      Could not load tables for "{tableSchemaPick}".
-                    </p>
-                  )}
-                  {tableSchemaPick &&
-                    assetsQ.data?.assets?.length === 0 && (
-                      <p className="text-ink-dim">
-                        No tables in "{tableSchemaPick}".
-                      </p>
-                    )}
-                  <div className="grid grid-cols-1 gap-0.5 sm:grid-cols-2">
-                    {assetsQ.data?.assets
-                      ?.filter((a) => a.kind !== "column")
-                      .map((asset) => {
-                        const key = `${asset.schema}.${asset.name}`;
-                        const checked = selectedTables.some(
-                          (t) =>
-                            t.schema === asset.schema && t.table === asset.name,
-                        );
-                        return (
-                          <label
-                            key={key}
-                            className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-surface-muted"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedTables([
-                                    ...selectedTables,
-                                    {
-                                      schema: asset.schema,
-                                      table: asset.name,
-                                    },
-                                  ]);
-                                } else {
-                                  setSelectedTables(
-                                    selectedTables.filter(
-                                      (t) =>
-                                        !(
-                                          t.schema === asset.schema &&
-                                          t.table === asset.name
-                                        ),
-                                    ),
-                                  );
-                                }
-                              }}
-                            />
-                            <span className="font-mono text-xs">
-                              {asset.name}
-                            </span>
-                          </label>
-                        );
-                      })}
-                  </div>
-                </div>
-              </div>
-              {selectedTables.length > 0 && (
-                <p className="mt-2 text-xs text-ink-dim">
-                  Selected ({selectedTables.length}):{" "}
-                  <span className="font-mono">
-                    {selectedTables
-                      .map((t) => `${t.schema}.${t.table}`)
-                      .join(", ")}
-                  </span>
-                </p>
-              )}
-            </Field>
-          )}
         </div>
         {error && (
           <p className="rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-sm text-critical">

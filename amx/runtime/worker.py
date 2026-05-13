@@ -204,6 +204,28 @@ def _parse_scope(scope_json: str | None) -> dict[str, list[str]]:
                 continue
             out.setdefault(schema, []).append(table)
         return out
+    if mode == "columns":
+        # Column-level scope. The coarse ``analysis_runs.scope`` dict
+        # only carries (schema, table) granularity, so we collapse
+        # duplicate column entries on the same table into a single
+        # table entry. The column list itself rides in
+        # ``settings_json`` so the real executor (follow-up) can
+        # restrict its per-column work to exactly what the user picked.
+        out_cols: dict[str, list[str]] = {}
+        seen: set[tuple[str, str]] = set()
+        for item in obj.get("columns", []) or []:
+            if not isinstance(item, dict):
+                continue
+            schema = str(item.get("schema") or "")
+            table = str(item.get("table") or "")
+            if not schema or not table:
+                continue
+            key = (schema, table)
+            if key in seen:
+                continue
+            seen.add(key)
+            out_cols.setdefault(schema, []).append(table)
+        return out_cols
     return {}
 
 
