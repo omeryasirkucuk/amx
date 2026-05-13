@@ -365,6 +365,75 @@ function ProfilesTree() {
   );
 }
 
+/**
+ * Tiny refresh icon shown next to a profile row or a database / catalog
+ * row. Posts ``/api/catalog/sync`` scoped to the row -- profile-only at
+ * the top, ``?profile=…&database=…`` at the database/catalog level so a
+ * click on one container doesn't drag every other container under the
+ * same profile through a re-walk. On settle we invalidate the live
+ * schema/asset queries under the row so the tree re-fetches the fresh
+ * data without a manual page reload.
+ */
+function CatalogSyncIconButton({
+  profile,
+  database,
+  invalidateKeys,
+  title,
+}: {
+  profile: string;
+  database?: string;
+  invalidateKeys: ReadonlyArray<ReadonlyArray<unknown>>;
+  title: string;
+}) {
+  const qc = useQueryClient();
+  const sync = useMutation({
+    mutationFn: () => {
+      const params = new URLSearchParams({ profile });
+      if (database) params.set("database", database);
+      return apiFetch(`/api/catalog/sync?${params.toString()}`, { method: "POST" });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
+      for (const key of invalidateKeys) {
+        qc.invalidateQueries({ queryKey: key as unknown[] });
+      }
+      // Second pass for small catalogs that finish before the first
+      // invalidation's refetch reaches the server.
+      window.setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["catalog-freshness"] });
+        for (const key of invalidateKeys) {
+          qc.invalidateQueries({ queryKey: key as unknown[] });
+        }
+      }, 3000);
+    },
+  });
+  return (
+    <button
+      type="button"
+      aria-label={title}
+      title={title}
+      onClick={(event) => {
+        // The row itself is a button bound to expand / navigate; we
+        // must not let the refresh click bubble through and trigger
+        // those side effects.
+        event.stopPropagation();
+        if (!sync.isPending) sync.mutate();
+      }}
+      className={cn(
+        "ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-ink-dim",
+        "hover:bg-surface-subtle hover:text-ink",
+        sync.isPending && "text-ink",
+      )}
+    >
+      {sync.isPending ? (
+        <Loader2 size={12} className="animate-spin" />
+      ) : (
+        <RefreshCw size={12} />
+      )}
+    </button>
+  );
+}
+
 function ProfileNode({
   profile,
   query,
@@ -385,26 +454,37 @@ function ProfileNode({
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        title={profile.backend || ""}
-        className={cn(
-          "flex w-full items-center gap-1 rounded px-2 py-1 text-left transition-colors duration-fast",
-          "text-[13px] font-bold uppercase tracking-wide",
-          params.profile === profile.name
-            ? "bg-accent-soft text-accent-ink"
-            : "text-ink hover:bg-surface-subtle",
-        )}
-      >
-        {effectiveOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className="truncate">{profile.name}</span>
-        {profile.backend && (
-          <span className="ml-auto text-[9px] font-normal normal-case tracking-normal text-ink-dim">
-            {profile.backend}
-          </span>
-        )}
-      </button>
+      <div className="flex w-full items-center">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          title={profile.backend || ""}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-1 rounded px-2 py-1 text-left transition-colors duration-fast",
+            "text-[13px] font-bold uppercase tracking-wide",
+            params.profile === profile.name
+              ? "bg-accent-soft text-accent-ink"
+              : "text-ink hover:bg-surface-subtle",
+          )}
+        >
+          {effectiveOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span className="truncate">{profile.name}</span>
+          {profile.backend && (
+            <span className="ml-auto text-[9px] font-normal normal-case tracking-normal text-ink-dim">
+              {profile.backend}
+            </span>
+          )}
+        </button>
+        <CatalogSyncIconButton
+          profile={profile.name}
+          title={`Refresh catalog for ${profile.name}`}
+          invalidateKeys={[
+            ["live-catalogs", profile.name],
+            ["live-databases", profile.name],
+            ["live-schemas", profile.name],
+          ]}
+        />
+      </div>
       {effectiveOpen && (
         <div className="ml-3 mt-0.5 border-l border-border pl-2">
           <ProfileScopeChildren
@@ -616,24 +696,42 @@ function ScopeNode({
   // would only filter the rows the user has already drilled into.
   const effectiveOpen = open || !!query;
 
+  // The catalog stamp is the universal container key on both 2-level
+  // (database) and 3-level (catalog) backends -- the backend stores
+  // both into the same ``catalog_entities.database_name`` column. Pass
+  // it through unchanged so the per-container refresh hits the right
+  // scope on either shape.
+  const containerName = scope.database ?? scope.catalog ?? "";
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => {
-          setOpen((v) => !v);
-          navigate(scopePath(scope));
-        }}
-        className={cn(
-          "flex w-full items-center gap-1 rounded px-2 py-1 text-left text-[13px] transition-colors duration-fast",
-          isOnThis
-            ? "bg-accent-soft text-accent-ink"
-            : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
+      <div className="flex w-full items-center">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen((v) => !v);
+            navigate(scopePath(scope));
+          }}
+          className={cn(
+            "flex min-w-0 flex-1 items-center gap-1 rounded px-2 py-1 text-left text-[13px] transition-colors duration-fast",
+            isOnThis
+              ? "bg-accent-soft text-accent-ink"
+              : "text-ink-muted hover:bg-surface-subtle hover:text-ink",
+          )}
+        >
+          {effectiveOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          <span className="truncate">{label}</span>
+        </button>
+        {containerName && (
+          <CatalogSyncIconButton
+            profile={scope.profile}
+            database={containerName}
+            title={`Refresh catalog for ${label}`}
+            invalidateKeys={[
+              ["live-schemas", scope.profile, scope.database ?? "", scope.catalog ?? ""],
+            ]}
+          />
         )}
-      >
-        {effectiveOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        <span className="truncate">{label}</span>
-      </button>
+      </div>
       {effectiveOpen && (
         <div className="ml-3 mt-0.5 border-l border-border pl-2">
           <SchemasUnderScope
