@@ -7,6 +7,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   useMutation,
   useQuery,
@@ -15,6 +16,7 @@ import {
 import {
   CalendarPlus,
   Download,
+  ExternalLink,
   Pencil,
   PauseCircle,
   PlayCircle,
@@ -420,14 +422,138 @@ function NewScheduleDialog({
   );
 }
 
+interface ScheduleDetailDialogProps {
+  open: boolean;
+  row: ScheduleRow | null;
+  onClose: () => void;
+  onNavigate: (path: string) => void;
+}
+
+function ScheduleDetailDialog({
+  open,
+  row,
+  onClose,
+  onNavigate,
+}: ScheduleDetailDialogProps) {
+  if (!row) return null;
+
+  let scopePretty: string;
+  try {
+    scopePretty = JSON.stringify(JSON.parse(row.scope_json), null, 2);
+  } catch {
+    scopePretty = row.scope_json || "(empty)";
+  }
+  const firedAt =
+    row.fired_at != null
+      ? new Date(row.fired_at * 1000).toLocaleString()
+      : "—";
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={`Schedule #${row.id} — ${row.name}`}
+      size="lg"
+    >
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <DetailItem label="Status">
+            <StatusChip status={row.status} />
+          </DetailItem>
+          <DetailItem label="Review strategy">
+            <span className="font-mono text-xs text-ink">
+              {row.review_strategy}
+            </span>
+          </DetailItem>
+          <DetailItem label="Fires at">
+            <span className="text-ink">
+              {row.fire_at_local}
+              <span className="ml-2 text-xs text-ink-dim">{row.fire_at_tz}</span>
+            </span>
+          </DetailItem>
+          <DetailItem label="Fired at">
+            <span className="text-ink">{firedAt}</span>
+          </DetailItem>
+          <DetailItem label="DB profile">
+            <span className="font-mono text-xs text-ink">{row.db_profile}</span>
+          </DetailItem>
+          <DetailItem label={row.catalog ? "Catalog" : "Database"}>
+            <span className="font-mono text-xs text-ink">
+              {row.catalog ?? row.database ?? "—"}
+            </span>
+          </DetailItem>
+          <DetailItem label="LLM profile" className="md:col-span-2">
+            <span className="font-mono text-xs text-ink">{row.llm_profile}</span>
+          </DetailItem>
+        </div>
+
+        <DetailItem label="Scope">
+          <pre className="max-h-60 overflow-auto rounded-md border border-border bg-surface-muted px-3 py-2 text-xs text-ink">
+            {scopePretty}
+          </pre>
+        </DetailItem>
+
+        {row.last_error && (
+          <DetailItem label="Last error">
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-xs text-critical">
+              {row.last_error}
+            </pre>
+          </DetailItem>
+        )}
+
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+          {row.triggered_run_id != null && (
+            <Button
+              variant="primary"
+              size="md"
+              leadingIcon={<ExternalLink size={14} />}
+              onClick={() => {
+                onNavigate(`/runs/${row.triggered_run_id}`);
+                onClose();
+              }}
+            >
+              View Results
+            </Button>
+          )}
+          <Button variant="secondary" size="md" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function DetailItem({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <div className="mb-1 text-xs uppercase tracking-wide text-ink-dim">
+        {label}
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
 export default function Schedules() {
   const qc = useQueryClient();
   const toast = useToast();
-  const [statusFilter, setStatusFilter] = useState<string>("active");
+  const navigate = useNavigate();
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   // When non-null the dialog opens in edit mode pre-filled with this
   // schedule's current fields. Set by the row-level Edit IconButton.
   const [editing, setEditing] = useState<ScheduleRow | null>(null);
+  // When non-null a read-only detail dialog opens with the clicked row.
+  const [detailRow, setDetailRow] = useState<ScheduleRow | null>(null);
 
   const apiStatus =
     statusFilter === "active"
@@ -632,7 +758,13 @@ export default function Schedules() {
         id: "actions",
         header: "",
         cell: (row) => (
-          <div className="flex items-center justify-end gap-1">
+          // stopPropagation so action-button clicks don't ALSO trigger
+          // the row's onRowClick (which would open the detail dialog
+          // on top of the action that just fired).
+          <div
+            className="flex items-center justify-end gap-1"
+            onClick={(e) => e.stopPropagation()}
+          >
             {(row.status === "pending" || row.status === "paused") && (
               <IconButton
                 size="sm"
@@ -822,6 +954,7 @@ export default function Schedules() {
           rows={rows}
           rowKey={(row) => String(row.id)}
           isLoading={isLoading}
+          onRowClick={(row) => setDetailRow(row)}
           emptyState={
             <div className="py-6 text-center text-sm text-ink-dim">
               No schedules. Create one with the button up top, or with{" "}
@@ -845,6 +978,13 @@ export default function Schedules() {
           setEditing(null);
         }}
         onCreated={invalidate}
+      />
+
+      <ScheduleDetailDialog
+        open={detailRow !== null}
+        row={detailRow}
+        onClose={() => setDetailRow(null)}
+        onNavigate={navigate}
       />
     </>
   );

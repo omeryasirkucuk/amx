@@ -876,6 +876,9 @@ export interface ScheduleRow {
   review_strategy: string;
   triggered_run_id: number | null;
   last_error: string | null;
+  // Epoch seconds when the schedule actually fired (run was created
+  // and the executor was dispatched). Null until the schedule fires.
+  fired_at: number | null;
 }
 
 export interface SchedulesListResponse {

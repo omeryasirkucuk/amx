@@ -59,13 +59,83 @@ def test_worker_creates_run_links_and_completes(
             (run_id,),
         ).fetchone()
     status, schedule_link, hb = row
-    assert status == "completed"
+    # The default no-op executor writes no results and applies nothing,
+    # so the run rolls up to "success" (no pending → no demotion).
+    assert status == "success"
     assert schedule_link == sid
     assert hb is not None  # initial heartbeat was emitted
 
     sched = store.get_scheduled_run(sid)
+    # Schedule lifecycle stays "completed" — that column tracks the
+    # schedule, not the run outcome.
     assert sched["status"] == "completed"
     assert sched["triggered_run_id"] == run_id
+
+
+def test_worker_demotes_to_ready_for_review_when_pending_results(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Manual review path: results saved, none applied → ready_for_review."""
+    schedule = _schedule(store, name="manual")
+
+    def manual_review(run_id: int, _payload: dict[str, Any]) -> None:
+        # Mimic a manual-review scheduled run: the executor saves
+        # alternatives into run_results but doesn't apply anything.
+        store.save_run_results(
+            run_id,
+            [
+                {
+                    "schema": "public",
+                    "table": "users",
+                    "column": "id",
+                    "asset_kind": "column",
+                    "source": "llm",
+                    "confidence": "high",
+                    "reasoning": "primary key",
+                    "alternatives": ["user_id"],
+                }
+            ],
+        )
+
+    run_id = spawn_scheduled_worker(
+        schedule, store=store, run_executor=manual_review, background=False
+    )
+
+    with sqlite3.connect(store.db_path) as conn:
+        (status,) = conn.execute(
+            "SELECT status FROM analysis_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+    assert status == "ready_for_review"
+
+    sched = store.get_scheduled_run(schedule["id"])
+    assert sched["status"] == "completed"
+
+
+def test_worker_stays_success_when_results_applied(
+    store: SQLiteHistoryStore,
+) -> None:
+    """Auto-apply path: applied_count > 0 → status stays success."""
+    schedule = _schedule(store, name="auto")
+
+    def auto_apply(run_id: int, _payload: dict[str, Any]) -> None:
+        # Mimic an auto-apply scheduled run: results were applied
+        # straight to the catalog without queueing for review.
+        store.increment_run_applied(run_id, by=3)
+
+    run_id = spawn_scheduled_worker(
+        schedule, store=store, run_executor=auto_apply, background=False
+    )
+
+    with sqlite3.connect(store.db_path) as conn:
+        (status,) = conn.execute(
+            "SELECT status FROM analysis_runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+    assert status == "success"
+
+    sched = store.get_scheduled_run(schedule["id"])
+    assert sched["status"] == "completed"
 
 
 def test_worker_marks_failed_when_executor_raises(
