@@ -24,10 +24,16 @@ interface DialogProps {
   children?: ReactNode;
 }
 
+// Every size now constrains height + uses a flex column so the body
+// can scroll when content overflows the viewport. Without
+// ``max-h-[92vh]`` the dialog grew past the screen on phones,
+// hiding the action buttons and leaving the user with nothing to
+// scroll (body overflow was hidden). The flex layout means the
+// header + footer stay pinned and only the children area scrolls.
 const sizeClasses: Record<NonNullable<DialogProps["size"]>, string> = {
-  sm: "max-w-sm",
-  md: "max-w-md",
-  lg: "max-w-2xl",
+  sm: "max-w-sm max-h-[92vh] flex flex-col",
+  md: "max-w-md max-h-[92vh] flex flex-col",
+  lg: "max-w-2xl max-h-[92vh] flex flex-col",
   xl: "max-w-[min(1200px,95vw)] max-h-[92vh] flex flex-col",
 };
 
@@ -126,7 +132,7 @@ export default function Dialog({
           <header
             className={cn(
               "flex items-start justify-between gap-4 px-5 pt-5",
-              size === "xl" && "shrink-0",
+              "shrink-0",
             )}
           >
             <div className="min-w-0">
@@ -162,7 +168,11 @@ export default function Dialog({
           <div
             className={cn(
               "px-5 py-4 text-sm text-ink",
-              size === "xl" && "min-h-0 flex-1 overflow-auto",
+              // Scrollable body in every size. Mobile viewports hit
+              // ``max-h-[92vh]`` quickly on a long form (e.g. the
+              // Schedule create dialog with profile dropdowns + tree
+              // picker + heads-up text + footer all stacked).
+              "min-h-0 flex-1 overflow-auto overscroll-contain",
             )}
           >
             {children}
@@ -172,7 +182,7 @@ export default function Dialog({
           <footer
             className={cn(
               "flex items-center justify-end gap-2 border-t border-border bg-surface-subtle/40 px-5 py-3",
-              size === "xl" && "shrink-0",
+              "shrink-0",
             )}
           >
             {footer}
