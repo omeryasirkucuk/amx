@@ -988,6 +988,11 @@ def _run_tool_loop(
             tool_choice="auto",
             on_thinking=on_thinking,
             on_content=_forward_content if on_content_delta is not None else None,
+            # Threading the cancel token through ``llm.chat`` means the
+            # stream consumer can bail between chunks, not just at the
+            # next iteration boundary. Without this a Cancel click during
+            # a long streamed answer waits for the whole answer to drain.
+            cancel_token=cancel_token,
         )
         # Per-step record so the Run detail Metrics card can render
         # an honest tool_agent.iter row -- the previous wiring summed

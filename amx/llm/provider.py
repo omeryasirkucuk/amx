@@ -838,6 +838,7 @@ def _consume_thinking_stream(
     iterator: Any,
     on_thinking: Callable[[str], None] | None = None,
     on_content: Callable[[str], None] | None = None,
+    cancel_token: Any | None = None,
 ) -> _StreamedResponse:
     """Drain a LiteLLM stream, fire ``on_thinking`` / ``on_content`` deltas, and rebuild a response.
 
@@ -863,6 +864,17 @@ def _consume_thinking_stream(
     thinking_tokens = 0
 
     for chunk in iterator:
+        # Cancellation handshake — the worker thread shares its
+        # ``threading.Event`` with the JobRegistry. A Cancel POST flips
+        # the event; we bail between chunks so the SSE producer can fire
+        # ``job.cancelled`` and the SPA's "Cancelling…" pill stops
+        # waiting on a stream that would otherwise keep draining until
+        # the LLM is done. Without this, the in-flight LiteLLM HTTP
+        # request is uninterruptible and the whole answer lands anyway.
+        if cancel_token is not None and cancel_token.is_set():
+            from amx.agents.orchestrator import RunCancelled
+
+            raise RunCancelled("Cancelled mid-stream")
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or prompt_tokens)
@@ -1193,6 +1205,7 @@ class LLMProvider:
         use_logprobs: bool = True,
         on_thinking: Callable[[str], None] | None = None,
         on_content: Callable[[str], None] | None = None,
+        cancel_token: Any | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         # ``_amx_rerun_attempt`` is consumed by the auto-retry path below
@@ -1375,11 +1388,14 @@ class LLMProvider:
                 # Consume the stream inside the retry context: any mid-stream
                 # error surfaces as the same exception class as a non-streamed
                 # failure, so the existing transient-retry / fatal-error
-                # classification keeps working.
+                # classification keeps working. ``cancel_token`` lets the
+                # consumer bail between chunks the moment the Studio Cancel
+                # button is clicked, instead of draining the full answer.
                 return _consume_thinking_stream(
                     raw,
                     on_thinking=on_thinking,
                     on_content=on_content,
+                    cancel_token=cancel_token,
                 )
             return raw
 

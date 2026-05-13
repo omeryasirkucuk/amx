@@ -111,9 +111,16 @@ export default function Ask() {
   async function openSession(id: number) {
     setLoadError(null);
     setLoadingSessionId(id);
+    // Clear the prior conversation synchronously so the chat panel
+    // doesn't show the wrong session while the detail GET is in flight.
+    // ``selectedSessionId`` flips immediately too, so the sidebar
+    // highlights the clicked row right away; AskChat below renders a
+    // skeleton when ``loadingSessionId === id``.
+    setSelectedSessionId(id);
+    setSeedTurns([]);
+    setSeedToken((n) => n + 1);
     try {
       const detail = await apiFetch<SessionDetailResponse>(`/api/ask/sessions/${id}`);
-      setSelectedSessionId(id);
       setSeedTurns(turnsToBubbles(detail.turns ?? []));
       setSeedToken((n) => n + 1);
     } catch (err) {
@@ -141,8 +148,24 @@ export default function Ask() {
   const deleteSession = useMutation({
     mutationFn: (id: number) =>
       apiFetch(`/api/ask/sessions/${id}`, { method: "DELETE" }),
+    // Optimistic splice: the row disappears the instant the user
+    // confirms in the dialog. React Query reconciles with the server on
+    // settled; on error we restore the snapshot so the row pops back
+    // and the toast explains why.
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["ask-sessions"] });
+      const snapshot = queryClient.getQueryData<SessionsResponse>([
+        "ask-sessions",
+      ]);
+      if (snapshot) {
+        queryClient.setQueryData<SessionsResponse>(["ask-sessions"], {
+          ...snapshot,
+          sessions: snapshot.sessions.filter((s) => s.id !== id),
+        });
+      }
+      return { snapshot };
+    },
     onSuccess: (_data, id) => {
-      queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
       // If the deleted session was the one open in the chat panel, drop
       // back to a blank "+ New" state — otherwise the panel keeps
       // showing turns from a session that no longer exists.
@@ -153,12 +176,19 @@ export default function Ask() {
       }
       toast.push({ title: "Session deleted", tone: "info", duration: 2200 });
     },
-    onError: (e: Error) =>
+    onError: (e: Error, _id, ctx) => {
+      if (ctx?.snapshot) {
+        queryClient.setQueryData(["ask-sessions"], ctx.snapshot);
+      }
       toast.push({
         title: "Could not delete session",
         description: e.message,
         tone: "error",
-      }),
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+    },
   });
   const pendingDeleteSession =
     pendingDeleteSessionId == null
@@ -167,16 +197,41 @@ export default function Ask() {
   const endSession = useMutation({
     mutationFn: (id: number) =>
       apiFetch(`/api/ask/sessions/${id}/end`, { method: "POST" }),
+    // Optimistic ``ended_at`` — flips the row's open/closed visual the
+    // instant the user clicks, so the warning chip and end button can
+    // update without waiting for the round-trip.
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ["ask-sessions"] });
+      const snapshot = queryClient.getQueryData<SessionsResponse>([
+        "ask-sessions",
+      ]);
+      if (snapshot) {
+        const nowEpoch = Math.floor(Date.now() / 1000);
+        queryClient.setQueryData<SessionsResponse>(["ask-sessions"], {
+          ...snapshot,
+          sessions: snapshot.sessions.map((s) =>
+            s.id === id ? { ...s, ended_at: s.ended_at ?? nowEpoch } : s,
+          ),
+        });
+      }
+      return { snapshot };
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
       toast.push({ title: "Session ended", tone: "info", duration: 2200 });
     },
-    onError: (e: Error) =>
+    onError: (e: Error, _id, ctx) => {
+      if (ctx?.snapshot) {
+        queryClient.setQueryData(["ask-sessions"], ctx.snapshot);
+      }
       toast.push({
         title: "Could not end session",
         description: e.message,
         tone: "error",
-      }),
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["ask-sessions"] });
+    },
   });
 
   // The chat panel is "empty" when the user has no loaded session AND
@@ -331,6 +386,7 @@ export default function Ask() {
             seedTurns={seedTurns}
             seedToken={seedToken}
             seedSubmit={seedSubmit}
+            loadingSession={loadingSessionId === selectedSessionId && selectedSessionId != null}
             onSeedSubmitConsumed={() => setSeedSubmit(null)}
             onSessionAssigned={handleSessionAssigned}
             onResumeStale={() => {
