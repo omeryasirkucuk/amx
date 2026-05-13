@@ -563,10 +563,14 @@ export default function Schedules() {
       </div>
     ) : null;
 
+  // Informational; hide on extra-narrow viewports so the Refresh /
+  // New schedule buttons keep room.
   const daemonChip = statusQ.data ? (
-    <Badge tone={statusQ.data.daemon.installed ? "positive" : "warning"}>
-      Daemon {statusQ.data.daemon.installed ? "installed" : "not installed"}
-    </Badge>
+    <span className="hidden sm:inline-flex">
+      <Badge tone={statusQ.data.daemon.installed ? "positive" : "warning"}>
+        Daemon {statusQ.data.daemon.installed ? "installed" : "not installed"}
+      </Badge>
+    </span>
   ) : null;
 
   return (
