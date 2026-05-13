@@ -10,6 +10,7 @@ from amx.agents.base import (
     BaseAgent,
     Confidence,
     MetadataSuggestion,
+    apply_confidence_signals,
     apply_logprob_confidence,
 )
 from amx.config import PromptDetail
@@ -476,6 +477,16 @@ class ProfileAgent(BaseAgent):
             medium_threshold=self.llm.cfg.logprob_medium,
             response_text=response,
         )
+
+        try:
+            apply_confidence_signals(
+                suggestions=suggestions,
+                logprobs_content=_logprobs,
+                response_text=response,
+                cfg=self.llm.cfg.confidence,
+            )
+        except Exception as exc:
+            log.warning("Confidence signal scoring failed: %s", exc)
 
         if not _is_retry:
             suggestions = self._retry_missing_columns(
