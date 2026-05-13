@@ -343,8 +343,14 @@ def list_schemas(
     """
     name = _require_profile(profile)
     scope = _active_scope_for_profile(cfg, name)
+    # The cache reader takes ``database`` (or ``catalog`` for 3-level
+    # backends) so the result is scoped to the actual container the
+    # SPA asked about. Without this scope, a Postgres profile with N
+    # databases would return every schema across every database under
+    # each tree-expand — the headline bug from the user's screenshot.
+    cache_scope = database or catalog
     if not force_live:
-        cached_items = _cached_schemas_for_profile(name)
+        cached_items = _cached_schemas_for_profile(name, cache_scope)
         if cached_items:
             return {
                 "catalog": catalog or None,
@@ -379,12 +385,21 @@ def list_schemas(
     }
 
 
-def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
+def _cached_schemas_for_profile(
+    profile: str, database: str | None = None
+) -> list[dict[str, Any]] | None:
     """Persistent-catalog read for the sidebar's schema list. Returns
     ``None`` when the catalog is missing / empty OR when the profile
     isn't fully synced — partial catalog must never be presented as
     the complete picture, so we fall through to the live DB in those
-    cases."""
+    cases.
+
+    ``database`` scopes the lookup to a single database under the
+    profile (Postgres / MySQL / Snowflake etc. — 2-level backends —
+    OR a Databricks UC catalog / BigQuery project — 3-level). Without
+    this scope the cache would return every schema for the profile
+    regardless of which database the route was asking about, which is
+    the cross-database leak the user reported."""
     try:
         from amx.search.catalog import SearchCatalog
 
@@ -403,7 +418,7 @@ def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
     except Exception:
         return None
     try:
-        rows = cat.fetch_distinct_schemas(profile)
+        rows = cat.fetch_distinct_schemas(profile, database_name=database)
     except Exception:
         return None
     if not rows:
@@ -415,11 +430,17 @@ def _cached_schemas_for_profile(profile: str) -> list[dict[str, Any]] | None:
     return [{"name": str(r.get("name") or ""), "comment": ""} for r in rows if r.get("name")]
 
 
-def _cached_assets_for_profile_schema(profile: str, schema: str) -> list[dict[str, Any]] | None:
+def _cached_assets_for_profile_schema(
+    profile: str, schema: str, database: str | None = None
+) -> list[dict[str, Any]] | None:
     """Persistent-catalog read for the sidebar's asset list under a
     schema. Returns ``None`` when the catalog is missing / empty OR
     when the profile isn't fully synced — partial catalog stays
-    behind the live DB so the user never sees an incomplete tree."""
+    behind the live DB so the user never sees an incomplete tree.
+
+    ``database`` scopes to a specific database under the profile so
+    Postgres (and friends) don't leak tables across multi-database
+    profiles — the user-reported screenshot bug."""
     try:
         from amx.search.catalog import SearchCatalog
 
@@ -434,7 +455,7 @@ def _cached_assets_for_profile_schema(profile: str, schema: str) -> list[dict[st
     except Exception:
         return None
     try:
-        rows = cat.fetch_distinct_tables_in_schema(profile, schema)
+        rows = cat.fetch_distinct_tables_in_schema(profile, schema, database_name=database)
     except Exception:
         return None
     if not rows:
@@ -470,8 +491,9 @@ def list_assets(
     connector. ``?force_live=true`` bypasses the cache.
     """
     name = _require_profile(profile)
+    cache_scope = database or catalog
     if not force_live:
-        cached = _cached_assets_for_profile_schema(name, schema)
+        cached = _cached_assets_for_profile_schema(name, schema, cache_scope)
         if cached:
             return {
                 "schema": schema,

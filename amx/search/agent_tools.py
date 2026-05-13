@@ -299,7 +299,7 @@ class ToolBox:
     # ── Cache-first metadata lookup ─────────────────────────────────────
     # Three layers, cheapest first. Every read tool consults this helper
     # before falling through to a live ``profile_table`` / ``list_*``
-    # call. The user reported that an unpinned PostgreSQL profile paid
+    # call. The user reported that an unpinned PostgreSQL profile incurred
     # ~500 live round-trips per ``/ask`` question (cross-DB fanout);
     # this helper closes that gap by reusing the catalog/cache work AMX
     # already does for sidebar exploration and ``/search sync``.
@@ -2383,7 +2383,23 @@ class ToolBox:
                 fully_synced = False
             if fully_synced:
                 try:
-                    catalog_schemas = self.catalog.fetch_distinct_schemas(self.db_profile)
+                    # Scope to the active database (or 3-level catalog)
+                    # so the cache doesn't leak schemas across multi-DB
+                    # profiles. ``catalog`` arg here is the LLM-provided
+                    # override that's already been validated as empty
+                    # above — when populated we'd have skipped the
+                    # cache branch entirely. So the scope is whatever
+                    # the profile config points at.
+                    db_scope = str(
+                        getattr(self.cfg.db, "database", "")
+                        or getattr(self.cfg.db, "catalog", "")
+                        or getattr(self.cfg.db, "project", "")
+                        or ""
+                    )
+                    catalog_schemas = self.catalog.fetch_distinct_schemas(
+                        self.db_profile,
+                        database_name=db_scope or None,
+                    )
                 except Exception:
                     catalog_schemas = []
                 # Strict list check — tests stub ``self.catalog`` with a
@@ -2508,8 +2524,19 @@ class ToolBox:
                 fully_synced = False
             if fully_synced:
                 try:
+                    # Same database-level scoping as list_schemas above —
+                    # avoid pulling tables from sibling databases under
+                    # the same profile.
+                    db_scope = str(
+                        getattr(self.cfg.db, "database", "")
+                        or getattr(self.cfg.db, "catalog", "")
+                        or getattr(self.cfg.db, "project", "")
+                        or ""
+                    )
                     catalog_tables = self.catalog.fetch_distinct_tables_in_schema(
-                        self.db_profile, target
+                        self.db_profile,
+                        target,
+                        database_name=db_scope or None,
                     )
                 except Exception:
                     catalog_tables = []

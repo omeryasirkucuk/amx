@@ -68,13 +68,27 @@ class EntityCrudMixin:
         row_count: int = 0,
     ) -> int:
         now = time.time()
+        # Lookup must include ``database_name`` — without it, a re-sync
+        # of profile X against a different database would UPDATE the
+        # wrong entity row (the post-v0.16 unique index keys on
+        # database_name; the legacy lookup didn't). See the migration
+        # block in sqlite_store.py.
         row = conn.execute(
             """
             SELECT id FROM catalog_entities
-            WHERE db_profile = ? AND schema_name = ? AND table_name = ? AND
-                  COALESCE(column_name, '') = COALESCE(?, '') AND entity_kind = ?
+            WHERE db_profile = ? AND database_name = ? AND schema_name = ?
+              AND table_name = ?
+              AND COALESCE(column_name, '') = COALESCE(?, '')
+              AND entity_kind = ?
             """,
-            (db_profile, schema_name, table_name, column_name, entity_kind),
+            (
+                db_profile,
+                database_name,
+                schema_name,
+                table_name,
+                column_name,
+                entity_kind,
+            ),
         ).fetchone()
         if row:
             # Bump ``last_synced_at`` on every re-upsert. The
@@ -450,23 +464,43 @@ class EntityCrudMixin:
         # re-sync rather than serve increasingly drifted data.
         return (time.time() - float(last)) < 7 * 24 * 60 * 60
 
-    def fetch_distinct_schemas(self, db_profile: str) -> list[dict]:
+    def fetch_distinct_schemas(
+        self, db_profile: str, database_name: str | None = None
+    ) -> list[dict]:
         """Return distinct ``schema_name`` rows for *db_profile* with
-        each schema's freshest ``last_synced_at``. Used by the
-        cache-first ``list_schemas`` agent tool when /search sync has
-        covered the profile."""
+        each schema's freshest ``last_synced_at``. When *database_name*
+        is provided, scope the result to that database — required for
+        2-level backends (Postgres, MySQL…) where a single profile
+        can reach multiple databases and each has its own schemas.
+        Without the filter, the cache would leak schemas across
+        databases under the same profile.
+        """
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT schema_name, MAX(last_synced_at) AS last_synced_at
-                FROM catalog_entities
-                WHERE db_profile = ? AND entity_kind = 'table'
-                  AND schema_name != ''
-                GROUP BY schema_name
-                ORDER BY schema_name
-                """,
-                (db_profile,),
-            ).fetchall()
+            if database_name is None:
+                rows = conn.execute(
+                    """
+                    SELECT schema_name, MAX(last_synced_at) AS last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND entity_kind = 'table'
+                      AND schema_name != ''
+                    GROUP BY schema_name
+                    ORDER BY schema_name
+                    """,
+                    (db_profile,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT schema_name, MAX(last_synced_at) AS last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND database_name = ?
+                      AND entity_kind = 'table'
+                      AND schema_name != ''
+                    GROUP BY schema_name
+                    ORDER BY schema_name
+                    """,
+                    (db_profile, database_name),
+                ).fetchall()
         return [
             {
                 "name": str(r["schema_name"] or ""),
@@ -476,21 +510,44 @@ class EntityCrudMixin:
             if r["schema_name"]
         ]
 
-    def fetch_distinct_tables_in_schema(self, db_profile: str, schema_name: str) -> list[dict]:
+    def fetch_distinct_tables_in_schema(
+        self,
+        db_profile: str,
+        schema_name: str,
+        database_name: str | None = None,
+    ) -> list[dict]:
         """Return distinct ``table_name`` rows under (profile, schema)
-        with each table's freshest ``last_synced_at``."""
+        with each table's freshest ``last_synced_at``. ``database_name``
+        scopes to a single database under the profile when provided —
+        the same database-level guard ``fetch_distinct_schemas``
+        applies.
+        """
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT table_name, MAX(last_synced_at) AS last_synced_at
-                FROM catalog_entities
-                WHERE db_profile = ? AND schema_name = ?
-                  AND entity_kind = 'table' AND table_name != ''
-                GROUP BY table_name
-                ORDER BY table_name
-                """,
-                (db_profile, schema_name),
-            ).fetchall()
+            if database_name is None:
+                rows = conn.execute(
+                    """
+                    SELECT table_name, MAX(last_synced_at) AS last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND schema_name = ?
+                      AND entity_kind = 'table' AND table_name != ''
+                    GROUP BY table_name
+                    ORDER BY table_name
+                    """,
+                    (db_profile, schema_name),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT table_name, MAX(last_synced_at) AS last_synced_at
+                    FROM catalog_entities
+                    WHERE db_profile = ? AND database_name = ?
+                      AND schema_name = ?
+                      AND entity_kind = 'table' AND table_name != ''
+                    GROUP BY table_name
+                    ORDER BY table_name
+                    """,
+                    (db_profile, database_name, schema_name),
+                ).fetchall()
         return [
             {
                 "name": str(r["table_name"] or ""),

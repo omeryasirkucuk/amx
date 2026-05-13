@@ -375,10 +375,27 @@ class SQLiteHistoryStore:
                 )
                 """
             )
+            # Identity index migration: pre-v0.16 the unique key didn't
+            # include ``database_name``, so a profile with three databases
+            # that each held a ``public.users`` table clobbered each other
+            # on insert and the cache leaked across databases. Drop the
+            # narrow index (if present from the legacy bootstrap) and
+            # recreate with ``database_name`` in the tuple. Existing rows
+            # that violate the new uniqueness — the survivor of the old
+            # collision — are tolerated; the next skeleton sync re-fills
+            # whatever was lost.
+            conn.execute("DROP INDEX IF EXISTS idx_catalog_entities_identity")
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_entities_identity
-                ON catalog_entities(db_profile, schema_name, table_name, COALESCE(column_name, ''), entity_kind)
+                ON catalog_entities(
+                    db_profile,
+                    database_name,
+                    schema_name,
+                    table_name,
+                    COALESCE(column_name, ''),
+                    entity_kind
+                )
                 """
             )
             conn.execute(
