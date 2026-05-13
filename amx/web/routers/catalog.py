@@ -345,16 +345,26 @@ def catalog_freshness(cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
 @router.post("/sync")
 def trigger_catalog_sync(
     profile: str | None = Query(default=None),
+    database: str | None = Query(default=None, alias="database"),
     cfg: AMXConfig = Depends(get_cfg),
 ) -> dict[str, Any]:
     """Kick off a skeleton sync for the requested profile (or every
     saved profile when omitted). Each profile gets its own daemon
-    thread that walks ``list_schemas`` → ``list_assets`` and writes
+    thread that walks every reachable database under it (``list_databases``
+    on 2-level backends, ``list_catalogs`` on 3-level) and writes
     skeleton rows into ``catalog_entities`` while updating
     ``catalog_profile_state`` so the freshness pill can render
     progress. Returns immediately with the state-machine entry
     already flipped to ``syncing`` so the SPA polls progress
     instead of guessing.
+
+    ``?database=`` (optional): when set, only that one database is
+    refreshed under the profile — used by the sidebar's per-database
+    refresh button so clicking refresh on `SAP` doesn't re-walk
+    `bird_train` and `bird_train_desc`. The flag is only honoured
+    when ``?profile=`` is also present; bare ``?database=`` is a
+    400 because the sync key is ``(profile, database)`` not
+    ``database`` alone.
     """
     import threading
 
@@ -364,6 +374,11 @@ def trigger_catalog_sync(
     if profile:
         targets = [profile.strip()]
     else:
+        if database:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="?database= requires ?profile= to scope the sync.",
+            )
         profile_map = getattr(cfg, "db_profiles", None)
         targets = list(profile_map.keys()) if hasattr(profile_map, "keys") else []
     targets = [p for p in targets if p]
@@ -393,10 +408,12 @@ def trigger_catalog_sync(
             except Exception:
                 pass
 
+    databases_arg: list[str] | None = [database.strip()] if database else None
+
     def _spawn(target_profile: str) -> None:
         def _runner() -> None:
             try:
-                sync_profile_skeleton(cfg, target_profile, catalog)
+                sync_profile_skeleton(cfg, target_profile, catalog, databases=databases_arg)
             except Exception as exc:  # pragma: no cover - best-effort
                 try:
                     catalog.finish_skeleton_sync(target_profile, ok=False, error=str(exc))
@@ -411,4 +428,8 @@ def trigger_catalog_sync(
 
     for target in targets:
         _spawn(target)
-    return {"profiles": targets, "status": "queued"}
+    return {
+        "profiles": targets,
+        "database": database or None,
+        "status": "queued",
+    }

@@ -30,10 +30,18 @@ import os
 import threading
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from amx.utils.logging import get_logger
+
+#: Backends where the top-level container is a *catalog* (3-level
+#: hierarchy: catalog -> schema -> table) rather than a *database* (2-level:
+#: database -> schema -> table). The skeleton sync enumerates containers
+#: with ``list_catalogs()`` for these and ``list_databases()`` for everyone
+#: else, but writes the discovered name into the same ``database_name``
+#: column so cache reads can be scoped uniformly.
+_THREE_LEVEL_BACKENDS = frozenset({"databricks", "bigquery"})
 
 log = get_logger("search.drift")
 
@@ -180,12 +188,125 @@ def _enqueue_sync(cfg, profile: str) -> None:
         log.warning("Drift skeleton sync failed for %s: %s", profile, exc)
 
 
-def sync_profile_skeleton(cfg, profile: str, catalog) -> dict:
-    """Synchronous skeleton sync. Returns a summary dict so the caller
-    (drift probe, ``POST /api/catalog/sync``, or a test) can inspect
-    the outcome. Never raises — every error path lands on
+def _scoped_connector(cfg, profile: str, container: str | None, is_three_level: bool) -> Any:
+    """Open a connector scoped to a specific *container* (database for
+    2-level backends, catalog for 3-level). ``container=None`` returns
+    the profile's default-scoped connector — used to enumerate the
+    container list itself.
+
+    Delegates to :func:`_build_connector` for the default scope so the
+    skeleton-sync test suite, which monkeypatches ``_build_connector``
+    with a stub, still works. For a non-default container we replace
+    the profile's ``DBConfig.database`` (or ``.catalog``) before
+    instantiating ``DatabaseConnector`` directly — tests stub the
+    enumeration path with ``list_databases`` returning an empty list,
+    so this branch never runs in unit tests.
+    """
+    profile_name = (profile or "").strip()
+    if container is None or not container:
+        return _build_connector(cfg, profile_name)
+    if cfg is None:
+        raise RuntimeError("cfg required to open connector")
+    profile_map = getattr(cfg, "db_profiles", {}) or {}
+    base = profile_map.get(profile_name)
+    if base is None:
+        # Without a profile entry we can't overlay a container —
+        # delegate so the standard "No DB profile named X" error
+        # surfaces consistently.
+        return _build_connector(cfg, profile_name)
+    overlay = {"catalog": container} if is_three_level else {"database": container}
+    try:
+        scoped = replace(base, **overlay)
+    except TypeError:
+        # ``base`` isn't a dataclass — narrow test stub. Fall back so
+        # the caller still stamps the container name onto upserts.
+        return _build_connector(cfg, profile_name)
+    from amx.db.connector import DatabaseConnector
+
+    return DatabaseConnector(scoped, profile_name=profile_name)
+
+
+def _empty_schemas_error(db_backend: str) -> str:
+    if db_backend == "databricks":
+        return (
+            "Connected but no schemas were visible. Pin a catalog on the "
+            "profile (Settings -> DB profile) or check that your warehouse "
+            "permissions expose at least one schema."
+        )
+    return (
+        "Connected but no schemas were visible. Check that the active "
+        "database is correct and the connection user has at least "
+        "``USAGE`` on one schema."
+    )
+
+
+def _enumerate_containers(
+    cfg,
+    profile: str,
+    db_backend: str,
+    default_container: str,
+    is_three_level: bool,
+) -> tuple[list[str], str | None]:
+    """Return the list of containers (databases/catalogs) to walk for
+    *profile*. Falls back to ``[default_container]`` (or ``[""]`` when
+    the profile has nothing pinned) on any enumeration failure so a
+    connector that doesn't implement ``list_databases``/``list_catalogs``
+    still gets a sync of its pinned scope.
+
+    Second item in the tuple is an error message when the enumeration
+    failed in a way the caller should surface to the user; ``None``
+    otherwise.
+    """
+    try:
+        connector = _scoped_connector(cfg, profile, None, is_three_level)
+    except Exception as exc:
+        return [], str(exc)
+    names: list[str] = []
+    try:
+        if is_three_level and hasattr(connector, "list_catalogs"):
+            names = list(connector.list_catalogs())
+        elif hasattr(connector, "list_databases"):
+            names = list(connector.list_databases())
+    except Exception as exc:
+        log.debug("Container enumeration failed for %s: %s", profile, exc)
+        names = []
+    cleaned = [str(n) for n in names if n]
+    if cleaned:
+        return cleaned, None
+    # No container list — either the backend has none (single-database
+    # SQLite, MSSQL with USE locked, Databricks profile without
+    # ``SHOW CATALOGS`` permission) or the call wasn't supported. Fall
+    # back to whatever the profile already pins. An empty fallback
+    # means the profile has no default container and the connector
+    # didn't volunteer one — that path still gets one walk attempt
+    # downstream and produces the actionable empty-schemas error.
+    return [default_container] if default_container else [""], None
+
+
+def sync_profile_skeleton(
+    cfg,
+    profile: str,
+    catalog,
+    *,
+    databases: list[str] | None = None,
+) -> dict:
+    """Synchronous skeleton sync. Walks **every** reachable database
+    (or catalog, on 3-level backends) under *profile* and upserts the
+    table rows into ``catalog_entities`` with the correct
+    ``database_name`` stamp so cache reads keyed by ``(profile,
+    database)`` resolve to the right schemas.
+
+    Returns a summary dict so the caller (drift probe,
+    ``POST /api/catalog/sync``, or a test) can inspect the outcome.
+    Never raises — every error path lands on
     ``finish_skeleton_sync(ok=False, error=...)`` so the state
     machine always terminates.
+
+    ``databases`` (optional): when set, skip the
+    ``list_databases``/``list_catalogs`` enumeration and walk exactly
+    the given container names. Used by the per-database refresh
+    button in the sidebar so clicking refresh on `SAP` doesn't
+    re-sync `bird_train` and `bird_train_desc`.
     """
     summary: dict[str, Any] = {
         "profile": profile,
@@ -193,122 +314,184 @@ def sync_profile_skeleton(cfg, profile: str, catalog) -> dict:
         "total": 0,
         "processed": 0,
         "error": "",
+        "containers": [],
     }
-    db_backend = str(getattr(cfg.db, "backend", "") or "") if cfg is not None else ""
-    database_name = ""
+    # Read backend + default container from the *target* profile, NOT
+    # ``cfg.db`` (the active profile). When the user clicks Sync All
+    # from an active local-postgre session, every other profile gets
+    # sync'd in turn — using ``cfg.db.backend`` here would stamp the
+    # postgres backend onto a Databricks failure message and produce
+    # the wrong actionable hint.
+    target_db = None
     if cfg is not None:
-        database_name = str(
-            getattr(cfg.db, "database", "")
-            or getattr(cfg.db, "catalog", "")
-            or getattr(cfg.db, "project", "")
-            or ""
+        profile_map = getattr(cfg, "db_profiles", {}) or {}
+        target_db = profile_map.get((profile or "").strip())
+    # Fallback to ``cfg.db`` only when the profile lookup fails (test
+    # stubs with no ``db_profiles`` map).
+    if target_db is None and cfg is not None:
+        target_db = getattr(cfg, "db", None)
+    db_backend = str(getattr(target_db, "backend", "") or "") if target_db is not None else ""
+    is_three_level = db_backend in _THREE_LEVEL_BACKENDS
+    default_container = ""
+    if target_db is not None:
+        default_container = str(
+            getattr(target_db, "catalog", "")
+            if is_three_level
+            else getattr(target_db, "database", "")
         )
+        if not default_container:
+            # ``project`` is BigQuery's catalog-equivalent on some
+            # profile shapes; preserve the prior fallback chain.
+            default_container = str(
+                getattr(target_db, "database", "")
+                or getattr(target_db, "catalog", "")
+                or getattr(target_db, "project", "")
+                or ""
+            )
 
-    # Step 1: open the connector + enumerate schemas. Failure here
-    # means we can't even count tables; mark the profile failed and
-    # bail before touching catalog_profile_state's progress fields.
-    try:
-        connector = _build_connector(cfg, profile)
-        schemas = connector.list_schemas() or []
-    except Exception as exc:
-        log.warning("Skeleton sync connect failed for %s: %s", profile, exc)
+    # Step 1: decide which containers to walk.
+    if databases:
+        containers = [str(d) for d in databases if d]
+        enum_error: str | None = None
+    else:
+        containers, enum_error = _enumerate_containers(
+            cfg, profile, db_backend, default_container, is_three_level
+        )
+    if enum_error is not None and not containers:
+        # The enumeration failed *and* we have no fallback. Surface the
+        # original connector error so the freshness pill renders a
+        # Retry CTA with the real reason (auth, network, missing
+        # driver).
+        log.warning("Skeleton sync enumerate failed for %s: %s", profile, enum_error)
         catalog.start_skeleton_sync(profile, total_tables=0)
-        catalog.finish_skeleton_sync(profile, ok=False, error=str(exc))
+        catalog.finish_skeleton_sync(profile, ok=False, error=enum_error)
         summary["state"] = "failed"
-        summary["error"] = str(exc)
+        summary["error"] = enum_error
         return summary
 
-    # ``list_schemas`` succeeded but returned zero rows. Treat this as a
-    # failure (not a silent success) so the freshness pill renders a
-    # Retry CTA + actionable error instead of "never · stale" with no
-    # explanation. The most common cause on Databricks is a profile
-    # without a catalog pinned; on 2-level backends it's a permission
-    # gap. Tailor the message so the user knows exactly what to check.
-    if not schemas:
-        if db_backend == "databricks":
-            error_msg = (
-                "Connected but no schemas were visible. Pin a catalog on the "
-                "profile (Settings → DB profile) or check that your warehouse "
-                "permissions expose at least one schema."
-            )
-        else:
-            error_msg = (
-                "Connected but no schemas were visible. Check that the active "
-                "database is correct and the connection user has at least "
-                "``USAGE`` on one schema."
-            )
-        log.warning(
-            "Skeleton sync for %s returned empty schemas - marking failed",
-            profile,
-        )
-        catalog.start_skeleton_sync(profile, total_tables=0)
-        catalog.finish_skeleton_sync(profile, ok=False, error=error_msg)
-        summary["state"] = "failed"
-        summary["error"] = error_msg
-        return summary
+    summary["containers"] = list(containers)
 
-    # Step 2: pass 1 — count tables across all schemas. Lets the UI
-    # show ``Syncing 0 / N…`` from the first tick rather than
-    # ``Syncing… N unknown``.
-    schema_assets: list[tuple[str, list]] = []
+    # Step 2: pass 1 across every container — count tables so the UI
+    # can render "Syncing 0 / N..." from the first tick. Per-container
+    # connect failures are collected here; if EVERY container fails
+    # the sync flips to ``failed`` with the first error as the
+    # surfaced message. Partial success (one container errors, others
+    # succeed) keeps the sync going so the user gets every reachable
+    # row.
+    per_container_plan: list[tuple[str, list[tuple[str, list]]]] = []
     total = 0
-    for schema in schemas:
+    last_error = ""
+    reached_any = False
+    for container in containers:
         try:
-            assets = connector.list_assets(schema) or []
+            connector = _scoped_connector(cfg, profile, container or None, is_three_level)
+            schemas = connector.list_schemas() or []
         except Exception as exc:
-            log.warning("Skeleton sync list_assets failed for %s/%s: %s", profile, schema, exc)
-            assets = []
-        schema_assets.append((schema, assets))
-        total += len(assets)
+            log.warning(
+                "Skeleton sync connect failed for %s/%s: %s",
+                profile,
+                container or "<default>",
+                exc,
+            )
+            last_error = str(exc)
+            continue
+        reached_any = True
+        if not schemas:
+            log.info(
+                "Skeleton sync for %s/%s found no schemas - skipping",
+                profile,
+                container or "<default>",
+            )
+            per_container_plan.append((container, []))
+            continue
+        schema_assets: list[tuple[str, list]] = []
+        for schema in schemas:
+            try:
+                assets = connector.list_assets(schema) or []
+            except Exception as exc:
+                log.warning(
+                    "Skeleton sync list_assets failed for %s/%s/%s: %s",
+                    profile,
+                    container or "<default>",
+                    schema,
+                    exc,
+                )
+                assets = []
+            schema_assets.append((schema, assets))
+            total += len(assets)
+        per_container_plan.append((container, schema_assets))
+
+    if not reached_any:
+        # Every container failed to connect. Surface the last error so
+        # the user sees a real reason on the pill.
+        catalog.start_skeleton_sync(profile, total_tables=0)
+        err = last_error or _empty_schemas_error(db_backend)
+        catalog.finish_skeleton_sync(profile, ok=False, error=err)
+        summary["state"] = "failed"
+        summary["error"] = err
+        return summary
+
+    if total == 0:
+        # We reached at least one container but nothing exposed a
+        # schema. Treat this exactly like the old "empty schemas"
+        # branch — it's a failure, not a silent success, so the
+        # freshness pill renders a Retry CTA.
+        err = _empty_schemas_error(db_backend)
+        log.warning(
+            "Skeleton sync for %s reached %d container(s) but no schemas - marking failed",
+            profile,
+            len(containers),
+        )
+        catalog.start_skeleton_sync(profile, total_tables=0)
+        catalog.finish_skeleton_sync(profile, ok=False, error=err)
+        summary["state"] = "failed"
+        summary["error"] = err
+        return summary
 
     catalog.start_skeleton_sync(profile, total_tables=total)
     summary["state"] = "syncing"
     summary["total"] = total
 
-    # Step 3: pass 2 — INSERT each table row. We use the
-    # entity-crud's ``_upsert_entity`` so the unique index keeps a
-    # re-run idempotent, and we skip ``profile_table`` entirely —
-    # that's the heavy per-table SQL that made the old drift loop
-    # take minutes.
+    # Step 3: pass 2 — INSERT each table row with the correct
+    # ``database_name`` stamp. Sharing one open SQLite connection
+    # across all containers keeps the per-schema progress write in
+    # the same transaction as the upserts so SQLite doesn't deadlock
+    # on a second writer.
     processed = 0
     try:
         with catalog._connect() as conn:  # noqa: SLF001 — owns the catalog conn
-            for schema, assets in schema_assets:
-                for asset in assets:
-                    name, kind = _asset_name_and_kind(asset)
-                    if not name:
-                        continue
-                    try:
-                        catalog._upsert_entity(  # noqa: SLF001
-                            conn,
-                            db_profile=profile,
-                            db_backend=db_backend,
-                            database_name=database_name,
-                            schema_name=schema,
-                            table_name=name,
-                            column_name=None,
-                            entity_kind="table",
-                            asset_kind=str(kind or "table"),
-                        )
-                        processed += 1
-                    except Exception as exc:
-                        # A single bad row mustn't kill the whole
-                        # skeleton — log and continue so the rest of
-                        # the catalog still benefits.
-                        log.debug(
-                            "Skeleton upsert failed for %s/%s.%s: %s",
-                            profile,
-                            schema,
-                            name,
-                            exc,
-                        )
-                # Per-schema progress write keeps SQLite WAL writes
-                # bounded; updating once per row would thrash on a
-                # 10k-table catalog. Sharing the open connection
-                # keeps the progress write inside the same
-                # transaction as the upserts so SQLite doesn't deadlock
-                # on a second writer.
-                catalog.record_skeleton_progress(profile, processed, conn=conn)
+            for container, schema_assets in per_container_plan:
+                stamp = container or default_container
+                for schema, assets in schema_assets:
+                    for asset in assets:
+                        name, kind = _asset_name_and_kind(asset)
+                        if not name:
+                            continue
+                        try:
+                            catalog._upsert_entity(  # noqa: SLF001
+                                conn,
+                                db_profile=profile,
+                                db_backend=db_backend,
+                                database_name=stamp,
+                                schema_name=schema,
+                                table_name=name,
+                                column_name=None,
+                                entity_kind="table",
+                                asset_kind=str(kind or "table"),
+                            )
+                            processed += 1
+                        except Exception as exc:
+                            # A single bad row mustn't kill the whole
+                            # skeleton — log and continue.
+                            log.debug(
+                                "Skeleton upsert failed for %s/%s/%s.%s: %s",
+                                profile,
+                                stamp or "<default>",
+                                schema,
+                                name,
+                                exc,
+                            )
+                    catalog.record_skeleton_progress(profile, processed, conn=conn)
     except Exception as exc:
         log.warning("Skeleton sync upsert pass failed for %s: %s", profile, exc)
         catalog.finish_skeleton_sync(profile, ok=False, error=str(exc))

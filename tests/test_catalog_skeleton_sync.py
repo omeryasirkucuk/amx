@@ -207,6 +207,42 @@ def test_empty_schemas_databricks_message(
     assert "catalog" in summary["error"].lower()
 
 
+def test_backend_read_from_target_profile_not_active(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the user clicks Sync All from an active 2-level profile,
+    the empty-schemas error for a *different* 3-level profile in the
+    batch must use the 3-level wording. Regression for the prod bug
+    where dbr-oyk failed with the postgres-shaped 'check ``USAGE`` on
+    one schema' message because the sync read backend from
+    ``cfg.db`` (the active profile) instead of
+    ``cfg.db_profiles[profile]`` (the target)."""
+    connector = _StubConnector(schemas=[], assets={})
+    _stub_build_connector(monkeypatch, connector)
+
+    class _ActivePostgresDB:
+        backend = "postgresql"
+        database = "appdb"
+        catalog = ""
+        project = ""
+
+    class _DatabricksDB:
+        backend = "databricks"
+        database = ""
+        catalog = ""
+        project = ""
+
+    class _MixedCfg:
+        db = _ActivePostgresDB()
+        db_profiles = {"prof-dbr": _DatabricksDB()}
+
+    summary = sync_profile_skeleton(_MixedCfg(), "prof-dbr", fresh_catalog)
+    assert summary["state"] == "failed"
+    assert "catalog" in summary["error"].lower()
+    # And the postgres-only 2-level wording must NOT appear.
+    assert "USAGE" not in summary["error"]
+
+
 def test_completeness_gate_window(
     fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -226,6 +262,181 @@ def test_completeness_gate_window(
         )
 
     assert fresh_catalog.is_profile_fully_synced("prof-a") is False
+
+
+class _MultiDBConnector:
+    """Connector stub that exposes ``list_databases`` so the skeleton
+    sync enumerates and walks every database. Each database carries
+    its own schemas + assets — the regression guard is that all rows
+    land in ``catalog_entities`` with the correct ``database_name``
+    stamp.
+
+    The skeleton-sync's per-container loop re-builds a connector via
+    ``replace(cfg.db_profiles[profile], database=name)``. The test's
+    cfg has no ``db_profiles``, so :func:`_scoped_connector` falls back
+    to ``_build_connector`` for every container — the monkeypatch
+    points that at this same stub. We therefore track the *current*
+    requested database via a class attribute that the test sets
+    before each ``list_schemas`` call would happen; instead, we use a
+    simpler pattern: this stub returns the union of every database's
+    contents on the default connector enumeration, then a per-database
+    factory closure returns the right one. The factory is what the
+    monkeypatch installs.
+    """
+
+    def __init__(self, databases: dict[str, dict[str, list[tuple[str, str]]]]):
+        self._databases = databases
+
+    def list_databases(self) -> list[str]:
+        return list(self._databases.keys())
+
+    def list_catalogs(self) -> list[str]:
+        return []
+
+
+class _PerDBConnector:
+    """Connector that knows about exactly one database's content —
+    used as the per-container scoped connector handed to the skeleton
+    sync's pass-1 / pass-2 loop."""
+
+    def __init__(self, database: str, schemas: dict[str, list[tuple[str, str]]]):
+        self.database = database
+        self._schemas = schemas
+
+    def list_schemas(self) -> list[str]:
+        return list(self._schemas.keys())
+
+    def list_assets(self, schema: str) -> list[tuple[str, str]]:
+        return list(self._schemas.get(schema, []))
+
+
+def test_sync_walks_every_database(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skeleton sync enumerates every database under a profile and
+    upserts each table with its own ``database_name`` stamp.
+
+    Regression guard for the user-reported screenshot where
+    ``LOCAL-POSTGRE`` showed identical schemas under SAP, bird_train,
+    and bird_train_desc because the sync only walked the pinned
+    database AND the unique index didn't include ``database_name``.
+    """
+    databases_payload: dict[str, dict[str, list[tuple[str, str]]]] = {
+        "SAP": {"public": [("sap_users", "table"), ("sap_orders", "table")]},
+        "bird_train": {"aviary": [("birds", "table"), ("species", "table")]},
+        "bird_train_desc": {"meta": [("notes", "table")]},
+    }
+
+    enumerator = _MultiDBConnector(databases_payload)
+    per_db = {name: _PerDBConnector(name, schemas) for name, schemas in databases_payload.items()}
+
+    # Track the order ``_build_connector`` is called. First call is the
+    # default enumerator; subsequent calls are per-container scoped
+    # connectors. Because the test's ``_StubCfg`` has no ``db_profiles``,
+    # ``_scoped_connector`` always defers to ``_build_connector`` —
+    # which we hijack here to route by requested-database via a
+    # mutable "current" pointer.
+    call_log: list[str] = []
+    current: dict[str, str] = {"db": ""}
+
+    def _fake_build(cfg, profile):
+        # On first call (no current set) return the enumerator.
+        if not call_log:
+            call_log.append("__enumerator__")
+            return enumerator
+        # Subsequent calls are per-database. The drift module's
+        # _scoped_connector falls back to _build_connector for stubs
+        # without a real db_profiles map, so we resolve the right
+        # connector via the current pointer the loop drives.
+        db = current["db"] or next(iter(databases_payload))
+        call_log.append(db)
+        return per_db[db]
+
+    import amx.search.drift as drift
+
+    monkeypatch.setattr(drift, "_build_connector", _fake_build)
+
+    # Patch _scoped_connector so we can thread the current container
+    # name through; the production helper takes the container from
+    # cfg overlay, but the stub bypass needs an explicit signal.
+    original_scoped = drift._scoped_connector
+
+    def _fake_scoped(cfg, profile, container, is_three_level):
+        if container:
+            current["db"] = container
+        else:
+            current["db"] = ""
+        return original_scoped(cfg, profile, container, is_three_level)
+
+    monkeypatch.setattr(drift, "_scoped_connector", _fake_scoped)
+
+    summary = sync_profile_skeleton(_StubCfg(), "local-postgre", fresh_catalog)
+    assert summary["state"] == "done", summary
+    assert summary["total"] == 5
+    assert summary["processed"] == 5
+    assert set(summary["containers"]) == {"SAP", "bird_train", "bird_train_desc"}
+
+    # Every database has its own rows with the correct database_name.
+    with fresh_catalog._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            """
+            SELECT database_name, schema_name, table_name
+            FROM catalog_entities
+            WHERE db_profile = ?
+            ORDER BY database_name, schema_name, table_name
+            """,
+            ("local-postgre",),
+        ).fetchall()
+    by_db: dict[str, set[tuple[str, str]]] = {}
+    for r in rows:
+        by_db.setdefault(r["database_name"], set()).add((r["schema_name"], r["table_name"]))
+    assert by_db == {
+        "SAP": {("public", "sap_users"), ("public", "sap_orders")},
+        "bird_train": {("aviary", "birds"), ("aviary", "species")},
+        "bird_train_desc": {("meta", "notes")},
+    }
+
+
+def test_explicit_databases_kwarg_skips_enumeration(
+    fresh_catalog: SearchCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``databases=[...]`` is passed (the per-database refresh
+    button in the sidebar) the sync walks exactly that list and skips
+    ``list_databases``."""
+    per_db = {"SAP": _PerDBConnector("SAP", {"public": [("sap_users", "table")]})}
+
+    current: dict[str, str] = {"db": "SAP"}
+    enumeration_called = {"hit": False}
+
+    class _Probe:
+        def list_databases(self) -> list[str]:
+            enumeration_called["hit"] = True
+            return ["SAP", "bird_train", "bird_train_desc"]
+
+        def list_catalogs(self) -> list[str]:
+            return []
+
+    probe = _Probe()
+
+    def _fake_build(cfg, profile):
+        return per_db[current["db"]] if current["db"] in per_db else probe
+
+    import amx.search.drift as drift
+
+    monkeypatch.setattr(drift, "_build_connector", _fake_build)
+
+    original_scoped = drift._scoped_connector
+
+    def _fake_scoped(cfg, profile, container, is_three_level):
+        current["db"] = container or "SAP"
+        return original_scoped(cfg, profile, container, is_three_level)
+
+    monkeypatch.setattr(drift, "_scoped_connector", _fake_scoped)
+
+    summary = sync_profile_skeleton(_StubCfg(), "local-postgre", fresh_catalog, databases=["SAP"])
+    assert summary["state"] == "done"
+    assert summary["containers"] == ["SAP"]
+    assert enumeration_called["hit"] is False
 
 
 def test_cache_helpers_fall_through_on_incomplete_sync(
