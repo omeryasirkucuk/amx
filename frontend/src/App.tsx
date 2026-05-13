@@ -81,7 +81,7 @@ export default function App() {
               <Route path="settings" element={<Settings />} />
               <Route path="system" element={<System />} />
               <Route path="pricing" element={<Pricing />} />
-              <Route path="schedules" element={<Schedules />} />
+              <Route path="runs/schedules" element={<Schedules />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

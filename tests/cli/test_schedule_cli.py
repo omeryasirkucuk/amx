@@ -1,9 +1,11 @@
-"""End-to-end CLI tests for ``amx schedule`` and ``amx scheduler``.
+"""End-to-end CLI tests for ``/analyze schedule`` (REPL form).
 
 Exercises the Click command tree against a tmp AMX config dir so the
 real history store is initialised and the commands run their full
 production path (minus the per-run executor, which the worker
-scaffold stubs).
+scaffold stubs). The schedule subgroup lives under the ``analyze``
+namespace, mirroring the REPL UX where every method is accessed as
+``/<tab> <verb>``.
 """
 
 from __future__ import annotations
@@ -16,15 +18,19 @@ import pytest
 from click.testing import CliRunner
 
 from amx.cli_support.commands.schedule import register_schedule_commands
-from amx.cli_support.commands.scheduler import register_scheduler_commands
 from amx.storage import sqlite_store as _store_module
 from amx.storage.sqlite_store import SQLiteHistoryStore
 
 
 @pytest.fixture
 def cli(tmp_path: Path):
-    """Build a Click root group with just the two scheduler groups and
-    point the module-level history_store singleton at a tmp DB."""
+    """Build a root Click group with an ``analyze`` tab holding the
+    ``schedule`` subgroup, then point the module-level history_store
+    singleton at a tmp DB.
+
+    Mirrors the production wiring in ``amx/cli.py`` where
+    ``register_schedule_commands`` attaches under the analyze tab.
+    """
     s = SQLiteHistoryStore(tmp_path / "history.db")
     s.init()
     _store_module._store = s
@@ -32,8 +38,10 @@ def cli(tmp_path: Path):
     @click.group()
     def root() -> None: ...
 
-    register_schedule_commands(root)
-    register_scheduler_commands(root)
+    @root.group()
+    def analyze() -> None: ...
+
+    register_schedule_commands(analyze)
     return root, s
 
 
@@ -43,6 +51,7 @@ def test_schedule_add_creates_row(cli) -> None:
     result = runner.invoke(
         root,
         [
+            "analyze",
             "schedule",
             "add",
             "--name",
@@ -92,12 +101,12 @@ def test_schedule_list_default_filters_to_active(cli) -> None:
     store.set_scheduled_run_status(sid_done, "completed")
 
     runner = CliRunner()
-    result = runner.invoke(root, ["schedule", "list"])
+    result = runner.invoke(root, ["analyze", "schedule", "list"])
     assert result.exit_code == 0
     assert "active" in result.output
     assert "done" not in result.output
 
-    result_all = runner.invoke(root, ["schedule", "list", "--all"])
+    result_all = runner.invoke(root, ["analyze", "schedule", "list", "--all"])
     assert result_all.exit_code == 0
     assert "active" in result_all.output
     assert "done" in result_all.output
@@ -115,9 +124,9 @@ def test_schedule_pause_and_resume(cli) -> None:
         review_strategy="auto",
     )
     runner = CliRunner()
-    assert runner.invoke(root, ["schedule", "pause", str(sid)]).exit_code == 0
+    assert runner.invoke(root, ["analyze", "schedule", "pause", str(sid)]).exit_code == 0
     assert store.get_scheduled_run(sid)["status"] == "paused"
-    assert runner.invoke(root, ["schedule", "resume", str(sid)]).exit_code == 0
+    assert runner.invoke(root, ["analyze", "schedule", "resume", str(sid)]).exit_code == 0
     assert store.get_scheduled_run(sid)["status"] == "pending"
 
 
@@ -133,7 +142,7 @@ def test_schedule_rm_with_yes_flag(cli) -> None:
         review_strategy="auto",
     )
     runner = CliRunner()
-    result = runner.invoke(root, ["schedule", "rm", str(sid), "-y"])
+    result = runner.invoke(root, ["analyze", "schedule", "rm", str(sid), "-y"])
     assert result.exit_code == 0
     assert store.get_scheduled_run(sid) is None
 
@@ -152,7 +161,7 @@ def test_schedule_run_now_fires_synchronously(cli) -> None:
     runner = CliRunner()
     result = runner.invoke(
         root,
-        ["schedule", "run-now", str(sid), "--foreground"],
+        ["analyze", "schedule", "run-now", str(sid), "--foreground"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
@@ -166,7 +175,7 @@ def test_schedule_run_now_fires_synchronously(cli) -> None:
 def test_scheduler_tick_json_output(cli) -> None:
     root, store = cli
     runner = CliRunner()
-    result = runner.invoke(root, ["scheduler", "tick"])
+    result = runner.invoke(root, ["analyze", "schedule", "tick"])
     assert result.exit_code == 0
     import json as _j
 
@@ -178,9 +187,9 @@ def test_scheduler_tick_json_output(cli) -> None:
 def test_scheduler_status_runs(cli) -> None:
     root, store = cli
     runner = CliRunner()
-    result = runner.invoke(root, ["scheduler", "status"])
+    result = runner.invoke(root, ["analyze", "schedule", "status"])
     assert result.exit_code == 0
-    assert "Scheduler status" in result.output
+    assert "Schedule status" in result.output
     assert "Daemon" in result.output
 
 
@@ -190,6 +199,7 @@ def test_schedule_add_rejects_bad_timezone(cli) -> None:
     result = runner.invoke(
         root,
         [
+            "analyze",
             "schedule",
             "add",
             "--name",
@@ -216,6 +226,7 @@ def test_schedule_add_rejects_bad_scope(cli) -> None:
     result = runner.invoke(
         root,
         [
+            "analyze",
             "schedule",
             "add",
             "--name",
