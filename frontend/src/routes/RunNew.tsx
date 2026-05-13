@@ -411,6 +411,32 @@ export default function RunNew() {
     }
     return [freshSelection()];
   });
+  // RunNew stays mounted across the inline-picker → scoped-form transition
+  // (same /runs/new route, only the query string changes), so the useState
+  // initializer above only sees the URL state at first mount. When the
+  // user picks a profile + database via ScopePicker, navigate() updates
+  // the URL params but selections is still the empty placeholder from
+  // first mount — leaving them looking at a fresh "pick a profile" form.
+  // Seed the first selection once the URL scope materialises.
+  const scopeSeededRef = useRef(false);
+  const scopeProfile = scope?.profile ?? "";
+  const scopeDatabase = scope?.database ?? scope?.catalog ?? "";
+  const scopeIsCatalog = scope?.kind === "catalog";
+  useEffect(() => {
+    if (scopeSeededRef.current) return;
+    if (!scopeProfile) return;
+    scopeSeededRef.current = true;
+    setSelections((curr) => {
+      const first = curr[0];
+      if (first && (first.profile || first.database)) return curr;
+      const seeded = freshSelection({
+        profile: scopeProfile,
+        database: scopeDatabase,
+        isCatalogBackend: scopeIsCatalog,
+      });
+      return curr.length === 0 ? [seeded] : [seeded, ...curr.slice(1)];
+    });
+  }, [scopeProfile, scopeDatabase, scopeIsCatalog]);
   const [missingOnly, setMissingOnly] = useState(false);
   const [autoApply, setAutoApply] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
