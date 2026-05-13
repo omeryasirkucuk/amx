@@ -460,6 +460,11 @@ def get_session(session_id: int) -> dict[str, Any]:
             "role": str(t.get("role") or ""),
             "question": str(t.get("question") or ""),
             "answer_summary": str(t.get("answer_summary") or ""),
+            # ``intent`` is set to "cancelled" on tombstone turns the
+            # cancel handler writes so the SPA can render a Cancelled
+            # pill instead of an empty assistant bubble when the user
+            # reopens the session later.
+            "intent": str(t.get("intent") or ""),
             "turn_index": int(t.get("turn_index") or 0),
             "created_at": t.get("created_at"),
         }
@@ -794,6 +799,27 @@ def _ask_worker(
         job.ended_at = time.time()
         emit(job.queue, "activity.fail", {"idx": 0, "detail": "Cancelled."})
         _finish(status_value="cancelled")
+        # Persist a tombstone assistant turn so the chat history shows
+        # the user that this question was cancelled when they reopen
+        # the session later. ``intent="cancelled"`` is the marker the
+        # session detail endpoint surfaces and the SPA's
+        # ``turnsToBubbles`` translates into a "Cancelled" pill.
+        if session_id is not None:
+            sessions = _session_store_or_none()
+            if sessions is not None:
+                try:
+                    sessions.append_assistant_turn(
+                        int(session_id),
+                        run_id=run_id,
+                        answer_summary="",
+                        intent="cancelled",
+                    )
+                except Exception as exc:  # pragma: no cover - best-effort
+                    log.warning(
+                        "Could not persist cancelled turn for session %s: %s",
+                        session_id,
+                        exc,
+                    )
         emit_terminal(job.queue, "job.cancelled", {})
         return
     except Exception as exc:
