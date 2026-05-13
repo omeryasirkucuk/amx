@@ -78,7 +78,11 @@ def build_alternative_scores(
 
     results: list[AlternativeScore] = []
     for i, text in enumerate(alternatives):
-        active = [normalised[name][i] for name in _SIGNAL_TO_FIELD if normalised[name][i] is not None]
+        active: list[float] = []
+        for name in _SIGNAL_TO_FIELD:
+            v = normalised[name][i]
+            if v is not None:
+                active.append(v)
         ensemble = sum(active) / len(active) if active else 0.0
         results.append(
             AlternativeScore(

@@ -41,8 +41,8 @@ def test_two_signals_average_after_normalisation():
     out = build_alternative_scores(
         alternatives=["a", "b"],
         signals={
-            "logprob": [0.8, 0.4],            # → 1.0, 0.0
-            "self_consistency": [0.6, 0.8],   # → 0.0, 1.0
+            "logprob": [0.8, 0.4],  # → 1.0, 0.0
+            "self_consistency": [0.6, 0.8],  # → 0.0, 1.0
         },
         thresholds=(0.75, 0.50),
     )

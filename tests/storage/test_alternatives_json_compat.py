@@ -78,9 +78,10 @@ def test_build_alternatives_json_falls_back_to_legacy_when_no_scores():
 
 
 def test_build_alternatives_json_emits_structured_when_scores_present():
+    from types import SimpleNamespace
+
     from amx.llm.confidence import AlternativeScore
     from amx.storage.sqlite_store import build_alternatives_json
-    from types import SimpleNamespace
 
     scores = [
         AlternativeScore(

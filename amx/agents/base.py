@@ -163,7 +163,10 @@ class MetadataSuggestion:
     #: paths so existing serialisation logic stays untouched on rows
     #: that do not have a structured score block. Populated by
     #: ``apply_confidence_signals`` when confidence is enabled.
-    suggestion_scores: list[object] | None = None
+    #: Annotated ``list[Any]`` (not ``list[AlternativeScore]``) to avoid
+    #: a circular import with ``amx.llm.confidence``; the runtime type
+    #: is always ``AlternativeScore``.
+    suggestion_scores: list[Any] | None = None
 
 
 @dataclass

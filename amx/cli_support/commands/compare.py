@@ -569,8 +569,9 @@ def _top_alternative_entry(row: dict[str, Any]) -> dict[str, Any] | None:
     elif isinstance(alts_raw, list):
         # Already-parsed list. Run through the normaliser so legacy
         # ``list[str]`` rows still come back as dicts with ``band=None``.
-        from amx.storage.sqlite_store import parse_alternatives_json
         import json as _json
+
+        from amx.storage.sqlite_store import parse_alternatives_json
 
         parsed = parse_alternatives_json(_json.dumps(alts_raw))
     else:
