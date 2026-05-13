@@ -176,6 +176,86 @@ def create_app(
     except Exception:
         pass
 
+    # Studio-resident scheduler ticker.
+    #
+    # The launchd / systemd / Task-Scheduler daemons are the
+    # always-on path for firing schedules while AMX is closed, but
+    # they're prone to OS-specific permission quirks (macOS TCC
+    # blocks the launchd-spawned Python from opening user files;
+    # Linux user timers need ``loginctl enable-linger``; Windows
+    # Task Scheduler needs explicit ``/ru`` user). The Studio
+    # process itself runs in the user's interactive session with
+    # full TCC / keychain / env access -- if Studio is open, every
+    # 60s tick from inside the Studio event loop is the most
+    # reliable path to fire due schedules, regardless of OS.
+    #
+    # The two paths coexist: the OS daemon (when installed and
+    # working) fires while Studio is closed; the Studio-resident
+    # ticker takes over the moment Studio comes up. The tick is
+    # idempotent (``claim_due_schedule`` atomically transitions
+    # pending -> running) so the worst case of both paths racing
+    # is a no-op for one side.
+    @app.on_event("startup")
+    async def _start_studio_scheduler_loop() -> None:
+        import asyncio
+        import logging
+
+        from amx.runtime.worker import (
+            production_run_executor,
+            spawn_scheduled_worker,
+        )
+        from amx.scheduler.tick import tick as _periodic_tick
+        from amx.storage.sqlite_store import history_store as _hs
+
+        slog = logging.getLogger("amx.web.scheduler-loop")
+
+        async def _loop() -> None:
+            # Stagger the first tick so the lifespan bootstrap tick
+            # has finished writing its report before the periodic
+            # loop starts claiming due schedules.
+            await asyncio.sleep(5.0)
+            while True:
+                try:
+                    store = _hs()
+                    if store is None:
+                        slog.warning("history store unavailable, retrying")
+                    else:
+                        def _spawn(payload: dict, _store=store) -> int:
+                            return spawn_scheduled_worker(
+                                payload,
+                                store=_store,
+                                background=True,
+                                run_executor=production_run_executor,
+                            )
+
+                        report = _periodic_tick(
+                            store=store,
+                            source="daemon",
+                            spawn_worker=_spawn,
+                        )
+                        if report.fired or report.stale_recovered:
+                            slog.info(
+                                "studio scheduler tick: fired=%s stale_recovered=%s",
+                                report.fired,
+                                report.stale_recovered,
+                            )
+                except Exception:  # noqa: BLE001
+                    slog.exception("studio scheduler tick crashed")
+                await asyncio.sleep(60.0)
+
+        app.state.scheduler_task = asyncio.create_task(_loop())
+
+    @app.on_event("shutdown")
+    async def _stop_studio_scheduler_loop() -> None:
+        task = getattr(app.state, "scheduler_task", None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except Exception:  # noqa: BLE001
+            pass
+
     root = static_root if static_root is not None else _static_root()
     app.state.static_root = root
 
