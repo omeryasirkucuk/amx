@@ -1333,6 +1333,62 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
                 hs.record_applied(r.result_id)
             except Exception:
                 pass
+        # Sync the catalog so concept search reflects the just-written
+        # description on the very next /ask. Without this the CLI
+        # apply path already updated catalog state via
+        # ``Orchestrator._record_applied_state`` but the Studio worker
+        # used to only update the run_results SQLite row — meaning a
+        # user could /apply a description and still get "no description
+        # found" from concept search until the next manual /search sync.
+        try:
+            from amx.search.catalog import SearchCatalog
+
+            catalog = SearchCatalog.from_history_store()
+        except Exception as exc:  # pragma: no cover - best-effort
+            catalog = None
+            log.debug("Could not open catalog for post-apply sync: %s", exc)
+        if catalog is None:
+            return
+        if r.result_id is not None:
+            try:
+                catalog.mark_applied(r.result_id)
+            except Exception as exc:  # pragma: no cover - best-effort
+                log.debug("catalog.mark_applied(%s) failed: %s", r.result_id, exc)
+        # Belt-and-braces: even when ``mark_applied`` flips
+        # applied_to_db=1 on an existing row, the text on that row may
+        # be a stale draft (user inline-edited at apply time). Insert
+        # a fresh reviewed row carrying the exact text written to the
+        # live DB so the catalog's effective description matches the
+        # COMMENT the user is about to read on the next /ask.
+        try:
+            catalog.record_applied_description(
+                db_profile=str(body.db_profile or getattr(cfg.db, "name", "") or ""),
+                db_backend=str(getattr(cfg.db, "backend", "") or ""),
+                database_name=str(
+                    body.database
+                    or body.catalog
+                    or getattr(cfg.db, "database", "")
+                    or getattr(cfg.db, "catalog", "")
+                    or getattr(cfg.db, "project", "")
+                    or ""
+                ),
+                schema_name=r.schema,
+                table_name=r.table or "",
+                column_name=r.column,
+                entity_kind="column" if r.column else "table",
+                asset_kind=(r.asset_kind or "table"),
+                description=r.final_description or "",
+                run_id=getattr(r, "run_id", None),
+                result_id=r.result_id,
+            )
+        except Exception as exc:  # pragma: no cover - best-effort
+            log.debug(
+                "catalog.record_applied_description failed for %s.%s.%s: %s",
+                r.schema,
+                r.table,
+                r.column,
+                exc,
+            )
 
     def _on_failed(r: ReviewResult, exc: Exception) -> None:
         if hs is not None and r.result_id is not None:

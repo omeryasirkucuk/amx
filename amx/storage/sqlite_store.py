@@ -410,6 +410,60 @@ class SQLiteHistoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_catalog_descriptions_entity_id ON catalog_descriptions(entity_id, created_at DESC)"
             )
+            # FTS5 virtual table for concept search. Mirrors the four
+            # search-relevant columns from ``catalog_entities``:
+            # ``search_text`` carries the synthesized blob the resolver
+            # built (path + dtype + descriptions + relationships) and
+            # the three name columns let MATCH queries weight a hit on
+            # column / table name above a hit in the description body.
+            # Stored as ``content_rowid=id`` so each FTS row tracks the
+            # owning entity row by primary key — sync.py mirrors INSERT
+            # / UPDATE / DELETE alongside the entity write path. The
+            # ``content=''`` shape (contentless FTS) avoids needing
+            # triggers to keep the FTS in sync with arbitrary external
+            # writes; we own every catalog_entities write site already.
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS catalog_entities_fts
+                USING fts5(
+                    db_profile UNINDEXED,
+                    column_name,
+                    table_name,
+                    schema_name,
+                    search_text,
+                    tokenize='unicode61 remove_diacritics 2'
+                )
+                """
+            )
+            # One-shot backfill on upgrade. If the catalog already holds
+            # rows but the FTS table is empty (existing install jumping
+            # to v0.15+), populate every entity now so concept search
+            # works on the first ``/ask`` after upgrade — without this
+            # the legacy O(n) scan fallback handles correctness but the
+            # latency win only kicks in after the next ``/search sync``.
+            try:
+                pending = conn.execute(
+                    "SELECT COUNT(*) AS n FROM catalog_entities WHERE search_text != ''"
+                ).fetchone()
+                fts_count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM catalog_entities_fts"
+                ).fetchone()
+                if pending and fts_count and int(pending["n"]) > 0 and int(fts_count["n"]) == 0:
+                    conn.execute(
+                        """
+                        INSERT INTO catalog_entities_fts (
+                            rowid, db_profile, column_name, table_name, schema_name, search_text
+                        )
+                        SELECT id, db_profile, COALESCE(column_name, ''), table_name,
+                               schema_name, search_text
+                        FROM catalog_entities
+                        WHERE search_text != ''
+                        """
+                    )
+            except sqlite3.OperationalError:
+                # FTS5 missing on the host SQLite; the search path
+                # falls back to the legacy scan automatically.
+                pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_relationships (

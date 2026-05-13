@@ -210,6 +210,20 @@ def submit_ask(
 
     scope_profiles = _resolve_ask_scope(cfg, body.scope_profiles, session_scope)
 
+    # Fire a background drift probe for every profile in scope. If a
+    # table was created / dropped since the last ``/search sync``, the
+    # probe enqueues an async sync so the NEXT /ask reflects the new
+    # schema. The current call uses whatever catalog state is there —
+    # the probe is intentionally fire-and-forget. ``AMX_SKIP_DRIFT_PROBE=1``
+    # opts out, and the helper applies a per-profile cooldown so
+    # back-to-back /ask calls don't hammer the live DB.
+    try:
+        from amx.search.drift import fire_drift_probe
+
+        fire_drift_probe(cfg, scope_profiles)
+    except Exception as exc:  # pragma: no cover - best-effort
+        log.debug("fire_drift_probe failed: %s", exc)
+
     job = jobs.new_job("ask")
     thread = threading.Thread(
         target=_ask_worker,

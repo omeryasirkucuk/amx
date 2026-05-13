@@ -3059,11 +3059,9 @@ class ToolBox:
             # honour it — otherwise fall through to the connection-time
             # default. If that fails AND the profile is unpinned, sweep
             # every database the server exposes and try each.
-            candidate_dbs: list[str | None]
-            if explicit_db:
-                candidate_dbs = [explicit_db]
-            else:
-                candidate_dbs = self._databases_to_sweep()
+            candidate_dbs: list[str | None] = (
+                [explicit_db] if explicit_db else self._databases_to_sweep()
+            )
 
             last_error: str | None = None
             resolved_database = None
