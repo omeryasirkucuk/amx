@@ -7,6 +7,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from amx.config import (
     PROFILING_MODES,
@@ -1849,6 +1850,182 @@ def cleanup_placeholders_core(
         "columns_cleared": cleaned_column,
         "warnings": warnings,
     }
+
+
+def _parse_cache_args(rest: list[str]) -> dict[str, Any]:
+    """Parse ``--profile=X --database=Y --type=schemas --force`` style
+    flags from ``/db cache-*`` rest tokens. Unknown flags raise so the
+    handler can surface a precise error instead of silently dropping
+    user intent.
+    """
+    out: dict[str, Any] = {
+        "profile": None,
+        "database": None,
+        "types": None,
+        "force": False,
+    }
+    for token in rest:
+        if not token:
+            continue
+        if token == "--force":
+            out["force"] = True
+            continue
+        if "=" not in token:
+            raise ValueError(f"Unknown argument {token!r}; expected --flag=value")
+        key, _, value = token.partition("=")
+        key = key.lstrip("-").strip()
+        value = value.strip()
+        if key == "profile":
+            out["profile"] = value
+        elif key == "database":
+            out["database"] = value
+        elif key == "type":
+            out["types"] = [t.strip() for t in value.split(",") if t.strip()]
+        else:
+            raise ValueError(
+                f"Unknown flag --{key}; expected --profile / --database / --type / --force"
+            )
+    return out
+
+
+def _format_age(ts: float | None) -> str:
+    if ts is None or ts <= 0:
+        return "—"
+    import time as _t
+
+    delta = max(0.0, _t.time() - float(ts))
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta // 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)}h ago"
+    return f"{int(delta // 86400)}d ago"
+
+
+def cmd_cache_show(cfg: AMXConfig, rest: list[str]) -> None:
+    """/db cache-show — render per-(profile, database) cache row counts."""
+    try:
+        args = _parse_cache_args(rest)
+    except ValueError as exc:
+        error(str(exc))
+        return
+    from amx.storage.cache_ops import cache_inventory
+
+    rows = cache_inventory(profile=args["profile"], database=args["database"])
+    if not rows:
+        info("No cached rows for the requested scope.")
+        return
+    table_rows = [
+        [
+            r.profile,
+            r.database or "—",
+            str(r.schemas_rows),
+            str(r.columns_rows),
+            str(r.catalog_rows),
+            _format_age(r.last_fetch),
+        ]
+        for r in rows
+    ]
+    render_table(
+        "DB cache inventory",
+        ["Profile", "Database", "Schemas", "Columns", "Catalog", "Last fetch"],
+        table_rows,
+    )
+
+
+def cmd_cache_stats(cfg: AMXConfig, rest: list[str]) -> None:
+    """/db cache-stats — aggregate metrics per cache table."""
+    if rest:
+        warn("/db cache-stats takes no arguments; ignoring extras.")
+    from amx.storage.cache_ops import cache_stats
+
+    stats = cache_stats()
+    if not stats:
+        info("Cache store unavailable — has /history-store been initialised?")
+        return
+    for key in ("schemas", "columns", "catalog"):
+        stat = stats.get(key)
+        if stat is None:
+            continue
+        rows: list[list[str]] = [
+            ["Table", stat.table],
+            ["Total rows", str(stat.total_rows)],
+            ["Distinct profiles", str(stat.distinct_profiles)],
+            ["Distinct databases", str(stat.distinct_databases)],
+            ["Oldest fetch", _format_age(stat.oldest_fetch)],
+            ["Newest fetch", _format_age(stat.newest_fetch)],
+        ]
+        if stat.ttl_aware:
+            rows.append(["Expired rows", str(stat.expired_rows)])
+        else:
+            rows.append(["TTL", "none — rewritten by /sync"])
+        render_table(f"Cache: {key}", ["Metric", "Value"], rows)
+
+
+def cmd_cache_clear(cfg: AMXConfig, rest: list[str]) -> None:
+    """/db cache-clear — DELETE rows from the requested cache tables.
+
+    Defaults to clearing all three tables for the scope. Without explicit
+    --profile/--database AND without --force we double-confirm: a
+    global flush is recoverable (next live read repopulates) but it
+    can spike latency for the rest of the active session.
+    """
+    try:
+        args = _parse_cache_args(rest)
+    except ValueError as exc:
+        error(str(exc))
+        return
+    from amx.storage.cache_ops import cache_clear
+
+    profile = args["profile"]
+    database = args["database"]
+    types = args["types"]
+    force = bool(args["force"])
+
+    scope_desc = []
+    if profile:
+        scope_desc.append(f"profile={profile}")
+    if database is not None:
+        scope_desc.append(f"database={database or '(empty)'}")
+    if types:
+        scope_desc.append(f"type={','.join(types)}")
+    scope_str = ", ".join(scope_desc) if scope_desc else "EVERY profile, EVERY database"
+
+    if not force:
+        if not profile and database is None:
+            # Global flush — make the user type yes twice.
+            if not confirm(
+                f"Clear DB caches for {scope_str}? This deletes every cached schema, column comment, and catalog row.",
+                default=False,
+            ):
+                info("Cache clear cancelled.")
+                return
+            if not confirm(
+                "Really? Every profile, every database — confirm one more time.",
+                default=False,
+            ):
+                info("Cache clear cancelled.")
+                return
+        else:
+            if not confirm(f"Clear DB caches for {scope_str}?", default=False):
+                info("Cache clear cancelled.")
+                return
+
+    try:
+        report = cache_clear(profile=profile, database=database, types=types)
+    except ValueError as exc:
+        error(str(exc))
+        return
+
+    summary_rows = [[k, str(v)] for k, v in report.deleted.items()]
+    summary_rows.append(["Total", str(report.total)])
+    render_table(
+        f"Cache clear ({scope_str})",
+        ["Cache", "Rows deleted"],
+        summary_rows,
+    )
+    success(f"Cleared {report.total} row(s) across {len(report.deleted)} cache table(s).")
 
 
 def cmd_cleanup_placeholders(cfg: AMXConfig, rest: list[str]) -> None:

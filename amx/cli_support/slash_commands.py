@@ -179,6 +179,44 @@ _DB_COMMANDS: tuple[SlashCommand, ...] = (
         "db",
         "Remove auto-inference placeholder comments from live DB (/cleanup-placeholders [schema])",
     ),
+    # Cache management — explicit handles over the SQLite catalog
+    # caches (schemas_cache, column_comments_cache, catalog_entities).
+    SlashCommand(
+        "/cache-show",
+        "db",
+        "Show DB cache contents (/cache-show [--profile=X] [--database=Y])",
+        long_desc=(
+            "Render per-(profile, database) row counts across the "
+            "schemas_cache, column_comments_cache, and catalog_entities "
+            "tables so the user can see exactly what AMX has indexed "
+            "for each scope plus the most recent fetch timestamp."
+        ),
+    ),
+    SlashCommand(
+        "/cache-stats",
+        "db",
+        "Aggregate DB cache metrics (rows, oldest fetch, %% expired, TTL window)",
+        long_desc=(
+            "Per-cache totals: total rows, distinct profiles / databases, "
+            "oldest and newest fetch timestamps, expired-row count under "
+            "the active TTL window. The catalog_entities row block has "
+            "no TTL (rewritten by /sync) so its expired-row count is "
+            "always zero."
+        ),
+    ),
+    SlashCommand(
+        "/cache-clear",
+        "db",
+        "Flush DB caches (/cache-clear [--profile=X] [--database=Y] [--type=schemas|columns|catalog|all] [--force])",
+        long_desc=(
+            "DELETE rows from the requested cache tables. Without "
+            "explicit scope flags AND without --force the command "
+            "double-confirms before nuking every profile's cache. "
+            "Default --type=all clears all three cache tables for the "
+            "scope. Cache loss is reversible — the next live-DB read "
+            "or /sync rebuilds the rows."
+        ),
+    ),
 )
 
 _METADATA_COMMANDS: tuple[SlashCommand, ...] = (

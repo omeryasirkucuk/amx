@@ -31,6 +31,7 @@ const System = lazy(() => import("./routes/System"));
 const Audit = lazy(() => import("./routes/Audit"));
 const Schedules = lazy(() => import("./routes/Schedules"));
 const Pricing = lazy(() => import("./routes/Pricing"));
+const DbCache = lazy(() => import("./routes/DbCache"));
 
 // Suspense fallback is intentionally minimal — chunk fetches over
 // loopback land in milliseconds, so a heavy skeleton would flash
@@ -81,6 +82,7 @@ export default function App() {
               <Route path="settings" element={<Settings />} />
               <Route path="system" element={<System />} />
               <Route path="pricing" element={<Pricing />} />
+              <Route path="db-cache" element={<DbCache />} />
               <Route path="runs/schedules" element={<Schedules />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>

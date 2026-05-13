@@ -1,12 +1,13 @@
 import { useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ChevronRight,
   ChevronDown,
   Database,
   FolderTree,
+  HardDrive,
   Layers,
   Loader2,
   RefreshCw,
@@ -74,6 +75,17 @@ export default function Sidebar({ collapsed }: Props) {
         >
           DB Profiles
         </SectionTitle>
+        <Link
+          to="/db-cache"
+          title="Inspect and flush AMX's DB metadata caches"
+          className={cn(
+            "mb-1 mt-1 flex items-center gap-1.5 rounded px-2 py-1 text-[12px]",
+            "text-ink-dim transition-colors duration-fast hover:bg-surface-subtle hover:text-ink",
+          )}
+        >
+          <HardDrive size={12} />
+          <span>DB cache</span>
+        </Link>
         <ProfileSearchInput />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
