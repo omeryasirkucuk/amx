@@ -1440,7 +1440,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         enabled=bool(conf_map.get("enabled", True)),
         use_logprob=bool(conf_map.get("use_logprob", True)),
         use_self_consistency=bool(conf_map.get("use_self_consistency", True)),
-        use_self_decl=bool(conf_map.get("use_self_decl", False)),
+        use_self_decl=bool(conf_map.get("use_self_decl", True)),
         use_judge=bool(conf_map.get("use_judge", False)),
         high=float(bands_map.get("high", 0.75)),
         med=float(bands_map.get("med", 0.50)),

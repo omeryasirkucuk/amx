@@ -3188,8 +3188,21 @@ function ResultRowItemImpl({
   const sourceAlts = pendingEntry
     ? normalizeAlternativeStrings(pendingEntry.alternatives)
     : normalizeAlternatives(displayRow.alternatives_json);
+  // Phase 1 confidence: structured-shape map keyed by alternative text
+  // so per-alternative badges can be looked up cheaply during render.
+  // ``pendingEntry`` flows from the re-run pending file which carries
+  // only ``alternatives: string[]``; for that path the lookup returns
+  // an empty map and the chosen-row falls back to the legacy
+  // ``ConfidencePill`` aggregate without crashing.
+  const structuredAlts = pendingEntry
+    ? []
+    : normalizeStructuredAlternatives(displayRow.alternatives_json);
+  const structuredByText = new Map(
+    structuredAlts.map((alt) => [alt.text, alt] as const),
+  );
   const chosen =
     pendingEntry?.final_description ?? displayRow.chosen_description ?? "";
+  const chosenStructured = structuredByText.get(chosen) ?? null;
   const visible = chosen && !sourceAlts.includes(chosen)
     ? [chosen, ...sourceAlts]
     : sourceAlts;
@@ -3390,6 +3403,7 @@ function ResultRowItemImpl({
         <ConfidencePill value={row.confidence} score={row.logprob_score} />
         <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
         <LogprobBadge score={row.logprob_score} />
+        {chosenStructured && <ConfidenceBadge alt={chosenStructured} />}
         {rerunSeq > 0 && (
           <span
             title={
@@ -3525,7 +3539,13 @@ function ResultRowItemImpl({
                 >
                   {isChosen ? "✓" : String.fromCharCode(65 + idx)}
                 </span>
-                <span className="leading-relaxed">{alt}</span>
+                <span className="flex-1 leading-relaxed">{alt}</span>
+                {(() => {
+                  const structuredAlt = structuredByText.get(alt);
+                  return structuredAlt ? (
+                    <ConfidenceBadge alt={structuredAlt} />
+                  ) : null;
+                })()}
               </button>
             );
           })
