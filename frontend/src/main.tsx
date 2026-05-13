@@ -4,13 +4,30 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
-import { captureTokenFromUrl } from "./lib/auth";
+import { captureTokenFromUrl, consumeDeeplink } from "./lib/auth";
 import "./styles/index.css";
 
 // Capture the bearer token before the React tree mounts so the very
 // first /api/* fetch already has it. The launcher embeds the token
 // as `?t=<token>` on the URL the browser tab opens.
 captureTokenFromUrl();
+
+// Honor the deep link a previous tab session stashed before it
+// bounced through ``/`` to refresh the bearer token (see the 401
+// branch in ``lib/api.ts``). Without this, a user who landed on
+// ``/ask`` right after a Studio restart would re-capture the token
+// but lose the page they were trying to read. ``replaceState`` keeps
+// the history clean — Back / Forward still walk the user's real
+// path, not the home bounce.
+(() => {
+  const target = consumeDeeplink();
+  if (!target) return;
+  // Only redirect if we actually landed on home — if BrowserRouter
+  // already has a non-home location (e.g. user typed the deep link
+  // again themselves) leave it alone.
+  if (window.location.pathname !== "/" || window.location.search) return;
+  window.history.replaceState({}, document.title, target);
+})();
 
 // Strip the stale-bundle reload bust query if we just landed from
 // one. Keeps the URL clean for Back / Forward / Bookmark and the
