@@ -17,6 +17,170 @@ import { Button, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
 
 import ScopeTree, { type SchemaPick } from "../components/ScopeTree";
 
+const CATALOG_BACKENDS = new Set(["databricks", "bigquery"]);
+
+/** One profile selection block — Profile + Database + tree of picks.
+ *  A run can stack any number of these; the SPA fans them out to
+ *  N parallel ``/api/runs`` calls on submit, so one "Start run"
+ *  click can spread metadata work across multiple databases. */
+interface ProfileSelection {
+  /** Local-only stable key for React. */
+  id: string;
+  profile: string;
+  /** Database or catalog name, depending on backend. */
+  database: string;
+  isCatalogBackend: boolean;
+  picks: SchemaPick[];
+}
+
+function freshSelection(seed?: {
+  profile?: string;
+  database?: string;
+  isCatalogBackend?: boolean;
+}): ProfileSelection {
+  return {
+    id: Math.random().toString(36).slice(2, 10),
+    profile: seed?.profile ?? "",
+    database: seed?.database ?? "",
+    isCatalogBackend: Boolean(seed?.isCatalogBackend),
+    picks: [],
+  };
+}
+
+interface SelectionBlockProps {
+  selection: ProfileSelection;
+  index: number;
+  canRemove: boolean;
+  profiles: DbProfileSummary[];
+  profileByName: Map<string, DbProfileSummary>;
+  onUpdate: (patch: Partial<ProfileSelection>) => void;
+  onRemove: () => void;
+}
+
+function SelectionBlock({
+  selection,
+  index,
+  canRemove,
+  profiles,
+  profileByName,
+  onUpdate,
+  onRemove,
+}: SelectionBlockProps) {
+  const selectedProfile = profileByName.get(selection.profile);
+  const isCatalog = Boolean(
+    selectedProfile && CATALOG_BACKENDS.has(selectedProfile.backend),
+  );
+
+  // Live databases / catalogs for the picked profile. Drives the
+  // second dropdown. Auto-picks the only available option to spare
+  // the user a click on single-DB profiles like Postgres.
+  const databasesQ = useQuery({
+    queryKey: ["run-sel-dbs", selection.profile, isCatalog],
+    queryFn: () => {
+      const path = isCatalog
+        ? `/api/live/catalogs?profile=${encodeURIComponent(selection.profile)}`
+        : `/api/live/databases?profile=${encodeURIComponent(selection.profile)}`;
+      return apiFetch<{ databases?: string[]; catalogs?: string[] }>(path);
+    },
+    enabled: Boolean(selection.profile),
+  });
+  const options = isCatalog
+    ? databasesQ.data?.catalogs ?? []
+    : databasesQ.data?.databases ?? [];
+
+  // Auto-pick the only available DB when the profile changes.
+  useEffect(() => {
+    if (!selection.database && options.length === 1) {
+      onUpdate({ database: options[0], isCatalogBackend: isCatalog });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options.length]);
+
+  return (
+    <div className="rounded-md border border-border bg-surface-muted/40 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-medium uppercase tracking-wider text-ink-dim">
+          Selection {index + 1}
+        </span>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="rounded border border-border px-2 py-0.5 text-xs text-ink-dim hover:border-critical/40 hover:text-critical"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="text-ink-dim">DB profile</span>
+          <select
+            className="h-8 rounded-md border border-border bg-surface-raised px-2 text-sm text-ink"
+            value={selection.profile}
+            onChange={(e) => {
+              const next = profileByName.get(e.target.value);
+              const nextIsCatalog = Boolean(
+                next && CATALOG_BACKENDS.has(next.backend),
+              );
+              onUpdate({
+                profile: e.target.value,
+                database: "",
+                isCatalogBackend: nextIsCatalog,
+                picks: [],
+              });
+            }}
+          >
+            <option value="">— pick a profile —</option>
+            {profiles.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name} · {p.backend}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="text-ink-dim">{isCatalog ? "Catalog" : "Database"}</span>
+          <select
+            className="h-8 rounded-md border border-border bg-surface-raised px-2 text-sm text-ink disabled:opacity-50"
+            value={selection.database}
+            onChange={(e) =>
+              onUpdate({
+                database: e.target.value,
+                isCatalogBackend: isCatalog,
+                picks: [],
+              })
+            }
+            disabled={!selection.profile || databasesQ.isLoading}
+          >
+            {!selection.profile && <option value="">pick a profile first</option>}
+            {selection.profile && databasesQ.isLoading && (
+              <option value="">loading…</option>
+            )}
+            {selection.profile && !databasesQ.isLoading && options.length === 0 && (
+              <option value="">(none visible)</option>
+            )}
+            {options.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="mt-3">
+        <ScopeTree
+          dbProfile={selection.profile}
+          database={selection.database}
+          isCatalogBackend={selection.isCatalogBackend || isCatalog}
+          picks={selection.picks}
+          onChange={(picks) => onUpdate({ picks })}
+        />
+      </div>
+    </div>
+  );
+}
+
 /** Build the ``column_overrides`` dict the /api/runs body now accepts
  * from a tree of {schema, tables: [{table, columns}]} picks. Returns
  * undefined when no column-level restriction is present, so callers
@@ -230,7 +394,23 @@ export default function RunNew() {
   const navigate = useNavigate();
   const toast = useToast();
   const scope = useRunScope();
-  const [picks, setPicks] = useState<SchemaPick[]>([]);
+  // Multi-profile selections. The first entry seeds itself from the
+  // URL scope (``?profile=…&database=…``) so existing deep-links from
+  // sidebar / Browse pages keep working. The user can append further
+  // selections via "Add profile"; each fires its own /api/runs call
+  // on submit, so one click can spread metadata work across N DBs.
+  const [selections, setSelections] = useState<ProfileSelection[]>(() => {
+    if (scope) {
+      return [
+        freshSelection({
+          profile: scope.profile,
+          database: scope.database ?? scope.catalog ?? "",
+          isCatalogBackend: scope.kind === "catalog",
+        }),
+      ];
+    }
+    return [freshSelection()];
+  });
   const [missingOnly, setMissingOnly] = useState(false);
   const [autoApply, setAutoApply] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
@@ -293,27 +473,75 @@ export default function RunNew() {
   // old per-schema asset-search machinery is gone. ``schemas`` is
   // still kept around for the "no schemas reachable" guard above.
 
+  // DB profile catalog drives every per-selection Profile dropdown.
+  const dbProfilesQ = useQuery({
+    queryKey: ["profiles", "db"],
+    queryFn: () => apiFetch<DbProfilesListResponse>("/api/profiles/db"),
+  });
+  const profileByName = useMemo(() => {
+    const m = new Map<string, DbProfileSummary>();
+    for (const p of dbProfilesQ.data?.profiles ?? []) m.set(p.name, p);
+    return m;
+  }, [dbProfilesQ.data]);
+
+  function updateSelection(id: string, patch: Partial<ProfileSelection>) {
+    setSelections((curr) =>
+      curr.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+    );
+  }
+
+  function addSelection() {
+    setSelections((curr) => [...curr, freshSelection()]);
+  }
+
+  function removeSelection(id: string) {
+    setSelections((curr) =>
+      curr.length <= 1 ? curr : curr.filter((s) => s.id !== id),
+    );
+  }
+
+  const totalPicks = selections.reduce((n, s) => n + s.picks.length, 0);
+  const canSubmit =
+    llmReady &&
+    selections.every((s) => s.profile && s.database) &&
+    totalPicks > 0;
+
   const submit = useMutation({
-    mutationFn: () =>
-      api.submitRun({
-        scope: buildScopeDict(picks),
-        column_overrides: buildColumnOverrides(picks),
-        apply: autoApply,
-        missing_only: missingOnly,
-        batch_mode: batchMode && supportsBatch,
-        db_profile: scope?.profile,
-        database: scope?.database,
-        catalog: scope?.catalog,
-        llm_overrides: buildOverridesPayload(overrides, profileDefaults),
-      }),
-    onSuccess: (result) => {
+    mutationFn: async () => {
+      // Fan-out: fire one /api/runs per selection, parallel. Whichever
+      // job_id comes back first wins the navigate(); the others still
+      // exist as separate Runs rows so the user can see all N.
+      const results = await Promise.all(
+        selections.map((sel) =>
+          api.submitRun({
+            scope: buildScopeDict(sel.picks),
+            column_overrides: buildColumnOverrides(sel.picks),
+            apply: autoApply,
+            missing_only: missingOnly,
+            batch_mode: batchMode && supportsBatch,
+            db_profile: sel.profile,
+            database: sel.isCatalogBackend ? undefined : sel.database,
+            catalog: sel.isCatalogBackend ? sel.database : undefined,
+            llm_overrides: buildOverridesPayload(overrides, profileDefaults),
+          }),
+        ),
+      );
+      return results;
+    },
+    onSuccess: (results) => {
       toast.push({
-        title: "Run started",
-        description: `${picks.length} ${picks.length === 1 ? "schema" : "schemas"} queued.`,
+        title:
+          results.length === 1
+            ? "Run started"
+            : `${results.length} runs started`,
+        description:
+          results.length === 1
+            ? `${totalPicks} ${totalPicks === 1 ? "schema" : "schemas"} queued.`
+            : `${selections.length} profiles queued in parallel.`,
         tone: "success",
         duration: 2200,
       });
-      navigate(`/runs/new-${result.job_id}`);
+      navigate(`/runs/new-${results[0].job_id}`);
     },
     onError: (err: Error) => {
       toast.push({
@@ -326,11 +554,16 @@ export default function RunNew() {
 
   const totalAssets = useMemo(
     () =>
-      picks.reduce(
-        (acc, p) => acc + (p.tables.length === 0 ? 1 : p.tables.length),
+      selections.reduce(
+        (acc, sel) =>
+          acc +
+          sel.picks.reduce(
+            (n, p) => n + (p.tables.length === 0 ? 1 : p.tables.length),
+            0,
+          ),
         0,
       ),
-    [picks],
+    [selections],
   );
 
   return (
@@ -376,22 +609,28 @@ export default function RunNew() {
           <Card className="lg:flex lg:h-full lg:flex-col lg:self-stretch">
             <CardHeader
               title="Scope"
-              description="Untick everything for the whole database. Tick schemas to limit; expand to drill into tables and individual columns."
+              description="Pick a DB profile, then drill into schemas / tables / columns. Add more profiles to spread a single run across multiple databases."
             />
-            <CardBody className="p-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-              {scope ? (
-                <ScopeTree
-                  dbProfile={scope.profile}
-                  database={scope.database ?? scope.catalog ?? ""}
-                  isCatalogBackend={scope.kind === "catalog"}
-                  picks={picks}
-                  onChange={setPicks}
+            <CardBody className="space-y-4 p-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-y-auto">
+              {selections.map((sel, idx) => (
+                <SelectionBlock
+                  key={sel.id}
+                  selection={sel}
+                  index={idx}
+                  canRemove={selections.length > 1}
+                  profiles={dbProfilesQ.data?.profiles ?? []}
+                  profileByName={profileByName}
+                  onUpdate={(patch) => updateSelection(sel.id, patch)}
+                  onRemove={() => removeSelection(sel.id)}
                 />
-              ) : (
-                <p className="px-3 py-2 text-xs text-ink-dim">
-                  Pick a DB profile first.
-                </p>
-              )}
+              ))}
+              <button
+                type="button"
+                onClick={addSelection}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-2 text-sm text-ink-dim hover:border-accent/40 hover:text-ink"
+              >
+                + Add another profile
+              </button>
             </CardBody>
           </Card>
 
@@ -456,7 +695,7 @@ export default function RunNew() {
               <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
                 <dt className="text-ink-dim">Schemas</dt>
                 <dd className="text-right font-mono tabular-nums text-ink">
-                  {picks.length}
+                  {totalPicks}
                 </dd>
                 <dt className="text-ink-dim">Asset slots</dt>
                 <dd className="text-right font-mono tabular-nums text-ink">
@@ -470,7 +709,7 @@ export default function RunNew() {
               <Button
                 type="button"
                 onClick={() => submit.mutate()}
-                disabled={picks.length === 0}
+                disabled={!canSubmit}
                 loading={submit.isPending}
                 variant="primary"
                 size="lg"
@@ -479,7 +718,7 @@ export default function RunNew() {
               >
                 {submit.isPending ? "Starting…" : "Start run"}
               </Button>
-              {picks.length === 0 && (
+              {totalPicks === 0 && (
                 <p className="text-[11px] text-ink-dim">
                   Pick at least one schema to enable the start button.
                 </p>
