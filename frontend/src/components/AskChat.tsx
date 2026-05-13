@@ -262,7 +262,7 @@ export default function AskChat({
   });
 
   // Aggregate streamed events into the assistant's turn.
-  const { thinking, streamingAnswer, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure } = useMemo(() => {
+  const { thinking, streamingAnswer, finalAnswer, toolCalls, finalMeta, finalCitations, jobFailure, wasCancelled } = useMemo(() => {
     const thinkingChunks: string[] = [];
     const tools: Array<{
       name: string;
@@ -287,6 +287,7 @@ export default function AskChat({
     } = {};
     let citations: Citation[] = [];
     let failure: { message: string; hint?: string } | null = null;
+    let wasCancelled = false;
     for (const event of events) {
       if (event.type === "thinking.delta" && typeof event.text === "string") {
         thinkingChunks.push(event.text);
@@ -330,6 +331,15 @@ export default function AskChat({
           message: String(event.error || "Ask failed."),
           hint: typeof event.hint === "string" ? event.hint : undefined,
         };
+      } else if (event.type === "job.cancelled") {
+        // Sticky flag — the close effect uses it to silently drop the
+        // bubble instead of surfacing the generic "no final answer"
+        // banner that previously mis-blamed the LLM. The local
+        // ``cancelling`` state flips synchronously when the user
+        // clicks Cancel, but that flag is reset inside the close
+        // effect itself; relying on the event keeps the signal
+        // attached to the stream regardless of state ordering.
+        wasCancelled = true;
       }
     }
     return {
@@ -340,6 +350,7 @@ export default function AskChat({
       finalMeta: meta,
       finalCitations: citations,
       jobFailure: failure,
+      wasCancelled,
     };
   }, [events]);
 
@@ -384,12 +395,17 @@ export default function AskChat({
       clearAskActiveJob(sessionKey);
       return;
     }
-    // Stream closed without final answer AND without job.failed (rare
-    // — proxy reset, network glitch, or a clean job.cancelled after
-    // the user clicked Cancel). When the user cancelled, no error
-    // banner — drop the activeJob silently so the cancelled turn
-    // simply disappears.
-    if (!cancelling) {
+    // Stream closed without final answer AND without job.failed.
+    // Two distinct flavours land here:
+    //   * The user clicked Cancel and the worker emitted job.cancelled —
+    //     the ``wasCancelled`` flag from the SSE stream OR the local
+    //     ``cancelling`` state catches it (the flag survives the
+    //     setCancelling(false) reset that previously raced the close
+    //     effect and let the error banner fire after a successful
+    //     cancel).
+    //   * A real proxy reset / network glitch — both flags are false,
+    //     surface the actionable banner.
+    if (!wasCancelled && !cancelling) {
       setSubmitError(
         "The ask stream ended without a final answer. Try again, or check Settings → LLM if this keeps happening.",
       );
@@ -398,7 +414,7 @@ export default function AskChat({
     setActiveJob(null);
     setCancelling(false);
     clearAskActiveJob(sessionKey);
-  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling]);
+  }, [closed, finalAnswer, jobFailure, toolCalls, finalMeta, finalCitations, sessionKey, clearAskActiveJob, cancelling, wasCancelled]);
 
   async function submitText(rawText: string) {
     const text = (rawText || "").trim();
