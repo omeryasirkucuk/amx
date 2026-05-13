@@ -25,6 +25,7 @@ from click.testing import CliRunner
 from amx.cli import main
 from amx.cli_support.commands.compare import (
     _aggregate_for_run,
+    _band_prefix,
     _collect_per_column_long,
     _collect_run_summary_rows,
     _detect_by,
@@ -2232,6 +2233,30 @@ class CatalogDiscoveryToolsTests(unittest.TestCase):
         self.assertFalse(payload["supported"])
         self.assertEqual(payload["volumes"], [])
         self.assertIn("Databricks", payload["message"])
+
+
+def test_band_prefix_renders_glyph_for_high_band():
+    assert "[H]" in _band_prefix({"band": "HIGH"})
+
+
+def test_band_prefix_renders_glyph_for_med_band():
+    assert "[M]" in _band_prefix({"band": "MED"})
+
+
+def test_band_prefix_renders_glyph_for_low_band():
+    assert "[L]" in _band_prefix({"band": "LOW"})
+
+
+def test_band_prefix_empty_for_legacy_string_entry():
+    assert _band_prefix("plain string") == ""
+
+
+def test_band_prefix_empty_for_dict_without_band():
+    assert _band_prefix({"text": "no band here"}) == ""
+
+
+def test_band_prefix_empty_for_unknown_band():
+    assert _band_prefix({"band": "WAT"}) == ""
 
 
 if __name__ == "__main__":
