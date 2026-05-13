@@ -33,12 +33,18 @@ def test_local_model_cost_map_env_set_before_import() -> None:
     so litellm skips the GitHub fetch (which fires the SSL warning
     on corp networks with TLS proxies).
     """
-    # Reset module cache + env var, then call the bootstrap.
+    # Reset both the cached module ref *and* the env var so we exercise
+    # the first-import code path even when an earlier test already
+    # warmed up the litellm module. Without the ``patch.object`` the
+    # bootstrap returns the cached module and never touches the env
+    # var, leaving the assertion at the mercy of pytest's collection
+    # order — historically this test happened to run before any other
+    # test imported litellm, but adding more test files can swap that
+    # ordering and trip the assertion.
     saved = os.environ.pop("LITELLM_LOCAL_MODEL_COST_MAP", None)
     try:
-        # The first call may already have configured the env var, so
-        # we check the post-condition rather than the boundary.
-        llm_provider._litellm()
+        with patch.object(llm_provider, "_litellm_module", None):
+            llm_provider._litellm()
         assert os.environ.get("LITELLM_LOCAL_MODEL_COST_MAP") == "True"
     finally:
         if saved is None:
