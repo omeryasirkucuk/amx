@@ -610,17 +610,21 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
                     "applied_flag": bool(body.apply),
                     "trigger": "studio",
                     "batch_mode": use_batch,
-                    # Persist the exact database/catalog the run was
-                    # rooted at — without this the apply path falls
-                    # back to the active profile's pinned default and
-                    # produces ``schema "X" does not exist`` errors
-                    # when the user scoped to a non-default database.
                     "database": (body.database or "").strip() or None,
                     "catalog": (body.catalog or "").strip() or None,
-                    # Record exactly which LLM-profile knobs diverged
-                    # for this one run so /history can show the
-                    # delta-from-profile alongside the run's outcome.
                     "llm_overrides": applied_overrides or None,
+                    # Persist the column-level scope (when the user
+                    # picked individual columns via the ScopeTree).
+                    # Keys: "schema.table" -> [col1, col2, ...].
+                    # The Ask agent's ``describe_run`` returns
+                    # ``settings_json`` verbatim so this is enough to
+                    # answer "did I run on just these columns?"
+                    # without a second roundtrip.
+                    "column_overrides": (
+                        dict(body.column_overrides)
+                        if body.column_overrides
+                        else None
+                    ),
                 },
             )
             # Bind the persistent run id to the live Job so the run
