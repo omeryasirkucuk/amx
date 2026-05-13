@@ -30,10 +30,10 @@ import logging
 import sys
 import time
 
+from amx.config import AMXConfig
 from amx.runtime.worker import production_run_executor, spawn_scheduled_worker
 from amx.scheduler.tick import tick
 from amx.storage.factory import init_history_store
-from amx.config import AMXConfig
 
 
 def _spawn(payload: dict) -> int:

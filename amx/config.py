@@ -2509,10 +2509,7 @@ class AMXConfig:
             # ghost selections after a profile is removed.
             if name in self.active_db_profiles:
                 self.active_db_profiles = [n for n in self.active_db_profiles if n != name]
-            if (
-                self.active_db_profile
-                and not self.active_db_profiles
-            ):
+            if self.active_db_profile and not self.active_db_profiles:
                 self.active_db_profiles = [self.active_db_profile]
             elif not self.active_db_profile:
                 self.active_db_profiles = []

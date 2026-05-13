@@ -29,9 +29,7 @@ from amx.search.agent_tools import ToolBox
 
 
 def _bare_toolbox(*, db_database: str = "", db_profile: str = "p"):
-    cfg_db = SimpleNamespace(
-        database=db_database, catalog="", backend="postgresql", project=""
-    )
+    cfg_db = SimpleNamespace(database=db_database, catalog="", backend="postgresql", project="")
     cfg = SimpleNamespace(
         db=cfg_db,
         db_profiles={db_profile: cfg_db},
@@ -87,6 +85,7 @@ def test_describe_table_serves_from_catalog_when_synced(monkeypatch):
             {"name": "waerk", "dtype": "char", "nullable": True, "comment": ""},
         ],
     }
+
     # Profile_table must never be called when the catalog has the data.
     def _boom(*_a, **_kw):
         raise AssertionError("profile_table called despite catalog hit")

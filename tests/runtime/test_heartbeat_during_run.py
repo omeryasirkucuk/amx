@@ -13,10 +13,7 @@ the real Orchestrator stack.
 from __future__ import annotations
 
 import json
-import threading
 import time
-from typing import Any
-from unittest.mock import patch
 
 from amx.runtime.worker import _scope_column_overrides
 from amx.storage.sqlite_store import SQLiteHistoryStore
@@ -58,9 +55,7 @@ def test_per_table_heartbeat_logic_works_against_real_store(
     # Stale-recovery with threshold=60 and now=started+220 must NOT
     # sweep this row: the last beat lives at started+210, well within
     # the 60s window.
-    recovered = s.recover_stale_runs(
-        threshold_sec=60.0, now_utc=started + 220.0
-    )
+    recovered = s.recover_stale_runs(threshold_sec=60.0, now_utc=started + 220.0)
     assert rid not in recovered
 
 

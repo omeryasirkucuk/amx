@@ -219,9 +219,7 @@ def install_daemon() -> dict[str, Any]:
         tmr_path = _systemd_timer_path(suffix)
         svc_path.parent.mkdir(parents=True, exist_ok=True)
         svc_path.write_text(
-            _SYSTEMD_SERVICE.format(
-                label=label, python_path=python_path, config_dir=str(cfg)
-            )
+            _SYSTEMD_SERVICE.format(label=label, python_path=python_path, config_dir=str(cfg))
         )
         tmr_path.write_text(_SYSTEMD_TIMER.format(label=label, suffix=suffix))
         # ``loginctl enable-linger`` keeps user-level systemd units
@@ -263,8 +261,8 @@ def install_daemon() -> dict[str, Any]:
         # append mode so consecutive ticks accumulate.
         task_action = (
             f'cmd.exe /c "set AMX_CONFIG_DIR={cfg} && '
-            f'set AMX_SKIP_BOOTSTRAP_TICK=1 && '
-            f'set PYTHONUNBUFFERED=1 && '
+            f"set AMX_SKIP_BOOTSTRAP_TICK=1 && "
+            f"set PYTHONUNBUFFERED=1 && "
             f'"{python_path}" -m amx.scheduler >> "{log_path_w}" 2>&1"'
         )
         cmd = [
