@@ -62,8 +62,16 @@ def _serialize(
     alternatives = list(rr.alternatives or [])
     logprob = rr.logprob_score
     if extra is not None:
+        # The pending JSON file caches only the user's last chosen text;
+        # the full alternatives list lives on ``run_results.alternatives_json``
+        # and must replace any cached value on every GET so the SPA can
+        # still show A / B / C buttons after the user clicks B. (The
+        # previous guard ``and not alternatives`` kept the stale single-
+        # entry pending list and made the other alternatives vanish from
+        # the carousel as soon as one was picked — regression caught
+        # 2026-05-14 during the single-signal pivot.)
         ext_alts = extra.get("alternatives_json")
-        if isinstance(ext_alts, list) and ext_alts and not alternatives:
+        if isinstance(ext_alts, list) and ext_alts:
             alternatives = ext_alts
         if logprob is None and extra.get("logprob_score") is not None:
             logprob = extra.get("logprob_score")

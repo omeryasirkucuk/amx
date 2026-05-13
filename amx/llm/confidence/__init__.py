@@ -1,12 +1,16 @@
 """Per-alternative confidence scoring for ``n_alternatives`` runs.
 
 Each LLM-emitted suggestion block now carries one
-:class:`AlternativeScore` per alternative description, holding both the
-raw per-signal scores (logprob span, self-consistency, …) and the
-combined ensemble + band that Studio and the CLI render.
+:class:`AlternativeScore` per alternative description. The user picks a
+single active signal (``confidence_signal`` on the LLM profile);
+:func:`amx.llm.confidence.scorer.score_alternatives` runs that signal,
+maps the raw 0–1 score to a HIGH / MED / LOW band by
+:func:`amx.llm.confidence.band.band_for`, and stores the result here.
 
-Phase 1 enables Signals A (logprob span) and C (self-consistency); the
-Signal B / D fields stay ``None`` until later phases wire them in.
+When the active signal is ``"none"`` no scoring runs and the
+``suggestion_scores`` field on ``MetadataSuggestion`` stays ``None`` so
+the existing storage / UI back-compat path (legacy ``list[str]``
+``alternatives_json``) takes over.
 """
 
 from __future__ import annotations
@@ -16,32 +20,26 @@ from dataclasses import dataclass
 
 @dataclass
 class AlternativeScore:
-    """Per-alternative confidence signals + ensemble.
+    """One alternative's active-signal score plus its HIGH/MED/LOW band.
 
-    Stored inside ``run_results.alternatives_json`` as the new
-    structured shape:
-
-        [{"text": ..., "scores": {...}, "ensemble": float, "band": str}, ...]
+    ``signal`` records which scorer produced the value so the UI can show
+    "SC: HIGH 0.78" style labels and the Phase 4 eval harness can group
+    rows by the signal that was active when each row was scored. When
+    the signal is unavailable for a row (e.g. logprob on a provider that
+    does not return token logprobs) ``score`` is ``None`` and ``band``
+    is ``"—"``.
     """
 
     text: str
-    logprob_score: float | None
-    self_consistency_score: float | None
-    self_decl_score: float | None
-    judge_score: float | None
-    ensemble_score: float
+    signal: str
+    score: float | None
     band: str
 
     def to_json(self) -> dict[str, object]:
         return {
             "text": self.text,
-            "scores": {
-                "logprob": self.logprob_score,
-                "self_consistency": self.self_consistency_score,
-                "self_decl": self.self_decl_score,
-                "judge": self.judge_score,
-            },
-            "ensemble": self.ensemble_score,
+            "signal": self.signal,
+            "score": self.score,
             "band": self.band,
         }
 

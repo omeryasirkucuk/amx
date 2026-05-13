@@ -2,47 +2,28 @@
 
 Reads ``run_results`` rows where the user has chosen one of the
 alternatives (``accepted IS NOT NULL``) and treats that choice as
-ground truth. For each available confidence signal — logprob,
-self-consistency, self-declaration, judge, and the combined ensemble
-— computes:
+ground truth. The single-signal pivot stores exactly one signal per
+row on each alternative (``alt["signal"]`` + ``alt["score"]``), so we
+group ``usable`` rows by signal and compute, per group:
 
 * **Top-1 accuracy**: the signal's highest-scored alternative matches
   the user-accepted text.
 * **Top-2 accuracy**: the user-accepted text is among the signal's
   two highest-scored alternatives.
 
-These are the same metrics the thesis evaluation chapter quotes, so
-the harness doubles as a research artefact. Rows where a particular
-signal has no scores (e.g. Anthropic + logprob) are excluded from
-that signal's denominator only; other signals continue to count.
+These are the same metrics the chapter on alternative-selection
+strategies quotes; the harness writes one Markdown report that compares
+runs done with different ``confidence_signal`` settings side by side.
 
-The Markdown renderer turns the metric dict into a report suitable
-for pasting into the chapter or sharing with reviewers.
+Rows whose alternatives have no signal recorded (legacy ``list[str]``
+or old ensemble payload) are excluded — the harness only measures runs
+produced under the single-signal pipeline.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-
-_SIGNAL_KEYS = ("logprob", "self_consistency", "self_decl", "judge")
-
-
-def _row_score_for_signal(alternatives: list[dict[str, Any]], signal: str) -> list[float | None]:
-    """Pull one signal's scores out of a parsed alternatives list.
-
-    ``ensemble`` lives on the row itself (one field per alternative);
-    every other key lives under ``alternative["scores"]``.
-    """
-    out: list[float | None] = []
-    for alt in alternatives:
-        if signal == "ensemble":
-            v = alt.get("ensemble")
-        else:
-            scores = alt.get("scores") or {}
-            v = scores.get(signal)
-        out.append(float(v) if isinstance(v, (int, float)) else None)
-    return out
 
 
 def _rank_indices(scores: list[float | None]) -> list[int]:
@@ -61,30 +42,52 @@ def _accepted_index(alternatives: list[dict[str, Any]], accepted: str) -> int | 
     return None
 
 
+def _row_scores(alternatives: list[dict[str, Any]]) -> list[float | None]:
+    """Return the per-alternative numeric score from the current shape."""
+    out: list[float | None] = []
+    for alt in alternatives:
+        v = alt.get("score")
+        out.append(float(v) if isinstance(v, (int, float)) else None)
+    return out
+
+
+def _row_signal(alternatives: list[dict[str, Any]]) -> str | None:
+    """All alternatives in one row share the same ``signal`` (only one
+    scorer ran). Pull the first non-empty value; return ``None`` for
+    legacy rows that have no signal recorded."""
+    for alt in alternatives:
+        sig = alt.get("signal")
+        if isinstance(sig, str) and sig:
+            return sig
+    return None
+
+
 def compute_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute per-signal top-1 / top-2 accuracy across ``rows``.
 
     Each row must carry an ``alternatives`` list (parsed JSON) and an
-    ``accepted`` string. Rows without a non-empty ``accepted``, or
-    whose ``accepted`` text does not match any alternative, are
-    excluded from the harness entirely (``sample_count`` denominator).
+    ``accepted`` string. Rows without a non-empty ``accepted``, whose
+    ``accepted`` text does not match any alternative, or whose
+    alternatives have no recorded ``signal`` (legacy / disabled
+    confidence) are excluded.
 
-    Returns a dict with:
+    Returns a dict with::
 
         {
-          "generated_at": <ISO 8601 UTC timestamp>,
+          "generated_at": "<ISO 8601 UTC>",
           "sample_count": <usable rows>,
           "signals": {
               "<signal>": {
-                  "scored_rows": <rows where signal had at least one non-None score>,
-                  "top1_accuracy": <float in [0, 1] or None>,
-                  "top2_accuracy": <float in [0, 1] or None>,
+                  "scored_rows": int,
+                  "top1_accuracy": float,
+                  "top2_accuracy": float,
               },
               …
           }
         }
     """
-    usable: list[tuple[list[dict[str, Any]], int]] = []
+    # (alternatives, accepted_idx, signal)
+    usable: list[tuple[list[dict[str, Any]], int, str]] = []
     for row in rows:
         accepted = (row.get("accepted") or "").strip()
         if not accepted:
@@ -95,29 +98,34 @@ def compute_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         idx = _accepted_index(alts, accepted)
         if idx is None:
             continue
-        usable.append((alts, idx))
+        signal = _row_signal(alts)
+        if signal is None:
+            continue
+        usable.append((alts, idx, signal))
 
     sample_count = len(usable)
+
+    by_signal: dict[str, dict[str, int]] = {}
+    for alts, accepted_idx, signal in usable:
+        bucket = by_signal.setdefault(signal, {"scored_rows": 0, "top1": 0, "top2": 0})
+        ranks = _rank_indices(_row_scores(alts))
+        if not ranks:
+            continue
+        bucket["scored_rows"] += 1
+        if ranks[0] == accepted_idx:
+            bucket["top1"] += 1
+        if accepted_idx in ranks[:2]:
+            bucket["top2"] += 1
+
     signals: dict[str, Any] = {}
-    for signal in (*_SIGNAL_KEYS, "ensemble"):
-        scored = 0
-        top1 = 0
-        top2 = 0
-        for alts, accepted_idx in usable:
-            ranks = _rank_indices(_row_score_for_signal(alts, signal))
-            if not ranks:
-                continue
-            scored += 1
-            if ranks[0] == accepted_idx:
-                top1 += 1
-            if accepted_idx in ranks[:2]:
-                top2 += 1
+    for name, bucket in by_signal.items():
+        scored = bucket["scored_rows"]
         if scored == 0:
             continue
-        signals[signal] = {
+        signals[name] = {
             "scored_rows": scored,
-            "top1_accuracy": top1 / scored,
-            "top2_accuracy": top2 / scored,
+            "top1_accuracy": bucket["top1"] / scored,
+            "top2_accuracy": bucket["top2"] / scored,
         }
 
     return {
@@ -139,7 +147,10 @@ def render_markdown(metrics: dict[str, Any]) -> str:
     ]
     signals = metrics.get("signals") or {}
     if not signals:
-        lines.append("No usable rows for evaluation. Apply some reviewed runs first.")
+        lines.append(
+            "No usable rows for evaluation. Run `/analyze` with a "
+            "`confidence_signal` configured and review at least one row."
+        )
         return "\n".join(lines) + "\n"
 
     lines.extend(

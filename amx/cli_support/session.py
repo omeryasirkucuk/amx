@@ -71,6 +71,9 @@ from amx.cli_support.commands.profiles import (
     cmd_code_profiles as _cmd_code_profiles,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_confidence_signal as _cmd_confidence_signal,
+)
+from amx.cli_support.commands.profiles import (
     cmd_cost as _cmd_cost,
 )
 from amx.cli_support.commands.profiles import (
@@ -909,6 +912,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "n-alternatives"):
             return True
         _cmd_n_alternatives(cfg, parts[1:])
+        return True
+    if head == "confidence-signal":
+        if not _require_namespace(head, namespace, "llm", "confidence-signal"):
+            return True
+        _cmd_confidence_signal(cfg, parts[1:])
         return True
     if head == "style":
         if not _require_namespace(head, namespace, "llm", "style"):

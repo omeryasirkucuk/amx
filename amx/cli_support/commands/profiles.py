@@ -165,6 +165,23 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
     high = ask("  High threshold", default=str(getattr(defaults, "logprob_high", 0.85)))
     med = ask("  Medium threshold", default=str(getattr(defaults, "logprob_medium", 0.50)))
 
+    from amx.config import CONFIDENCE_SIGNAL_CHOICES, DEFAULT_CONFIDENCE_SIGNAL
+
+    info(
+        "Per-alternative confidence signal — only one runs per analysis.\n"
+        f"  Choices: {', '.join(CONFIDENCE_SIGNAL_CHOICES)}\n"
+        "  Press Enter to keep the default."
+    )
+    confidence_signal_raw = ask(
+        "  Confidence signal",
+        default=str(getattr(defaults, "confidence_signal", DEFAULT_CONFIDENCE_SIGNAL)),
+    )
+    confidence_signal = (
+        confidence_signal_raw.strip().lower()
+        if confidence_signal_raw.strip() in CONFIDENCE_SIGNAL_CHOICES
+        else DEFAULT_CONFIDENCE_SIGNAL
+    )
+
     return LLMConfig(
         provider=provider,
         model=normalize_llm_model(provider, model),
@@ -177,6 +194,7 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         batch_context_column_names=int(getattr(defaults, "batch_context_column_names", 0)),
         logprob_high=float(high),
         logprob_medium=float(med),
+        confidence_signal=confidence_signal,
     )
 
 
@@ -766,6 +784,62 @@ def cmd_n_alternatives(cfg: AMXConfig, rest: list[str]) -> None:
     success(
         f"n_alternatives set to [info]{value}[/info] ({cost_note}) and saved "
         f"for LLM profile '{cfg.active_llm_profile}'."
+    )
+
+
+_CONFIDENCE_SIGNAL_DESCRIPTIONS: dict[str, str] = {
+    "none": "no per-alternative scoring (badge hidden)",
+    "logprob": "provider token-probability span over each alternative "
+    "(0 extra tokens; unavailable on providers that don't return logprobs)",
+    "self_consistency": "semantic similarity across alternatives via local "
+    "sentence-transformers (0 extra LLM tokens; needs N>=2)",
+    "self_decl": "LLM emits CONFIDENCE_i: HIGH|MED|LOW alongside each "
+    "DESCRIPTION_i (small prompt+output token bump)",
+    "judge": "second LLM call ranks the N alternatives best-to-worst "
+    "(roughly doubles per-suggestion token spend on the active LLM)",
+}
+
+
+def cmd_confidence_signal(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the active per-alternative confidence scorer.
+
+    Exactly one scorer runs per analysis (or none, when the badge
+    is disabled). The chosen scorer's raw 0-1 score per alternative
+    drives the HIGH / MED / LOW band shown in Studio and on the CLI
+    /compare table.
+    """
+    from amx.config import CONFIDENCE_SIGNAL_CHOICES
+
+    choices_pipe = "|".join(CONFIDENCE_SIGNAL_CHOICES)
+
+    if not rest:
+        current = getattr(cfg.llm, "confidence_signal", "self_consistency")
+        heading(f"Confidence signal: {current}")
+        lines = []
+        for name in CONFIDENCE_SIGNAL_CHOICES:
+            lines.append(f"  {name:<18} — {_CONFIDENCE_SIGNAL_DESCRIPTIONS[name]}")
+        info(
+            "\n".join(lines) + f"\n\nCurrent: [info]{current}[/info] for LLM profile "
+            f"'{cfg.active_llm_profile or 'default'}'.\n"
+            f"Run [info]/confidence-signal {choices_pipe}[/info] to change."
+        )
+        return
+
+    value = rest[0].lower().strip()
+    if value not in CONFIDENCE_SIGNAL_CHOICES:
+        error(
+            f"Unknown confidence signal: {value!r}. Valid: {', '.join(CONFIDENCE_SIGNAL_CHOICES)}"
+        )
+        return
+
+    cfg.llm.confidence_signal = value
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].confidence_signal = value
+    cfg.save()
+    success(
+        f"Confidence signal set to [info]{value}[/info] "
+        f"({_CONFIDENCE_SIGNAL_DESCRIPTIONS[value]}) and saved "
+        f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
     )
 
 
