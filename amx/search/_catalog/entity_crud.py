@@ -416,6 +416,40 @@ class EntityCrudMixin:
             "columns": columns,
         }
 
+    def is_profile_fully_synced(self, db_profile: str) -> bool:
+        """``True`` iff the catalog can safely stand in for the live
+        DB. Reads ``catalog_profile_state``; requires ``state='done'``
+        AND ``last_full_sync_at`` within the last 7 days. Anything else
+        means a cache-first reader should fall through to the live
+        connector so the user never sees a partial slice.
+
+        Returns ``False`` when the table doesn't exist yet (legacy
+        catalog from a pre-v0.15 install) so existing users keep
+        seeing the live DB until they run a fresh skeleton sync — the
+        UI's Sync-all button handles that.
+        """
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT state, last_full_sync_at
+                    FROM catalog_profile_state
+                    WHERE db_profile = ?
+                    """,
+                    (db_profile,),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        if not row:
+            return False
+        state = str(row["state"] or "")
+        last = row["last_full_sync_at"]
+        if state != "done" or last is None:
+            return False
+        # 7-day staleness window — past this, force the user to
+        # re-sync rather than serve increasingly drifted data.
+        return (time.time() - float(last)) < 7 * 24 * 60 * 60
+
     def fetch_distinct_schemas(self, db_profile: str) -> list[dict]:
         """Return distinct ``schema_name`` rows for *db_profile* with
         each schema's freshest ``last_synced_at``. Used by the

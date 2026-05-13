@@ -464,6 +464,26 @@ class SQLiteHistoryStore:
                 # FTS5 missing on the host SQLite; the search path
                 # falls back to the legacy scan automatically.
                 pass
+            # Per-profile completeness state. The cache-first read path
+            # (sidebar, schedule/run scope pickers, Ask agent tools)
+            # gates on ``state = 'done'`` so a partially-synced catalog
+            # never gets surfaced to the user as the full picture. The
+            # row is upserted by ``sync_profile_skeleton`` at start /
+            # progress / finish.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS catalog_profile_state (
+                    db_profile TEXT PRIMARY KEY,
+                    state TEXT NOT NULL DEFAULT 'none',
+                    total_tables INTEGER NOT NULL DEFAULT 0,
+                    processed_tables INTEGER NOT NULL DEFAULT 0,
+                    started_at REAL,
+                    finished_at REAL,
+                    last_full_sync_at REAL,
+                    last_error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS catalog_relationships (
