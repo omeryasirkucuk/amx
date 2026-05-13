@@ -2631,6 +2631,76 @@ class SQLiteHistoryStore:
                 return sid
             return None
 
+    def set_run_schedule_link(self, run_id: int, schedule_id: int) -> None:
+        """Attach a scheduled_runs id to an existing analysis_runs row.
+
+        Idempotent: writing the same link twice has no effect, and a
+        missing run_id is a no-op (callers can be defensive without a
+        preflight check).
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET triggered_by_schedule_id = ? WHERE id = ?",
+                (schedule_id, run_id),
+            )
+
+    def recover_stale_runs(
+        self,
+        *,
+        threshold_sec: float = 300.0,
+        now_utc: float | None = None,
+    ) -> list[int]:
+        """Mark stale running rows as failed and return their ids.
+
+        A run is "stale" when ``status='running'`` and ``ended_at IS NULL``
+        AND either:
+          * ``last_heartbeat_at`` is older than ``now - threshold_sec``, or
+          * ``last_heartbeat_at IS NULL`` (back-compat path -- runs that
+            started before this column existed are assumed dead if
+            recovered after a process restart).
+
+        Idempotent: callers can invoke at every bootstrap tick without
+        worrying about double-marking. Tightening the threshold over
+        time will sweep up more rows on the next call.
+        """
+        now = now_utc if now_utc is not None else time.time()
+        cutoff = now - threshold_sec
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM analysis_runs
+                WHERE status = 'running'
+                  AND ended_at IS NULL
+                  AND (
+                       last_heartbeat_at IS NULL
+                       OR last_heartbeat_at < ?
+                  )
+                """,
+                (cutoff,),
+            ).fetchall()
+            recovered = [int(r[0]) for r in rows]
+            if recovered:
+                placeholders = ",".join("?" for _ in recovered)
+                conn.execute(
+                    f"""
+                    UPDATE analysis_runs
+                    SET ended_at = ?,
+                        duration_sec = CASE
+                            WHEN started_at IS NOT NULL THEN MAX(0.0, ? - started_at)
+                            ELSE 0.0
+                        END,
+                        status = 'failed',
+                        error_text = CASE
+                            WHEN error_text IS NULL OR error_text = ''
+                            THEN 'Recovered stale running run (heartbeat threshold exceeded)'
+                            ELSE error_text
+                        END
+                    WHERE id IN ({placeholders})
+                    """,
+                    [now, now, *recovered],
+                )
+        return recovered
+
     def update_run_heartbeat(
         self,
         run_id: int,
