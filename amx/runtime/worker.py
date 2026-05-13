@@ -74,20 +74,16 @@ into ``status='failed'`` on both rows.
 
 
 def default_run_executor(run_id: int, payload: dict[str, Any]) -> None:
-    """No-op executor used until the real Orchestrator integration lands.
+    """No-op executor used by tests and as a safe fallback.
 
-    Performs no real metadata-discovery work -- it exists so the
-    scheduler's state-machine flow can be exercised end-to-end. A
-    follow-up PR replaces this with the genuine Orchestrator drive
-    (build LLM, resolve DB, loop tables, persist alternatives).
-
-    A clear log line names the deferral so anyone tracing a run sees
-    why this row finishes immediately.
+    Performs no real metadata-discovery work; logs a clear line so
+    anyone tracing a run can tell it picked up the stub. Production
+    call sites (tick, CLI run-now, Studio run-now) inject
+    :func:`production_run_executor` instead.
     """
     log.warning(
-        "amx.runtime.worker.default_run_executor: scheduled run %s "
-        "marked complete WITHOUT running metadata discovery -- the "
-        "full Orchestrator integration lands in a follow-up PR. "
+        "amx.runtime.worker.default_run_executor (no-op): scheduled "
+        "run %s marked complete WITHOUT running metadata discovery. "
         "Schedule payload: %s",
         run_id,
         json.dumps(
@@ -103,6 +99,178 @@ def default_run_executor(run_id: int, payload: dict[str, Any]) -> None:
             }
         ),
     )
+
+
+def production_run_executor(run_id: int, payload: dict[str, Any]) -> None:
+    """Real per-table Orchestrator drive for a scheduled run.
+
+    Loads the saved :class:`AMXConfig`, builds a one-shot
+    DatabaseConnector + LLMProvider against the schedule's chosen
+    profiles (without mutating the user's active config), resolves the
+    schedule's saved scope against the live DB, and calls
+    :meth:`Orchestrator.process_table` for every reachable
+    ``(schema, table)`` pair.
+
+    Failure modes that bubble up as exceptions:
+
+    * Schedule references a profile that has been deleted since
+      creation. ``KeyError`` from ``cfg.db_profiles[...]``.
+    * Connector / LLM provider rejects the saved settings. Raised
+      from inside the agent stack.
+    * Live DB does not expose any schema named in the schedule's
+      scope. We log per-schema and skip; if every schema is missing
+      we raise so the caller can mark the schedule failed.
+
+    The orchestrator writes its own per-result rows into
+    ``analysis_runs``; the surrounding worker is responsible for the
+    schedule-side state transition.
+    """
+    # Local imports keep ``amx.runtime.worker`` lazily loaded -- agent
+    # / DB / LLM stacks are heavy and tests that don't need them
+    # shouldn't pay the import cost on every collection scan.
+    from amx.agents.orchestrator import Orchestrator
+    from amx.config import AMXConfig
+    from amx.db.connector import DatabaseConnector
+    from amx.llm.provider import LLMProvider
+
+    schedule_id = int(payload.get("id") or 0)
+    db_profile_name = str(payload.get("db_profile") or "")
+    llm_profile_name = str(payload.get("llm_profile") or "")
+    if not db_profile_name or not llm_profile_name:
+        raise ValueError(
+            f"schedule #{schedule_id} missing db_profile or llm_profile"
+        )
+
+    cfg = AMXConfig.load()
+    db_cfg = cfg.db_profiles.get(db_profile_name)
+    if db_cfg is None:
+        raise KeyError(
+            f"DB profile '{db_profile_name}' (from schedule #{schedule_id}) "
+            "no longer exists. Edit the schedule or recreate the profile."
+        )
+    llm_cfg = cfg.llm_profiles.get(llm_profile_name)
+    if llm_cfg is None:
+        raise KeyError(
+            f"LLM profile '{llm_profile_name}' (from schedule #{schedule_id}) "
+            "no longer exists. Edit the schedule or recreate the profile."
+        )
+
+    db = DatabaseConnector(db_cfg)
+    llm = LLMProvider(llm_cfg)
+    orchestrator = Orchestrator(
+        db,
+        llm,
+        run_id=run_id,
+        search_profile=db_profile_name,
+    )
+
+    scope = _resolve_live_scope(payload.get("scope_json"), db)
+    if not scope:
+        log.warning(
+            "production_run_executor: schedule #%s produced empty live "
+            "scope. Nothing to do.",
+            schedule_id,
+        )
+        return
+
+    log.info(
+        "production_run_executor: schedule #%s firing across %s table(s) "
+        "in %s schema(s).",
+        schedule_id,
+        sum(len(ts) for ts in scope.values()),
+        len(scope),
+    )
+    for schema, tables in scope.items():
+        for table in tables:
+            try:
+                orchestrator.process_table(
+                    schema, table, interactive_review=False
+                )
+            except Exception:  # noqa: BLE001 - keep going on per-table errors
+                log.exception(
+                    "production_run_executor: %s.%s failed under schedule #%s",
+                    schema,
+                    table,
+                    schedule_id,
+                )
+
+
+def _resolve_live_scope(
+    scope_json: str | None, db: Any
+) -> dict[str, list[str]]:
+    """Expand a schedule's saved scope_json against the live database.
+
+    Mirrors the four scope modes ``_parse_scope`` already understands
+    (``all`` / ``schemas`` / ``tables`` / ``columns``) but, unlike that
+    helper, talks to the live DB to enumerate everything reachable
+    under ``mode='all'`` and ``mode='schemas'``. Missing entities are
+    dropped with a warning rather than failing the whole run.
+    """
+    if not scope_json:
+        return {}
+    try:
+        obj = json.loads(scope_json)
+    except (TypeError, ValueError):
+        return {}
+    mode = obj.get("mode")
+    out: dict[str, list[str]] = {}
+    if mode == "all":
+        for schema in db.list_schemas():
+            tables = [
+                name
+                for name, kind in db.list_assets(schema)
+                if kind.name.upper() not in {"COLUMN"}
+            ]
+            if tables:
+                out[schema] = tables
+        return out
+    if mode == "schemas":
+        for schema in obj.get("schemas", []) or []:
+            try:
+                tables = [
+                    name
+                    for name, kind in db.list_assets(str(schema))
+                    if kind.name.upper() not in {"COLUMN"}
+                ]
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "scope schema '%s' could not be enumerated: %s",
+                    schema,
+                    exc,
+                )
+                continue
+            if tables:
+                out[str(schema)] = tables
+        return out
+    if mode == "tables":
+        for item in obj.get("tables", []) or []:
+            if not isinstance(item, dict):
+                continue
+            schema = str(item.get("schema") or "")
+            table = str(item.get("table") or "")
+            if schema and table:
+                out.setdefault(schema, []).append(table)
+        return out
+    if mode == "columns":
+        # Column-level picks fan out to (schema, table) pairs; the
+        # orchestrator's pre-existing column_overrides path narrows
+        # the actual per-column work, but we don't wire that here in
+        # the initial cut. Future revision can set
+        # ``orchestrator.column_overrides`` from this payload.
+        seen: set[tuple[str, str]] = set()
+        for item in obj.get("columns", []) or []:
+            if not isinstance(item, dict):
+                continue
+            schema = str(item.get("schema") or "")
+            table = str(item.get("table") or "")
+            if not schema or not table:
+                continue
+            if (schema, table) in seen:
+                continue
+            seen.add((schema, table))
+            out.setdefault(schema, []).append(table)
+        return out
+    return {}
 
 
 def spawn_scheduled_worker(

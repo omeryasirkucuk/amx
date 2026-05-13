@@ -30,7 +30,7 @@ from typing import Any
 import click
 
 from amx.config import AMXConfig
-from amx.runtime.worker import spawn_scheduled_worker
+from amx.runtime.worker import production_run_executor, spawn_scheduled_worker
 from amx.scheduler.tick import tick
 from amx.storage.sqlite_store import history_store
 
@@ -518,7 +518,12 @@ def register_schedule_commands(
             raise click.ClickException(f"No schedule with id={schedule_id}")
 
         def spawn(payload: dict[str, Any]) -> int:
-            return spawn_scheduled_worker(payload, store=hs, background=background)
+            return spawn_scheduled_worker(
+                payload,
+                store=hs,
+                background=background,
+                run_executor=production_run_executor,
+            )
 
         report = tick(
             store=hs,
@@ -553,7 +558,12 @@ def register_schedule_commands(
         hs = _require_store()
 
         def spawn(payload: dict[str, Any]) -> int:
-            return spawn_scheduled_worker(payload, store=hs, background=True)
+            return spawn_scheduled_worker(
+                payload,
+                store=hs,
+                background=True,
+                run_executor=production_run_executor,
+            )
 
         report = tick(
             store=hs,

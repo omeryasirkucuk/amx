@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from amx.runtime.worker import spawn_scheduled_worker
+from amx.runtime.worker import production_run_executor, spawn_scheduled_worker
 from amx.scheduler.daemon_install import detect_daemon_state
 from amx.scheduler.tick import tick
 from amx.storage.sqlite_store import history_store
@@ -207,7 +207,12 @@ def run_now(schedule_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
     def spawn(payload: dict[str, Any]) -> int:
-        return spawn_scheduled_worker(payload, store=s, background=True)
+        return spawn_scheduled_worker(
+            payload,
+            store=s,
+            background=True,
+            run_executor=production_run_executor,
+        )
 
     report = tick(
         store=s,
@@ -279,7 +284,12 @@ def manual_tick_endpoint() -> dict[str, Any]:
     s = _store()
 
     def spawn(payload: dict[str, Any]) -> int:
-        return spawn_scheduled_worker(payload, store=s, background=True)
+        return spawn_scheduled_worker(
+            payload,
+            store=s,
+            background=True,
+            run_executor=production_run_executor,
+        )
 
     report = tick(store=s, source="daemon", spawn_worker=spawn, now_utc=time.time())
     return {
