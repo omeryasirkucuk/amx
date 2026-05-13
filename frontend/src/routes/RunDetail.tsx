@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity as ActivityIcon, Loader2, PauseCircle, Pin, PinOff, PlayCircle, RefreshCw, SkipForward, Timer } from "lucide-react";
 
+import type { StructuredAlternative } from "../lib/api";
 import { apiFetch, api } from "../lib/api";
 import {
   isPinned as isCellPinned,
@@ -655,7 +656,7 @@ function LiveRunStream({ jobId }: { jobId: string }) {
 }
 
 function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
-  const alts = normalizeAlternatives(detail.alternatives);
+  const structuredAlts = normalizeStructuredAlternatives(detail.alternatives);
   const tone =
     detail.confidence === "high"
       ? "positive"
@@ -683,26 +684,42 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
       <ReasoningDisclosure reasoning={detail.reasoning ?? ""} />
       <CitationsDisclosure citations={detail.citations} />
       <div className="mt-2 space-y-1">
-        {alts.length === 0 ? (
+        {structuredAlts.length === 0 ? (
           <div className="text-xs text-ink-dim">{detail.chosen_description || "—"}</div>
         ) : (
-          alts.map((alt, idx) => {
+          structuredAlts.map((alt, idx) => {
             const isChosen =
-              alt === detail.chosen_description || (idx === 0 && !detail.chosen_description);
+              alt.text === detail.chosen_description ||
+              (idx === 0 && !detail.chosen_description);
+            const stripeStyle =
+              alt.band && BAND_STYLES[alt.band]
+                ? BAND_STYLES[alt.band].stripe
+                : "bg-transparent";
             return (
               <div
                 key={idx}
                 className={cn(
-                  "rounded border px-2 py-1 text-xs",
+                  "flex overflow-hidden rounded border text-xs",
                   isChosen
                     ? "border-accent/40 bg-accent-soft/30 text-ink"
                     : "border-surface-border text-ink-muted",
                 )}
               >
-                <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
-                  {String.fromCharCode(65 + idx)}
-                </span>
-                {alt}
+                <div
+                  className={cn("hidden sm:block w-1 shrink-0", stripeStyle)}
+                  aria-hidden
+                />
+                <div className="flex-1 px-2 py-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
+                        {String.fromCharCode(65 + idx)}
+                      </span>
+                      {alt.text}
+                    </div>
+                    <ConfidenceBadge alt={alt} />
+                  </div>
+                </div>
               </div>
             );
           })
@@ -792,11 +809,114 @@ function normalizeAlternatives(raw: unknown): string[] {
     if (typeof entry === "string") {
       out.push(entry);
     } else if (entry && typeof entry === "object") {
-      const desc = (entry as { description?: unknown }).description;
-      if (typeof desc === "string") out.push(desc);
+      // Phase 1 structured shape uses ``text``; legacy shape used
+      // ``description`` (kept for backwards compat with rows still in
+      // history.db that predate the rename).
+      const obj = entry as { text?: unknown; description?: unknown };
+      if (typeof obj.text === "string") out.push(obj.text);
+      else if (typeof obj.description === "string") out.push(obj.description);
     }
   }
   return out;
+}
+
+/**
+ * Parse ``alternatives_json`` while preserving Phase 1 confidence
+ * metadata. Legacy rows (list[str]) yield entries whose ``band`` is
+ * ``null`` — UI consumers fall back to no stripe / no badge in that
+ * case.
+ */
+function normalizeStructuredAlternatives(raw: unknown): StructuredAlternative[] {
+  let arr: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      arr = [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  const out: StructuredAlternative[] = [];
+  for (const entry of arr) {
+    if (typeof entry === "string") {
+      out.push({ text: entry });
+    } else if (entry && typeof entry === "object" && "text" in entry) {
+      out.push(entry as StructuredAlternative);
+    } else if (entry && typeof entry === "object" && "description" in entry) {
+      out.push({ text: String((entry as { description: unknown }).description) });
+    }
+  }
+  return out;
+}
+
+const BAND_STYLES: Record<string, { stripe: string; pill: string; label: string }> = {
+  HIGH: {
+    stripe: "bg-green-500",
+    pill: "bg-green-100 text-green-800 border-green-300",
+    label: "HIGH",
+  },
+  MED: {
+    stripe: "bg-amber-500",
+    pill: "bg-amber-100 text-amber-800 border-amber-300",
+    label: "MED",
+  },
+  LOW: {
+    stripe: "bg-red-500",
+    pill: "bg-red-100 text-red-800 border-red-300",
+    label: "LOW",
+  },
+};
+
+/**
+ * Phase 1 per-alternative confidence pill. Clicking expands a panel
+ * showing the raw signal breakdown (logprob span, self-consistency,
+ * and — in later phases — self-declaration and judge scores).
+ *
+ * Returns ``null`` for alternatives that do not carry a band (legacy
+ * rows or confidence-disabled runs) so the UI stays clean.
+ */
+function ConfidenceBadge({ alt }: { alt: StructuredAlternative }) {
+  if (!alt.band || !BAND_STYLES[alt.band]) return null;
+  const style = BAND_STYLES[alt.band];
+  const ensemble = typeof alt.ensemble === "number" ? alt.ensemble.toFixed(2) : null;
+  const scores = alt.scores ?? null;
+  const fmt = (v: number | null | undefined) =>
+    typeof v === "number" ? v.toFixed(2) : "—";
+
+  return (
+    <details className="inline-block relative align-middle">
+      <summary
+        className={`cursor-pointer list-none select-none inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${style.pill}`}
+      >
+        <span
+          className={`sm:hidden inline-block h-2 w-2 rounded-full ${style.stripe}`}
+          aria-hidden
+        />
+        {style.label}
+        {ensemble && <span className="opacity-70">{ensemble}</span>}
+      </summary>
+      <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border border-surface-border bg-surface p-2 text-[11px] text-ink shadow-lg">
+        <table className="w-full">
+          <tbody>
+            <tr>
+              <td className="py-0.5 pr-2 text-ink-dim">Logprob span</td>
+              <td className="py-0.5 text-right font-mono">{fmt(scores?.logprob)}</td>
+            </tr>
+            <tr>
+              <td className="py-0.5 pr-2 text-ink-dim">Self-consistency</td>
+              <td className="py-0.5 text-right font-mono">{fmt(scores?.self_consistency)}</td>
+            </tr>
+            <tr className="border-t border-surface-border font-medium">
+              <td className="py-0.5 pr-2">Ensemble</td>
+              <td className="py-0.5 text-right font-mono">
+                {ensemble ?? "—"} {style.label}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
 }
 
 /** Compact token + cost chip rendered next to the status badge in the
