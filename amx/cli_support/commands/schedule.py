@@ -25,6 +25,7 @@ from typing import Any
 
 import click
 
+from amx.config import AMXConfig
 from amx.runtime.worker import spawn_scheduled_worker
 from amx.scheduler.tick import tick
 from amx.storage.sqlite_store import history_store
@@ -33,6 +34,96 @@ LogEvent = Callable[..., None]
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _pick_from_list(
+    items: list[str],
+    *,
+    label: str,
+    default: str | None = None,
+) -> str:
+    """Numbered picker; users can type either the index or the literal name."""
+    if not items:
+        raise click.ClickException(
+            f"No {label} configured. Run the matching `amx` setup command "
+            "to add one first."
+        )
+    if len(items) == 1:
+        return items[0]
+    click.echo(f"\nAvailable {label}:")
+    for i, item in enumerate(items, start=1):
+        marker = "  (current)" if item == default else ""
+        click.echo(f"  [{i}] {item}{marker}")
+    fallback_default = default if default in items else items[0]
+    raw = click.prompt(
+        f"Pick a {label} (number or name)",
+        default=fallback_default,
+        show_default=True,
+    )
+    raw = str(raw).strip()
+    if raw.isdigit():
+        idx = int(raw) - 1
+        if 0 <= idx < len(items):
+            return items[idx]
+        raise click.BadParameter(f"index out of range: {raw}")
+    if raw not in items:
+        raise click.BadParameter(
+            f"unknown {label}: {raw!r}. Available: {', '.join(items)}"
+        )
+    return raw
+
+
+def _pick_scope_spec(cfg: AMXConfig, db_profile: str) -> str:
+    """Walk the user through scope picking. Returns the compact spec string."""
+    mode = click.prompt(
+        "Scope mode",
+        type=click.Choice(["all", "schemas", "tables"], case_sensitive=False),
+        default="all",
+        show_default=True,
+    )
+    if mode == "all":
+        return "all"
+
+    schemas: list[str] = []
+    try:
+        from amx.db.factory import build_connector
+
+        connector = build_connector(cfg, profile_name=db_profile)
+        schemas = sorted(connector.list_schemas() or [])
+    except Exception as exc:  # noqa: BLE001
+        click.echo(
+            f"  (could not introspect schemas: {exc}) "
+            "Falling back to free-text.",
+            err=True,
+        )
+
+    if mode == "schemas":
+        if not schemas:
+            raw = click.prompt("Comma-separated schema names", type=str)
+            return f"schema:{raw.strip()}"
+        click.echo("\nAvailable schemas (comma-separated indices or names):")
+        for i, s in enumerate(schemas, start=1):
+            click.echo(f"  [{i}] {s}")
+        raw = click.prompt("Pick schemas", type=str).strip()
+        picks: list[str] = []
+        for tok in [t.strip() for t in raw.split(",") if t.strip()]:
+            if tok.isdigit():
+                idx = int(tok) - 1
+                if 0 <= idx < len(schemas):
+                    picks.append(schemas[idx])
+                else:
+                    raise click.BadParameter(f"index out of range: {tok}")
+            elif tok in schemas:
+                picks.append(tok)
+            else:
+                raise click.BadParameter(f"unknown schema: {tok}")
+        return "schema:" + ",".join(picks)
+
+    raw = click.prompt(
+        "Comma-separated schema.table pairs (e.g. public.users, sales.orders)",
+        type=str,
+    )
+    return f"table:{raw.strip()}"
 
 
 def _zoneinfo(tz_name: str):
@@ -152,54 +243,123 @@ def _require_store():
 def register_schedule_commands(
     main: click.Group,
     *,
+    pass_config: Callable[[Callable[..., Any]], Callable[..., Any]] | None = None,
     log_event: LogEvent | None = None,
 ) -> None:
     """Attach the ``amx schedule`` group to *main*."""
+
+    pc = pass_config or click.make_pass_decorator(AMXConfig, ensure=True)
 
     @main.group("schedule")
     def schedule() -> None:
         """Manage one-shot scheduled metadata runs."""
 
     @schedule.command("add")
-    @click.option("--name", required=True, help="Human-readable label.")
+    @click.option("--name", default=None, help="Human-readable label.")
     @click.option(
         "--at",
         "at",
-        required=True,
-        help="Local wall-clock fire time (e.g. '2026-12-31 09:00').",
+        default=None,
+        help="Local wall-clock fire time (e.g. '2026-12-31 09:00'). Prompts if omitted.",
     )
     @click.option(
         "--tz",
         "tz_name",
-        default="UTC",
-        show_default=True,
-        help="IANA tz id for --at (e.g. 'Europe/Istanbul').",
+        default=None,
+        help="IANA tz id for --at (e.g. 'Europe/Istanbul'). Defaults to system tz.",
     )
-    @click.option("--db", "db_profile", required=True, help="DB profile name.")
+    @click.option(
+        "--db",
+        "db_profile",
+        default=None,
+        help="DB profile name. Picker shown when omitted.",
+    )
     @click.option(
         "--scope",
-        required=True,
-        help="Scope: 'schema:a,b' / 'table:s.t,...' / 'all'.",
+        default=None,
+        help="Scope: 'schema:a,b' / 'table:s.t,...' / 'all'. Wizard shown when omitted.",
     )
-    @click.option("--llm", "llm_profile", required=True, help="LLM profile name.")
+    @click.option(
+        "--llm",
+        "llm_profile",
+        default=None,
+        help="LLM profile name. Picker shown when omitted.",
+    )
     @click.option(
         "--strategy",
         "review_strategy",
-        default="auto",
-        show_default=True,
+        default=None,
         type=click.Choice(["auto", "manual"]),
+        help="Review strategy. Prompts if omitted.",
     )
+    @pc
     def schedule_add(
-        name: str,
-        at: str,
-        tz_name: str,
-        db_profile: str,
-        scope: str,
-        llm_profile: str,
-        review_strategy: str,
+        cfg: AMXConfig,
+        name: str | None,
+        at: str | None,
+        tz_name: str | None,
+        db_profile: str | None,
+        scope: str | None,
+        llm_profile: str | None,
+        review_strategy: str | None,
     ) -> None:
-        """Create a new scheduled run."""
+        """Create a new scheduled run.
+
+        Run without flags for a guided wizard with picker-based selection
+        of DB / LLM profiles and live-DB scope, OR supply every flag for
+        a non-interactive create.
+        """
         hs = _require_store()
+
+        # Resolve each field: use the flag if given, otherwise prompt.
+        if not name:
+            name = click.prompt("Schedule name", type=str).strip()
+
+        if not at:
+            at = click.prompt(
+                "Fire time (local, YYYY-MM-DD HH:MM)",
+                type=str,
+            ).strip()
+
+        if not tz_name:
+            # Default to system tz when available.
+            try:
+                from datetime import datetime as _dt
+
+                tz_name = _dt.now().astimezone().tzinfo.tzname(None) or "UTC"
+            except Exception:  # noqa: BLE001
+                tz_name = "UTC"
+            tz_name = click.prompt(
+                "Timezone (IANA)", default=tz_name, type=str
+            ).strip()
+
+        if not db_profile:
+            db_names = sorted((cfg.db_profiles or {}).keys())
+            db_profile = _pick_from_list(
+                db_names,
+                label="DB profile",
+                default=cfg.active_db_profile,
+            )
+
+        if not llm_profile:
+            llm_names = sorted((cfg.llm_profiles or {}).keys())
+            llm_profile = _pick_from_list(
+                llm_names,
+                label="LLM profile",
+                default=cfg.active_llm_profile,
+            )
+
+        if not scope:
+            scope = _pick_scope_spec(cfg, db_profile)
+
+        if not review_strategy:
+            review_strategy = click.prompt(
+                "Review strategy",
+                type=click.Choice(["auto", "manual"]),
+                default="auto",
+                show_default=True,
+            )
+
         fire_at_utc, fire_at_tz = _parse_at(at, tz_name)
         scope_json = _parse_scope(scope)
         sid = hs.create_scheduled_run(
