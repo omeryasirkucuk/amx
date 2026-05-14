@@ -66,9 +66,7 @@ class TestHasCredentialsCache:
     def test_keyring_ref_resolves_once_then_cached(self) -> None:
         store = _CountingStore(resolved={"amx/p1/api_key": "real-key"})
         secrets.set_default_store(store)
-        llm = LLMConfig(
-            provider="openai", model="gpt-5", api_key="keyring:amx/p1/api_key"
-        )
+        llm = LLMConfig(provider="openai", model="gpt-5", api_key="keyring:amx/p1/api_key")
         for _ in range(5):
             assert profiles._check_credentials_cached("p1", llm) is True
         assert store.get_calls == 1, (
@@ -78,9 +76,7 @@ class TestHasCredentialsCache:
     def test_invalidation_drops_cache_and_re_resolves(self) -> None:
         store = _CountingStore(resolved={"amx/p1/api_key": "real-key"})
         secrets.set_default_store(store)
-        llm = LLMConfig(
-            provider="openai", model="gpt-5", api_key="keyring:amx/p1/api_key"
-        )
+        llm = LLMConfig(provider="openai", model="gpt-5", api_key="keyring:amx/p1/api_key")
         assert profiles._check_credentials_cached("p1", llm) is True
         assert store.get_calls == 1
         profiles._invalidate_credential_cache("p1")
@@ -89,9 +85,7 @@ class TestHasCredentialsCache:
 
     def test_resolver_failure_returns_false_no_propagation(self, caplog) -> None:
         secrets.set_default_store(_BrokenStore())
-        llm = LLMConfig(
-            provider="openai", model="gpt-5", api_key="keyring:amx/p1/api_key"
-        )
+        llm = LLMConfig(provider="openai", model="gpt-5", api_key="keyring:amx/p1/api_key")
         # Must not raise.
         assert profiles._check_credentials_cached("p1", llm) is False
         # And the failure is cached so subsequent reads don't keep

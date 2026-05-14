@@ -63,9 +63,7 @@ class TestApplyLlmOverrides:
 
     def test_profile_swap_with_per_knob_override(self) -> None:
         cfg = _cfg_with_two_profiles()
-        derived, audit = _apply_llm_overrides(
-            cfg, LLMOverrides(profile="fast", temperature=0.3)
-        )
+        derived, audit = _apply_llm_overrides(cfg, LLMOverrides(profile="fast", temperature=0.3))
         # Profile's full bundle in effect …
         assert derived.llm.provider == "openai"
         assert derived.llm.api_key == "fast-key"
@@ -77,9 +75,7 @@ class TestApplyLlmOverrides:
 
     def test_unknown_profile_falls_back_safely(self) -> None:
         cfg = _cfg_with_two_profiles()
-        derived, audit = _apply_llm_overrides(
-            cfg, LLMOverrides(profile="missing", temperature=0.5)
-        )
+        derived, audit = _apply_llm_overrides(cfg, LLMOverrides(profile="missing", temperature=0.5))
         # Active profile (anthropic) stayed in place …
         assert derived.llm.provider == "anthropic"
         assert derived.llm.api_key == "active-key"
