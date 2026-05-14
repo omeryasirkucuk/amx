@@ -103,6 +103,10 @@ export default function Landing() {
     queryKey: ["apply-events", "landing"],
     queryFn: () => api.applyEvents({ limit: 20 }),
     retry: false,
+    // Background count for a subtitle chip — not user-actionable.
+    // Failure already degrades gracefully to 0 in the UI; let it
+    // stay silent instead of toasting on every Landing render.
+    meta: { silentError: true },
   });
   const recentAppliesCount = applyEvents.data?.events?.length ?? 0;
 
