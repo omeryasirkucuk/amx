@@ -1659,6 +1659,19 @@ class SQLiteHistoryStore:
         out: list[dict[str, Any]] = []
         visited: set[int] = {int(run_id)}
 
+        def _child_status(child_run_id: int) -> str | None:
+            """Read ``analysis_runs.status`` for a descendant. Surfaced
+            on the tree entry so the Studio can render a refresh-safe
+            ``Generating variations…`` indicator after a page reload
+            during execution — without this field the spinner is
+            local-state only and a refresh wipes it."""
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT status FROM analysis_runs WHERE id = ?",
+                    (int(child_run_id),),
+                ).fetchone()
+            return str(row["status"]) if row and row["status"] else None
+
         def _collect_variations(parent_id: int, depth: int) -> None:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -1716,6 +1729,7 @@ class SQLiteHistoryStore:
                     "mode": first_mode,
                     "model": first_model,
                     "provider": first_provider,
+                    "status": _child_status(child_run_id),
                     "depth": depth,
                     "over_max_depth": depth > variations_depth_cap,
                     "rows": rows_for_run,
@@ -1769,6 +1783,7 @@ class SQLiteHistoryStore:
                         "mode": first_mode,
                         "model": first_model,
                         "provider": first_provider,
+                        "status": _child_status(child_run_id),
                         "depth": 1,
                         "over_max_depth": False,
                         "rows": rows_for_run,

@@ -266,6 +266,17 @@ interface DescendantRunEntry {
   mode: string | null;
   model: string | null;
   provider: string | null;
+  /** ``analysis_runs.status`` — drives the refresh-safe
+   *  ``Generating variations…`` indicator. When the page mounts
+   *  after a refresh during execution, ``running`` here keeps the
+   *  spinner alive until the SSE terminal event arrives. */
+  status?: string | null;
+  /** SSE job id for descendants whose worker thread is still in
+   *  the live job registry. Drives mount-time SSE re-subscription
+   *  so a refresh during execution doesn't drop the stream. Null
+   *  for descendants that already exited (or that started in a
+   *  previous process and have no live worker to attach to). */
+  live_job_id?: string | null;
   depth: number;
   over_max_depth: boolean;
   version_label: string;
@@ -2209,6 +2220,41 @@ function FailedRunCard({ errorText }: { errorText: string }) {
   );
 }
 
+/** Mount-time hydrated SSE subscriber. One instance per descendant
+ *  whose worker is still alive on page load. Renders nothing — it
+ *  exists purely to keep the SSE stream attached after a refresh
+ *  during execution. When the worker emits a terminal event
+ *  (``job.done`` / ``job.failed`` / ``job.cancelled``), the
+ *  ``onTerminal`` callback fires and the parent refetches the
+ *  results query so the spinner disappears + new alternatives fold
+ *  in. Stale workers (started in a previous process and orphaned)
+ *  come back with ``live_job_id = null`` and never reach this
+ *  component — the ``status === "running"`` indicator stays on
+ *  until a future poll surfaces a terminal state. */
+function DescendantStreamSubscriber({
+  jobId,
+  onTerminal,
+}: {
+  jobId: string;
+  onTerminal: () => void;
+}) {
+  const sse = useEventSource({
+    path: `/api/runs/${encodeURIComponent(jobId)}/events`,
+    enabled: true,
+  });
+  useEffect(() => {
+    const terminal = sse.events.find(
+      (e) =>
+        e.type === "job.done" ||
+        e.type === "job.failed" ||
+        e.type === "job.cancelled",
+    );
+    if (terminal) onTerminal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sse.events]);
+  return null;
+}
+
 function ResultsTab({
   runId,
   loading,
@@ -2385,6 +2431,72 @@ function ResultsTab({
     }
     return { descendantsByV1Id: rowsByV1, versionInfoByRowId: labels };
   }, [rows, descendants]);
+
+  // Refresh-safe in-flight indicator. For every descendant whose
+  // ``analysis_runs.status === "running"`` AND whose rows[] match a
+  // v1 asset on this page, record its kind + seed alt index + SSE
+  // job id under the v1 row id. The map drives:
+  //   1. The ``Generating variations…`` indicator restoration after
+  //      a refresh during execution (status=running alone is enough).
+  //   2. The per-alternative ✨ spinner restoration (seed alt idx
+  //      drives which letter to spin).
+  //   3. The SSE re-subscription so terminal events still flip the
+  //      UI when they arrive — ``DescendantStreamSubscriber`` below.
+  const liveDescendants = useMemo(() => {
+    const out = new Map<
+      number,
+      Array<{
+        kind: "variations" | "rerun";
+        seedAltIdx: number | null;
+        jobId: string | null;
+        runId: number;
+      }>
+    >();
+    const v1IdByAssetKey = new Map<string, number>();
+    for (const r of rows) {
+      const key = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
+      if (r.id != null) v1IdByAssetKey.set(key, r.id);
+    }
+    for (const desc of descendants) {
+      const isRunning =
+        desc.status === "running" || desc.status === "queued";
+      if (!isRunning) continue;
+      const seedAltIdx = (() => {
+        const id = desc.seed_alternative_id ?? "";
+        const colon = id.lastIndexOf(":");
+        if (colon === -1) return null;
+        const idx = Number(id.slice(colon + 1));
+        return Number.isFinite(idx) ? idx : null;
+      })();
+      for (const dr of desc.rows ?? []) {
+        const key = `${dr.schema_name}.${dr.table_name}.${dr.column_name ?? "__table__"}`;
+        const v1Id = v1IdByAssetKey.get(key);
+        if (v1Id == null) continue;
+        const arr = out.get(v1Id) ?? [];
+        arr.push({
+          kind: desc.kind,
+          seedAltIdx,
+          jobId: desc.live_job_id ?? null,
+          runId: desc.run_id,
+        });
+        out.set(v1Id, arr);
+      }
+    }
+    return out;
+  }, [rows, descendants]);
+
+  const onDescendantTerminal = useCallback(() => {
+    // Terminal SSE event for a descendant we re-subscribed to on
+    // mount. Refresh the results query so the next render sees
+    // ``status`` flipped to success/failed/partial and the
+    // ``Generating variations…`` indicator disappears, with the
+    // new alternatives folded in via the existing descendants
+    // splice path. Pending + recent-runs queries refresh too so
+    // the apply pipeline picks up the new alternatives.
+    queryClient.invalidateQueries({ queryKey: ["run-results"] });
+    queryClient.invalidateQueries({ queryKey: ["pending"] });
+    queryClient.invalidateQueries({ queryKey: ["recent-runs"] });
+  }, [queryClient]);
 
   const queueApply = useMutation({
     mutationFn: () => {
@@ -2886,6 +2998,24 @@ function ResultsTab({
 
   return (
     <div className="space-y-3">
+      {/* Mount-time SSE re-subscription. For every descendant whose
+          worker is still alive, a hidden subscriber tails the SSE
+          stream and invalidates the results query on terminal
+          events. After a page refresh during execution this
+          restores the ``Generating variations…`` indicator + the
+          per-alternative ✨ spinner + auto-flips the UI when the
+          worker finishes — no manual navigation required. */}
+      {Array.from(liveDescendants.entries()).flatMap(([v1Id, list]) =>
+        list
+          .filter((d): d is typeof d & { jobId: string } => !!d.jobId)
+          .map((d) => (
+            <DescendantStreamSubscriber
+              key={`${v1Id}-${d.runId}`}
+              jobId={d.jobId}
+              onTerminal={onDescendantTerminal}
+            />
+          )),
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-ink-muted">
           Run #{runId} produced <span className="font-mono">{rows.length}</span>{" "}
@@ -3297,6 +3427,14 @@ function ResultsTab({
                         ? (versionInfoByRowId.get(r.id) ?? null)
                         : null
                     }
+                    hydratedRunningKinds={
+                      r.id != null
+                        ? (liveDescendants.get(r.id) ?? []).map((d) => ({
+                            kind: d.kind,
+                            seedAltIdx: d.seedAltIdx,
+                          }))
+                        : []
+                    }
                   />
                 );
               })}
@@ -3589,6 +3727,7 @@ function ResultRowItemImpl({
   onToggleReviewSelected,
   isKeynavFocused = false,
   versionInfo = null,
+  hydratedRunningKinds = [],
 }: {
   row: ResultRow;
   /** Active DB profile — keys the pinned-cells localStorage bucket
@@ -3620,6 +3759,17 @@ function ResultRowItemImpl({
    *  the row renders as a stand-alone v1 with no version chrome —
    *  same as the historical shape for runs without descendants. */
   versionInfo?: VersionInfo | null;
+  /** Refresh-safe hydrated busy state — each entry is one
+   *  descendant whose worker is still in flight for THIS asset.
+   *  After a page reload during execution, this state comes from
+   *  the descendants endpoint's ``status === "running"`` field and
+   *  drives the ``Generating variations…`` indicator + the
+   *  per-alternative ✨ spinner exactly as the original-session
+   *  local state would. */
+  hydratedRunningKinds?: Array<{
+    kind: "variations" | "rerun";
+    seedAltIdx: number | null;
+  }>;
 }) {
   // When the row was fetched with ``include_history=true`` and a
   // re-run produced a v2/v3+ version, surface the latest entry's
@@ -3756,7 +3906,24 @@ function ResultRowItemImpl({
     setVariationsJobId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [variationsSse.events, variationsJobId]);
-  const variationsBusy = !!variationsJobId && !variationsSse.closed;
+  // OR the post-submit local job id (current session) with the
+  // hydrated descendants payload (refresh-safe). Either signal
+  // renders the ``Generating variations…`` inline status + the
+  // per-alternative ✨ spinner. When the SSE subscriber emits a
+  // terminal event the descendants query refetches; ``status``
+  // flips off ``running``; this OR resolves false; spinner clears.
+  const hydratedVariationKinds = hydratedRunningKinds.filter(
+    (d) => d.kind === "variations",
+  );
+  const variationsBusy =
+    (!!variationsJobId && !variationsSse.closed) ||
+    hydratedVariationKinds.length > 0;
+  // Per-alternative spinner refinement (use only the seed letter to
+  // spin instead of every alt) is a follow-up — the current
+  // ``variationsBusy`` boolean spins every alt's ✨, which is the
+  // pre-existing behaviour and survives the hydration patch. The
+  // important fix here is that ``variationsBusy`` itself resolves
+  // true after a refresh, not just on the local submit path.
   const rerunSse = useEventSource({
     path: rerunJobId ? `/api/runs/${encodeURIComponent(rerunJobId)}/events` : "",
     enabled: !!rerunJobId,
@@ -3803,7 +3970,9 @@ function ResultRowItemImpl({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rerunSse.events, rerunJobId]);
 
-  const rerunBusy = !!rerunJobId && !rerunSse.closed;
+  const rerunBusy =
+    (!!rerunJobId && !rerunSse.closed) ||
+    hydratedRunningKinds.some((d) => d.kind === "rerun");
   const rerunLabel = (() => {
     const parts: string[] = [];
     if (row.schema_name) parts.push(row.schema_name);

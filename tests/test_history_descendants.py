@@ -260,6 +260,30 @@ class TestGetDescendantRuns:
         assert tree[0]["kind"] == "variations"
         assert tree[0]["seed_alternative_text"] == ("Latitude — geographic vertical position")
 
+    def test_descendant_entry_carries_status(self, store: SQLiteHistoryStore) -> None:
+        """Each descendant entry includes the child run's
+        ``analysis_runs.status`` so the Studio can render a
+        refresh-safe ``Generating variations…`` indicator. Without
+        this field, a refresh during execution silently drops the
+        spinner — the user had to navigate to the runs list to
+        confirm work was still in flight."""
+        run1, rid1 = _seed_original(store)
+        child = _seed_variation_run(
+            store,
+            parent_run_id=run1,
+            parent_result_id=rid1,
+            alt_index=0,
+            seed_text="x",
+        )
+        # Force the child into ``running`` to mimic an in-flight worker.
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET status='running' WHERE id=?",
+                (child,),
+            )
+        tree = store.get_descendant_runs(run1)
+        assert tree[0]["status"] == "running"
+
 
 class TestGetRunResultsEndpointShape:
     """Pin the API-layer assembly: ``include_descendants=true`` adds

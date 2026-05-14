@@ -163,6 +163,7 @@ def get_run(
 @router.get("/runs/{run_id}/results")
 def get_run_results(
     run_id: int,
+    jobs: JobRegistry = Depends(get_jobs),
     unevaluated_only: bool = Query(default=False),
     include_history: bool = Query(
         default=False,
@@ -208,6 +209,23 @@ def get_run_results(
         # the inline rendering can group v1 + v2/v3 side-by-side.
         for idx, entry in enumerate(descendants, start=2):
             entry["version_label"] = f"v{idx}"
+        # ``live_job_id`` per descendant — used by the Studio's
+        # mount-time SSE hydration to re-subscribe after a page
+        # refresh during execution. Without it, the
+        # ``Generating variations…`` indicator only lives in
+        # client memory and a reload silently wipes it. Builds the
+        # same {run_id: job_id} index the recent-runs list uses.
+        live_by_run_id: dict[int, str] = {}
+        for job in jobs.list():
+            if job.kind not in ("run", "rerun", "variations"):
+                continue
+            if job.status not in ("queued", "running"):
+                continue
+            if job.run_id is None:
+                continue
+            live_by_run_id[int(job.run_id)] = job.id
+        for entry in descendants:
+            entry["live_job_id"] = live_by_run_id.get(int(entry["run_id"]))
         payload["descendants"] = descendants
         # Convenience flag — frontend uses this to decide whether to
         # bother rendering the descendants section.
