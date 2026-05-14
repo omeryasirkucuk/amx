@@ -238,6 +238,13 @@ def register_history_commands(
             "llm_provider": row.get("llm_provider"),
             "llm_model": row.get("llm_model"),
             "scope": row.get("scope_json"),
+            # ``settings_json`` captures the effective LLM config at run-time
+            # — including any per-run override picked from the interactive
+            # gate (``Override LLM settings for this run? [y/N]`` in
+            # ``analyze_flow.py``). Surfacing it here lets ``/history show``
+            # explain why a given run produced what it produced, even when
+            # the saved profile has since drifted from those values.
+            "settings": row.get("settings_json"),
             "metrics": row.get("metrics_json"),
             "tokens": row.get("tokens_json"),
             "results": row.get("results_json"),

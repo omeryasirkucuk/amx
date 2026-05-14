@@ -10,7 +10,12 @@ from typing import Any
 
 import click
 
-from amx.config import AMXConfig, LLMConfig
+from amx.config import (
+    ALTERNATIVES_MODE_CHOICES,
+    CONFIDENCE_SIGNAL_CHOICES,
+    AMXConfig,
+    LLMConfig,
+)
 from amx.storage.sqlite_store import history_store
 from amx.utils.console import (
     ask,
@@ -201,6 +206,32 @@ def _maybe_apply_llm_overrides_interactively(
     )
     if changed:
         overrides["thinking_budget"] = ivalue
+
+    info("Alternatives diversity (Enter to keep current):")
+    # ``alternatives_mode`` only has an effect when N >= 2; mirror Studio's
+    # tile-disabled rule by skipping the prompt when the *effective*
+    # n_alternatives for this run is 1 (either the profile default or a
+    # value the user just lowered to 1 in the picker above).
+    effective_n_alt = overrides.get("n_alternatives", original_llm.n_alternatives)
+    if effective_n_alt and int(effective_n_alt) > 1:
+        changed, svalue = _ask_optional_choice(
+            "  Alternatives mode (semantic = paraphrase / lexical = shared vocab, shifted meaning)",
+            current=original_llm.alternatives_mode,
+            choices=list(ALTERNATIVES_MODE_CHOICES),
+        )
+        if changed:
+            overrides["alternatives_mode"] = svalue
+    # ``confidence_signal`` stays meaningful even at N == 1: a single
+    # alternative still surfaces a confidence band (SC degrades to 1.0,
+    # logprob still scores the spanning tokens, judge is a no-op the
+    # scorer handles gracefully). Always prompt.
+    changed, svalue = _ask_optional_choice(
+        "  Confidence signal",
+        current=original_llm.confidence_signal,
+        choices=list(CONFIDENCE_SIGNAL_CHOICES),
+    )
+    if changed:
+        overrides["confidence_signal"] = svalue
 
     info("Confidence thresholds (token probability 0.0-1.0):")
     changed, value = _ask_optional_float(
@@ -1121,6 +1152,12 @@ def execute_analyze_run(
                             "logprob_high": float(getattr(cfg.llm, "logprob_high", 0.0) or 0.0),
                             "logprob_medium": float(getattr(cfg.llm, "logprob_medium", 0.0) or 0.0),
                             "force_logprobs": bool(getattr(cfg.llm, "force_logprobs", True)),
+                            # Per-run override picker fields — captured
+                            # post-override so ``/history show <run>``
+                            # reports the effective values actually used
+                            # to generate this run's alternatives.
+                            "alternatives_mode": getattr(cfg.llm, "alternatives_mode", ""),
+                            "confidence_signal": getattr(cfg.llm, "confidence_signal", ""),
                             "dedup_used": bool(use_dedup),
                             "missing_only": bool(missing_only),
                             "review_strategy": review_strategy,
