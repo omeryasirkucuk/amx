@@ -11,7 +11,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
-from amx.agents.base import AgentContext, Confidence, MetadataSuggestion, apply_logprob_confidence
+from amx.agents.base import (
+    AgentContext,
+    Confidence,
+    MetadataSuggestion,
+    apply_confidence_signals,
+    apply_logprob_confidence,
+)
 from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
@@ -1435,15 +1441,33 @@ class Orchestrator:
                 cap=cap,
             )
 
-        merged.extend(
-            apply_logprob_confidence(
-                merge_results,
-                result.logprobs,
-                high_threshold=self.llm.cfg.logprob_high,
-                medium_threshold=self.llm.cfg.logprob_medium,
-                response_text=result.content,
-            )
+        merged_with_logprob = apply_logprob_confidence(
+            merge_results,
+            result.logprobs,
+            high_threshold=self.llm.cfg.logprob_high,
+            medium_threshold=self.llm.cfg.logprob_medium,
+            response_text=result.content,
         )
+        # Re-score per-alternative confidence on the merged candidates.
+        # The merge step builds fresh ``MetadataSuggestion(source="combined")``
+        # objects whose ``.suggestions`` list may differ from any single
+        # sub-agent's output, so per-alternative scores attached upstream
+        # would no longer align. Running ``apply_confidence_signals``
+        # here re-embeds (self_consistency), reparses (self_decl), or
+        # re-ranks (judge) the merged candidate set. Best-effort: any
+        # failure is swallowed and the row falls back to the legacy
+        # ``list[str]`` payload.
+        try:
+            apply_confidence_signals(
+                suggestions=merged_with_logprob,
+                logprobs_content=result.logprobs,
+                response_text=result.content,
+                cfg=self.llm.cfg,
+                llm=self.llm,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            log.warning("Post-merge confidence scoring failed: %s", exc)
+        merged.extend(merged_with_logprob)
         return merged
 
     def _merge_fill_up(
