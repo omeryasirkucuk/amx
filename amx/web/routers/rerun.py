@@ -31,8 +31,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from amx.agents._orchestrator.rerun import RerunOutcome, rerun_items
+from amx.agents.base import Confidence
+from amx.agents.orchestrator import ReviewResult
 from amx.agents.rerun_context import RerunContextError
 from amx.config import AMXConfig
+from amx.pending_review import load_pending, save_pending
 from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
@@ -133,6 +136,62 @@ def _make_event_emitter(queue: Queue):
     return _emit
 
 
+def _queue_outcomes_for_review(outcomes: list[RerunOutcome]) -> int:
+    """Add successful re-run outcomes to the on-disk pending queue.
+
+    A Re-Run row is born without a chosen description -- it is a list
+    of fresh alternatives waiting for a human pick. The Studio renders
+    such rows on the run-detail page, but without a matching pending
+    entry the alternative buttons have nothing to attach to and a
+    click is a no-op. Auto-seeding the queue with the top alternative
+    gives the user a clickable row immediately; they can swap to a
+    different alternative on the SPA (which PATCHes the same entry)
+    or skip it back out of the queue.
+
+    The first alternative is chosen as a sensible default (it is the
+    model's top pick under the active confidence signal). Pending
+    entries are keyed by ``result_id``; a same-result_id idempotency
+    check on the restore endpoint already protects against duplicate
+    appends on retry.
+    """
+    rows = load_pending()
+    appended = 0
+    for outcome in outcomes:
+        if outcome.error:
+            continue
+        if outcome.new_result_id <= 0:
+            continue
+        # An asset can carry no alternatives if the agent failed to
+        # produce anything -- skip those rather than queue a row with
+        # an empty final_description (save_pending would drop it).
+        alts = list(outcome.alternatives or [])
+        if not alts or not (alts[0] or "").strip():
+            continue
+        try:
+            confidence = Confidence[outcome.confidence.upper()]
+        except (KeyError, AttributeError):
+            confidence = Confidence.MEDIUM
+        rows.append(
+            ReviewResult(
+                schema=outcome.schema,
+                table=outcome.table,
+                column=outcome.column,
+                final_description=alts[0],
+                confidence=confidence,
+                source=outcome.source or "rerun",
+                applied=True,
+                asset_kind=outcome.asset_kind or "table",
+                result_id=int(outcome.new_result_id),
+                alternatives=alts,
+                logprob_score=outcome.logprob_score,
+            )
+        )
+        appended += 1
+    if appended:
+        save_pending(rows)
+    return appended
+
+
 def _rerun_worker(
     cfg: AMXConfig,
     job: Job,
@@ -191,6 +250,11 @@ def _rerun_worker(
         return
 
     successful = sum(1 for o in outcomes if not o.error)
+    try:
+        queued = _queue_outcomes_for_review(outcomes)
+    except Exception as exc:  # noqa: BLE001 -- review queue is best-effort
+        log.warning("Failed to seed pending queue after re-run: %s", exc)
+        queued = 0
     job.run_id = int(new_run_id)
     job.status = "done"
     job.summary = {
@@ -198,10 +262,13 @@ def _rerun_worker(
         "total": len(outcomes),
         "successful": successful,
         "failed": len(outcomes) - successful,
+        "pending_queued": queued,
         "duration_sec": round(time.time() - started_wall, 3),
         "outcomes": [_outcome_to_dict(o) for o in outcomes],
     }
     job.ended_at = time.time()
+    if queued:
+        emit(job.queue, "pending.saved", {"count": queued})
     emit_terminal(job.queue, "job.done", {"summary": job.summary})
 
 

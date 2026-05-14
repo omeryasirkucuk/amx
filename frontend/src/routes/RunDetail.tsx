@@ -2371,6 +2371,24 @@ function ResultsTab({
     return m;
   }, [pending.data]);
 
+  // Map asset key (schema|table|column) → the result_id currently
+  // holding the pending pick for that asset. Drives the per-row
+  // cross-version lock in ``ResultRowItem``: when an asset has
+  // multiple versions (v1 + v2/v3 stacked inline), only the version
+  // whose row holds the pending entry stays clickable; the rest of
+  // that asset's rows render their alternatives non-clickable so the
+  // user can't queue two competing descriptions for the same column
+  // and have an arbitrary one win at Apply time.
+  const pendingAssetHolderByKey = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of pending.data?.pending ?? []) {
+      if (p.result_id == null) continue;
+      const key = `${p.schema}.${p.table}.${p.column ?? "__table__"}`;
+      m.set(key, p.result_id);
+    }
+    return m;
+  }, [pending.data]);
+
   // Per-asset version index. Joins each descendant row to its v1
   // counterpart by ``(schema, table, column)``, sorts within each
   // asset chronologically, and assigns ``v2`` / ``v3`` / … labels
@@ -3399,12 +3417,29 @@ function ResultsTab({
               {tableRows.map((r) => {
                 const pendingEntry =
                   r.id != null ? pendingByResultId.get(r.id) : undefined;
+                // Cross-version lock: if a different row for the same
+                // asset (schema|table|column) currently holds the
+                // pending pick, this row's alternatives go non-
+                // clickable. ``r.id`` is the row's own id; the holder
+                // for this asset key may be this same row (no lock)
+                // or a sibling version (lock with that version's
+                // label so the tooltip can point the user there).
+                const assetKey = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
+                const holderRowId = pendingAssetHolderByKey.get(assetKey);
+                const lockedByOtherVersion =
+                  holderRowId != null && holderRowId !== r.id
+                    ? {
+                        versionLabel:
+                          versionInfoByRowId.get(holderRowId)?.versionLabel ?? "v1",
+                      }
+                    : null;
                 return (
                   <ResultRowItem
                     key={r.id}
                     row={r}
                     dbProfile={scope.db_profile}
                     pendingEntry={pendingEntry}
+                    lockedByOtherVersion={lockedByOtherVersion}
                     pickAlternative={(description) => {
                       if (!pendingEntry) return;
                       patchPending.mutate({ idx: pendingEntry.idx, description });
@@ -3748,6 +3783,7 @@ function ResultRowItemImpl({
   isKeynavFocused = false,
   versionInfo = null,
   hydratedRunningKinds = [],
+  lockedByOtherVersion = null,
 }: {
   row: ResultRow;
   /** Active DB profile — keys the pinned-cells localStorage bucket
@@ -3790,6 +3826,14 @@ function ResultRowItemImpl({
     kind: "variations" | "rerun";
     seedAltIdx: number | null;
   }>;
+  /** Mutual exclusion across asset versions. When the same asset
+   *  (schema/table/column) has an active pending entry on a DIFFERENT
+   *  row -- typically a sibling version (v1 vs v2/v3) -- this row's
+   *  alternative buttons go non-clickable so the user can't queue
+   *  two competing descriptions for the same column at once. The
+   *  ``versionLabel`` here names the version that holds the lock so
+   *  the tooltip can point the user at where to deselect first. */
+  lockedByOtherVersion?: { versionLabel: string } | null;
 }) {
   // When the row was fetched with ``include_history=true`` and a
   // re-run produced a v2/v3+ version, surface the latest entry's
@@ -4309,7 +4353,16 @@ function ResultRowItemImpl({
             // and ``isAppliedClean`` rows stay non-toggleable because the
             // description is already on disk in the live DB.
             const canDeselect = editable && isChosen && !applied;
-            const clickable = canPick || canRestore || canDeselect;
+            // Cross-version lock: if a sibling version of this asset
+            // already holds a pending pick, every alternative in THIS
+            // row becomes non-clickable until the user clears the
+            // sibling's selection. Matches the user's mental model
+            // that only one description per column can be queued at
+            // a time -- the apply step would otherwise write two
+            // competing comments for the same column with last-write-
+            // wins semantics that are invisible from the SPA.
+            const clickable =
+              (canPick || canRestore || canDeselect) && !lockedByOtherVersion;
             return (
               <button
                 key={`${row.id}-${idx}`}
@@ -4321,19 +4374,21 @@ function ResultRowItemImpl({
                 }}
                 disabled={!clickable || isMutating}
                 title={
-                  isAppliedClean
-                    ? isChosen
-                      ? "Currently applied to the live database."
-                      : "Click to queue this alternative as a revision -- the next Apply overwrites the live comment."
-                    : applied
+                  lockedByOtherVersion
+                    ? `Locked: this asset already has a selection on ${lockedByOtherVersion.versionLabel}. Deselect it there first to pick from this version.`
+                    : isAppliedClean
                       ? isChosen
-                        ? "Pending revision uses this alternative -- Apply to overwrite the live comment."
-                        : "Make this the queued revision (does not write to the database until Apply)."
-                      : skipped
-                        ? "Click to restore this row to the pending queue with this alternative chosen."
-                        : isChosen
-                          ? "Click again to deselect — sends the row back to the unreviewed queue."
-                          : "Make this the chosen alternative"
+                        ? "Currently applied to the live database."
+                        : "Click to queue this alternative as a revision -- the next Apply overwrites the live comment."
+                      : applied
+                        ? isChosen
+                          ? "Pending revision uses this alternative -- Apply to overwrite the live comment."
+                          : "Make this the queued revision (does not write to the database until Apply)."
+                        : skipped
+                          ? "Click to restore this row to the pending queue with this alternative chosen."
+                          : isChosen
+                            ? "Click again to deselect — sends the row back to the unreviewed queue."
+                            : "Make this the chosen alternative"
                 }
                 className={cn(
                   "flex w-full items-start gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-fast",

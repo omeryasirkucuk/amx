@@ -33,6 +33,7 @@ from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
 from amx.web.progress_bus import emit, emit_terminal
+from amx.web.routers.rerun import _queue_outcomes_for_review
 from amx.web.routers.runs import LLMOverrides
 
 router = APIRouter(prefix="/api", tags=["variations"])
@@ -158,6 +159,11 @@ def _variations_worker(
         emit_terminal(job.queue, "job.failed", {"error": message})
         return
 
+    try:
+        queued = _queue_outcomes_for_review([outcome])
+    except Exception as exc:  # noqa: BLE001 -- review queue is best-effort
+        log.warning("Failed to seed pending queue after variations: %s", exc)
+        queued = 0
     job.run_id = int(new_run_id)
     job.status = "done"
     job.summary = {
@@ -169,8 +175,11 @@ def _variations_worker(
         "duration_sec": round(time.time() - started_wall, 3),
         "seed_alternative_id": f"{payload.result_id}:{payload.alternative_index}",
         "mode": payload.mode,
+        "pending_queued": queued,
     }
     job.ended_at = time.time()
+    if queued:
+        emit(job.queue, "pending.saved", {"count": queued})
     emit_terminal(job.queue, "job.done", {"summary": job.summary})
 
 
