@@ -349,3 +349,52 @@ class TestRunRowRecordsDerivedLlmIdentity:
         new_run = store.get_run(int(new_run_id))
         assert new_run.get("llm_provider") == "openrouter"
         assert new_run.get("llm_model") == "moonshotai/kimi-k2-thinking"
+
+
+class TestHeartbeatPingedOnReRunStart:
+    """Re-Run / Variations workers must beat the run row's heartbeat
+    BEFORE any multi-second work begins, otherwise the scheduler's
+    stale-run sweeper (``recover_stale_runs``) flips the row to
+    ``failed`` with message
+    ``Recovered stale running run (heartbeat threshold exceeded)``
+    even when the worker is alive and writing run_results rows.
+
+    Pin both the initial-beat AND the subsequent ticker behaviour:
+    the moment we return from ``rerun_items``, ``last_heartbeat_at``
+    is non-NULL — closing the NULL window the sweeper treats as
+    immediately stale."""
+
+    def test_initial_heartbeat_set_before_target_loop(
+        self, store: SQLiteHistoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, rid = _seed_run(store)
+        cfg = _cfg()
+
+        # Capture last_heartbeat_at the moment build_context_snapshot
+        # is first invoked. If the heartbeat ticker fires AFTER the
+        # target loop starts (which is what the bug was), this field
+        # is still NULL at this point and the sweeper wins.
+        seen_heartbeat: dict[str, float | None] = {"value": None}
+
+        from amx.agents import rerun_context as rc_mod
+
+        def capture_heartbeat(*args, **kwargs) -> None:
+            with store._connect() as conn:
+                row = conn.execute(
+                    "SELECT last_heartbeat_at FROM analysis_runs "
+                    "WHERE command='rerun' ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                seen_heartbeat["value"] = row[0] if row else None
+            raise RerunContextError("stop early after probing heartbeat")
+
+        monkeypatch.setattr(rc_mod, "build_context_snapshot", capture_heartbeat)
+        monkeypatch.setattr(rerun_mod, "build_context_snapshot", capture_heartbeat)
+
+        rerun_items(cfg, target_result_ids=[rid])
+
+        assert seen_heartbeat["value"] is not None, (
+            "last_heartbeat_at is NULL by the time the first target's "
+            "build_context_snapshot runs. The sweeper treats NULL as "
+            "immediately stale — every Re-Run / Variations job will "
+            "be flipped to 'Recovered stale running run' mid-flight."
+        )

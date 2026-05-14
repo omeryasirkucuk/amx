@@ -729,6 +729,42 @@ def rerun_items(
         except Exception as exc:  # noqa: BLE001 — caller-supplied callback
             log.warning("on_run_created callback raised: %s", exc)
 
+    # Start a heartbeat ticker so the scheduler's stale-run sweep
+    # (``recover_stale_runs`` in ``amx/scheduler/tick.py``) doesn't
+    # flip this row to ``failed`` mid-flight. The sweep treats
+    # ``last_heartbeat_at IS NULL`` as immediately stale, so the
+    # first beat fires synchronously to close the NULL window before
+    # the multi-second target loop begins. Subsequent beats run on a
+    # daemon thread until the ``finally`` block stops it. Mirrors the
+    # ``_start_heartbeat_ticker`` pattern in
+    # ``amx/web/routers/runs.py:532`` — without it every Re-Run /
+    # Variations submit gets clobbered ~one tick after starting,
+    # turning a real success/partial into a fake "Recovered stale
+    # running run (heartbeat threshold exceeded)" failure even after
+    # the worker successfully wrote run_results rows.
+    heartbeat_stop = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+    try:
+        hs.update_run_heartbeat(int(new_run_id))
+    except Exception as exc:  # noqa: BLE001 — defensive, never fatal
+        log.warning("rerun heartbeat initial beat failed for run_id=%s: %s", new_run_id, exc)
+
+    def _heartbeat_tick(target_run_id: int) -> None:
+        while not heartbeat_stop.is_set():
+            try:
+                hs.update_run_heartbeat(target_run_id)
+            except Exception:  # noqa: BLE001 — never crash the ticker
+                log.exception("rerun heartbeat ticker failed for run_id=%s", target_run_id)
+            heartbeat_stop.wait(60.0)
+
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_tick,
+        args=(int(new_run_id),),
+        name=f"amx-rerun-heartbeat-{new_run_id}",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+
     outcomes: list[RerunOutcome] = []
     started = time.monotonic()
     # Reset the module-level singleton so the per-step tokens + USD
@@ -1001,6 +1037,13 @@ def rerun_items(
             error_text=error_text,
         )
     finally:
+        # Stop the heartbeat ticker FIRST so a teardown delay in the
+        # snapshot cleanup doesn't keep a stale beat alive past
+        # finish_run. The thread is daemon — set the event, then a
+        # short join keeps the test suite from seeing it linger.
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=0.5)
         # Storage-maliyetsiz: snapshots disappear the moment the worker
         # exits, regardless of success / failure / cancellation.
         try:
