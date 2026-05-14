@@ -153,8 +153,42 @@ def _queue_outcomes_for_review(outcomes: list[RerunOutcome]) -> int:
     entries are keyed by ``result_id``; a same-result_id idempotency
     check on the restore endpoint already protects against duplicate
     appends on retry.
+
+    Re-Run / Variations are explicit "redo this asset" actions, so
+    the new row supersedes any prior pending entry for the same
+    ``(schema, table, column, asset_kind)`` -- without this, the
+    pending file ends up carrying both the original v1 entry (seeded
+    by ``/run``) AND the new v2/v3 entry. The Apply step would then
+    issue two ``COMMENT ON`` statements for the same column with
+    last-write-wins semantics that are invisible from the SPA. The
+    pre-filter below drops the prior entry so the new row is the
+    canonical queued pick for the asset.
     """
-    rows = load_pending()
+    # Asset-key set of the outcomes we are about to queue. Used to
+    # supersede any prior pending entry on the same asset. Failed
+    # outcomes (``outcome.error`` truthy or no alternatives) are
+    # excluded so a model failure on v2 doesn't silently delete the
+    # user's already-queued v1 pick.
+    supersede_keys: set[tuple[str, str, str | None, str]] = set()
+    for o in outcomes:
+        if o.error or o.new_result_id <= 0:
+            continue
+        first_alt = (o.alternatives or [None])[0]
+        if not first_alt or not str(first_alt).strip():
+            continue
+        supersede_keys.add((o.schema, o.table, o.column, o.asset_kind or "table"))
+
+    existing = load_pending()
+    if supersede_keys:
+        rows = [
+            r
+            for r in existing
+            if (r.schema, r.table, r.column, r.asset_kind or "table") not in supersede_keys
+        ]
+    else:
+        rows = list(existing)
+    superseded = len(existing) - len(rows)
+
     appended = 0
     for outcome in outcomes:
         if outcome.error:
@@ -187,7 +221,7 @@ def _queue_outcomes_for_review(outcomes: list[RerunOutcome]) -> int:
             )
         )
         appended += 1
-    if appended:
+    if appended or superseded:
         save_pending(rows)
     return appended
 

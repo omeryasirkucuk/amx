@@ -3004,10 +3004,27 @@ function ResultsTab({
   // Apply will overwrite the live comment for those, so they must
   // contribute to the CTA's count or the button stays disabled
   // ("Queue empty -- all applied") even though work is queued.
-  const queuedCount = rows.reduce(
-    (n, r) => n + (r.id != null && pendingByResultId.has(r.id) ? 1 : 0),
-    0,
-  );
+  //
+  // Descendant rows (v2/v3 from Re-Run / Variations) live in
+  // ``descendantsByV1Id`` and are spliced into the rendering
+  // pipeline separately from ``rows``. A pending entry on a
+  // descendant row must still tally here -- otherwise the user
+  // clicks an alternative on v2, the row's badge flips to
+  // ``accepted`` with ✓, but the page header keeps reading
+  // "0 queued" and the Apply CTA stays "Nothing to apply" because
+  // a reduce over ``rows`` alone never sees the v2 entry.
+  const queuedCount = useMemo(() => {
+    const ids = new Set<number>();
+    for (const r of rows) if (r.id != null) ids.add(r.id);
+    for (const drs of descendantsByV1Id.values()) {
+      for (const dr of drs) if (dr.id != null) ids.add(dr.id);
+    }
+    let n = 0;
+    for (const id of pendingByResultId.keys()) {
+      if (ids.has(id)) n += 1;
+    }
+    return n;
+  }, [rows, descendantsByV1Id, pendingByResultId]);
   // Applied & untouched: the row has a live-DB comment AND no
   // pending revision queued. Used for the "X applied" tally next to
   // the Apply CTA so it reflects committed work, not work currently
