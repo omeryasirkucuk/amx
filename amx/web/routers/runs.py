@@ -74,6 +74,7 @@ class LLMOverrides(BaseModel):
     column_batch_size: int | None = Field(default=None, ge=1, le=200)
     prompt_detail: str | None = None
     description_verbosity: str | None = None
+    confidence_signal: str | None = None
     thinking_budget: int | None = Field(default=None, ge=0, le=64_000)
     logprob_high: float | None = Field(default=None, ge=0.0, le=1.0)
     logprob_medium: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -98,6 +99,19 @@ class LLMOverrides(BaseModel):
         allowed = {"brief", "detailed", "comprehensive", "exhaustive"}
         if v not in allowed:
             raise ValueError(f"description_verbosity must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("confidence_signal")
+    @classmethod
+    def _check_confidence_signal(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from amx.config import CONFIDENCE_SIGNAL_CHOICES
+
+        if v not in CONFIDENCE_SIGNAL_CHOICES:
+            raise ValueError(
+                f"confidence_signal must be one of {sorted(CONFIDENCE_SIGNAL_CHOICES)}"
+            )
         return v
 
     def non_null(self) -> dict[str, Any]:

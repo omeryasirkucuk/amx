@@ -821,10 +821,17 @@ function normalizeAlternatives(raw: unknown): string[] {
 }
 
 /**
- * Parse ``alternatives_json`` while preserving Phase 1 confidence
- * metadata. Legacy rows (list[str]) yield entries whose ``band`` is
- * ``null`` — UI consumers fall back to no stripe / no badge in that
- * case.
+ * Parse ``alternatives_json`` into ``StructuredAlternative`` entries.
+ *
+ * Three on-disk shapes are accepted (mirrors
+ * ``parse_alternatives_json`` on the backend):
+ *
+ *  1. Legacy flat ``string[]`` — yields ``{text, band=null}``.
+ *  2. Old ensemble shape ``{text, scores, ensemble, band}`` — drops
+ *     the per-signal numbers; keeps only the band so existing rows
+ *     still render a pill.
+ *  3. Current single-signal shape ``{text, signal, score, band}`` —
+ *     passes through.
  */
 function normalizeStructuredAlternatives(raw: unknown): StructuredAlternative[] {
   let arr: unknown = raw;
@@ -839,11 +846,31 @@ function normalizeStructuredAlternatives(raw: unknown): StructuredAlternative[] 
   const out: StructuredAlternative[] = [];
   for (const entry of arr) {
     if (typeof entry === "string") {
-      out.push({ text: entry });
+      out.push({ text: entry, signal: null, score: null, band: null });
     } else if (entry && typeof entry === "object" && "text" in entry) {
-      out.push(entry as StructuredAlternative);
+      const obj = entry as Record<string, unknown>;
+      const text = String(obj.text ?? "");
+      // Current single-signal shape uses ``signal`` + ``score``; old
+      // ensemble rows have ``scores`` + ``ensemble`` and we drop those
+      // fields here so only the band label survives.
+      const hasNewShape = "signal" in obj || "score" in obj;
+      out.push({
+        text,
+        signal: hasNewShape && typeof obj.signal === "string" ? obj.signal : null,
+        score:
+          hasNewShape && typeof obj.score === "number" ? (obj.score as number) : null,
+        band:
+          obj.band === "HIGH" || obj.band === "MED" || obj.band === "LOW"
+            ? obj.band
+            : null,
+      });
     } else if (entry && typeof entry === "object" && "description" in entry) {
-      out.push({ text: String((entry as { description: unknown }).description) });
+      out.push({
+        text: String((entry as { description: unknown }).description),
+        signal: null,
+        score: null,
+        band: null,
+      });
     }
   }
   return out;
@@ -867,21 +894,25 @@ const BAND_STYLES: Record<string, { stripe: string; pill: string; label: string 
   },
 };
 
+const SIGNAL_ABBREV: Record<string, string> = {
+  logprob: "LP",
+  self_consistency: "SC",
+  self_decl: "SD",
+  judge: "JU",
+};
+
 /**
- * Phase 1 per-alternative confidence pill. Clicking expands a panel
- * showing the raw signal breakdown (logprob span, self-consistency,
- * and — in later phases — self-declaration and judge scores).
- *
- * Returns ``null`` for alternatives that do not carry a band (legacy
- * rows or confidence-disabled runs) so the UI stays clean.
+ * Per-alternative confidence pill. The label is
+ * ``{SIGNAL_ABBREV}: {band} {score}`` so the user always knows which
+ * scorer drove the value — e.g. ``SC: HIGH 0.78``. Falls back to no
+ * pill when the alternative carries no band (legacy ``list[str]`` rows
+ * or runs whose ``confidence_signal`` is ``"none"``).
  */
 function ConfidenceBadge({ alt }: { alt: StructuredAlternative }) {
   if (!alt.band || !BAND_STYLES[alt.band]) return null;
   const style = BAND_STYLES[alt.band];
-  const ensemble = typeof alt.ensemble === "number" ? alt.ensemble.toFixed(2) : null;
-  const scores = alt.scores ?? null;
-  const fmt = (v: number | null | undefined) =>
-    typeof v === "number" ? v.toFixed(2) : "—";
+  const scoreText = typeof alt.score === "number" ? alt.score.toFixed(2) : null;
+  const abbrev = alt.signal ? SIGNAL_ABBREV[alt.signal] ?? null : null;
 
   return (
     <details className="inline-block relative align-middle">
@@ -892,25 +923,24 @@ function ConfidenceBadge({ alt }: { alt: StructuredAlternative }) {
           className={`sm:hidden inline-block h-2 w-2 rounded-full ${style.stripe}`}
           aria-hidden
         />
+        {abbrev && <span className="opacity-70">{abbrev}:</span>}
         {style.label}
-        {ensemble && <span className="opacity-70">{ensemble}</span>}
+        {scoreText && <span className="opacity-70">{scoreText}</span>}
       </summary>
       <div className="absolute right-0 z-10 mt-1 w-56 rounded-md border border-surface-border bg-surface p-2 text-[11px] text-ink shadow-lg">
         <table className="w-full">
           <tbody>
             <tr>
-              <td className="py-0.5 pr-2 text-ink-dim">Logprob span</td>
-              <td className="py-0.5 text-right font-mono">{fmt(scores?.logprob)}</td>
+              <td className="py-0.5 pr-2 text-ink-dim">Signal</td>
+              <td className="py-0.5 text-right font-mono">{alt.signal ?? "—"}</td>
             </tr>
             <tr>
-              <td className="py-0.5 pr-2 text-ink-dim">Self-consistency</td>
-              <td className="py-0.5 text-right font-mono">{fmt(scores?.self_consistency)}</td>
+              <td className="py-0.5 pr-2 text-ink-dim">Score</td>
+              <td className="py-0.5 text-right font-mono">{scoreText ?? "—"}</td>
             </tr>
             <tr className="border-t border-surface-border font-medium">
-              <td className="py-0.5 pr-2">Ensemble</td>
-              <td className="py-0.5 text-right font-mono">
-                {ensemble ?? "—"} {style.label}
-              </td>
+              <td className="py-0.5 pr-2">Band</td>
+              <td className="py-0.5 text-right font-mono">{style.label}</td>
             </tr>
           </tbody>
         </table>

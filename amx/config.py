@@ -1336,22 +1336,44 @@ def _db_to_mapping(db: DBConfig) -> dict[str, Any]:
     return base
 
 
+#: Allowed values for ``LLMConfig.confidence_signal``. ``none`` means
+#: per-alternative scoring is disabled entirely for that profile.
+CONFIDENCE_SIGNAL_CHOICES: tuple[str, ...] = (
+    "logprob",
+    "self_consistency",
+    "self_decl",
+    "judge",
+    "none",
+)
+
+DEFAULT_CONFIDENCE_SIGNAL = "self_consistency"
+
+
+def _coerce_confidence_signal(value: Any) -> str:
+    """Clamp a YAML-loaded value to a valid ``confidence_signal`` choice.
+
+    Unknown values (typos like ``judje``) fall back to the default rather
+    than raising, so a hand-edited config does not stop AMX from
+    starting. The CLI ``/confidence-signal`` command and the Studio
+    dropdown both surface valid values for the user to correct it.
+    """
+    if isinstance(value, str) and value in CONFIDENCE_SIGNAL_CHOICES:
+        return value
+    return DEFAULT_CONFIDENCE_SIGNAL
+
+
 @dataclass
 class ConfidenceConfig:
-    """Per-alternative confidence scoring knobs.
+    """Per-alternative confidence band cut-offs.
 
-    Phases 1 + 2 enable Signal A (logprob span), Signal C
-    (self-consistency), and Signal B (LLM self-declaration). Signal D
-    (Phase 3 LLM-as-judge) stays off by default because its second-pass
-    LLM call roughly doubles per-run token spend; users opt in
-    explicitly via ``use_judge: true`` on the LLM profile.
+    Active-signal selection has moved up onto
+    ``LLMConfig.confidence_signal`` so the user picks a single scorer in
+    the same place they choose ``description_verbosity`` and
+    ``n_alternatives``. This block keeps only the absolute band cut-offs
+    and the master enable switch.
     """
 
     enabled: bool = True
-    use_logprob: bool = True
-    use_self_consistency: bool = True
-    use_self_decl: bool = True
-    use_judge: bool = False  # Phase 3 — opt-in
     high: float = 0.75
     med: float = 0.50
 
@@ -1395,6 +1417,12 @@ class LLMConfig(_ObservableConfig):
     logprob_high: float = 0.85
     logprob_medium: float = 0.50
     force_logprobs: bool = True
+    #: Which per-alternative confidence signal runs for this profile.
+    #: One of ``CONFIDENCE_SIGNAL_CHOICES``. ``none`` disables scoring
+    #: for the profile; otherwise exactly one scorer runs and its raw
+    #: 0–1 score is mapped to HIGH/MED/LOW by ``ConfidenceConfig`` band
+    #: cut-offs.
+    confidence_signal: str = DEFAULT_CONFIDENCE_SIGNAL
     confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
     # Token budget for the model's internal reasoning (Anthropic extended
     # thinking). Only consumed when the model supports reasoning AND a caller
@@ -1438,13 +1466,14 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     bands_map = conf_map.get("bands") or {}
     confidence_cfg = ConfidenceConfig(
         enabled=bool(conf_map.get("enabled", True)),
-        use_logprob=bool(conf_map.get("use_logprob", True)),
-        use_self_consistency=bool(conf_map.get("use_self_consistency", True)),
-        use_self_decl=bool(conf_map.get("use_self_decl", True)),
-        use_judge=bool(conf_map.get("use_judge", False)),
         high=float(bands_map.get("high", 0.75)),
         med=float(bands_map.get("med", 0.50)),
     )
+    # Pre-pivot YAML may still carry the legacy ``use_*`` boolean gates
+    # under the ``confidence`` block; we silently drop them so existing
+    # config files keep loading. The active signal selection moves to
+    # the top-level ``confidence_signal`` field, validated below.
+    confidence_signal = _coerce_confidence_signal(m.get("confidence_signal"))
     return LLMConfig(
         provider=provider,
         model=model,
@@ -1466,6 +1495,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         custom_input_cost_per_mtok=_optional_nonneg_float(m.get("custom_input_cost_per_mtok")),
         custom_output_cost_per_mtok=_optional_nonneg_float(m.get("custom_output_cost_per_mtok")),
         rag_query_timeout_sec=float(m.get("rag_query_timeout_sec", 5.0) or 5.0),
+        confidence_signal=confidence_signal,
         confidence=confidence_cfg,
     )
 
@@ -1514,12 +1544,9 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "custom_input_cost_per_mtok": llm.custom_input_cost_per_mtok,
         "custom_output_cost_per_mtok": llm.custom_output_cost_per_mtok,
         "rag_query_timeout_sec": llm.rag_query_timeout_sec,
+        "confidence_signal": llm.confidence_signal,
         "confidence": {
             "enabled": llm.confidence.enabled,
-            "use_logprob": llm.confidence.use_logprob,
-            "use_self_consistency": llm.confidence.use_self_consistency,
-            "use_self_decl": llm.confidence.use_self_decl,
-            "use_judge": llm.confidence.use_judge,
             "bands": {
                 "high": llm.confidence.high,
                 "med": llm.confidence.med,

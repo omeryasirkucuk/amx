@@ -142,6 +142,7 @@ export interface LLMProfileDefaults {
   column_batch_size: number | null;
   prompt_detail: string | null;
   description_verbosity: string | null;
+  confidence_signal: string | null;
   thinking_budget: number | null;
   logprob_high: number | null;
   logprob_medium: number | null;
@@ -158,6 +159,7 @@ export interface LLMOverrides {
   column_batch_size?: number;
   prompt_detail?: string;
   description_verbosity?: string;
+  confidence_signal?: string;
   thinking_budget?: number;
   logprob_high?: number;
   logprob_medium?: number;
@@ -953,20 +955,16 @@ export interface ModelCatalog {
 }
 
 /**
- * Phase 1 confidence scoring: structured alternative entry persisted
- * inside ``run_results.alternatives_json``. Legacy runs may still
- * surface plain strings — the consumer must call ``normalizeAlternatives``
- * (RunDetail.tsx) which already accepts both shapes.
+ * Confidence scoring (single-signal pivot): each alternative carries
+ * the active signal name, its raw 0–1 score, and the HIGH / MED / LOW
+ * band derived from absolute cut-offs. Legacy rows that predate the
+ * feature surface ``signal=null`` / ``score=null`` / ``band=null`` so
+ * the UI can render them as plain alternatives without a pill.
  */
 export interface StructuredAlternative {
   text: string;
-  scores?: {
-    logprob: number | null;
-    self_consistency: number | null;
-    self_decl: number | null;
-    judge: number | null;
-  };
-  ensemble?: number | null;
+  signal?: string | null;
+  score?: number | null;
   band?: "HIGH" | "MED" | "LOW" | null;
 }
 
