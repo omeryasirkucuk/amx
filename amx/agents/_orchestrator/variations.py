@@ -31,6 +31,7 @@ from typing import Any
 
 from amx.agents._orchestrator.rerun import RerunContextError, RerunOutcome, rerun_items
 from amx.config import AMXConfig
+from amx.llm.provider import LLMProvider
 from amx.storage.sqlite_store import history_store
 from amx.utils.logging import get_logger
 
@@ -216,6 +217,8 @@ def variations_one_item(
                 parent_run_id=int(original_run_id),
                 seed_text=seed_text,
                 n_alts_requested=n_alts_requested,
+                cfg=cfg,
+                mode=mode,
             )
         except Exception as exc:  # noqa: BLE001 — audit-only post-step
             log.warning(
@@ -237,6 +240,8 @@ def _update_variation_columns(
     parent_run_id: int,
     seed_text: str,
     n_alts_requested: int,
+    cfg: AMXConfig,
+    mode: str = "semantic",
 ) -> None:
     """Patch the new row with Variations audit columns + the
     structured-shape preserving seed filter.
@@ -298,21 +303,88 @@ def _update_variation_columns(
             filtered_struct.append(entry)
 
         filtered_count = len(filtered_struct)
-        expected_after_filter = (
-            n_alts_requested - 1 if seed_removed else n_alts_requested
-        )
         production_warning: str | None = None
-        if filtered_count < expected_after_filter:
-            production_warning = (
-                f"produced {filtered_count} of {n_alts_requested} requested"
-                + (" (after seed echo)" if seed_removed else "")
-            )
+        retry_added = 0
+        fallback_added = 0
+        if filtered_count < n_alts_requested:
+            # Top-up retry: ask the LLM for the missing slots, NOT
+            # paraphrases of the surviving entries AND NOT echoes of
+            # the seed. ProfileAgent's own top-up runs upstream, so
+            # this fires specifically when the LLM echoed the seed
+            # and the filter dropped it below N — same code path
+            # also catches the rare case where ProfileAgent's top-up
+            # itself failed to recover.
+            from amx.agents._top_up import top_up_alternatives
+
+            existing_texts = [
+                e.get("text") if isinstance(e, dict) else str(e) for e in filtered_struct
+            ]
+            existing_texts = [t for t in existing_texts if t]
+            try:
+                llm = LLMProvider(cfg.llm)
+                new_alts = top_up_alternatives(
+                    llm=llm,
+                    existing_alts=existing_texts,
+                    n_needed=n_alts_requested - filtered_count,
+                    asset_label="(variations retry)",
+                    mode=mode,
+                    seed_text=seed_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Variations top-up retry failed for run_result %s: %s",
+                    new_result_id,
+                    exc,
+                )
+                new_alts = []
+            retry_added = len(new_alts)
+            # Append top-up entries as structured dicts so the
+            # alternatives_json stays in the structured shape that
+            # drives the per-alt confidence badges. New entries
+            # carry no signal/score/band since we haven't run
+            # signals on them; the frontend renders these
+            # badge-less but still clickable/applyable.
+            for text in new_alts:
+                filtered_struct.append(
+                    {
+                        "text": text,
+                        "signal": None,
+                        "score": None,
+                        "band": "—",
+                    }
+                )
+            # Fallback pad — every variations row carries exactly
+            # ``n_alts_requested`` entries regardless of model or
+            # parser behaviour.
+            while len(filtered_struct) < n_alts_requested:
+                fallback_added += 1
+                filtered_struct.append(
+                    {
+                        "text": (
+                            f"FALLBACK variation {fallback_added}: model + "
+                            "retry did not produce a distinct alternative for "
+                            "this slot. Please edit manually or generate "
+                            "another Variations run."
+                        ),
+                        "signal": None,
+                        "score": None,
+                        "band": "—",
+                    }
+                )
+            if fallback_added > 0:
+                production_warning = (
+                    f"produced {filtered_count} of {n_alts_requested} requested "
+                    f"(retry got {retry_added}, fallback padded {fallback_added}"
+                    + (", after seed echo" if seed_removed else "")
+                    + ")"
+                )
             log.warning(
-                "Variations under-production for run_result %s: "
-                "produced=%d expected=%d (n_alts=%d, seed_removed=%s, raw=%d)",
+                "Variations top-up for run_result %s: "
+                "filtered=%d, retry=%d, fallback=%d, target=%d (seed_removed=%s, raw=%d)",
                 new_result_id,
                 filtered_count,
-                expected_after_filter,
+                retry_added,
+                fallback_added,
                 n_alts_requested,
                 seed_removed,
                 original_len,

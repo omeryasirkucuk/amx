@@ -217,7 +217,14 @@ class TestVariationsOneItem:
         # extract plain text for the comparison.
         alt_texts = [(alt if isinstance(alt, str) else alt.get("text", "")) for alt in alts]
         assert seed not in alt_texts, alt_texts
-        assert len(alt_texts) == 2
+        # Hard guarantee: filtered_count was 2 after seed echo; the
+        # top-up retry path fires (failing here against a no-key
+        # mock LLM), then fallback padding restores the row to
+        # exactly n_alts_requested=3 entries — never fewer.
+        assert len(alt_texts) == 3, (
+            f"Expected hard-guarantee 3 entries (n_alternatives=3); got "
+            f"{len(alt_texts)}. The retry+pad path should always reach N."
+        )
 
 
 class TestVariationsStructuredShapeAndWarning:
@@ -284,9 +291,7 @@ class TestVariationsStructuredShapeAndWarning:
                         "confidence": "high",
                         "alternatives": [s.text for s in scores],
                         "alternative_scores": [s.to_json() for s in scores],
-                        "alternatives_mode": kwargs["llm_overrides"][
-                            "alternatives_mode"
-                        ],
+                        "alternatives_mode": kwargs["llm_overrides"]["alternatives_mode"],
                         "model": "gpt-x",
                         "provider": "openai",
                         "parent_result_id": rid,
@@ -326,24 +331,28 @@ class TestVariationsStructuredShapeAndWarning:
         rows = store.get_run_results(new_run_id)
         new_row = rows[0]
         alts = new_row["alternatives_json"]
-        # Each surviving entry must be a structured dict — that's the
-        # whole point of this fix. A plain ``list[str]`` here means
-        # the post-step overwrite has regressed and v2/v3 rows will
-        # render without confidence badges in the Studio.
+        # Each entry must be a structured dict — that's the whole point
+        # of the badge-preservation fix. A plain ``list[str]`` here
+        # would mean v2/v3 rows render badge-less.
         assert all(isinstance(a, dict) for a in alts), (
             f"alternatives_json lost structured shape: {alts!r}. "
             "Re-introduces the badge-less v2/v3 regression."
         )
-        # Per-alternative signal preserved on the surviving entries.
-        for entry in alts:
-            assert entry.get("signal") == "self_consistency"
+        # Surviving original-LLM entries keep their per-alt signal.
+        # Top-up + fallback entries have signal=None (no SC re-run
+        # on the continuation call) — that's acceptable trade-off
+        # for the hard-guarantee shape.
+        signals = {a.get("signal") for a in alts}
+        assert "self_consistency" in signals, (
+            "Original LLM entries lost their per-alt confidence signal."
+        )
         # Seed dropped from the structured list (no entry with the
         # seed text remains).
         seed_texts = [a.get("text", "") for a in alts]
         assert seed not in seed_texts
-        # n_alternatives=3 with seed echo (1 dropped) ⇒ expected 2;
-        # this fixture returns 2 so no warning.
-        assert new_row.get("production_warning") in (None, "")
+        # Hard guarantee: row always carries exactly n_alts_requested
+        # entries via the retry+pad path.
+        assert len(alts) == 3
 
     def test_production_warning_fires_on_under_production(
         self, store: SQLiteHistoryStore, monkeypatch: pytest.MonkeyPatch
@@ -378,9 +387,7 @@ class TestVariationsStructuredShapeAndWarning:
                         "source": "rerun",
                         "confidence": "high",
                         "alternatives": ["only-one", "only-two"],
-                        "alternatives_mode": kwargs["llm_overrides"][
-                            "alternatives_mode"
-                        ],
+                        "alternatives_mode": kwargs["llm_overrides"]["alternatives_mode"],
                         "model": "gpt-x",
                         "provider": "openai",
                         "parent_result_id": rid,
@@ -418,17 +425,26 @@ class TestVariationsStructuredShapeAndWarning:
         )
 
         new_row = store.get_run_results(new_run_id)[0]
-        warning = new_row.get("production_warning")
-        assert warning == "produced 2 of 3 requested", (
-            f"Expected production_warning='produced 2 of 3 requested', got "
-            f"{warning!r}"
+        warning = new_row.get("production_warning") or ""
+        # Under-production triggers the top-up retry. The retry
+        # fails against the no-key stub LLM, so fallback padding
+        # fires. The warning text now records the full audit:
+        # initial count, retry success, fallback count.
+        assert warning.startswith("produced 2 of 3 requested"), (
+            f"Expected warning to start with 'produced 2 of 3 requested', got {warning!r}"
         )
+        assert "retry got 0" in warning
+        assert "fallback padded" in warning
+        # And the row hard-guarantees N entries via the pad.
+        alts = new_row["alternatives_json"]
+        assert len(alts) == 3
 
-    def test_no_warning_on_full_set(
+    def test_no_warning_when_llm_returned_full_set_no_echo(
         self, store: SQLiteHistoryStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Three-of-three (with seed echo removing one): expected
-        count is 2 and we got 2 ⇒ NO warning."""
+        """LLM returned exactly N alternatives AND none of them was
+        the seed (no seed echo). The filter is a no-op, the top-up
+        retry never fires, no fallback pad, no warning."""
         run_id, rid = _seed_original_run(store)
         seed = "Sample seed text"
 
@@ -454,10 +470,9 @@ class TestVariationsStructuredShapeAndWarning:
                         "asset_kind": "column",
                         "source": "rerun",
                         "confidence": "high",
-                        "alternatives": [seed, "v-A", "v-B"],
-                        "alternatives_mode": kwargs["llm_overrides"][
-                            "alternatives_mode"
-                        ],
+                        # Three distinct alternatives, NO seed echo.
+                        "alternatives": ["v-A", "v-B", "v-C"],
+                        "alternatives_mode": kwargs["llm_overrides"]["alternatives_mode"],
                         "model": "gpt-x",
                         "provider": "openai",
                         "parent_result_id": rid,
@@ -474,7 +489,7 @@ class TestVariationsStructuredShapeAndWarning:
                     table="orders",
                     column="status",
                     asset_kind="column",
-                    alternatives=[seed, "v-A", "v-B"],
+                    alternatives=["v-A", "v-B", "v-C"],
                     confidence="high",
                     logprob_score=None,
                     source="rerun",

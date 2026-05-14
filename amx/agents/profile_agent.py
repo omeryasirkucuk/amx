@@ -528,7 +528,111 @@ class ProfileAgent(BaseAgent):
                 ctx, columns, suggestions, batch_label=batch_label
             )
 
+        # Hard guarantee: every suggestion carries exactly
+        # ``self._n_alternatives`` entries. When the model under-
+        # produced, fire ONE continuation LLM call to fill the gap;
+        # if that also under-produces, pad with the existing
+        # FALLBACK string pattern so the row CAN'T leave the agent
+        # with fewer than N entries. Covers /run + /rerun + the
+        # base Variations path (which uses the rerun executor →
+        # ProfileAgent.run). Skipped during the missing-columns
+        # retry path so we don't double-pay LLM cost on the same
+        # asset.
+        if not _is_retry:
+            self._top_up_under_produced(suggestions, ctx=ctx)
+
         return suggestions
+
+    def _top_up_under_produced(
+        self,
+        suggestions: list[MetadataSuggestion],
+        *,
+        ctx: AgentContext,
+    ) -> None:
+        """Top-up any under-produced suggestion to exactly
+        ``self._n_alternatives`` entries via one continuation LLM
+        call + fallback string padding. Mutates ``suggestions`` in
+        place. Stamps ``production_warning`` on the suggestion when
+        the fallback pad fired (the retry alone didn't recover N)."""
+        from amx.agents._top_up import top_up_alternatives
+
+        n = self._n_alternatives
+        mode = getattr(self.llm.cfg, "alternatives_mode", None)
+        for s in suggestions:
+            existing = list(s.suggestions or [])
+            if len(existing) >= n:
+                continue
+            needed = n - len(existing)
+            label = f"{ctx.schema}.{ctx.table}" + (f".{s.column}" if s.column else " (table-level)")
+            log.warning(
+                "ProfileAgent under-production for %s: produced %d, requested %d, "
+                "attempting top-up retry",
+                label,
+                len(existing),
+                n,
+            )
+            try:
+                new_alts = top_up_alternatives(
+                    llm=self.llm,
+                    existing_alts=existing,
+                    n_needed=needed,
+                    asset_label=label,
+                    mode=mode,
+                    seed_text=None,
+                )
+            except Exception as exc:  # noqa: BLE001 — caller pads on failure
+                log.warning("top_up retry raised for %s: %s", label, exc)
+                new_alts = []
+
+            retry_count = len(new_alts)
+            merged = existing + new_alts
+            fallback_count = 0
+            if len(merged) < n:
+                # Pad with a FALLBACK placeholder so the row carries
+                # exactly N entries. Each pad entry is unique by
+                # appending an index so the structured-shape de-dup
+                # downstream (variations seed filter, etc.) doesn't
+                # collapse them into one.
+                while len(merged) < n:
+                    fallback_count += 1
+                    merged.append(
+                        f"FALLBACK alternative {fallback_count}: model did not "
+                        "produce a distinct alternative for this slot. Please "
+                        "edit manually or re-run with a different model."
+                    )
+                # Stamp the suggestion so the persistence layer
+                # writes ``production_warning`` on the row.
+                s.production_warning = (
+                    f"produced {len(existing)} of {n} requested "
+                    f"(retry got {retry_count}, fallback padded {fallback_count})"
+                )
+                log.warning(
+                    "ProfileAgent top-up insufficient for %s -- fallback padded "
+                    "%d slot(s); production_warning stamped on suggestion",
+                    label,
+                    fallback_count,
+                )
+            s.suggestions = merged
+
+            # Re-run confidence signals on the merged set so the
+            # new top-up entries get badges too. Wrapped — a
+            # failure here just leaves the top-up entries as
+            # band-less rows on the Studio.
+            if new_alts:
+                try:
+                    apply_confidence_signals(
+                        suggestions=[s],
+                        logprobs_content=None,
+                        response_text=None,
+                        cfg=self.llm.cfg,
+                        llm=self.llm,
+                    )
+                except Exception as exc:  # noqa: BLE001 — band-less is acceptable
+                    log.warning(
+                        "Re-applying confidence signals after top-up failed for %s: %s",
+                        label,
+                        exc,
+                    )
 
     def _retry_missing_columns(
         self,

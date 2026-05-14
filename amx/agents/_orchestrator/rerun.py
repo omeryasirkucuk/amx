@@ -880,30 +880,16 @@ def rerun_items(
                 except Exception as exc:  # pragma: no cover — defensive
                     log.warning("Rerun confidence scoring failed: %s", exc)
 
-                # Under-production audit. The Variations executor's
-                # post-step ``_update_variation_columns`` overwrites
-                # this with a richer ``(after seed echo)`` suffix
-                # when the LLM echoed the seed, so the value here is
-                # intentionally seed-unaware (it's also the
-                # source-of-truth for plain Re-Run rows where no
-                # seed-filter happens).
-                n_alts_requested = max(
-                    1, int(getattr(cfg.llm, "n_alternatives", 1) or 1)
-                )
-                produced = len(suggestion.suggestions or [])
-                production_warning = (
-                    f"produced {produced} of {n_alts_requested} requested"
-                    if produced < n_alts_requested
-                    else None
-                )
-                if production_warning:
-                    log.warning(
-                        "Rerun under-production for %s.%s.%s: %s",
-                        ctx.schema,
-                        ctx.table,
-                        ctx.column or "(table-level)",
-                        production_warning,
-                    )
+                # Under-production audit. ProfileAgent's top-up
+                # retry + fallback pad already guarantees
+                # ``len(suggestion.suggestions) == n_alternatives``;
+                # when the retry alone couldn't recover and the
+                # fallback fired, ``suggestion.production_warning``
+                # carries the audit string. The Variations
+                # executor's post-step may overwrite this with a
+                # richer ``(after seed echo)`` suffix when the LLM
+                # echoed the seed.
+                production_warning = getattr(suggestion, "production_warning", None)
                 new_id, rerun_seq = _persist_rerun_row(
                     new_run_id=new_run_id,
                     suggestion=suggestion,
