@@ -226,15 +226,14 @@ function buildCrumbs(
     const out: Crumb[] = [{ label: "Browse", to: "/" }];
     const scopeSeg = params.database ?? params.catalog;
     if (params.profile && scopeSeg) {
-      // The profile crumb links back to Landing because there is no
-      // profile-level page in the SPA — ``/db/:profile`` and
-      // ``/cat/:profile`` both redirect to ``/`` (see App.tsx). The
-      // Landing page hosts the sidebar tree, which is the natural
-      // place to pick a different database / catalog under the same
-      // profile, so the redirect is semantic rather than a dead end.
+      // The profile crumb links to the profile-level page
+      // (``/db/:profile`` for 2-level backends, ``/cat/:profile`` for
+      // 3-level) which lists every database / catalog reachable under
+      // the profile — the same drill-down pattern the database crumb
+      // offers for schemas.
       out.push({
         label: params.profile,
-        to: "/",
+        to: `/${root}/${params.profile}`,
       });
       out.push({
         label: scopeSeg,

@@ -198,7 +198,10 @@ export default function Table() {
         title={table}
         breadcrumbs={[
           { label: "Browse", to: "/" },
-          { label: scope.profile },
+          {
+            label: scope.profile,
+            to: `/${scope.kind === "catalog" ? "cat" : "db"}/${encodeURIComponent(scope.profile)}`,
+          },
           {
             label: scope.database ?? scope.catalog ?? "",
             to: scopePath(scope),
