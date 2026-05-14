@@ -7,6 +7,7 @@ import {
   History,
   PauseCircle,
   PlayCircle,
+  ScrollText,
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -353,6 +354,11 @@ export default function RunsList() {
             <Link to="/runs/compare">
               <Button variant="secondary" size="md" leadingIcon={<GitCompare size={14} />}>
                 Compare
+              </Button>
+            </Link>
+            <Link to="/audit">
+              <Button variant="secondary" size="md" leadingIcon={<ScrollText size={14} />}>
+                Audit
               </Button>
             </Link>
             <Link to="/runs/new">
