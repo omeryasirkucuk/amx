@@ -174,6 +174,8 @@ class IHistoryStore(Protocol):
 
     def update_run_heartbeat(self, run_id: int, *, now_utc: float | None = None) -> None: ...
 
+    def update_run_current_step(self, run_id: int, label: str) -> None: ...
+
     def recover_stale_runs(
         self,
         *,

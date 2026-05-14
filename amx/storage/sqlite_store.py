@@ -958,6 +958,12 @@ class SQLiteHistoryStore:
             # scheduler and for runs created before this migration.
             ("triggered_by_schedule_id", "INTEGER"),
             ("last_heartbeat_at", "REAL"),
+            # Cold-load progress signal for the Studio run-detail page.
+            # The worker rewrites this as it walks startup phases
+            # (connect / LLM / RAG / orchestrator / per-table); the
+            # SPA seeds its "current step" label from it so refresh
+            # doesn't fall back to "Waiting for the worker to begin…".
+            ("current_step_label", "TEXT"),
         ):
             if col_name in existing_cols:
                 continue
@@ -1201,7 +1207,8 @@ class SQLiteHistoryStore:
                     metrics_json = ?,
                     tokens_json = ?,
                     results_json = ?,
-                    error_text = ?
+                    error_text = ?,
+                    current_step_label = NULL
                 WHERE id = ?
                 """,
                 (
@@ -3067,6 +3074,24 @@ class SQLiteHistoryStore:
             conn.execute(
                 "UPDATE analysis_runs SET last_heartbeat_at = ? WHERE id = ?",
                 (ts, run_id),
+            )
+
+    def update_run_current_step(self, run_id: int, label: str) -> None:
+        """Persist the most recent phase label for a live run.
+
+        Cold-load progress: a Studio page refresh has no SSE replay,
+        so without a persisted phase label the run-detail card falls
+        back to "Waiting for the worker to begin…" even when the
+        worker has been busy for half a minute. The web worker calls
+        this at each startup/per-table boundary; ``finish_run`` clears
+        the field when the run ends so the persisted view doesn't
+        keep advertising a stale phase. No-ops for unknown run_ids.
+        """
+        trimmed = (label or "").strip()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE analysis_runs SET current_step_label = ? WHERE id = ?",
+                (trimmed or None, run_id),
             )
 
 

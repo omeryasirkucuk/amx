@@ -78,6 +78,15 @@ interface RunDetailPayload {
       run id. SPA subscribes to /api/runs/{job}/events while it's
       present so a numeric-id detail page shows live progress. */
   live_job_id?: string | null;
+  /** UTC epoch seconds when the row was inserted. Anchor for the
+      Live progress elapsed timer so a refresh resumes the count
+      instead of restarting from 0s. */
+  started_at?: number | null;
+  /** Most recent phase label the worker wrote to the row. Surfaced
+      on cold-load so a refresh after the in-process SSE replay
+      buffer is lost (e.g. Studio restart mid-run) still shows real
+      progress instead of "Waiting for the worker to begin…". */
+  current_step_label?: string | null;
 }
 
 /** PR C (citation chain): machine-readable provenance for a
@@ -1178,7 +1187,23 @@ function compactTokenCount(n: number): string {
   return n.toLocaleString();
 }
 
-function PersistedRunActivityCard({ jobId }: { jobId: string }) {
+function PersistedRunActivityCard({
+  jobId,
+  startedAtEpochSec,
+  initialStepLabel,
+}: {
+  jobId: string;
+  /** UTC epoch seconds the row was inserted. Anchors the elapsed
+   *  timer so a page refresh resumes the count instead of resetting
+   *  to 0s. Null when the parent payload hasn't loaded yet — we fall
+   *  back to ``Date.now()`` for that one render. */
+  startedAtEpochSec: number | null;
+  /** Most recent phase label the worker persisted. Seeded into
+   *  ``lastStep`` on cold load so a refresh after the in-process SSE
+   *  replay buffer was lost (e.g. Studio restart mid-run) still
+   *  shows real progress instead of "Waiting for the worker…". */
+  initialStepLabel: string | null;
+}) {
   // Compact live-progress panel rendered inside PersistedRunView when
   // the run still has a worker thread. Subscribes to the same SSE
   // stream LiveRunStream uses; reusing that whole component would
@@ -1195,7 +1220,7 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
   // the Live progress card stalled on the current per-table activity
   // for the entire 5–30 minute window the agents took to drive a
   // single table through profile + RAG + LLM batch.
-  const [lastStep, setLastStep] = useState<string | null>(null);
+  const [lastStep, setLastStep] = useState<string | null>(initialStepLabel ?? null);
   // Wall-clock when the current ``lastStep`` started. The "Now:"
   // line uses this to render "(12s)" next to the step label and
   // tick once per second, so a single long ``step_spinner`` (e.g.
@@ -1211,10 +1236,15 @@ function PersistedRunActivityCard({ jobId }: { jobId: string }) {
     Array<{ id: number; label: string; offsetSec: number }>
   >([]);
   const recentIdRef = useRef(0);
-  // Wall-clock for the elapsed-time chip. Mirrors LiveRunStream so
-  // the user can see the run has been going for "1m 47s" without
-  // having to wait for the next SSE event to arrive.
-  const [startTime] = useState(() => Date.now());
+  // Wall-clock for the elapsed-time chip. Anchor to ``started_at``
+  // from the run row so a page refresh resumes the count instead of
+  // restarting from 0s. Falls back to ``Date.now()`` when the parent
+  // payload hasn't loaded yet (single-render gap), then snaps to the
+  // server-known start as soon as the prop arrives.
+  const startTime =
+    startedAtEpochSec != null && Number.isFinite(startedAtEpochSec)
+      ? Math.floor(startedAtEpochSec * 1000)
+      : Date.now();
   const [now, setNow] = useState(() => Date.now());
   const { events, closed, error } = useEventSource({
     path: `/api/runs/${jobId}/events`,
@@ -1654,7 +1684,13 @@ function PersistedRunView({ runId }: { runId: number }) {
         description="The worker exits between rows. Already-written descriptions stay; in-flight assets stop. This cannot be undone."
         confirmLabel="Cancel run"
       />
-      {liveJobId && <PersistedRunActivityCard jobId={liveJobId} />}
+      {liveJobId && (
+        <PersistedRunActivityCard
+          jobId={liveJobId}
+          startedAtEpochSec={run.data?.started_at ?? null}
+          initialStepLabel={run.data?.current_step_label ?? null}
+        />
+      )}
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
         <TabsList>
           {(["summary", "results", "scope", "settings"] as Tab[]).map((t) => (
