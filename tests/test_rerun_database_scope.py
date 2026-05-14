@@ -138,3 +138,108 @@ class TestConnectorRespectsParentScope:
 
         with pytest.raises(RerunContextError):
             _connector_for_db_profile(cfg_with_blank_db, "missing")
+
+
+# ── End-to-end: build_context_snapshot reads database from settings_json ──
+
+
+class TestBuildContextSnapshotResolvesDatabase:
+    """Pin the end-to-end resolution path: a parent run whose
+    ``analysis_runs.database`` column is blank (the production shape —
+    that column doesn't exist on the table) but whose ``settings_json``
+    carries ``database='bird_train'`` must surface 'bird_train' to the
+    connector. The previous fix's tests called
+    ``_connector_for_db_profile`` directly with the kwarg
+    pre-supplied — they couldn't catch the upstream "we never read the
+    right field" bug that this test would have prevented."""
+
+    def test_database_resolved_from_settings_json(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pathlib import Path
+
+        from amx.agents import rerun_context as rc
+        from amx.storage.sqlite_store import SQLiteHistoryStore
+
+        hs = SQLiteHistoryStore(Path(tmp_path) / "history.db")
+        hs.init()
+        monkeypatch.setattr(rc, "history_store", lambda: hs)
+
+        # Seed a parent run whose settings_json carries the database
+        # while the top-level column is blank — production shape.
+        run_id = hs.create_run(
+            command="analyze.run",
+            mode="chat",
+            db_backend="postgresql",
+            db_profile="local-postgre",
+            llm_provider="openai",
+            llm_model="gpt-x",
+            scope={"cars": ["data"]},
+            settings={"database": "bird_train", "catalog": None},
+        )
+        [target_id] = hs.save_run_results(
+            run_id,
+            [
+                {
+                    "schema": "cars",
+                    "table": "data",
+                    "column": "ID",
+                    "asset_kind": "column",
+                    "source": "llm",
+                    "confidence": "medium",
+                    "alternatives": ["a"],
+                }
+            ],
+        )
+
+        # Build a real cfg whose db_profile has the bug-trigger shape
+        # (blank database). Stub the DatabaseConnector so we capture
+        # what database value reaches it without making a live
+        # connection.
+        from amx.config import AMXConfig, DBConfig
+
+        cfg = AMXConfig()
+        cfg.db_profiles = {
+            "local-postgre": DBConfig(backend="postgresql", database=""),
+        }
+        cfg.active_db_profile = "local-postgre"
+
+        captured: dict[str, str] = {}
+
+        class _StubConnector:
+            def __init__(self, cfg_in) -> None:
+                captured["database"] = cfg_in.database or ""
+                captured["catalog"] = getattr(cfg_in, "catalog", "") or ""
+                self.cfg = cfg_in
+                self.backend = "postgresql"
+                self.stats_label = "stub"
+
+            def profile_table(self, schema, table, **kwargs):
+                # Surface enough fields so _table_profile_to_dicts
+                # doesn't crash. The actual contents don't matter —
+                # we're testing the connector-cfg wiring, not the
+                # profiling output.
+                from amx.db.connector import TableProfile
+
+                return TableProfile(
+                    schema=schema,
+                    name=table,
+                    existing_comment=None,
+                    schema_comment=None,
+                    database_comment=None,
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(rc, "DatabaseConnector", _StubConnector)
+
+        rc.build_context_snapshot(cfg, target_result_id=int(target_id), job_id="probe-1")
+
+        assert captured["database"] == "bird_train", (
+            f"Connector was handed database={captured.get('database')!r}; "
+            "expected 'bird_train' from the parent run's settings_json. "
+            "If this returns '' or None, the parent_database read is "
+            "still missing the settings_json fallback and 100% of "
+            "Re-Runs / Variations will fail in production."
+        )

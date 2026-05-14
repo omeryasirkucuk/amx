@@ -399,7 +399,37 @@ def build_context_snapshot(
             "cannot rebuild the database context for this re-run."
         )
 
-    parent_database = (parent_run.get("database") or "") if parent_run else ""
+    # The parent run records its database / catalog inside
+    # ``settings_json`` — analysis_runs has no top-level ``database``
+    # or ``catalog`` column. Reading the top-level field alone returns
+    # ``None`` for every existing run, so the connector falls back to
+    # the engine default and the inspector raises ``NoSuchTableError``.
+    # Mirror the resolution pattern used by ``rerun_items`` in
+    # ``_orchestrator/rerun.py`` so both code paths agree on where to
+    # find the scope: top-level first (forward-compat with a future
+    # schema migration that lifts the field out), then
+    # ``settings_json``. ``hs.get_run`` parses settings_json into a
+    # dict for us; the defensive str-parse below survives the
+    # DualWriteHistoryStore + shared-mode reader paths.
+    parent_settings_raw = (
+        (parent_run.get("settings_json") or parent_run.get("settings") or {}) if parent_run else {}
+    )
+    if isinstance(parent_settings_raw, str):
+        try:
+            import json as _json
+
+            parent_settings_raw = _json.loads(parent_settings_raw) or {}
+        except Exception:
+            parent_settings_raw = {}
+    parent_settings: dict[str, Any] = (
+        parent_settings_raw if isinstance(parent_settings_raw, dict) else {}
+    )
+    parent_database = (
+        (parent_run.get("database") or parent_settings.get("database") or "") if parent_run else ""
+    )
+    parent_catalog = (
+        (parent_run.get("catalog") or parent_settings.get("catalog") or "") if parent_run else ""
+    )
     cached = hs.lookup_run_context_cache(
         db_profile=db_profile_name,
         database=parent_database,
@@ -432,14 +462,9 @@ def build_context_snapshot(
             )
 
     if db_profile_dict is None or existing_metadata is None:
-        # Forward the parent run's database + catalog so the
-        # connector points at the same scope the original /run
-        # targeted. Without this, a profile whose ``database`` field
-        # is blank falls back to the engine default (Postgres'
-        # ``postgres`` system DB, Databricks' default catalog, …)
-        # and the inspector raises ``NoSuchTableError`` for a table
-        # that demonstrably exists where the parent run found it.
-        parent_catalog = (parent_run.get("catalog") or "") if parent_run else ""
+        # Forward the parent run's database + catalog (resolved above
+        # via the settings_json fallback) so the connector points at
+        # the same scope the original /run targeted.
         db = _connector_for_db_profile(
             cfg,
             db_profile_name,
