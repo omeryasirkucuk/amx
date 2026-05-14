@@ -433,6 +433,19 @@ class DualWriteHistoryStore:
             lambda: self.shared.record_applied(result_uuid),
         )
 
+    def record_apply_event(self, **kwargs: Any) -> None:
+        """Write one ``apply_events`` row to the local SQLite history.
+
+        The audit log is personal-state — it captures who applied
+        which COMMENT from which machine — so we deliberately do NOT
+        fan-out to the shared team store. Mirrors the
+        ``list_apply_events`` read delegate added in PR #431; without
+        this passthrough Studio's ``_record_audit`` call raised
+        ``AttributeError`` (swallowed at debug level) and every apply
+        event silently disappeared.
+        """
+        self.local.record_apply_event(**kwargs)
+
     def record_db_apply_failure(self, result_id: int, error_text: str = "") -> None:
         self.local.record_db_apply_failure(result_id, error_text)
         result_uuid = self._resolve_result_uuid(result_id)

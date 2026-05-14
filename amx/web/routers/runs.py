@@ -1493,6 +1493,34 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
             except Exception:
                 pass
 
+    # Track which runs contributed how many freshly-applied rows so we
+    # can batch-increment ``analysis_runs.applied_count`` and transition
+    # the run's ``status`` once after the apply loop completes. Without
+    # these two updates the Runs list pill stayed at "ready" forever
+    # even after the user applied every row — the CLI path already
+    # does both via ``increment_run_applied`` + ``update_run_status``.
+    applied_run_ids: dict[int, int] = {}
+
+    def _track_run(r: ReviewResult) -> None:
+        if hs is None or r.result_id is None:
+            return
+        try:
+            row = hs.get_run_result(int(r.result_id))
+        except Exception:
+            return
+        if not row:
+            return
+        rid = row.get("run_id")
+        if rid is None:
+            return
+        applied_run_ids[int(rid)] = applied_run_ids.get(int(rid), 0) + 1
+
+    original_on_applied = _on_applied
+
+    def _on_applied_and_track(r: ReviewResult) -> None:
+        original_on_applied(r)
+        _track_run(r)
+
     # Build the audit context once so each successful COMMENT write
     # lands in apply_events with the correct attribution. Mirrors the
     # CLI path (amx/cli_support/commands/run.py): without these
@@ -1515,7 +1543,7 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
         applied = apply_review_results_to_db(
             db,
             results,
-            on_applied=_on_applied,
+            on_applied=_on_applied_and_track,
             on_failed=_on_failed,
             on_progress=_build_progress_callback(job),
             cancel_token=job.cancel,
@@ -1572,6 +1600,28 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
             clear_pending()
         except Exception:
             pass
+
+    # Roll the per-run applied count and status forward so the Runs
+    # list pill stops claiming "ready" after the user applied rows.
+    # Mirrors the CLI's ``run_loop.py`` / ``run_summary.py`` behaviour.
+    # ``applied_partial`` is a new status surfacing "some applied, some
+    # still pending" — distinct from plain ``success`` (everything
+    # applied) and ``ready_for_review`` (nothing applied yet).
+    if hs is not None and applied_run_ids:
+        for rid, count in applied_run_ids.items():
+            try:
+                hs.increment_run_applied(rid, by=count)
+            except Exception as exc:  # pragma: no cover — best-effort
+                log.debug("increment_run_applied(%s, %s) failed: %s", rid, count, exc)
+            try:
+                run_row = hs.get_run(rid)
+                applied_total = int((run_row or {}).get("applied_count") or 0)
+                pending_remaining = len(hs.get_run_results(rid, unevaluated_only=True))
+                if applied_total > 0:
+                    new_status = "success" if pending_remaining == 0 else "applied_partial"
+                    hs.update_run_status(rid, new_status)
+            except Exception as exc:  # pragma: no cover — best-effort
+                log.debug("post-apply status transition for run %s failed: %s", rid, exc)
 
     job.status = "done"
     job.summary = {"applied": int(applied), "total": len(results)}

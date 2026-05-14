@@ -243,6 +243,10 @@ export function statusTone(
   if (status === "failed") return "critical";
   if (status === "cancelled") return "warning";
   if (status === "running" || status === "queued") return "accent";
+  // ``applied_partial`` is "some applied, some still pending" — the
+  // amber tone mirrors how /apply queues surface "you still have work
+  // to do" elsewhere in the UI.
+  if (status === "applied_partial") return "warning";
   return "neutral";
 }
 
@@ -250,6 +254,7 @@ export function statusTone(
 export function statusLabel(status: string | null | undefined): string {
   if (!status) return "—";
   if (status === "ready_for_review") return "ready";
+  if (status === "applied_partial") return "partial";
   return status;
 }
 
