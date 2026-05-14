@@ -17,9 +17,11 @@ import StatusPill from "../components/StatusPill";
 import Dialog from "../components/ui/Dialog";
 import { RouteState, useToast } from "../components/ui";
 import {
+  AltScoreBadge,
   ConfidencePill,
   LogprobBadge,
 } from "../components/ui/InsightBadges";
+import AlternativesModeBadge from "../components/ui/AlternativesModeBadge";
 import {
   apiFetch,
   api,
@@ -1243,6 +1245,26 @@ function PerColumnPivot({
     return (labelByAsset.get(a) ?? "").localeCompare(labelByAsset.get(b) ?? "");
   });
 
+  // Derive each run's diversity mode from the first non-null
+  // ``alternatives_mode`` seen across its cells. The mode is row-level
+  // in the DB so every cell carries it, but for the pivot header we
+  // show it once next to the run id (per user spec: "tüm run için bir
+  // kere vermek yeterli her kolona yazmaya gerek yok"). Returns
+  // ``null`` for legacy runs that predate PR #441.
+  const modeByRun = new Map<number, "semantic" | "lexical" | null>();
+  for (const id of runIds) {
+    let resolved: "semantic" | "lexical" | null = null;
+    for (const inner of byAsset.values()) {
+      const cell = inner.get(id);
+      const mode = cell?.alternatives_mode ?? null;
+      if (mode === "semantic" || mode === "lexical") {
+        resolved = mode;
+        break;
+      }
+    }
+    modeByRun.set(id, resolved);
+  }
+
   return (
     <table className="w-full text-xs">
       <thead className="bg-surface-subtle/60 text-[11px] uppercase tracking-wider text-ink-dim">
@@ -1250,7 +1272,10 @@ function PerColumnPivot({
           <th className="px-5 py-2 text-left font-semibold">Asset</th>
           {runIds.map((id) => (
             <th key={id} className="px-5 py-2 text-left font-semibold">
-              #{id}
+              <div className="flex items-center gap-2">
+                <span>#{id}</span>
+                <AlternativesModeBadge mode={modeByRun.get(id) ?? null} />
+              </div>
             </th>
           ))}
         </tr>
@@ -1324,6 +1349,42 @@ function PerColumnPivot({
                             </span>
                           ) : null}
                         </div>
+                        {/* Stacked DESCRIPTION_2..N so semantic vs
+                            lexical divergence is visible side-by-side.
+                            DESCRIPTION_1 stays the cell headline above
+                            -- by contract it's the single most
+                            defensible answer regardless of mode -- so
+                            we slice the headline off and only render
+                            the remaining alts here. Hidden entirely on
+                            legacy rows that carry no structured
+                            alternatives. */}
+                        {Array.isArray(cell.alternatives) &&
+                        cell.alternatives.length > 1 ? (
+                          <div className="mt-1.5 space-y-0.5 border-t border-surface-border/40 pt-1.5">
+                            {cell.alternatives
+                              .slice(1)
+                              .map((alt, idx) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-start justify-between gap-2 text-[11px] leading-snug"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <span className="mr-1.5 inline-block w-3 text-[10px] text-ink-dim">
+                                      {String.fromCharCode(66 + idx)}
+                                    </span>
+                                    <span className="text-ink-muted">
+                                      {alt.text}
+                                    </span>
+                                  </div>
+                                  <AltScoreBadge
+                                    band={alt.band ?? null}
+                                    score={alt.score ?? null}
+                                    signal={alt.signal ?? null}
+                                  />
+                                </div>
+                              ))}
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <span className="text-ink-dim">—</span>

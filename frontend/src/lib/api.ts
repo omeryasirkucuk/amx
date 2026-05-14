@@ -378,6 +378,13 @@ export interface CompareSummaryRow {
   [key: string]: unknown;
 }
 
+export interface CompareAlternative {
+  text: string;
+  signal?: string | null;
+  score?: number | null;
+  band?: "high" | "med" | "low" | null;
+}
+
 export interface ComparePerColumnRow {
   schema?: string;
   table?: string;
@@ -387,6 +394,17 @@ export interface ComparePerColumnRow {
   confidence?: string;
   logprob_score?: number | null;
   token_count?: number | null;
+  /** Full DESCRIPTION_1..N list parsed from ``alternatives_json``. The
+   *  Compare pivot shows DESCRIPTION_1 in the cell headline and the
+   *  remaining alts stacked underneath so semantic / lexical
+   *  divergence is visible side-by-side. Empty / undefined on legacy
+   *  rows that predate structured scoring — render the headline
+   *  only. */
+  alternatives?: CompareAlternative[];
+  /** Diversity mode recorded at write time. ``null`` on legacy rows
+   *  (column shipped in PR #441). Studio surfaces this once per run
+   *  column header rather than repeating per cell. */
+  alternatives_mode?: AlternativesMode | null;
 }
 
 export interface CompareAggregateRow {
