@@ -65,7 +65,13 @@ def list_recent_runs(
     ``/api/runs/{job}/cancel`` by hand.
     """
     cmd_filter = None if (command or "").strip().lower() in {"", "all"} else command
-    rows = _store().list_recent_runs(limit=limit, command_filter=cmd_filter)
+    store = _store()
+    rows = store.list_recent_runs(limit=limit, command_filter=cmd_filter)
+    # Global "pending review" tally — runs still holding unreviewed
+    # result rows (``ready_for_review`` + ``applied_partial``). The
+    # Studio Landing chip reads this so its count reflects the whole
+    # table, not the (necessarily small) recent-feed window.
+    pending_review_total = store.count_pending_review_runs(command_filter=cmd_filter)
     # Build a {run_id: job_id} index in O(active jobs) so the per-row
     # lookup below is O(1). ``apply`` jobs don't carry a run_id and
     # are skipped; ``run``, ``rerun``, and ``variations`` jobs each
@@ -87,7 +93,12 @@ def list_recent_runs(
             rid = row.get("id") if isinstance(row, dict) else None
             if rid is not None and int(rid) in live_by_run_id:
                 row["live_job_id"] = live_by_run_id[int(rid)]
-    return {"command_filter": cmd_filter, "runs": rows, "count": len(rows)}
+    return {
+        "command_filter": cmd_filter,
+        "runs": rows,
+        "count": len(rows),
+        "pending_review_total": pending_review_total,
+    }
 
 
 @router.get("/runs/{run_id}")

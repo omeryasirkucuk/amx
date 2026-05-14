@@ -591,6 +591,9 @@ class DualWriteHistoryStore:
     def stats(self, command_filter: str | None = "analyze.run") -> dict[str, Any]:
         return self.local.stats(command_filter=command_filter)
 
+    def count_pending_review_runs(self, command_filter: str | None = "analyze.run") -> int:
+        return self.local.count_pending_review_runs(command_filter=command_filter)
+
     # ── Scheduled runs (Phase 1b — local-only for now) ─────────────────
     #
     # All scheduled_runs operations delegate to the local store; the
