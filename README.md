@@ -13,9 +13,9 @@
 </p>
 
 <p align="center">
-  <a href="https://omeryasirkucuk.github.io/amx-docs/"><strong>Documentation</strong></a>
+  <a href="https://amxcli.com/"><strong>Documentation</strong></a>
   ·
-  <a href="https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/">Quickstart</a>
+  <a href="https://amxcli.com/getting-started/quickstart/">Quickstart</a>
   ·
   <a href="https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md">Changelog</a>
   ·
@@ -36,7 +36,7 @@ Five minutes from `pip install` to your first reviewed comment. **Ten database e
 pip install amx-cli
 ```
 
-The PyPI distribution is `amx-cli`; the import package is `amx` (`import amx`). Requires Python 3.10+. See the [installation guide](https://omeryasirkucuk.github.io/amx-docs/getting-started/installation/) for prerequisites, source builds, and where AMX writes config / history / logs.
+The PyPI distribution is `amx-cli`; the import package is `amx` (`import amx`). Requires Python 3.10+. See the [installation guide](https://amxcli.com/getting-started/installation/) for prerequisites, source builds, and where AMX writes config / history / logs.
 
 ## Quick start
 
@@ -50,7 +50,7 @@ amx                       # open the interactive session (the AMX REPL)
 
 `/run` without an argument opens a scope picker (Database / Schema / Asset). `/run-apply` short-circuits review-and-apply when you already trust the model. If anything misbehaves, `amx doctor` runs from any shell — even when AMX itself can't start — and prints actionable hints next to each ✗.
 
-The full guided walkthrough is at the [5-minute quickstart](https://omeryasirkucuk.github.io/amx-docs/getting-started/quickstart/) and [first-run walkthrough](https://omeryasirkucuk.github.io/amx-docs/getting-started/first-run/).
+The full guided walkthrough is at the [5-minute quickstart](https://amxcli.com/getting-started/quickstart/) and [first-run walkthrough](https://amxcli.com/getting-started/first-run/).
 
 ## AMX CLI
 
@@ -68,7 +68,7 @@ From inside the REPL, `/studio` boots **AMX Studio**, a token-protected web UI o
   <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/studio-overview.png" alt="AMX Studio Catalog landing page — sidebar with Catalog selected, four quick-action cards (Browse, New run, Ask, Audit), and a Recent activity feed" width="900">
 </p>
 
-Full walkthrough at [`/studio`](https://omeryasirkucuk.github.io/amx-docs/cli/studio/).
+Full walkthrough at [`/studio`](https://amxcli.com/cli/studio/).
 
 ## How it works
 
@@ -104,19 +104,19 @@ Every approval is recorded in local run history — re-evaluate later with `/his
 
 PostgreSQL · Snowflake · Databricks (Unity Catalog) · BigQuery · MySQL / MariaDB · Oracle · SQL Server · Redshift · ClickHouse · DuckDB
 
-Per-backend setup, connection details, and the capability matrix live in the [Backends section](https://omeryasirkucuk.github.io/amx-docs/backends/).
+Per-backend setup, connection details, and the capability matrix live in the [Backends section](https://amxcli.com/backends/).
 
 ## Supported LLM providers
 
 OpenAI · Anthropic · Google Gemini · DeepSeek · OpenRouter · Ollama · vLLM / LM Studio · any OpenAI-compatible endpoint
 
-Provider-specific guides (including OpenAI / Anthropic Batch mode and local-model setups) live in the [LLM providers section](https://omeryasirkucuk.github.io/amx-docs/llm-providers/).
+Provider-specific guides (including OpenAI / Anthropic Batch mode and local-model setups) live in the [LLM providers section](https://amxcli.com/llm-providers/).
 
 ## Documentation
 
-Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://omeryasirkucuk.github.io/amx-docs/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
+Full user, operator, and contributor docs live at **[amxcli.com](https://amxcli.com/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://amxcli.com/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
 
-Recent: Studio Lineage & Variations, Confidence Scoring, and explicit cache controls — see the [changelog](https://omeryasirkucuk.github.io/amx-docs/changelog/).
+Recent: Studio Lineage & Variations, Confidence Scoring, and explicit cache controls — see the [changelog](https://amxcli.com/changelog/).
 
 ## Contributing & support
 
