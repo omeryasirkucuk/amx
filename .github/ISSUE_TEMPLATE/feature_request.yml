@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest a new capability, command, adapter, or improvement.
+title: "feat: <short description>"
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to propose an improvement. Concrete user stories help us prioritise.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What pain point or missing capability are you running into today? Describe the situation, not the solution.
+      placeholder: e.g. When I run AMX against a Snowflake warehouse with row-access policies, the Profile sub-agent reads zero rows and produces low-confidence drafts.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like AMX to do? Sketch the UX (REPL command, flag, output, etc.) if you have one in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you have tried or other designs you weighed.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of AMX does this touch?
+      options:
+        - REPL / CLI UX
+        - Profile sub-agent (schema, stats, samples)
+        - RAG sub-agent (ingested docs)
+        - Code sub-agent (repo mining)
+        - Orchestrator / ranking
+        - Database adapter (new engine, or behaviour of an existing one)
+        - LLM provider integration
+        - Configuration / profiles
+        - Studio (web UI)
+        - Documentation
+        - Release / packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Screenshots, mockups, links to related issues, or anything else that helps explain the idea.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
