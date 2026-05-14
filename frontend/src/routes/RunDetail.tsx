@@ -3258,14 +3258,17 @@ function ResultRowItemImpl({
   const sourceAlts = pendingEntry
     ? normalizeAlternativeStrings(pendingEntry.alternatives)
     : normalizeAlternatives(displayRow.alternatives_json);
-  // Phase 1 confidence: structured-shape map keyed by alternative text
-  // so per-alternative badges can be looked up cheaply during render.
-  // ``pendingEntry`` flows from the re-run pending file which carries
-  // only ``alternatives: string[]``; for that path the lookup returns
-  // an empty map and the chosen-row falls back to the legacy
-  // ``ConfidencePill`` aggregate without crashing.
+  // Confidence: structured-shape map keyed by alternative text so
+  // per-alternative badges can be looked up cheaply during render.
+  // The pending-API serializer enriches every row with the fresh
+  // ``run_results.alternatives_json`` (current single-signal shape:
+  // ``[{text, signal, score, band}, …]``), so ``pendingEntry.alternatives``
+  // carries the same payload as ``displayRow.alternatives_json``.
+  // ``normalizeStructuredAlternatives`` already accepts both legacy
+  // ``string[]`` and the structured shape, so a single parse keeps
+  // the badges visible across click / restore / skip transitions.
   const structuredAlts = pendingEntry
-    ? []
+    ? normalizeStructuredAlternatives(pendingEntry.alternatives)
     : normalizeStructuredAlternatives(displayRow.alternatives_json);
   const structuredByText = new Map(
     structuredAlts.map((alt) => [alt.text, alt] as const),
