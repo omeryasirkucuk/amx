@@ -107,6 +107,7 @@ def variations_one_item(
     job_id: str | None = None,
     cancel_token: threading.Event | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    on_run_created: Callable[[int], None] | None = None,
 ) -> tuple[int, RerunOutcome]:
     """Generate seeded variations from one row's chosen alternative.
 
@@ -132,6 +133,13 @@ def variations_one_item(
 
     seed_block = _seed_directive(seed_text=seed_text, mode=mode, user_addendum=user_instructions)
 
+    log.info(
+        "variations_one_item: starting (result_id=%s alt=%s mode=%s profile_override=%s)",
+        result_id,
+        alternative_index,
+        mode,
+        overrides.get("profile") or "—",
+    )
     new_run_id, outcomes = rerun_items(
         cfg,
         target_result_ids=[int(result_id)],
@@ -140,6 +148,7 @@ def variations_one_item(
         job_id=job_id,
         cancel_token=cancel_token,
         on_event=on_event,
+        on_run_created=on_run_created,
     )
     if not outcomes:
         raise RerunContextError("Variations executor returned no outcomes.")

@@ -67,11 +67,15 @@ def list_recent_runs(
     cmd_filter = None if (command or "").strip().lower() in {"", "all"} else command
     rows = _store().list_recent_runs(limit=limit, command_filter=cmd_filter)
     # Build a {run_id: job_id} index in O(active jobs) so the per-row
-    # lookup below is O(1). Apply / rerun jobs are skipped — only the
-    # primary "run" worker maps to an analyze.run / rerun row id.
+    # lookup below is O(1). ``apply`` jobs don't carry a run_id and
+    # are skipped; ``run``, ``rerun``, and ``variations`` jobs each
+    # map to an analysis_runs row id and must surface live progress
+    # so the Studio's per-row Cancel control + the run-detail
+    # subscriber both work for in-flight Re-Run / Variations jobs.
+    _LIVE_JOB_KINDS = {"run", "rerun", "variations"}
     live_by_run_id: dict[int, str] = {}
     for job in jobs.list():
-        if job.kind != "run":
+        if job.kind not in _LIVE_JOB_KINDS:
             continue
         if job.status not in ("queued", "running"):
             continue
@@ -108,7 +112,11 @@ def get_run(
         )
     live_job_id: str | None = None
     for job in jobs.list():
-        if job.kind == "run" and job.run_id == run_id and job.status in ("queued", "running"):
+        if (
+            job.kind in ("run", "rerun", "variations")
+            and job.run_id == run_id
+            and job.status in ("queued", "running")
+        ):
             live_job_id = job.id
             break
     row = dict(row)

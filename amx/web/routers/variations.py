@@ -122,6 +122,11 @@ def _variations_worker(
             llm_overrides_dict = payload.llm_overrides.non_null()
             if not llm_overrides_dict:
                 llm_overrides_dict = None
+
+        def _bind_run_id(run_id: int) -> None:
+            job.run_id = run_id
+            emit(job.queue, "run.created", {"run_id": run_id})
+
         new_run_id, outcome = variations_one_item(
             cfg,
             original_run_id=int(payload.original_run_id),
@@ -134,6 +139,7 @@ def _variations_worker(
             job_id=job.id,
             cancel_token=job.cancel,
             on_event=_make_event_emitter(job.queue),
+            on_run_created=_bind_run_id,
         )
     except RerunContextError as exc:
         job.status = "failed"

@@ -3737,27 +3737,47 @@ function ResultRowItemImpl({
                     <ConfidenceBadge alt={structuredAlt} />
                   ) : null;
                 })()}
-                {visible.length >= 2 && !variationsBusy && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const letter = isChosen
-                        ? "✓"
-                        : String.fromCharCode(65 + idx);
-                      setVariationsState({
-                        altIndex: idx,
-                        altText: alt,
-                        altLetter: letter === "✓" ? "★" : letter,
-                      });
-                    }}
-                    title="Generate variations from this alternative"
-                    className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-dim hover:bg-surface-subtle hover:text-accent"
-                    aria-label="Generate variations from this alternative"
-                  >
-                    <Sparkles size={11} />
-                  </button>
-                )}
+                {visible.length >= 2 && (() => {
+                  // While the variations worker is in flight, the same
+                  // ✨ slot reads as a spinner so the row's user sees
+                  // that *this* alternative is the one being varied
+                  // around — hiding the button would tell them nothing.
+                  // The inline "Generating variations…" status below
+                  // the row covers row-agnostic context. We click-disable
+                  // the button so a stray click doesn't fire a second
+                  // worker against the same seed.
+                  if (variationsBusy) {
+                    return (
+                      <span
+                        title="Generating variations…"
+                        className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center text-accent"
+                      >
+                        <Loader2 size={11} className="animate-spin" />
+                      </span>
+                    );
+                  }
+                  return (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const letter = isChosen
+                          ? "✓"
+                          : String.fromCharCode(65 + idx);
+                        setVariationsState({
+                          altIndex: idx,
+                          altText: alt,
+                          altLetter: letter === "✓" ? "★" : letter,
+                        });
+                      }}
+                      title="Generate variations from this alternative"
+                      className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-dim hover:bg-surface-subtle hover:text-accent"
+                      aria-label="Generate variations from this alternative"
+                    >
+                      <Sparkles size={11} />
+                    </button>
+                  );
+                })()}
               </button>
             );
           })
@@ -3771,6 +3791,13 @@ function ResultRowItemImpl({
           <p className="px-1 text-[10.5px] text-ink-dim">
             Applied — pick a different alternative above to queue a revision,
             then Apply to overwrite the live comment.
+          </p>
+        )}
+        {variationsBusy && (
+          <p className="px-1 text-[10.5px] text-accent inline-flex items-center gap-1">
+            <Loader2 size={10} className="animate-spin" aria-hidden />
+            Generating variations… the new run will appear in /history when
+            done.
           </p>
         )}
       </div>

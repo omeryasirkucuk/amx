@@ -577,6 +577,7 @@ def rerun_items(
     job_id: str | None = None,
     cancel_token: threading.Event | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    on_run_created: Callable[[int], None] | None = None,
 ) -> tuple[int, list[RerunOutcome]]:
     """Re-run one or many ``run_results`` rows with optional user guidance.
 
@@ -669,8 +670,17 @@ def rerun_items(
         mode=mode,
         db_backend=str(parent_run.get("db_backend") or ""),
         db_profile=str(parent_run.get("db_profile") or ""),
-        llm_provider=str(parent_run.get("llm_provider") or cfg.llm.provider or ""),
-        llm_model=str(parent_run.get("llm_model") or cfg.llm.model or ""),
+        # ``cfg.llm`` is the DERIVED config returned by
+        # :func:`_llm_for_rerun` — when ``llm_overrides.profile`` (or
+        # any other per-knob override) flipped provider / model, this
+        # carries the post-override values. Reading ``parent_run``
+        # first would silently bury the override and leave the run
+        # row reporting the original profile's identity while the
+        # actual LLM call hit a different provider — confusing on
+        # the runs list and incorrect for audit. Falls back to the
+        # parent only when cfg.llm is somehow empty.
+        llm_provider=str(cfg.llm.provider or parent_run.get("llm_provider") or ""),
+        llm_model=str(cfg.llm.model or parent_run.get("llm_model") or ""),
         scope=parent_scope,
         selected_count=len(target_result_ids),
         planned_count=len(target_result_ids),
@@ -704,6 +714,20 @@ def rerun_items(
             "catalog": inherited_catalog,
         },
     )
+
+    # Surface the freshly-created run_id back to the router worker
+    # immediately so it can pin ``job.run_id`` BEFORE the (potentially
+    # multi-second) target loop runs. Without this, the runs list +
+    # the run-detail page can't find the live worker by numeric id —
+    # only the SSE-stream subscriber (which knows the job_id directly)
+    # sees progress. The /run worker's _run_worker_body sets
+    # job.run_id at the same point in its lifecycle (see
+    # amx/web/routers/runs.py:790).
+    if on_run_created is not None:
+        try:
+            on_run_created(int(new_run_id))
+        except Exception as exc:  # noqa: BLE001 — caller-supplied callback
+            log.warning("on_run_created callback raised: %s", exc)
 
     outcomes: list[RerunOutcome] = []
     started = time.monotonic()
@@ -920,10 +944,44 @@ def rerun_items(
         # can show the re-run alongside normal analyze.run rows. Mirror
         # analyze_flow's tokens={} payload so the re-run also surfaces
         # frozen USD cost in the run-detail page and in /usage.
+        #
+        # Status state machine:
+        #   * every outcome succeeded → ``success``;
+        #   * mixed → ``partial``;
+        #   * every outcome failed → ``failed`` (NOT ``partial``).
+        # The third bucket previously collapsed into ``partial`` which
+        # looked the same on the runs list as a half-successful run —
+        # but a 0.0s run where every target hit ``build_context_snapshot``
+        # is fundamentally different from a long run where most rows
+        # produced LLM output and one timed out. Mark them apart so
+        # the user sees the failure mode in the status column.
         successful = sum(1 for o in outcomes if not o.error)
+        if not outcomes:
+            status = "failed"
+        elif successful == len(outcomes):
+            status = "success"
+        elif successful == 0:
+            status = "failed"
+        else:
+            status = "partial"
+        # Surface every target's error verbatim on ``error_text`` when
+        # status==failed so /history show + the Studio run-detail page
+        # can render the cause instead of silently leaving the column
+        # blank. Truncate at 2000 chars so a runaway stacktrace doesn't
+        # blow up the row.
+        error_text = ""
+        if status == "failed":
+            errors = [o.error for o in outcomes if o.error]
+            joined = "; ".join(errors) if errors else "Worker produced no outcomes."
+            error_text = joined[:2000]
+            log.warning(
+                "rerun_items finished with no successful outcomes (targets=%d): %s",
+                len(targets),
+                error_text,
+            )
         hs.finish_run(
             int(new_run_id),
-            status="success" if successful == len(outcomes) else "partial",
+            status=status,
             metrics={
                 "duration_sec": round(time.monotonic() - started, 3),
                 "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
@@ -940,7 +998,7 @@ def rerun_items(
                 "records": token_tracker.records(),
             },
             results={"new_result_ids": [o.new_result_id for o in outcomes if o.new_result_id]},
-            error_text="",
+            error_text=error_text,
         )
     finally:
         # Storage-maliyetsiz: snapshots disappear the moment the worker
