@@ -74,7 +74,12 @@ class IHistoryStore(Protocol):
         evaluation: str,
     ) -> None: ...
 
-    def record_applied(self, result_id: int) -> None: ...
+    def record_applied(
+        self,
+        result_id: int,
+        *,
+        chosen_description: str | None = None,
+    ) -> None: ...
 
     def record_db_apply_failure(self, result_id: int, error_text: str = "") -> None: ...
 

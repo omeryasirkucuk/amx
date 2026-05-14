@@ -363,16 +363,29 @@ class SQLAlchemyHistoryStore:
                 )
             )
 
-    def record_applied(self, result_id: str) -> None:
+    def record_applied(
+        self,
+        result_id: str,
+        *,
+        chosen_description: str | None = None,
+    ) -> None:
         with self.engine.begin() as conn:
+            values: dict[str, Any] = {
+                "applied_at": _utcnow(),
+                "db_applied_status": "applied",
+                "rejection_reason": "",
+            }
+            if chosen_description:
+                existing = conn.execute(
+                    select(self._t_results.c.chosen_description).where(
+                        self._t_results.c.id == result_id
+                    )
+                ).fetchone()
+                current = (existing[0] if existing else "") or ""
+                if not current:
+                    values["chosen_description"] = chosen_description
             conn.execute(
-                update(self._t_results)
-                .where(self._t_results.c.id == result_id)
-                .values(
-                    applied_at=_utcnow(),
-                    db_applied_status="applied",
-                    rejection_reason="",
-                )
+                update(self._t_results).where(self._t_results.c.id == result_id).values(**values)
             )
 
     def record_db_apply_failure(self, result_id: str, error_text: str = "") -> None:

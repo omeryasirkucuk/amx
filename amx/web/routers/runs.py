@@ -1502,7 +1502,10 @@ def _apply_worker(cfg: AMXConfig, job: Job, body: ApplyRequest) -> None:
     def _on_applied(r: ReviewResult) -> None:
         if hs is not None and r.result_id is not None:
             try:
-                hs.record_applied(r.result_id)
+                hs.record_applied(
+                    r.result_id,
+                    chosen_description=r.final_description or None,
+                )
             except Exception:
                 pass
         # Sync the catalog so concept search reflects the just-written

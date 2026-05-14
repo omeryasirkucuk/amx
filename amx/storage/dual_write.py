@@ -212,7 +212,10 @@ class DualWriteHistoryStore:
                 evaluation=payload["evaluation"],
             )
         elif op_kind == OP_RECORD_APPLIED:
-            self.shared.record_applied(payload["result_id"])
+            self.shared.record_applied(
+                payload["result_id"],
+                chosen_description=payload.get("chosen_description"),
+            )
         elif op_kind == OP_RECORD_DB_APPLY_FAILURE:
             self.shared.record_db_apply_failure(payload["result_id"], payload.get("error_text", ""))
         elif op_kind == OP_LOG_EVENT:
@@ -421,16 +424,21 @@ class DualWriteHistoryStore:
             ),
         )
 
-    def record_applied(self, result_id: int) -> None:
-        self.local.record_applied(result_id)
+    def record_applied(
+        self,
+        result_id: int,
+        *,
+        chosen_description: str | None = None,
+    ) -> None:
+        self.local.record_applied(result_id, chosen_description=chosen_description)
         result_uuid = self._resolve_result_uuid(result_id)
         if result_uuid is None:
             return
-        payload = {"result_id": result_uuid}
+        payload = {"result_id": result_uuid, "chosen_description": chosen_description}
         self._try_remote(
             OP_RECORD_APPLIED,
             payload,
-            lambda: self.shared.record_applied(result_uuid),
+            lambda: self.shared.record_applied(result_uuid, chosen_description=chosen_description),
         )
 
     def record_apply_event(self, **kwargs: Any) -> None:
