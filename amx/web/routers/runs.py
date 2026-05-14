@@ -445,6 +445,43 @@ def _build_progress_callback(job: Job) -> Callable[[ReviewResult, str, int, int,
     return _on_progress
 
 
+def _announce_phase(
+    job: Job,
+    hs: Any | None,
+    run_id: int | None,
+    label: str,
+) -> None:
+    """Surface a Studio-visible progress signal on two channels.
+
+    The web worker spends 30-60s before the per-table loop starts
+    (DB connector, LLM provider, history row, RAG store, code RAG,
+    orchestrator). None of those phases emit anything on their own,
+    so the run-detail page rendered "Waiting for the worker to
+    begin…" while real work was in flight. This helper bridges that
+    gap by emitting a ``step.update`` event on the live SSE queue
+    (so connected tabs see the label) AND writing it to
+    ``analysis_runs.current_step_label`` (so a refresh that lands
+    after the in-process replay buffer was lost — e.g. Studio
+    restarted mid-run — still has a current phase to render).
+
+    Empty / whitespace labels are ignored so accidental
+    ``_announce_phase(..., "")`` calls don't clutter the SSE buffer
+    with blank chips. Persistence failures are swallowed because the
+    live SSE channel is the load-bearing surface; the column write is
+    a cold-load nice-to-have.
+    """
+    trimmed = (label or "").strip()
+    if not trimmed:
+        return
+    emit(job.queue, "step.update", {"idx": 0, "label": trimmed})
+    if hs is None or run_id is None:
+        return
+    try:
+        hs.update_run_current_step(run_id, trimmed)
+    except Exception:  # noqa: BLE001 - SSE emit is the load-bearing channel
+        log.exception("update_run_current_step failed for run_id=%s", run_id)
+
+
 def _start_heartbeat_ticker(
     hs: Any,
     run_id: int,
@@ -604,6 +641,16 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         },
     )
 
+    # First user-visible phase. The history-store handle isn't open
+    # yet (create_run runs further down) so persistence is deferred to
+    # the next _announce_phase call — the SSE buffer carries this one.
+    _announce_phase(
+        job,
+        None,
+        None,
+        f"Opening {(body.db_profile or '').strip() or 'active'} connector",
+    )
+
     try:
         db, effective_profile, effective_backend = _scoped_connector(
             cfg, body.db_profile, body.database, body.catalog
@@ -614,6 +661,8 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
     except Exception as exc:
         _fail_job(job, f"Could not open DB connector: {exc}")
         return
+
+    _announce_phase(job, None, None, f"Initializing LLM {cfg.llm.provider}/{cfg.llm.model}")
 
     try:
         llm = LLMProvider(cfg.llm)
@@ -700,6 +749,17 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         except Exception as exc:
             log.warning("Could not persist run history: %s", exc)
 
+    _announce_phase(
+        job,
+        hs,
+        run_id,
+        (
+            f"Loading docs RAG store ({cfg.active_doc_profile})"
+            if cfg.active_doc_profile
+            else "Preparing run context"
+        ),
+    )
+
     # PR E: open a RAG store for the run when a doc profile is active
     # (or the per-run override above asked for one). Mirrors the CLI's
     # analyze_flow logic — failure to open is downgraded to a one-line
@@ -749,6 +809,8 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         rag_extra_metrics["effective_run_code_paths"] = list(cfg.effective_run_code_paths())
     except Exception:  # pragma: no cover - defensive
         rag_extra_metrics["effective_run_code_paths"] = []
+
+    _announce_phase(job, hs, run_id, "Building orchestrator")
 
     orchestrator = Orchestrator(
         db=db,
@@ -811,6 +873,18 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
 
     def _display_to_sse(event_type: str, payload: dict[str, Any]) -> None:
         emit(job.queue, event_type, payload)
+        # Mirror live-narration labels into the persisted column so a
+        # page refresh after the in-process replay buffer is lost
+        # (e.g. Studio restart mid-run) still shows the most recent
+        # per-table phase instead of falling back to the "Waiting for
+        # the worker…" placeholder.
+        if event_type in ("step.update", "step.begin") and hs is not None and run_id is not None:
+            label = str(payload.get("label") or "").strip()
+            if label:
+                try:
+                    hs.update_run_current_step(run_id, label)
+                except Exception:  # noqa: BLE001
+                    log.exception("update_run_current_step failed for run_id=%s", run_id)
 
     _display = _get_display()
     _display.start_headless(
@@ -821,6 +895,8 @@ def _run_worker_body(cfg: AMXConfig, job: Job, body: RunRequest) -> None:
         model=cfg.llm.model,
     )
     _push_display_subscriber(_display_to_sse)
+
+    _announce_phase(job, hs, run_id, "Starting per-table processing")
 
     # Make ``job.cancel`` visible to every nested LLM call via a
     # ContextVar. The orchestrator's table-level cancel checks fire at

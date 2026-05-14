@@ -600,6 +600,9 @@ class DualWriteHistoryStore:
     def update_run_heartbeat(self, run_id: int, *, now_utc: float | None = None) -> None:
         self.local.update_run_heartbeat(run_id, now_utc=now_utc)
 
+    def update_run_current_step(self, run_id: int, label: str) -> None:
+        self.local.update_run_current_step(run_id, label)
+
     def recover_stale_runs(
         self,
         *,

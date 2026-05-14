@@ -835,6 +835,9 @@ class SQLAlchemyHistoryStore:
     def update_run_heartbeat(self, run_id: int, *, now_utc: float | None = None) -> None:
         raise NotImplementedError(self._SCHED_NOT_LOCAL)
 
+    def update_run_current_step(self, run_id: int, label: str) -> None:
+        raise NotImplementedError(self._SCHED_NOT_LOCAL)
+
     def recover_stale_runs(
         self,
         *,
