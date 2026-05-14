@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { ApiError, api, apiFetch } from "../lib/api";
+import type { DbCacheSearchResult } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import { scopePath } from "../lib/scope";
@@ -146,8 +147,8 @@ function ProfileSearchInput() {
         type="text"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search profiles, databases…"
-        aria-label="Search DB profiles"
+        placeholder="Search schemas, tables, columns…"
+        aria-label="Search DB profiles, schemas, tables, columns"
         className="w-full bg-transparent text-xs text-ink outline-none placeholder:text-ink-dim"
       />
       {query && (
@@ -307,6 +308,25 @@ function LlmSection() {
   );
 }
 
+/** Minimum query length before we issue a cache-search request.
+ *  Single characters would degrade into a near-no-op scan that
+ *  returns the entire catalog; two characters is the same gate the
+ *  backend enforces. */
+const SEARCH_MIN_CHARS = 2;
+/** Debounce window between keystrokes — long enough that fast
+ *  typing collapses into one request, short enough that the user
+ *  sees results almost immediately after they pause. */
+const SEARCH_DEBOUNCE_MS = 200;
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(id);
+  }, [value, delay]);
+  return debounced;
+}
+
 function ProfilesTree() {
   const qc = useQueryClient();
   const { query } = useProfileSearch();
@@ -333,6 +353,15 @@ function ProfilesTree() {
         No DB profiles yet — add one under Settings.
       </div>
     );
+  }
+  // A query of two or more characters switches the sidebar into
+  // catalog-cache search mode: instead of filtering the tree by
+  // already-cached child names, we ask the backend to walk
+  // catalog_entities (schemas + tables + columns) and render the
+  // hits as a flat ranked list. Tree mode handles empty / 1-char
+  // queries as before.
+  if (query.length >= SEARCH_MIN_CHARS) {
+    return <SearchResultsList query={query} profiles={list} />;
   }
   // When the search box is empty, render the whole tree. When
   // it's set, decide row-by-row whether to show each profile.
@@ -374,6 +403,208 @@ function ProfilesTree() {
         );
       })}
     </div>
+  );
+}
+
+/** Catalog-cache search results. Renders when the sidebar search
+ *  query is two or more characters — replaces the tree with a
+ *  flat ranked list of schema / table / column matches pulled from
+ *  catalog_entities via /api/db/cache/search.
+ *
+ *  Multi-match UX: a query like "id" can resolve to hundreds of
+ *  columns. We cap at 50 server-side and surface a "+N more" hint
+ *  rather than auto-expanding the tree (which would unfold every
+ *  schema at once and obscure the matches). Refining the query is
+ *  the natural narrowing affordance.
+ */
+function SearchResultsList({
+  query,
+  profiles,
+}: {
+  query: string;
+  profiles: DbProfileSummary[];
+}) {
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const { setQuery } = useProfileSearch();
+  const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
+  const search = useQuery({
+    queryKey: ["db-cache-search", debouncedQuery],
+    queryFn: () => api.dbCacheSearch(debouncedQuery),
+    enabled: debouncedQuery.length >= SEARCH_MIN_CHARS,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  if (search.isLoading || debouncedQuery !== query) {
+    return <div className="px-2 py-1 text-[11px] text-ink-dim">Searching…</div>;
+  }
+  if (search.error) {
+    return (
+      <div className="px-2 py-1 text-[11px] text-critical">
+        {(search.error as Error).message}
+      </div>
+    );
+  }
+  const results = search.data?.results ?? [];
+  if (results.length === 0) {
+    // The most common reason for an empty result set is that no
+    // profile has been catalog-synced yet — without ``state='done'``
+    // on catalog_profile_state the backend has nothing to search.
+    // Surface that hint so the user has a single next step.
+    const anySynced = profiles.length > 0;
+    return (
+      <div className="space-y-1 px-2 py-1 text-[11px] text-ink-dim">
+        <div>No matches for “{query}”.</div>
+        {anySynced && (
+          <div className="text-ink-dim">
+            Tip: column search requires{" "}
+            <Link to="/db-cache" className="underline hover:text-ink">
+              a synced catalog
+            </Link>
+            .
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Group rows by profile so cross-profile noise is easy to scan.
+  // Maintain insertion order — the server already ranked schema →
+  // table → column then alphabetical, so we just preserve it.
+  const byProfile = new Map<string, DbCacheSearchResult[]>();
+  for (const r of results) {
+    const bucket = byProfile.get(r.profile);
+    if (bucket) bucket.push(r);
+    else byProfile.set(r.profile, [r]);
+  }
+
+  // 3-level backends (Databricks Unity Catalog, BigQuery) store
+  // the catalog/project in ``database_name``; clicking through must
+  // route them as a catalog URL or the page won't resolve. The
+  // sidebar's catalogs query is already cached for any profile the
+  // user has touched, so we read ``supports_catalogs`` from there.
+  const profileSupportsCatalogs = (profileName: string): boolean => {
+    const cats = qc.getQueryData<CatalogsCache>(["live-catalogs", profileName]);
+    return !!cats?.supports_catalogs;
+  };
+
+  const onResultClick = (r: DbCacheSearchResult) => {
+    const usesCatalog = profileSupportsCatalogs(r.profile);
+    const scope = {
+      profile: r.profile,
+      database: usesCatalog ? undefined : r.database,
+      catalog: usesCatalog ? r.database : undefined,
+    };
+    const targetPath = r.table
+      ? scopePath(scope, r.schema, r.table)
+      : scopePath(scope, r.schema);
+    setQuery("");
+    navigate(targetPath);
+  };
+
+  return (
+    <div className="space-y-2">
+      {Array.from(byProfile.entries()).map(([profileName, rows]) => (
+        <div key={profileName}>
+          <div className="px-2 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+            {profileName}
+          </div>
+          <div className="space-y-0.5">
+            {rows.map((r, idx) => (
+              <SearchResultRow
+                key={`${profileName}-${idx}-${r.schema}-${r.table ?? ""}-${r.column ?? ""}`}
+                row={r}
+                query={query}
+                onSelect={() => onResultClick(r)}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+      {search.data?.truncated && (
+        <div className="px-2 pt-1 text-[10px] italic text-ink-dim">
+          Showing first {results.length} matches — refine your search to narrow.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One row in ``SearchResultsList``. Renders the breadcrumb path
+ *  (schema › table › column) with the matching segment bolded so
+ *  the hit is visually unambiguous. */
+function SearchResultRow({
+  row,
+  query,
+  onSelect,
+}: {
+  row: DbCacheSearchResult;
+  query: string;
+  onSelect: () => void;
+}) {
+  const leaf =
+    row.match_field === "column"
+      ? row.column ?? ""
+      : row.match_field === "table"
+        ? row.table ?? ""
+        : row.schema;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={`${row.profile} · ${row.database} · ${row.schema}${
+        row.table ? " · " + row.table : ""
+      }${row.column ? " · " + row.column : ""}`}
+      className={cn(
+        "flex w-full min-w-0 flex-col items-start gap-0.5 rounded px-2 py-1 text-left",
+        "text-[11px] text-ink hover:bg-surface-subtle",
+      )}
+    >
+      <div className="flex w-full min-w-0 items-center gap-1">
+        <span className="truncate font-mono text-ink">
+          <Highlight text={leaf} needle={query} />
+        </span>
+        <span className="ml-auto shrink-0 rounded bg-surface-subtle px-1 py-px text-[9px] uppercase tracking-wide text-ink-dim">
+          {row.match_field}
+        </span>
+      </div>
+      <div className="w-full truncate text-[10px] text-ink-dim">
+        {row.schema}
+        {row.table && (
+          <>
+            <span className="px-0.5">›</span>
+            {row.table}
+          </>
+        )}
+        {row.column && (
+          <>
+            <span className="px-0.5">›</span>
+            {row.column}
+          </>
+        )}
+      </div>
+    </button>
+  );
+}
+
+/** Bold the matching substring inside a result label. Case-
+ *  insensitive; first occurrence only — keeps the visual noise
+ *  low for column names that repeat the query several times. */
+function Highlight({ text, needle }: { text: string; needle: string }) {
+  if (!needle) return <>{text}</>;
+  const lowerText = text.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  const idx = lowerText.indexOf(lowerNeedle);
+  if (idx < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span className="font-semibold text-accent-ink">
+        {text.slice(idx, idx + needle.length)}
+      </span>
+      {text.slice(idx + needle.length)}
+    </>
   );
 }
 

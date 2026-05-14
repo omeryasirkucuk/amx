@@ -253,6 +253,26 @@ export interface ColumnsResponse {
   count: number;
 }
 
+/** One row in the catalog-cache search response. ``table`` / ``column``
+ *  are nullable so the same shape covers schema-level, table-level,
+ *  and column-level matches. ``match_field`` discriminates which
+ *  field actually matched the query — the sidebar renders the
+ *  matching segment bolded and ranks rows by it. */
+export interface DbCacheSearchResult {
+  profile: string;
+  db_backend: string;
+  database: string;
+  schema: string;
+  table: string | null;
+  column: string | null;
+  match_field: "schema" | "table" | "column";
+}
+export interface DbCacheSearchResponse {
+  query: string;
+  truncated: boolean;
+  results: DbCacheSearchResult[];
+}
+
 export interface SnapshotColumn {
   name: string;
   dtype: string;
@@ -510,6 +530,18 @@ export const api = {
         scope,
       ),
     ),
+  /** Substring search over the persistent catalog cache —
+   *  schema / table / column names. Powers the sidebar's column-level
+   *  search. ``profile`` narrows to a single profile; omit it to
+   *  search every fully-synced profile. */
+  dbCacheSearch: (q: string, profile?: string | null, limit?: number) => {
+    const params = new URLSearchParams({ q });
+    if (profile) params.set("profile", profile);
+    if (typeof limit === "number") params.set("limit", String(limit));
+    return apiFetch<DbCacheSearchResponse>(
+      `/api/db/cache/search?${params.toString()}`,
+    );
+  },
   liveSnapshot: (scope: Scope, schema: string, table: string) =>
     apiFetch<SnapshotResponse>(
       withScope(
