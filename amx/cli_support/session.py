@@ -512,8 +512,8 @@ Commands (in order):
 
   Alternatives diversity:
  12a) /alternatives-mode [mode]         Show or set alternatives diversity mode for the active profile
-                                          semantic = alternates explore DIFFERENT meanings (default)
-                                          lexical  = alternates are same-meaning phrasing variants
+                                          semantic = SAME meaning, different wording — paraphrase DESCRIPTION_1 (default)
+                                          lexical  = SHARED vocabulary, meaning may shift through added nuances
 
   Confidence:
  12) /logprob-thresholds [high] [med]   Show or set logprob confidence thresholds used to bucket

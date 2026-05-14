@@ -1350,14 +1350,19 @@ DEFAULT_CONFIDENCE_SIGNAL = "self_consistency"
 
 
 #: Allowed values for ``LLMConfig.alternatives_mode``. Controls the *kind*
-#: of variation the LLM is asked to express across DESCRIPTION_1..N:
+#: of variation the LLM is asked to express across DESCRIPTION_1..N,
+#: per Definition 1 (NLP standard). Do NOT re-invert these definitions.
 #:
-#: * ``semantic`` — alternatives explore meaningfully different
-#:   interpretations of the column (default; makes the confidence signal
-#:   genuinely informative because rankings are over distinct meanings).
-#: * ``lexical`` — alternatives express the SAME meaning with different
-#:   wording, useful when the user already trusts the interpretation and
-#:   only wants the strongest phrasing.
+#: * ``semantic`` — alternatives PARAPHRASE DESCRIPTION_1: same factual
+#:   content, different surface form (synonyms, restructured phrasing,
+#:   alternative word choices). No new concepts, attributes, or nuances
+#:   may be added or removed. The self-consistency scorer should produce
+#:   HIGH SC across these alts because their embeddings are close.
+#: * ``lexical`` — alternatives SHARE CORE VOCABULARY with DESCRIPTION_1
+#:   (overlapping keywords / similar phrasing) but may diverge in meaning
+#:   by adding nuances, narrower / broader framings, or shifted emphases.
+#:   SC will spread (some alts paraphrase, others shift) — that spread is
+#:   the intentional signal.
 ALTERNATIVES_MODE_CHOICES: tuple[str, ...] = ("semantic", "lexical")
 
 DEFAULT_ALTERNATIVES_MODE = "semantic"
@@ -1452,10 +1457,13 @@ class LLMConfig(_ObservableConfig):
     #: 0–1 score is mapped to HIGH/MED/LOW by ``ConfidenceConfig`` band
     #: cut-offs.
     confidence_signal: str = DEFAULT_CONFIDENCE_SIGNAL
-    #: Whether alternatives express different *meanings* (``semantic``) or
-    #: different *wording* of the same meaning (``lexical``). Profile-level
-    #: default; can be overridden per run via ``LLMOverrides``. Has no
-    #: effect when ``n_alternatives == 1``.
+    #: Diversity mode for ``DESCRIPTION_1..N`` per Definition 1 (NLP
+    #: standard): ``semantic`` ⇒ paraphrases of DESCRIPTION_1 (same
+    #: meaning, different wording); ``lexical`` ⇒ shared vocabulary with
+    #: DESCRIPTION_1 while allowing the meaning to drift through added
+    #: nuances or reframing. Profile-level default; can be overridden
+    #: per run via ``LLMOverrides``. Has no effect when
+    #: ``n_alternatives == 1``.
     alternatives_mode: str = DEFAULT_ALTERNATIVES_MODE
     confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
     # Token budget for the model's internal reasoning (Anthropic extended
