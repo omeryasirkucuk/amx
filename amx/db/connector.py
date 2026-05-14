@@ -1234,7 +1234,23 @@ class DatabaseConnector:
             actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
                 exc, backend=self.backend
             )
-            msg = f"Profiling failed for {schema}.{table}: {actionable}"
+            # Always include the exception class so the user can tell a
+            # ``KeyError('cars.data')`` (corrupt catalog cache) from a
+            # ``SQLAlchemyOperationalError`` (DB down) — the plain
+            # ``str(exc)`` fallback strips that signal. Log the full
+            # traceback at WARNING so operators have the chain in
+            # studio.log even when the UI shows only the one-liner.
+            exc_class = type(exc).__name__
+            actionable_str = (actionable or "").strip() or "(no detail)"
+            msg = f"Profiling failed for {schema}.{table}: {actionable_str} [{exc_class}]"
+            log.warning(
+                "Profiling failed for %s.%s (class=%s, raw=%r)",
+                schema,
+                table,
+                exc_class,
+                str(exc),
+                exc_info=True,
+            )
             raise ProfilingError(schema, table, msg) from exc
         estimated_rows = int(profile.stats_n_live_tup or 0)
         full_scan_blocked = bool(max_rows and estimated_rows > max_rows)
@@ -1320,7 +1336,23 @@ class DatabaseConnector:
             actionable = adapter.actionable_profile_error(exc) or actionable_error_message(
                 exc, backend=self.backend
             )
-            msg = f"Profiling failed for {schema}.{table}: {actionable}"
+            # Always include the exception class so the user can tell a
+            # ``KeyError('cars.data')`` (corrupt catalog cache) from a
+            # ``SQLAlchemyOperationalError`` (DB down) — the plain
+            # ``str(exc)`` fallback strips that signal. Log the full
+            # traceback at WARNING so operators have the chain in
+            # studio.log even when the UI shows only the one-liner.
+            exc_class = type(exc).__name__
+            actionable_str = (actionable or "").strip() or "(no detail)"
+            msg = f"Profiling failed for {schema}.{table}: {actionable_str} [{exc_class}]"
+            log.warning(
+                "Profiling failed for %s.%s (class=%s, raw=%r)",
+                schema,
+                table,
+                exc_class,
+                str(exc),
+                exc_info=True,
+            )
             raise ProfilingError(schema, table, msg) from exc
 
         # Build the ColumnProfile list first; we need it indexed before

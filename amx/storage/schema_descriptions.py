@@ -384,6 +384,54 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "just in analysis_runs.settings_json) so a rerun that switches "
             "mode yields an accurate per-row audit in /history and Studio."
         ),
+        "seed_alternative_id": (  # local-only
+            "When this row was generated as a seeded *variation* of one "
+            "specific alternative of an earlier run, encodes that source "
+            'alternative as the string ``"{parent_result_id}:{alt_index}"`` '
+            '(e.g. ``"12345:1"`` = row 12345, alternative B). NULL on every '
+            "non-variations row (originals, plain Re-Runs). Distinct from "
+            "``parent_result_id`` which points at the row-level re-run chain."
+        ),
+        "seed_alternative_text": (  # local-only
+            "Verbatim text of the seed alternative the user picked when "
+            "kicking off this Variations run, captured at request time so "
+            "the audit trail survives even if the parent row is later "
+            "rewritten / superseded. NULL on every non-variations row."
+        ),
+        "parent_run_id": (  # local-only
+            "``analysis_runs.id`` of the run that owned the seed alternative "
+            "for a Variations row. NULL on every non-variations row. "
+            "Distinct from ``parent_result_id`` (row-level re-run chain) — "
+            "both may be set independently when a variation is itself "
+            "re-run. Indexed via ``idx_run_results_parent_run`` so the "
+            "inline descendant tree query stays cheap."
+        ),
+        "model": (  # local-only
+            "Effective LLM model identifier that produced this row's "
+            "alternatives. Mirrors ``analysis_runs.llm_model`` for original "
+            "runs, but captures the per-run override when the Studio "
+            "Variations / Re-Run modal (or the CLI picker) swapped to a "
+            "different profile for this single row. NULL on legacy rows "
+            "written before the per-row model audit shipped."
+        ),
+        "provider": (  # local-only
+            "Effective LLM provider identifier (``openai`` / ``anthropic`` / "
+            "``gemini`` / ``openrouter`` / …) that produced this row's "
+            "alternatives. Paired with ``model`` so the audit captures the "
+            "full provider/model bundle that was in effect, including the "
+            "case where a per-run override swapped profiles."
+        ),
+        "production_warning": (  # local-only
+            "One-line summary when the LLM (or the parser) produced fewer "
+            "alternatives than the active profile's ``n_alternatives``. "
+            "Examples: ``produced 2 of 3 requested`` or "
+            "``produced 2 of 3 requested (after seed echo)`` on Variations "
+            "rows where the model echoed the seed verbatim. NULL on the "
+            "success path so absence-of-warning is meaningful. The Studio's "
+            "run-detail page renders this as an inline ⚠ chip next to the "
+            "version label so a reviewer notices under-production without "
+            "scanning every alternative count."
+        ),
     },
     # ── app_events (local + shared) ───────────────────────────────────────
     "app_events": {

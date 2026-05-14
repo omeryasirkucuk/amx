@@ -22,6 +22,7 @@ from amx.web.auth import TokenAuthMiddleware, generate_token
 from amx.web.jobs import JobRegistry
 from amx.web.routers import (
     ask,
+    capabilities,
     catalog,
     code_ops,
     comments,
@@ -40,6 +41,7 @@ from amx.web.routers import (
     style,
     system,
     system_ops,
+    variations,
 )
 from amx.web.security_headers import SecurityHeadersMiddleware
 
@@ -130,6 +132,8 @@ def create_app(
     app.include_router(generate.router)
     app.include_router(pricing.router)
     app.include_router(rerun.router)
+    app.include_router(variations.router)
+    app.include_router(capabilities.router)
     app.include_router(installs.router)
     app.include_router(style.router)
     app.include_router(schedules.router)

@@ -1,19 +1,21 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import {
-  ChevronDown,
-  PlayCircle,
-  Settings as SettingsIcon,
-} from "lucide-react";
+import { PlayCircle, Settings as SettingsIcon } from "lucide-react";
 
 import { api, apiFetch } from "../lib/api";
-import type { LLMOverrides, LLMProfileDefaults, ModelPrice } from "../lib/api";
-import { cn } from "../lib/cn";
 import type { Scope } from "../lib/scope";
 import PageHeader from "../components/PageHeader";
 import { Card, CardBody, CardHeader } from "../components/Card";
 import { Button, InfoHint, Skeleton, Switch, useToast } from "../components/ui";
+import AdvancedLLMOverrides, {
+  EMPTY_OVERRIDES,
+  buildOverridesPayload,
+  seedFromDefaults,
+  type OverrideFormState,
+  type ProfileOption,
+} from "../components/AdvancedLLMOverrides";
+import { useLLMCapabilities } from "../lib/llmCapabilities";
 
 import ScopeTree, { type SchemaPick } from "../components/ScopeTree";
 
@@ -230,131 +232,12 @@ function buildScopeDict(picks: SchemaPick[]): Record<string, string[]> {
   return out;
 }
 
-/** Mutable form-state shape for the "Advanced LLM settings" disclosure.
- *  Strings everywhere because every input is uncontrolled-friendly:
- *  the user can clear a field to empty, and we only forward the
- *  parsed numeric value when it actually differs from the saved
- *  profile default. Empty / unparseable / unchanged ⇒ no override. */
-interface OverrideFormState {
-  temperature: string;
-  maxTokens: string;
-  nAlternatives: string;
-  columnBatchSize: string;
-  promptDetail: string;
-  descriptionVerbosity: string;
-  confidenceSignal: string;
-  alternativesMode: string;
-  thinkingBudget: string;
-  logprobHigh: string;
-  logprobMedium: string;
-  customInputCost: string;
-  customOutputCost: string;
-}
-
-const EMPTY_OVERRIDES: OverrideFormState = {
-  temperature: "",
-  maxTokens: "",
-  nAlternatives: "",
-  columnBatchSize: "",
-  promptDetail: "",
-  descriptionVerbosity: "",
-  confidenceSignal: "",
-  alternativesMode: "",
-  thinkingBudget: "",
-  logprobHigh: "",
-  logprobMedium: "",
-  customInputCost: "",
-  customOutputCost: "",
-};
-
-/** Build an OverrideFormState seeded with the active profile's
- *  current values so every input shows a real number ("0.20",
- *  "16384") instead of an empty box. Numeric ``null`` values
- *  collapse to ``""`` because cost overrides are nullable on the
- *  backend and the user clears them by emptying the field. Used
- *  both for initial seeding via useEffect and for the "Reset to
- *  profile defaults" button. */
-function seedFromDefaults(defaults: LLMProfileDefaults | null): OverrideFormState {
-  const num = (value: number | null | undefined): string =>
-    value === null || value === undefined ? "" : String(value);
-  if (!defaults) return EMPTY_OVERRIDES;
-  return {
-    temperature: num(defaults.temperature),
-    maxTokens: num(defaults.max_tokens),
-    nAlternatives: num(defaults.n_alternatives),
-    columnBatchSize: num(defaults.column_batch_size),
-    promptDetail: defaults.prompt_detail ?? "",
-    descriptionVerbosity: defaults.description_verbosity ?? "",
-    confidenceSignal: defaults.confidence_signal ?? "",
-    alternativesMode: defaults.alternatives_mode ?? "",
-    thinkingBudget: num(defaults.thinking_budget),
-    logprobHigh: num(defaults.logprob_high),
-    logprobMedium: num(defaults.logprob_medium),
-    customInputCost: num(defaults.custom_input_cost_per_mtok),
-    customOutputCost: num(defaults.custom_output_cost_per_mtok),
-  };
-}
-
-/** Coerce a stringy form value into a numeric override only when the
- *  user actually typed something new. Returns ``undefined`` to mean
- *  "no override" (use the saved profile's value). */
-function pickNumber(raw: string, profileValue: number | null | undefined): number | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed)) return undefined;
-  if (profileValue !== null && profileValue !== undefined && parsed === profileValue) {
-    return undefined;
-  }
-  return parsed;
-}
-
-function pickString(raw: string, profileValue: string | null | undefined): string | undefined {
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  if (profileValue && trimmed === profileValue) return undefined;
-  return trimmed;
-}
-
-/** Build the ``llm_overrides`` payload from the form state. Returns
- *  ``undefined`` when the user has not changed any field, so the
- *  request body stays byte-identical to the pre-overrides shape in
- *  the common case. */
-function buildOverridesPayload(
-  form: OverrideFormState,
-  defaults: LLMProfileDefaults | null,
-): LLMOverrides | undefined {
-  const out: LLMOverrides = {};
-  const temperature = pickNumber(form.temperature, defaults?.temperature);
-  if (temperature !== undefined) out.temperature = temperature;
-  const maxTokens = pickNumber(form.maxTokens, defaults?.max_tokens);
-  if (maxTokens !== undefined) out.max_tokens = maxTokens;
-  const nAlt = pickNumber(form.nAlternatives, defaults?.n_alternatives);
-  if (nAlt !== undefined) out.n_alternatives = nAlt;
-  const columnBatch = pickNumber(form.columnBatchSize, defaults?.column_batch_size);
-  if (columnBatch !== undefined) out.column_batch_size = columnBatch;
-  const promptDetail = pickString(form.promptDetail, defaults?.prompt_detail);
-  if (promptDetail !== undefined) out.prompt_detail = promptDetail;
-  const verbosity = pickString(form.descriptionVerbosity, defaults?.description_verbosity);
-  if (verbosity !== undefined) out.description_verbosity = verbosity;
-  const confSig = pickString(form.confidenceSignal, defaults?.confidence_signal);
-  if (confSig !== undefined) out.confidence_signal = confSig;
-  const altMode = pickString(form.alternativesMode, defaults?.alternatives_mode);
-  if (altMode === "semantic" || altMode === "lexical") {
-    out.alternatives_mode = altMode;
-  }
-  const thinking = pickNumber(form.thinkingBudget, defaults?.thinking_budget);
-  if (thinking !== undefined) out.thinking_budget = thinking;
-  const high = pickNumber(form.logprobHigh, defaults?.logprob_high);
-  if (high !== undefined) out.logprob_high = high;
-  const medium = pickNumber(form.logprobMedium, defaults?.logprob_medium);
-  if (medium !== undefined) out.logprob_medium = medium;
-  const inputCost = pickNumber(form.customInputCost, defaults?.custom_input_cost_per_mtok);
-  if (inputCost !== undefined) out.custom_input_cost_per_mtok = inputCost;
-  const outputCost = pickNumber(form.customOutputCost, defaults?.custom_output_cost_per_mtok);
-  if (outputCost !== undefined) out.custom_output_cost_per_mtok = outputCost;
-  return Object.keys(out).length === 0 ? undefined : out;
-}
+// OverrideFormState, EMPTY_OVERRIDES, seedFromDefaults, pickNumber,
+// pickString, buildOverridesPayload, and the AdvancedLLMOverrides
+// component itself now live in
+// ``frontend/src/components/AdvancedLLMOverrides.tsx`` so the Re-Run
+// modal can mount the same form block. RunNew imports them at the
+// top of this file.
 
 interface DbProfileSummary {
   name: string;
@@ -479,6 +362,20 @@ export default function RunNew() {
   const profileDefaults = ctx.data?.llm_profile_defaults ?? null;
   const llmModel = ctx.data?.llm_model ?? null;
   const activeLlmProfile = ctx.data?.active_llm_profile ?? null;
+  // Saved LLM profiles drive the per-run profile picker inside the
+  // Advanced LLM settings block. Without this query the picker row
+  // is hidden (the shared component gates on ``profiles && length > 0``).
+  // Re-Run + Variations modals each fetch this independently with the
+  // same query key, so a TanStack cache hit serves all three mounts.
+  const llmProfilesQ = useQuery({
+    queryKey: ["profiles", "llm"],
+    queryFn: () =>
+      apiFetch<{ profiles: ProfileOption[]; active: string | null }>(
+        "/api/profiles/llm",
+      ),
+    staleTime: 60_000,
+  });
+  const llmProfiles: ProfileOption[] = llmProfilesQ.data?.profiles ?? [];
   // Resolve the live (provider, model) price so the "Cost overrides"
   // section can show the auto-detected LiteLLM/OpenRouter rate as the
   // default badge instead of "—". The profile's stored
@@ -515,6 +412,23 @@ export default function RunNew() {
   // RunNew keeps the bad path out of history altogether.
   const llmReady = !!(
     ctx.data?.llm_provider && ctx.data?.llm_model && ctx.data?.active_llm_profile
+  );
+
+  // When the user swaps profiles via the in-panel picker, capability
+  // gating in the Advanced block must re-resolve against the chosen
+  // (provider, model) — otherwise switching to a non-reasoning model
+  // would leave the thinking_budget row falsely enabled.
+  const pickedLlmProfile = llmProfiles.find(
+    (p) => p.name === overrides.profile,
+  );
+  const effectiveProvider = pickedLlmProfile?.provider ?? llmProvider;
+  const effectiveModel = pickedLlmProfile?.model ?? llmModel;
+  const { supportsThinking, supportsLogprobs } = useLLMCapabilities(
+    effectiveProvider,
+    effectiveModel,
+  );
+  const credentialsMissing = Boolean(
+    pickedLlmProfile && pickedLlmProfile.has_credentials === false,
   );
 
 
@@ -559,6 +473,7 @@ export default function RunNew() {
   const totalPicks = selections.reduce((n, s) => n + s.picks.length, 0);
   const canSubmit =
     llmReady &&
+    !credentialsMissing &&
     selections.every((s) => s.profile && s.database) &&
     totalPicks > 0;
 
@@ -746,7 +661,18 @@ export default function RunNew() {
                 profileName={ctx.data?.active_llm_profile ?? null}
                 livePrice={livePrice.data ?? null}
                 livePriceLoading={livePrice.isFetching}
+                profiles={llmProfiles}
+                supportsThinking={supportsThinking}
+                supportsLogprobs={supportsLogprobs}
+                effectiveModel={effectiveModel}
               />
+              {credentialsMissing && (
+                <p className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-[11px] text-warn">
+                  The selected LLM profile is missing credentials. Open
+                  Settings → LLM → {overrides.profile} to add an API key
+                  before starting the run.
+                </p>
+              )}
               <hr className="border-border" />
               <dl className="grid grid-cols-2 gap-y-1.5 text-xs">
                 <dt className="text-ink-dim">Schemas</dt>
@@ -941,494 +867,3 @@ function ScopePicker() {
   );
 }
 
-interface AdvancedLLMOverridesProps {
-  open: boolean;
-  onToggle: () => void;
-  form: OverrideFormState;
-  onChange: (next: OverrideFormState) => void;
-  defaults: LLMProfileDefaults | null;
-  profileName: string | null;
-  /** Auto-resolved (provider, model) price from
-   *  ``GET /api/pricing/model``. Used to back-fill the "default X"
-   *  chip on the Cost overrides rows when the active profile has no
-   *  custom rate set — so the user sees the actual rate AMX will
-   *  bill at instead of an unhelpful em-dash. */
-  livePrice: ModelPrice | null;
-  livePriceLoading: boolean;
-}
-
-/** Cost-override row variant. The default badge falls back to the
- *  resolved LiveLLM/OpenRouter rate when the profile has no custom
- *  override, so users see the actual price AMX will bill at instead
- *  of "default —". Source is shown in parentheses ("litellm" /
- *  "openrouter" / "fallback") so the user knows where the number
- *  came from and whether it's worth overriding. */
-function CostOverrideRow({
-  label,
-  profileValue,
-  liveValue,
-  liveSource,
-  liveLoading,
-  changed,
-  children,
-}: {
-  label: string;
-  profileValue: number | null | undefined;
-  liveValue: number | null;
-  liveSource: string | null;
-  liveLoading: boolean;
-  changed: boolean;
-  children: ReactNode;
-}) {
-  const profileSet = profileValue !== null && profileValue !== undefined;
-  const usingLive = !profileSet && liveValue !== null;
-  const renderBadge = (): { text: string; tone: "default" | "muted" } => {
-    if (changed) return { text: "override", tone: "default" };
-    if (profileSet) return { text: `profile $${(profileValue as number).toFixed(2)}`, tone: "default" };
-    if (usingLive) {
-      const sourceLabel =
-        liveSource && liveSource !== "user_override" && liveSource !== "unknown"
-          ? ` · ${liveSource}`
-          : "";
-      return { text: `live $${(liveValue as number).toFixed(2)}${sourceLabel}`, tone: "default" };
-    }
-    if (liveLoading) return { text: "loading…", tone: "muted" };
-    return { text: "default —", tone: "muted" };
-  };
-  const badge = renderBadge();
-  const tooltip = profileSet
-    ? `Profile-defined custom rate: $${(profileValue as number).toFixed(4)} / 1M tokens.`
-    : usingLive
-      ? `Auto-resolved from ${liveSource ?? "pricing cache"}. Override here to bill this run at a different rate.`
-      : "No price resolved for this model. Set a custom rate or run /refresh-prices.";
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] font-medium text-ink-muted">{label}</span>
-        <span
-          className={cn(
-            "font-mono text-[10px] tabular-nums",
-            changed
-              ? "text-accent"
-              : badge.tone === "muted"
-                ? "text-ink-dim"
-                : "text-ink-muted",
-          )}
-          title={tooltip}
-        >
-          {badge.text}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-/** One row in the disclosure: label + hint icon, default chip on
- *  the right, input on the next line. Single column to fit the
- *  narrow side card without wrapping the labels. */
-function OverrideRow({
-  label,
-  hint,
-  defaultValue,
-  changed,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  defaultValue: string;
-  changed: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-muted">
-          {label}
-          {hint && <InfoHint text={hint} />}
-        </span>
-        <span
-          className={cn(
-            "font-mono text-[10px] tabular-nums",
-            changed ? "text-accent" : "text-ink-dim",
-          )}
-          title={`Profile default: ${defaultValue}`}
-        >
-          {changed ? "override" : `default ${defaultValue}`}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-/** Disclosure block on /runs/new exposing every LLM-profile tuning
- *  knob as a per-run override. Inputs pre-fill from the active
- *  profile's defaults so the user has a real starting point. The
- *  parent only forwards values that differ from the profile default
- *  to the backend; the saved profile is never mutated. */
-function AdvancedLLMOverrides({
-  open,
-  onToggle,
-  form,
-  onChange,
-  defaults,
-  profileName,
-  livePrice,
-  livePriceLoading,
-}: AdvancedLLMOverridesProps) {
-  const update = (patch: Partial<OverrideFormState>) =>
-    onChange({ ...form, ...patch });
-  const diffMap = useMemo(
-    () => ({
-      temperature: pickNumber(form.temperature, defaults?.temperature) !== undefined,
-      maxTokens: pickNumber(form.maxTokens, defaults?.max_tokens) !== undefined,
-      nAlternatives:
-        pickNumber(form.nAlternatives, defaults?.n_alternatives) !== undefined,
-      columnBatchSize:
-        pickNumber(form.columnBatchSize, defaults?.column_batch_size) !== undefined,
-      promptDetail:
-        pickString(form.promptDetail, defaults?.prompt_detail) !== undefined,
-      descriptionVerbosity:
-        pickString(form.descriptionVerbosity, defaults?.description_verbosity) !==
-        undefined,
-      confidenceSignal:
-        pickString(form.confidenceSignal, defaults?.confidence_signal) !== undefined,
-      alternativesMode:
-        pickString(form.alternativesMode, defaults?.alternatives_mode) !== undefined,
-      thinkingBudget:
-        pickNumber(form.thinkingBudget, defaults?.thinking_budget) !== undefined,
-      logprobHigh:
-        pickNumber(form.logprobHigh, defaults?.logprob_high) !== undefined,
-      logprobMedium:
-        pickNumber(form.logprobMedium, defaults?.logprob_medium) !== undefined,
-      customInputCost:
-        pickNumber(form.customInputCost, defaults?.custom_input_cost_per_mtok) !==
-        undefined,
-      customOutputCost:
-        pickNumber(form.customOutputCost, defaults?.custom_output_cost_per_mtok) !==
-        undefined,
-    }),
-    [form, defaults],
-  );
-  const overrideCount = useMemo(
-    () => Object.values(diffMap).filter(Boolean).length,
-    [diffMap],
-  );
-  const fmt = (value: number | string | null | undefined): string =>
-    value === null || value === undefined || value === "" ? "—" : String(value);
-  const inputCls =
-    "w-full rounded-md border border-surface-border bg-surface px-2 py-1 font-mono text-xs tabular-nums";
-  const selectCls =
-    "w-full rounded-md border border-surface-border bg-surface px-2 py-1 text-xs";
-  const sectionCls =
-    "rounded-md border border-border/60 bg-surface-subtle/40 px-3 py-2.5 space-y-2.5";
-
-  return (
-    <div className="rounded-md border border-border bg-surface-subtle/30">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-medium text-ink-muted hover:bg-surface-subtle/60"
-        aria-expanded={open}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <ChevronDown
-            size={12}
-            className={cn(
-              "transition-transform duration-fast",
-              !open && "-rotate-90",
-            )}
-            aria-hidden="true"
-          />
-          Advanced LLM settings
-          <InfoHint text="Override the active LLM profile's tuning knobs for this run only. The saved profile is not mutated." />
-        </span>
-        <span
-          className={cn(
-            "text-[10px] uppercase tracking-wider",
-            overrideCount > 0 ? "text-accent" : "text-ink-dim",
-          )}
-        >
-          {overrideCount > 0
-            ? `${overrideCount} override${overrideCount > 1 ? "s" : ""}`
-            : "match profile"}
-        </span>
-      </button>
-      {open && (
-        <div className="space-y-3 border-t border-border px-3 py-3 text-xs">
-          <p className="text-[11px] text-ink-dim">
-            Source profile{" "}
-            <span className="font-mono text-ink-muted">
-              {profileName ?? "—"}
-            </span>
-            . Edit a field to override for this run only.
-          </p>
-
-          <div className={sectionCls}>
-            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
-              Generation
-            </h4>
-
-            <OverrideRow
-              label="Temperature"
-              hint="Creativity: low = consistent, high = varied (0.1–0.3 recommended)."
-              defaultValue={fmt(defaults?.temperature)}
-              changed={diffMap.temperature}
-            >
-              <input
-                type="number"
-                min={0}
-                max={2}
-                step={0.05}
-                value={form.temperature}
-                onChange={(e) => update({ temperature: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-
-            <OverrideRow
-              label="Max output tokens"
-              hint="Output budget per LLM call. Reasoning models auto-tune a 32k floor on top. Higher = bigger answers + higher cost."
-              defaultValue={fmt(defaults?.max_tokens)}
-              changed={diffMap.maxTokens}
-            >
-              <input
-                type="number"
-                min={256}
-                max={262_144}
-                step={1024}
-                value={form.maxTokens}
-                onChange={(e) => update({ maxTokens: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-
-            <OverrideRow
-              label="Alternatives per column"
-              hint="How many alternative description proposals to generate per column (1–5)."
-              defaultValue={fmt(defaults?.n_alternatives)}
-              changed={diffMap.nAlternatives}
-            >
-              <input
-                type="number"
-                min={1}
-                max={5}
-                step={1}
-                value={form.nAlternatives}
-                onChange={(e) => update({ nAlternatives: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-
-            <OverrideRow
-              label="Column batch size"
-              hint="Columns processed per LLM call. Higher = cheaper; lower = more stable."
-              defaultValue={fmt(defaults?.column_batch_size)}
-              changed={diffMap.columnBatchSize}
-            >
-              <input
-                type="number"
-                min={1}
-                max={200}
-                step={1}
-                value={form.columnBatchSize}
-                onChange={(e) => update({ columnBatchSize: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-
-            <OverrideRow
-              label="Prompt detail"
-              hint="How much context the model receives. More = accurate; less = fast/cheap."
-              defaultValue={fmt(defaults?.prompt_detail)}
-              changed={diffMap.promptDetail}
-            >
-              <select
-                value={form.promptDetail}
-                onChange={(e) => update({ promptDetail: e.target.value })}
-                className={selectCls}
-              >
-                {!form.promptDetail && <option value="">—</option>}
-                {["minimal", "standard", "detailed", "full"].map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </OverrideRow>
-
-            <OverrideRow
-              label="Description verbosity"
-              hint="Output length: brief = one sentence, exhaustive = detailed."
-              defaultValue={fmt(defaults?.description_verbosity)}
-              changed={diffMap.descriptionVerbosity}
-            >
-              <select
-                value={form.descriptionVerbosity}
-                onChange={(e) => update({ descriptionVerbosity: e.target.value })}
-                className={selectCls}
-              >
-                {!form.descriptionVerbosity && <option value="">—</option>}
-                {["brief", "detailed", "comprehensive", "exhaustive"].map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </OverrideRow>
-
-            <OverrideRow
-              label="Confidence signal"
-              hint="Active per-alternative scorer. 'self_consistency' is universal; 'logprob' needs provider logprobs; 'self_decl' adds prompt cost; 'judge' issues a second LLM call (~2× tokens); 'none' hides the badge."
-              defaultValue={fmt(defaults?.confidence_signal)}
-              changed={diffMap.confidenceSignal}
-            >
-              <select
-                value={form.confidenceSignal}
-                onChange={(e) => update({ confidenceSignal: e.target.value })}
-                className={selectCls}
-              >
-                {!form.confidenceSignal && <option value="">—</option>}
-                {["self_consistency", "logprob", "self_decl", "judge", "none"].map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </OverrideRow>
-
-            <OverrideRow
-              label="Alternatives diversity mode"
-              // Per Definition 1 (NLP standard): semantic ⇒ same meaning /
-              // different words; lexical ⇒ shared vocabulary / shifted
-              // meaning. Do NOT re-invert.
-              hint="Semantic = paraphrase the chosen description (same meaning, different wording). Lexical = share core vocabulary with the chosen description while letting the meaning shift through added nuances. Has no effect when alternatives per column is 1."
-              defaultValue={fmt(defaults?.alternatives_mode)}
-              changed={diffMap.alternativesMode}
-            >
-              <select
-                value={form.alternativesMode}
-                onChange={(e) => update({ alternativesMode: e.target.value })}
-                className={selectCls}
-              >
-                {!form.alternativesMode && <option value="">—</option>}
-                {["semantic", "lexical"].map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </OverrideRow>
-
-            <OverrideRow
-              label="Thinking budget"
-              hint="Token budget for the model's internal reasoning (Anthropic extended thinking + similar). 0 = off."
-              defaultValue={fmt(defaults?.thinking_budget)}
-              changed={diffMap.thinkingBudget}
-            >
-              <input
-                type="number"
-                min={0}
-                max={64_000}
-                step={256}
-                value={form.thinkingBudget}
-                onChange={(e) => update({ thinkingBudget: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-          </div>
-
-          <div className={sectionCls}>
-            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
-              Confidence thresholds
-            </h4>
-            <OverrideRow
-              label="High threshold (≥)"
-              hint="Predictions above this token-probability score are flagged 'high confidence'."
-              defaultValue={fmt(defaults?.logprob_high)}
-              changed={diffMap.logprobHigh}
-            >
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.05}
-                value={form.logprobHigh}
-                onChange={(e) => update({ logprobHigh: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-            <OverrideRow
-              label="Medium threshold (≥)"
-              hint="Above this is 'medium confidence'; below counts as 'low'."
-              defaultValue={fmt(defaults?.logprob_medium)}
-              changed={diffMap.logprobMedium}
-            >
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.05}
-                value={form.logprobMedium}
-                onChange={(e) => update({ logprobMedium: e.target.value })}
-                className={inputCls}
-              />
-            </OverrideRow>
-          </div>
-
-          <div className={sectionCls}>
-            <h4 className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
-              Cost overrides
-              <InfoHint text="Reporting only — does not change the LLM call. The default badge shows the rate AMX will bill at: profile override if set, otherwise the auto-detected LiteLLM / OpenRouter price for this model. Both rates must be set together, or both blank." />
-            </h4>
-            <CostOverrideRow
-              label="Input USD / 1M"
-              profileValue={defaults?.custom_input_cost_per_mtok}
-              liveValue={livePrice?.input_per_mtok ?? null}
-              liveSource={livePrice?.source ?? null}
-              liveLoading={livePriceLoading}
-              changed={diffMap.customInputCost}
-            >
-              <input
-                type="number"
-                min={0}
-                step={0.01}
-                value={form.customInputCost}
-                onChange={(e) => update({ customInputCost: e.target.value })}
-                className={inputCls}
-              />
-            </CostOverrideRow>
-            <CostOverrideRow
-              label="Output USD / 1M"
-              profileValue={defaults?.custom_output_cost_per_mtok}
-              liveValue={livePrice?.output_per_mtok ?? null}
-              liveSource={livePrice?.source ?? null}
-              liveLoading={livePriceLoading}
-              changed={diffMap.customOutputCost}
-            >
-              <input
-                type="number"
-                min={0}
-                step={0.01}
-                value={form.customOutputCost}
-                onChange={(e) => update({ customOutputCost: e.target.value })}
-                className={inputCls}
-              />
-            </CostOverrideRow>
-          </div>
-
-          {overrideCount > 0 && (
-            <button
-              type="button"
-              onClick={() => onChange(seedFromDefaults(defaults))}
-              className="text-[11px] text-accent underline-offset-2 hover:underline"
-            >
-              Reset to profile defaults
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}

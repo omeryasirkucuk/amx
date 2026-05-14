@@ -31,6 +31,7 @@ intact so the Studio history drawer can show "v1 vs v2" side-by-side.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from collections.abc import Callable
@@ -93,28 +94,50 @@ class RerunOutcome:
 def _llm_for_rerun(
     cfg: AMXConfig,
     *,
+    overrides: dict[str, Any] | None,
     temperature_override: float | None,
-) -> LLMProvider:
-    """Open an :class:`LLMProvider` honouring the optional temperature bump.
+) -> tuple[LLMProvider, AMXConfig]:
+    """Open an :class:`LLMProvider` honouring the optional per-run override
+    block.
 
-    The diversity nudge (default ``original + 0.2``, capped at 1.0) is
-    applied here by the caller — we just respect ``cfg.llm.temperature``
-    once it's been mutated. Never reach above 1.0; some providers reject
-    it.
+    Mirrors :func:`amx.web.routers.runs._apply_llm_overrides`: builds a
+    derived ``LLMConfig`` via :func:`dataclasses.replace` so the saved
+    profile on disk is **never** mutated. Returns both the live
+    provider and the derived ``AMXConfig`` so downstream call sites
+    (e.g. :func:`_persist_rerun_row`) can read post-override values
+    from ``derived_cfg.llm`` instead of the original profile.
+
+    The legacy ``temperature_override`` shim (single-knob path used by
+    the in-flight Studio bundles + the CLI ``/rerun --temperature``
+    diversity nudge) is folded into the overrides dict here so a single
+    code path applies them.
     """
     if not cfg.llm or not cfg.llm.provider or not cfg.llm.model:
         raise RerunContextError(
             "No active LLM profile is configured. Open Settings → LLM and pick one."
         )
-    if temperature_override is not None:
-        # ``cfg.llm`` is a dataclass; mutating ``temperature`` here only
-        # affects this LLMProvider instance because LLMProvider snaps
-        # the value into its own state at construction.
+    derived_overrides: dict[str, Any] = dict(overrides or {})
+    if temperature_override is not None and "temperature" not in derived_overrides:
         try:
-            cfg.llm.temperature = max(0.0, min(1.0, float(temperature_override)))
-        except Exception:
+            derived_overrides["temperature"] = max(0.0, min(1.0, float(temperature_override)))
+        except (TypeError, ValueError):
             pass
-    return LLMProvider(cfg.llm)
+    # Profile swap: when the caller specified ``profile=<saved-profile-name>``
+    # the named profile's full LLMConfig (provider/model/api_key/api_base)
+    # becomes the base; per-knob overrides layer on top. Unknown names
+    # degrade safely (silent fall-through to the active profile). Mirrors
+    # :func:`amx.web.routers.runs._apply_llm_overrides`.
+    profile_name = derived_overrides.pop("profile", None)
+    base_llm = cfg.llm
+    if profile_name and profile_name in cfg.llm_profiles:
+        base_llm = cfg.llm_profiles[profile_name]
+    if not derived_overrides and base_llm is cfg.llm:
+        return LLMProvider(cfg.llm), cfg
+    derived_llm = (
+        dataclasses.replace(base_llm, **derived_overrides) if derived_overrides else base_llm
+    )
+    derived_cfg = dataclasses.replace(cfg, llm=derived_llm)
+    return LLMProvider(derived_llm), derived_cfg
 
 
 def _pick_target_suggestion(
@@ -478,6 +501,11 @@ def _persist_rerun_row(
     user_instructions: str | None,
     model_name: str,
     alternatives_mode: str | None = None,
+    seed_alternative_id: str | None = None,
+    seed_alternative_text: str | None = None,
+    production_warning: str | None = None,
+    parent_run_id: int | None = None,
+    provider_name: str | None = None,
 ) -> tuple[int, int]:
     """Insert one ``run_results`` row for the re-run + return ``(new_id, seq)``.
 
@@ -523,6 +551,20 @@ def _persist_rerun_row(
         "rerun_seq": int(rerun_seq),
         "user_instructions": (user_instructions or "").strip() or None,
         "alternatives_mode": alternatives_mode,
+        # Variations audit (NULL on plain Re-Run rows). When set, this
+        # row was generated as a seeded variation; the columns carry
+        # back to the source alternative + its owning run so /history
+        # show and Studio can render the inline-nested tree.
+        "seed_alternative_id": seed_alternative_id,
+        "seed_alternative_text": seed_alternative_text,
+        "parent_run_id": int(parent_run_id) if parent_run_id else None,
+        # Per-row LLM identity — needed when a per-run profile override
+        # was applied since analysis_runs.llm_model / llm_provider
+        # would still report the base profile.
+        "model": model_name or None,
+        "provider": provider_name or None,
+        # Under-production audit (NULL on the success path).
+        "production_warning": production_warning,
     }
     [new_id] = hs.save_run_results(int(new_run_id), [row])
     return int(new_id), int(rerun_seq)
@@ -534,9 +576,11 @@ def rerun_items(
     target_result_ids: list[int],
     user_instructions: str | None = None,
     temperature_override: float | None = None,
+    llm_overrides: dict[str, Any] | None = None,
     job_id: str | None = None,
     cancel_token: threading.Event | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    on_run_created: Callable[[int], None] | None = None,
 ) -> tuple[int, list[RerunOutcome]]:
     """Re-run one or many ``run_results`` rows with optional user guidance.
 
@@ -546,6 +590,13 @@ def rerun_items(
     lets the Studio worker pipe progress into its SSE queue
     (``activity.added`` / ``activity.complete`` / ``activity.fail``) —
     CLI callers can leave it ``None``.
+
+    ``llm_overrides`` is the per-run override block mirrored from
+    Studio's ``LLMOverrides`` Pydantic model — same fields, same
+    semantics. ``temperature_override`` is the legacy single-knob
+    shim for the CLI ``/rerun --temperature`` flag and in-flight Studio
+    bundles; folded into ``llm_overrides`` internally by
+    :func:`_llm_for_rerun`. The saved profile on disk is never mutated.
     """
     if not target_result_ids:
         raise RerunContextError("rerun_items called with no targets.")
@@ -555,7 +606,14 @@ def rerun_items(
         raise RerunContextError("History store is not initialised — cannot re-run an item.")
 
     job_id = job_id or f"rerun-{int(time.time() * 1000)}"
-    llm = _llm_for_rerun(cfg, temperature_override=temperature_override)
+    # Build the derived cfg so downstream calls
+    # (``apply_confidence_signals``, ``_persist_rerun_row``, etc.) see
+    # post-override values for ``alternatives_mode`` /
+    # ``confidence_signal`` / ``temperature`` etc. The saved profile on
+    # disk and ``cfg.llm`` on the caller side are untouched.
+    llm, cfg = _llm_for_rerun(
+        cfg, overrides=llm_overrides, temperature_override=temperature_override
+    )
 
     # Resolve the original run + its scope so the new analysis_runs row
     # carries forward enough context for /history list to render it.
@@ -615,8 +673,17 @@ def rerun_items(
         mode=mode,
         db_backend=str(parent_run.get("db_backend") or ""),
         db_profile=str(parent_run.get("db_profile") or ""),
-        llm_provider=str(parent_run.get("llm_provider") or cfg.llm.provider or ""),
-        llm_model=str(parent_run.get("llm_model") or cfg.llm.model or ""),
+        # ``cfg.llm`` is the DERIVED config returned by
+        # :func:`_llm_for_rerun` — when ``llm_overrides.profile`` (or
+        # any other per-knob override) flipped provider / model, this
+        # carries the post-override values. Reading ``parent_run``
+        # first would silently bury the override and leave the run
+        # row reporting the original profile's identity while the
+        # actual LLM call hit a different provider — confusing on
+        # the runs list and incorrect for audit. Falls back to the
+        # parent only when cfg.llm is somehow empty.
+        llm_provider=str(cfg.llm.provider or parent_run.get("llm_provider") or ""),
+        llm_model=str(cfg.llm.model or parent_run.get("llm_model") or ""),
         scope=parent_scope,
         selected_count=len(target_result_ids),
         planned_count=len(target_result_ids),
@@ -629,6 +696,19 @@ def rerun_items(
             "parent_run_id": parent_run_id,
             "user_instructions": (user_instructions or "").strip() or None,
             "temperature_override": temperature_override,
+            # Effective LLM config used for this re-run (post-override).
+            # Mirrors the analyze.run path so ``/history show <run>``
+            # surfaces the same fields whether the run came from /run or
+            # from a re-run. ``llm_overrides`` records only the fields
+            # the user actually overrode so a reviewer can tell at a
+            # glance what the re-run changed vs inherited.
+            "llm_overrides": dict(llm_overrides) if llm_overrides else None,
+            "alternatives_mode": getattr(cfg.llm, "alternatives_mode", ""),
+            "confidence_signal": getattr(cfg.llm, "confidence_signal", ""),
+            "n_alternatives": int(getattr(cfg.llm, "n_alternatives", 0) or 0),
+            "temperature": float(getattr(cfg.llm, "temperature", 0.0) or 0.0),
+            "prompt_detail": getattr(cfg.llm, "prompt_detail", ""),
+            "description_verbosity": getattr(cfg.llm, "description_verbosity", ""),
             # Surface the database / catalog at the settings level so
             # the SPA's history.get_run handler can flatten them onto
             # the run row (see history.py:92) and the Apply pending
@@ -637,6 +717,56 @@ def rerun_items(
             "catalog": inherited_catalog,
         },
     )
+
+    # Surface the freshly-created run_id back to the router worker
+    # immediately so it can pin ``job.run_id`` BEFORE the (potentially
+    # multi-second) target loop runs. Without this, the runs list +
+    # the run-detail page can't find the live worker by numeric id —
+    # only the SSE-stream subscriber (which knows the job_id directly)
+    # sees progress. The /run worker's _run_worker_body sets
+    # job.run_id at the same point in its lifecycle (see
+    # amx/web/routers/runs.py:790).
+    if on_run_created is not None:
+        try:
+            on_run_created(int(new_run_id))
+        except Exception as exc:  # noqa: BLE001 — caller-supplied callback
+            log.warning("on_run_created callback raised: %s", exc)
+
+    # Start a heartbeat ticker so the scheduler's stale-run sweep
+    # (``recover_stale_runs`` in ``amx/scheduler/tick.py``) doesn't
+    # flip this row to ``failed`` mid-flight. The sweep treats
+    # ``last_heartbeat_at IS NULL`` as immediately stale, so the
+    # first beat fires synchronously to close the NULL window before
+    # the multi-second target loop begins. Subsequent beats run on a
+    # daemon thread until the ``finally`` block stops it. Mirrors the
+    # ``_start_heartbeat_ticker`` pattern in
+    # ``amx/web/routers/runs.py:532`` — without it every Re-Run /
+    # Variations submit gets clobbered ~one tick after starting,
+    # turning a real success/partial into a fake "Recovered stale
+    # running run (heartbeat threshold exceeded)" failure even after
+    # the worker successfully wrote run_results rows.
+    heartbeat_stop = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+    try:
+        hs.update_run_heartbeat(int(new_run_id))
+    except Exception as exc:  # noqa: BLE001 — defensive, never fatal
+        log.warning("rerun heartbeat initial beat failed for run_id=%s: %s", new_run_id, exc)
+
+    def _heartbeat_tick(target_run_id: int) -> None:
+        while not heartbeat_stop.is_set():
+            try:
+                hs.update_run_heartbeat(target_run_id)
+            except Exception:  # noqa: BLE001 — never crash the ticker
+                log.exception("rerun heartbeat ticker failed for run_id=%s", target_run_id)
+            heartbeat_stop.wait(60.0)
+
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_tick,
+        args=(int(new_run_id),),
+        name=f"amx-rerun-heartbeat-{new_run_id}",
+        daemon=True,
+    )
+    heartbeat_thread.start()
 
     outcomes: list[RerunOutcome] = []
     started = time.monotonic()
@@ -750,6 +880,16 @@ def rerun_items(
                 except Exception as exc:  # pragma: no cover — defensive
                     log.warning("Rerun confidence scoring failed: %s", exc)
 
+                # Under-production audit. ProfileAgent's top-up
+                # retry + fallback pad already guarantees
+                # ``len(suggestion.suggestions) == n_alternatives``;
+                # when the retry alone couldn't recover and the
+                # fallback fired, ``suggestion.production_warning``
+                # carries the audit string. The Variations
+                # executor's post-step may overwrite this with a
+                # richer ``(after seed echo)`` suffix when the LLM
+                # echoed the seed.
+                production_warning = getattr(suggestion, "production_warning", None)
                 new_id, rerun_seq = _persist_rerun_row(
                     new_run_id=new_run_id,
                     suggestion=suggestion,
@@ -758,6 +898,8 @@ def rerun_items(
                     user_instructions=user_instructions,
                     model_name=getattr(llm, "model_name", "") or str(cfg.llm.model or ""),
                     alternatives_mode=getattr(cfg.llm, "alternatives_mode", None),
+                    provider_name=str(cfg.llm.provider or "") or None,
+                    production_warning=production_warning,
                 )
 
                 outcome = RerunOutcome(
@@ -852,10 +994,44 @@ def rerun_items(
         # can show the re-run alongside normal analyze.run rows. Mirror
         # analyze_flow's tokens={} payload so the re-run also surfaces
         # frozen USD cost in the run-detail page and in /usage.
+        #
+        # Status state machine:
+        #   * every outcome succeeded → ``success``;
+        #   * mixed → ``partial``;
+        #   * every outcome failed → ``failed`` (NOT ``partial``).
+        # The third bucket previously collapsed into ``partial`` which
+        # looked the same on the runs list as a half-successful run —
+        # but a 0.0s run where every target hit ``build_context_snapshot``
+        # is fundamentally different from a long run where most rows
+        # produced LLM output and one timed out. Mark them apart so
+        # the user sees the failure mode in the status column.
         successful = sum(1 for o in outcomes if not o.error)
+        if not outcomes:
+            status = "failed"
+        elif successful == len(outcomes):
+            status = "success"
+        elif successful == 0:
+            status = "failed"
+        else:
+            status = "partial"
+        # Surface every target's error verbatim on ``error_text`` when
+        # status==failed so /history show + the Studio run-detail page
+        # can render the cause instead of silently leaving the column
+        # blank. Truncate at 2000 chars so a runaway stacktrace doesn't
+        # blow up the row.
+        error_text = ""
+        if status == "failed":
+            errors = [o.error for o in outcomes if o.error]
+            joined = "; ".join(errors) if errors else "Worker produced no outcomes."
+            error_text = joined[:2000]
+            log.warning(
+                "rerun_items finished with no successful outcomes (targets=%d): %s",
+                len(targets),
+                error_text,
+            )
         hs.finish_run(
             int(new_run_id),
-            status="success" if successful == len(outcomes) else "partial",
+            status=status,
             metrics={
                 "duration_sec": round(time.monotonic() - started, 3),
                 "model_processing_sec": round(token_tracker.total_model_processing_sec, 3),
@@ -872,9 +1048,16 @@ def rerun_items(
                 "records": token_tracker.records(),
             },
             results={"new_result_ids": [o.new_result_id for o in outcomes if o.new_result_id]},
-            error_text="",
+            error_text=error_text,
         )
     finally:
+        # Stop the heartbeat ticker FIRST so a teardown delay in the
+        # snapshot cleanup doesn't keep a stale beat alive past
+        # finish_run. The thread is daemon — set the event, then a
+        # short join keeps the test suite from seeing it linger.
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=0.5)
         # Storage-maliyetsiz: snapshots disappear the moment the worker
         # exits, regardless of success / failure / cancellation.
         try:

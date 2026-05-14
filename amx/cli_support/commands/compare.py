@@ -893,12 +893,40 @@ def _collect_per_column_long(
     from amx.storage.sqlite_store import parse_alternatives_json
 
     asset_map = _build_asset_map(runs, results_by_run, column_filter)
+
+    # Per-(parent_run, asset) descendant lookup. Each entry holds the
+    # chronologically-ordered list of v2/v3/... versions for that cell
+    # in the pivot. Built lazily from ``get_descendant_runs`` only when
+    # the parent run actually has descendants -- runs with no
+    # variations / re-runs pay zero extra cost.
+    hs = history_store()
+    descendants_by_cell: dict[tuple[int, str, str, str], list[dict[str, Any]]] = {}
+    if hs is not None:
+        for run in runs:
+            parent_id = int(run["id"])
+            try:
+                entries = hs.get_descendant_runs(parent_id)
+            except Exception:
+                entries = []
+            for entry in entries:
+                for desc_row in entry.get("rows", []) or []:
+                    key = (
+                        parent_id,
+                        str(desc_row.get("schema_name") or ""),
+                        str(desc_row.get("table_name") or ""),
+                        str(desc_row.get("column_name") or ""),
+                    )
+                    descendants_by_cell.setdefault(key, []).append(
+                        {"row": desc_row, "entry": entry}
+                    )
+
     rows: list[dict[str, Any]] = []
     for asset_key in sorted(asset_map.keys()):
         schema_n, table_n, col_n = asset_key
         runs_for_asset = asset_map[asset_key]
         for run in runs:
-            row = runs_for_asset.get(int(run["id"]))
+            run_id = int(run["id"])
+            row = runs_for_asset.get(run_id)
             if not row:
                 continue
             # ``alternatives`` carries the full DESCRIPTION_1..N list so the
@@ -909,20 +937,64 @@ def _collect_per_column_long(
             # recorded diversity mode (semantic | lexical | NULL on legacy
             # rows) — Studio shows it once per run column header rather
             # than repeating on every cell.
+            #
+            # ``version_label`` / ``parent_run_id`` / ``descendant_kind`` /
+            # ``descendant_run_id`` / ``seed_alternative_text`` are NULL on
+            # v1 rows. They light up on the descendant rows emitted below
+            # so the Studio pivot can stack v2/v3 under v1 inside the same
+            # ``(asset, run)`` cell.
             rows.append(
                 {
                     "schema": schema_n,
                     "table": table_n,
                     "column": col_n,
-                    "run_id": int(run["id"]),
+                    "run_id": run_id,
                     "description": _top_alternative(row),
                     "confidence": str(row.get("confidence") or ""),
                     "logprob_score": row.get("logprob_score"),
                     "token_count": row.get("token_count"),
                     "alternatives": parse_alternatives_json(row.get("alternatives_json")),
                     "alternatives_mode": row.get("alternatives_mode"),
+                    "version_label": "v1",
+                    "parent_run_id": None,
+                    "descendant_kind": None,
+                    "descendant_run_id": None,
+                    "seed_alternative_text": None,
                 }
             )
+
+            # Emit descendant rows for this (run, asset) cell. Per-asset
+            # version labels (v2, v3, ...) follow the same chronological
+            # rule the run-detail page applies: sort by descendant run id
+            # ascending, then assign v2..vN in order. The descendants
+            # remain anchored to the parent ``run_id`` in the pivot so
+            # they stack under v1 in the same cell rather than spawning a
+            # new column.
+            cell_descendants = descendants_by_cell.get((run_id, schema_n, table_n, col_n), [])
+            cell_descendants.sort(key=lambda d: int(d["entry"].get("run_id") or 0))
+            for idx, pair in enumerate(cell_descendants, start=2):
+                desc_row = pair["row"]
+                entry = pair["entry"]
+                rows.append(
+                    {
+                        "schema": schema_n,
+                        "table": table_n,
+                        "column": col_n,
+                        "run_id": run_id,
+                        "description": _top_alternative(desc_row),
+                        "confidence": str(desc_row.get("confidence") or ""),
+                        "logprob_score": desc_row.get("logprob_score"),
+                        "token_count": desc_row.get("token_count"),
+                        "alternatives": parse_alternatives_json(desc_row.get("alternatives_json")),
+                        "alternatives_mode": desc_row.get("alternatives_mode") or entry.get("mode"),
+                        "version_label": f"v{idx}",
+                        "parent_run_id": run_id,
+                        "descendant_kind": entry.get("kind"),
+                        "descendant_run_id": int(entry.get("run_id") or 0) or None,
+                        "seed_alternative_text": desc_row.get("seed_alternative_text")
+                        or entry.get("seed_alternative_text"),
+                    }
+                )
     return rows
 
 

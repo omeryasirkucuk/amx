@@ -175,6 +175,15 @@ class MetadataSuggestion:
     #: a circular import with ``amx.llm.confidence``; the runtime type
     #: is always ``AlternativeScore``.
     suggestion_scores: list[Any] | None = None
+    #: One-line audit when the LLM (or the parser) returned fewer
+    #: alternatives than the active profile's ``n_alternatives`` AND
+    #: the top-up retry didn't fully recover — populated by
+    #: :func:`ProfileAgent._top_up_under_produced` with a string like
+    #: ``"produced 2 of 3 requested (retry got 0, fallback padded 1)"``.
+    #: ``None`` on the success path so absence-of-warning is
+    #: meaningful. Persisted to ``run_results.production_warning`` by
+    #: the storage layer.
+    production_warning: str | None = None
 
 
 @dataclass

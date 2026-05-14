@@ -116,13 +116,29 @@ def _serialize_rag_hit(hit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _connector_for_db_profile(cfg: AMXConfig, profile_name: str) -> DatabaseConnector:
+def _connector_for_db_profile(
+    cfg: AMXConfig,
+    profile_name: str,
+    *,
+    database: str | None = None,
+    catalog: str | None = None,
+) -> DatabaseConnector:
     """Open a fresh ``DatabaseConnector`` against a named DB profile.
 
     Mirrors the resolution logic the run worker uses: look up the
-    profile in ``cfg.db_profiles`` and instantiate a connector. The
-    connector's ``cfg`` attribute carries the connection details so
-    ``profile_table`` can introspect.
+    profile in ``cfg.db_profiles`` and instantiate a connector. When
+    *database* / *catalog* are provided (always the case from the
+    re-run path, since the parent run captured its scope) they
+    override the profile's defaults via :func:`dataclasses.replace`
+    so the connector points at the same database the original run
+    targeted.
+
+    Without this override, a profile whose ``database`` field is
+    blank falls back to the engine-specific default (Postgres'
+    ``postgres`` system DB, Databricks' default catalog, …) and the
+    re-run profiles the wrong database entirely — producing
+    ``sqlalchemy.exc.NoSuchTableError: cars.data`` even though the
+    table exists in ``bird_train`` where the original /run worked.
     """
     base = cfg.db_profiles.get((profile_name or "").strip())
     if base is None:
@@ -130,6 +146,26 @@ def _connector_for_db_profile(cfg: AMXConfig, profile_name: str) -> DatabaseConn
             f"DB profile '{profile_name}' is not defined in this AMXConfig — "
             "the original run referenced a profile that no longer exists."
         )
+    patch: dict[str, Any] = {}
+    if database:
+        patch["database"] = database
+    if catalog:
+        patch["catalog"] = catalog
+    if patch:
+        try:
+            from dataclasses import replace as _dc_replace
+
+            base = _dc_replace(base, **patch)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning(
+                "Could not override db_profile %s with database=%r catalog=%r: %s; "
+                "falling back to profile defaults — re-run may target the wrong "
+                "database.",
+                profile_name,
+                database,
+                catalog,
+                exc,
+            )
     return DatabaseConnector(base)
 
 
@@ -363,7 +399,37 @@ def build_context_snapshot(
             "cannot rebuild the database context for this re-run."
         )
 
-    parent_database = (parent_run.get("database") or "") if parent_run else ""
+    # The parent run records its database / catalog inside
+    # ``settings_json`` — analysis_runs has no top-level ``database``
+    # or ``catalog`` column. Reading the top-level field alone returns
+    # ``None`` for every existing run, so the connector falls back to
+    # the engine default and the inspector raises ``NoSuchTableError``.
+    # Mirror the resolution pattern used by ``rerun_items`` in
+    # ``_orchestrator/rerun.py`` so both code paths agree on where to
+    # find the scope: top-level first (forward-compat with a future
+    # schema migration that lifts the field out), then
+    # ``settings_json``. ``hs.get_run`` parses settings_json into a
+    # dict for us; the defensive str-parse below survives the
+    # DualWriteHistoryStore + shared-mode reader paths.
+    parent_settings_raw = (
+        (parent_run.get("settings_json") or parent_run.get("settings") or {}) if parent_run else {}
+    )
+    if isinstance(parent_settings_raw, str):
+        try:
+            import json as _json
+
+            parent_settings_raw = _json.loads(parent_settings_raw) or {}
+        except Exception:
+            parent_settings_raw = {}
+    parent_settings: dict[str, Any] = (
+        parent_settings_raw if isinstance(parent_settings_raw, dict) else {}
+    )
+    parent_database = (
+        (parent_run.get("database") or parent_settings.get("database") or "") if parent_run else ""
+    )
+    parent_catalog = (
+        (parent_run.get("catalog") or parent_settings.get("catalog") or "") if parent_run else ""
+    )
     cached = hs.lookup_run_context_cache(
         db_profile=db_profile_name,
         database=parent_database,
@@ -396,7 +462,15 @@ def build_context_snapshot(
             )
 
     if db_profile_dict is None or existing_metadata is None:
-        db = _connector_for_db_profile(cfg, db_profile_name)
+        # Forward the parent run's database + catalog (resolved above
+        # via the settings_json fallback) so the connector points at
+        # the same scope the original /run targeted.
+        db = _connector_for_db_profile(
+            cfg,
+            db_profile_name,
+            database=parent_database or None,
+            catalog=parent_catalog or None,
+        )
         try:
             db_profile_dict, existing_metadata = _build_db_profile_dict(
                 db,
