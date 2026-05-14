@@ -272,6 +272,22 @@ interface DescendantRunEntry {
   rows: ResultRow[];
 }
 
+/** Per-asset version metadata threaded into each ``ResultRowItem``
+ *  when the row is part of a multi-version asset stack. Drives the
+ *  version chip in the row header + the optional seed-provenance
+ *  banner. ``versionLabel`` is computed PER ASSET (v1 on the direct
+ *  row; v2/v3/… on descendant rows in chronological order within
+ *  this same asset) — independent of any global descendant counter. */
+interface VersionInfo {
+  versionLabel: string;
+  kind: "original" | "variations" | "rerun";
+  runId: number;
+  mode: string | null;
+  model: string | null;
+  seedAlternativeId: string | null;
+  seedAlternativeText: string | null;
+}
+
 type Tab = "summary" | "results" | "scope" | "settings";
 
 // Two URL shapes converge here:
@@ -2291,40 +2307,83 @@ function ResultsTab({
     return m;
   }, [pending.data]);
 
-  // Per-asset descendant index — joins ``descendants[i].rows[]`` to
-  // each v1 row by ``(schema, table, column)`` so the inline asset
-  // card can render v1 + v2/v3 stacked vertically. Re-Run descendants
-  // typically carry one matching row per asset; Variations descendants
-  // carry the one seeded asset. Rows in a descendant that don't match
-  // any v1 asset key are dropped here (rare — would only happen if the
-  // descendant somehow targeted an asset the parent didn't touch).
-  const versionsByResultId = useMemo(() => {
-    const out = new Map<number, AssetVersionEntry[]>();
-    const v1ByAssetKey = new Map<string, number>();
+  // Per-asset version index. Joins each descendant row to its v1
+  // counterpart by ``(schema, table, column)``, sorts within each
+  // asset chronologically, and assigns ``v2`` / ``v3`` / … labels
+  // PER-ASSET rather than globally. Two assets with their own
+  // independent variation chains both produce v2 on the first
+  // variation — the fact that other assets in the same parent run
+  // also have variations is irrelevant to this asset's version
+  // counter. (The previous global numbering surfaced v3 on an
+  // asset's first variation just because two earlier variations
+  // existed for other assets — confusing and wrong.)
+  //
+  // Also builds the descendants-by-v1 list so the rendering
+  // pipeline can splice descendant ``ResultRow``s into the main
+  // flow immediately after their v1 counterpart. Each descendant
+  // then renders as a full ``ResultRowItem`` (same component as
+  // v1) so clicks, SC badges, ✨ triggers, and applied/skipped
+  // state all work identically — no separate read-only variant.
+  const { descendantsByV1Id, versionInfoByRowId } = useMemo(() => {
+    const v1IdByAssetKey = new Map<string, number>();
     for (const r of rows) {
       const key = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
-      v1ByAssetKey.set(key, r.id);
+      if (r.id != null) v1IdByAssetKey.set(key, r.id);
     }
-    for (const desc of descendants) {
-      for (const dr of desc.rows ?? []) {
+    type DescPair = { row: ResultRow; entry: DescendantRunEntry };
+    const pairsByAssetKey = new Map<string, DescPair[]>();
+    for (const entry of descendants) {
+      for (const dr of entry.rows ?? []) {
         const key = `${dr.schema_name}.${dr.table_name}.${dr.column_name ?? "__table__"}`;
-        const v1Id = v1ByAssetKey.get(key);
-        if (v1Id == null) continue;
-        const arr = out.get(v1Id) ?? [];
-        arr.push({
-          versionLabel: desc.version_label,
-          runId: desc.run_id,
-          kind: desc.kind,
-          seed_alternative_id: desc.seed_alternative_id,
-          seed_alternative_text: desc.seed_alternative_text ?? null,
-          mode: desc.mode,
-          model: desc.model,
-          row: dr,
-        });
-        out.set(v1Id, arr);
+        if (!v1IdByAssetKey.has(key)) continue;
+        const arr = pairsByAssetKey.get(key) ?? [];
+        arr.push({ row: dr, entry });
+        pairsByAssetKey.set(key, arr);
       }
     }
-    return out;
+    const rowsByV1: Map<number, ResultRow[]> = new Map();
+    const labels: Map<number, VersionInfo> = new Map();
+    for (const [key, pairs] of pairsByAssetKey.entries()) {
+      const v1Id = v1IdByAssetKey.get(key);
+      if (v1Id == null) continue;
+      // Sort chronologically by descendant run id (ascending). The
+      // backend emits descendants in run-id order, but sort here
+      // defensively so the labels stay stable if the API ever changes.
+      pairs.sort((a, b) => (a.entry.run_id ?? 0) - (b.entry.run_id ?? 0));
+      const rowList: ResultRow[] = [];
+      pairs.forEach((p, i) => {
+        rowList.push(p.row);
+        if (p.row.id != null) {
+          labels.set(p.row.id, {
+            versionLabel: `v${i + 2}`,
+            kind: p.entry.kind,
+            runId: p.entry.run_id,
+            mode: p.entry.mode,
+            model: p.entry.model,
+            seedAlternativeId: p.entry.seed_alternative_id,
+            seedAlternativeText: p.entry.seed_alternative_text ?? null,
+          });
+        }
+      });
+      rowsByV1.set(v1Id, rowList);
+    }
+    // Tag every v1 row whose asset has descendants with an explicit
+    // ``v1 — original`` versionInfo so the user sees an equal-weight
+    // label on v1 instead of the absence-of-chip implying "v1".
+    for (const [, v1Id] of v1IdByAssetKey.entries()) {
+      if (rowsByV1.has(v1Id)) {
+        labels.set(v1Id, {
+          versionLabel: "v1",
+          kind: "original",
+          runId: 0,
+          mode: null,
+          model: null,
+          seedAlternativeId: null,
+          seedAlternativeText: null,
+        });
+      }
+    }
+    return { descendantsByV1Id: rowsByV1, versionInfoByRowId: labels };
   }, [rows, descendants]);
 
   const queueApply = useMutation({
@@ -2600,19 +2659,40 @@ function ResultsTab({
     };
   }, [rows, filterQuery, pendingByResultId]);
 
+  // Expand the filtered v1 list with each row's descendants spliced
+  // in immediately after their parent. The pagination + grouping
+  // below then iterates the expanded list, so v1 + v2/v3/… for the
+  // same asset always render adjacent — each as its own
+  // ``ResultRowItem`` with full click-to-apply / SC badge / ✨
+  // trigger parity. Filtering still operates on v1 only above
+  // (otherwise filtering by status would surface a descendant whose
+  // v1 was filtered out, breaking the v1/v2 stack semantics).
+  const expandedFilteredRows = useMemo(() => {
+    const out: ResultRow[] = [];
+    for (const r of filteredRows) {
+      out.push(r);
+      if (r.id != null) {
+        for (const dr of descendantsByV1Id.get(r.id) ?? []) {
+          out.push(dr);
+        }
+      }
+    }
+    return out;
+  }, [filteredRows, descendantsByV1Id]);
+
   // PR B — paginate the FLAT filtered list (page slicing happens before
   // grouping so a 50-row page may surface partial groups; that's
   // intentional, otherwise group-by-table on a wide schema would push
   // the page count above what the pagination controls advertise).
   const pageCount = Math.max(
     1,
-    Math.ceil(filteredRows.length / RESULTS_PAGE_SIZE),
+    Math.ceil(expandedFilteredRows.length / RESULTS_PAGE_SIZE),
   );
   const effectivePage = Math.min(currentPage, pageCount);
   const pagedRows = useMemo(() => {
     const start = (effectivePage - 1) * RESULTS_PAGE_SIZE;
-    return filteredRows.slice(start, start + RESULTS_PAGE_SIZE);
-  }, [filteredRows, effectivePage]);
+    return expandedFilteredRows.slice(start, start + RESULTS_PAGE_SIZE);
+  }, [expandedFilteredRows, effectivePage]);
 
   const grouped = useMemo(() => {
     // When ``Group`` is ``Table`` we honour the historical sort-within-
@@ -3212,7 +3292,11 @@ function ResultsTab({
                     }
                     onToggleReviewSelected={toggleReviewSelected}
                     isKeynavFocused={r.id != null && keynavFocusId === r.id}
-                    versions={versionsByResultId.get(r.id) ?? []}
+                    versionInfo={
+                      r.id != null
+                        ? (versionInfoByRowId.get(r.id) ?? null)
+                        : null
+                    }
                   />
                 );
               })}
@@ -3489,22 +3573,6 @@ function BulkRerunOrchestrator({
 // is fine because the parent already memoises ``pendingByResultId``
 // and the callback closures are recreated only when the underlying
 // mutation hooks change.
-/** One entry in the per-asset stacked version groups. Mirrors the
- *  shape `DescendantsPanel` previously consumed but scoped to a
- *  single asset — `groupResultsByAsset` in `ResultsTab` builds
- *  these by joining ``descendants[i].rows`` to the v1 row by
- *  ``(schema, table, column)``. */
-interface AssetVersionEntry {
-  versionLabel: string;
-  runId: number;
-  kind: "variations" | "rerun";
-  seed_alternative_id: string | null;
-  seed_alternative_text: string | null;
-  mode: string | null;
-  model: string | null;
-  row: ResultRow;
-}
-
 function ResultRowItemImpl({
   row,
   dbProfile,
@@ -3520,7 +3588,7 @@ function ResultRowItemImpl({
   isReviewSelected = false,
   onToggleReviewSelected,
   isKeynavFocused = false,
-  versions = [],
+  versionInfo = null,
 }: {
   row: ResultRow;
   /** Active DB profile — keys the pinned-cells localStorage bucket
@@ -3546,23 +3614,25 @@ function ResultRowItemImpl({
   onToggleReviewSelected?: (id: number) => void;
   /** PR B — when true the row gets an outline ring; driven by ``j/k`` nav. */
   isKeynavFocused?: boolean;
-  /** Variations / Re-Run descendants whose rows match this asset's
-   *  ``(schema, table, column)`` key. Rendered as collapsible
-   *  ``v2`` / ``v3`` / … groups stacked under the v1 alternatives —
-   *  the user can compare v1 vs v2 in one place and fall back to v1
-   *  by collapsing the newer groups. */
-  versions?: AssetVersionEntry[];
+  /** Per-asset version metadata. When set, the row's header carries
+   *  a version chip (``v1`` / ``v2`` / …) + a seed-provenance banner
+   *  (for variations) or a re-run banner (for re-runs). When null,
+   *  the row renders as a stand-alone v1 with no version chrome —
+   *  same as the historical shape for runs without descendants. */
+  versionInfo?: VersionInfo | null;
 }) {
   // When the row was fetched with ``include_history=true`` and a
   // re-run produced a v2/v3+ version, surface the latest entry's
-  // suggestions in place — ONLY when there are no inline-descendant
-  // versions to render. With the v1+v2 stacked layout, swapping in
-  // place would replace v1's alternatives with v2's content under
-  // the v1 group header, leaving the user with no way to see the
-  // original alternatives. Keep the legacy in-place swap for runs
-  // without descendants so the old re-run-chain UX still works.
+  // suggestions in place — ONLY when this row is rendering as a
+  // stand-alone v1 with no descendants stacked alongside. With the
+  // v1+v2 stacked layout the descendants now render as their own
+  // ``ResultRowItem`` instances next to this one, so swapping the
+  // alternatives in place would duplicate v2's content under v1's
+  // header and leave the user with no way to see the original
+  // alternatives. Keep the legacy in-place swap for runs without
+  // descendants so the old re-run-chain UX still works.
   const latestChainEntry = (() => {
-    if (versions.length > 0) return null;
+    if (versionInfo != null) return null;
     const chain = row.history;
     if (!Array.isArray(chain) || chain.length === 0) return null;
     // chain is ordered by rerun_seq ASC; last entry is newest.
@@ -3837,7 +3907,30 @@ function ResultRowItemImpl({
         <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
         <LogprobBadge score={row.logprob_score} />
         {chosenStructured && <ConfidenceBadge alt={chosenStructured} />}
-        {rerunSeq > 0 && (
+        {/* Per-asset version chip — shown ONLY when the row is part
+            of a multi-version asset stack (v1+v2). For stand-alone
+            v1 rows with no descendants, no chip renders (same as the
+            historical layout). The descendant rows get the same chip
+            with v2/v3/… so the user perceives v1 and v2 as equal-
+            weight option sets rather than v1 + a debug panel. */}
+        {versionInfo != null && (
+          <span
+            title={
+              versionInfo.kind === "original"
+                ? "Original alternatives for this asset"
+                : versionInfo.kind === "variations"
+                  ? `Variations · run #${versionInfo.runId}`
+                  : `Re-Run · run #${versionInfo.runId}`
+            }
+          >
+            <Badge tone="info">{versionInfo.versionLabel}</Badge>
+          </span>
+        )}
+        {/* Legacy in-place swap chip — only kept for runs without
+            descendants where ``include_history=true`` brought back
+            an older re-run chain. Hidden when versionInfo is set
+            because the new chip above replaces it. */}
+        {versionInfo == null && rerunSeq > 0 && (
           <span
             title={
               displayRow.user_instructions
@@ -3892,6 +3985,50 @@ function ResultRowItemImpl({
           )}
         </span>
       </div>
+      {/* Provenance banner — surfaces under the header for descendant
+          rows so the user knows AT A GLANCE which alternative seeded
+          this version + which run produced it. Hidden on v1
+          (versionInfo.kind === "original") and on rows with no
+          version chrome at all. */}
+      {versionInfo != null &&
+        versionInfo.kind !== "original" && (
+          <div className="mt-1.5 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-border bg-surface-subtle/30 px-2.5 py-1 text-[10.5px] text-ink-dim">
+            <span className="text-ink-muted">
+              {versionInfo.kind === "variations"
+                ? (() => {
+                    const id = versionInfo.seedAlternativeId ?? "";
+                    const colon = id.lastIndexOf(":");
+                    const idx = Number(id.slice(colon + 1));
+                    const letter = Number.isFinite(idx)
+                      ? String.fromCharCode(65 + idx)
+                      : "?";
+                    return `variations of ${letter}`;
+                  })()
+                : "re-run"}
+            </span>
+            <Link
+              to={`/runs/${versionInfo.runId}`}
+              className="font-mono text-accent hover:underline"
+              title="Open this version on its own detail page"
+            >
+              run #{versionInfo.runId}
+            </Link>
+            {versionInfo.mode && (
+              <span>· {versionInfo.mode}</span>
+            )}
+            {versionInfo.model && (
+              <span className="font-mono">· {versionInfo.model}</span>
+            )}
+            {versionInfo.seedAlternativeText && (
+              <span className="block w-full italic">
+                Seed:{" "}
+                <span className="font-mono not-italic text-ink-muted">
+                  "{versionInfo.seedAlternativeText}"
+                </span>
+              </span>
+            )}
+          </div>
+        )}
       <RerunDialog
         open={rerunOpen}
         onClose={() => setRerunOpen(false)}
@@ -4067,137 +4204,11 @@ function ResultRowItemImpl({
             done.
           </p>
         )}
-        {versions.length > 0 && (
-          <VersionGroupsSection versions={versions} />
-        )}
       </div>
     </li>
   );
 }
 
-/** Stacked-vertical version groups rendered inside an asset card,
- *  below the v1 alternatives. Each entry is independently
- *  collapsible. v1 stays where it was (above this section); the
- *  newest version starts expanded, older ones collapsed by default
- *  — so a user who likes v1 can fall back instantly by collapsing
- *  the newer groups. Replaces the previous run-wide
- *  ``Other versions`` panel which sat below the entire results
- *  table and gave no per-asset context. */
-function VersionGroupsSection({
-  versions,
-}: {
-  versions: AssetVersionEntry[];
-}) {
-  // Newest = last entry in the descendants array (server emits in
-  // creation order). Start it open; older versions stay collapsed.
-  const newestRunId = versions[versions.length - 1]?.runId ?? -1;
-  const [openRuns, setOpenRuns] = useState<Set<number>>(
-    () => new Set([newestRunId]),
-  );
-  const toggle = (rid: number) =>
-    setOpenRuns((prev) => {
-      const next = new Set(prev);
-      if (next.has(rid)) next.delete(rid);
-      else next.add(rid);
-      return next;
-    });
-  return (
-    <div className="mt-2 space-y-1.5">
-      {versions.map((v) => {
-        const alts = normalizeAlternatives(v.row.alternatives_json);
-        const open = openRuns.has(v.runId);
-        const altLetter =
-          v.kind === "variations" && v.seed_alternative_id
-            ? (() => {
-                const colon = v.seed_alternative_id!.lastIndexOf(":");
-                const idx = Number(v.seed_alternative_id!.slice(colon + 1));
-                return Number.isFinite(idx)
-                  ? String.fromCharCode(65 + idx)
-                  : null;
-              })()
-            : null;
-        return (
-          <div
-            key={v.runId}
-            className="rounded-md border border-border bg-surface-subtle/30"
-          >
-            <button
-              type="button"
-              onClick={() => toggle(v.runId)}
-              className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left hover:bg-surface-subtle/60"
-            >
-              <span className="inline-flex flex-wrap items-center gap-1.5 text-[11px]">
-                <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent">
-                  {v.versionLabel}
-                </span>
-                <span className="text-ink">
-                  {v.kind === "variations"
-                    ? altLetter
-                      ? `variations of ${altLetter}`
-                      : "variations"
-                    : "re-run"}
-                </span>
-                <Link
-                  to={`/runs/${v.runId}`}
-                  onClick={(e) => e.stopPropagation()}
-                  className="font-mono text-[10.5px] text-accent hover:underline"
-                  title="Open this version on its own detail page"
-                >
-                  run #{v.runId}
-                </Link>
-                {v.mode && (
-                  <span className="text-ink-dim">· {v.mode}</span>
-                )}
-                {v.model && (
-                  <span className="font-mono text-[10px] text-ink-dim">
-                    · {v.model}
-                  </span>
-                )}
-              </span>
-              <span className="text-[10px] text-ink-dim">
-                {open ? "▼" : "▶"}
-              </span>
-            </button>
-            {open && (
-              <div className="border-t border-border px-2.5 py-1.5">
-                {v.kind === "variations" && v.seed_alternative_text && (
-                  <p className="mb-1.5 text-[10.5px] italic text-ink-dim">
-                    Seed:{" "}
-                    <span className="font-mono not-italic text-ink-muted">
-                      "{v.seed_alternative_text}"
-                    </span>
-                  </p>
-                )}
-                {alts.length === 0 ? (
-                  <p className="text-[10.5px] italic text-ink-dim">
-                    (no alternatives saved)
-                  </p>
-                ) : (
-                  <ul className="space-y-0.5">
-                    {alts.map((alt, i) => {
-                      const letter =
-                        v.kind === "variations" && altLetter
-                          ? `${altLetter}${i + 1}`
-                          : String.fromCharCode(65 + i);
-                      return (
-                        <li key={i} className="text-[11px] text-ink">
-                          <span className="mr-1.5 font-mono text-ink-dim">
-                            {letter}
-                          </span>
-                          {alt}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 // Public name kept the same so import sites and inspector traces are
 // unaffected by the memo wrapping. Default shallow prop equality

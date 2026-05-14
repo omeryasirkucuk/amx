@@ -178,23 +178,28 @@ class TestRunDetailLineageAndDescendants:
             "LineageChip tooltip copy is missing."
         )
 
-    def test_descendants_panel_replaced_by_inline_groups(self) -> None:
-        """The previous run-wide ``Other versions`` panel that sat
-        below the results table is gone — replaced by per-asset
-        version groups inside each ``ResultRowItem`` so v1 + v2
-        stack inside the same asset card. The new layout is
-        anchored on the ``variations of`` / ``re-run`` group labels
-        emitted by ``VersionGroupsSection``."""
+    def test_descendants_render_as_sibling_result_row_items(self) -> None:
+        """Descendants now render as their OWN ``ResultRowItem``
+        instances spliced into the main rows flow — not as a
+        read-only group inside the v1 card. The user spec required
+        v1 and v2 to have equal interaction surface (click-to-apply,
+        SC badge, ✨ trigger). Anchor on the provenance banner copy
+        that ResultRowItem now renders for descendant rows."""
         text = _all_bundle_text()
-        # The old panel's signature copy must be gone.
-        assert "Variations + Re-Runs derived from this run" not in text, (
-            "The deprecated bottom ``Other versions`` panel is back. "
-            "Per-asset inline version groups (in ResultRowItem) replace "
-            "it; the run-wide panel left users scrolling past the "
-            "entire results list to compare v1 vs v2."
+        # The old run-wide panel must stay gone.
+        assert "Variations + Re-Runs derived from this run" not in text
+        # The interim VersionGroupsSection (which rendered descendants
+        # as read-only li elements inside v1) must also stay gone.
+        assert "no alternatives saved" not in text, (
+            "The interim VersionGroupsSection's read-only li renderer "
+            "is back. Descendants must render as full ResultRowItem "
+            "instances so v2 alternatives have click-to-apply / SC "
+            "badge / ✨ trigger parity with v1."
         )
-        # The new per-asset group labels anchor the new layout.
+        # The provenance banner copy lives on the descendant
+        # ResultRowItem's header — anchor on it.
         assert "variations of" in text or "re-run" in text
+        assert "Open this version on its own detail page" in text
 
     def test_results_secondary_count_line_present(self) -> None:
         """The 'Showing N original · M variations' secondary line
