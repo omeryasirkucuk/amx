@@ -126,7 +126,12 @@ export default function TopBar() {
             <ol className="flex items-center gap-1 text-xs text-ink-dim">
               {crumbs.map((c, i) => (
                 <li key={i} className="flex items-center gap-1">
-                  <ChevronRight size={12} className="text-border-strong" />
+                  <ChevronRight
+                    size={14}
+                    strokeWidth={2.5}
+                    className="text-ink-muted"
+                    aria-hidden="true"
+                  />
                   {c.to && i < crumbs.length - 1 ? (
                     <Link
                       to={c.to}
@@ -221,8 +226,14 @@ function buildCrumbs(
     const out: Crumb[] = [{ label: "Browse", to: "/" }];
     const scopeSeg = params.database ?? params.catalog;
     if (params.profile && scopeSeg) {
+      // The profile crumb links to the profile-level page
+      // (``/db/:profile`` for 2-level backends, ``/cat/:profile`` for
+      // 3-level) which lists every database / catalog reachable under
+      // the profile — the same drill-down pattern the database crumb
+      // offers for schemas.
       out.push({
         label: params.profile,
+        to: `/${root}/${params.profile}`,
       });
       out.push({
         label: scopeSeg,

@@ -18,6 +18,7 @@ import { ToastProvider } from "./components/ui";
 // navigation would kill the toast queue and reset the error boundary.
 const Landing = lazy(() => import("./routes/Landing"));
 const Home = lazy(() => import("./routes/Home"));
+const Profile = lazy(() => import("./routes/Profile"));
 const Database = lazy(() => import("./routes/Database"));
 const Schema = lazy(() => import("./routes/Schema"));
 const Table = lazy(() => import("./routes/Table"));
@@ -66,12 +67,12 @@ export default function App() {
               <Route index element={<Landing />} />
               <Route path="overview" element={<Home />} />
               <Route path="db" element={<Navigate to="/" replace />} />
-              <Route path="db/:profile" element={<Navigate to="/" replace />} />
+              <Route path="db/:profile" element={<Profile />} />
               <Route path="db/:profile/:database" element={<Database />} />
               <Route path="db/:profile/:database/:schema" element={<Schema />} />
               <Route path="db/:profile/:database/:schema/:table" element={<Table />} />
               <Route path="cat" element={<Navigate to="/" replace />} />
-              <Route path="cat/:profile" element={<Navigate to="/" replace />} />
+              <Route path="cat/:profile" element={<Profile />} />
               <Route path="cat/:profile/:catalog" element={<Database />} />
               <Route path="cat/:profile/:catalog/:schema" element={<Schema />} />
               <Route path="cat/:profile/:catalog/:schema/:table" element={<Table />} />

@@ -557,6 +557,168 @@ class EntityCrudMixin:
             if r["table_name"]
         ]
 
+    def search_entities(
+        self,
+        query: str,
+        *,
+        db_profile: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[dict[str, object]], bool]:
+        """Substring search across ``catalog_entities`` for schema /
+        table / column names. Powers the Studio sidebar's column-level
+        search box.
+
+        Returns ``(results, truncated)``. Each result is a flat dict
+        with the breadcrumb fields::
+
+            {
+                "profile", "db_backend", "database",
+                "schema", "table", "column",
+                "match_field": "schema" | "table" | "column",
+            }
+
+        ``table`` / ``column`` are ``None`` for higher-level matches.
+        Results are ranked ``schema → table → column`` so structural
+        hits surface above the long tail of column matches, then
+        alphabetical for stable ordering. ``truncated`` flips True
+        when the catalog row count exceeds ``limit`` — the SPA shows
+        a "refine your search" hint in that case.
+
+        Only fully-synced profiles contribute rows: a half-finished
+        skeleton sync could surface schemas / columns that no longer
+        exist on the live DB and burn the user's trust. When
+        ``db_profile`` is given but the profile isn't fully synced,
+        returns ``([], False)``; when ``db_profile`` is None, the
+        synced set is computed via ``catalog_profile_state`` and used
+        to gate every UNION branch.
+
+        Queries shorter than two characters return immediately — the
+        SPA enforces this too but the server is the authoritative
+        gate.
+        """
+        q = (query or "").strip()
+        if len(q) < 2:
+            return [], False
+        if limit <= 0:
+            return [], False
+        needle = f"%{q.lower()}%"
+
+        with self._connect() as conn:
+            if db_profile is not None:
+                if not self.is_profile_fully_synced(db_profile):
+                    return [], False
+                synced_profiles: list[str] = [db_profile]
+            else:
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT db_profile, last_full_sync_at
+                        FROM catalog_profile_state
+                        WHERE state = 'done' AND last_full_sync_at IS NOT NULL
+                        """,
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    return [], False
+                cutoff = time.time() - 7 * 24 * 60 * 60
+                synced_profiles = [
+                    str(r["db_profile"])
+                    for r in rows
+                    if float(r["last_full_sync_at"] or 0.0) >= cutoff
+                ]
+            if not synced_profiles:
+                return [], False
+
+            placeholder = ",".join("?" * len(synced_profiles))
+            cap = limit + 1
+            schema_rows = conn.execute(
+                f"""
+                SELECT db_profile, db_backend, database_name, schema_name
+                FROM catalog_entities
+                WHERE LOWER(schema_name) LIKE ?
+                  AND entity_kind = 'table'
+                  AND schema_name != ''
+                  AND db_profile IN ({placeholder})
+                GROUP BY db_profile, db_backend, database_name, schema_name
+                ORDER BY schema_name, db_profile, database_name
+                LIMIT ?
+                """,
+                (needle, *synced_profiles, cap),
+            ).fetchall()
+            table_rows = conn.execute(
+                f"""
+                SELECT db_profile, db_backend, database_name, schema_name, table_name
+                FROM catalog_entities
+                WHERE LOWER(table_name) LIKE ?
+                  AND entity_kind = 'table'
+                  AND table_name != ''
+                  AND db_profile IN ({placeholder})
+                GROUP BY db_profile, db_backend, database_name, schema_name, table_name
+                ORDER BY table_name, schema_name, db_profile, database_name
+                LIMIT ?
+                """,
+                (needle, *synced_profiles, cap),
+            ).fetchall()
+            column_rows = conn.execute(
+                f"""
+                SELECT db_profile, db_backend, database_name, schema_name,
+                       table_name, column_name
+                FROM catalog_entities
+                WHERE LOWER(column_name) LIKE ?
+                  AND entity_kind = 'column'
+                  AND column_name IS NOT NULL AND column_name != ''
+                  AND db_profile IN ({placeholder})
+                ORDER BY column_name, table_name, schema_name, db_profile, database_name
+                LIMIT ?
+                """,
+                (needle, *synced_profiles, cap),
+            ).fetchall()
+
+        results: list[dict[str, object]] = []
+        for r in schema_rows:
+            results.append(
+                {
+                    "profile": str(r["db_profile"] or ""),
+                    "db_backend": str(r["db_backend"] or ""),
+                    "database": str(r["database_name"] or ""),
+                    "schema": str(r["schema_name"] or ""),
+                    "table": None,
+                    "column": None,
+                    "match_field": "schema",
+                }
+            )
+        for r in table_rows:
+            results.append(
+                {
+                    "profile": str(r["db_profile"] or ""),
+                    "db_backend": str(r["db_backend"] or ""),
+                    "database": str(r["database_name"] or ""),
+                    "schema": str(r["schema_name"] or ""),
+                    "table": str(r["table_name"] or ""),
+                    "column": None,
+                    "match_field": "table",
+                }
+            )
+        for r in column_rows:
+            results.append(
+                {
+                    "profile": str(r["db_profile"] or ""),
+                    "db_backend": str(r["db_backend"] or ""),
+                    "database": str(r["database_name"] or ""),
+                    "schema": str(r["schema_name"] or ""),
+                    "table": str(r["table_name"] or ""),
+                    "column": str(r["column_name"] or ""),
+                    "match_field": "column",
+                }
+            )
+
+        truncated = (
+            len(schema_rows) > limit
+            or len(table_rows) > limit
+            or len(column_rows) > limit
+            or len(results) > limit
+        )
+        return results[:limit], truncated
+
     def _index_entity(self, conn: sqlite3.Connection, entity_id: int) -> None:
         row = conn.execute("SELECT * FROM catalog_entities WHERE id = ?", (entity_id,)).fetchone()
         if not row:
