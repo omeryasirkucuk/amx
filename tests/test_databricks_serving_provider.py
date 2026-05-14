@@ -119,6 +119,9 @@ class WizardTests(unittest.TestCase):
                 # confidence signal prompt — accept the self_consistency
                 # default by pressing Enter (empty string).
                 "",
+                # alternatives diversity mode prompt — accept the
+                # semantic default by pressing Enter (empty string).
+                "",
             ]
         )
         choice_values = iter(["databricks_serving"])

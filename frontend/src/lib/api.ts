@@ -143,12 +143,18 @@ export interface LLMProfileDefaults {
   prompt_detail: string | null;
   description_verbosity: string | null;
   confidence_signal: string | null;
+  alternatives_mode: AlternativesMode | null;
   thinking_budget: number | null;
   logprob_high: number | null;
   logprob_medium: number | null;
   custom_input_cost_per_mtok: number | null;
   custom_output_cost_per_mtok: number | null;
 }
+
+/** Diversity mode for the LLM alternatives. ``semantic`` (default) means
+ *  the model is asked to emit meaningfully different interpretations;
+ *  ``lexical`` means same-meaning phrasing variants only. */
+export type AlternativesMode = "semantic" | "lexical";
 
 /** Per-run override of the active LLM profile's tuning knobs. Every
  *  field is optional; omitted = use the saved profile's value. */
@@ -160,6 +166,7 @@ export interface LLMOverrides {
   prompt_detail?: string;
   description_verbosity?: string;
   confidence_signal?: string;
+  alternatives_mode?: AlternativesMode;
   thinking_budget?: number;
   logprob_high?: number;
   logprob_medium?: number;
@@ -991,4 +998,5 @@ export interface ResultRow {
   parent_result_id: number | null;
   rerun_seq: number;
   user_instructions: string | null;
+  alternatives_mode: AlternativesMode | null;
 }
