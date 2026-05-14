@@ -116,6 +116,9 @@ class WizardTests(unittest.TestCase):
                 # logprob thresholds (high / medium)
                 "0.85",
                 "0.50",
+                # confidence signal prompt — accept the self_consistency
+                # default by pressing Enter (empty string).
+                "",
             ]
         )
         choice_values = iter(["databricks_serving"])

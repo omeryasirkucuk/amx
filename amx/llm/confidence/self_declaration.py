@@ -1,6 +1,6 @@
 """Signal B: LLM self-declared confidence per alternative.
 
-When ``cfg.confidence.use_self_decl`` is on, the system prompt emits
+When ``cfg.confidence_signal == "self_decl"`` the system prompt emits
 a ``CONFIDENCE_i: HIGH|MED|LOW`` marker right after each
 ``DESCRIPTION_i: …`` block. This module parses those markers out of
 the raw response text and maps the bands to a numeric score:
@@ -9,11 +9,11 @@ the raw response text and maps the bands to a numeric score:
 * ``MED`` (or ``MEDIUM``) → 0.6
 * ``LOW``    → 0.3
 
-Missing or unrecognised values become ``None`` so the ensemble falls
-back to the remaining signals for that alternative. This signal is
-notoriously poorly-calibrated on its own (models are overconfident),
-but as part of the ensemble alongside logprob + self-consistency it
-adds useful disagreement signal for the thesis evaluation in Phase 4.
+Missing or unrecognised values become ``None`` so the scorer reports an
+"unavailable" band for that alternative. The signal is notoriously
+poorly-calibrated on its own (models are overconfident); it is
+intentionally one of several options the user can pick rather than the
+default.
 """
 
 from __future__ import annotations

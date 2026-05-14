@@ -1,19 +1,19 @@
 """Signal D: LLM-as-judge second-pass ranking.
 
-When ``cfg.confidence.use_judge`` is on, the orchestrator issues a
+When ``cfg.confidence_signal == "judge"`` the orchestrator issues a
 second LLM call after the alternatives are produced, asking the model
 to rank them best-to-worst. The rank position is normalised to a
-``[0, 1]`` score (rank 1 → ``1.0``, rank N → ``0.0``) and folded into
-the ensemble alongside the other signals.
+``[0, 1]`` score (rank 1 → ``1.0``, rank N → ``0.0``) and used directly
+as the per-alternative confidence score.
 
 To mitigate position bias the alternatives are shuffled before being
 shown to the judge; the shuffle is seeded for reproducible tests but
 defaults to a fresh seed at runtime so consecutive runs of the same
 input still get a fair re-shuffle.
 
-Cost: roughly doubles the per-suggestion token spend, which is why
-``use_judge`` defaults to ``False`` and is intended as an opt-in for
-power users / research evaluations rather than the default path.
+Cost: roughly doubles the per-suggestion token spend on the active LLM,
+which is why ``"judge"`` is an opt-in signal — users pick it explicitly
+on the profile dropdown instead of getting it by default.
 """
 
 from __future__ import annotations

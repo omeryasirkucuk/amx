@@ -290,6 +290,12 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "Show/set number of alternatives per column (/n-alternatives [1-5])",
     ),
     SlashCommand(
+        "/confidence-signal",
+        "llm",
+        "Show/set active per-alternative confidence scorer "
+        "(/confidence-signal [none|logprob|self_consistency|self_decl|judge])",
+    ),
+    SlashCommand(
         "/style",
         "llm",
         "Reference table for description style",

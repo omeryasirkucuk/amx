@@ -30,11 +30,22 @@ _SCHEMA_DESCRIPTIONS_TABLE = "_amx_schema_descriptions"
 def parse_alternatives_json(raw):
     """Parse ``run_results.alternatives_json`` into a normalised list of dicts.
 
-    Accepts:
-      * ``None`` / empty string → ``[]``
-      * Legacy JSON array of strings → ``[{"text": str, "scores": {...None…}, "ensemble": None, "band": None}]``
-      * New structured JSON array of dicts → returned with text / scores / ensemble / band fields normalised.
-      * Anything malformed → ``[]`` and a warning log.
+    Three on-disk shapes are accepted:
+
+    1. **Legacy** flat ``list[str]`` from pre-confidence rows
+       (``["alt one.", "alt two."]``). Each entry normalises to
+       ``{text, signal=None, score=None, band=None}``.
+    2. **Old ensemble** structured shape from the four-signal aggregate
+       phase (``[{"text": …, "scores": {...}, "ensemble": …, "band": …},
+       …]``). The per-signal scores are dropped — only the band label
+       survives so legacy Studio runs still show a coloured pill — and
+       ``signal``/``score`` come back as ``None``.
+    3. **Current** single-signal shape
+       (``[{"text": …, "signal": …, "score": …, "band": …}, …]``).
+       Returned as-is.
+
+    Anything malformed yields ``[]`` plus a warning log, never an
+    exception, so the API endpoints and Studio UI keep rendering.
     """
     if not raw:
         return []
@@ -51,29 +62,30 @@ def parse_alternatives_json(raw):
             out.append(
                 {
                     "text": entry,
-                    "scores": {
-                        "logprob": None,
-                        "self_consistency": None,
-                        "self_decl": None,
-                        "judge": None,
-                    },
-                    "ensemble": None,
+                    "signal": None,
+                    "score": None,
                     "band": None,
                 }
             )
         elif isinstance(entry, dict) and "text" in entry:
-            scores = entry.get("scores") or {}
+            # Current single-signal shape uses ``signal`` + ``score``.
+            # Old ensemble shape uses ``scores`` (dict) + ``ensemble``.
+            if "signal" in entry or "score" in entry:
+                signal = entry.get("signal")
+                score = entry.get("score")
+                band = entry.get("band")
+            else:
+                # Legacy ensemble row — preserve the band label only;
+                # per-signal data no longer fits the schema.
+                signal = None
+                score = None
+                band = entry.get("band")
             out.append(
                 {
                     "text": str(entry["text"]),
-                    "scores": {
-                        "logprob": scores.get("logprob"),
-                        "self_consistency": scores.get("self_consistency"),
-                        "self_decl": scores.get("self_decl"),
-                        "judge": scores.get("judge"),
-                    },
-                    "ensemble": entry.get("ensemble"),
-                    "band": entry.get("band"),
+                    "signal": signal if isinstance(signal, str) or signal is None else None,
+                    "score": float(score) if isinstance(score, (int, float)) else None,
+                    "band": band if isinstance(band, str) or band is None else None,
                 }
             )
     return out

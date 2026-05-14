@@ -408,11 +408,15 @@ class ProfileAgent(BaseAgent):
     def _build_messages(self, ctx: AgentContext) -> list[dict[str, str]]:
         """Build the messages list for a single profile batch — shared by run() and collect_messages()."""
         user_msg = self._build_prompt(ctx)
+        # The system prompt only emits ``CONFIDENCE_i:`` per-alternative
+        # markers when the active confidence signal is self-declaration,
+        # since that is the only scorer that consumes them. Other
+        # signals (logprob span, self-consistency, judge) don't need the
+        # extra prompt real estate so we skip those lines entirely.
         conf_cfg = getattr(self.llm.cfg, "confidence", None)
+        active_signal = getattr(self.llm.cfg, "confidence_signal", "none")
         emit_self_decl = bool(
-            conf_cfg
-            and getattr(conf_cfg, "enabled", True)
-            and getattr(conf_cfg, "use_self_decl", False)
+            conf_cfg and getattr(conf_cfg, "enabled", True) and active_signal == "self_decl"
         )
         system = _build_system_prompt(
             self._n_alternatives,
@@ -508,7 +512,7 @@ class ProfileAgent(BaseAgent):
                 suggestions=suggestions,
                 logprobs_content=_logprobs,
                 response_text=response,
-                cfg=self.llm.cfg.confidence,
+                cfg=self.llm.cfg,
                 llm=self.llm,
             )
         except Exception as exc:

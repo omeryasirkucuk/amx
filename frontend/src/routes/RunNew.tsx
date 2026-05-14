@@ -224,6 +224,7 @@ interface OverrideFormState {
   columnBatchSize: string;
   promptDetail: string;
   descriptionVerbosity: string;
+  confidenceSignal: string;
   thinkingBudget: string;
   logprobHigh: string;
   logprobMedium: string;
@@ -238,6 +239,7 @@ const EMPTY_OVERRIDES: OverrideFormState = {
   columnBatchSize: "",
   promptDetail: "",
   descriptionVerbosity: "",
+  confidenceSignal: "",
   thinkingBudget: "",
   logprobHigh: "",
   logprobMedium: "",
@@ -263,6 +265,7 @@ function seedFromDefaults(defaults: LLMProfileDefaults | null): OverrideFormStat
     columnBatchSize: num(defaults.column_batch_size),
     promptDetail: defaults.prompt_detail ?? "",
     descriptionVerbosity: defaults.description_verbosity ?? "",
+    confidenceSignal: defaults.confidence_signal ?? "",
     thinkingBudget: num(defaults.thinking_budget),
     logprobHigh: num(defaults.logprob_high),
     logprobMedium: num(defaults.logprob_medium),
@@ -313,6 +316,8 @@ function buildOverridesPayload(
   if (promptDetail !== undefined) out.prompt_detail = promptDetail;
   const verbosity = pickString(form.descriptionVerbosity, defaults?.description_verbosity);
   if (verbosity !== undefined) out.description_verbosity = verbosity;
+  const confSig = pickString(form.confidenceSignal, defaults?.confidence_signal);
+  if (confSig !== undefined) out.confidence_signal = confSig;
   const thinking = pickNumber(form.thinkingBudget, defaults?.thinking_budget);
   if (thinking !== undefined) out.thinking_budget = thinking;
   const high = pickNumber(form.logprobHigh, defaults?.logprob_high);
@@ -1062,6 +1067,8 @@ function AdvancedLLMOverrides({
       descriptionVerbosity:
         pickString(form.descriptionVerbosity, defaults?.description_verbosity) !==
         undefined,
+      confidenceSignal:
+        pickString(form.confidenceSignal, defaults?.confidence_signal) !== undefined,
       thinkingBudget:
         pickNumber(form.thinkingBudget, defaults?.thinking_budget) !== undefined,
       logprobHigh:
@@ -1237,6 +1244,26 @@ function AdvancedLLMOverrides({
               >
                 {!form.descriptionVerbosity && <option value="">—</option>}
                 {["brief", "detailed", "comprehensive", "exhaustive"].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </OverrideRow>
+
+            <OverrideRow
+              label="Confidence signal"
+              hint="Active per-alternative scorer. 'self_consistency' is universal; 'logprob' needs provider logprobs; 'self_decl' adds prompt cost; 'judge' issues a second LLM call (~2× tokens); 'none' hides the badge."
+              defaultValue={fmt(defaults?.confidence_signal)}
+              changed={diffMap.confidenceSignal}
+            >
+              <select
+                value={form.confidenceSignal}
+                onChange={(e) => update({ confidenceSignal: e.target.value })}
+                className={selectCls}
+              >
+                {!form.confidenceSignal && <option value="">—</option>}
+                {["self_consistency", "logprob", "self_decl", "judge", "none"].map((v) => (
                   <option key={v} value={v}>
                     {v}
                   </option>

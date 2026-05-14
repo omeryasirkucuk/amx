@@ -85,8 +85,11 @@ def apply_confidence_signals(
     is swallowed — the suggestions list is returned unchanged on error
     so an analysis run is never aborted by a scoring regression.
 
-    ``llm`` is required only when Signal D (LLM-as-judge) is on; for
-    Phase 1 / 2 callers can omit it and the judge silently skips.
+    ``cfg`` is the full :class:`amx.config.LLMConfig` so the scorer can
+    read both ``confidence_signal`` (which scorer to run) and the
+    nested ``confidence`` block (band cut-offs + master enable switch).
+    ``llm`` is needed only when the active signal is ``"judge"`` (the
+    second-pass scorer issues a real LLM call); other signals ignore it.
 
     Note: the legacy aggregate fields (``confidence`` and
     ``logprob_score``) keep being maintained by

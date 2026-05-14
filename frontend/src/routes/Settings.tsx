@@ -790,6 +790,7 @@ function LlmProfileWizard({
   const [columnBatchSize, setColumnBatchSize] = useState(10);
   const [promptDetail, setPromptDetail] = useState("standard");
   const [descriptionVerbosity, setDescriptionVerbosity] = useState("brief");
+  const [confidenceSignal, setConfidenceSignal] = useState("self_consistency");
   const [logprobHigh, setLogprobHigh] = useState(0.85);
   const [logprobMedium, setLogprobMedium] = useState(0.5);
   const [hydratedFor, setHydratedFor] = useState<string | null>(null);
@@ -820,6 +821,7 @@ function LlmProfileWizard({
     setColumnBatchSize(Number(d.column_batch_size ?? 10));
     setPromptDetail(String(d.prompt_detail || "standard"));
     setDescriptionVerbosity(String(d.description_verbosity || "brief"));
+    setConfidenceSignal(String(d.confidence_signal || "self_consistency"));
     setLogprobHigh(Number(d.logprob_high ?? 0.85));
     setLogprobMedium(Number(d.logprob_medium ?? 0.5));
     setHydratedFor(editingName);
@@ -866,6 +868,7 @@ function LlmProfileWizard({
         column_batch_size: columnBatchSize,
         prompt_detail: promptDetail,
         description_verbosity: descriptionVerbosity,
+        confidence_signal: confidenceSignal,
         logprob_high: logprobHigh,
         logprob_medium: logprobMedium,
       };
@@ -1090,6 +1093,28 @@ function LlmProfileWizard({
               className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
             >
               {["brief", "detailed", "comprehensive", "exhaustive"].map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field
+            label="Confidence signal"
+            hint="Picks which scorer drives the HIGH / MED / LOW badge on each alternative. Only one runs per analysis. 'judge' issues a second LLM call (roughly doubles tokens); 'none' hides the badge."
+          >
+            <select
+              value={confidenceSignal}
+              onChange={(e) => setConfidenceSignal(e.target.value)}
+              className="w-full rounded-md border border-surface-border bg-surface px-3 py-1.5 text-sm"
+            >
+              {[
+                "self_consistency",
+                "logprob",
+                "self_decl",
+                "judge",
+                "none",
+              ].map((v) => (
                 <option key={v} value={v}>
                   {v}
                 </option>
