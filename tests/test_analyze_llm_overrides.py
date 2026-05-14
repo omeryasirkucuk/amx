@@ -196,3 +196,209 @@ def test_override_gate_walks_choice_fields(cfg_with_profile, monkeypatch) -> Non
     }
     assert cfg_with_profile.llm.prompt_detail == "detailed"
     assert cfg_with_profile.llm.description_verbosity == "comprehensive"
+
+
+# ── Picker parity: alternatives_mode + confidence_signal ───────────────
+#
+# Pins the picker's coverage of the two knobs added for parity with the
+# Studio "Advanced LLM settings" override panel. Studio's
+# ``LLMOverrides`` Pydantic model already accepts both fields; this
+# block makes sure the CLI's interactive picker (the parity surface) does
+# the same. Per the user spec, CLI per-run flags stay out of scope so
+# scripted ``/run`` invocations remain reproducible from ``config.yml``
+# alone.
+
+
+def _all_numeric_blank(monkeypatch) -> None:
+    """Helper: monkeypatch ``ask`` to return blank (= accept default)
+    for every numeric prompt the picker walks."""
+    monkeypatch.setattr(analyze_flow, "ask", lambda *_a, **_k: "")
+
+
+def test_override_gate_walks_alternatives_mode_when_n_gt_1(cfg_with_profile, monkeypatch) -> None:
+    """When the effective ``n_alternatives`` is 2 or more, the picker
+    prompts for ``alternatives_mode`` and the chosen value lands in the
+    derived ``LLMConfig`` without mutating the saved profile."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: True)
+    _all_numeric_blank(monkeypatch)
+
+    seen_alt_mode_prompt = False
+
+    def fake_choice(question: str, choices: list[str], *, default: str = "", **_k):
+        nonlocal seen_alt_mode_prompt
+        if "alternatives mode" in question.lower():
+            seen_alt_mode_prompt = True
+            assert set(choices) == {"semantic", "lexical"}, (
+                "alternatives_mode picker must offer exactly the Definition 1 choices"
+            )
+            return "lexical"
+        return default
+
+    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+
+    saved_llm = cfg_with_profile.llm
+    restore, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
+
+    assert seen_alt_mode_prompt, "picker did not prompt for alternatives_mode"
+    assert applied.get("alternatives_mode") == "lexical"
+    assert cfg_with_profile.llm.alternatives_mode == "lexical"
+    # Saved profile stays untouched — the picker only swaps the derived
+    # config onto cfg.llm.
+    assert saved_llm.alternatives_mode == "semantic"
+
+    restore()
+    assert cfg_with_profile.llm is saved_llm
+
+
+def test_override_gate_skips_alternatives_mode_when_n_is_1(cfg_with_profile, monkeypatch) -> None:
+    """When the user lowers ``n_alternatives`` to 1 in the picker, the
+    next prompt jumps past ``alternatives_mode`` — mirrors Studio's
+    tile-disabled rule. The override dict carries the new ``n`` but no
+    ``alternatives_mode`` entry."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: True)
+
+    answers = iter(
+        [
+            "",  # temperature
+            "",  # max_tokens
+            "1",  # n_alternatives → 1 (effective n becomes 1)
+            "",  # column_batch_size
+            "",  # thinking_budget
+            "",  # logprob_high
+            "",  # logprob_medium
+            "",  # custom_input
+            "",  # custom_output
+        ]
+    )
+    monkeypatch.setattr(analyze_flow, "ask", lambda *_a, **_k: next(answers, ""))
+
+    asked_alt_mode = False
+
+    def fake_choice(question: str, choices: list[str], *, default: str = "", **_k):
+        nonlocal asked_alt_mode
+        if "alternatives mode" in question.lower():
+            asked_alt_mode = True
+        return default
+
+    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
+
+    assert applied == {"n_alternatives": 1}
+    assert "alternatives_mode" not in applied, (
+        "alternatives_mode must be skipped when effective n is 1"
+    )
+    assert asked_alt_mode is False
+
+
+def test_override_gate_walks_confidence_signal(cfg_with_profile, monkeypatch) -> None:
+    """``confidence_signal`` prompt fires regardless of ``n`` (a single
+    alternative still carries a confidence band)."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: True)
+    _all_numeric_blank(monkeypatch)
+
+    seen_signal_prompt = False
+
+    def fake_choice(question: str, choices: list[str], *, default: str = "", **_k):
+        nonlocal seen_signal_prompt
+        if "confidence signal" in question.lower():
+            seen_signal_prompt = True
+            assert "self_consistency" in choices and "judge" in choices
+            return "judge"
+        return default
+
+    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+
+    saved_llm = cfg_with_profile.llm
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
+
+    assert seen_signal_prompt, "picker did not prompt for confidence_signal"
+    assert applied.get("confidence_signal") == "judge"
+    assert cfg_with_profile.llm.confidence_signal == "judge"
+    # Saved profile retains the LLMConfig default (self_consistency).
+    assert saved_llm.confidence_signal == "self_consistency"
+
+
+def test_override_gate_keep_default_for_new_fields(cfg_with_profile, monkeypatch) -> None:
+    """Pressing Enter on both new rows leaves neither field in the
+    applied dict — the picker only records what the user actually
+    changed."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: True)
+    _all_numeric_blank(monkeypatch)
+
+    monkeypatch.setattr(
+        analyze_flow,
+        "ask_choice",
+        lambda _q, _choices, *, default="", **_k: default,
+    )
+
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
+    assert "alternatives_mode" not in applied
+    assert "confidence_signal" not in applied
+
+
+def test_override_summary_line_includes_new_overrides(
+    cfg_with_profile, monkeypatch, capsys
+) -> None:
+    """The ``Applied per-run overrides: ...`` line is dict-driven and
+    must surface the two new keys when overridden."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(analyze_flow, "confirm", lambda *_a, **_k: True)
+    _all_numeric_blank(monkeypatch)
+
+    printed_lines: list[str] = []
+
+    def fake_info(msg: str, *args, **kwargs) -> None:
+        printed_lines.append(str(msg))
+
+    monkeypatch.setattr(analyze_flow, "info", fake_info)
+
+    def fake_choice(question: str, choices: list[str], *, default: str = "", **_k):
+        if "alternatives mode" in question.lower():
+            return "lexical"
+        if "confidence signal" in question.lower():
+            return "judge"
+        return default
+
+    monkeypatch.setattr(analyze_flow, "ask_choice", fake_choice)
+
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
+    assert applied == {
+        "alternatives_mode": "lexical",
+        "confidence_signal": "judge",
+    }
+    summary = next(
+        (line for line in printed_lines if line.startswith("Applied per-run overrides")), None
+    )
+    assert summary is not None, "summary line missing from picker output"
+    assert "alternatives_mode=lexical" in summary
+    assert "confidence_signal=judge" in summary
+
+
+def test_override_gate_non_interactive_does_not_prompt_for_new_fields(
+    cfg_with_profile, monkeypatch
+) -> None:
+    """Scripted ``/run`` invocations (non-TTY) must never see the new
+    prompts — the picker short-circuits at the TTY check. Regression
+    pin for the reproducibility contract: ``config.yml`` plus a
+    non-interactive run produces deterministic output."""
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(
+        analyze_flow,
+        "ask_choice",
+        lambda *_a, **_k: pytest.fail("ask_choice must not run in non-TTY mode"),
+    )
+    monkeypatch.setattr(
+        analyze_flow,
+        "ask",
+        lambda *_a, **_k: pytest.fail("ask must not run in non-TTY mode"),
+    )
+
+    saved_llm = cfg_with_profile.llm
+    _, applied = analyze_flow._maybe_apply_llm_overrides_interactively(cfg_with_profile)
+    assert applied == {}
+    assert cfg_with_profile.llm is saved_llm
