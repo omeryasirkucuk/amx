@@ -112,6 +112,14 @@ OpenAI · Anthropic · Google Gemini · DeepSeek · OpenRouter · Ollama · vLLM
 
 Provider-specific guides (including OpenAI / Anthropic Batch mode and local-model setups) live in the [LLM providers section](https://amxcli.com/llm-providers/).
 
+## Next up
+
+- **dbt integration** — Connect dbt projects so the AMX code agent extracts table and column metadata from the transformation layer.
+- **MCP integration for docs and repo** — Expose the AMX repo and docs over the Model Context Protocol so LLM clients can query them as live context.
+- **CDC integration** — Detect schema changes in upstream sources and keep AMX metadata in sync.
+
+See the [full roadmap](https://amxcli.com/roadmap/) for details.
+
 ## Documentation
 
 Full user, operator, and contributor docs live at **[amxcli.com](https://amxcli.com/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://amxcli.com/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
