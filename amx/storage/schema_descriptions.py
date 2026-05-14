@@ -421,6 +421,17 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "full provider/model bundle that was in effect, including the "
             "case where a per-run override swapped profiles."
         ),
+        "production_warning": (  # local-only
+            "One-line summary when the LLM (or the parser) produced fewer "
+            "alternatives than the active profile's ``n_alternatives``. "
+            "Examples: ``produced 2 of 3 requested`` or "
+            "``produced 2 of 3 requested (after seed echo)`` on Variations "
+            "rows where the model echoed the seed verbatim. NULL on the "
+            "success path so absence-of-warning is meaningful. The Studio's "
+            "run-detail page renders this as an inline ⚠ chip next to the "
+            "version label so a reviewer notices under-production without "
+            "scanning every alternative count."
+        ),
     },
     # ── app_events (local + shared) ───────────────────────────────────────
     "app_events": {

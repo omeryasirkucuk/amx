@@ -503,6 +503,7 @@ def _persist_rerun_row(
     alternatives_mode: str | None = None,
     seed_alternative_id: str | None = None,
     seed_alternative_text: str | None = None,
+    production_warning: str | None = None,
     parent_run_id: int | None = None,
     provider_name: str | None = None,
 ) -> tuple[int, int]:
@@ -562,6 +563,8 @@ def _persist_rerun_row(
         # would still report the base profile.
         "model": model_name or None,
         "provider": provider_name or None,
+        # Under-production audit (NULL on the success path).
+        "production_warning": production_warning,
     }
     [new_id] = hs.save_run_results(int(new_run_id), [row])
     return int(new_id), int(rerun_seq)
@@ -877,6 +880,30 @@ def rerun_items(
                 except Exception as exc:  # pragma: no cover — defensive
                     log.warning("Rerun confidence scoring failed: %s", exc)
 
+                # Under-production audit. The Variations executor's
+                # post-step ``_update_variation_columns`` overwrites
+                # this with a richer ``(after seed echo)`` suffix
+                # when the LLM echoed the seed, so the value here is
+                # intentionally seed-unaware (it's also the
+                # source-of-truth for plain Re-Run rows where no
+                # seed-filter happens).
+                n_alts_requested = max(
+                    1, int(getattr(cfg.llm, "n_alternatives", 1) or 1)
+                )
+                produced = len(suggestion.suggestions or [])
+                production_warning = (
+                    f"produced {produced} of {n_alts_requested} requested"
+                    if produced < n_alts_requested
+                    else None
+                )
+                if production_warning:
+                    log.warning(
+                        "Rerun under-production for %s.%s.%s: %s",
+                        ctx.schema,
+                        ctx.table,
+                        ctx.column or "(table-level)",
+                        production_warning,
+                    )
                 new_id, rerun_seq = _persist_rerun_row(
                     new_run_id=new_run_id,
                     suggestion=suggestion,
@@ -886,6 +913,7 @@ def rerun_items(
                     model_name=getattr(llm, "model_name", "") or str(cfg.llm.model or ""),
                     alternatives_mode=getattr(cfg.llm, "alternatives_mode", None),
                     provider_name=str(cfg.llm.provider or "") or None,
+                    production_warning=production_warning,
                 )
 
                 outcome = RerunOutcome(

@@ -250,6 +250,7 @@ class SQLiteHistoryStore:
                     parent_run_id INTEGER,
                     model TEXT,
                     provider TEXT,
+                    production_warning TEXT,
                     FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
                 )
                 """
@@ -334,6 +335,15 @@ class SQLiteHistoryStore:
                 "ALTER TABLE run_results ADD COLUMN parent_run_id INTEGER",
                 "ALTER TABLE run_results ADD COLUMN model TEXT",
                 "ALTER TABLE run_results ADD COLUMN provider TEXT",
+                # Under-production audit. When the LLM (or the
+                # parser) produces fewer alternatives than the active
+                # profile's ``n_alternatives``, this column captures
+                # a one-line summary — e.g. ``"produced 2 of 3
+                # requested"`` or ``"produced 2 of 3 requested (after
+                # seed echo)"`` on Variations rows where the model
+                # echoed the seed verbatim. NULL on the success path
+                # so absence-of-warning is meaningful.
+                "ALTER TABLE run_results ADD COLUMN production_warning TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
@@ -1298,8 +1308,8 @@ class SQLiteHistoryStore:
                         token_count, model_version, reasoning, alternatives_json,
                         parent_result_id, rerun_seq, user_instructions, citations_json,
                         alternatives_mode, seed_alternative_id, seed_alternative_text,
-                        parent_run_id, model, provider
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        parent_run_id, model, provider, production_warning
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -1349,6 +1359,8 @@ class SQLiteHistoryStore:
                         # still report the base profile's values.
                         s.get("model"),
                         s.get("provider"),
+                        # Under-production audit (NULL on success path).
+                        s.get("production_warning"),
                     ),
                 )
                 ids.append(int(cur.lastrowid))
@@ -1672,6 +1684,21 @@ class SQLiteHistoryStore:
                 ).fetchone()
             return str(row["status"]) if row and row["status"] else None
 
+        def _first_signal_in(rows_for_run: list[dict[str, Any]]) -> str | None:
+            """Surface the confidence signal active when this descendant
+            ran (e.g. ``self_consistency`` / ``logprob`` / ``judge``).
+            Read from the first entry of the first row's
+            ``alternatives_json`` since signal is per-alternative.
+            Drives the version-group header label so a reviewer sees
+            badge-type differences between v1 and vN at a glance."""
+            for rr in rows_for_run:
+                alts = rr.get("alternatives_json")
+                if isinstance(alts, list):
+                    for entry in alts:
+                        if isinstance(entry, dict) and entry.get("signal"):
+                            return str(entry["signal"])
+            return None
+
         def _collect_variations(parent_id: int, depth: int) -> None:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -1730,6 +1757,7 @@ class SQLiteHistoryStore:
                     "model": first_model,
                     "provider": first_provider,
                     "status": _child_status(child_run_id),
+                    "confidence_signal": _first_signal_in(rows_for_run),
                     "depth": depth,
                     "over_max_depth": depth > variations_depth_cap,
                     "rows": rows_for_run,
@@ -1784,6 +1812,7 @@ class SQLiteHistoryStore:
                         "model": first_model,
                         "provider": first_provider,
                         "status": _child_status(child_run_id),
+                        "confidence_signal": _first_signal_in(rows_for_run),
                         "depth": 1,
                         "over_max_depth": False,
                         "rows": rows_for_run,

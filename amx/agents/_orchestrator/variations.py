@@ -50,14 +50,61 @@ def _seed_directive(*, seed_text: str, mode: str, user_addendum: str | None) -> 
     mode_lower = (mode or "").strip().lower()
     if mode_lower == "lexical":
         diversity_block = (
-            "ALTERNATIVES DIVERSITY (lexical mode — shared vocabulary, allow "
-            "meaning to drift):\n"
-            "  Each DESCRIPTION_i MUST re-use the key tokens of the "
-            "SEED_DESCRIPTION above (the same nouns / verbs / domain "
-            "vocabulary) while introducing ONE new conceptual nuance that "
-            "shifts what the description claims. A reviewer should be able "
-            "to articulate the difference in a single sentence per "
-            "alternative. Do NOT echo the seed verbatim."
+            "ALTERNATIVES DIVERSITY (lexical mode — shared vocabulary, "
+            "distinct candidate meanings):\n"
+            "DO:\n"
+            "  * Re-use the key tokens of the SEED_DESCRIPTION above "
+            "(same nouns / verbs / domain vocabulary).\n"
+            "  * Make each DESCRIPTION_i propose a DISTINCT CANDIDATE "
+            "MEANING — a different interpretation of what the column "
+            "actually refers to, not just a different framing of the "
+            "same idea.\n"
+            "  * Pass the articulability test: for each DESCRIPTION_i "
+            "you must be able to write a 3-7 word phrase describing "
+            "how its meaning differs from SEED_DESCRIPTION (e.g. "
+            "'capacity ceiling, not current count' / 'lifetime total, "
+            "not currently-active' / 'billing scope, not "
+            "activity-based'). If you cannot, the variation is too "
+            "close to the seed — rewrite it with a sharper shift.\n"
+            "DO NOT:\n"
+            "  * DO NOT echo the seed verbatim.\n"
+            "  * DO NOT produce variations that differ only by an "
+            "added adjective (e.g. 'total', 'functional', 'designed') "
+            "without a corresponding shift in what the column "
+            "actually refers to.\n"
+            "  * DO NOT produce variations that all describe the same "
+            "underlying concept with slightly different framings — "
+            "each variation must propose a candidate meaning a "
+            "reviewer could distinguish at a glance.\n"
+            "\n"
+            "WORKED EXAMPLES (study before generating):\n"
+            "\n"
+            "  STRONG lexical (each variation is a distinct candidate "
+            "meaning of the same column):\n"
+            '    SEED: "Number of users active in the system."\n'
+            '    DESCRIPTION_1: "Maximum number of users the system '
+            'can support concurrently."\n'
+            "      (shift: capacity ceiling, not current count)\n"
+            '    DESCRIPTION_2: "Cumulative number of users '
+            'registered since system launch."\n'
+            "      (shift: lifetime total, not currently-active)\n"
+            '    DESCRIPTION_3: "Number of users billed in the '
+            'current cycle, regardless of activity."\n'
+            "      (shift: billing scope, not activity-based)\n"
+            "\n"
+            "  WEAK lexical (DO NOT produce output like this — these "
+            "are NOT distinct candidate meanings, just rephrasings):\n"
+            '    SEED: "Number of users active in the system."\n'
+            '    DESCRIPTION_1: "Total number of users actively '
+            'using the system."         (← just added "total")\n'
+            '    DESCRIPTION_2: "Number of functional users active '
+            'in the system."           (← just added "functional")\n'
+            '    DESCRIPTION_3: "Number of users actively engaged '
+            'with the system."         (← swapped "active" for '
+            '"engaged")\n'
+            "    None of these propose a candidate meaning a reviewer "
+            "could distinguish at a glance — they are all the same "
+            "concept rephrased."
         )
     else:
         diversity_block = (
@@ -157,6 +204,7 @@ def variations_one_item(
     # Filter the seed back out of the alternatives, then write the
     # Variations audit columns onto the new run_results row.
     filtered = _filter_seed_out(outcome.alternatives, seed_text)
+    n_alts_requested = max(1, int(getattr(cfg.llm, "n_alternatives", 1) or 1))
     hs = history_store()
     if hs is not None and outcome.new_result_id:
         try:
@@ -166,7 +214,8 @@ def variations_one_item(
                 seed_alternative_id=f"{result_id}:{alternative_index}",
                 seed_alternative_text=seed_text,
                 parent_run_id=int(original_run_id),
-                alternatives_filtered=filtered,
+                seed_text=seed_text,
+                n_alts_requested=n_alts_requested,
             )
         except Exception as exc:  # noqa: BLE001 — audit-only post-step
             log.warning(
@@ -186,32 +235,105 @@ def _update_variation_columns(
     seed_alternative_id: str,
     seed_alternative_text: str,
     parent_run_id: int,
-    alternatives_filtered: list[str],
+    seed_text: str,
+    n_alts_requested: int,
 ) -> None:
-    """Patch the new row with Variations audit columns.
+    """Patch the new row with Variations audit columns + the
+    structured-shape preserving seed filter.
 
-    We can't go through the public ``save_run_results`` API because the
-    row is already inserted by :func:`rerun_items`. Use the store's
-    private connection helper directly; held under the store's lock
-    so we don't race a concurrent write.
+    ``_persist_rerun_row`` (called from ``rerun_items``) writes the
+    new row's ``alternatives_json`` with the rich structured shape
+    ``[{text, signal, score, band}, ...]`` so the per-alternative
+    confidence badge (SC / logprob / JU) renders in the Studio. The
+    previous implementation overwrote that with a plain ``list[str]``
+    (just the filtered text), stripping the badge data and leaving v2
+    / v3 alternative rows badge-less.
+
+    Fix: read the row's current ``alternatives_json`` (already
+    structured), drop the entry whose ``text`` matches the seed
+    (case + whitespace insensitive, same rule as ``_filter_seed_out``),
+    and re-emit the filtered structured list. ``production_warning``
+    is computed at the same time: when the surviving slot count is
+    short of ``n_alts_requested``, capture a one-line summary so the
+    Studio can render the inline ⚠ chip. Seed echo (LLM returned the
+    seed verbatim) legitimately removes one slot — that gets the
+    ``(after seed echo)`` suffix; pure under-production has no suffix.
+
+    Held under the store's lock so we don't race a concurrent write.
     """
     import json as _json
 
+    def _norm(s: object) -> str:
+        return " ".join(str(s or "").strip().lower().split())
+
+    seed_norm = _norm(seed_text)
+
     with hs._lock, hs._connect() as conn:  # noqa: SLF001 — internal patch path
+        row = conn.execute(
+            "SELECT alternatives_json FROM run_results WHERE id = ?",
+            (int(new_result_id),),
+        ).fetchone()
+        if row is None:
+            return
+        raw = row["alternatives_json"]
+        parsed: list[Any] = []
+        try:
+            parsed = _json.loads(raw) if isinstance(raw, str) else []
+        except Exception:
+            parsed = []
+        if not isinstance(parsed, list):
+            parsed = []
+        original_len = len(parsed)
+        filtered_struct: list[Any] = []
+        seed_removed = False
+        for entry in parsed:
+            entry_text = (
+                entry.get("text")
+                if isinstance(entry, dict)
+                else (entry if isinstance(entry, str) else "")
+            )
+            if _norm(entry_text) == seed_norm and not seed_removed:
+                seed_removed = True
+                continue
+            filtered_struct.append(entry)
+
+        filtered_count = len(filtered_struct)
+        expected_after_filter = (
+            n_alts_requested - 1 if seed_removed else n_alts_requested
+        )
+        production_warning: str | None = None
+        if filtered_count < expected_after_filter:
+            production_warning = (
+                f"produced {filtered_count} of {n_alts_requested} requested"
+                + (" (after seed echo)" if seed_removed else "")
+            )
+            log.warning(
+                "Variations under-production for run_result %s: "
+                "produced=%d expected=%d (n_alts=%d, seed_removed=%s, raw=%d)",
+                new_result_id,
+                filtered_count,
+                expected_after_filter,
+                n_alts_requested,
+                seed_removed,
+                original_len,
+            )
+
         conn.execute(
             """
             UPDATE run_results
             SET seed_alternative_id = ?,
                 seed_alternative_text = ?,
                 parent_run_id = ?,
-                alternatives_json = ?
+                alternatives_json = ?,
+                production_warning = ?
             WHERE id = ?
             """,
             (
                 seed_alternative_id,
                 seed_alternative_text,
                 int(parent_run_id),
-                _json.dumps(alternatives_filtered, ensure_ascii=True),
+                _json.dumps(filtered_struct, ensure_ascii=True),
+                production_warning,
                 int(new_result_id),
             ),
         )
