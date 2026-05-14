@@ -88,6 +88,51 @@ class _CacheBackedTableProfile:
         self.analytics = None
 
 
+def _sample_distinct_values(
+    db: DatabaseConnector,
+    schema: str,
+    table: str,
+    column: str,
+    limit: int,
+) -> tuple[list[str], int | None]:
+    """Pull up to *limit* distinct non-null values from one column.
+
+    Shared by ``_tool_sample_column_values`` (LLM-facing) and the
+    ``value_overlap`` join-inference strategy. The same SQL shape is
+    used in both: a single ``SELECT DISTINCT col ... LIMIT N`` plus a
+    best-effort ``COUNT(DISTINCT col)`` that soft-fails on un-indexed
+    columns where the planner gives up.
+
+    Returns ``(samples, distinct_count)`` where ``distinct_count`` is
+    ``None`` when the count query failed. Raises ``Exception`` from
+    the engine layer when the main SELECT itself fails — callers
+    decide whether to swallow that into a per-row "skipped" marker
+    or bubble it up.
+    """
+    from sqlalchemy import text as _text
+
+    adapter = db._adapter  # noqa: SLF001
+    fqn = adapter.fully_qualified_name(schema, table)
+    col_q = adapter.quote_identifier(column)
+    n = max(1, int(limit))
+    with db.engine.connect() as conn:
+        rows = conn.execute(
+            _text(f"SELECT DISTINCT {col_q} AS v FROM {fqn} WHERE {col_q} IS NOT NULL LIMIT :n"),
+            {"n": n},
+        ).fetchall()
+        samples = [str(r[0]) for r in rows if r and r[0] is not None]
+        try:
+            distinct_row = conn.execute(
+                _text(f"SELECT COUNT(DISTINCT {col_q}) FROM {fqn}"),
+            ).fetchone()
+            distinct_count: int | None = (
+                int(distinct_row[0]) if distinct_row and distinct_row[0] is not None else None
+            )
+        except Exception:
+            distinct_count = None
+    return samples, distinct_count
+
+
 class ToolBox:
     """Concrete tool implementations the agent loop dispatches into."""
 
@@ -1425,19 +1470,32 @@ class ToolBox:
                 "function": {
                     "name": "find_joinable_tables",
                     "description": (
-                        "Given ONE table, return the tables it can be joined with using a "
-                        "three-tier fallback: (1) declared foreign keys, (2) name-overlap "
-                        "heuristic (rarity-weighted shared column names — works WITHOUT FK "
-                        "constraints, ideal for SAP-style schemas), (3) semantic similarity on "
-                        "column descriptions. The result includes ``inference_source`` "
-                        "(``foreign_key`` / ``name_overlap`` / ``semantic_similarity``) — when "
-                        "you compose the final answer, ALWAYS state the inference tier "
-                        "explicitly so the user knows whether the join is FK-verified or "
-                        "name-inferred. Use for 'which tables can I join with vbrk?', "
-                        "'tables that can join with X', 'find tables related to vbrk'. "
-                        "Different from get_join_candidates which needs both sides upfront. "
-                        "WITHIN-PROFILE only: for cross-profile JOIN candidates ('what can I "
-                        "join this with from another DB'), call find_joinable_across_profiles."
+                        "Given ONE table, return the tables it can be joined with. "
+                        "Default ``strategy='auto'`` cascades four METADATA tiers cheap-to-"
+                        "expensive: (1) declared foreign keys, (2) rarity-weighted name "
+                        "overlap (with a live information_schema rescue when the catalog is "
+                        "stale for this table — SAP/legacy schemas typically land here), "
+                        "(3) semantic similarity over column descriptions. The result "
+                        "includes ``inference_source`` and ``strategies_tried`` so you can "
+                        "see which tier won (or that every tier returned empty — in that "
+                        "case ``inference_source`` is ``null``). "
+                        "If the metadata tiers come back empty OR you need DATA-LEVEL "
+                        "proof a join actually works, re-call with "
+                        "``strategy='value_overlap'`` — this hits the database, samples "
+                        "distinct values from both sides of each name-overlap candidate, "
+                        "and reports an ``overlap_count`` + ``overlap_ratio`` per row. "
+                        "Use ``strategy='all'`` to run every tier and get a merged list "
+                        "with per-row ``inference_sources``. "
+                        "When you compose the final answer, ALWAYS state the inference "
+                        "source explicitly so the user knows whether the join is FK-"
+                        "verified, name-inferred, or value-verified. Do NOT fall back to "
+                        "your own domain knowledge to fill the list — call this tool again "
+                        "with a stronger strategy instead. "
+                        "Use for 'which tables can I join with vbrk?', 'tables that can "
+                        "join with X', 'find tables related to vbrk'. Different from "
+                        "get_join_candidates which needs both sides upfront. WITHIN-"
+                        "PROFILE only: for cross-profile JOIN candidates call "
+                        "find_joinable_across_profiles."
                     ),
                     "parameters": {
                         "type": "object",
@@ -1445,6 +1503,25 @@ class ToolBox:
                             "table": {
                                 "type": "string",
                                 "description": "Table as schema.table or just table_name (we'll resolve via find_table_by_name first).",
+                            },
+                            "strategy": {
+                                "type": "string",
+                                "enum": [
+                                    "auto",
+                                    "foreign_key",
+                                    "name_overlap",
+                                    "semantic",
+                                    "value_overlap",
+                                    "all",
+                                ],
+                                "description": (
+                                    "Which inference tier(s) to run. ``auto`` (default) "
+                                    "cascades FK → name_overlap → semantic. Individual "
+                                    "names run only that tier. ``value_overlap`` samples "
+                                    "actual column values to verify joinability (one "
+                                    "extra DB round-trip per candidate, opt-in). ``all`` "
+                                    "runs everything and merges results."
+                                ),
                             },
                         },
                         "required": ["table"],
@@ -4314,10 +4391,23 @@ class ToolBox:
             ),
         }
 
-    def _tool_find_joinable_tables(self, table: str) -> dict[str, Any]:
+    _VALID_JOIN_STRATEGIES: frozenset[str] = frozenset(
+        {"auto", "foreign_key", "name_overlap", "semantic", "value_overlap", "all"}
+    )
+
+    def _tool_find_joinable_tables(
+        self,
+        table: str,
+        strategy: str = "auto",
+    ) -> dict[str, Any]:
         target = (table or "").strip()
         if not target:
             raise _ToolError("Argument 'table' is required.")
+        strategy = (strategy or "auto").strip().lower()
+        if strategy not in self._VALID_JOIN_STRATEGIES:
+            raise _ToolError(
+                f"strategy must be one of {sorted(self._VALID_JOIN_STRATEGIES)}; got {strategy!r}."
+            )
         # Resolve to schema.table when only the table name was provided.
         # Multi-profile scope: search across every configured profile;
         # if the table exists in only one profile we anchor there. The
@@ -4353,43 +4443,173 @@ class ToolBox:
                 }
             row = exact[0]
             target = f"{row.get('schema_name') or ''}.{row.get('table_name') or ''}"
-        # Three-tier fallback chain (v0.9.7):
-        # 1. Symbolic FK relationships from catalog (best — explicit
-        #    referential integrity). Empty when the DB has no FK
-        #    constraints, which is typical of SAP / legacy schemas
-        #    where joins are managed at the application layer.
-        # 2. Name-overlap heuristic — same column name on both sides,
-        #    weighted by rarity so ``mandt`` (in every table) doesn't
-        #    drown out a high-signal shared name. Works WITHOUT FK
-        #    constraints AND WITHOUT per-column descriptions.
-        # 3. Semantic similarity — vector match on column descriptions.
-        #    Requires the catalog to have been ``/run``-populated.
-        # The first non-empty tier wins; ``inference_source`` is
-        # surfaced so the LLM can be honest in the answer ("via FK"
-        # vs "via shared column name" vs "via semantic similarity").
-        rows = self.catalog.joinable_tables(self.db_profile, target, limit=12)
-        inference_source = "foreign_key"
-        if not rows:
-            rows = self.catalog.name_overlap_joinable_tables(
+
+        # Four-tier strategy palette (v0.14):
+        # 1. ``foreign_key``    — declared FK relationships from the catalog.
+        # 2. ``name_overlap``   — rarity-weighted shared column names,
+        #                          with a live ``information_schema``
+        #                          rescue when ``catalog_entities`` is
+        #                          missing rows for the target table.
+        # 3. ``semantic``       — vector similarity over column
+        #                          descriptions (requires /run).
+        # 4. ``value_overlap``  — opt-in data-touching strategy:
+        #                          samples distinct values from both
+        #                          sides of each name-overlap candidate
+        #                          and scores by Jaccard intersection.
+        #                          Bounded at 12 candidates × 200
+        #                          distinct values per side; opt-in
+        #                          to keep the default hot path free
+        #                          of extra DB hits.
+        # ``strategy="auto"`` cascades 1→2→3 (today's behavior, unchanged
+        # for default callers). ``"all"`` runs every strategy and merges
+        # results by (target_schema, target_table), keeping the highest
+        # per-row score. Individual strategy names run only that tier.
+        strategies_tried: list[str] = []
+        source_was_live = False
+
+        def _run_fk() -> list[dict[str, Any]]:
+            strategies_tried.append("foreign_key")
+            return self.catalog.joinable_tables(self.db_profile, target, limit=12)
+
+        def _run_name_overlap() -> list[dict[str, Any]]:
+            nonlocal source_was_live
+            strategies_tried.append("name_overlap")
+            r = self.catalog.name_overlap_joinable_tables(
                 self.db_profile,
                 target,
                 limit=12,
             )
-            if rows:
-                inference_source = "name_overlap"
-        if not rows:
+            if r:
+                return r
+            # Live rescue: catalog wasn't synced for this target yet, so
+            # we have no base column list to compare against peers.
+            # Fetch column names directly from the live backend (one
+            # cheap ``get_columns`` call) and retry with the override.
+            if self.catalog.target_has_catalog_columns(self.db_profile, target):
+                return []
+            live_cols = self._fetch_live_column_names(target)
+            if not live_cols:
+                return []
+            source_was_live = True
+            return self.catalog.name_overlap_joinable_tables(
+                self.db_profile,
+                target,
+                limit=12,
+                base_cols_override=live_cols,
+            )
+
+        def _run_semantic() -> list[dict[str, Any]]:
+            strategies_tried.append("semantic_similarity")
             try:
-                rows = self.catalog.semantic_joinable_tables(
+                return self.catalog.semantic_joinable_tables(
                     self.db_profile,
                     target,
                     limit=12,
                 )
             except Exception:
-                rows = []
-            if rows:
+                return []
+
+        def _run_value_overlap() -> list[dict[str, Any]]:
+            # Seed candidates from name_overlap (with the live rescue
+            # path) so we only sample values for plausible joins. Pure
+            # name_overlap may not return enough candidates on its own;
+            # we don't try to widen — value_overlap is meant to *verify*
+            # name overlap with real data, not to discover joins from
+            # scratch.
+            seeds = _run_name_overlap()
+            # We routed through name_overlap purely to get seeds — the
+            # user asked for value_overlap, so drop that label.
+            if "name_overlap" in strategies_tried:
+                strategies_tried.remove("name_overlap")
+            strategies_tried.append("value_overlap")
+            if not seeds:
+                return []
+            return self._compute_value_overlap_rows(target, seeds)
+
+        rows: list[dict[str, Any]] = []
+        inference_source: str | None = None
+        per_strategy_results: list[tuple[str, list[dict[str, Any]]]] = []
+
+        if strategy in ("auto", "foreign_key", "all"):
+            fk_rows = _run_fk()
+            per_strategy_results.append(("foreign_key", fk_rows))
+            if not rows and fk_rows:
+                rows = fk_rows
+                inference_source = "foreign_key"
+            if strategy == "foreign_key":
+                pass  # nothing else to run
+            elif strategy == "auto" and rows:
+                pass  # cascade stops on first hit
+
+        need_name_overlap = (
+            (strategy == "auto" and not rows) or strategy == "name_overlap" or strategy == "all"
+        )
+        if need_name_overlap:
+            no_rows = _run_name_overlap()
+            per_strategy_results.append(("name_overlap", no_rows))
+            if not rows and no_rows:
+                rows = no_rows
+                inference_source = "name_overlap"
+
+        need_semantic = (
+            (strategy == "auto" and not rows) or strategy == "semantic" or strategy == "all"
+        )
+        if need_semantic:
+            s_rows = _run_semantic()
+            per_strategy_results.append(("semantic_similarity", s_rows))
+            if not rows and s_rows:
+                rows = s_rows
                 inference_source = "semantic_similarity"
-        joinable = [
-            {
+
+        if strategy in ("value_overlap", "all"):
+            v_rows = _run_value_overlap()
+            per_strategy_results.append(("value_overlap", v_rows))
+            if not rows and v_rows:
+                rows = v_rows
+                inference_source = "value_overlap"
+
+        if strategy == "all":
+            # Merge per-strategy results by (target_schema, target_table),
+            # keeping the highest-score row and tagging each with its
+            # source so the LLM can see why each candidate landed in
+            # the list.
+            merged: dict[tuple[str, str], dict[str, Any]] = {}
+            for label, batch in per_strategy_results:
+                for r in batch:
+                    key = (
+                        str(r.get("target_schema_name") or "").lower(),
+                        str(r.get("target_table_name") or "").lower(),
+                    )
+                    if not key[0] or not key[1]:
+                        continue
+                    enriched = dict(r)
+                    enriched.setdefault("inference_sources", [])
+                    if label not in enriched["inference_sources"]:
+                        enriched["inference_sources"].append(label)
+                    existing = merged.get(key)
+                    if existing is None or float(enriched.get("score") or 0.0) > float(
+                        existing.get("score") or 0.0
+                    ):
+                        # Carry over any sources already merged into the
+                        # previous best so we don't lose history.
+                        if existing is not None:
+                            for src in existing.get("inference_sources", []):
+                                if src not in enriched["inference_sources"]:
+                                    enriched["inference_sources"].append(src)
+                        merged[key] = enriched
+                    else:
+                        for src in enriched["inference_sources"]:
+                            if src not in existing.get("inference_sources", []):
+                                existing.setdefault("inference_sources", []).append(src)
+            rows = sorted(
+                merged.values(),
+                key=lambda r: -float(r.get("score") or 0.0),
+            )[:12]
+            inference_source = "all" if rows else None
+
+        joinable: list[dict[str, Any]] = []
+        for r in rows:
+            entry: dict[str, Any] = {
                 "target_schema": str(r.get("target_schema_name") or ""),
                 "target_table": str(r.get("target_table_name") or ""),
                 "left_column": str(r.get("left_column") or ""),
@@ -4398,15 +4618,154 @@ class ToolBox:
                 "score": float(r.get("score") or 0.0),
                 "shared_column_count": int(r.get("shared_column_count") or 0),
             }
-            for r in rows
-        ]
-        return {
+            # value_overlap (or "all" carrying value_overlap rows)
+            # surfaces per-row data signals so the LLM can cite the
+            # intersection count and Jaccard ratio in its answer.
+            if "overlap_count" in r:
+                entry["overlap_count"] = int(r.get("overlap_count") or 0)
+            if "overlap_ratio" in r:
+                entry["overlap_ratio"] = float(r.get("overlap_ratio") or 0.0)
+            if "sample_size_per_side" in r:
+                entry["sample_size_per_side"] = int(r.get("sample_size_per_side") or 0)
+            if "inference_sources" in r:
+                entry["inference_sources"] = list(r.get("inference_sources") or [])
+            joinable.append(entry)
+
+        response: dict[str, Any] = {
             "table": target,
             "found": True,
+            "strategy": strategy,
             "joinable_tables": joinable,
             "count": len(joinable),
             "inference_source": inference_source,
+            "strategies_tried": strategies_tried,
         }
+        if source_was_live:
+            response["source_was_live"] = True
+            response["note"] = (
+                "Catalog had no column rows for this table; column "
+                "names were fetched live from the backend. Run "
+                "`/search sync` to refresh the catalog for faster "
+                "subsequent calls."
+            )
+        return response
+
+    def _fetch_live_column_names(self, target: str) -> list[str]:
+        """Return live column names for ``schema.table`` from the active
+        backend's information_schema (or adapter equivalent).
+
+        Used by the name_overlap rescue path: when the catalog has
+        no column rows for the target, we still want to discover
+        joinable peers from the catalog by feeding in the live
+        column list. Cheap (one ``get_columns`` round-trip via the
+        SQLAlchemy inspector) and soft-fails to an empty list so
+        the caller can give up gracefully.
+        """
+        if "." not in target:
+            return []
+        schema_name, table_name = target.split(".", 1)
+        try:
+            from sqlalchemy import inspect as _inspect
+
+            db = self._connector_for_profile(self.db_profile)
+            insp = _inspect(db.engine)
+            cols = insp.get_columns(table_name, schema=schema_name)
+        except Exception:
+            return []
+        out: list[str] = []
+        for c in cols or []:
+            name = str(c.get("name") or "").strip() if isinstance(c, dict) else ""
+            if name:
+                out.append(name)
+        return out
+
+    def _compute_value_overlap_rows(
+        self,
+        target: str,
+        seeds: list[dict[str, Any]],
+        *,
+        sample_n: int = 200,
+        min_intersection: int = 3,
+        candidate_limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Run the value_overlap strategy against a list of name-overlap
+        candidates.
+
+        For each seed, samples up to *sample_n* distinct values from
+        the highest-rarity shared column on both sides of the join,
+        then scores by Jaccard intersection. Drops candidates whose
+        intersection is below *min_intersection* — too few common
+        values is noise (collisions on flag values like ``''`` or
+        ``'X'`` shouldn't drive a join recommendation).
+
+        Bounded at *candidate_limit* seeds × 2 sides × 2 queries
+        (``SELECT DISTINCT`` + ``COUNT(DISTINCT)``) so an answer
+        never costs more than ~48 short reads per call.
+        """
+        if "." not in target:
+            return []
+        schema_name, table_name = target.split(".", 1)
+        db = self._connector_for_profile(self.db_profile)
+        out: list[dict[str, Any]] = []
+        for seed in seeds[: max(1, int(candidate_limit))]:
+            target_schema = str(seed.get("target_schema_name") or "")
+            target_table = str(seed.get("target_table_name") or "")
+            # ``left_column`` from name_overlap is comma-separated when
+            # multiple columns are shared; the first entry is the
+            # highest-rarity (the function sorts by weight desc inside
+            # each candidate). Sampling on the rarest shared column is
+            # the most informative single check.
+            raw_left = str(seed.get("left_column") or "")
+            join_col = raw_left.split(",")[0].strip()
+            if not target_schema or not target_table or not join_col:
+                continue
+            try:
+                left_samples, _ = _sample_distinct_values(
+                    db,
+                    schema_name,
+                    table_name,
+                    join_col,
+                    sample_n,
+                )
+                right_samples, _ = _sample_distinct_values(
+                    db,
+                    target_schema,
+                    target_table,
+                    join_col,
+                    sample_n,
+                )
+            except Exception:
+                # Skip this candidate rather than failing the whole
+                # strategy — common reasons: column missing on the
+                # right side (catalog out-of-date), permissions, or
+                # type mismatch that breaks the SELECT.
+                continue
+            left_set = {v for v in left_samples if v != ""}
+            right_set = {v for v in right_samples if v != ""}
+            if not left_set or not right_set:
+                continue
+            inter = left_set & right_set
+            if len(inter) < min_intersection:
+                continue
+            union = left_set | right_set
+            jaccard = len(inter) / len(union) if union else 0.0
+            name_weight = float(seed.get("score") or 0.0)
+            row = dict(seed)
+            row.update(
+                {
+                    "relationship_type": "value_overlap",
+                    "source": "value_overlap",
+                    "left_column": join_col,
+                    "right_column": join_col,
+                    "score": round(name_weight * jaccard, 4),
+                    "overlap_count": len(inter),
+                    "overlap_ratio": round(jaccard, 4),
+                    "sample_size_per_side": max(len(left_set), len(right_set)),
+                }
+            )
+            out.append(row)
+        out.sort(key=lambda r: -float(r.get("score") or 0.0))
+        return out
 
     # ── Data-quality / uniqueness probes (v0.10.2) ─────────────────────────
 
@@ -4660,8 +5019,6 @@ class ToolBox:
         (which scans every column + foreign keys + stats) so a "give
         me an example" question doesn't pay for a full table profile.
         """
-        from sqlalchemy import text as _text
-
         schema_name = (schema or "").strip()
         table_name = (table or "").strip()
         column_name = (column or "").strip()
@@ -4671,39 +5028,10 @@ class ToolBox:
             )
         n = max(1, min(int(limit or 5), 50))
 
-        db = self._live_db()
-        adapter = db._adapter  # noqa: SLF001
-        fqn = adapter.fully_qualified_name(schema_name, table_name)
-        col_q = adapter.quote_identifier(column_name)
-
         try:
-            with db.engine.connect() as conn:
-                # DISTINCT keeps the prompt small when the column has
-                # repeated values (boolean flags, status codes, etc.).
-                rows = conn.execute(
-                    _text(
-                        f"SELECT DISTINCT {col_q} AS v "
-                        f"FROM {fqn} "
-                        f"WHERE {col_q} IS NOT NULL "
-                        f"LIMIT :n"
-                    ),
-                    {"n": n},
-                ).fetchall()
-                samples = [str(r[0]) for r in rows if r and r[0] is not None]
-                # Also fetch distinct count when cheap (single-column
-                # COUNT(DISTINCT) is fast on indexed tables; soft-fails
-                # on big un-indexed columns where the planner gives up).
-                try:
-                    distinct_row = conn.execute(
-                        _text(f"SELECT COUNT(DISTINCT {col_q}) FROM {fqn}"),
-                    ).fetchone()
-                    distinct_count = (
-                        int(distinct_row[0])
-                        if distinct_row and distinct_row[0] is not None
-                        else None
-                    )
-                except Exception:
-                    distinct_count = None
+            samples, distinct_count = _sample_distinct_values(
+                self._live_db(), schema_name, table_name, column_name, n
+            )
         except Exception as exc:
             return {
                 "schema": schema_name,

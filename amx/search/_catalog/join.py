@@ -113,11 +113,37 @@ class JoinMixin:
             return "possible"
         return "weak_hypothesis"
 
+    def target_has_catalog_columns(
+        self,
+        db_profile: str,
+        table_path: str,
+    ) -> bool:
+        """Return True iff ``catalog_entities`` has at least one column
+        row for ``schema.table`` under *db_profile*.
+
+        Used by the tool layer to decide whether name-overlap can
+        operate against the catalog as-is, or whether it needs to
+        feed in a live column list via ``base_cols_override``.
+        """
+        if "." not in (table_path or ""):
+            return False
+        schema_name, table_name = table_path.split(".", 1)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM catalog_entities WHERE db_profile=? "
+                "AND entity_kind='column' AND LOWER(schema_name)=LOWER(?) "
+                "AND LOWER(table_name)=LOWER(?) LIMIT 1",
+                (db_profile, schema_name, table_name),
+            ).fetchone()
+        return row is not None
+
     def name_overlap_joinable_tables(
         self,
         db_profile: str,
         table_path: str,
         limit: int = 12,
+        *,
+        base_cols_override: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Find joinable tables by shared column NAMES (no FK / no LLM).
 
@@ -137,26 +163,48 @@ class JoinMixin:
         (with ``relationship_type='name_overlap'`` and
         ``source='name_overlap'``) so the tool-agent layer can dispatch
         them through the existing renderer.
+
+        When *base_cols_override* is provided, skip the catalog lookup
+        for the target table's column list and use the supplied names
+        directly. This lets the tool layer rescue stale-catalog cases:
+        if ``catalog_entities`` has no column rows for the target,
+        callers can fetch them live via ``profile_table`` and feed
+        them in. Peer tables still come from the catalog — we only
+        rescue the *target*'s columns, not a full schema scan.
         """
         if "." not in (table_path or ""):
             return []
         schema_name, table_name = table_path.split(".", 1)
         with self._connect() as conn:
-            base = conn.execute(
-                "SELECT id FROM catalog_entities WHERE db_profile=? "
-                "AND entity_kind='table' AND LOWER(schema_name)=LOWER(?) "
-                "AND LOWER(table_name)=LOWER(?) LIMIT 1",
-                (db_profile, schema_name, table_name),
-            ).fetchone()
-            if not base:
-                return []
-            base_cols_rows = conn.execute(
-                "SELECT column_name FROM catalog_entities WHERE db_profile=? "
-                "AND entity_kind='column' AND LOWER(schema_name)=LOWER(?) "
-                "AND LOWER(table_name)=LOWER(?)",
-                (db_profile, schema_name, table_name),
-            ).fetchall()
-            base_cols = [str(r["column_name"]).lower() for r in base_cols_rows if r["column_name"]]
+            if base_cols_override is None:
+                base = conn.execute(
+                    "SELECT id FROM catalog_entities WHERE db_profile=? "
+                    "AND entity_kind='table' AND LOWER(schema_name)=LOWER(?) "
+                    "AND LOWER(table_name)=LOWER(?) LIMIT 1",
+                    (db_profile, schema_name, table_name),
+                ).fetchone()
+                if not base:
+                    return []
+                base_cols_rows = conn.execute(
+                    "SELECT column_name FROM catalog_entities WHERE db_profile=? "
+                    "AND entity_kind='column' AND LOWER(schema_name)=LOWER(?) "
+                    "AND LOWER(table_name)=LOWER(?)",
+                    (db_profile, schema_name, table_name),
+                ).fetchall()
+                base_cols = [
+                    str(r["column_name"]).lower() for r in base_cols_rows if r["column_name"]
+                ]
+            else:
+                # Deduplicate while preserving order — caller may pass
+                # a TableProfile column list which can contain dupes
+                # on backends that surface system columns twice.
+                seen: set[str] = set()
+                base_cols = []
+                for c in base_cols_override:
+                    lc = str(c or "").strip().lower()
+                    if lc and lc not in seen:
+                        seen.add(lc)
+                        base_cols.append(lc)
             if not base_cols:
                 return []
             placeholders = ",".join("?" for _ in base_cols)
