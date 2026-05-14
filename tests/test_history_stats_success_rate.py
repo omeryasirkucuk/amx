@@ -55,3 +55,25 @@ def test_success_rate_includes_review_and_partial_applied(
     assert stats["success_runs"] == 4
     assert stats["failed_runs"] == 1
     assert stats["ready_for_review_runs"] == 1
+
+
+def test_count_pending_review_runs_covers_ready_and_partial(
+    store: SQLiteHistoryStore,
+) -> None:
+    # The Studio Landing chip should treat both "nothing applied yet"
+    # and "some accepted, some still unreviewed" as work-awaiting-
+    # review. ``success``, ``completed``, ``failed`` and ``cancelled``
+    # carry no pending rows and must stay out of the count.
+    _seed_run(store, status="ready_for_review")
+    _seed_run(store, status="ready_for_review")
+    _seed_run(store, status="applied_partial")
+    _seed_run(store, status="success")
+    _seed_run(store, status="completed")
+    _seed_run(store, status="failed")
+    _seed_run(store, status="cancelled")
+
+    assert store.count_pending_review_runs() == 3
+    # With the default ``analyze.run`` filter dropped the count is the
+    # same here because every seeded row uses that command, but the
+    # call must accept ``None`` without raising.
+    assert store.count_pending_review_runs(command_filter=None) == 3

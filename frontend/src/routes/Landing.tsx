@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -86,14 +86,13 @@ export default function Landing() {
   const profileCount = profiles.data?.profiles?.length ?? 0;
   const hasLlm = !!ctx.data?.llm_model;
 
-  // Pending review hint: count runs that finished with
-  // ``ready_for_review`` (analyze / rerun / generate flows). Aggregated
-  // from the recent-runs feed -- good enough for the landing chip
-  // without adding a dedicated endpoint.
-  const pendingReviewCount = useMemo(() => {
-    const runs = recent.data?.runs ?? [];
-    return runs.filter((r) => (r.status ?? "") === "ready_for_review").length;
-  }, [recent.data]);
+  // Pending review hint: runs awaiting human review --
+  // ``ready_for_review`` (nothing applied yet) or ``applied_partial``
+  // (some rows accepted, others still unreviewed). The total is
+  // computed server-side against the full ``analysis_runs`` table so
+  // the chip stays honest even when older ready runs fall outside the
+  // recent-feed window the Landing pulls for its activity list.
+  const pendingReviewCount = recent.data?.pending_review_total ?? 0;
 
   // Audit card subtitle hint: count cross-user applies in the last
   // bunch. Today the SPA already pulls /api/history/apply-events for
