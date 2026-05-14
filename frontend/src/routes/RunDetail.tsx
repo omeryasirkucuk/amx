@@ -89,6 +89,11 @@ interface RunDetailPayload {
       buffer is lost (e.g. Studio restart mid-run) still shows real
       progress instead of "Waiting for the worker to begin…". */
   current_step_label?: string | null;
+  /** Captured by the executor when a worker fails. Drives the
+   *  failure-banner on the results tab so a 0.0s failed Re-Run /
+   *  Variations submit doesn't render as the generic "no per-column
+   *  suggestions" empty state. */
+  error_text?: string | null;
 }
 
 /** PR C (citation chain): machine-readable provenance for a
@@ -1731,6 +1736,10 @@ function PersistedRunView({ runId }: { runId: number }) {
             loading={results.isLoading}
             rows={results.data?.results ?? []}
             error={results.error as Error | undefined}
+            runStatus={(run.data?.status as string | undefined) ?? null}
+            runErrorText={
+              (run.data?.error_text as string | undefined) ?? null
+            }
             scope={{
               db_profile: run.data?.db_profile ?? null,
               database: run.data?.database ?? null,
@@ -2026,17 +2035,82 @@ interface PendingResponseLite {
   count: number;
 }
 
+/** Empty-state surface when a run finished with ``status="failed"``.
+ *
+ *  Surfaces the persisted ``analysis_runs.error_text`` (set by the
+ *  executor when a worker fails) so the user doesn't have to ssh
+ *  into the host and tail the Studio log to figure out why a 0.0s
+ *  Re-Run or Variations submit produced no rows. Includes a
+ *  "Copy traceback" button — the persisted message is often the
+ *  first line of an exception chain, so the user can paste it
+ *  into a bug report or grep for it in their own logs.
+ */
+function FailedRunCard({ errorText }: { errorText: string }) {
+  const [open, setOpen] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const onCopy = () => {
+    void navigator.clipboard.writeText(errorText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <Card>
+      <CardHeader title="Run failed" />
+      <CardBody>
+        <p className="text-sm text-ink-muted">
+          The worker stopped before producing any per-column
+          suggestions. The error below was captured on the run row
+          (``analysis_runs.error_text``).
+        </p>
+        <div className="mt-3 rounded-md border border-critical/30 bg-critical-soft/20 px-3 py-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-critical hover:underline"
+            >
+              {open ? "Hide error details" : "View error details"}
+            </button>
+            <button
+              type="button"
+              onClick={onCopy}
+              className="rounded border border-critical/40 px-2 py-0.5 text-[10px] uppercase tracking-wider text-critical hover:bg-critical-soft/40"
+            >
+              {copied ? "Copied" : "Copy traceback"}
+            </button>
+          </div>
+          {open && (
+            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink p-2 font-mono text-[11px] text-bg">
+              {errorText}
+            </pre>
+          )}
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
 function ResultsTab({
   runId,
   loading,
   rows,
   error,
+  runStatus,
+  runErrorText,
   scope,
 }: {
   runId: number;
   loading: boolean;
   rows: ResultRow[];
   error?: Error;
+  /** Run-level status from analysis_runs.status. When ``failed`` the
+   *  empty state surfaces the persisted error instead of the generic
+   *  "no per-column suggestions" copy. */
+  runStatus: string | null;
+  /** analysis_runs.error_text — populated by the executor when a
+   *  worker fails. Drives the failure-banner expandable. */
+  runErrorText: string | null;
   scope: {
     db_profile: string | null;
     database: string | null;
@@ -2527,12 +2601,26 @@ function ResultsTab({
     );
   }
   if (rows.length === 0) {
+    // Failed runs surface the persisted exception so the user doesn't
+    // have to ssh into the host and tail the studio log. Legitimate
+    // empty cases (missing-only filter dropped everything, scope was
+    // empty) keep the existing generic copy.
+    const isFailure = runStatus === "failed";
+    const trimmedError = (runErrorText ?? "").trim();
+    if (isFailure) {
+      return (
+        <FailedRunCard
+          errorText={trimmedError || "Worker reported no error message."}
+        />
+      );
+    }
     return (
       <Card>
         <CardBody className="text-sm text-ink-dim">
-          This run produced no per-column suggestions. (Run failed before
-          generating alternatives, or the missing-only filter dropped every
-          asset.)
+          This run produced no per-column suggestions. (The
+          missing-only filter dropped every asset, or the scope was
+          empty.) For executor failures, check the run's status —
+          failed runs surface the underlying error here.
         </CardBody>
       </Card>
     );
