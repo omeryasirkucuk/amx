@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from amx.agents._prompt_helpers import alternatives_mode_directive
 from amx.agents.base import (
     AgentContext,
     BaseAgent,
@@ -13,7 +14,7 @@ from amx.agents.base import (
     apply_logprob_confidence,
 )
 from amx.codebase.analyzer import CodebaseReport, CodeReference
-from amx.config import PromptDetail
+from amx.config import DEFAULT_ALTERNATIVES_MODE, PromptDetail
 from amx.llm.prompts import (
     ALTERNATIVES_LENGTH_RULE_REMINDER,
     length_rule,
@@ -71,6 +72,7 @@ Confidence rules:
 - LOW: only superficial or sparse references exist.
 Reasoning must mention the concrete code patterns that justify the description.
 
+{alternatives_mode_directive}
 {alternatives_length_reminder}
 Respond in this format for each column (one block per column):
 
@@ -92,6 +94,7 @@ def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
     style_profile: StyleProfile | None = None,
+    alternatives_mode: str = DEFAULT_ALTERNATIVES_MODE,
 ) -> str:
     n = max(1, min(5, n_alternatives))
     if n > 1:
@@ -107,6 +110,7 @@ def _build_system_prompt(
         _BASE_SYSTEM_PROMPT.format(
             desc_lines=desc_lines,
             description_length_rule=length_rule(description_verbosity),
+            alternatives_mode_directive=alternatives_mode_directive(alternatives_mode, n),
             alternatives_length_reminder=alternatives_length_reminder,
         ).strip()
         + "\n"
@@ -346,7 +350,10 @@ class CodeAgent(BaseAgent):
             f"Code references:\n\n" + "\n\n".join(all_code_blocks) + _user_instructions_block(ctx)
         )
         system = _build_system_prompt(
-            self._n_alternatives, self._description_verbosity, style_profile=self._style_profile
+            self._n_alternatives,
+            self._description_verbosity,
+            style_profile=self._style_profile,
+            alternatives_mode=getattr(self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE),
         )
         return [
             {"role": "system", "content": system},

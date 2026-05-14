@@ -75,6 +75,7 @@ class LLMOverrides(BaseModel):
     prompt_detail: str | None = None
     description_verbosity: str | None = None
     confidence_signal: str | None = None
+    alternatives_mode: str | None = None
     thinking_budget: int | None = Field(default=None, ge=0, le=64_000)
     logprob_high: float | None = Field(default=None, ge=0.0, le=1.0)
     logprob_medium: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -113,6 +114,20 @@ class LLMOverrides(BaseModel):
                 f"confidence_signal must be one of {sorted(CONFIDENCE_SIGNAL_CHOICES)}"
             )
         return v
+
+    @field_validator("alternatives_mode")
+    @classmethod
+    def _check_alternatives_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from amx.config import ALTERNATIVES_MODE_CHOICES
+
+        normalised = v.strip().lower() if isinstance(v, str) else v
+        if normalised not in ALTERNATIVES_MODE_CHOICES:
+            raise ValueError(
+                f"alternatives_mode must be one of {sorted(ALTERNATIVES_MODE_CHOICES)}"
+            )
+        return normalised
 
     def non_null(self) -> dict[str, Any]:
         """Return only the fields the caller actually set."""
@@ -1386,6 +1401,10 @@ def _column_details_for_table(
                 # RunDetail component can render conditionally
                 # without null guards in every consumer.
                 "citations": row.get("citations_json") or [],
+                # Diversity mode active when alternatives were generated.
+                # NULL on legacy rows; the Pending / Review components
+                # treat NULL as "mode not recorded" and skip the badge.
+                "alternatives_mode": row.get("alternatives_mode"),
             }
         )
     return out

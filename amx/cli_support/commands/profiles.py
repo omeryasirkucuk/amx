@@ -182,6 +182,35 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         else DEFAULT_CONFIDENCE_SIGNAL
     )
 
+    from amx.config import ALTERNATIVES_MODE_CHOICES, DEFAULT_ALTERNATIVES_MODE
+
+    try:
+        n_alt_value = int(n_alt)
+    except (TypeError, ValueError):
+        n_alt_value = int(getattr(defaults, "n_alternatives", 3) or 3)
+    if n_alt_value > 1:
+        info(
+            "Alternatives diversity mode — what kind of variation across "
+            "DESCRIPTION_1..N?\n"
+            f"  Choices: {', '.join(ALTERNATIVES_MODE_CHOICES)}\n"
+            "  semantic = different MEANINGS (default);  "
+            "lexical = same meaning, different wording.\n"
+            "  Press Enter to keep the default."
+        )
+        alternatives_mode_raw = ask(
+            "  Alternatives mode",
+            default=str(getattr(defaults, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE)),
+        )
+        alternatives_mode = (
+            alternatives_mode_raw.strip().lower()
+            if alternatives_mode_raw.strip().lower() in ALTERNATIVES_MODE_CHOICES
+            else DEFAULT_ALTERNATIVES_MODE
+        )
+    else:
+        # n=1 -> diversity mode has no effect; keep the default silently
+        # so the YAML still round-trips cleanly.
+        alternatives_mode = DEFAULT_ALTERNATIVES_MODE
+
     return LLMConfig(
         provider=provider,
         model=normalize_llm_model(provider, model),
@@ -195,6 +224,7 @@ def interactive_llm_block(defaults: LLMConfig | None = None) -> LLMConfig:
         logprob_high=float(high),
         logprob_medium=float(med),
         confidence_signal=confidence_signal,
+        alternatives_mode=alternatives_mode,
     )
 
 
@@ -839,6 +869,63 @@ def cmd_confidence_signal(cfg: AMXConfig, rest: list[str]) -> None:
     success(
         f"Confidence signal set to [info]{value}[/info] "
         f"({_CONFIDENCE_SIGNAL_DESCRIPTIONS[value]}) and saved "
+        f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
+    )
+
+
+_ALTERNATIVES_MODE_DESCRIPTIONS: dict[str, str] = {
+    "semantic": (
+        "alternatives explore meaningfully different INTERPRETATIONS of "
+        "the column (default — makes the confidence signal informative "
+        "because rankings are over distinct meanings)"
+    ),
+    "lexical": (
+        "alternatives express the SAME meaning with different wording — "
+        "use when the interpretation is already certain and only the "
+        "phrasing should vary"
+    ),
+}
+
+
+def cmd_alternatives_mode(cfg: AMXConfig, rest: list[str]) -> None:
+    """Show or set the active alternatives diversity mode.
+
+    Controls what kind of variation the LLM is asked to express across
+    ``DESCRIPTION_1..N`` slots: distinct candidate meanings
+    (``semantic``) or same-meaning phrasing variants (``lexical``).
+    """
+    from amx.config import ALTERNATIVES_MODE_CHOICES
+
+    choices_pipe = "|".join(ALTERNATIVES_MODE_CHOICES)
+
+    if not rest:
+        current = getattr(cfg.llm, "alternatives_mode", "semantic")
+        heading(f"Alternatives diversity mode: {current}")
+        lines = [
+            f"  {name:<10} - {_ALTERNATIVES_MODE_DESCRIPTIONS[name]}"
+            for name in ALTERNATIVES_MODE_CHOICES
+        ]
+        info(
+            "\n".join(lines) + f"\n\nCurrent: [info]{current}[/info] for LLM profile "
+            f"'{cfg.active_llm_profile or 'default'}'.\n"
+            f"Run [info]/alternatives-mode {choices_pipe}[/info] to change."
+        )
+        return
+
+    value = rest[0].lower().strip()
+    if value not in ALTERNATIVES_MODE_CHOICES:
+        error(
+            f"Unknown alternatives mode: {value!r}. Valid: {', '.join(ALTERNATIVES_MODE_CHOICES)}"
+        )
+        return
+
+    cfg.llm.alternatives_mode = value
+    if cfg.active_llm_profile and cfg.active_llm_profile in cfg.llm_profiles:
+        cfg.llm_profiles[cfg.active_llm_profile].alternatives_mode = value
+    cfg.save()
+    success(
+        f"Alternatives mode set to [info]{value}[/info] "
+        f"({_ALTERNATIVES_MODE_DESCRIPTIONS[value]}) and saved "
         f"for LLM profile '{cfg.active_llm_profile or 'default'}'."
     )
 

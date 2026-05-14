@@ -243,6 +243,7 @@ interface OverrideFormState {
   promptDetail: string;
   descriptionVerbosity: string;
   confidenceSignal: string;
+  alternativesMode: string;
   thinkingBudget: string;
   logprobHigh: string;
   logprobMedium: string;
@@ -258,6 +259,7 @@ const EMPTY_OVERRIDES: OverrideFormState = {
   promptDetail: "",
   descriptionVerbosity: "",
   confidenceSignal: "",
+  alternativesMode: "",
   thinkingBudget: "",
   logprobHigh: "",
   logprobMedium: "",
@@ -284,6 +286,7 @@ function seedFromDefaults(defaults: LLMProfileDefaults | null): OverrideFormStat
     promptDetail: defaults.prompt_detail ?? "",
     descriptionVerbosity: defaults.description_verbosity ?? "",
     confidenceSignal: defaults.confidence_signal ?? "",
+    alternativesMode: defaults.alternatives_mode ?? "",
     thinkingBudget: num(defaults.thinking_budget),
     logprobHigh: num(defaults.logprob_high),
     logprobMedium: num(defaults.logprob_medium),
@@ -336,6 +339,10 @@ function buildOverridesPayload(
   if (verbosity !== undefined) out.description_verbosity = verbosity;
   const confSig = pickString(form.confidenceSignal, defaults?.confidence_signal);
   if (confSig !== undefined) out.confidence_signal = confSig;
+  const altMode = pickString(form.alternativesMode, defaults?.alternatives_mode);
+  if (altMode === "semantic" || altMode === "lexical") {
+    out.alternatives_mode = altMode;
+  }
   const thinking = pickNumber(form.thinkingBudget, defaults?.thinking_budget);
   if (thinking !== undefined) out.thinking_budget = thinking;
   const high = pickNumber(form.logprobHigh, defaults?.logprob_high);
@@ -1087,6 +1094,8 @@ function AdvancedLLMOverrides({
         undefined,
       confidenceSignal:
         pickString(form.confidenceSignal, defaults?.confidence_signal) !== undefined,
+      alternativesMode:
+        pickString(form.alternativesMode, defaults?.alternatives_mode) !== undefined,
       thinkingBudget:
         pickNumber(form.thinkingBudget, defaults?.thinking_budget) !== undefined,
       logprobHigh:
@@ -1282,6 +1291,26 @@ function AdvancedLLMOverrides({
               >
                 {!form.confidenceSignal && <option value="">—</option>}
                 {["self_consistency", "logprob", "self_decl", "judge", "none"].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </OverrideRow>
+
+            <OverrideRow
+              label="Alternatives diversity mode"
+              hint="Semantic = each alternative is a meaningfully different interpretation. Lexical = same meaning, different wording. Has no effect when alternatives per column is 1."
+              defaultValue={fmt(defaults?.alternatives_mode)}
+              changed={diffMap.alternativesMode}
+            >
+              <select
+                value={form.alternativesMode}
+                onChange={(e) => update({ alternativesMode: e.target.value })}
+                className={selectCls}
+              >
+                {!form.alternativesMode && <option value="">—</option>}
+                {["semantic", "lexical"].map((v) => (
                   <option key={v} value={v}>
                     {v}
                   </option>

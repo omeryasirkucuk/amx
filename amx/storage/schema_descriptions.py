@@ -371,6 +371,16 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "RAG-derived citations backing this alternative. NULL on legacy "
             "rows and non-RAG sources — callers treat NULL and [] alike."
         ),
+        "alternatives_mode": (  # local-only
+            "Diversity mode that produced this row's alternatives. "
+            "``semantic`` (default) means the LLM was instructed to emit "
+            "meaningfully different interpretations of the column purpose; "
+            "``lexical`` means same-meaning phrasing variants only. NULL on "
+            "legacy rows recorded before the mode field shipped — review UI "
+            "treats NULL as 'mode not recorded'. Captured row-level (not just "
+            "in analysis_runs.settings_json) so a rerun that switches mode "
+            "yields an accurate per-row audit in /history and Studio."
+        ),
     },
     # ── app_events (local + shared) ───────────────────────────────────────
     "app_events": {

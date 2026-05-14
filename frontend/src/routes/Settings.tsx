@@ -813,6 +813,9 @@ function LlmProfileWizard({
   const [promptDetail, setPromptDetail] = useState("standard");
   const [descriptionVerbosity, setDescriptionVerbosity] = useState("brief");
   const [confidenceSignal, setConfidenceSignal] = useState("self_consistency");
+  const [alternativesMode, setAlternativesMode] = useState<"semantic" | "lexical">(
+    "semantic",
+  );
   const [logprobHigh, setLogprobHigh] = useState(0.85);
   const [logprobMedium, setLogprobMedium] = useState(0.5);
   const [hydratedFor, setHydratedFor] = useState<string | null>(null);
@@ -844,6 +847,10 @@ function LlmProfileWizard({
     setPromptDetail(String(d.prompt_detail || "standard"));
     setDescriptionVerbosity(String(d.description_verbosity || "brief"));
     setConfidenceSignal(String(d.confidence_signal || "self_consistency"));
+    {
+      const raw = String(d.alternatives_mode || "semantic").toLowerCase();
+      setAlternativesMode(raw === "lexical" ? "lexical" : "semantic");
+    }
     setLogprobHigh(Number(d.logprob_high ?? 0.85));
     setLogprobMedium(Number(d.logprob_medium ?? 0.5));
     setHydratedFor(editingName);
@@ -891,6 +898,7 @@ function LlmProfileWizard({
         prompt_detail: promptDetail,
         description_verbosity: descriptionVerbosity,
         confidence_signal: confidenceSignal,
+        alternatives_mode: alternativesMode,
         logprob_high: logprobHigh,
         logprob_medium: logprobMedium,
       };
@@ -1075,6 +1083,49 @@ function LlmProfileWizard({
               onChange={(e) => setNAlternatives(Number(e.target.value))}
               className="w-full"
             />
+          </Field>
+          <Field
+            label="Alternatives diversity mode"
+            hint={
+              nAlternatives <= 1
+                ? "Has no effect when alternatives per column is 1."
+                : "Semantic = each alternative is a meaningfully different interpretation. Lexical = same meaning, different wording."
+            }
+          >
+            <div
+              role="radiogroup"
+              aria-label="Alternatives diversity mode"
+              className="grid grid-cols-1 sm:grid-cols-2 gap-2"
+            >
+              {(["semantic", "lexical"] as const).map((mode) => {
+                const active = alternativesMode === mode;
+                const disabled = nAlternatives <= 1;
+                return (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    disabled={disabled}
+                    key={mode}
+                    onClick={() => setAlternativesMode(mode)}
+                    className={
+                      "rounded-md border px-3 py-2 text-left text-sm transition " +
+                      (active
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-surface-border bg-surface text-ink-base hover:border-accent/60") +
+                      (disabled ? " opacity-60 cursor-not-allowed" : "")
+                    }
+                  >
+                    <div className="font-medium capitalize">{mode}</div>
+                    <div className="text-[11px] text-ink-dim">
+                      {mode === "semantic"
+                        ? "Different MEANINGS (default)"
+                        : "Same meaning, different wording"}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </Field>
           <Field
             label={`Column batch size (${columnBatchSize})`}

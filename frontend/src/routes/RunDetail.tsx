@@ -163,6 +163,13 @@ interface ResultRow {
    *  ``?include_history=true``. Ordered by ``rerun_seq`` ASC, so
    *  ``history[history.length - 1]`` is always the latest version. */
   history?: ResultRow[];
+  /** Diversity mode that produced this row's alternatives.
+   *  ``semantic`` (default) means the LLM was asked for meaningfully
+   *  different interpretations; ``lexical`` means same-meaning phrasing
+   *  variants only. ``null`` / undefined on legacy rows recorded before
+   *  the column shipped — the review UI treats both as "mode not
+   *  recorded" and hides the badge. */
+  alternatives_mode?: "semantic" | "lexical" | null;
 }
 
 interface ResultsResponse {
@@ -215,6 +222,9 @@ interface ColumnDetail {
   /** PR C: provenance trail forwarded by the live SSE column detail
    *  shape so the live card matches the persisted Run detail page. */
   citations?: Citation[];
+  /** Diversity mode that produced these alternatives — see
+   *  ``ResultRow.alternatives_mode`` for the full contract. */
+  alternatives_mode?: "semantic" | "lexical" | null;
 }
 
 interface ActivityRow {
@@ -665,6 +675,39 @@ function LiveRunStream({ jobId }: { jobId: string }) {
   );
 }
 
+/** Tiny badge surfacing how this row's alternatives were generated.
+ *  Hidden when the value is missing (legacy rows, single-alternative
+ *  runs that never recorded the mode). Compact so it sits inline with
+ *  the existing confidence + logprob row. */
+function AlternativesModeBadge({
+  mode,
+}: {
+  mode?: "semantic" | "lexical" | null;
+}) {
+  if (mode !== "semantic" && mode !== "lexical") return null;
+  const label = mode === "semantic" ? "Semantic" : "Lexical";
+  const title =
+    mode === "semantic"
+      ? "Alternatives explore different MEANINGS"
+      : "Alternatives are same-meaning phrasing variants";
+  const tone =
+    mode === "semantic"
+      ? "border-accent/40 bg-accent-soft/40 text-accent"
+      : "border-surface-border bg-surface text-ink-muted";
+  return (
+    <span
+      title={title}
+      className={
+        "inline-flex items-center rounded border px-1.5 py-[1px] " +
+        "text-[10px] uppercase tracking-wider " +
+        tone
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
 function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
   const structuredAlts = normalizeStructuredAlternatives(detail.alternatives);
   const tone =
@@ -685,6 +728,7 @@ function ColumnSuggestionCard({ detail }: { detail: ColumnDetail }) {
             logprob {detail.logprob_score.toFixed(3)}
           </span>
         )}
+        <AlternativesModeBadge mode={detail.alternatives_mode} />
         {detail.source && (
           <span className="ml-auto text-[10px] uppercase tracking-wider text-ink-dim">
             {detail.source}

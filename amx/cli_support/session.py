@@ -59,6 +59,9 @@ from amx.cli_support.commands.profiles import (
     cmd_add_llm_profile as _cmd_add_llm_profile,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_alternatives_mode as _cmd_alternatives_mode,
+)
+from amx.cli_support.commands.profiles import (
     cmd_ask_context as _cmd_ask_context,
 )
 from amx.cli_support.commands.profiles import (
@@ -507,6 +510,11 @@ Commands (in order):
  11) /batch-context-columns [off|all|N] Show or set how many non-batch column names are added
                                          as context in every profile batch prompt
 
+  Alternatives diversity:
+ 12a) /alternatives-mode [mode]         Show or set alternatives diversity mode for the active profile
+                                          semantic = alternates explore DIFFERENT meanings (default)
+                                          lexical  = alternates are same-meaning phrasing variants
+
   Confidence:
  12) /logprob-thresholds [high] [med]   Show or set logprob confidence thresholds used to bucket
                                          per-column results into high / medium / low
@@ -917,6 +925,11 @@ def _handle_session_builtin(
         if not _require_namespace(head, namespace, "llm", "confidence-signal"):
             return True
         _cmd_confidence_signal(cfg, parts[1:])
+        return True
+    if head == "alternatives-mode":
+        if not _require_namespace(head, namespace, "llm", "alternatives-mode"):
+            return True
+        _cmd_alternatives_mode(cfg, parts[1:])
         return True
     if head == "style":
         if not _require_namespace(head, namespace, "llm", "style"):

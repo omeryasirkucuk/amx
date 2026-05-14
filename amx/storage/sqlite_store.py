@@ -244,6 +244,7 @@ class SQLiteHistoryStore:
                     effective_source_kind TEXT NOT NULL DEFAULT '',
                     superseded_at REAL,
                     rejection_reason TEXT NOT NULL DEFAULT '',
+                    alternatives_mode TEXT,
                     FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
                 )
                 """
@@ -298,6 +299,14 @@ class SQLiteHistoryStore:
                 # non-RAG sources -- callers treat both as "no
                 # citations" with no UI fallout.
                 "ALTER TABLE run_results ADD COLUMN citations_json TEXT",
+                # Diversity mode active when the row's alternatives
+                # were generated. ``semantic`` (default) means the LLM
+                # was instructed to produce meaningfully distinct
+                # interpretations; ``lexical`` means same-meaning
+                # phrasing variants only. Captured row-level (not just
+                # run-level) so a rerun that switches mode shows an
+                # accurate audit per row in the review UI.
+                "ALTER TABLE run_results ADD COLUMN alternatives_mode TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
@@ -1255,8 +1264,9 @@ class SQLiteHistoryStore:
                         run_id, saved_at, schema_name, table_name, column_name,
                         asset_kind, source, confidence, logprob_score, raw_logprob,
                         token_count, model_version, reasoning, alternatives_json,
-                        parent_result_id, rerun_seq, user_instructions, citations_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        parent_result_id, rerun_seq, user_instructions, citations_json,
+                        alternatives_mode
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -1287,6 +1297,12 @@ class SQLiteHistoryStore:
                             if s.get("citations")
                             else None
                         ),
+                        # ``alternatives_mode`` captures whether this row's
+                        # alternatives were generated for distinct meanings
+                        # (``semantic``) or wording variants (``lexical``).
+                        # ``None`` on legacy / non-LLM rows is treated as
+                        # "not recorded" by the review UI.
+                        s.get("alternatives_mode"),
                     ),
                 )
                 ids.append(int(cur.lastrowid))
