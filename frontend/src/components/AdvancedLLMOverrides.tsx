@@ -265,8 +265,12 @@ function CostOverrideRow({
 }) {
   const profileSet = profileValue !== null && profileValue !== undefined;
   const usingLive = !profileSet && liveValue !== null;
-  const renderBadge = (): { text: string; tone: "default" | "muted" } => {
-    if (changed) return { text: "override", tone: "default" };
+  // Mirrors :func:`OverrideRow`'s chip convention: always render the
+  // saved/resolved default; append ``· override`` only when the row
+  // is changed. The "default" tag varies slightly because the source
+  // text changes (profile / live price / em-dash) — but the structure
+  // is the same so the panel's right column scans uniformly.
+  const renderBaseChip = (): { text: string; tone: "default" | "muted" } => {
     if (profileSet)
       return {
         text: `profile $${(profileValue as number).toFixed(2)}`,
@@ -285,7 +289,7 @@ function CostOverrideRow({
     if (liveLoading) return { text: "loading…", tone: "muted" };
     return { text: "default —", tone: "muted" };
   };
-  const badge = renderBadge();
+  const base = renderBaseChip();
   const tooltip = profileSet
     ? `Profile-defined custom rate: $${(profileValue as number).toFixed(4)} / 1M tokens.`
     : usingLive
@@ -300,13 +304,14 @@ function CostOverrideRow({
             "font-mono text-[10px] tabular-nums",
             changed
               ? "text-accent"
-              : badge.tone === "muted"
+              : base.tone === "muted"
                 ? "text-ink-dim"
                 : "text-ink-muted",
           )}
           title={tooltip}
         >
-          {badge.text}
+          <span>{base.text}</span>
+          {changed && <span className="ml-1">· override</span>}
         </span>
       </div>
       {children}
@@ -316,7 +321,13 @@ function CostOverrideRow({
 
 /** One row in the disclosure: label + hint icon, default chip on
  *  the right, input on the next line. Single column to fit the
- *  narrow side card without wrapping the labels. */
+ *  narrow side card without wrapping the labels.
+ *
+ *  Header-right chip convention: the saved profile's value is always
+ *  shown as ``default <value>``; when the field has been changed
+ *  from that default ``· override`` is appended. Every knob in the
+ *  panel renders the same pattern so the user can scan one column
+ *  and tell at a glance which rows are overridden. */
 function OverrideRow({
   label,
   hint,
@@ -344,7 +355,8 @@ function OverrideRow({
           )}
           title={`Profile default: ${defaultValue}`}
         >
-          {changed ? "override" : `default ${defaultValue}`}
+          <span>default {defaultValue}</span>
+          {changed && <span className="ml-1">· override</span>}
         </span>
       </div>
       {children}
@@ -387,6 +399,11 @@ export default function AdvancedLLMOverrides({
   const profileOverrideActive = form.profile.trim().length > 0;
   const diffMap = useMemo(
     () => ({
+      // ``profile`` participates in the override count so the
+      // disclosure header reflects the swap and the "Reset to
+      // profile defaults" link stays visible even when *only* the
+      // profile was changed.
+      profile: form.profile.trim().length > 0,
       temperature:
         pickNumber(form.temperature, defaults?.temperature) !== undefined,
       maxTokens:
@@ -487,13 +504,6 @@ export default function AdvancedLLMOverrides({
       {open && (
         <div className="space-y-3 border-t border-border px-3 py-3 text-xs">
           {prelude}
-          <p className="text-[11px] text-ink-dim">
-            Source profile{" "}
-            <span className="font-mono text-ink-muted">
-              {profileName ?? "—"}
-            </span>
-            . Edit a field to override for this run only.
-          </p>
 
           <div className={sectionCls}>
             <h4 className="text-[10px] font-semibold uppercase tracking-wider text-ink-dim">
