@@ -239,6 +239,11 @@ interface ResultRow {
    *  the column shipped — the review UI treats both as "mode not
    *  recorded" and hides the badge. */
   alternatives_mode?: "semantic" | "lexical" | null;
+  /** Under-production audit — populated when the LLM (or parser)
+   *  returned fewer alternatives than the active profile asked for.
+   *  Drives the inline ⚠ chip on the version chip; ``null`` on the
+   *  success path so absence is meaningful. */
+  production_warning?: string | null;
 }
 
 interface ResultsResponse {
@@ -266,6 +271,12 @@ interface DescendantRunEntry {
   mode: string | null;
   model: string | null;
   provider: string | null;
+  /** Confidence signal active when this descendant ran
+   *  (``self_consistency`` / ``logprob`` / ``judge`` / ``self_decl``
+   *  / ``none``). Surfaces in the version-group header so the user
+   *  understands which badge type to expect on this version's
+   *  alternative rows. Null on legacy / non-LLM rows. */
+  confidence_signal?: string | null;
   /** ``analysis_runs.status`` — drives the refresh-safe
    *  ``Generating variations…`` indicator. When the page mounts
    *  after a refresh during execution, ``running`` here keeps the
@@ -297,6 +308,13 @@ interface VersionInfo {
   model: string | null;
   seedAlternativeId: string | null;
   seedAlternativeText: string | null;
+  /** Active confidence signal for this version (e.g.
+   *  ``self_consistency``). Surfaces in the version-group banner so
+   *  badge-type differences between versions are immediately
+   *  understandable to the reviewer. Null on v1 (the original run's
+   *  signal is already visible via row-level badges) and on
+   *  descendant rows that didn't carry signal info. */
+  confidenceSignal: string | null;
 }
 
 type Tab = "summary" | "results" | "scope" | "settings";
@@ -2408,6 +2426,7 @@ function ResultsTab({
             model: p.entry.model,
             seedAlternativeId: p.entry.seed_alternative_id,
             seedAlternativeText: p.entry.seed_alternative_text ?? null,
+            confidenceSignal: p.entry.confidence_signal ?? null,
           });
         }
       });
@@ -2426,6 +2445,7 @@ function ResultsTab({
           model: null,
           seedAlternativeId: null,
           seedAlternativeText: null,
+          confidenceSignal: null,
         });
       }
     }
@@ -4095,6 +4115,25 @@ function ResultRowItemImpl({
             <Badge tone="info">{versionInfo.versionLabel}</Badge>
           </span>
         )}
+        {/* Under-production warning chip — surfaces when the LLM (or
+            the parser) returned fewer alternatives than the active
+            profile's n_alternatives. Hover for the two possible
+            causes (LLM under-produced vs. parser strict-mode dropped
+            one). Hidden on the success path so it's a clear signal
+            when present, not visual noise on every row. */}
+        {row.production_warning && (
+          <span
+            title={
+              `${row.production_warning}. Two possible causes: (1) the LLM ` +
+              "genuinely returned fewer blocks than requested, or (2) the " +
+              "output parser dropped a malformed block silently. Check the " +
+              "backend studio.log for the raw response if the count keeps " +
+              "missing the requested N."
+            }
+          >
+            <Badge tone="warning">⚠ {row.production_warning}</Badge>
+          </span>
+        )}
         {/* Legacy in-place swap chip — only kept for runs without
             descendants where ``include_history=true`` brought back
             an older re-run chain. Hidden when versionInfo is set
@@ -4184,6 +4223,19 @@ function ResultRowItemImpl({
             </Link>
             {versionInfo.mode && (
               <span>· {versionInfo.mode}</span>
+            )}
+            {versionInfo.confidenceSignal && (
+              <span
+                className="font-mono"
+                title={
+                  "Confidence signal active when this version ran. " +
+                  "Badge types between v1 and vN can legitimately differ; " +
+                  "the badge type on each row matches the signal active " +
+                  "when that row was produced."
+                }
+              >
+                · {versionInfo.confidenceSignal}
+              </span>
             )}
             {versionInfo.model && (
               <span className="font-mono">· {versionInfo.model}</span>

@@ -218,3 +218,283 @@ class TestVariationsOneItem:
         alt_texts = [(alt if isinstance(alt, str) else alt.get("text", "")) for alt in alts]
         assert seed not in alt_texts, alt_texts
         assert len(alt_texts) == 2
+
+
+class TestVariationsStructuredShapeAndWarning:
+    """Bug-fix regression: ``_update_variation_columns`` previously
+    overwrote ``alternatives_json`` with a plain ``list[str]``,
+    stripping per-alternative confidence signal data and leaving v2
+    / v3 rows badge-less in the Studio. Pin the fix.
+
+    Same tests also pin the ``production_warning`` flag — the new
+    Bug-1 column populated when the LLM (or parser) returned fewer
+    alternatives than the active profile asked for."""
+
+    def test_structured_alternatives_preserved_after_seed_filter(
+        self, store: SQLiteHistoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_id, rid = _seed_original_run(store)
+        seed = "Geographic reference table storing coordinates."
+
+        def fake_rerun_items(*args, **kwargs):
+            new_run_id = store.create_run(
+                command="rerun",
+                mode="single",
+                db_backend="postgresql",
+                db_profile="local",
+                llm_provider="openai",
+                llm_model="gpt-x",
+                scope={"public": ["orders"]},
+                settings={"trigger": "variations", "parent_run_id": run_id},
+            )
+            seq = store.next_rerun_seq(rid)
+            # Persist with the STRUCTURED shape — ``alternative_scores``
+            # tells ``build_alternatives_json`` to emit per-alt dicts.
+            from amx.llm.confidence import AlternativeScore
+
+            scores = [
+                AlternativeScore(
+                    text=seed,
+                    signal="self_consistency",
+                    score=0.85,
+                    band="high",
+                ),
+                AlternativeScore(
+                    text="Variation A — coords stored physically.",
+                    signal="self_consistency",
+                    score=0.72,
+                    band="medium",
+                ),
+                AlternativeScore(
+                    text="Variation B — coords mapped logically.",
+                    signal="self_consistency",
+                    score=0.65,
+                    band="medium",
+                ),
+            ]
+            [new_id] = store.save_run_results(
+                int(new_run_id),
+                [
+                    {
+                        "schema": "public",
+                        "table": "orders",
+                        "column": "status",
+                        "asset_kind": "column",
+                        "source": "rerun",
+                        "confidence": "high",
+                        "alternatives": [s.text for s in scores],
+                        "alternative_scores": [s.to_json() for s in scores],
+                        "alternatives_mode": kwargs["llm_overrides"][
+                            "alternatives_mode"
+                        ],
+                        "model": "gpt-x",
+                        "provider": "openai",
+                        "parent_result_id": rid,
+                        "rerun_seq": seq,
+                    }
+                ],
+            )
+            outcome = RerunOutcome(
+                target_result_id=rid,
+                new_result_id=int(new_id),
+                rerun_seq=int(seq),
+                schema="public",
+                table="orders",
+                column="status",
+                asset_kind="column",
+                alternatives=[s.text for s in scores],
+                confidence="high",
+                logprob_score=None,
+                source="rerun",
+            )
+            return int(new_run_id), [outcome]
+
+        monkeypatch.setattr(var_mod, "rerun_items", fake_rerun_items)
+
+        cfg = AMXConfig(
+            llm=LLMConfig(provider="openai", model="gpt-x", api_key="k", n_alternatives=3)
+        )
+        new_run_id, _ = variations_one_item(
+            cfg,
+            original_run_id=run_id,
+            result_id=rid,
+            alternative_index=1,
+            seed_text=seed,
+            mode="lexical",
+        )
+
+        rows = store.get_run_results(new_run_id)
+        new_row = rows[0]
+        alts = new_row["alternatives_json"]
+        # Each surviving entry must be a structured dict — that's the
+        # whole point of this fix. A plain ``list[str]`` here means
+        # the post-step overwrite has regressed and v2/v3 rows will
+        # render without confidence badges in the Studio.
+        assert all(isinstance(a, dict) for a in alts), (
+            f"alternatives_json lost structured shape: {alts!r}. "
+            "Re-introduces the badge-less v2/v3 regression."
+        )
+        # Per-alternative signal preserved on the surviving entries.
+        for entry in alts:
+            assert entry.get("signal") == "self_consistency"
+        # Seed dropped from the structured list (no entry with the
+        # seed text remains).
+        seed_texts = [a.get("text", "") for a in alts]
+        assert seed not in seed_texts
+        # n_alternatives=3 with seed echo (1 dropped) ⇒ expected 2;
+        # this fixture returns 2 so no warning.
+        assert new_row.get("production_warning") in (None, "")
+
+    def test_production_warning_fires_on_under_production(
+        self, store: SQLiteHistoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the LLM returns 2 of 3 requested and NO seed echo,
+        ``production_warning`` carries
+        ``produced 2 of 3 requested``."""
+        run_id, rid = _seed_original_run(store)
+        seed = "completely unique seed nothing matches"
+
+        def fake_rerun_items(*args, **kwargs):
+            new_run_id = store.create_run(
+                command="rerun",
+                mode="single",
+                db_backend="postgresql",
+                db_profile="local",
+                llm_provider="openai",
+                llm_model="gpt-x",
+                scope={"public": ["orders"]},
+                settings={"trigger": "variations", "parent_run_id": run_id},
+            )
+            seq = store.next_rerun_seq(rid)
+            # Only TWO alts — under-production. Neither matches seed.
+            [new_id] = store.save_run_results(
+                int(new_run_id),
+                [
+                    {
+                        "schema": "public",
+                        "table": "orders",
+                        "column": "status",
+                        "asset_kind": "column",
+                        "source": "rerun",
+                        "confidence": "high",
+                        "alternatives": ["only-one", "only-two"],
+                        "alternatives_mode": kwargs["llm_overrides"][
+                            "alternatives_mode"
+                        ],
+                        "model": "gpt-x",
+                        "provider": "openai",
+                        "parent_result_id": rid,
+                        "rerun_seq": seq,
+                    }
+                ],
+            )
+            outcome = RerunOutcome(
+                target_result_id=rid,
+                new_result_id=int(new_id),
+                rerun_seq=int(seq),
+                schema="public",
+                table="orders",
+                column="status",
+                asset_kind="column",
+                alternatives=["only-one", "only-two"],
+                confidence="high",
+                logprob_score=None,
+                source="rerun",
+            )
+            return int(new_run_id), [outcome]
+
+        monkeypatch.setattr(var_mod, "rerun_items", fake_rerun_items)
+
+        cfg = AMXConfig(
+            llm=LLMConfig(provider="openai", model="gpt-x", api_key="k", n_alternatives=3)
+        )
+        new_run_id, _ = variations_one_item(
+            cfg,
+            original_run_id=run_id,
+            result_id=rid,
+            alternative_index=0,
+            seed_text=seed,
+            mode="semantic",
+        )
+
+        new_row = store.get_run_results(new_run_id)[0]
+        warning = new_row.get("production_warning")
+        assert warning == "produced 2 of 3 requested", (
+            f"Expected production_warning='produced 2 of 3 requested', got "
+            f"{warning!r}"
+        )
+
+    def test_no_warning_on_full_set(
+        self, store: SQLiteHistoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Three-of-three (with seed echo removing one): expected
+        count is 2 and we got 2 ⇒ NO warning."""
+        run_id, rid = _seed_original_run(store)
+        seed = "Sample seed text"
+
+        def fake_rerun_items(*args, **kwargs):
+            new_run_id = store.create_run(
+                command="rerun",
+                mode="single",
+                db_backend="postgresql",
+                db_profile="local",
+                llm_provider="openai",
+                llm_model="gpt-x",
+                scope={"public": ["orders"]},
+                settings={"trigger": "variations", "parent_run_id": run_id},
+            )
+            seq = store.next_rerun_seq(rid)
+            [new_id] = store.save_run_results(
+                int(new_run_id),
+                [
+                    {
+                        "schema": "public",
+                        "table": "orders",
+                        "column": "status",
+                        "asset_kind": "column",
+                        "source": "rerun",
+                        "confidence": "high",
+                        "alternatives": [seed, "v-A", "v-B"],
+                        "alternatives_mode": kwargs["llm_overrides"][
+                            "alternatives_mode"
+                        ],
+                        "model": "gpt-x",
+                        "provider": "openai",
+                        "parent_result_id": rid,
+                        "rerun_seq": seq,
+                    }
+                ],
+            )
+            return int(new_run_id), [
+                RerunOutcome(
+                    target_result_id=rid,
+                    new_result_id=int(new_id),
+                    rerun_seq=int(seq),
+                    schema="public",
+                    table="orders",
+                    column="status",
+                    asset_kind="column",
+                    alternatives=[seed, "v-A", "v-B"],
+                    confidence="high",
+                    logprob_score=None,
+                    source="rerun",
+                )
+            ]
+
+        monkeypatch.setattr(var_mod, "rerun_items", fake_rerun_items)
+
+        cfg = AMXConfig(
+            llm=LLMConfig(provider="openai", model="gpt-x", api_key="k", n_alternatives=3)
+        )
+        new_run_id, _ = variations_one_item(
+            cfg,
+            original_run_id=run_id,
+            result_id=rid,
+            alternative_index=0,
+            seed_text=seed,
+            mode="semantic",
+        )
+        assert store.get_run_results(new_run_id)[0].get("production_warning") in (
+            None,
+            "",
+        )
