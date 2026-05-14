@@ -2619,8 +2619,15 @@ class SQLiteHistoryStore:
             total_runs = conn.execute(
                 f"SELECT COUNT(*) AS n FROM analysis_runs {where}", params
             ).fetchone()["n"]
+            # "Success rate" reads as "did the analysis finish without
+            # erroring?" — not "did the user apply the suggestions?".
+            # ``ready_for_review`` and ``applied_partial`` both mean the
+            # pipeline ran to completion; treating them as non-success
+            # made the Overview tile stick at 0% for users who reviewed
+            # rather than auto-applied.
             ok_runs = conn.execute(
-                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status = 'success'"
+                "SELECT COUNT(*) AS n FROM analysis_runs WHERE status IN"
+                " ('success', 'applied_partial', 'ready_for_review', 'completed')"
                 + (" AND command = ?" if command_filter else ""),
                 params,
             ).fetchone()["n"]
