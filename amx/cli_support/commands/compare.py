@@ -890,6 +890,8 @@ def _collect_per_column_long(
     results_by_run: dict[int, list[dict[str, Any]]],
     column_filter: str = "",
 ) -> list[dict[str, Any]]:
+    from amx.storage.sqlite_store import parse_alternatives_json
+
     asset_map = _build_asset_map(runs, results_by_run, column_filter)
     rows: list[dict[str, Any]] = []
     for asset_key in sorted(asset_map.keys()):
@@ -899,6 +901,14 @@ def _collect_per_column_long(
             row = runs_for_asset.get(int(run["id"]))
             if not row:
                 continue
+            # ``alternatives`` carries the full DESCRIPTION_1..N list so the
+            # Studio Compare pivot can render mode-specific divergence
+            # alongside the headline ``description`` (DESCRIPTION_1). The
+            # CLI's text-renderer still reads ``description`` only, so this
+            # is additive on the wire. ``alternatives_mode`` is the row's
+            # recorded diversity mode (semantic | lexical | NULL on legacy
+            # rows) — Studio shows it once per run column header rather
+            # than repeating on every cell.
             rows.append(
                 {
                     "schema": schema_n,
@@ -909,6 +919,8 @@ def _collect_per_column_long(
                     "confidence": str(row.get("confidence") or ""),
                     "logprob_score": row.get("logprob_score"),
                     "token_count": row.get("token_count"),
+                    "alternatives": parse_alternatives_json(row.get("alternatives_json")),
+                    "alternatives_mode": row.get("alternatives_mode"),
                 }
             )
     return rows

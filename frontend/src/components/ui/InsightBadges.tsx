@@ -55,3 +55,74 @@ export function ConfidencePill({
     </span>
   );
 }
+
+/** Per-alternative band visual vocabulary. Lifted out of RunDetail so
+ *  RunsCompare and any future surface that renders ``alternatives_json``
+ *  rows reads with the same glyphs / tones. */
+export const ALT_BAND_STYLES: Record<
+  string,
+  { stripe: string; pill: string; label: string }
+> = {
+  HIGH: {
+    stripe: "bg-positive",
+    pill: "border border-positive/40 bg-positive-soft text-positive",
+    label: "HIGH",
+  },
+  MED: {
+    stripe: "bg-warning",
+    pill: "border border-warning/40 bg-warning-soft text-warning",
+    label: "MED",
+  },
+  LOW: {
+    stripe: "bg-critical",
+    pill: "border border-critical/40 bg-critical-soft text-critical",
+    label: "LOW",
+  },
+};
+
+/** Short tag the per-alternative pill prefixes (``SC: HIGH 0.78``) so
+ *  the reader always knows which scorer drove the value. */
+export const ALT_SIGNAL_ABBREV: Record<string, string> = {
+  logprob: "LP",
+  self_consistency: "SC",
+  self_decl: "SD",
+  judge: "JU",
+};
+
+/** Compact per-alternative score pill rendered in stacked alternatives
+ *  lists. The label is ``{SIGNAL_ABBREV}: {band} {score}`` so the user
+ *  always knows which scorer drove the value — e.g. ``SC: HIGH 0.78``.
+ *  Falls back to no pill when the alternative carries no band (legacy
+ *  ``list[str]`` rows or runs whose ``confidence_signal`` is ``"none"``).
+ *
+ *  Distinct from the rich ``ConfidenceBadge`` in RunDetail which adds a
+ *  click-to-expand popup with the full signal breakdown; this compact
+ *  variant is the right fit for narrow Compare cells. */
+export function AltScoreBadge({
+  band,
+  score,
+  signal,
+}: {
+  band?: string | null;
+  score?: number | null;
+  signal?: string | null;
+}) {
+  const upper = (band || "").toUpperCase();
+  if (!upper || !ALT_BAND_STYLES[upper]) return null;
+  const style = ALT_BAND_STYLES[upper];
+  const scoreText = typeof score === "number" ? score.toFixed(2) : null;
+  const abbrev = signal ? ALT_SIGNAL_ABBREV[signal] ?? null : null;
+  return (
+    <span
+      className={
+        "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 " +
+        "text-[10px] font-medium " +
+        style.pill
+      }
+    >
+      {abbrev && <span className="opacity-70">{abbrev}:</span>}
+      {style.label}
+      {scoreText && <span className="opacity-70">{scoreText}</span>}
+    </span>
+  );
+}
