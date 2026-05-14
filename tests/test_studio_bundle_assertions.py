@@ -178,13 +178,23 @@ class TestRunDetailLineageAndDescendants:
             "LineageChip tooltip copy is missing."
         )
 
-    def test_descendants_panel_title_present(self) -> None:
-        """The inline panel below v1 results carries this header so
-        the user knows v2/v3 cards live there. Removing it would
-        regress Issue 2 of the lineage UI spec."""
+    def test_descendants_panel_replaced_by_inline_groups(self) -> None:
+        """The previous run-wide ``Other versions`` panel that sat
+        below the results table is gone — replaced by per-asset
+        version groups inside each ``ResultRowItem`` so v1 + v2
+        stack inside the same asset card. The new layout is
+        anchored on the ``variations of`` / ``re-run`` group labels
+        emitted by ``VersionGroupsSection``."""
         text = _all_bundle_text()
-        assert "Other versions" in text
-        assert "Each card below" in text or "fall back to v1" in text
+        # The old panel's signature copy must be gone.
+        assert "Variations + Re-Runs derived from this run" not in text, (
+            "The deprecated bottom ``Other versions`` panel is back. "
+            "Per-asset inline version groups (in ResultRowItem) replace "
+            "it; the run-wide panel left users scrolling past the "
+            "entire results list to compare v1 vs v2."
+        )
+        # The new per-asset group labels anchor the new layout.
+        assert "variations of" in text or "re-run" in text
 
     def test_results_secondary_count_line_present(self) -> None:
         """The 'Showing N original · M variations' secondary line

@@ -2291,6 +2291,42 @@ function ResultsTab({
     return m;
   }, [pending.data]);
 
+  // Per-asset descendant index — joins ``descendants[i].rows[]`` to
+  // each v1 row by ``(schema, table, column)`` so the inline asset
+  // card can render v1 + v2/v3 stacked vertically. Re-Run descendants
+  // typically carry one matching row per asset; Variations descendants
+  // carry the one seeded asset. Rows in a descendant that don't match
+  // any v1 asset key are dropped here (rare — would only happen if the
+  // descendant somehow targeted an asset the parent didn't touch).
+  const versionsByResultId = useMemo(() => {
+    const out = new Map<number, AssetVersionEntry[]>();
+    const v1ByAssetKey = new Map<string, number>();
+    for (const r of rows) {
+      const key = `${r.schema_name}.${r.table_name}.${r.column_name ?? "__table__"}`;
+      v1ByAssetKey.set(key, r.id);
+    }
+    for (const desc of descendants) {
+      for (const dr of desc.rows ?? []) {
+        const key = `${dr.schema_name}.${dr.table_name}.${dr.column_name ?? "__table__"}`;
+        const v1Id = v1ByAssetKey.get(key);
+        if (v1Id == null) continue;
+        const arr = out.get(v1Id) ?? [];
+        arr.push({
+          versionLabel: desc.version_label,
+          runId: desc.run_id,
+          kind: desc.kind,
+          seed_alternative_id: desc.seed_alternative_id,
+          seed_alternative_text: desc.seed_alternative_text ?? null,
+          mode: desc.mode,
+          model: desc.model,
+          row: dr,
+        });
+        out.set(v1Id, arr);
+      }
+    }
+    return out;
+  }, [rows, descendants]);
+
   const queueApply = useMutation({
     mutationFn: () => {
       // Use the persisted scope when available; otherwise fall back
@@ -3176,6 +3212,7 @@ function ResultsTab({
                     }
                     onToggleReviewSelected={toggleReviewSelected}
                     isKeynavFocused={r.id != null && keynavFocusId === r.id}
+                    versions={versionsByResultId.get(r.id) ?? []}
                   />
                 );
               })}
@@ -3192,166 +3229,19 @@ function ResultsTab({
           pageSize={RESULTS_PAGE_SIZE}
         />
       )}
-      {descendants.length > 0 && (
-        <DescendantsPanel descendants={descendants} />
-      )}
+      {/* The per-asset ``VersionGroupsSection`` inside each
+        ``ResultRowItem`` now renders v1 + v2/v3 stacked inline. The
+        previous run-wide ``DescendantsPanel`` is intentionally
+        dropped — it duplicated the same data on a panel below the
+        results table with no per-asset context, and a user looking
+        at the country row had to scroll past the entire results
+        list to compare v1 vs v2. The component definition below
+        stays in the file (now unused but retained) until a
+        follow-up cleanup pass. */}
     </div>
   );
 }
 
-/** Inline lineage panel — renders each Variations / Re-Run descendant
- *  as a collapsible card below the v1 results so the user can see
- *  alternatives across versions in one place. Newest descendant is
- *  auto-expanded; older versions stay collapsed by default. */
-function DescendantsPanel({
-  descendants,
-}: {
-  descendants: DescendantRunEntry[];
-}) {
-  // Newest = highest version_label (vN with largest N). The server
-  // emits in collection order so the LAST entry is the newest.
-  const newestRunId = descendants[descendants.length - 1]?.run_id ?? -1;
-  const initialOpen = new Set([newestRunId]);
-  const [openRuns, setOpenRuns] = useState<Set<number>>(initialOpen);
-  const toggle = (rid: number) =>
-    setOpenRuns((prev) => {
-      const next = new Set(prev);
-      if (next.has(rid)) next.delete(rid);
-      else next.add(rid);
-      return next;
-    });
-  return (
-    <Card>
-      <CardHeader title="Other versions" />
-      <CardBody>
-        <p className="mb-2 text-[11px] text-ink-dim">
-          Variations + Re-Runs derived from this run. Each card below
-          is an independent run with its own alternatives — collapse
-          to fall back to v1 above.
-        </p>
-        <ul className="space-y-3">
-          {descendants.map((entry) => (
-            <li
-              key={entry.run_id}
-              id={`version-${entry.version_label}`}
-              className="rounded-md border border-surface-border bg-surface"
-            >
-              <button
-                type="button"
-                onClick={() => toggle(entry.run_id)}
-                className="flex w-full items-center justify-between gap-3 rounded-t-md px-3 py-2 text-left hover:bg-surface-subtle/40"
-              >
-                <span className="inline-flex items-center gap-2 text-xs">
-                  <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent">
-                    {entry.version_label}
-                  </span>
-                  <span className="text-ink">
-                    {entry.kind === "variations" ? "Variations" : "Re-Run"}
-                  </span>
-                  <Link
-                    to={`/runs/${entry.run_id}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="font-mono text-[11px] text-accent hover:underline"
-                    title="Open this version on its own detail page"
-                  >
-                    run #{entry.run_id}
-                  </Link>
-                  {entry.kind === "variations" && entry.seed_alternative_id && (
-                    <span className="text-[11px] text-ink-dim">
-                      · seed{" "}
-                      {(() => {
-                        const id = entry.seed_alternative_id ?? "";
-                        const colon = id.lastIndexOf(":");
-                        if (colon === -1) return "?";
-                        const idx = Number(id.slice(colon + 1));
-                        return Number.isFinite(idx)
-                          ? String.fromCharCode(65 + idx)
-                          : "?";
-                      })()}
-                    </span>
-                  )}
-                  {entry.mode && (
-                    <span className="text-[11px] text-ink-dim">
-                      · {entry.mode}
-                    </span>
-                  )}
-                  {entry.model && (
-                    <span className="font-mono text-[10px] text-ink-dim">
-                      · {entry.model}
-                    </span>
-                  )}
-                  <span className="text-[11px] text-ink-dim">
-                    · {entry.rows.length}{" "}
-                    {entry.rows.length === 1 ? "row" : "rows"}
-                  </span>
-                </span>
-                <span className="text-[10px] text-ink-dim">
-                  {openRuns.has(entry.run_id) ? "▼ collapse" : "▶ expand"}
-                </span>
-              </button>
-              {openRuns.has(entry.run_id) && (
-                <div className="border-t border-surface-border px-3 py-2">
-                  {entry.kind === "variations" &&
-                    entry.seed_alternative_text && (
-                      <p className="mb-2 text-[11px] italic text-ink-dim">
-                        Seed:{" "}
-                        <span className="font-mono not-italic text-ink-muted">
-                          "{entry.seed_alternative_text}"
-                        </span>
-                      </p>
-                    )}
-                  <ul className="space-y-1.5">
-                    {entry.rows.map((row) => {
-                      const alts = normalizeAlternatives(
-                        row.alternatives_json,
-                      );
-                      const label = [
-                        row.schema_name,
-                        row.table_name,
-                        row.column_name,
-                      ]
-                        .filter(Boolean)
-                        .join(".");
-                      return (
-                        <li
-                          key={row.id}
-                          className="rounded border border-surface-border bg-surface-subtle/30 px-2.5 py-1.5"
-                        >
-                          <div className="font-mono text-[11px] text-ink-muted">
-                            {label || `(row #${row.id})`}
-                          </div>
-                          <ul className="mt-1 space-y-0.5">
-                            {alts.length === 0 ? (
-                              <li className="text-[11px] italic text-ink-dim">
-                                (no alternatives saved)
-                              </li>
-                            ) : (
-                              alts.map((alt, i) => (
-                                <li
-                                  key={i}
-                                  className="text-[11px] text-ink"
-                                >
-                                  <span className="mr-1.5 font-mono text-ink-dim">
-                                    {String.fromCharCode(65 + i)}
-                                  </span>
-                                  {alt}
-                                </li>
-                              ))
-                            )}
-                          </ul>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-      </CardBody>
-    </Card>
-  );
-}
 
 /** PR B — paginated controls under the results list. Renders a
  * 7-slot Prev/page-tokens/Next bar with elided middle when the
@@ -3599,6 +3489,22 @@ function BulkRerunOrchestrator({
 // is fine because the parent already memoises ``pendingByResultId``
 // and the callback closures are recreated only when the underlying
 // mutation hooks change.
+/** One entry in the per-asset stacked version groups. Mirrors the
+ *  shape `DescendantsPanel` previously consumed but scoped to a
+ *  single asset — `groupResultsByAsset` in `ResultsTab` builds
+ *  these by joining ``descendants[i].rows`` to the v1 row by
+ *  ``(schema, table, column)``. */
+interface AssetVersionEntry {
+  versionLabel: string;
+  runId: number;
+  kind: "variations" | "rerun";
+  seed_alternative_id: string | null;
+  seed_alternative_text: string | null;
+  mode: string | null;
+  model: string | null;
+  row: ResultRow;
+}
+
 function ResultRowItemImpl({
   row,
   dbProfile,
@@ -3614,6 +3520,7 @@ function ResultRowItemImpl({
   isReviewSelected = false,
   onToggleReviewSelected,
   isKeynavFocused = false,
+  versions = [],
 }: {
   row: ResultRow;
   /** Active DB profile — keys the pinned-cells localStorage bucket
@@ -3639,15 +3546,23 @@ function ResultRowItemImpl({
   onToggleReviewSelected?: (id: number) => void;
   /** PR B — when true the row gets an outline ring; driven by ``j/k`` nav. */
   isKeynavFocused?: boolean;
+  /** Variations / Re-Run descendants whose rows match this asset's
+   *  ``(schema, table, column)`` key. Rendered as collapsible
+   *  ``v2`` / ``v3`` / … groups stacked under the v1 alternatives —
+   *  the user can compare v1 vs v2 in one place and fall back to v1
+   *  by collapsing the newer groups. */
+  versions?: AssetVersionEntry[];
 }) {
   // When the row was fetched with ``include_history=true`` and a
   // re-run produced a v2/v3+ version, surface the latest entry's
-  // suggestions in place. Without this swap, the user had to
-  // navigate to the new run's detail page to see the regenerated
-  // alternatives — defeating the point of an inline Re-Run icon.
-  // ``displayRow`` keeps the original ``id`` (+ pending bookkeeping)
-  // but prefers the latest chain entry's content fields.
+  // suggestions in place — ONLY when there are no inline-descendant
+  // versions to render. With the v1+v2 stacked layout, swapping in
+  // place would replace v1's alternatives with v2's content under
+  // the v1 group header, leaving the user with no way to see the
+  // original alternatives. Keep the legacy in-place swap for runs
+  // without descendants so the old re-run-chain UX still works.
   const latestChainEntry = (() => {
+    if (versions.length > 0) return null;
     const chain = row.history;
     if (!Array.isArray(chain) || chain.length === 0) return null;
     // chain is ordered by rerun_seq ASC; last entry is newest.
@@ -4152,8 +4067,135 @@ function ResultRowItemImpl({
             done.
           </p>
         )}
+        {versions.length > 0 && (
+          <VersionGroupsSection versions={versions} />
+        )}
       </div>
     </li>
+  );
+}
+
+/** Stacked-vertical version groups rendered inside an asset card,
+ *  below the v1 alternatives. Each entry is independently
+ *  collapsible. v1 stays where it was (above this section); the
+ *  newest version starts expanded, older ones collapsed by default
+ *  — so a user who likes v1 can fall back instantly by collapsing
+ *  the newer groups. Replaces the previous run-wide
+ *  ``Other versions`` panel which sat below the entire results
+ *  table and gave no per-asset context. */
+function VersionGroupsSection({
+  versions,
+}: {
+  versions: AssetVersionEntry[];
+}) {
+  // Newest = last entry in the descendants array (server emits in
+  // creation order). Start it open; older versions stay collapsed.
+  const newestRunId = versions[versions.length - 1]?.runId ?? -1;
+  const [openRuns, setOpenRuns] = useState<Set<number>>(
+    () => new Set([newestRunId]),
+  );
+  const toggle = (rid: number) =>
+    setOpenRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(rid)) next.delete(rid);
+      else next.add(rid);
+      return next;
+    });
+  return (
+    <div className="mt-2 space-y-1.5">
+      {versions.map((v) => {
+        const alts = normalizeAlternatives(v.row.alternatives_json);
+        const open = openRuns.has(v.runId);
+        const altLetter =
+          v.kind === "variations" && v.seed_alternative_id
+            ? (() => {
+                const colon = v.seed_alternative_id!.lastIndexOf(":");
+                const idx = Number(v.seed_alternative_id!.slice(colon + 1));
+                return Number.isFinite(idx)
+                  ? String.fromCharCode(65 + idx)
+                  : null;
+              })()
+            : null;
+        return (
+          <div
+            key={v.runId}
+            className="rounded-md border border-border bg-surface-subtle/30"
+          >
+            <button
+              type="button"
+              onClick={() => toggle(v.runId)}
+              className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left hover:bg-surface-subtle/60"
+            >
+              <span className="inline-flex flex-wrap items-center gap-1.5 text-[11px]">
+                <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                  {v.versionLabel}
+                </span>
+                <span className="text-ink">
+                  {v.kind === "variations"
+                    ? altLetter
+                      ? `variations of ${altLetter}`
+                      : "variations"
+                    : "re-run"}
+                </span>
+                <Link
+                  to={`/runs/${v.runId}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="font-mono text-[10.5px] text-accent hover:underline"
+                  title="Open this version on its own detail page"
+                >
+                  run #{v.runId}
+                </Link>
+                {v.mode && (
+                  <span className="text-ink-dim">· {v.mode}</span>
+                )}
+                {v.model && (
+                  <span className="font-mono text-[10px] text-ink-dim">
+                    · {v.model}
+                  </span>
+                )}
+              </span>
+              <span className="text-[10px] text-ink-dim">
+                {open ? "▼" : "▶"}
+              </span>
+            </button>
+            {open && (
+              <div className="border-t border-border px-2.5 py-1.5">
+                {v.kind === "variations" && v.seed_alternative_text && (
+                  <p className="mb-1.5 text-[10.5px] italic text-ink-dim">
+                    Seed:{" "}
+                    <span className="font-mono not-italic text-ink-muted">
+                      "{v.seed_alternative_text}"
+                    </span>
+                  </p>
+                )}
+                {alts.length === 0 ? (
+                  <p className="text-[10.5px] italic text-ink-dim">
+                    (no alternatives saved)
+                  </p>
+                ) : (
+                  <ul className="space-y-0.5">
+                    {alts.map((alt, i) => {
+                      const letter =
+                        v.kind === "variations" && altLetter
+                          ? `${altLetter}${i + 1}`
+                          : String.fromCharCode(65 + i);
+                      return (
+                        <li key={i} className="text-[11px] text-ink">
+                          <span className="mr-1.5 font-mono text-ink-dim">
+                            {letter}
+                          </span>
+                          {alt}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
