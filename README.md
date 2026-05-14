@@ -24,6 +24,8 @@
 
 ---
 
+_AMX is in early development — expect breaking changes between releases. Stay current with `pip install --upgrade amx-cli`._
+
 Three independent sub-agents — **Profile** (schema, stats, sample values), **RAG** (ingested docs), and **Code** (references mined from your repos) — gather evidence in parallel. An orchestrator merges and ranks them, you accept / edit / skip each suggestion, and AMX writes the approved text back as native `COMMENT` statements on the engine.
 
 Five minutes from `pip install` to your first reviewed comment. **Ten database engines, seven LLM providers.**
@@ -63,7 +65,7 @@ A typical session — running `/run`, inspecting ranked suggestions inline, acce
 From inside the REPL, `/studio` boots **AMX Studio**, a token-protected web UI on `127.0.0.1`, and opens your browser. Same review-and-apply workflow as the REPL — runs, results, the pending queue, the `/ask` chat, and full DB / LLM / Docs / Code profile management — but on a denser surface. **Browse** any database / schema / table to inline-edit comments or hit per-asset **Generate** to draft just one comment through the same human-in-the-loop queue. The SPA bundle ships inside `amx-cli`; no Node toolchain or extra install needed.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/studio-overview.png" alt="AMX Studio Overview page — sidebar with active profile, four stat cards (active backend, LLM model, total runs, success rate), and a Recent runs feed" width="900">
+  <img src="https://raw.githubusercontent.com/omeryasirkucuk/amx/main/docs/assets/studio-overview.png" alt="AMX Studio Catalog landing page — sidebar with Catalog selected, four quick-action cards (Browse, New run, Ask, Audit), and a Recent activity feed" width="900">
 </p>
 
 Full walkthrough at [`/studio`](https://omeryasirkucuk.github.io/amx-docs/cli/studio/).
@@ -114,6 +116,8 @@ Provider-specific guides (including OpenAI / Anthropic Batch mode and local-mode
 
 Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/amx-docs](https://omeryasirkucuk.github.io/amx-docs/)** — concepts, the slash-command map, configuration, data sources, collaboration, troubleshooting, and the [Python API](https://omeryasirkucuk.github.io/amx-docs/api/reference/) for headless use. Release notes are in [`CHANGELOG.md`](https://github.com/omeryasirkucuk/amx/blob/main/CHANGELOG.md) and on the [GitHub Releases page](https://github.com/omeryasirkucuk/amx/releases).
 
+Recent: Studio Lineage & Variations, Confidence Scoring, and explicit cache controls — see the [changelog](https://omeryasirkucuk.github.io/amx-docs/changelog/).
+
 ## Contributing & support
 
 - [Contributing guide](https://github.com/omeryasirkucuk/amx/blob/main/CONTRIBUTING.md) — development setup, branching, commit format, release process
@@ -123,3 +127,7 @@ Full user, operator, and contributor docs live at **[omeryasirkucuk.github.io/am
 ## License
 
 Apache-2.0 — see [`LICENSE`](https://github.com/omeryasirkucuk/amx/blob/main/LICENSE).
+
+---
+
+_This project is developed with the help of multiple AI coding agents._
