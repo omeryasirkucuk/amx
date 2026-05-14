@@ -328,7 +328,9 @@ function StatCard({
  * Compute success rate from the stats payload. Backend ships
  * `total_runs` / `success_runs` (canonical) — falls back to the
  * legacy `total` / `success` aliases if those ever come back.
- * Ready-for-review and cancelled runs both count against success.
+ * `success_runs` covers any run that finished the analysis without
+ * erroring (success, ready_for_review, applied_partial, completed);
+ * only failed / cancelled / still-running runs count against the rate.
  */
 function successRate(stats: unknown): string {
   if (!stats || typeof stats !== "object") return "—";
