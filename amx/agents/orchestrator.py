@@ -1330,9 +1330,7 @@ class Orchestrator:
         # the long form, but this LLM call summarises it back down.
         verbosity = getattr(self.llm.cfg, "description_verbosity", "brief")
         cap = max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
-        alternatives_mode = getattr(
-            self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
-        )
+        alternatives_mode = getattr(self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE)
         description_lines = (
             "\n".join(
                 f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
@@ -1350,9 +1348,7 @@ class Orchestrator:
                     description_length_rule=length_rule(verbosity),
                     n_alternatives=cap,
                     description_lines=description_lines,
-                    alternatives_mode_note=alternatives_mode_merge_note(
-                        alternatives_mode, cap
-                    ),
+                    alternatives_mode_note=alternatives_mode_merge_note(alternatives_mode, cap),
                 ),
             },
         ]

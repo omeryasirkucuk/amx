@@ -170,9 +170,7 @@ def _build_system_prompt(
         _BASE_SYSTEM_PROMPT.format(
             desc_lines=desc_lines,
             description_length_rule=length_rule(description_verbosity),
-            alternatives_mode_directive=alternatives_mode_directive(
-                alternatives_mode, n
-            ),
+            alternatives_mode_directive=alternatives_mode_directive(alternatives_mode, n),
             alternatives_length_reminder=alternatives_length_reminder,
         ).strip()
         + "\n"
@@ -352,9 +350,7 @@ class RAGAgent(BaseAgent):
             self._n_alternatives,
             self._description_verbosity,
             style_profile=self._style_profile,
-            alternatives_mode=getattr(
-                self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
-            ),
+            alternatives_mode=getattr(self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE),
         )
         return (
             [

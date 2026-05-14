@@ -648,9 +648,7 @@ def _record_and_queue(
                     "alternatives": alternatives,
                     "alternative_scores": alternative_scores,
                     "reasoning": "",
-                    "alternatives_mode": getattr(
-                        cfg.llm, "alternatives_mode", None
-                    ),
+                    "alternatives_mode": getattr(cfg.llm, "alternatives_mode", None),
                 }
             ],
         )

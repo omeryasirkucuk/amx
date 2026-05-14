@@ -59,6 +59,9 @@ from amx.cli_support.commands.profiles import (
     cmd_add_llm_profile as _cmd_add_llm_profile,
 )
 from amx.cli_support.commands.profiles import (
+    cmd_alternatives_mode as _cmd_alternatives_mode,
+)
+from amx.cli_support.commands.profiles import (
     cmd_ask_context as _cmd_ask_context,
 )
 from amx.cli_support.commands.profiles import (
@@ -69,9 +72,6 @@ from amx.cli_support.commands.profiles import (
 )
 from amx.cli_support.commands.profiles import (
     cmd_code_profiles as _cmd_code_profiles,
-)
-from amx.cli_support.commands.profiles import (
-    cmd_alternatives_mode as _cmd_alternatives_mode,
 )
 from amx.cli_support.commands.profiles import (
     cmd_confidence_signal as _cmd_confidence_signal,

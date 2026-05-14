@@ -153,9 +153,7 @@ def _build_system_prompt(
         _BASE_SYSTEM_PROMPT.format(
             description_length_rule=description_length_rule,
             alt_instruction=alt_instruction,
-            alternatives_mode_directive=alternatives_mode_directive(
-                alternatives_mode, n
-            ),
+            alternatives_mode_directive=alternatives_mode_directive(alternatives_mode, n),
             alternatives_length_reminder=alternatives_length_reminder,
             extra_items=extra_items,
             desc_lines=desc_lines,
@@ -429,9 +427,7 @@ class ProfileAgent(BaseAgent):
             description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
             style_profile=self._style_profile,
             emit_self_decl=emit_self_decl,
-            alternatives_mode=getattr(
-                self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
-            ),
+            alternatives_mode=getattr(self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE),
         )
         return [
             {"role": "system", "content": system},

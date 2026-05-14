@@ -298,8 +298,7 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/alternatives-mode",
         "llm",
-        "Show/set alternatives diversity mode "
-        "(/alternatives-mode [semantic|lexical])",
+        "Show/set alternatives diversity mode (/alternatives-mode [semantic|lexical])",
     ),
     SlashCommand(
         "/style",

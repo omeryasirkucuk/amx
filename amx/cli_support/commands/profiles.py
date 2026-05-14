@@ -915,8 +915,7 @@ def cmd_alternatives_mode(cfg: AMXConfig, rest: list[str]) -> None:
     value = rest[0].lower().strip()
     if value not in ALTERNATIVES_MODE_CHOICES:
         error(
-            f"Unknown alternatives mode: {value!r}. "
-            f"Valid: {', '.join(ALTERNATIVES_MODE_CHOICES)}"
+            f"Unknown alternatives mode: {value!r}. Valid: {', '.join(ALTERNATIVES_MODE_CHOICES)}"
         )
         return
 
