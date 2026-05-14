@@ -3567,13 +3567,20 @@ function ResultRowItemImpl({
             // pickAlternative -- pendingEntry is already there.
             const canPick = editable && !isChosen;
             const canRestore = (skipped || isAppliedClean) && !isChosen;
-            const clickable = canPick || canRestore;
+            // Toggle-off: clicking the already-chosen alternative on an
+            // editable (queued/accepted) row removes the pending entry,
+            // returning the row to the unreviewed/skipped state. ``applied``
+            // and ``isAppliedClean`` rows stay non-toggleable because the
+            // description is already on disk in the live DB.
+            const canDeselect = editable && isChosen && !applied;
+            const clickable = canPick || canRestore || canDeselect;
             return (
               <button
                 key={`${row.id}-${idx}`}
                 type="button"
                 onClick={() => {
-                  if (canPick) pickAlternative(alt);
+                  if (canDeselect) skipRow();
+                  else if (canPick) pickAlternative(alt);
                   else if (canRestore) restoreRow(alt);
                 }}
                 disabled={!clickable || isMutating}
@@ -3589,7 +3596,7 @@ function ResultRowItemImpl({
                       : skipped
                         ? "Click to restore this row to the pending queue with this alternative chosen."
                         : isChosen
-                          ? "Currently chosen alternative"
+                          ? "Click again to deselect — sends the row back to the unreviewed queue."
                           : "Make this the chosen alternative"
                 }
                 className={cn(
