@@ -516,6 +516,18 @@ class DualWriteHistoryStore:
     def list_recent_events(self, limit: int = 30) -> list[dict[str, Any]]:
         return self.local.list_recent_events(limit)
 
+    def list_apply_events(
+        self,
+        *,
+        run_id: int | None = None,
+        profile_name: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        # Read-only audit timeline; SQLite is the source of truth.
+        # Powers the Studio Audit page and the Landing recent-applies
+        # tile via ``/api/history/apply-events``.
+        return self.local.list_apply_events(run_id=run_id, profile_name=profile_name, limit=limit)
+
     def get_session_state(self, namespace: str, key: str, default: Any = None) -> Any:
         return self.local.get_session_state(namespace, key, default)
 

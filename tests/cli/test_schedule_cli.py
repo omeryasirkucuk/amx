@@ -66,6 +66,11 @@ def test_schedule_add_creates_row(cli) -> None:
             "schema:public",
             "--llm",
             "claude",
+            # Pass --strategy explicitly so the non-interactive
+            # CliRunner doesn't hit the click.prompt for "Review
+            # strategy" and Abort on empty stdin (Python < 3.14).
+            "--strategy",
+            "auto",
         ],
         catch_exceptions=False,
     )
@@ -214,6 +219,8 @@ def test_schedule_add_rejects_bad_timezone(cli) -> None:
             "all",
             "--llm",
             "l",
+            "--strategy",
+            "auto",
         ],
     )
     assert result.exit_code != 0
