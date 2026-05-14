@@ -1349,6 +1349,35 @@ CONFIDENCE_SIGNAL_CHOICES: tuple[str, ...] = (
 DEFAULT_CONFIDENCE_SIGNAL = "self_consistency"
 
 
+#: Allowed values for ``LLMConfig.alternatives_mode``. Controls the *kind*
+#: of variation the LLM is asked to express across DESCRIPTION_1..N:
+#:
+#: * ``semantic`` — alternatives explore meaningfully different
+#:   interpretations of the column (default; makes the confidence signal
+#:   genuinely informative because rankings are over distinct meanings).
+#: * ``lexical`` — alternatives express the SAME meaning with different
+#:   wording, useful when the user already trusts the interpretation and
+#:   only wants the strongest phrasing.
+ALTERNATIVES_MODE_CHOICES: tuple[str, ...] = ("semantic", "lexical")
+
+DEFAULT_ALTERNATIVES_MODE = "semantic"
+
+
+def _coerce_alternatives_mode(value: Any) -> str:
+    """Clamp a YAML-loaded value to a valid ``alternatives_mode`` choice.
+
+    Unknown values (typos like ``semanitc``) fall back to the default
+    rather than raising — the CLI ``/llm alternatives-mode`` command and
+    the Studio segmented control both surface valid values for the user
+    to correct. Case-insensitive so a hand-edited ``Semantic`` works.
+    """
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ALTERNATIVES_MODE_CHOICES:
+            return lowered
+    return DEFAULT_ALTERNATIVES_MODE
+
+
 def _coerce_confidence_signal(value: Any) -> str:
     """Clamp a YAML-loaded value to a valid ``confidence_signal`` choice.
 
@@ -1423,6 +1452,11 @@ class LLMConfig(_ObservableConfig):
     #: 0–1 score is mapped to HIGH/MED/LOW by ``ConfidenceConfig`` band
     #: cut-offs.
     confidence_signal: str = DEFAULT_CONFIDENCE_SIGNAL
+    #: Whether alternatives express different *meanings* (``semantic``) or
+    #: different *wording* of the same meaning (``lexical``). Profile-level
+    #: default; can be overridden per run via ``LLMOverrides``. Has no
+    #: effect when ``n_alternatives == 1``.
+    alternatives_mode: str = DEFAULT_ALTERNATIVES_MODE
     confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
     # Token budget for the model's internal reasoning (Anthropic extended
     # thinking). Only consumed when the model supports reasoning AND a caller
@@ -1474,6 +1508,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
     # config files keep loading. The active signal selection moves to
     # the top-level ``confidence_signal`` field, validated below.
     confidence_signal = _coerce_confidence_signal(m.get("confidence_signal"))
+    alternatives_mode = _coerce_alternatives_mode(m.get("alternatives_mode"))
     return LLMConfig(
         provider=provider,
         model=model,
@@ -1496,6 +1531,7 @@ def _llm_from_mapping(m: dict[str, Any]) -> LLMConfig:
         custom_output_cost_per_mtok=_optional_nonneg_float(m.get("custom_output_cost_per_mtok")),
         rag_query_timeout_sec=float(m.get("rag_query_timeout_sec", 5.0) or 5.0),
         confidence_signal=confidence_signal,
+        alternatives_mode=alternatives_mode,
         confidence=confidence_cfg,
     )
 
@@ -1545,6 +1581,7 @@ def _llm_to_mapping(llm: LLMConfig) -> dict[str, Any]:
         "custom_output_cost_per_mtok": llm.custom_output_cost_per_mtok,
         "rag_query_timeout_sec": llm.rag_query_timeout_sec,
         "confidence_signal": llm.confidence_signal,
+        "alternatives_mode": llm.alternatives_mode,
         "confidence": {
             "enabled": llm.confidence.enabled,
             "bands": {

@@ -477,6 +477,7 @@ def _persist_rerun_row(
     asset_kind: str,
     user_instructions: str | None,
     model_name: str,
+    alternatives_mode: str | None = None,
 ) -> tuple[int, int]:
     """Insert one ``run_results`` row for the re-run + return ``(new_id, seq)``.
 
@@ -521,6 +522,7 @@ def _persist_rerun_row(
         "parent_result_id": int(chain_root),
         "rerun_seq": int(rerun_seq),
         "user_instructions": (user_instructions or "").strip() or None,
+        "alternatives_mode": alternatives_mode,
     }
     [new_id] = hs.save_run_results(int(new_run_id), [row])
     return int(new_id), int(rerun_seq)
@@ -755,6 +757,7 @@ def rerun_items(
                     asset_kind=asset_kind_raw,
                     user_instructions=user_instructions,
                     model_name=getattr(llm, "model_name", "") or str(cfg.llm.model or ""),
+                    alternatives_mode=getattr(cfg.llm, "alternatives_mode", None),
                 )
 
                 outcome = RerunOutcome(

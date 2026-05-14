@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from amx.agents._prompt_helpers import alternatives_mode_directive
 from amx.agents.base import (
     AgentContext,
     BaseAgent,
@@ -13,7 +14,7 @@ from amx.agents.base import (
     apply_confidence_signals,
     apply_logprob_confidence,
 )
-from amx.config import PromptDetail
+from amx.config import DEFAULT_ALTERNATIVES_MODE, PromptDetail
 from amx.llm.prompts import (
     ALTERNATIVES_LENGTH_RULE_REMINDER,
     length_rule,
@@ -69,6 +70,7 @@ Coverage rule (CRITICAL): emit one COLUMN block for EVERY column listed in the i
 For EACH column provide:
 1. {description_length_rule}
 {alt_instruction}
+{alternatives_mode_directive}
 {alternatives_length_reminder}
 {extra_items}
 A confidence level: HIGH / MEDIUM / LOW.
@@ -100,6 +102,7 @@ def _build_system_prompt(
     description_verbosity: str = "brief",
     style_profile: StyleProfile | None = None,
     emit_self_decl: bool = False,
+    alternatives_mode: str = DEFAULT_ALTERNATIVES_MODE,
 ) -> str:
     """Build the system prompt dynamically for the requested number of alternatives.
 
@@ -150,6 +153,9 @@ def _build_system_prompt(
         _BASE_SYSTEM_PROMPT.format(
             description_length_rule=description_length_rule,
             alt_instruction=alt_instruction,
+            alternatives_mode_directive=alternatives_mode_directive(
+                alternatives_mode, n
+            ),
             alternatives_length_reminder=alternatives_length_reminder,
             extra_items=extra_items,
             desc_lines=desc_lines,
@@ -423,6 +429,9 @@ class ProfileAgent(BaseAgent):
             description_verbosity=getattr(self.llm.cfg, "description_verbosity", "brief"),
             style_profile=self._style_profile,
             emit_self_decl=emit_self_decl,
+            alternatives_mode=getattr(
+                self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
+            ),
         )
         return [
             {"role": "system", "content": system},

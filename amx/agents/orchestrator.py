@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
+from amx.agents._prompt_helpers import alternatives_mode_merge_note
 from amx.agents.base import (
     AgentContext,
     Confidence,
@@ -22,6 +23,7 @@ from amx.agents.code_agent import CodeAgent
 from amx.agents.profile_agent import ProfileAgent
 from amx.agents.rag_agent import RAGAgent
 from amx.codebase.analyzer import CodebaseReport
+from amx.config import DEFAULT_ALTERNATIVES_MODE
 from amx.db.connector import AssetKind, DatabaseConnector, TableProfile
 from amx.docs.rag import RAGStore
 from amx.llm.prompts import length_rule
@@ -51,20 +53,19 @@ Produce up to {n_alternatives} ranked descriptions per column using evidence dis
 Length rule (CRITICAL — honour the user's verbosity preset):
 {description_length_rule}
 
+{alternatives_mode_note}
+
 Alternative descriptions:
 - DESCRIPTION_1 is the single best, most defensible description.
-- DESCRIPTION_2 .. DESCRIPTION_{n_alternatives} are distinct alternative
-  framings ranked by likelihood.
-- An "alternative" must offer a meaningfully different interpretation
-  (different business role, different unit, different scope) — not just
-  a rephrasing of DESCRIPTION_1.
+- DESCRIPTION_2 .. DESCRIPTION_{n_alternatives} are ranked alternative
+  candidates (see the diversity directive above for what makes a valid
+  alternative).
 - The Length rule above applies EQUALLY to DESCRIPTION_1, DESCRIPTION_2,
-  ..., DESCRIPTION_{n_alternatives}. An alternative is a different
-  interpretation, not a shorter version. Do not collapse alternatives
-  into one-sentence summaries when the verbosity preset is comprehensive
-  or exhaustive.
-- If the evidence does not support a distinct alternative for a slot,
-  write a single em-dash "—" on that line. Do NOT pad with paraphrases.
+  ..., DESCRIPTION_{n_alternatives} — an alternative is never a shorter
+  version. Do not collapse alternates into one-sentence summaries when
+  the verbosity preset is comprehensive or exhaustive.
+- If the evidence does not support another candidate for a slot, write
+  a single em-dash "—" on that line. Do NOT pad with rephrasings.
 
 Output rules:
 - Write every description and reasoning string in **clear, business-friendly American English**.
@@ -106,17 +107,18 @@ the user's requested count of {n_alternatives}.
 Length rule (CRITICAL — honour the user's verbosity preset):
 {description_length_rule}
 
+{alternatives_mode_note}
+
 For EACH column below:
 - Existing descriptions are listed under "Existing".
 - Produce additional ranked alternative descriptions labelled
   DESCRIPTION_2 .. DESCRIPTION_{n_alternatives}, filling only the slots
   that are missing from the existing list.
-- Each new alternative MUST offer a meaningfully different interpretation
-  from the existing ones — different business role, scope, or unit.
+- Each new alternative MUST follow the diversity directive above.
 - The Length rule above applies EQUALLY to every DESCRIPTION_N slot you
-  fill. An alternative is a different interpretation, not a shorter
-  version — do not collapse alternatives into one-sentence summaries
-  when the verbosity preset is comprehensive or exhaustive.
+  fill — an alternative is never a shorter version. Do not collapse
+  alternates into one-sentence summaries when the verbosity preset is
+  comprehensive or exhaustive.
 - If the evidence truly does not support another distinct alternative for
   a slot, write a single em-dash "—" on that line. Do NOT pad with
   rephrasings of an existing description.
@@ -1328,6 +1330,9 @@ class Orchestrator:
         # the long form, but this LLM call summarises it back down.
         verbosity = getattr(self.llm.cfg, "description_verbosity", "brief")
         cap = max(1, min(5, getattr(self.llm.cfg, "n_alternatives", 3)))
+        alternatives_mode = getattr(
+            self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
+        )
         description_lines = (
             "\n".join(
                 f"DESCRIPTION_{i}: <alternative description — apply the SAME length rule as DESCRIPTION_1>"
@@ -1345,6 +1350,9 @@ class Orchestrator:
                     description_length_rule=length_rule(verbosity),
                     n_alternatives=cap,
                     description_lines=description_lines,
+                    alternatives_mode_note=alternatives_mode_merge_note(
+                        alternatives_mode, cap
+                    ),
                 ),
             },
         ]
@@ -1517,6 +1525,14 @@ class Orchestrator:
                     description_length_rule=length_rule(verbosity),
                     columns_text=columns_text,
                     fillup_response_lines=fillup_response_lines,
+                    alternatives_mode_note=alternatives_mode_merge_note(
+                        getattr(
+                            self.llm.cfg,
+                            "alternatives_mode",
+                            DEFAULT_ALTERNATIVES_MODE,
+                        ),
+                        cap,
+                    ),
                 ),
             },
         ]
@@ -1571,6 +1587,9 @@ class Orchestrator:
         hs = history_store()
         if hs is None or self.run_id is None:
             return {}
+        active_alternatives_mode = getattr(
+            self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
+        )
         rows = [
             {
                 "schema": s.schema,
@@ -1584,6 +1603,7 @@ class Orchestrator:
                 "model_version": self.llm.model_name,
                 "reasoning": s.reasoning,
                 "alternatives": s.suggestions,
+                "alternatives_mode": active_alternatives_mode,
                 # Phase 1 confidence: per-alternative score breakdown
                 # serialised into the same alternatives_json column.
                 # ``None`` when scoring was disabled / unavailable so

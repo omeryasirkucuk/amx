@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from amx.agents._prompt_helpers import alternatives_mode_directive
 from amx.agents.base import (
     AgentContext,
     BaseAgent,
@@ -12,7 +13,7 @@ from amx.agents.base import (
     MetadataSuggestion,
     apply_logprob_confidence,
 )
-from amx.config import PromptDetail
+from amx.config import DEFAULT_ALTERNATIVES_MODE, PromptDetail
 from amx.core.token_budget import MaxTokenValidator
 from amx.docs.rag import RAGStore
 from amx.llm.prompts import (
@@ -131,6 +132,7 @@ Confidence rules:
 - LOW: excerpts provide only weak surrounding context.
 Reasoning must cite the document evidence pattern, not just repeat the description.
 
+{alternatives_mode_directive}
 {alternatives_length_reminder}
 Respond in this format for each column (one block per column):
 
@@ -152,6 +154,7 @@ def _build_system_prompt(
     n_alternatives: int,
     description_verbosity: str = "brief",
     style_profile: StyleProfile | None = None,
+    alternatives_mode: str = DEFAULT_ALTERNATIVES_MODE,
 ) -> str:
     n = max(1, min(5, n_alternatives))
     if n > 1:
@@ -167,6 +170,9 @@ def _build_system_prompt(
         _BASE_SYSTEM_PROMPT.format(
             desc_lines=desc_lines,
             description_length_rule=length_rule(description_verbosity),
+            alternatives_mode_directive=alternatives_mode_directive(
+                alternatives_mode, n
+            ),
             alternatives_length_reminder=alternatives_length_reminder,
         ).strip()
         + "\n"
@@ -343,7 +349,12 @@ class RAGAgent(BaseAgent):
             f"Relevant documentation:\n{doc_text}" + _user_instructions_block(ctx)
         )
         system = _build_system_prompt(
-            self._n_alternatives, self._description_verbosity, style_profile=self._style_profile
+            self._n_alternatives,
+            self._description_verbosity,
+            style_profile=self._style_profile,
+            alternatives_mode=getattr(
+                self.llm.cfg, "alternatives_mode", DEFAULT_ALTERNATIVES_MODE
+            ),
         )
         return (
             [

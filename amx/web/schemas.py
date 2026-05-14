@@ -47,6 +47,8 @@ class LLMProfileDefaults(BaseModel):
     column_batch_size: int | None = None
     prompt_detail: str | None = None
     description_verbosity: str | None = None
+    confidence_signal: str | None = None
+    alternatives_mode: str | None = None
     thinking_budget: int | None = None
     logprob_high: float | None = None
     logprob_medium: float | None = None

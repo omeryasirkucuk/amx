@@ -55,6 +55,7 @@ def _format_merge_prompt(*, columns_text: str, preset: str, n: int = 1) -> str:
         description_length_rule=length_rule(preset),
         n_alternatives=n,
         description_lines=description_lines,
+        alternatives_mode_note="",
     )
 
 
@@ -69,6 +70,7 @@ def _format_fillup_prompt(*, columns_text: str, preset: str, n: int = 3) -> str:
         description_length_rule=length_rule(preset),
         columns_text=columns_text,
         fillup_response_lines=fillup_response_lines,
+        alternatives_mode_note="",
     )
 
 

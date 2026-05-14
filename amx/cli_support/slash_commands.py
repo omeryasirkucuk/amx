@@ -296,6 +296,12 @@ _LLM_COMMANDS: tuple[SlashCommand, ...] = (
         "(/confidence-signal [none|logprob|self_consistency|self_decl|judge])",
     ),
     SlashCommand(
+        "/alternatives-mode",
+        "llm",
+        "Show/set alternatives diversity mode "
+        "(/alternatives-mode [semantic|lexical])",
+    ),
+    SlashCommand(
         "/style",
         "llm",
         "Reference table for description style",
