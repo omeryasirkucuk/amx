@@ -1,6 +1,9 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: "class",
+  // AMX Studio is dark-only by design (see `src/styles/index.css`
+  // `:root { color-scheme: dark }`). No `.dark` class is toggled and
+  // no `light:` variants exist, so leaving Tailwind at its default
+  // (media-query darkMode that has no effect here) is correct.
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {

@@ -269,7 +269,13 @@ export default function AskChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedToken]);
 
-  const { events, closed } = useEventSource({
+  const {
+    events,
+    closed,
+    error: sseError,
+    exhausted: sseExhausted,
+    reconnect: sseReconnect,
+  } = useEventSource({
     path: activeJob ? `/api/ask/${activeJob}/events` : "",
     enabled: !!activeJob,
   });
@@ -737,6 +743,28 @@ export default function AskChat({
             </div>
           </div>
         </div>
+        {activeJob && sseError && !closed && (
+          <div
+            role="status"
+            className={cn(
+              "flex items-center gap-2 rounded-md border px-3 py-2 text-xs",
+              sseExhausted
+                ? "border-critical/40 bg-critical-soft text-critical"
+                : "border-warning/40 bg-warning-soft text-warning",
+            )}
+          >
+            <span className="flex-1 truncate">{sseError}</span>
+            {sseExhausted && (
+              <button
+                type="button"
+                onClick={sseReconnect}
+                className="rounded border border-critical/40 px-2 py-0.5 text-[11px] font-medium text-critical hover:bg-critical/10"
+              >
+                Reconnect
+              </button>
+            )}
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="flex items-end gap-2">
           <div className="relative flex-1">
             <textarea

@@ -1,3 +1,17 @@
+/* Self-hosted webfonts. Before this, ``font-family: Inter`` resolved
+   only on machines with Inter installed; everywhere else the body fell
+   back through ``ui-sans-serif`` → ``system-ui`` → the platform default,
+   so the same Studio rendered with different metrics on Linux servers,
+   stock Windows boxes, and macOS without Inter. ``@fontsource`` bundles
+   the WOFF2 files locally and emits one ``@font-face`` per weight with
+   ``font-display: swap`` so the body text shows immediately in the
+   fallback stack and re-rasterizes once Inter is ready. */
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

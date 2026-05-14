@@ -24,7 +24,7 @@
 //    actually displays at once — so reaching it is a sentinel that
 //    something is wrong, not an everyday case.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { tokenQuerySuffix } from "./auth";
 
@@ -88,25 +88,46 @@ const NAMED_EVENTS = [
   "pip.install.failed",
 ] as const;
 
+export interface UseEventSourceResult {
+  events: SseEvent[];
+  closed: boolean;
+  error: string | null;
+  /** Reconnect-attempt counter exposed for UI ("Reconnecting (3/5)"). */
+  retryAttempt: number;
+  /** Backoff cap reached — the auto-retry loop has given up. The
+   *  caller should show a manual Reconnect affordance and call
+   *  ``reconnect()`` to restart the loop. */
+  exhausted: boolean;
+  /** Manually reset the retry counter and re-open the stream. Use this
+   *  instead of forcing a page reload — the caller's in-memory state
+   *  (chat transcript, scroll position) stays intact. */
+  reconnect: () => void;
+}
+
 export function useEventSource({
   path,
   enabled = true,
   terminalTypes = DEFAULT_TERMINAL,
-}: UseEventSourceOptions): {
-  events: SseEvent[];
-  closed: boolean;
-  error: string | null;
-} {
+}: UseEventSourceOptions): UseEventSourceResult {
   const [events, setEvents] = useState<SseEvent[]>([]);
   const [closed, setClosed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [exhausted, setExhausted] = useState(false);
+  const [reconnectNonce, setReconnectNonce] = useState(0);
   const sourceRef = useRef<EventSource | null>(null);
+
+  const reconnect = useCallback(() => {
+    setReconnectNonce((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
     setEvents([]);
     setClosed(false);
     setError(null);
+    setRetryAttempt(0);
+    setExhausted(false);
     const suffix = tokenQuerySuffix();
     const sep = path.includes("?") ? "&" : "?";
     const url = suffix ? `${path}${sep}${suffix}` : path;
@@ -123,6 +144,7 @@ export function useEventSource({
         // transient blip should not poison the budget for the rest
         // of a long-lived stream.
         attempts = 0;
+        setRetryAttempt(0);
         // Clear any "connection lost" message left over from a
         // previous reconnect attempt now that data is flowing again.
         setError(null);
@@ -174,14 +196,22 @@ export function useEventSource({
           sourceRef.current = null;
         }
         if (attempts >= MAX_RECONNECT_ATTEMPTS) {
-          setError("Connection lost. Please reload the page.");
+          // Auto-retry budget exhausted. The caller surfaces a
+          // manual Reconnect button that calls ``reconnect()`` —
+          // bumping ``reconnectNonce`` re-runs this effect with a
+          // fresh attempt counter.
+          setError("Connection lost. Click Reconnect to retry.");
+          setExhausted(true);
           stopped = true;
           return;
         }
         const delay =
           RECONNECT_BACKOFF_MS[Math.min(attempts, RECONNECT_BACKOFF_MS.length - 1)];
         attempts += 1;
-        setError(`Connection lost. Reconnecting (attempt ${attempts})…`);
+        setRetryAttempt(attempts);
+        setError(
+          `Connection lost. Reconnecting (attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS})…`,
+        );
         reconnectTimer = setTimeout(connect, delay);
       };
     };
@@ -199,7 +229,11 @@ export function useEventSource({
         sourceRef.current = null;
       }
     };
-  }, [enabled, path, terminalTypes]);
+  }, [enabled, path, terminalTypes, reconnectNonce]);
 
-  return { events, closed, error };
+  return { events, closed, error, retryAttempt, exhausted, reconnect };
 }
+
+/** Public constant the caller can read to render the X/N progress
+ *  indicator without importing the internal config. */
+export const SSE_MAX_RECONNECT_ATTEMPTS = MAX_RECONNECT_ATTEMPTS;

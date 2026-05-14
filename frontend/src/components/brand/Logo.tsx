@@ -104,8 +104,9 @@ export default function Logo({ size = 14, className, suffix }: Props) {
           height={suffixHeight}
           viewBox={`0 0 ${cols} ${ROW_H}`}
           shapeRendering="crispEdges"
-          fill="rgb(245, 245, 242)"
+          fill="currentColor"
           aria-hidden="true"
+          className="text-ink"
           style={{ display: "block" }}
         >
           {rects}
