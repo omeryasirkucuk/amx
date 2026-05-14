@@ -283,7 +283,10 @@ def register_analyze_commands(
             hs = history_store()
             if result.result_id is not None and hs is not None:
                 with contextlib.suppress(Exception):
-                    hs.record_applied(result.result_id)
+                    hs.record_applied(
+                        result.result_id,
+                        chosen_description=getattr(result, "final_description", None) or None,
+                    )
 
         def _on_failed(result: Any, exc: Exception) -> None:
             hs = history_store()

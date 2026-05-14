@@ -102,7 +102,9 @@ class AnalyzeApplyIntegrationTests(unittest.TestCase):
         self.assertIn("Apply pending metadata to the database", result.output)
         self.assertIn("Applied 1 comment(s). Pending file cleared.", result.output)
         clear_pending.assert_called_once()
-        fake_history.record_applied.assert_called_once_with(17)
+        fake_history.record_applied.assert_called_once_with(
+            17, chosen_description="Order identifier"
+        )
 
     def test_analyze_apply_dry_run_does_not_write(self) -> None:
         """``--dry-run`` previews SQL templates without touching the

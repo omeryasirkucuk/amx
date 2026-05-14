@@ -597,7 +597,10 @@ def register_history_commands(
                 def _on_applied(result: Any) -> None:
                     inner_hs = history_store()
                     if result.result_id is not None and inner_hs is not None:
-                        inner_hs.record_applied(result.result_id)
+                        inner_hs.record_applied(
+                            result.result_id,
+                            chosen_description=getattr(result, "final_description", None) or None,
+                        )
                     if result.result_id is not None:
                         try:
                             from amx.search.catalog import SearchCatalog
