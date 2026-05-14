@@ -155,3 +155,16 @@ def test_reads_come_from_local(dual: DualWriteHistoryStore) -> None:
     )
     listed = dual.list_recent_runs(limit=5, command_filter="analyze.run")
     assert any(r["id"] == rid for r in listed)
+
+
+def test_list_apply_events_delegates_to_local(
+    dual: DualWriteHistoryStore,
+) -> None:
+    # Regression guard: ``/api/history/apply-events`` and the Landing
+    # tile both call ``list_apply_events`` on the active store; when
+    # shared mode is on, the active store is a ``DualWriteHistoryStore``
+    # which used to bubble up ``AttributeError`` because the delegate
+    # was missing here. The empty-list shape is what the route forwards
+    # as ``{events: [], count: 0}``.
+    assert dual.list_apply_events() == []
+    assert dual.list_apply_events(run_id=42, profile_name="prod", limit=5) == []
