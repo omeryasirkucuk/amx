@@ -4200,8 +4200,8 @@ function ResultRowItemImpl({
         {variationsBusy && (
           <p className="px-1 text-[10.5px] text-accent inline-flex items-center gap-1">
             <Loader2 size={10} className="animate-spin" aria-hidden />
-            Generating variations… the new run will appear in /history when
-            done.
+            Generating variations… results will appear here and in /history
+            when done.
           </p>
         )}
       </div>
