@@ -245,6 +245,12 @@ class SQLiteHistoryStore:
                     superseded_at REAL,
                     rejection_reason TEXT NOT NULL DEFAULT '',
                     alternatives_mode TEXT,
+                    seed_alternative_id TEXT,
+                    seed_alternative_text TEXT,
+                    parent_run_id INTEGER,
+                    model TEXT,
+                    provider TEXT,
+                    production_warning TEXT,
                     FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
                 )
                 """
@@ -310,6 +316,34 @@ class SQLiteHistoryStore:
                 # the review UI. NB: rows written before commit ``<sha>``
                 # used the inverted definitions — see CHANGELOG.
                 "ALTER TABLE run_results ADD COLUMN alternatives_mode TEXT",
+                # Variations feature (v0.15). When a row was generated as a
+                # seeded variation from one specific alternative of an earlier
+                # run, ``seed_alternative_id`` is the string
+                # ``"{parent_result_id}:{alt_index}"`` identifying that source
+                # alt; ``seed_alternative_text`` carries the verbatim seed so
+                # the audit trail survives even if the parent row is later
+                # rewritten. ``parent_run_id`` is the seed's owning
+                # ``analysis_runs.id`` (distinct from the row-level
+                # ``parent_result_id`` used by Re-Run chains; both can coexist).
+                # ``model`` / ``provider`` capture the LLM identity that
+                # produced the row — needed when a per-run model override was
+                # in effect since the run-level ``analysis_runs.llm_model`` /
+                # ``analysis_runs.llm_provider`` would still report the base
+                # profile's values. NULL on every legacy row.
+                "ALTER TABLE run_results ADD COLUMN seed_alternative_id TEXT",
+                "ALTER TABLE run_results ADD COLUMN seed_alternative_text TEXT",
+                "ALTER TABLE run_results ADD COLUMN parent_run_id INTEGER",
+                "ALTER TABLE run_results ADD COLUMN model TEXT",
+                "ALTER TABLE run_results ADD COLUMN provider TEXT",
+                # Under-production audit. When the LLM (or the
+                # parser) produces fewer alternatives than the active
+                # profile's ``n_alternatives``, this column captures
+                # a one-line summary — e.g. ``"produced 2 of 3
+                # requested"`` or ``"produced 2 of 3 requested (after
+                # seed echo)"`` on Variations rows where the model
+                # echoed the seed verbatim. NULL on the success path
+                # so absence-of-warning is meaningful.
+                "ALTER TABLE run_results ADD COLUMN production_warning TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
@@ -317,6 +351,11 @@ class SQLiteHistoryStore:
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_run_results_parent "
                     "ON run_results(parent_result_id)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_run_results_parent_run "
+                    "ON run_results(parent_run_id)"
                 )
             # ── rerun_context_snapshots: short-lived, GC'd when the worker
             # finishes (job.done / failed / cancelled). One row per target
@@ -1268,8 +1307,9 @@ class SQLiteHistoryStore:
                         asset_kind, source, confidence, logprob_score, raw_logprob,
                         token_count, model_version, reasoning, alternatives_json,
                         parent_result_id, rerun_seq, user_instructions, citations_json,
-                        alternatives_mode
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        alternatives_mode, seed_alternative_id, seed_alternative_text,
+                        parent_run_id, model, provider, production_warning
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -1308,6 +1348,19 @@ class SQLiteHistoryStore:
                         # legacy / non-LLM rows is treated as "not recorded"
                         # by the review UI.
                         s.get("alternatives_mode"),
+                        # Variations audit (NULL on non-variations rows).
+                        s.get("seed_alternative_id"),
+                        s.get("seed_alternative_text"),
+                        s.get("parent_run_id"),
+                        # Per-row LLM identity — captures the effective model /
+                        # provider in use when the alternatives were generated.
+                        # Needed when a per-run profile override was applied,
+                        # since analysis_runs.llm_model / llm_provider would
+                        # still report the base profile's values.
+                        s.get("model"),
+                        s.get("provider"),
+                        # Under-production audit (NULL on success path).
+                        s.get("production_warning"),
                     ),
                 )
                 ids.append(int(cur.lastrowid))
@@ -1591,6 +1644,186 @@ class SQLiteHistoryStore:
             with contextlib.suppress(Exception):
                 d["citations_json"] = json.loads(cite_raw)
         return d
+
+    def get_descendant_runs(
+        self,
+        run_id: int,
+        *,
+        variations_depth_cap: int = 3,
+        rerun_depth_cap: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return the descendant Variations + Re-Run runs for *run_id*.
+
+        Variations descendants are looked up via
+        ``run_results.parent_run_id``; Re-Run descendants via the
+        ``rerun`` ``analysis_runs.command`` plus
+        ``settings_json.parent_run_id``. Variations recurse up to
+        ``variations_depth_cap`` levels (default 3); deeper rows are
+        flattened into the deepest visible parent with an
+        ``over_max_depth`` flag so the frontend can render a "(nested)"
+        indicator. Re-Run descend one level only (a re-run of a re-run
+        is just another re-run of the original asset).
+
+        The shape mirrors :func:`amx.web.routers.history.get_run_results`
+        descendants block — both Studio (``GET /api/runs/{id}/results``)
+        and CLI (``/history show``) consume the same tree.
+        """
+        out: list[dict[str, Any]] = []
+        visited: set[int] = {int(run_id)}
+
+        def _child_status(child_run_id: int) -> str | None:
+            """Read ``analysis_runs.status`` for a descendant. Surfaced
+            on the tree entry so the Studio can render a refresh-safe
+            ``Generating variations…`` indicator after a page reload
+            during execution — without this field the spinner is
+            local-state only and a refresh wipes it."""
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT status FROM analysis_runs WHERE id = ?",
+                    (int(child_run_id),),
+                ).fetchone()
+            return str(row["status"]) if row and row["status"] else None
+
+        def _first_signal_in(rows_for_run: list[dict[str, Any]]) -> str | None:
+            """Surface the confidence signal active when this descendant
+            ran (e.g. ``self_consistency`` / ``logprob`` / ``judge``).
+            Read from the first entry of the first row's
+            ``alternatives_json`` since signal is per-alternative.
+            Drives the version-group header label so a reviewer sees
+            badge-type differences between v1 and vN at a glance."""
+            for rr in rows_for_run:
+                alts = rr.get("alternatives_json")
+                if isinstance(alts, list):
+                    for entry in alts:
+                        if isinstance(entry, dict) and entry.get("signal"):
+                            return str(entry["signal"])
+            return None
+
+        def _collect_variations(parent_id: int, depth: int) -> None:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT run_id FROM run_results "
+                    "WHERE parent_run_id = ? ORDER BY run_id",
+                    (int(parent_id),),
+                ).fetchall()
+            for r in rows:
+                child_run_id = int(r["run_id"])
+                if child_run_id in visited:
+                    continue
+                visited.add(child_run_id)
+                rows_for_run = self.get_run_results(child_run_id)
+                first_seed = next(
+                    (
+                        rr.get("seed_alternative_id")
+                        for rr in rows_for_run
+                        if rr.get("seed_alternative_id")
+                    ),
+                    None,
+                )
+                # Surface the verbatim seed text + mode + model on the
+                # tree entry so the Studio header chip + the inline
+                # version groups can render the full lineage breadcrumb
+                # without an extra per-row scan client-side.
+                first_seed_text = next(
+                    (
+                        rr.get("seed_alternative_text")
+                        for rr in rows_for_run
+                        if rr.get("seed_alternative_text")
+                    ),
+                    None,
+                )
+                first_mode = next(
+                    (
+                        rr.get("alternatives_mode")
+                        for rr in rows_for_run
+                        if rr.get("alternatives_mode")
+                    ),
+                    None,
+                )
+                first_model = next(
+                    (rr.get("model") for rr in rows_for_run if rr.get("model")),
+                    None,
+                )
+                first_provider = next(
+                    (rr.get("provider") for rr in rows_for_run if rr.get("provider")),
+                    None,
+                )
+                entry = {
+                    "run_id": child_run_id,
+                    "kind": "variations",
+                    "seed_alternative_id": first_seed,
+                    "seed_alternative_text": first_seed_text,
+                    "mode": first_mode,
+                    "model": first_model,
+                    "provider": first_provider,
+                    "status": _child_status(child_run_id),
+                    "confidence_signal": _first_signal_in(rows_for_run),
+                    "depth": depth,
+                    "over_max_depth": depth > variations_depth_cap,
+                    "rows": rows_for_run,
+                }
+                out.append(entry)
+                if depth < variations_depth_cap:
+                    _collect_variations(child_run_id, depth + 1)
+
+        def _collect_reruns(parent_id: int) -> None:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, settings_json FROM analysis_runs "
+                    "WHERE command = 'rerun' ORDER BY id",
+                ).fetchall()
+            for r in rows:
+                child_run_id = int(r["id"])
+                if child_run_id in visited:
+                    continue
+                settings_raw = r["settings_json"]
+                try:
+                    settings = json.loads(settings_raw) if isinstance(settings_raw, str) else {}
+                except Exception:
+                    settings = {}
+                if not isinstance(settings, dict):
+                    continue
+                if int(settings.get("parent_run_id") or 0) != int(parent_id):
+                    continue
+                visited.add(child_run_id)
+                rows_for_run = self.get_run_results(child_run_id)
+                first_mode = next(
+                    (
+                        rr.get("alternatives_mode")
+                        for rr in rows_for_run
+                        if rr.get("alternatives_mode")
+                    ),
+                    None,
+                )
+                first_model = next(
+                    (rr.get("model") for rr in rows_for_run if rr.get("model")),
+                    None,
+                )
+                first_provider = next(
+                    (rr.get("provider") for rr in rows_for_run if rr.get("provider")),
+                    None,
+                )
+                out.append(
+                    {
+                        "run_id": child_run_id,
+                        "kind": "rerun",
+                        "seed_alternative_id": None,
+                        "mode": first_mode,
+                        "model": first_model,
+                        "provider": first_provider,
+                        "status": _child_status(child_run_id),
+                        "confidence_signal": _first_signal_in(rows_for_run),
+                        "depth": 1,
+                        "over_max_depth": False,
+                        "rows": rows_for_run,
+                    }
+                )
+                # Re-Run depth cap = 1; do not recurse.
+
+        _collect_variations(int(run_id), depth=1)
+        if rerun_depth_cap >= 1:
+            _collect_reruns(int(run_id))
+        return out
 
     def get_result_chain(self, result_id: int) -> list[dict[str, Any]]:
         """Return the full version chain (original + all re-runs) for an item.

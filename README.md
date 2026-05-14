@@ -118,6 +118,8 @@ Full user, operator, and contributor docs live at **[amxcli.com](https://amxcli.
 
 Recent: Studio Lineage & Variations, Confidence Scoring, and explicit cache controls — see the [changelog](https://amxcli.com/changelog/).
 
+Recent: Studio Lineage & Variations, Confidence Scoring, and explicit cache controls — see the [changelog](https://omeryasirkucuk.github.io/amx-docs/changelog/).
+
 ## Contributing & support
 
 - [Contributing guide](https://github.com/omeryasirkucuk/amx/blob/main/CONTRIBUTING.md) — development setup, branching, commit format, release process

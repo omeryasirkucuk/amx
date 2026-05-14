@@ -28,6 +28,7 @@ from amx.config import (
     LLMConfig,
 )
 from amx.db.profile_schema import FieldSpec, spec_for, supported_backends
+from amx.storage.secrets import get_default_store, is_secret_reference, parse_reference
 from amx.web.deps import get_cfg
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -331,6 +332,7 @@ def upsert_llm(
     merged = _merge_llm_patch(existing, body)
     cfg.upsert_llm_profile(name, merged)
     cfg.save()
+    _invalidate_credential_cache(name)
     return _mask_llm(merged, name, is_active=name == (cfg.active_llm_profile or ""))
 
 
@@ -349,6 +351,7 @@ def delete_llm(name: str, cfg: AMXConfig = Depends(get_cfg)) -> dict[str, Any]:
         )
     cfg.remove_llm_profile(name)
     cfg.save()
+    _invalidate_credential_cache(name)
     return {
         "ok": True,
         "name": name,
@@ -878,6 +881,65 @@ def _mask_db(profile: DBConfig, name: str, *, is_active: bool) -> dict[str, Any]
     return raw
 
 
+#: Lazy in-process cache for ``has_credentials`` results that require a
+#: keyring lookup. Key: ``(profile_name, secret_ref)`` so renaming a
+#: profile or rotating its keyring ref produces a fresh entry. Cleared
+#: on every credential mutation via :func:`_invalidate_credential_cache`.
+_CREDENTIAL_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def _check_credentials_cached(profile_name: str, llm: LLMConfig) -> bool:
+    """Resolve whether *llm* has usable credentials, lazily + cached.
+
+    Profiles whose ``api_key`` is a literal string take the fast path
+    (no keyring call). Profiles whose ``api_key`` is a ``keyring:`` ref
+    pay one keyring lookup per (name, ref) pair per process lifetime;
+    subsequent reads hit :data:`_CREDENTIAL_CACHE`. Resolver failures
+    (locked keychain, secret-service unavailable) cache ``False`` and
+    log once — they MUST NOT propagate, otherwise a missing key would
+    500 the ``/api/profiles/llm`` list and break Settings entirely.
+
+    The cache is invalidated by :func:`_invalidate_credential_cache`
+    from the PUT/DELETE handlers below.
+    """
+    api_key = (llm.api_key or "").strip()
+    if not api_key:
+        return False
+    if not is_secret_reference(api_key):
+        return True
+    cache_key = (profile_name, api_key)
+    cached = _CREDENTIAL_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        store = get_default_store()
+        ref = parse_reference(api_key)
+        resolved = store.get(ref)
+        has_creds = bool(resolved)
+    except Exception as exc:  # noqa: BLE001 — last-resort + logged
+        log.warning(
+            "has_credentials resolver failed for profile %r (ref=%r): %s; "
+            "caching False for the session",
+            profile_name,
+            api_key,
+            exc,
+        )
+        has_creds = False
+    _CREDENTIAL_CACHE[cache_key] = has_creds
+    return has_creds
+
+
+def _invalidate_credential_cache(profile_name: str) -> None:
+    """Drop every cache entry for *profile_name* (any ref shape).
+
+    Called after PUT / DELETE on an LLM profile so the next read
+    re-resolves against the live keyring.
+    """
+    stale = [key for key in _CREDENTIAL_CACHE if key[0] == profile_name]
+    for key in stale:
+        _CREDENTIAL_CACHE.pop(key, None)
+
+
 def _mask_llm(profile: LLMConfig, name: str, *, is_active: bool) -> dict[str, Any]:
     raw = asdict(profile)
     for secret in _LLM_SECRET_FIELDS:
@@ -885,6 +947,7 @@ def _mask_llm(profile: LLMConfig, name: str, *, is_active: bool) -> dict[str, An
             raw[secret] = SECRET_PLACEHOLDER
     raw["name"] = name
     raw["is_active"] = is_active
+    raw["has_credentials"] = _check_credentials_cached(name, profile)
     return raw
 
 
