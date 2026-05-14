@@ -232,6 +232,16 @@ SCHEMA_DESCRIPTIONS: dict[str, dict[str, str]] = {
             "run recovery path to fail runs whose host crashed mid-flight. "
             "NULL for completed runs and for runs created before this column."
         ),
+        "current_step_label": (  # local-only
+            "Most recent phase label for an in-flight run (e.g. "
+            "'Connecting to local-postgre @ bird_train', 'Initializing LLM "
+            "openai/gpt-4o', 'Profiling sales.orders'). Rewritten by the "
+            "web worker as it walks startup phases and the per-table loop "
+            "so a Studio page refresh can render meaningful progress "
+            "instead of falling back to 'Waiting for the worker to begin'. "
+            "Cleared back to NULL by finish_run; never populated for "
+            "completed runs."
+        ),
     },
     # ── run_results (local + shared) ──────────────────────────────────────
     "run_results": {
