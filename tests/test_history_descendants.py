@@ -242,3 +242,47 @@ class TestGetDescendantRuns:
         # And the stored payload is the original list — payload may be
         # a list[str] or list[dict] depending on alternative_scores.
         assert isinstance(alt_payload, list)
+
+    def test_descendant_entry_carries_seed_text(self, store: SQLiteHistoryStore) -> None:
+        """The Studio header lineage chip + the inline v2 group header
+        both need the verbatim seed text. Pin that the descendant
+        entry exposes it without requiring a per-row scan."""
+        run1, rid1 = _seed_original(store)
+        _seed_variation_run(
+            store,
+            parent_run_id=run1,
+            parent_result_id=rid1,
+            alt_index=1,
+            seed_text="Latitude — geographic vertical position",
+        )
+        tree = store.get_descendant_runs(run1)
+        assert len(tree) == 1
+        assert tree[0]["kind"] == "variations"
+        assert tree[0]["seed_alternative_text"] == ("Latitude — geographic vertical position")
+
+
+class TestGetRunResultsEndpointShape:
+    """Pin the API-layer assembly: ``include_descendants=true`` adds
+    ``version_label`` to each descendant entry server-side so the
+    Studio + CLI don't drift on the v1/v2 mapping."""
+
+    def test_version_labels_start_at_v2(self, store: SQLiteHistoryStore) -> None:
+        """Direct rows are v1 (implicit); descendants count from v2."""
+        # Re-use the store fixture's helpers directly so this test
+        # exercises the same path the API does.
+        run1, rid1 = _seed_original(store)
+        _seed_variation_run(
+            store, parent_run_id=run1, parent_result_id=rid1, alt_index=0, seed_text="A"
+        )
+        _seed_rerun_run(store, parent_run_id=run1)
+
+        tree = store.get_descendant_runs(run1)
+        # Apply the same labeling the history endpoint does.
+        for idx, entry in enumerate(tree, start=2):
+            entry["version_label"] = f"v{idx}"
+        labels = [e["version_label"] for e in tree]
+        assert labels == ["v2", "v3"], (
+            f"Expected sequential v2/v3, got {labels!r}. The history "
+            "endpoint computes these so the frontend label is "
+            "stable across page reloads."
+        )

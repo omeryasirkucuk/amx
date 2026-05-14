@@ -94,6 +94,68 @@ interface RunDetailPayload {
    *  Variations submit doesn't render as the generic "no per-column
    *  suggestions" empty state. */
   error_text?: string | null;
+  /** Re-Run + Variations children carry a lineage breadcrumb so
+   *  the page header can show "From run #N · seed: …" without an
+   *  extra fetch. Populated server-side by ``history.get_run`` from
+   *  ``settings_json.parent_run_id`` (+ the first run_results row's
+   *  ``seed_alternative_*`` for Variations). Null for original runs. */
+  lineage?: {
+    parent_run_id: number;
+    kind: "variations" | "rerun";
+    seed_alternative_id?: string | null;
+    seed_alternative_text?: string | null;
+  } | null;
+}
+
+/** Inline lineage chip rendered under the status row when this run
+ *  is a Variations or Re-Run child. Clickable → navigates back to
+ *  the parent run. The seed text is truncated to 60 chars so it fits
+ *  on one row without crowding out the other chips. */
+function LineageChip({
+  lineage,
+}: {
+  lineage: NonNullable<RunDetailPayload["lineage"]>;
+}) {
+  const seedText = (lineage.seed_alternative_text ?? "").trim();
+  const truncated =
+    seedText.length > 60 ? `${seedText.slice(0, 60)}…` : seedText;
+  // ``seed_alternative_id`` is the string ``"{parent_result_id}:{idx}"``;
+  // surface the letter (A/B/C…) by decoding the index suffix.
+  const altLetter = (() => {
+    const id = lineage.seed_alternative_id ?? "";
+    const colon = id.lastIndexOf(":");
+    if (colon === -1) return null;
+    const idx = Number(id.slice(colon + 1));
+    if (!Number.isFinite(idx)) return null;
+    return String.fromCharCode(65 + idx);
+  })();
+  return (
+    <Link
+      to={`/runs/${lineage.parent_run_id}`}
+      title="Navigate to the parent run that produced the seed alternative"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-subtle/40 px-2.5 py-0.5 font-mono text-[10.5px] text-ink-muted hover:border-accent/40 hover:bg-accent-soft/30 hover:text-ink",
+      )}
+    >
+      <span className="text-ink-dim">
+        {lineage.kind === "variations" ? "From run" : "Re-run of run"}
+      </span>
+      <span className="text-accent">#{lineage.parent_run_id}</span>
+      {lineage.kind === "variations" && altLetter && (
+        <>
+          <span className="text-ink-dim">· seed:</span>
+          <span className="rounded bg-accent/15 px-1 text-[10px] font-semibold text-accent">
+            {altLetter}
+          </span>
+        </>
+      )}
+      {lineage.kind === "variations" && truncated && (
+        <span className="max-w-[28rem] truncate text-ink-dim">
+          "{truncated}"
+        </span>
+      )}
+    </Link>
+  );
 }
 
 /** PR C (citation chain): machine-readable provenance for a
@@ -183,6 +245,31 @@ interface ResultsResponse {
   run_id: number;
   results: ResultRow[];
   count: number;
+  /** Inline lineage tree — populated when the query string carries
+   *  ``include_descendants=true``. Each entry is one child run that
+   *  was either Re-Run from this row or generated as a seeded
+   *  Variations descendant. ``version_label`` is computed
+   *  server-side (v2 / v3 / …) so labels stay stable across reloads. */
+  descendants?: DescendantRunEntry[];
+  has_descendants?: boolean;
+}
+
+interface DescendantRunEntry {
+  run_id: number;
+  kind: "variations" | "rerun";
+  /** ``"{parent_result_id}:{alt_index}"`` for variations; null on
+   *  Re-Run descendants which have no per-alternative seed. */
+  seed_alternative_id: string | null;
+  /** Verbatim text of the seed alternative, captured at submit
+   *  time so the group header survives a parent-row rewrite. */
+  seed_alternative_text?: string | null;
+  mode: string | null;
+  model: string | null;
+  provider: string | null;
+  depth: number;
+  over_max_depth: boolean;
+  version_label: string;
+  rows: ResultRow[];
 }
 
 type Tab = "summary" | "results" | "scope" | "settings";
@@ -1556,7 +1643,7 @@ function PersistedRunView({ runId }: { runId: number }) {
     // navigate to the new run id to see the regenerated suggestions.
     queryFn: () =>
       apiFetch<ResultsResponse>(
-        `/api/history/runs/${runId}/results?include_history=true`,
+        `/api/history/runs/${runId}/results?include_history=true&include_descendants=true`,
       ),
     enabled: tab === "results",
     // Tail the results table while live so partial output streams in
@@ -1668,6 +1755,9 @@ function PersistedRunView({ runId }: { runId: number }) {
                 {run.data.llm_model ?? "—"}
               </span>
               <RunHeaderTokenCost run={run.data} />
+              {run.data.lineage && (
+                <LineageChip lineage={run.data.lineage} />
+              )}
               <RunHeaderScope run={run.data} />
               <RunHeaderRagBadge run={run.data} />
               <RunHeaderCodeBadge run={run.data} />
@@ -1731,11 +1821,23 @@ function PersistedRunView({ runId }: { runId: number }) {
           <SummaryTab run={run.data} />
         </TabPanel>
         <TabPanel value="results">
+          {results.data?.has_descendants && (
+            <p className="mb-3 text-[11px] text-ink-dim">
+              Showing {results.data.count} original ·{" "}
+              {results.data.descendants?.length ?? 0}{" "}
+              {(results.data.descendants?.length ?? 0) === 1
+                ? "variation / re-run"
+                : "variations / re-runs"}
+              . Each version below is independently collapsible — fall
+              back to v1 at any time by collapsing the newer ones.
+            </p>
+          )}
           <ResultsTab
             runId={runId}
             loading={results.isLoading}
             rows={results.data?.results ?? []}
             error={results.error as Error | undefined}
+            descendants={results.data?.descendants ?? []}
             runStatus={(run.data?.status as string | undefined) ?? null}
             runErrorText={
               (run.data?.error_text as string | undefined) ?? null
@@ -2096,6 +2198,7 @@ function ResultsTab({
   loading,
   rows,
   error,
+  descendants,
   runStatus,
   runErrorText,
   scope,
@@ -2104,6 +2207,10 @@ function ResultsTab({
   loading: boolean;
   rows: ResultRow[];
   error?: Error;
+  /** Variations / Re-Run children of this run. Each entry is a
+   *  child run group rendered as a collapsible card below the v1
+   *  results so the user can fall back to v1 by collapsing. */
+  descendants: DescendantRunEntry[];
   /** Run-level status from analysis_runs.status. When ``failed`` the
    *  empty state surfaces the persisted error instead of the generic
    *  "no per-column suggestions" copy. */
@@ -3085,7 +3192,164 @@ function ResultsTab({
           pageSize={RESULTS_PAGE_SIZE}
         />
       )}
+      {descendants.length > 0 && (
+        <DescendantsPanel descendants={descendants} />
+      )}
     </div>
+  );
+}
+
+/** Inline lineage panel — renders each Variations / Re-Run descendant
+ *  as a collapsible card below the v1 results so the user can see
+ *  alternatives across versions in one place. Newest descendant is
+ *  auto-expanded; older versions stay collapsed by default. */
+function DescendantsPanel({
+  descendants,
+}: {
+  descendants: DescendantRunEntry[];
+}) {
+  // Newest = highest version_label (vN with largest N). The server
+  // emits in collection order so the LAST entry is the newest.
+  const newestRunId = descendants[descendants.length - 1]?.run_id ?? -1;
+  const initialOpen = new Set([newestRunId]);
+  const [openRuns, setOpenRuns] = useState<Set<number>>(initialOpen);
+  const toggle = (rid: number) =>
+    setOpenRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(rid)) next.delete(rid);
+      else next.add(rid);
+      return next;
+    });
+  return (
+    <Card>
+      <CardHeader title="Other versions" />
+      <CardBody>
+        <p className="mb-2 text-[11px] text-ink-dim">
+          Variations + Re-Runs derived from this run. Each card below
+          is an independent run with its own alternatives — collapse
+          to fall back to v1 above.
+        </p>
+        <ul className="space-y-3">
+          {descendants.map((entry) => (
+            <li
+              key={entry.run_id}
+              id={`version-${entry.version_label}`}
+              className="rounded-md border border-surface-border bg-surface"
+            >
+              <button
+                type="button"
+                onClick={() => toggle(entry.run_id)}
+                className="flex w-full items-center justify-between gap-3 rounded-t-md px-3 py-2 text-left hover:bg-surface-subtle/40"
+              >
+                <span className="inline-flex items-center gap-2 text-xs">
+                  <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-accent">
+                    {entry.version_label}
+                  </span>
+                  <span className="text-ink">
+                    {entry.kind === "variations" ? "Variations" : "Re-Run"}
+                  </span>
+                  <Link
+                    to={`/runs/${entry.run_id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-mono text-[11px] text-accent hover:underline"
+                    title="Open this version on its own detail page"
+                  >
+                    run #{entry.run_id}
+                  </Link>
+                  {entry.kind === "variations" && entry.seed_alternative_id && (
+                    <span className="text-[11px] text-ink-dim">
+                      · seed{" "}
+                      {(() => {
+                        const id = entry.seed_alternative_id ?? "";
+                        const colon = id.lastIndexOf(":");
+                        if (colon === -1) return "?";
+                        const idx = Number(id.slice(colon + 1));
+                        return Number.isFinite(idx)
+                          ? String.fromCharCode(65 + idx)
+                          : "?";
+                      })()}
+                    </span>
+                  )}
+                  {entry.mode && (
+                    <span className="text-[11px] text-ink-dim">
+                      · {entry.mode}
+                    </span>
+                  )}
+                  {entry.model && (
+                    <span className="font-mono text-[10px] text-ink-dim">
+                      · {entry.model}
+                    </span>
+                  )}
+                  <span className="text-[11px] text-ink-dim">
+                    · {entry.rows.length}{" "}
+                    {entry.rows.length === 1 ? "row" : "rows"}
+                  </span>
+                </span>
+                <span className="text-[10px] text-ink-dim">
+                  {openRuns.has(entry.run_id) ? "▼ collapse" : "▶ expand"}
+                </span>
+              </button>
+              {openRuns.has(entry.run_id) && (
+                <div className="border-t border-surface-border px-3 py-2">
+                  {entry.kind === "variations" &&
+                    entry.seed_alternative_text && (
+                      <p className="mb-2 text-[11px] italic text-ink-dim">
+                        Seed:{" "}
+                        <span className="font-mono not-italic text-ink-muted">
+                          "{entry.seed_alternative_text}"
+                        </span>
+                      </p>
+                    )}
+                  <ul className="space-y-1.5">
+                    {entry.rows.map((row) => {
+                      const alts = normalizeAlternatives(
+                        row.alternatives_json,
+                      );
+                      const label = [
+                        row.schema_name,
+                        row.table_name,
+                        row.column_name,
+                      ]
+                        .filter(Boolean)
+                        .join(".");
+                      return (
+                        <li
+                          key={row.id}
+                          className="rounded border border-surface-border bg-surface-subtle/30 px-2.5 py-1.5"
+                        >
+                          <div className="font-mono text-[11px] text-ink-muted">
+                            {label || `(row #${row.id})`}
+                          </div>
+                          <ul className="mt-1 space-y-0.5">
+                            {alts.length === 0 ? (
+                              <li className="text-[11px] italic text-ink-dim">
+                                (no alternatives saved)
+                              </li>
+                            ) : (
+                              alts.map((alt, i) => (
+                                <li
+                                  key={i}
+                                  className="text-[11px] text-ink"
+                                >
+                                  <span className="mr-1.5 font-mono text-ink-dim">
+                                    {String.fromCharCode(65 + i)}
+                                  </span>
+                                  {alt}
+                                </li>
+                              ))
+                            )}
+                          </ul>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </CardBody>
+    </Card>
   );
 }
 

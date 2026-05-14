@@ -1680,6 +1680,18 @@ class SQLiteHistoryStore:
                     ),
                     None,
                 )
+                # Surface the verbatim seed text + mode + model on the
+                # tree entry so the Studio header chip + the inline
+                # version groups can render the full lineage breadcrumb
+                # without an extra per-row scan client-side.
+                first_seed_text = next(
+                    (
+                        rr.get("seed_alternative_text")
+                        for rr in rows_for_run
+                        if rr.get("seed_alternative_text")
+                    ),
+                    None,
+                )
                 first_mode = next(
                     (
                         rr.get("alternatives_mode")
@@ -1700,6 +1712,7 @@ class SQLiteHistoryStore:
                     "run_id": child_run_id,
                     "kind": "variations",
                     "seed_alternative_id": first_seed,
+                    "seed_alternative_text": first_seed_text,
                     "mode": first_mode,
                     "model": first_model,
                     "provider": first_provider,

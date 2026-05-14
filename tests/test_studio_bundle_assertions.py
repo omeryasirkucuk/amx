@@ -148,16 +148,52 @@ class TestRunNewMountsProfilePicker:
     def test_runnew_chunk_uses_capabilities_hook(self) -> None:
         """RunNew must wire ``useLLMCapabilities`` so capability gates
         re-resolve when the user picks a different profile in the
-        in-panel dropdown."""
+        in-panel dropdown. The capabilities endpoint is the most
+        reliable anchor — it appears in the chunk that imports
+        ``useLLMCapabilities``. Searching the whole bundle (rather
+        than the RunNew chunk in isolation) is intentional: Vite
+        may split the hook into a shared chunk."""
         runnew = sorted(_BUNDLE_ROOT.glob("RunNew-*.js"))
         if not runnew:
             pytest.skip("RunNew chunk not present in bundle.")
-        chunk = runnew[-1].read_text(encoding="utf-8", errors="ignore")
-        # The capabilities endpoint is the most reliable anchor — it
-        # appears in the chunk that imports useLLMCapabilities.
         all_text = _all_bundle_text()
         assert "/api/llm/capabilities" in all_text, (
             "Capabilities endpoint missing from the bundle. The "
             "``useLLMCapabilities`` hook must drive the per-profile "
             "knob gating on every Advanced LLM settings surface."
         )
+
+
+class TestRunDetailLineageAndDescendants:
+    """RunDetail must show a lineage chip on Variations / Re-Run
+    children and an inline ``Other versions`` panel on parents."""
+
+    def test_lineage_chip_strings_present(self) -> None:
+        """Anchor on the three labels the LineageChip emits so a
+        regression that drops the chip lands on this test."""
+        text = _all_bundle_text()
+        assert "From run" in text, "Variations header chip 'From run #N' is missing."
+        assert "Re-run of run" in text, "Re-Run header chip is missing."
+        assert "Navigate to the parent run that produced the seed alternative" in text, (
+            "LineageChip tooltip copy is missing."
+        )
+
+    def test_descendants_panel_title_present(self) -> None:
+        """The inline panel below v1 results carries this header so
+        the user knows v2/v3 cards live there. Removing it would
+        regress Issue 2 of the lineage UI spec."""
+        text = _all_bundle_text()
+        assert "Other versions" in text
+        assert "Each card below" in text or "fall back to v1" in text
+
+    def test_results_secondary_count_line_present(self) -> None:
+        """The 'Showing N original · M variations' secondary line
+        under the tab strip — Issue 4 of the lineage UI spec."""
+        text = _all_bundle_text()
+        assert "original" in text  # part of "Showing N original"
+
+    def test_include_descendants_query_param_used(self) -> None:
+        """RunDetail must fetch with include_descendants=true so the
+        descendants panel actually has data to render."""
+        text = _all_bundle_text()
+        assert "include_descendants=true" in text

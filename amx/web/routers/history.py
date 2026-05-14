@@ -131,6 +131,32 @@ def get_run(
             row["database"] = settings.get("database") or None
         if row.get("catalog") in (None, ""):
             row["catalog"] = settings.get("catalog") or None
+
+    # Lineage chip — surface the parent run id (for Variations + Re-Run
+    # children) so the Studio header can render ``From run #N · seed:
+    # …`` without an extra fetch. Variations capture the seed text on
+    # the first run_results row; we read it lazily to avoid bloating
+    # this hot endpoint on runs that have no descendants.
+    lineage: dict[str, Any] = {}
+    if isinstance(settings, dict):
+        parent = settings.get("parent_run_id")
+        if isinstance(parent, int) and parent > 0:
+            lineage["parent_run_id"] = parent
+            trigger = settings.get("trigger") or ""
+            lineage["kind"] = "variations" if str(trigger) == "variations" else "rerun"
+            # For Variations, surface the seed text + id from any
+            # row in this run (they all share the same seed). For
+            # Re-Run there is no per-alternative seed so both fields
+            # stay null.
+            if lineage["kind"] == "variations":
+                first = _store().get_run_results(run_id)
+                for r in first or []:
+                    if r.get("seed_alternative_id"):
+                        lineage["seed_alternative_id"] = r["seed_alternative_id"]
+                        lineage["seed_alternative_text"] = r.get("seed_alternative_text")
+                        break
+    if lineage:
+        row["lineage"] = lineage
     return row
 
 
@@ -172,9 +198,20 @@ def get_run_results(
     payload: dict[str, Any] = {"run_id": run_id, "results": rows, "count": len(rows)}
     if include_descendants:
         try:
-            payload["descendants"] = store.get_descendant_runs(int(run_id))
+            descendants = store.get_descendant_runs(int(run_id))
         except Exception:
-            payload["descendants"] = []
+            descendants = []
+        # ``version_label`` is computed server-side so the labels are
+        # stable across page reloads and the frontend doesn't need to
+        # re-sort. v1 = the direct run; v2..vN = descendants in
+        # collection order. Each descendant carries its own label so
+        # the inline rendering can group v1 + v2/v3 side-by-side.
+        for idx, entry in enumerate(descendants, start=2):
+            entry["version_label"] = f"v{idx}"
+        payload["descendants"] = descendants
+        # Convenience flag — frontend uses this to decide whether to
+        # bother rendering the descendants section.
+        payload["has_descendants"] = bool(descendants)
     return payload
 
 
