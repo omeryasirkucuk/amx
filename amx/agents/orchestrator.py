@@ -2286,7 +2286,10 @@ class Orchestrator:
         hs = history_store()
         if hs is not None and r.result_id is not None:
             try:
-                hs.record_applied(r.result_id)
+                hs.record_applied(
+                    r.result_id,
+                    chosen_description=r.final_description or None,
+                )
             except Exception as exc:
                 log.debug(
                     "Could not record applied timestamp for result_id=%s: %s", r.result_id, exc

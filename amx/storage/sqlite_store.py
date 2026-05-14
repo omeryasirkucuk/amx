@@ -1341,20 +1341,46 @@ class SQLiteHistoryStore:
                 (now, chosen_description, evaluation, result_id),
             )
 
-    def record_applied(self, result_id: int) -> None:
-        """Record when a reviewed description was successfully applied to DB."""
+    def record_applied(
+        self,
+        result_id: int,
+        *,
+        chosen_description: str | None = None,
+    ) -> None:
+        """Record when a reviewed description was successfully applied to DB.
+
+        When ``chosen_description`` is provided it backfills
+        ``run_results.chosen_description`` *only* if the column is still empty.
+        The interactive review path (``record_evaluation``) wins when both ran,
+        but non-interactive apply paths (Studio "Apply pending", CLI
+        ``/history apply``) finally persist the text actually written to the
+        live DB, so ``describe_run`` / chat answers can quote it later.
+        """
         now = time.time()
         with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE run_results
-                SET applied_at = ?,
-                    db_applied_status = 'applied',
-                    rejection_reason = ''
-                WHERE id = ?
-                """,
-                (now, result_id),
-            )
+            if chosen_description:
+                conn.execute(
+                    """
+                    UPDATE run_results
+                    SET applied_at = ?,
+                        db_applied_status = 'applied',
+                        rejection_reason = '',
+                        chosen_description = COALESCE(NULLIF(chosen_description, ''), ?)
+                    WHERE id = ?
+                    """,
+                    (now, chosen_description, result_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE run_results
+                    SET applied_at = ?,
+                        db_applied_status = 'applied',
+                        rejection_reason = ''
+                    WHERE id = ?
+                    """,
+                    (now, result_id),
+                )
 
     def record_db_apply_failure(self, result_id: int, error_text: str = "") -> None:
         """Record when a reviewed description failed during DB write-back."""

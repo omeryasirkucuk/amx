@@ -1557,7 +1557,15 @@ class ToolBox:
                         "review decisions the user made. Use this AFTER list_past_runs has "
                         "narrowed the candidate set, when the user wants details on a specific "
                         "run ('show me run 42', 'what did the LLM suggest for adr6 in run 17', "
-                        "'why is run 13's avg logprob higher than run 12's')."
+                        "'why is run 13's avg logprob higher than run 12's'). "
+                        "Each result row carries an `applied` boolean and an `applied_at` "
+                        "epoch; the top-level `applied_columns` list pre-filters the rows that "
+                        "were actually committed to the database — quote it verbatim when the "
+                        "user asks which columns were applied. When summarising a run, render "
+                        "results as a single Markdown table with columns "
+                        "`Applied | Column | Confidence | Description` (use ✅ for applied "
+                        "rows, ⏭️ for proposed-but-not-applied rows). Lead with a header line: "
+                        "`Run #<id> — <status> (<applied_count> of <results_count> applied)`."
                     ),
                     "parameters": {
                         "type": "object",
@@ -5849,8 +5857,11 @@ class ToolBox:
                 results = []
                 out["results_warning"] = f"Could not load run_results: {exc}"
             # Compact the results for LLM consumption — drop heavy raw
-            # fields the model rarely needs.
-            out["results"] = [
+            # fields the model rarely needs. ``applied`` / ``applied_at``
+            # let the assistant answer "which columns applied?" without
+            # guessing, and the precomputed ``applied_columns`` summary
+            # below is what it should quote verbatim for partial-apply runs.
+            results_out = [
                 {
                     "schema": r.get("schema_name") or "",
                     "table": r.get("table_name") or "",
@@ -5863,6 +5874,8 @@ class ToolBox:
                     "model_version": r.get("model_version") or "",
                     "chosen_description": r.get("chosen_description") or "",
                     "evaluation": r.get("evaluation") or "",
+                    "applied": (r.get("db_applied_status") or "") == "applied",
+                    "applied_at": r.get("applied_at"),
                     "alternatives": (
                         r.get("alternatives_json")
                         if isinstance(r.get("alternatives_json"), list)
@@ -5871,7 +5884,19 @@ class ToolBox:
                 }
                 for r in results
             ]
-            out["results_count"] = len(out["results"])
+            out["results"] = results_out
+            out["results_count"] = len(results_out)
+            out["applied_columns"] = [
+                {
+                    "schema": r["schema"],
+                    "table": r["table"],
+                    "column": r["column"],
+                    "chosen_description": r["chosen_description"],
+                    "applied_at": r["applied_at"],
+                }
+                for r in results_out
+                if r["applied"]
+            ]
         return out
 
     def _tool_compare_runs(
