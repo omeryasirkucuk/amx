@@ -1184,3 +1184,329 @@ def test_gc_run_context_cache_reaps_only_expired_rows(
         table="customers",
     )
     assert survivors is not None
+
+
+# ── Re-Run modal Advanced parity (PR: rerun-modal-parity) ─────────────
+#
+# Pins the new ``llm_overrides`` block on ``rerun_items``. The Re-Run
+# modal in Studio now mounts the same ``AdvancedLLMOverrides`` form as
+# RunNew, so every knob in ``LLMOverrides`` (alternatives_mode,
+# confidence_signal, max_tokens, …) must flow through the rerun path
+# end-to-end. The CLI ``/rerun --temperature`` shim keeps working as
+# the lone single-knob exception.
+
+
+def _real_cfg_with_llm() -> Any:
+    """A *real* AMXConfig + LLMConfig so the dataclasses.replace path in
+    ``_llm_for_rerun`` actually has dataclass instances to replace.
+
+    The ``_stub_cfg()`` SimpleNamespace shortcut works for the legacy
+    code path (no overrides → ``dataclasses.replace`` never called) but
+    blows up the moment we exercise the override path. These tests use
+    real dataclasses so the replace machinery is genuinely covered.
+    """
+    from amx.config import AMXConfig as _AMXConfig
+    from amx.config import LLMConfig as _LLMConfig
+
+    cfg = _AMXConfig()
+    cfg.llm = _LLMConfig(
+        provider="stub",
+        model="stub-1",
+        temperature=0.2,
+        max_tokens=512,
+        n_alternatives=3,
+        logprob_high=0.85,
+        logprob_medium=0.50,
+    )
+    cfg.active_llm_profile = "stub-llm"
+    return cfg
+
+
+def _wire_rerun_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+    store: SQLiteHistoryStore,
+) -> dict[str, Any]:
+    """Common fixture wiring for the override-path tests."""
+    from amx.agents import rerun_context as rc_mod
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    monkeypatch.setattr(rerun_mod, "history_store", lambda: store)
+    monkeypatch.setattr(rc_mod, "history_store", lambda: store)
+
+    def _fake_snapshot(cfg, *, target_result_id, job_id, user_instructions=None):
+        snap_id = f"snap-{target_result_id}"
+        store.save_rerun_snapshot(
+            snapshot_id=snap_id,
+            job_id=job_id,
+            target_result_id=int(target_result_id),
+            payload={
+                "schema": "public",
+                "table": "orders",
+                "column": "status",
+                "asset_kind": "column",
+                "db_profile": {"columns": [{"name": "status", "dtype": "text"}]},
+                "rag_context": [],
+                "code_context": [],
+                "existing_metadata": {},
+                "user_instructions": (user_instructions or "").strip(),
+                "original": {"run_id": 0, "result_id": int(target_result_id)},
+            },
+        )
+        return snap_id
+
+    monkeypatch.setattr(rerun_mod, "build_context_snapshot", _fake_snapshot)
+
+    seen_llm_cfgs: list[Any] = []
+
+    class _FakeLLM:
+        model_name = "stub-1"
+
+        def __init__(self, _cfg):
+            self.cfg = _cfg
+            seen_llm_cfgs.append(_cfg)
+
+    monkeypatch.setattr(rerun_mod, "LLMProvider", _FakeLLM)
+
+    def _fake_run(self, ctx):
+        return [
+            MetadataSuggestion(
+                schema=ctx.schema,
+                table=ctx.table,
+                column=ctx.column,
+                suggestions=["v2-alt-1", "v2-alt-2", "v2-alt-3"],
+                confidence=Confidence.HIGH,
+                reasoning="rerun stub",
+                source="rerun",
+            )
+        ]
+
+    monkeypatch.setattr(rerun_mod.ProfileAgent, "run", _fake_run)
+    return {"seen_llm_cfgs": seen_llm_cfgs}
+
+
+def test_rerun_walks_all_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Every LLMOverrides field reaches the LLMConfig the agents see.
+
+    Sends a full overrides dict and asserts the seeded ``LLMProvider``
+    was constructed against a derived ``LLMConfig`` carrying each value.
+    """
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    s = SQLiteHistoryStore(tmp_path / "h.db")
+    s.init()
+    _, original_id = _seed_original_run(s)
+    state = _wire_rerun_stubs(monkeypatch, s)
+
+    cfg = _real_cfg_with_llm()
+    rerun_mod.rerun_items(
+        cfg,
+        target_result_ids=[original_id],
+        llm_overrides={
+            "temperature": 0.9,
+            "max_tokens": 4096,
+            "n_alternatives": 5,
+            "prompt_detail": "full",
+            "description_verbosity": "exhaustive",
+            "confidence_signal": "judge",
+            "alternatives_mode": "lexical",
+            "thinking_budget": 8192,
+            "logprob_high": 0.9,
+            "logprob_medium": 0.6,
+        },
+    )
+
+    used = state["seen_llm_cfgs"][-1]
+    assert used.temperature == 0.9
+    assert used.max_tokens == 4096
+    assert used.n_alternatives == 5
+    assert used.prompt_detail == "full"
+    assert used.description_verbosity == "exhaustive"
+    assert used.confidence_signal == "judge"
+    assert used.alternatives_mode == "lexical"
+    assert used.thinking_budget == 8192
+    assert used.logprob_high == 0.9
+    assert used.logprob_medium == 0.6
+
+
+def test_rerun_profile_unchanged_after_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The saved LLM profile instance on ``cfg.llm`` is byte-identical
+    before and after the rerun, regardless of overrides. Proves the
+    immutable ``dataclasses.replace`` path doesn't leak."""
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    s = SQLiteHistoryStore(tmp_path / "h.db")
+    s.init()
+    _, original_id = _seed_original_run(s)
+    _wire_rerun_stubs(monkeypatch, s)
+
+    cfg = _real_cfg_with_llm()
+    saved_profile = cfg.llm
+    before_snapshot = (
+        cfg.llm.temperature,
+        cfg.llm.alternatives_mode,
+        cfg.llm.confidence_signal,
+        cfg.llm.n_alternatives,
+    )
+
+    rerun_mod.rerun_items(
+        cfg,
+        target_result_ids=[original_id],
+        llm_overrides={
+            "temperature": 0.99,
+            "alternatives_mode": "lexical",
+            "confidence_signal": "judge",
+            "n_alternatives": 5,
+        },
+    )
+
+    # ``cfg.llm`` may be replaced with the derived dataclass internally
+    # for the duration of the run, but the *original* profile instance
+    # held by the caller stays untouched — that's the contract.
+    after_snapshot = (
+        saved_profile.temperature,
+        saved_profile.alternatives_mode,
+        saved_profile.confidence_signal,
+        saved_profile.n_alternatives,
+    )
+    assert after_snapshot == before_snapshot
+
+
+def test_rerun_batch_applies_overrides_to_all_items(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A multi-target rerun applies the same overrides to every target."""
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    s = SQLiteHistoryStore(tmp_path / "h.db")
+    s.init()
+    # Seed two separate originals so we exercise the batch path.
+    _, original_a = _seed_original_run(s)
+    _, original_b = _seed_original_run(s)
+    state = _wire_rerun_stubs(monkeypatch, s)
+
+    cfg = _real_cfg_with_llm()
+    new_run_id, outcomes = rerun_mod.rerun_items(
+        cfg,
+        target_result_ids=[original_a, original_b],
+        llm_overrides={
+            "alternatives_mode": "lexical",
+            "confidence_signal": "judge",
+        },
+    )
+
+    assert len(outcomes) == 2
+    # Both new rows write under the same derived cfg ⇒ same mode.
+    for outcome in outcomes:
+        new_row = s.get_run_result(outcome.new_result_id)
+        assert new_row is not None
+        assert new_row["alternatives_mode"] == "lexical"
+
+    # The LLMProvider sees the derived cfg once (Studio shares the
+    # provider across the batch); confidence_signal lands on the
+    # underlying cfg passed at construction.
+    used = state["seen_llm_cfgs"][-1]
+    assert used.alternatives_mode == "lexical"
+    assert used.confidence_signal == "judge"
+
+
+def test_rerun_alternatives_mode_skipped_when_n_is_1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the override sets ``n_alternatives=1``, an empty
+    ``alternatives_mode`` is not forced — the caller decides whether to
+    emit one. This pins the backend's permissive contract: the
+    front-end disables the row, so the backend should never inject a
+    bogus value of its own when N=1."""
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    s = SQLiteHistoryStore(tmp_path / "h.db")
+    s.init()
+    _, original_id = _seed_original_run(s)
+    state = _wire_rerun_stubs(monkeypatch, s)
+
+    cfg = _real_cfg_with_llm()
+    cfg.llm.alternatives_mode = "semantic"
+    rerun_mod.rerun_items(
+        cfg,
+        target_result_ids=[original_id],
+        llm_overrides={"n_alternatives": 1},  # no alternatives_mode key
+    )
+
+    used = state["seen_llm_cfgs"][-1]
+    assert used.n_alternatives == 1
+    # alternatives_mode inherits the profile default; backend doesn't
+    # force a particular value when the override omits it.
+    assert used.alternatives_mode == "semantic"
+
+
+def test_rerun_temperature_override_legacy_back_compat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The legacy single-knob ``temperature_override`` field still
+    drives the derived cfg's temperature when sent alone — the path
+    every in-flight Studio bundle + the CLI ``/rerun --temperature``
+    flag relies on."""
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    s = SQLiteHistoryStore(tmp_path / "h.db")
+    s.init()
+    _, original_id = _seed_original_run(s)
+    state = _wire_rerun_stubs(monkeypatch, s)
+
+    cfg = _real_cfg_with_llm()
+    rerun_mod.rerun_items(
+        cfg,
+        target_result_ids=[original_id],
+        temperature_override=0.7,
+    )
+
+    used = state["seen_llm_cfgs"][-1]
+    assert used.temperature == 0.7
+    # All other knobs inherit the profile.
+    assert used.alternatives_mode == "semantic"
+    assert used.n_alternatives == 3
+
+
+def test_rerun_settings_json_records_effective_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The new rerun's ``analysis_runs.settings_json`` records the
+    *effective* (post-override) LLM config so ``/history show <run>``
+    reports what actually ran."""
+    from amx.agents._orchestrator import rerun as rerun_mod
+
+    s = SQLiteHistoryStore(tmp_path / "h.db")
+    s.init()
+    _, original_id = _seed_original_run(s)
+    _wire_rerun_stubs(monkeypatch, s)
+
+    cfg = _real_cfg_with_llm()
+    new_run_id, _ = rerun_mod.rerun_items(
+        cfg,
+        target_result_ids=[original_id],
+        llm_overrides={
+            "alternatives_mode": "lexical",
+            "confidence_signal": "judge",
+            "temperature": 0.45,
+        },
+    )
+
+    new_run = s.get_run(int(new_run_id))
+    assert new_run is not None
+    settings = new_run.get("settings_json") or new_run.get("settings")
+    if isinstance(settings, str):
+        import json as _json
+
+        settings = _json.loads(settings)
+    assert isinstance(settings, dict)
+    assert settings.get("alternatives_mode") == "lexical"
+    assert settings.get("confidence_signal") == "judge"
+    assert float(settings.get("temperature") or 0) == 0.45
+    # ``llm_overrides`` records ONLY the fields the user overrode so a
+    # reviewer can tell at a glance what was changed vs inherited.
+    overrides = settings.get("llm_overrides") or {}
+    assert overrides.get("alternatives_mode") == "lexical"
+    assert overrides.get("confidence_signal") == "judge"
+    assert float(overrides.get("temperature") or 0) == 0.45

@@ -775,6 +775,11 @@ export const api = {
     result_ids: number[];
     user_instructions?: string | null;
     temperature_override?: number | null;
+    /** Full per-run LLM override block — same shape as
+     *  ``LLMOverrides`` on ``POST /api/runs``. New surface, parity
+     *  with RunNew's Advanced LLM settings. ``temperature_override``
+     *  above stays for one release as a back-compat shim. */
+    llm_overrides?: LLMOverrides;
   }) =>
     apiFetch<{ job_id: string; status: string; new_run_id?: number | null }>(
       "/api/runs/rerun-item",
@@ -784,6 +789,7 @@ export const api = {
           result_ids: body.result_ids,
           user_instructions: body.user_instructions ?? null,
           temperature_override: body.temperature_override ?? null,
+          llm_overrides: body.llm_overrides ?? null,
         }),
       },
     ),

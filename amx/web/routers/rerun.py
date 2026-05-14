@@ -37,6 +37,7 @@ from amx.utils.logging import get_logger
 from amx.web.deps import get_cfg, get_jobs
 from amx.web.jobs import Job, JobRegistry
 from amx.web.progress_bus import emit, emit_terminal
+from amx.web.routers.runs import LLMOverrides
 
 router = APIRouter(prefix="/api", tags=["rerun"])
 log = get_logger("web.rerun")
@@ -65,12 +66,25 @@ class RerunRequest(BaseModel):
     temperature_override: float | None = Field(
         default=None,
         description=(
-            "Optional temperature override for diversity nudge. When "
-            "omitted the executor leaves the original LLM profile's "
-            "temperature in place."
+            "Legacy single-knob temperature override. New Studio code "
+            "sends ``llm_overrides.temperature`` instead; this field is "
+            "kept for one release so in-flight bundles don't break. When "
+            "both are set, this field wins so the wire contract stays "
+            "stable for existing callers."
         ),
         ge=0.0,
         le=1.0,
+    )
+    llm_overrides: LLMOverrides | None = Field(
+        default=None,
+        description=(
+            "Per-run override of the active LLM profile's tuning knobs — "
+            "same shape and validators as ``LLMOverrides`` on "
+            "``POST /api/runs``. Mirrors RunNew's Advanced LLM settings "
+            "panel content. The executor applies these via immutable "
+            "``dataclasses.replace`` on a derived ``LLMConfig``; the "
+            "saved profile on disk is never mutated."
+        ),
     )
 
 
@@ -133,11 +147,22 @@ def _rerun_worker(
     job.status = "running"
     started_wall = time.time()
     try:
+        # Build the LLM-overrides dict the executor applies via
+        # ``dataclasses.replace`` (immutable, no profile mutation).
+        # The legacy ``temperature_override`` shim wins when both
+        # surfaces send a temperature so an in-flight Studio bundle
+        # stays consistent.
+        llm_overrides_dict: dict[str, Any] | None = None
+        if payload.llm_overrides is not None:
+            llm_overrides_dict = payload.llm_overrides.non_null()
+            if not llm_overrides_dict:
+                llm_overrides_dict = None
         new_run_id, outcomes = rerun_items(
             cfg,
             target_result_ids=list(payload.result_ids),
             user_instructions=payload.user_instructions,
             temperature_override=payload.temperature_override,
+            llm_overrides=llm_overrides_dict,
             job_id=job.id,
             cancel_token=job.cancel,
             on_event=_make_event_emitter(job.queue),

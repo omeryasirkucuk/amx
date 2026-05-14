@@ -31,6 +31,7 @@ intact so the Studio history drawer can show "v1 vs v2" side-by-side.
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from collections.abc import Callable
@@ -93,28 +94,39 @@ class RerunOutcome:
 def _llm_for_rerun(
     cfg: AMXConfig,
     *,
+    overrides: dict[str, Any] | None,
     temperature_override: float | None,
-) -> LLMProvider:
-    """Open an :class:`LLMProvider` honouring the optional temperature bump.
+) -> tuple[LLMProvider, AMXConfig]:
+    """Open an :class:`LLMProvider` honouring the optional per-run override
+    block.
 
-    The diversity nudge (default ``original + 0.2``, capped at 1.0) is
-    applied here by the caller — we just respect ``cfg.llm.temperature``
-    once it's been mutated. Never reach above 1.0; some providers reject
-    it.
+    Mirrors :func:`amx.web.routers.runs._apply_llm_overrides`: builds a
+    derived ``LLMConfig`` via :func:`dataclasses.replace` so the saved
+    profile on disk is **never** mutated. Returns both the live
+    provider and the derived ``AMXConfig`` so downstream call sites
+    (e.g. :func:`_persist_rerun_row`) can read post-override values
+    from ``derived_cfg.llm`` instead of the original profile.
+
+    The legacy ``temperature_override`` shim (single-knob path used by
+    the in-flight Studio bundles + the CLI ``/rerun --temperature``
+    diversity nudge) is folded into the overrides dict here so a single
+    code path applies them.
     """
     if not cfg.llm or not cfg.llm.provider or not cfg.llm.model:
         raise RerunContextError(
             "No active LLM profile is configured. Open Settings → LLM and pick one."
         )
-    if temperature_override is not None:
-        # ``cfg.llm`` is a dataclass; mutating ``temperature`` here only
-        # affects this LLMProvider instance because LLMProvider snaps
-        # the value into its own state at construction.
+    derived_overrides: dict[str, Any] = dict(overrides or {})
+    if temperature_override is not None and "temperature" not in derived_overrides:
         try:
-            cfg.llm.temperature = max(0.0, min(1.0, float(temperature_override)))
-        except Exception:
+            derived_overrides["temperature"] = max(0.0, min(1.0, float(temperature_override)))
+        except (TypeError, ValueError):
             pass
-    return LLMProvider(cfg.llm)
+    if not derived_overrides:
+        return LLMProvider(cfg.llm), cfg
+    derived_llm = dataclasses.replace(cfg.llm, **derived_overrides)
+    derived_cfg = dataclasses.replace(cfg, llm=derived_llm)
+    return LLMProvider(derived_llm), derived_cfg
 
 
 def _pick_target_suggestion(
@@ -534,6 +546,7 @@ def rerun_items(
     target_result_ids: list[int],
     user_instructions: str | None = None,
     temperature_override: float | None = None,
+    llm_overrides: dict[str, Any] | None = None,
     job_id: str | None = None,
     cancel_token: threading.Event | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
@@ -546,6 +559,13 @@ def rerun_items(
     lets the Studio worker pipe progress into its SSE queue
     (``activity.added`` / ``activity.complete`` / ``activity.fail``) —
     CLI callers can leave it ``None``.
+
+    ``llm_overrides`` is the per-run override block mirrored from
+    Studio's ``LLMOverrides`` Pydantic model — same fields, same
+    semantics. ``temperature_override`` is the legacy single-knob
+    shim for the CLI ``/rerun --temperature`` flag and in-flight Studio
+    bundles; folded into ``llm_overrides`` internally by
+    :func:`_llm_for_rerun`. The saved profile on disk is never mutated.
     """
     if not target_result_ids:
         raise RerunContextError("rerun_items called with no targets.")
@@ -555,7 +575,14 @@ def rerun_items(
         raise RerunContextError("History store is not initialised — cannot re-run an item.")
 
     job_id = job_id or f"rerun-{int(time.time() * 1000)}"
-    llm = _llm_for_rerun(cfg, temperature_override=temperature_override)
+    # Build the derived cfg so downstream calls
+    # (``apply_confidence_signals``, ``_persist_rerun_row``, etc.) see
+    # post-override values for ``alternatives_mode`` /
+    # ``confidence_signal`` / ``temperature`` etc. The saved profile on
+    # disk and ``cfg.llm`` on the caller side are untouched.
+    llm, cfg = _llm_for_rerun(
+        cfg, overrides=llm_overrides, temperature_override=temperature_override
+    )
 
     # Resolve the original run + its scope so the new analysis_runs row
     # carries forward enough context for /history list to render it.
@@ -629,6 +656,19 @@ def rerun_items(
             "parent_run_id": parent_run_id,
             "user_instructions": (user_instructions or "").strip() or None,
             "temperature_override": temperature_override,
+            # Effective LLM config used for this re-run (post-override).
+            # Mirrors the analyze.run path so ``/history show <run>``
+            # surfaces the same fields whether the run came from /run or
+            # from a re-run. ``llm_overrides`` records only the fields
+            # the user actually overrode so a reviewer can tell at a
+            # glance what the re-run changed vs inherited.
+            "llm_overrides": dict(llm_overrides) if llm_overrides else None,
+            "alternatives_mode": getattr(cfg.llm, "alternatives_mode", ""),
+            "confidence_signal": getattr(cfg.llm, "confidence_signal", ""),
+            "n_alternatives": int(getattr(cfg.llm, "n_alternatives", 0) or 0),
+            "temperature": float(getattr(cfg.llm, "temperature", 0.0) or 0.0),
+            "prompt_detail": getattr(cfg.llm, "prompt_detail", ""),
+            "description_verbosity": getattr(cfg.llm, "description_verbosity", ""),
             # Surface the database / catalog at the settings level so
             # the SPA's history.get_run handler can flatten them onto
             # the run row (see history.py:92) and the Apply pending
