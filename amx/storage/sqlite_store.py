@@ -245,6 +245,11 @@ class SQLiteHistoryStore:
                     superseded_at REAL,
                     rejection_reason TEXT NOT NULL DEFAULT '',
                     alternatives_mode TEXT,
+                    seed_alternative_id TEXT,
+                    seed_alternative_text TEXT,
+                    parent_run_id INTEGER,
+                    model TEXT,
+                    provider TEXT,
                     FOREIGN KEY (run_id) REFERENCES analysis_runs(id)
                 )
                 """
@@ -310,6 +315,25 @@ class SQLiteHistoryStore:
                 # the review UI. NB: rows written before commit ``<sha>``
                 # used the inverted definitions — see CHANGELOG.
                 "ALTER TABLE run_results ADD COLUMN alternatives_mode TEXT",
+                # Variations feature (v0.15). When a row was generated as a
+                # seeded variation from one specific alternative of an earlier
+                # run, ``seed_alternative_id`` is the string
+                # ``"{parent_result_id}:{alt_index}"`` identifying that source
+                # alt; ``seed_alternative_text`` carries the verbatim seed so
+                # the audit trail survives even if the parent row is later
+                # rewritten. ``parent_run_id`` is the seed's owning
+                # ``analysis_runs.id`` (distinct from the row-level
+                # ``parent_result_id`` used by Re-Run chains; both can coexist).
+                # ``model`` / ``provider`` capture the LLM identity that
+                # produced the row — needed when a per-run model override was
+                # in effect since the run-level ``analysis_runs.llm_model`` /
+                # ``analysis_runs.llm_provider`` would still report the base
+                # profile's values. NULL on every legacy row.
+                "ALTER TABLE run_results ADD COLUMN seed_alternative_id TEXT",
+                "ALTER TABLE run_results ADD COLUMN seed_alternative_text TEXT",
+                "ALTER TABLE run_results ADD COLUMN parent_run_id INTEGER",
+                "ALTER TABLE run_results ADD COLUMN model TEXT",
+                "ALTER TABLE run_results ADD COLUMN provider TEXT",
             ):
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(stmt)
@@ -317,6 +341,11 @@ class SQLiteHistoryStore:
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_run_results_parent "
                     "ON run_results(parent_result_id)"
+                )
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_run_results_parent_run "
+                    "ON run_results(parent_run_id)"
                 )
             # ── rerun_context_snapshots: short-lived, GC'd when the worker
             # finishes (job.done / failed / cancelled). One row per target
@@ -1268,8 +1297,9 @@ class SQLiteHistoryStore:
                         asset_kind, source, confidence, logprob_score, raw_logprob,
                         token_count, model_version, reasoning, alternatives_json,
                         parent_result_id, rerun_seq, user_instructions, citations_json,
-                        alternatives_mode
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        alternatives_mode, seed_alternative_id, seed_alternative_text,
+                        parent_run_id, model, provider
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -1308,6 +1338,17 @@ class SQLiteHistoryStore:
                         # legacy / non-LLM rows is treated as "not recorded"
                         # by the review UI.
                         s.get("alternatives_mode"),
+                        # Variations audit (NULL on non-variations rows).
+                        s.get("seed_alternative_id"),
+                        s.get("seed_alternative_text"),
+                        s.get("parent_run_id"),
+                        # Per-row LLM identity — captures the effective model /
+                        # provider in use when the alternatives were generated.
+                        # Needed when a per-run profile override was applied,
+                        # since analysis_runs.llm_model / llm_provider would
+                        # still report the base profile's values.
+                        s.get("model"),
+                        s.get("provider"),
                     ),
                 )
                 ids.append(int(cur.lastrowid))

@@ -122,9 +122,20 @@ def _llm_for_rerun(
             derived_overrides["temperature"] = max(0.0, min(1.0, float(temperature_override)))
         except (TypeError, ValueError):
             pass
-    if not derived_overrides:
+    # Profile swap: when the caller specified ``profile=<saved-profile-name>``
+    # the named profile's full LLMConfig (provider/model/api_key/api_base)
+    # becomes the base; per-knob overrides layer on top. Unknown names
+    # degrade safely (silent fall-through to the active profile). Mirrors
+    # :func:`amx.web.routers.runs._apply_llm_overrides`.
+    profile_name = derived_overrides.pop("profile", None)
+    base_llm = cfg.llm
+    if profile_name and profile_name in cfg.llm_profiles:
+        base_llm = cfg.llm_profiles[profile_name]
+    if not derived_overrides and base_llm is cfg.llm:
         return LLMProvider(cfg.llm), cfg
-    derived_llm = dataclasses.replace(cfg.llm, **derived_overrides)
+    derived_llm = (
+        dataclasses.replace(base_llm, **derived_overrides) if derived_overrides else base_llm
+    )
     derived_cfg = dataclasses.replace(cfg, llm=derived_llm)
     return LLMProvider(derived_llm), derived_cfg
 
@@ -490,6 +501,10 @@ def _persist_rerun_row(
     user_instructions: str | None,
     model_name: str,
     alternatives_mode: str | None = None,
+    seed_alternative_id: str | None = None,
+    seed_alternative_text: str | None = None,
+    parent_run_id: int | None = None,
+    provider_name: str | None = None,
 ) -> tuple[int, int]:
     """Insert one ``run_results`` row for the re-run + return ``(new_id, seq)``.
 
@@ -535,6 +550,18 @@ def _persist_rerun_row(
         "rerun_seq": int(rerun_seq),
         "user_instructions": (user_instructions or "").strip() or None,
         "alternatives_mode": alternatives_mode,
+        # Variations audit (NULL on plain Re-Run rows). When set, this
+        # row was generated as a seeded variation; the columns carry
+        # back to the source alternative + its owning run so /history
+        # show and Studio can render the inline-nested tree.
+        "seed_alternative_id": seed_alternative_id,
+        "seed_alternative_text": seed_alternative_text,
+        "parent_run_id": int(parent_run_id) if parent_run_id else None,
+        # Per-row LLM identity — needed when a per-run profile override
+        # was applied since analysis_runs.llm_model / llm_provider
+        # would still report the base profile.
+        "model": model_name or None,
+        "provider": provider_name or None,
     }
     [new_id] = hs.save_run_results(int(new_run_id), [row])
     return int(new_id), int(rerun_seq)
@@ -798,6 +825,7 @@ def rerun_items(
                     user_instructions=user_instructions,
                     model_name=getattr(llm, "model_name", "") or str(cfg.llm.model or ""),
                     alternatives_mode=getattr(cfg.llm, "alternatives_mode", None),
+                    provider_name=str(cfg.llm.provider or "") or None,
                 )
 
                 outcome = RerunOutcome(
