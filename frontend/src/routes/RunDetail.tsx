@@ -3647,8 +3647,15 @@ function normalizeAlternativeStrings(raw: unknown[]): string[] {
   for (const entry of raw ?? []) {
     if (typeof entry === "string") out.push(entry);
     else if (entry && typeof entry === "object") {
-      const desc = (entry as { description?: unknown }).description;
-      if (typeof desc === "string") out.push(desc);
+      // The pending file caches alternatives as ``list[str]`` for re-run
+      // rows, but the GET /api/pending enrichment path replaces it with
+      // the fresh ``run_results.alternatives_json`` which is now the
+      // structured ``[{text, signal, score, band}]`` shape from the
+      // single-signal pivot. ``description`` is the legacy field name
+      // some older paths still emit; ``text`` is the current one.
+      const obj = entry as { text?: unknown; description?: unknown };
+      if (typeof obj.text === "string") out.push(obj.text);
+      else if (typeof obj.description === "string") out.push(obj.description);
     }
   }
   const seen = new Set<string>();
